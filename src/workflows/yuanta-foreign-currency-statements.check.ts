@@ -46,7 +46,47 @@ const {
   isYuantaForeignCurrencyCsvControl,
   stageYuantaForeignCurrency,
   yuantaForeignCurrencyStatementsInputSchema,
+  yuantaForeignCurrentBalanceCaptureMatching,
 } = await import("./yuanta-foreign-currency-statements.ts");
+const { matchCurrentBalanceCaptures } = await import("./current-balance-capture-match.ts");
+
+{
+  const admittedAccount = {
+    identity: {
+      sourceConnectionKey: "sha256:yuanta-fx-connection",
+      identityEpochKey: "sha256:yuanta-fx-epoch",
+      subjectDigest: "sha256:yuanta-fx-subject",
+      accountNo: "sha256:yuanta-fx-account",
+      sourceAccountKey: "sha256:yuanta-fx-account",
+    },
+  };
+  const rows = [
+    { sourceAccountKey: "sha256:yuanta-fx-account", currency: "USD" },
+    { sourceAccountKey: "sha256:yuanta-fx-account", currency: "JPY" },
+  ];
+  assert.deepEqual(
+    matchCurrentBalanceCaptures(rows, [admittedAccount, admittedAccount], yuantaForeignCurrentBalanceCaptureMatching)
+      .matched.map(({ row, capture }) => [row.currency, capture]),
+    [["USD", admittedAccount], ["JPY", admittedAccount]],
+    "the key carries no currency, so one admitted account matches its row in every currency",
+  );
+  assert.throws(
+    () => matchCurrentBalanceCaptures(
+      [{ sourceAccountKey: "sha256:other-fx-account", currency: "USD" }],
+      [admittedAccount],
+      yuantaForeignCurrentBalanceCaptureMatching,
+    ),
+    /^Error: Yuanta foreign current deposit snapshot contains an account without an existing financial identity\.$/u,
+  );
+  assert.throws(
+    () => matchCurrentBalanceCaptures(
+      [],
+      [admittedAccount, { identity: { ...admittedAccount.identity, subjectDigest: "sha256:other-subject" } }],
+      yuantaForeignCurrentBalanceCaptureMatching,
+    ),
+    /^Error: Yuanta foreign current deposit identities are ambiguous across financial captures\.$/u,
+  );
+}
 const { StatementComponentAbsentError } =
   await import("../lib/automation/product-collection.ts");
 

@@ -29,7 +29,7 @@ import {
 } from "./cathay-foreign-statements.js";
 import {
   buildCathayCurrentDepositBalanceCaptures,
-  cathayCurrentSubjectDigest,
+  buildCathayDomesticCurrentDepositBalanceCaptures,
 } from "./cathay-current-deposit-canonical.js";
 import {
   type CathayCurrentDepositBalanceRow,
@@ -39,7 +39,6 @@ import {
   parseCathayCurrentDepositBalanceSnapshot,
   readCathayCurrentDepositBalances,
 } from "./cathay-current-deposit-balances.js";
-import { cathayOpaqueIdentity } from "../ledger/pglite/cathay-domestic-adapter.js";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.js";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.js";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.js";
@@ -298,38 +297,8 @@ export async function runCathayAllProviderWorkflow(
           readCurrent(page, "domestic", context),
           context.signal,
         );
-        const selectedKeys = new Set(domestic.accountNumbers);
-        const selectedRows = rows.filter((row) =>
-          selectedKeys.has(row.sourceAccountKey),
-        );
-        if (
-          selectedRows.length === 0 ||
-          [...selectedKeys].some(
-            (key) => !selectedRows.some((row) => row.sourceAccountKey === key),
-          )
-        ) {
-          throw new Error(
-            "Cathay domestic current balance source omitted a selected account.",
-          );
-        }
-        const sourceConnectionId =
-          process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
-        const identityEpoch =
-          process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
-        const connectionKey = cathayOpaqueIdentity(sourceConnectionId);
-        const epochKey = cathayOpaqueIdentity(identityEpoch);
-        const balanceCaptures = buildCathayCurrentDepositBalanceCaptures(
-          selectedRows,
-          {
-            sourceConnectionKey: connectionKey,
-            identityEpochKey: epochKey,
-            subjectDigest: cathayCurrentSubjectDigest(connectionKey, epochKey),
-            observedAt: selectedRows[0]!.observedAt,
-            scopeDate: selectedRows[0]!.observedAt.slice(0, 10),
-          },
-        );
         items = currentBalanceItems(
-          balanceCaptures,
+          buildCathayDomesticCurrentDepositBalanceCaptures(rows, domestic.requests),
           "domestic-current-balance",
         );
       } else if (typeId === "foreign_currency" && foreign) {

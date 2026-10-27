@@ -48,6 +48,10 @@ import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import {
+  indexCurrentBalanceCaptures,
+  type CurrentBalanceCaptureMatching,
+} from "./current-balance-capture-match.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -1034,36 +1038,39 @@ export function buildCtbcCurrentDepositBalanceCapture(
 }
 
 /**
- * Index a run's admitted deposit identities and return the lookup its current
- * balance rows use. Every capture in one run shares the first capture's
- * source connection and identity epoch, so a row needs only its stream and
- * source account key.
+ * CTBC keys a balance by each capture's own stream and source account key.
+ * Every CTBC capture carries one constant source connection and the identity
+ * epoch of the run's single human attestation manifest, so captures spanning
+ * more than one connection or epoch fail closed before matching. A row with
+ * no admitted capture fails the run. The first capture wins.
  */
-export function indexCtbcCurrentDepositFinancialCaptures(
-  financialCaptures: readonly ExistingCtbcFinancialCapture[],
-): (row: Readonly<{ stream: string; sourceAccountKey: string }>) => ExistingCtbcFinancialCapture | undefined {
-  const result = new Map<string, ExistingCtbcFinancialCapture>();
-  for (const candidate of financialCaptures) {
-    const identity = candidate.identity;
-    const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-    const key = `${identity.sourceConnectionKey}\u0000${identity.identityEpochKey}\u0000${identity.stream}\u0000${sourceAccountKey}`;
-    const prior = result.get(key);
-    if (
-      prior &&
-      (prior.authorityRoute !== candidate.authorityRoute ||
-        prior.identity.accountNo !== identity.accountNo ||
-        prior.identity.accountNumber?.value !== identity.accountNumber?.value ||
-        prior.identity.subjectDigest !== identity.subjectDigest ||
-        prior.identity.currency !== identity.currency)
-    )
-      throw new Error("CTBC current deposit identities are ambiguous across financial captures.");
-    if (!prior) result.set(key, candidate);
-  }
-  const first = financialCaptures[0]?.identity;
-  return (row) => first && result.get(
-    `${first.sourceConnectionKey}\u0000${first.identityEpochKey}\u0000${row.stream}\u0000${row.sourceAccountKey}`,
-  );
-}
+export const ctbcCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ stream: string; sourceAccountKey: string }>,
+  ExistingCtbcFinancialCapture
+> = {
+  captureKey: ({ identity }) =>
+    `${identity.stream}\u0000${identity.sourceAccountKey ?? identity.accountNo}`,
+  rowKey: (row) => `${row.stream}\u0000${row.sourceAccountKey}`,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    kept.authorityRoute === candidate.authorityRoute &&
+    kept.identity.accountNo === candidate.identity.accountNo &&
+    kept.identity.accountNumber?.value === candidate.identity.accountNumber?.value &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest &&
+    kept.identity.currency === candidate.identity.currency,
+  ambiguousMessage: "CTBC current deposit identities are ambiguous across financial captures.",
+  oneScope: {
+    scope: ({ identity }) => `${identity.sourceConnectionKey}\u0000${identity.identityEpochKey}`,
+    message:
+      "CTBC current deposit captures span more than one source connection or identity epoch.",
+  },
+  unmatched: {
+    kind: "throw",
+    message: "CTBC current deposit snapshot has no admitted account identity.",
+  },
+};
 
 async function readCtbcCurrentDepositBalancesFromPage(
   page: Page,
@@ -1212,17 +1219,18 @@ export async function stageCtbcDeposit(
       completed: currentRows.length,
       total: currentRows.length,
     });
-    const admittedCaptureFor = indexCtbcCurrentDepositFinancialCaptures(financialCaptures);
+    const admittedCaptures = indexCurrentBalanceCaptures(
+      financialCaptures,
+      ctbcCurrentBalanceCaptureMatching,
+    );
     await context.event("validation", "started", "current-balance-validation-started", {
       completed: 0,
       total: currentRows.length,
     });
     try {
-      for (const row of currentRows) {
+      const { matched } = admittedCaptures.match(currentRows);
+      for (const { row, capture: matching } of matched) {
         context.signal.throwIfAborted();
-        const matching = admittedCaptureFor(row);
-        if (!matching)
-          throw new Error("CTBC current deposit snapshot has no admitted account identity.");
         balances.push({
           product: "current-balance",
           itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
