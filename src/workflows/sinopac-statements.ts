@@ -1451,7 +1451,6 @@ export async function readSinopacDepositSource(
 ): Promise<SinopacDepositSourceSnapshot> {
   const { signal } = context;
   const { event } = product;
-  const observedAt = context.now();
   await event("collection", "started", "account-list-collection-started");
   const listed = await withAbort(source.listAccounts(), signal);
   signal.throwIfAborted();
@@ -1459,6 +1458,7 @@ export async function readSinopacDepositSource(
     completed: listed.length,
     total: listed.length,
   });
+  const observedAt = context.now();
   const dateRange = resolveDateRange(input);
   const windows = sinopacQueryWindows(dateRange);
   const accounts = sinopacFilterAccounts(
