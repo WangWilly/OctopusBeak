@@ -294,9 +294,6 @@ function formatTime(value: string | undefined): string {
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
 }
 
-export const LINEBANK_OBSERVED_TIME_EVIDENCE_VERSION =
-  "observed-time-v1" as const;
-
 /** Reconstruct the source timestamp using Taiwan's fixed UTC+8 offset. */
 export function linebankEpochMillisecondsFromSourceDateTime(
   txDt: string | undefined,
