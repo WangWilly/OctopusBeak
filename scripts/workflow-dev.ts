@@ -305,6 +305,7 @@ export function createLocalSolverHumanAssistancePort(
           confidenceThreshold: verificationConfidenceThreshold(contract, readAutomationSettingsFile()),
           seams: {
             pageForRun,
+            signal: AbortSignal.any([signal, requestSignal]),
             solver: appVerificationSolver,
             resume: () => {
               resumed = true;

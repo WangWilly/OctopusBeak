@@ -121,6 +121,7 @@ function recordingSeams(
     failures,
     seams: {
       pageForRun,
+      signal: new AbortController().signal,
       solver,
       resume: () => { calls.push("resume"); },
       postSubmitOutcome: async () => { calls.push("post-submit"); return postSubmit; },
