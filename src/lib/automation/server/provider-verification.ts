@@ -6,20 +6,40 @@ import {
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
   SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   SINOPAC_CAPTCHA_NATURAL_WIDTH,
-  SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
 } from "../sinopac-captcha.ts";
-import { matchesRejectionDialog } from "../sign-in-prompt.ts";
-import { SINOPAC_SOURCE } from "./sources/sinopac.ts";
-import { YUANTA_DIALOG_DISMISS_TIMEOUT_MS } from "../yuanta-captcha.ts";
-import { POST_CAPTCHA_INPUT_SELECTOR, POST_CAPTCHA_INPUT_SEMANTIC_ID } from "../post-captcha.ts";
 import {
+  POST_CAPTCHA_INPUT_SELECTOR,
+  POST_CAPTCHA_INPUT_SEMANTIC_ID,
+  POST_CAPTCHA_STAGE_ID,
+} from "../post-captcha.ts";
+import {
+  YUANTA_TRADE_AUDIO_PATH,
+  YUANTA_TRADE_AUDIO_SEMANTIC_ID,
   YUANTA_TRADE_CAPTCHA_CHALLENGE_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID,
+  YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
+  YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID,
+  YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID,
 } from "../yuanta-trade-captcha.ts";
+import {
+  YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR,
+  YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
+  YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  YUANTA_BANK_MAIN_FRAME_NAME,
+} from "../yuanta-captcha.ts";
+import {
+  FUBON_CAPTCHA_IMAGE_SELECTOR,
+  FUBON_CAPTCHA_IMAGE_SEMANTIC_ID,
+  FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
+  FUBON_CAPTCHA_NATURAL_HEIGHT,
+  FUBON_CAPTCHA_NATURAL_WIDTH,
+  FUBON_LOGIN_FRAME_NAME,
+} from "../fubon-captcha.ts";
 import {
   automationViewer,
   type PageForRun,
-  type ViewerDialogAccess,
   type ViewerTargetInputHandler,
   type ViewerPageAccess,
 } from "./automation-viewer.ts";
@@ -32,20 +52,6 @@ import {
   createProviderVerificationCapabilityRegistry,
   type ProviderVerificationCapabilityOwner,
 } from "./provider-verification-capabilities.ts";
-
-const YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR = "#chbYCaptchaV2";
-const YUANTA_TRADE_AUDIO_SEMANTIC_ID = "yuanta-trade.login.audio-challenge";
-const YUANTA_TRADE_AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
-export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
-export const FUBON_CAPTCHA_IMAGE_SELECTOR = 'img[src*="captchaImage"]:visible';
-const FUBON_CAPTCHA_INPUT_SEMANTIC_ID = "fubon.login.captcha-input";
-const FUBON_CAPTCHA_IMAGE_SEMANTIC_ID = "fubon.login.captcha-image";
-const FUBON_CAPTCHA_FRAME_NAME = "txnFrame";
-const FUBON_CAPTCHA_REJECTION_TEXT = /^0290\s*驗證碼輸入錯誤$/u;
-const FUBON_POST_SUBMIT_OBSERVE_TIMEOUT_MS = 12_000;
-const FUBON_POST_SUBMIT_POLL_MS = 75;
-const FUBON_CAPTCHA_NATURAL_WIDTH = 158;
-const FUBON_CAPTCHA_NATURAL_HEIGHT = 30;
 
 type YuantaCompletionProbe = {
   checkboxChecked: boolean;
@@ -62,32 +68,14 @@ type ProviderVerificationAdapter = {
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
   handleInput?: ViewerTargetInputHandler;
-  probePostSubmit?: ProviderVerificationPostSubmitProbe;
+  /** Fails when a solver click did not reach the provider's verified state. */
+  confirmClick?(session: string, contract: HumanAssistanceContract): Promise<void>;
 };
 
-export type ProviderVerificationPostSubmitOutcome =
-  | "none"
-  | "provider-rejected"
-  | "unrecognized-dialog";
-
-export type ProviderVerificationPostSubmitProbe = (
-  session: string,
-  contract: HumanAssistanceContract,
-  resume: () => Promise<void>,
-  cleanupSession?: () => Promise<void>,
-) => Promise<ProviderVerificationPostSubmitOutcome>;
-
-export type ProviderVerificationPageRunner = <T>(
+type ProviderVerificationPageRunner = <T>(
   session: string,
   action: (page: ViewerPageAccess) => Promise<T>,
 ) => Promise<T>;
-
-export type ProviderVerificationInputForwarder = (
-  session: string,
-  rawInput: unknown,
-  contract: HumanAssistanceContract,
-  targetInputHandler?: ViewerTargetInputHandler,
-) => Promise<unknown>;
 
 export type ProviderVerificationHost = {
   captureChallengeImage(
@@ -120,30 +108,17 @@ export type ProviderVerificationHost = {
     contract: HumanAssistanceContract,
     answer: string,
   ): Promise<void>;
-  probePostSubmit(
+  /** Clicks a declared target, then holds the provider to its verified state. */
+  clickTarget(
     session: string,
     contract: HumanAssistanceContract,
-    resume: () => Promise<void>,
-    cleanupSession?: () => Promise<void>,
-  ): Promise<ProviderVerificationPostSubmitOutcome>;
+    targetId: string,
+  ): Promise<void>;
   inspectCompletion(
     session: string,
     contract: HumanAssistanceContract,
   ): Promise<boolean>;
 };
-
-/**
- * The App reaches each run's page through the page lookup. Checks may run
- * provider adapters against their own page runner instead; without an input
- * forwarder such a host finds no page to send input to.
- */
-export type ProviderVerificationDependencies =
-  | Readonly<{ pageForRun: PageForRun; withPage?: undefined; sendInput?: undefined }>
-  | Readonly<{
-    pageForRun?: undefined;
-    withPage: ProviderVerificationPageRunner;
-    sendInput?: ProviderVerificationInputForwarder;
-  }>;
 
 async function visibleSinopacCaptchaInput(page: ViewerPageAccess) {
   const input = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
@@ -181,301 +156,6 @@ const sinopacInputHandler: ViewerTargetInputHandler = async (page, input, target
   return false;
 };
 
-function normalizeProviderDialogText(message: string) {
-  return message
-    .normalize("NFKC")
-    .toLocaleLowerCase("zh-TW")
-    .replace(/\s+/g, "");
-}
-
-/**
- * Only the evidence-backed CAPTCHA rejection wording for a provider may
- * advance the retry campaign. Other dialogs remain fail-closed and never
- * become retry signals.
- */
-function classifyProviderPostSubmitDialog(
-  dialog: ViewerDialogAccess,
-  evidenceBackedMessage: string,
-): ProviderVerificationPostSubmitOutcome {
-  let type = "unknown";
-  try {
-    type = dialog.type();
-  } catch {
-    return "unrecognized-dialog";
-  }
-  if (type !== "alert") return "unrecognized-dialog";
-
-  let message = "";
-  try {
-    message = normalizeProviderDialogText(dialog.message());
-  } catch {
-    return "unrecognized-dialog";
-  }
-  return message === normalizeProviderDialogText(evidenceBackedMessage)
-    ? "provider-rejected"
-    : "unrecognized-dialog";
-}
-
-function classifySinopacPostSubmitDialog(
-  dialog: ViewerDialogAccess,
-): ProviderVerificationPostSubmitOutcome {
-  try {
-    const snapshot = { type: dialog.type(), message: dialog.message() };
-    return matchesRejectionDialog(SINOPAC_SOURCE.workflow.verification?.rejection, snapshot)
-      ? "provider-rejected"
-      : "unrecognized-dialog";
-  } catch {
-    return "unrecognized-dialog";
-  }
-}
-
-function classifyYuantaPostSubmitDialog(
-  dialog: ViewerDialogAccess,
-): ProviderVerificationPostSubmitOutcome {
-  return classifyProviderPostSubmitDialog(
-    dialog,
-    "驗證碼不正確，請重新輸入",
-  );
-}
-
-const PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS = 5_000;
-const PROVIDER_RESUME_JOIN_TIMEOUT_MS = 5_000;
-
-async function settleProviderPromise<T>(promise: Promise<T>, timeoutMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = await Promise.race([
-    promise.then(
-      (value) => ({ timedOut: false as const, value }),
-      (error) => ({ timedOut: false as const, error }),
-    ),
-    new Promise<{ timedOut: true }>((resolve) => {
-      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-  return result;
-}
-
-async function dismissProviderDialog(
-  dialog: ViewerDialogAccess,
-  timeoutMs: number,
-) {
-  const dismissal = Promise.resolve().then(() => dialog.dismiss());
-  // A native dialog implementation can reject or remain pending.  Observe
-  // the underlying promise even when the bounded wait expires so it cannot
-  // become an unhandled rejection later.
-  void dismissal.catch(() => undefined);
-  const result = await settleProviderPromise(
-    dismissal,
-    timeoutMs,
-  );
-  return !result.timedOut && !("error" in result);
-}
-
-function createProviderPostSubmitProbe(
-  withPage: ProviderVerificationPageRunner,
-  classifyDialog: (dialog: ViewerDialogAccess) => ProviderVerificationPostSubmitOutcome,
-  dismissTimeoutMs: number,
-): ProviderVerificationPostSubmitProbe {
-  return async (session, _contract, resume, cleanupSession) => withPage(session, async (page) => {
-    // Without both the dialog observer and exact-session cleanup capability,
-    // starting resume could leave a workflow blocked in its long navigation
-    // wait with nobody able to classify or terminate it.
-    if (!page.onDialog || !page.offDialog || !cleanupSession) {
-      return "unrecognized-dialog";
-    }
-
-    let dialogStarted = false;
-    let resolveDialog!: (dialog: {
-      outcome: ProviderVerificationPostSubmitOutcome;
-      settled: Promise<ProviderVerificationPostSubmitOutcome>;
-    }) => void;
-    const dialogObserved = new Promise<{
-      outcome: ProviderVerificationPostSubmitOutcome;
-      settled: Promise<ProviderVerificationPostSubmitOutcome>;
-    }>(
-      (resolve) => {
-        resolveDialog = resolve;
-      },
-    );
-    const dialogHandler = (dialog: ViewerDialogAccess) => {
-      if (dialogStarted) return;
-      dialogStarted = true;
-      // The provider adapter is the sole owner of post-submit dialogs when a
-      // host capability is present.  The dismissal is awaited (with a short
-      // bound) before the outcome is visible to the retry coordinator.
-      void (async () => {
-        let classified: ProviderVerificationPostSubmitOutcome;
-        try {
-          classified = classifyDialog(dialog);
-        } catch {
-          classified = "unrecognized-dialog";
-        }
-        const settled = dismissProviderDialog(dialog, dismissTimeoutMs).then(
-          (dismissed) => dismissed ? classified : "unrecognized-dialog",
-          () => "unrecognized-dialog" as const,
-        );
-        resolveDialog({ outcome: classified, settled });
-      })();
-    };
-    page.onDialog(dialogHandler);
-    try {
-      const resumePromise = Promise.resolve().then(resume);
-      const resumed = resumePromise.then(
-        () => ({ kind: "completed" as const }),
-        (error) => ({ kind: "failed" as const, error }),
-      );
-      const result = await Promise.race([
-        dialogObserved.then((outcome) => ({ kind: "dialog" as const, outcome })),
-        resumed,
-      ]);
-      if (result.kind === "dialog") {
-        const dialogOutcome = await result.outcome.settled;
-        // A host-owned dialog is retryable only after the resumed execution
-        // has been explicitly cleaned up and its process promise has settled.
-        // Without the capability callback there is no safe way to prevent a
-        // late resume from mutating the shared task-run owner, so fail closed.
-        const cleanupResult = await settleProviderPromise(
-          Promise.resolve().then(() => cleanupSession()),
-          PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS,
-        );
-        const resumeResult = await settleProviderPromise(
-          resumed,
-          PROVIDER_RESUME_JOIN_TIMEOUT_MS,
-        );
-        if (
-          cleanupResult.timedOut ||
-          ("error" in cleanupResult) ||
-          resumeResult.timedOut
-        ) {
-          return "unrecognized-dialog";
-        }
-        return dialogOutcome;
-      }
-      if (result.kind === "failed") throw result.error;
-      // A clean resume without a dialog is the ordinary success path. Any
-      // resume failure remains fail-closed and is propagated above.
-      return "none";
-    } finally {
-      page.offDialog(dialogHandler);
-    }
-  });
-}
-
-function createFubonPostSubmitProbe(
-  withPage: ProviderVerificationPageRunner,
-): ProviderVerificationPostSubmitProbe {
-  return async (session, _contract, resume, cleanupSession) => withPage(session, async (page) => {
-    // A missing observer or exact-session cleanup cannot safely start a
-    // retryable post-submit execution.
-    if (!page.frame || !cleanupSession) return "unrecognized-dialog";
-    const frame = page.frame(FUBON_CAPTCHA_FRAME_NAME);
-    if (!frame) return "unrecognized-dialog";
-    const rejection = frame.getByText(FUBON_CAPTCHA_REJECTION_TEXT).first();
-    // Only a newly appearing response can prove this submission was rejected.
-    let alreadyVisible: boolean;
-    try {
-      alreadyVisible = await rejection.isVisible();
-    } catch {
-      return "unrecognized-dialog";
-    }
-    if (alreadyVisible) return "unrecognized-dialog";
-
-    let observing = true;
-    const observed = (async () => {
-      const deadline = Date.now() + FUBON_POST_SUBMIT_OBSERVE_TIMEOUT_MS;
-      while (observing && Date.now() < deadline) {
-        try {
-          // Resolve the frame again on every poll: the bank can replace the
-          // login iframe while rendering the response.
-          const currentFrame = page.frame?.(FUBON_CAPTCHA_FRAME_NAME);
-          if (
-            currentFrame &&
-            await currentFrame.getByText(FUBON_CAPTCHA_REJECTION_TEXT).first().isVisible()
-          ) return true;
-        } catch {
-          // A detached frame is transient; only a visible exact 0290 proves
-          // the rejection.
-        }
-        await new Promise((resolve) => setTimeout(resolve, FUBON_POST_SUBMIT_POLL_MS));
-      }
-      return false;
-    })();
-    const resumed = Promise.resolve().then(resume).then(
-      () => ({ kind: "completed" as const }),
-      (error) => ({ kind: "failed" as const, error }),
-    );
-    try {
-      const first = await Promise.race([
-        observed.then((seen) => ({ kind: "observed" as const, seen })),
-        resumed,
-      ]);
-      let providerRejected = first.kind === "observed" && first.seen;
-      if (first.kind === "failed" && !providerRejected) {
-        // The workflow can reject the login form immediately after the bank
-        // renders 0290. Give the already-armed observer a bounded chance to
-        // settle before the failure propagates.
-        const lateObservation = await settleProviderPromise(observed, 500);
-        providerRejected = !lateObservation.timedOut
-          && !("error" in lateObservation)
-          && lateObservation.value;
-      }
-      if (providerRejected) {
-        const cleanupResult = await settleProviderPromise(
-          Promise.resolve().then(cleanupSession),
-          PROVIDER_DIALOG_CLEANUP_TIMEOUT_MS,
-        );
-        const resumeResult = await settleProviderPromise(
-          resumed,
-          PROVIDER_RESUME_JOIN_TIMEOUT_MS,
-        );
-        if (
-          cleanupResult.timedOut ||
-          ("error" in cleanupResult) ||
-          resumeResult.timedOut
-        ) return "unrecognized-dialog";
-        return "provider-rejected";
-      }
-      if (first.kind === "failed") throw first.error;
-      const finalResume = await resumed;
-      if (finalResume.kind === "failed") throw finalResume.error;
-      return "none";
-    } finally {
-      observing = false;
-    }
-  });
-}
-
-function createSinopacPostSubmitProbe(
-  withPage: ProviderVerificationPageRunner,
-): ProviderVerificationPostSubmitProbe {
-  return createProviderPostSubmitProbe(
-    withPage,
-    classifySinopacPostSubmitDialog,
-    SINOPAC_DIALOG_DISMISS_TIMEOUT_MS,
-  );
-}
-
-function createYuantaPostSubmitProbe(
-  withPage: ProviderVerificationPageRunner,
-): ProviderVerificationPostSubmitProbe {
-  const probe = createProviderPostSubmitProbe(
-    withPage,
-    classifyYuantaPostSubmitDialog,
-    YUANTA_DIALOG_DISMISS_TIMEOUT_MS,
-  );
-  return async (session, contract, resume, cleanupSession) => {
-    // The Yuanta adapter also owns the trade checkbox/image-selection stages.
-    // Only the bank's six-digit login CAPTCHA has evidence-backed rejection
-    // wording; trade stages keep their existing workflow behavior.
-    if (!yuantaBankCaptchaContract(contract)) {
-      await resume();
-      return "none";
-    }
-    return probe(session, contract, resume, cleanupSession);
-  };
-}
-
 function sinopacCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
     (target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
@@ -484,8 +164,8 @@ function sinopacCaptchaContract(contract: HumanAssistanceContract) {
 
 function yuantaBankCaptchaContract(contract: HumanAssistanceContract) {
   return contract.targets.some(
-    (target) => target.semanticId === "yuanta-bank.login.captcha-input",
-  ) && contract.challengeImageRegion?.semanticId === "yuanta-bank.login.captcha-image";
+    (target) => target.semanticId === YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID,
+  ) && contract.challengeImageRegion?.semanticId === YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID;
 }
 
 function yuantaTradeAudioContract(contract: HumanAssistanceContract) {
@@ -504,7 +184,7 @@ async function resolveFubonCaptchaImage(
 ): Promise<CaptchaImageDescriptor | null> {
   let frame;
   try {
-    frame = page.frame?.(FUBON_CAPTCHA_FRAME_NAME);
+    frame = page.frame?.(FUBON_LOGIN_FRAME_NAME);
   } catch {
     return null;
   }
@@ -535,7 +215,7 @@ async function resolveYuantaCaptchaImage(
 ): Promise<CaptchaImageDescriptor | null> {
   let frame;
   try {
-    frame = page.frame?.("main") ?? page.mainFrame?.();
+    frame = page.frame?.(YUANTA_BANK_MAIN_FRAME_NAME) ?? page.mainFrame?.();
   } catch {
     return null;
   }
@@ -591,13 +271,13 @@ function yuantaCompletionSatisfied(
   semanticId: string,
   probe: YuantaCompletionProbe,
 ) {
-  if (semanticId === "yuanta-trade.login.captcha-checkbox") {
+  if (semanticId === YUANTA_TRADE_CAPTCHA_CHECKBOX_SEMANTIC_ID) {
     return probe.checkboxChecked || probe.challengeVisible;
   }
-  if (semanticId === "yuanta-trade.login.challenge-control") {
+  if (semanticId === YUANTA_TRADE_CHALLENGE_CONTROL_SEMANTIC_ID) {
     return !probe.challengeVisible;
   }
-  if (semanticId === "yuanta-trade.login.challenge-submit") return !probe.challengeVisible;
+  if (semanticId === YUANTA_TRADE_CHALLENGE_SUBMIT_SEMANTIC_ID) return !probe.challengeVisible;
   return false;
 }
 
@@ -642,21 +322,21 @@ function createAdapters(
     naturalHeight: FUBON_CAPTCHA_NATURAL_HEIGHT,
   });
   const sinopacSourceOwner = createLoadedCaptchaSourceOwner({
-    id: "sinopac.login.captcha-image",
+    id: SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
     withPage,
     resolveImage: resolveSinopacCaptchaImage,
     naturalWidth: SINOPAC_CAPTCHA_NATURAL_WIDTH,
     naturalHeight: SINOPAC_CAPTCHA_NATURAL_HEIGHT,
   });
   const yuantaSourceOwner = createLoadedCaptchaSourceOwner({
-    id: "yuanta-bank.login.captcha-image",
+    id: YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
     withPage,
     resolveImage: resolveYuantaCaptchaImage,
   });
   return [
     {
       id: "post",
-      owns: contract => contract.stageId === "ipost-login-captcha"
+      owns: contract => contract.stageId === POST_CAPTCHA_STAGE_ID
         && contract.targets.some(target => target.semanticId === POST_CAPTCHA_INPUT_SEMANTIC_ID),
       inspectCompletion: async () => false,
       handleInput: async (page, operation, target) => {
@@ -691,7 +371,6 @@ function createAdapters(
         (target) => target.semanticId === FUBON_CAPTCHA_INPUT_SEMANTIC_ID,
       ),
       inspectCompletion: async () => false,
-      probePostSubmit: createFubonPostSubmitProbe(withPage),
     },
     {
       id: "cathay",
@@ -709,7 +388,6 @@ function createAdapters(
       owns: (contract) => contract.targets.some((target) => target.semanticId === SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID),
       inspectCompletion: async () => false,
       handleInput: sinopacInputHandler,
-      probePostSubmit: createSinopacPostSubmitProbe(withPage),
     },
     {
       id: "yuanta",
@@ -724,17 +402,25 @@ function createAdapters(
         || target.semanticId.startsWith("yuanta-bank.")
       )),
       inspectCompletion: (session, contract) => inspectYuantaCompletion(withPage, session, contract),
-      probePostSubmit: createYuantaPostSubmitProbe(withPage),
+      async confirmClick(session, contract) {
+        if (
+          contract.stageId === YUANTA_TRADE_CAPTCHA_CHECKBOX_STAGE_ID
+          && !await inspectYuantaCompletion(withPage, session, contract)
+        ) {
+          throw new Error("Yuanta Trade CAPTCHA checkbox did not reach its verified state.");
+        }
+      },
     },
   ];
 }
 
+/** Each run's provider adapters, reaching its page only through the page lookup. */
 export function createProviderVerificationHost(
-  dependencies: ProviderVerificationDependencies,
+  dependencies: Readonly<{ pageForRun: PageForRun }>,
 ): ProviderVerificationHost {
-  const viewer = automationViewer(dependencies.pageForRun ?? (() => null));
-  const withPage = dependencies.withPage ?? viewer.withPage;
-  const forwardInput = dependencies.sendInput ?? viewer.sendHumanVerificationInput;
+  const viewer = automationViewer(dependencies.pageForRun);
+  const withPage = viewer.withPage;
+  const forwardInput = viewer.sendHumanVerificationInput;
   const adapters = createAdapters(withPage);
   const capabilityRegistry = createProviderVerificationCapabilityRegistry(
     adapters.flatMap((adapter) => adapter.capabilityOwner ? [adapter.capabilityOwner] : []),
@@ -827,20 +513,15 @@ export function createProviderVerificationHost(
     }, contract);
   };
 
-  const probePostSubmit = async (
+  const clickTarget = async (
     session: string,
     contract: HumanAssistanceContract,
-    resume: () => Promise<void>,
-    cleanupSession?: () => Promise<void>,
-  ): Promise<ProviderVerificationPostSubmitOutcome> => {
-    const adapter = matchingAdapters(contract).find(
-      (candidate) => candidate.probePostSubmit,
-    );
-    if (!adapter?.probePostSubmit) {
-      await resume();
-      return "none";
+    targetId: string,
+  ) => {
+    await viewer.clickTarget(session, contract, targetId);
+    for (const adapter of matchingAdapters(contract)) {
+      await adapter.confirmClick?.(session, contract);
     }
-    return adapter.probePostSubmit(session, contract, resume, cleanupSession);
   };
 
   const inspectCompletion = async (
@@ -863,7 +544,7 @@ export function createProviderVerificationHost(
     captureChallengeAudio,
     sendInput,
     injectAnswer,
-    probePostSubmit,
+    clickTarget,
     inspectCompletion,
   };
 }

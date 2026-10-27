@@ -398,12 +398,17 @@ class Attempt {
   }
 
   private find(match: PageMatch): Found | undefined {
-    const frame = match.frame === undefined ? undefined : this.page.frame({ name: match.frame });
-    if (frame === null) return undefined;
-    const root = frame ?? this.page;
-    const scope = match.within === undefined ? root : root.locator(match.within);
-    return { frame, scope, match: matchOf(scope, match) };
+    return locatePageMatch(this.page, match);
   }
+}
+
+/** Locate a page match in its named frame; undefined while that frame is absent. */
+export function locatePageMatch(page: Page, match: PageMatch): Found | undefined {
+  const frame = match.frame === undefined ? undefined : page.frame({ name: match.frame });
+  if (frame === null) return undefined;
+  const root = frame ?? page;
+  const scope = match.within === undefined ? root : root.locator(match.within);
+  return { frame, scope, match: matchOf(scope, match) };
 }
 
 function matchOf(scope: Scope, match: PageMatch): Locator {

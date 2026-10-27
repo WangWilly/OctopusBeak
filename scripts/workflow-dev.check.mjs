@@ -124,7 +124,7 @@ function recordingRoute(outcome, { resume = true } = {}) {
     calls,
     async route(input) {
       calls.push(input);
-      if (resume) await input.dependencies.resumeAppWorkflow();
+      if (resume) await input.seams.resume();
       return outcome;
     },
   };
@@ -142,33 +142,31 @@ test("development verification runs the App solver route on the registered sessi
   assert.equal(calls[0].taskRunId, "dev-session");
   assert.equal(calls[0].contract.version, 1);
   assert.equal(calls[0].contract.stageId, "synthetic-login-captcha");
-  let probeResumed = false;
   assert.equal(
-    await calls[0].dependencies.probePostSubmit("dev-session", calls[0].contract, async () => { probeResumed = true; }),
+    await calls[0].seams.postSubmitOutcome(),
     "none",
+    "a rejected answer surfaces as the workflow's own failure, not a post-submit probe",
   );
-  assert.equal(probeResumed, true, "workflow-owned CAPTCHA outcomes resume without a provider dialog probe");
 });
 
-test("development verification's default seams reach the page its adapter hosts", async () => {
+test("development verification's seams reach the page its adapter hosts", async () => {
   const { calls, route } = recordingRoute({ kind: "resumed" });
   const pageHost = developmentPageHost("dev-session");
-  const shots = [];
-  const page = { screenshot: async (options) => { shots.push(options); return Buffer.from("challenge"); } };
+  const page = {};
   const port = createLocalSolverHumanAssistancePort(new AbortController().signal, {
     workflowId: "sinopac-statements",
     pageHost,
     route,
   });
   await port.request(textCaptchaStage, new AbortController().signal);
-  const { dependencies, contract } = calls[0];
-  await assert.rejects(dependencies.captureChallengeImage("dev-session", contract), /No active App browser page/u);
+  const { seams } = calls[0];
+  assert.equal(seams.pageForRun("dev-session"), null);
   const release = pageHost.host(page);
   assert.throws(() => pageHost.host(page), /already hosts a page/u);
-  assert.ok(await dependencies.captureChallengeImage("dev-session", contract));
+  assert.equal(seams.pageForRun("dev-session"), page);
+  assert.equal(seams.pageForRun("another-session"), null);
   release();
-  assert.equal(pageHost.pageForRun("dev-session"), null);
-  assert.equal(shots.length, 1);
+  assert.equal(seams.pageForRun("dev-session"), null);
 });
 
 test("development verification fails closed where the App has no solver route", async () => {

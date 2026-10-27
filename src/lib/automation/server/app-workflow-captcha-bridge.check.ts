@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after, before } from "node:test";
+import { chromium, type Browser } from "playwright";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import {
   createPgliteOperationalProvider,
@@ -14,6 +15,7 @@ import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { openSyntheticPage, pngDataUrl, solidPng } from "./verification-page-check-support.ts";
 
 const noHostedPage = () => null;
 
@@ -95,6 +97,22 @@ const yuantaTradeImageContract: HumanAssistanceContractInput = {
   focus: { targetId: "challenge-image-1", contextRegionIds: [] },
 };
 
+let browser: Browser;
+before(async () => { browser = await chromium.launch({ headless: true }); });
+after(async () => { await browser.close(); });
+
+/**
+ * One login page every provider adapter below can resolve: SinoPac's #imgCode,
+ * Yuanta Bank's GOTP image, and a field SinoPac and Post select by name that
+ * also sits under the contract's target rectangle for generic typing.
+ */
+const CAPTCHA_LOGIN_PAGE = `<body style="margin:0">
+  <input id="login_captcha" name="captcha"
+    style="position:absolute;left:1px;top:1px;width:10px;height:10px;margin:0;padding:0;border:0;box-sizing:border-box">
+  <img id="imgCode" src="${pngDataUrl(120, 40)}" width="120" height="40" style="position:absolute;left:40px;top:40px">
+  <img src="/GOTP.png" width="120" height="40" style="position:absolute;left:40px;top:120px">
+</body>`;
+
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -119,6 +137,9 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
     const artifactRoot = await mkdtemp(join(tmpdir(), `${providerId}-app-captcha-`));
     const originalCwd = process.cwd();
     const store = new PGliteStore(await createTestPGlite("operational"));
+    const page = await openSyntheticPage(browser, CAPTCHA_LOGIN_PAGE, [
+      { path: "/GOTP.png", contentType: "image/png", body: solidPng(120, 40) },
+    ]);
     try {
       const provider = createPgliteOperationalProvider(store);
       const created = await provider.automation.createTaskRun({
@@ -134,8 +155,9 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         VERIFICATION_TEXT_CAPTCHA_CONFIDENCE_THRESHOLD: "0.9",
       };
       process.chdir(artifactRoot);
-      const captureSessions: string[] = [];
+      const pageLookups: string[] = [];
       const injectedAnswers: string[] = [];
+
       const executeAttempts: number[] = [];
       let solverCalls = 0;
 
@@ -147,6 +169,10 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
         run,
         routeWaitingRunVerification: (input) => routeWaitingRunVerification({
           ...input,
+          pageForRun: (session) => {
+            pageLookups.push(session);
+            return session === created.taskRunId ? page : null;
+          },
           solver: {
             async solve() {
               solverCalls += 1;
@@ -155,20 +181,6 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
                 confidence: solverCalls <= 3 ? 0.1 : 0.99,
               };
             },
-          },
-          providerVerification: {
-            handlesChallengeImage: () => true,
-            async captureChallengeImage(session) {
-              captureSessions.push(session);
-              return Buffer.from("mock captcha image");
-            },
-            async isChallengeImageCurrent() { return true; },
-            refreshesChallengeImage: () => false,
-            async refreshChallengeImage() { return false; },
-          },
-          injectAnswer: async (session, _contract, answer) => {
-            assert.equal(session, created.taskRunId);
-            injectedAnswers.push(answer);
           },
         }),
         async execute(options: AutomationTaskExecutionOptions) {
@@ -181,6 +193,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
             assert.equal(attempt, 1, "only solver exhaustion rejects the pending stage");
             return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
           }
+          injectedAnswers.push(await page.inputValue("#login_captcha"));
+          await page.fill("#login_captcha", "");
           const rejected = attempt === 2;
           // Worker cleanup aborts the request before the host joins execution.
           // Progress events are deliberately absent: they must not drive retries.
@@ -191,8 +205,9 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
 
       assert.equal((await run.finish(await campaign)).status, "completed");
       assert.deepEqual(executeAttempts, [1, 2, 3]);
-      assert.equal(captureSessions.length, 5);
-      assert.deepEqual(captureSessions, Array.from({ length: 5 }, () => created.taskRunId));
+      assert.equal(solverCalls, 5, "three unaccepted challenges in round one, one per later round");
+      assert.ok(pageLookups.length > 0);
+      assert.ok(pageLookups.every((session) => session === created.taskRunId));
       assert.deepEqual(injectedAnswers, [answer, answer]);
       const finalRun = await provider.automation.taskRunById(created.taskRunId);
       assert.equal(finalRun?.status, "completed");
@@ -203,6 +218,7 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
       assert.deepEqual(await readdir(artifactRoot), [], "typed retry writes no CLI log, assistance JSONL, source, or output files");
     } finally {
       process.chdir(originalCwd);
+      await page.close();
       await store.close();
       await rm(artifactRoot, { recursive: true, force: true });
     }

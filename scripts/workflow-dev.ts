@@ -30,12 +30,11 @@ import {
 import type { PGliteWorkflowRunItem } from "../src/ledger/pglite/workflow-run.ts";
 import type { PageForRun } from "../src/lib/automation/server/automation-viewer.ts";
 import {
-  WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
-  appProviderPostSubmitProbe,
+  appVerificationSolver,
   appWorkflowRoutesVerification,
+  noPostSubmitOutcome,
   routeVerificationActor,
   verificationConfidenceThreshold,
-  verificationRoutingDependencies,
 } from "../src/lib/automation/server/verification-routing.ts";
 import { verificationPlanForContract } from "../src/lib/automation/server/verification-solver.ts";
 import { readAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
@@ -266,10 +265,7 @@ export function createDevelopmentBrowserPort(
   };
 }
 
-type LocalSolverRoute = Readonly<{
-  route?: typeof routeVerificationActor;
-  dependencies?: typeof verificationRoutingDependencies;
-}>;
+type LocalSolverRoute = Readonly<{ route?: typeof routeVerificationActor }>;
 
 /**
  * Verify through the App's local solver route against the page `pageHost`
@@ -282,7 +278,6 @@ export function createLocalSolverHumanAssistancePort(
   options: Readonly<{ workflowId: string; pageHost: DevelopmentPageHost }> & LocalSolverRoute,
 ): WorkflowExecutorPorts["humanAssistance"] {
   const route = options.route ?? routeVerificationActor;
-  const dependencies = options.dependencies ?? verificationRoutingDependencies;
   const { sessionKey, pageForRun } = options.pageHost;
   let version = 0;
   return {
@@ -308,17 +303,19 @@ export function createLocalSolverHumanAssistancePort(
           contract,
           taskRunId: sessionKey,
           confidenceThreshold: verificationConfidenceThreshold(contract, readAutomationSettingsFile()),
-          dependencies: dependencies(contract, {
+          seams: {
             pageForRun,
-            resumeAppWorkflow: () => {
+            signal: AbortSignal.any([signal, requestSignal]),
+            solver: appVerificationSolver,
+            resume: () => {
               resumed = true;
               resolve(completed);
             },
+            // A rejected answer surfaces as the workflow's own failure.
+            postSubmitOutcome: noPostSubmitOutcome,
             finalizeFailed: (message) => { throw new Error(message); },
-            providerProbePostSubmit: WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(options.workflowId)
-              ? async (_session, _contract, resume) => { await resume(); return "none"; }
-              : appProviderPostSubmitProbe(pageForRun),
-          }),
+            onChallengeCaptured: () => {},
+          },
         }).then(
           (outcome) => outcome.kind === "resumed" ? undefined : outcome.kind,
           () => "failed",

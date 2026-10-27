@@ -1,13 +1,7 @@
-/**
- * A host-started solver retry may let the provider adapter own the
- * post-submit dialog. Direct or human resumes intentionally omit this
- * capability and keep the workflow's fail-fast dialog handler.
- */
-export const YUANTA_DIALOG_OWNER_ENV = "OCTOPUSBEAK_YUANTA_DIALOG_OWNER";
-export const YUANTA_HOST_DIALOG_OWNER_PREFIX = "provider-verification-host:";
+/** YuanTa Bank renders its signed-out and signed-in pages, the CAPTCHA included, in this frame. */
+export const YUANTA_BANK_MAIN_FRAME_NAME = "main";
 
-export function yuantaHostDialogOwner(session: string): string {
-  return YUANTA_HOST_DIALOG_OWNER_PREFIX + session;
-}
+export const YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR = 'img[src*="GOTP"]:visible';
 
-export const YUANTA_DIALOG_DISMISS_TIMEOUT_MS = 500;
+export const YUANTA_BANK_CAPTCHA_INPUT_SEMANTIC_ID = "yuanta-bank.login.captcha-input";
+export const YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID = "yuanta-bank.login.captcha-image";
