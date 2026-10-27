@@ -15,7 +15,6 @@ import {
   linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
   linebankHumanAttestedCapture,
-  normalizeLineBankFinancialCapture,
   linebankQueryWindows,
   linebankTransactionPageFromResponse,
   linebankValidateSourceOccurrenceFields,
@@ -24,7 +23,8 @@ import {
   linebankAutoDismissApprovedAlert,
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
-import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.ts";
+import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
+import { normalizeLineBankFinancialCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
 
 const accountSnapshotEndpoint =
   "https://accessibility.linebank.com.tw/v1/account/common/payables?featureTypeCode=01";
