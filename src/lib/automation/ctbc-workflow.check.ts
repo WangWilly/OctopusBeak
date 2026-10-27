@@ -20,8 +20,26 @@ import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
 import {
   decodeCtbcSourceJson,
+  readCtbcDepositSource,
   runCtbcProviderWorkflow,
+  stageCtbcDeposit,
+  type CtbcDepositRunner,
+  type CtbcReadCurrentDepositBalances,
 } from "../../workflows/ctbc-statements.ts";
+
+/** The real deposit runner over the synthetic page, with current balances replaced. */
+function withCurrentBalances(readCurrentBalances: CtbcReadCurrentDepositBalances): { collectDeposit: CtbcDepositRunner } {
+  return {
+    collectDeposit: async (page, input, context, product) =>
+      await stageCtbcDeposit(
+        await readCtbcDepositSource(page, input, context, product),
+        input,
+        context,
+        product,
+        readCurrentBalances,
+      ),
+  };
+}
 
 function currentBalanceRow() {
   return {
@@ -261,17 +279,13 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
       const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
         code: "0000", rsData: { detailList: rows, nextKey: "" },
       }) }) });
-      const result = await runCtbcProviderWorkflow({ ...harness.context, financialCommit: commit }, input, {
-        readCurrentDepositBalances: async () => [currentBalanceRow()],
-      });
+      const result = await runCtbcProviderWorkflow({ ...harness.context, financialCommit: commit }, input, withCurrentBalances(async () => [currentBalanceRow()]));
       assert.equal(result.status, "financial-admitted");
     }
     const conflicting = createContext({ page: createPage({ detailResponse: response(detailsResource, {
       code: "0000", rsData: { detailList: [{ ...original, memo1: "Changed provider claim" }], nextKey: "" },
     }) }) });
-    const conflicted = await runCtbcProviderWorkflow({ ...conflicting.context, financialCommit: commit }, input, {
-      readCurrentDepositBalances: async () => [currentBalanceRow()],
-    });
+    const conflicted = await runCtbcProviderWorkflow({ ...conflicting.context, financialCommit: commit }, input, withCurrentBalances(async () => [currentBalanceRow()]));
     assert.equal(conflicted.status, "partial");
     assert.deepEqual(conflicted.products, [
       { typeId: "deposit", status: "failed", itemCount: 2, committedCount: 1, errorCode: "canonical-commit-failed" },
@@ -295,12 +309,10 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
   try {
     process.chdir(directory);
     const harness = createContext();
-    const result = await runCtbcProviderWorkflow(harness.context, input, {
-      readCurrentDepositBalances: async () => {
-        assert.equal(harness.committed.length, 0, "all sources are collected before commit");
-        return [currentBalanceRow()];
-      },
-    });
+    const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => {
+      assert.equal(harness.committed.length, 0, "all sources are collected before commit");
+      return [currentBalanceRow()];
+    }));
 
     assert.deepEqual(result, {
       status: "financial-admitted",
@@ -362,17 +374,15 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
       body: async () => Buffer.from([0xc3, 0x28]),
     } as Response }),
   });
-  await assert.rejects(runCtbcProviderWorkflow(malformed.context, input, {
-    readCurrentDepositBalances: async () => [],
-  }), (error: unknown) => error instanceof ProductCollectionInterruptedError
+  await assert.rejects(runCtbcProviderWorkflow(malformed.context, input, withCurrentBalances(async () => [])),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.committed.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ expectedRanges: 2 }) });
-  await assert.rejects(runCtbcProviderWorkflow(incomplete.context, input, {
-    readCurrentDepositBalances: async () => [],
-  }), (error: unknown) => error instanceof ProductCollectionInterruptedError
+  await assert.rejects(runCtbcProviderWorkflow(incomplete.context, input, withCurrentBalances(async () => [])),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-validation-failed"
     && /source admission blocked/u.test(String((error as { cause?: unknown }).cause)));
   assert.equal(incomplete.committed.length, 0);
@@ -388,10 +398,13 @@ test("CTBC delayed automatic login does not request human assistance and honors 
   });
   let runError: unknown;
   await runCtbcProviderWorkflow(context.context, input, {
-    collectStatements: async () => ({
-      output: { count: 1, rowCount: 0 },
-      captures: [],
-    }),
+    collectDeposit: async (_page, parsedInput, productContext, product) => await stageCtbcDeposit(
+      { output: { count: 1, rowCount: 0 }, captures: [] },
+      parsedInput,
+      productContext,
+      product,
+      async () => assert.fail("an empty source must not read current balances"),
+    ),
   }).catch((error: unknown) => { runError = error; });
   assert.ok(runError instanceof Error, "An empty CTBC source must not be admitted.");
   assert.equal(context.assistanceCalls, 0, String(runError));
@@ -408,8 +421,10 @@ test("CTBC delayed automatic login does not request human assistance and honors 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`CTBC names a ${stop} commit ${errorCode}`, async () => {
     const harness = createContext();
-    await assert.rejects(runCtbcProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, input, {
-      readCurrentDepositBalances: async () => [currentBalanceRow()],
-    }), assertStoppedRun("deposit", 2, errorCode));
+    await assert.rejects(runCtbcProviderWorkflow(
+      { ...harness.context, financialCommit: stoppedCommitPort(stop) },
+      input,
+      withCurrentBalances(async () => [currentBalanceRow()]),
+    ), assertStoppedRun("deposit", 2, errorCode));
   });
 }
