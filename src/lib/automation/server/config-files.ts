@@ -196,8 +196,23 @@ export function readAutomationCredentialsFile(
   return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path), codec));
 }
 
+type AutomationSettingsWriteListener = (path: string, settings: AutomationSettingsFile) => void;
+
+const settingsWriteListeners = new Set<AutomationSettingsWriteListener>();
+
+/** Hears every settings write in this process, so no writer has to remember to announce one. */
+export function onAutomationSettingsWritten(listener: AutomationSettingsWriteListener): () => void {
+  settingsWriteListeners.add(listener);
+  return () => settingsWriteListeners.delete(listener);
+}
+
+function announceSettingsWritten(path: string, settings: AutomationSettingsFile) {
+  for (const listener of settingsWriteListeners) listener(path, settings);
+}
+
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
   atomicWrite(path, settingsFileText(settings));
+  announceSettingsWritten(path, settings);
 }
 
 export function writeAutomationCredentialsFile(
@@ -275,6 +290,7 @@ export function writeAutomationConfigFiles(
 
   if (nextCredentialsText === null) {
     atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
+    announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
     return;
   }
 
@@ -299,6 +315,7 @@ export function writeAutomationConfigFiles(
     }
     throw writeError;
   }
+  announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
 }
 
 export function migrateAutomationCredentialsFileEncryption(path = AUTOMATION_CREDENTIALS_PATH) {
