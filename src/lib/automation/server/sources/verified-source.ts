@@ -50,6 +50,7 @@ export type VerifiedWorkflow = Readonly<
     | "requiresTdcc"
     | "requiresAccountIdentity"
     | "attachedPreviewProducts"
+    | "requiresProductCollection"
   > & {
     runtime: AppWorkflowRuntime;
     /** Present when the workflow's verification stages reach the solver route. */
