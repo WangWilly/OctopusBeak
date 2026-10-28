@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
 import {
   hncbCurrentDepositBalances,
   readHncbDepositSource,
@@ -111,12 +114,14 @@ async function record(
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     const recorder = recordDepositCommit();
-    const context = {
+    const context = withBoundProducts({
       signal: new AbortController().signal,
       text: strictSourceText,
       event: recorder.event,
       financialCommit: recorder.financialCommit,
-    };
+    } as Pick<WorkflowContext, "signal" | "text" | "event"> as WorkflowContextWith<"financialCommit">, HNCB_SOURCE, {
+      statementTypes: ["deposit"],
+    });
     const output = await runHncbStatements({} as Page, input, context, {
       collectDeposit: async (_page, depositInput, depositContext, product) => await stageHncbDeposit(
         await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
