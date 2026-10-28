@@ -93,19 +93,25 @@ export function currentPreviewVisibility(settings: AutomationSettingsFile = read
   });
 }
 
+function initialPreviewVisibility(): PreviewVisibility | null {
+  try {
+    return currentPreviewVisibility();
+  } catch {
+    // An invalid settings file must not stop the app from starting; the first write announces.
+    return null;
+  }
+}
+
 /**
  * Calls `onChange` after any write of the settings file changes Preview
  * visibility, comparing with the visibility last seen.
  */
-export function watchPreviewVisibility(
-  onChange: () => void,
-  initial: PreviewVisibility = currentPreviewVisibility(),
-): () => void {
-  let last = initial;
+export function watchPreviewVisibility(onChange: () => void): () => void {
+  let last = initialPreviewVisibility();
   return onAutomationSettingsWritten((path, settings) => {
     if (path !== AUTOMATION_SETTINGS_PATH) return;
     const next = currentPreviewVisibility(settings);
-    if (sameVisibility(next, last)) return;
+    if (last !== null && sameVisibility(next, last)) return;
     last = next;
     onChange();
   });
