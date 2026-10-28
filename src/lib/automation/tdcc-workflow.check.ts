@@ -17,13 +17,21 @@ import { createTdccSecretStore } from "./server/tdcc-secret-store.ts";
 import { createTdccSessionHost } from "./server/tdcc-session-host.ts";
 import { classifyFailure } from "./failure-classification.ts";
 import { summarizeInterruptedProductCollection } from "./server/typed-workflow-outcome.ts";
-import { createTdccWorkflow } from "./tdcc-workflow.ts";
+import { createTdccWorkflow, type TdccWorkflowOptions } from "./tdcc-workflow.ts";
+import { productCollectionFacts } from "./server/app-workflow-registry.ts";
+import { TDCC_SOURCE } from "./server/sources/tdcc.ts";
 import { strictSourceText } from "./source-text.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import type { WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";
+
+/** The TDCC definition the registry runs, with the fake TDCC transport. */
+const tdccDefinition = (fetch: TdccWorkflowOptions["fetch"]) => ({
+  ...createTdccWorkflow({ fetch }),
+  productCollection: productCollectionFacts(TDCC_SOURCE),
+});
 
 // Built at runtime so the repository privacy and secret scanners do not read fixtures as real accounts.
 const USER_ID = ["Q", "2", "87654321"].join("");
@@ -236,7 +244,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
       async run(input, fake, runOptions = {}) {
         runs += 1;
         const host = createTdccSessionHost(secrets);
-        const executor = createWorkflowExecutor([createTdccWorkflow({ fetch: fake.fetch })], {
+        const executor = createWorkflowExecutor([tdccDefinition(fake.fetch)], {
           browser: { withPage: async () => { throw new Error("TDCC does not use a browser."); } },
           text: strictSourceText,
           humanAssistance: { request: async () => { throw new Error("TDCC never requests assistance."); } },
@@ -658,7 +666,7 @@ test("through the supervised worker frames, a rotated token is saved when the ru
       recordCommitAttempt: async () => undefined,
       requestHumanAssistance: async () => "failed",
       tdccSession: createTdccSessionHost(secrets),
-      workerFactory: (_path, options) => inProcessAppWorkflowWorker(options.workerData, { resolveDefinition: () => createTdccWorkflow({ fetch: fake.fetch }) }),
+      workerFactory: (_path, options) => inProcessAppWorkflowWorker(options.workerData, { resolveDefinition: () => tdccDefinition(fake.fetch) }),
     });
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");

@@ -9,6 +9,7 @@ import {
   TDCC_MAX_SUMMARY_COUNT,
   TdccCollectionSummaryInvariantError,
   type RecordValidatedTdccExclusions,
+  type TdccProductId,
   type TdccValidatedExclusion,
 } from "./tdcc-collection-summary.ts";
 
@@ -44,7 +45,7 @@ const failure: CollectionProductOutcome = {
 };
 
 test("normal collection returns items without retaining them and produces stable private evidence", async () => {
-  const run = createTdccRunSummary(["settlement"]);
+  const run = createTdccRunSummary();
   const decision = await run.collect("settlement", async (record) => {
     record([hidden]);
     record([hidden]);
@@ -72,7 +73,7 @@ test("zero items distinguish proven absence, intentional exclusions, and incompl
     { exclusions: [problematic], collection: { ...empty, absence: "not_held" as const }, kind: "incomplete", status: "incomplete" },
   ];
   for (const scenario of scenarios) {
-    const run = createTdccRunSummary(["settlement"]);
+    const run = createTdccRunSummary();
     const decision = await run.collect("settlement", async (record) => {
       record(scenario.exclusions);
       return scenario.collection;
@@ -92,7 +93,7 @@ test("zero items distinguish proven absence, intentional exclusions, and incompl
 
 test("failure and cancellation retain early observations, prior receipts, and unattempted products", async () => {
   for (const error of [new Error("provider failure"), new DOMException("cancelled", "AbortError")]) {
-    const run = createTdccRunSummary(["securities", "settlement", "fund"]);
+    const run = createTdccRunSummary();
     await run.collect("securities", async () => collected);
     await assert.rejects(run.collect("settlement", async (record) => {
       record([hidden]);
@@ -113,7 +114,7 @@ test("failure and cancellation retain early observations, prior receipts, and un
 });
 
 test("a failed collector with no observations still has incomplete coverage", async () => {
-  const run = createTdccRunSummary(["settlement"]);
+  const run = createTdccRunSummary();
   await assert.rejects(run.collect("settlement", async () => { throw new Error("first request failed"); }));
   const summary = run.summarize(base([failure]));
   assert.equal(summary.status, "failed");
@@ -122,7 +123,7 @@ test("a failed collector with no observations still has incomplete coverage", as
 
 test("recorders expire on both return and throw, and a product cannot be collected twice", async () => {
   for (const fail of [false, true]) {
-    const run = createTdccRunSummary(["settlement"]);
+    const run = createTdccRunSummary();
     let recorder: RecordValidatedTdccExclusions | undefined;
     const work = run.collect("settlement", async (record) => {
       recorder = record;
@@ -135,13 +136,13 @@ test("recorders expire on both return and throw, and a product cannot be collect
     const before = run.summarize(base([fail ? failure : success]));
     assert.throws(() => recorder!([problematic]), TdccCollectionSummaryInvariantError);
     await assert.rejects(run.collect("settlement", async () => collected), TdccCollectionSummaryInvariantError);
-    await assert.rejects(run.collect("fund", async () => collected), TdccCollectionSummaryInvariantError);
+    await assert.rejects(run.collect("deposit" as TdccProductId, async () => collected), TdccCollectionSummaryInvariantError);
     assert.deepEqual(run.summarize(base([fail ? failure : success])), before);
   }
 });
 
 test("in-flight collection excludes concurrent collection and premature snapshots", async () => {
-  const run = createTdccRunSummary(["settlement", "fund"]);
+  const run = createTdccRunSummary();
   let finish!: (value: TdccProductCollection) => void;
   const pending = run.collect("settlement", () => new Promise((resolve) => { finish = resolve; }));
   try {
@@ -155,7 +156,7 @@ test("in-flight collection excludes concurrent collection and premature snapshot
 });
 
 test("run-wide overflow rejects only the new observation and preserves earlier evidence", async () => {
-  const run = createTdccRunSummary(["settlement", "fund"]);
+  const run = createTdccRunSummary();
   await run.collect("settlement", async (record) => {
     record([{ reason: "time-deposits-not-admitted", bankId: "fixture-bank", count: TDCC_MAX_SUMMARY_COUNT }]);
     return empty;
