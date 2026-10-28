@@ -1,18 +1,16 @@
 import {
   TDCC_PRODUCT_COLLECTORS,
   TDCC_PRODUCT_IDS,
-  tdccFatalCode,
-  tdccProductFailureCode,
   TdccRunSession,
   type TdccProductId,
 } from "../../workflows/tdcc-epassbook-collection.ts";
 import type { TdccClientOptions } from "../../workflows/tdcc-epassbook-client.ts";
 import {
   collectSelectedProducts,
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
 } from "./product-collection.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
 import type { ProductCollectionRunSummary } from "./product-collection.ts";
 import { aggregateTdccExclusionCounts, createTdccRunSummary } from "./tdcc-collection-summary.ts";
 import { productRunResult } from "./workflow-run-result.ts";
@@ -27,9 +25,9 @@ export type TdccWorkflowOptions = Readonly<{
 
 function selectedProducts(input: unknown): TdccProductId[] {
   const statementTypes = (input as Partial<TdccWorkflowInput> | null)?.statementTypes;
-  if (!Array.isArray(statementTypes)) throw new ProductCollectionFatalError("workflow-failed");
+  if (!Array.isArray(statementTypes)) throw new FailureCodeError("workflow-failed");
   const selected = TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
-  if (selected.length === 0) throw new ProductCollectionFatalError("workflow-failed");
+  if (selected.length === 0) throw new FailureCodeError("workflow-failed");
   return selected;
 }
 
@@ -50,7 +48,7 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     const lease = await tdcc.session.open();
     if (lease.status !== "ready") {
       await context.event("authentication", "advanced", "device-registration-required");
-      throw new ProductCollectionFatalError("device-registration-required");
+      throw new FailureCodeError("device-registration-required");
     }
     const session = new TdccRunSession(tdcc.session, lease, {
       ...(options.fetch ? { fetch: options.fetch } : {}),
@@ -68,8 +66,6 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
         signal: context.signal,
         event: context.event,
         productFailure: context.productFailure,
-        classifyFatal: tdccFatalCode,
-        classifyFailure: tdccProductFailureCode,
         async collect(typeId, product) {
           await product.reportActivity("query");
           const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>

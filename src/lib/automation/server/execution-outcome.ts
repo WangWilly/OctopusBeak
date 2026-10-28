@@ -3,10 +3,8 @@ import type { AppWorkflowWorkerOutcome } from "./app-workflow-worker-supervisor.
 import type { WorkflowRunEvent } from "../run-event.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import { TYPED_WORKFLOW_ERROR_CODES, type TypedWorkflowErrorCode } from "../workflow-failures.ts";
-import {
-  classifyTypedWorkflowFailure,
-  summarizeInterruptedProductCollection,
-} from "./typed-workflow-outcome.ts";
+import { classifyFailure } from "../failure-classification.ts";
+import { summarizeInterruptedProductCollection } from "./typed-workflow-outcome.ts";
 
 /** How one workflow execution ended, as the host saw it. */
 export type ExecutionEnding =
@@ -27,29 +25,35 @@ function classified(code: TypedWorkflowErrorCode): TaskRunFailure {
 }
 
 /**
- * The host's missing solver route proves a verification configuration failure:
- * the worker sees only its rejected request, never the host's signal. Otherwise
- * a worker's code is proven when it is specific, or when a failed product
- * confirms a generic workflow-failed. Anything else is classified from events.
+ * A worker's code counts as reported when it is specific, or when a failed
+ * product confirms a generic workflow-failed.
+ */
+function reportedWorkerCode(
+  outcome: Extract<AppWorkflowWorkerOutcome, { status: "failed" }>,
+): TaskRunFailure["code"] | undefined {
+  if (!ERROR_CODES.has(outcome.errorCode)) return undefined;
+  const code = outcome.errorCode as TypedWorkflowErrorCode;
+  if (code === "commit-outcome-unknown") return undefined;
+  const productConfirms = outcome.summary?.products?.some(
+    (product) => product.status === "failed" && product.errorCode === code,
+  );
+  return code !== "workflow-failed" || productConfirms ? code : undefined;
+}
+
+/**
+ * A failed worker's code is proven when the classification names it, or when
+ * the host's missing solver route names a verification configuration failure.
+ * Anything else is classified from the execution's events.
  */
 function workerFailure(
   outcome: Exclude<AppWorkflowWorkerOutcome, { status: "completed" }>,
   events: readonly WorkflowRunEvent[],
 ): TaskRunFailure {
-  if (outcome.status === "failed" && events.some((event) => event.signal === "solver-route-unavailable"
-    || event.signal === "solver-challenge-unsupported")) {
-    return { code: "verification-configuration-failed", proven: true };
-  }
-  if (outcome.status === "failed" && ERROR_CODES.has(outcome.errorCode)) {
-    const code = outcome.errorCode as TypedWorkflowErrorCode;
-    const productConfirms = outcome.summary?.products?.some(
-      (product) => product.status === "failed" && product.errorCode === code,
-    );
-    if (code !== "commit-outcome-unknown" && (code !== "workflow-failed" || productConfirms)) {
-      return { code, proven: true };
-    }
-  }
-  return classified(classifyTypedWorkflowFailure(undefined, events, outcome.status === "cancelled"));
+  if (outcome.status === "cancelled") return { code: "cancelled", proven: false };
+  const reported = reportedWorkerCode(outcome);
+  const code = classifyFailure({ reported, events, stopped: false });
+  if (reported !== undefined && code === reported) return { code: reported, proven: true };
+  return code === "verification-configuration-failed" ? { code, proven: true } : classified(code);
 }
 
 /**
@@ -63,7 +67,7 @@ export function reportExecution(
   if (ending.kind === "host-error") {
     return {
       summary: summarizeInterruptedProductCollection(ending.error) ?? ending.workerSummary,
-      failure: classified(classifyTypedWorkflowFailure(ending.error, events, ending.cancelled)),
+      failure: classified(classifyFailure({ error: ending.error, events, stopped: ending.cancelled })),
     };
   }
   const { outcome } = ending;

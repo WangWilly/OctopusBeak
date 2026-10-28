@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Frame, Locator, Page, Response } from "playwright";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
@@ -113,7 +113,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
 
   const fmain = async (): Promise<Frame> => {
     const frame = await ifFound(frames.frame("fmain", { timeoutMs: SHELL_TIMEOUT_MS }));
-    if (!frame) throw new ProductCollectionFatalError("authentication-failed");
+    if (!frame) throw new FailureCodeError("authentication-failed");
     return frame;
   };
 
@@ -130,7 +130,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         const rendered = await ifFound(showing(route, ROUTE_RENDER_TIMEOUT_MS));
         if (rendered) return rendered;
       } else if (!route.menuId) {
-        throw new ProductCollectionFatalError("authentication-failed");
+        throw new FailureCodeError("authentication-failed");
       }
       await menuAction(route.path, route.menuId);
       await frames.settle(content);

@@ -25,6 +25,17 @@ export const TYPED_WORKFLOW_ERROR_CODES = [
 
 export type TypedWorkflowErrorCode = typeof TYPED_WORKFLOW_ERROR_CODES[number];
 
+/** A failure whose Failure code is already known where it is thrown. */
+export class FailureCodeError extends Error {
+  readonly errorCode: TypedWorkflowErrorCode;
+
+  constructor(errorCode: TypedWorkflowErrorCode, message = "The workflow stopped with a typed failure.") {
+    super(message);
+    this.name = "FailureCodeError";
+    this.errorCode = errorCode;
+  }
+}
+
 export type UserAction =
   | "register-device"
   | "check-sign-in-details"
@@ -55,6 +66,34 @@ export const WORKFLOW_FAILURE_USER_ACTIONS = {
   "collection-scope-changed": null,
   "workflow-failed": null,
 } as const satisfies Record<TypedWorkflowErrorCode, UserAction | null>;
+
+/**
+ * Whether a product failing with this code stops its Product collection run.
+ * Only a failure confined to the product's own source data lets the run go on (ADR 0068).
+ */
+export const WORKFLOW_FAILURE_ENDS_RUN = {
+  "captcha-provider-rejected": true,
+  cancelled: true,
+  "source-integrity-failed": false,
+  "source-validation-failed": false,
+  "source-access-challenged": true,
+  "source-unavailable": true,
+  "browser-runtime-config-failed": true,
+  "verification-configuration-failed": true,
+  "authentication-timeout": true,
+  "authentication-dialog-interrupted": true,
+  "authentication-failed": true,
+  "verification-failed": true,
+  "device-registration-required": true,
+  "provider-protocol-outdated": true,
+  "external-prerequisite-unavailable": true,
+  "source-collection-failed": false,
+  "canonical-commit-failed": true,
+  "canonical-reset-required": true,
+  "commit-outcome-unknown": true,
+  "collection-scope-changed": true,
+  "workflow-failed": true,
+} as const satisfies Record<TypedWorkflowErrorCode, boolean>;
 
 export function userActionForFailure(code: string | null | undefined): UserAction | null {
   if (code == null || !Object.hasOwn(WORKFLOW_FAILURE_USER_ACTIONS, code)) return null;

@@ -1,11 +1,4 @@
-import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
-import { SourceTextIntegrityError } from "../source-text.ts";
-import { ProviderProtocolOutdatedError, SourceAccessChallengeError, SourceUnavailableError } from "../source-access.ts";
-import { ExternalPrerequisiteUnavailableError } from "../external-prerequisite.ts";
-import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
 import {
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   sanitizeCollectionProductOutcomes,
   type CollectionProductOutcome,
@@ -104,54 +97,4 @@ export function sanitizeTypedWorkflowOutcome(value: unknown): TypedWorkflowOutco
     summary = looseRunResult(source.status, counts, source.products);
   }
   return { errorCode, summary };
-}
-
-/**
- * Classify from typed failure evidence only; never persist the thrown message.
- * Commit outcome is not decided here: the Active Automation Task Run applies the
- * run's Commit attempts (ADR 0056).
- */
-export function classifyTypedWorkflowFailure(
-  error: unknown,
-  events: readonly WorkflowRunEvent[],
-  signalAborted = false,
-): TypedWorkflowErrorCode {
-  if (error instanceof ProductCollectionInterruptedError || error instanceof ProductCollectionFatalError) {
-    if (ERROR_CODES.has(error.errorCode)) return error.errorCode;
-  }
-  if (error instanceof BrowserRuntimeConfigurationError) return "browser-runtime-config-failed";
-  if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
-  if (error instanceof SourceAccessChallengeError) return "source-access-challenged";
-  if (error instanceof SourceUnavailableError) return "source-unavailable";
-  if (error instanceof ProviderProtocolOutdatedError) return "provider-protocol-outdated";
-  if (error instanceof ExternalPrerequisiteUnavailableError) return "external-prerequisite-unavailable";
-
-  if (signalAborted) return "cancelled";
-  if (events.some((event) => event.signal === "verification-solver-exhausted")) {
-    return "verification-failed";
-  }
-  if (error instanceof CaptchaProviderRejectedError) return "captcha-provider-rejected";
-  if (events.some((event) => event.signal === "solver-route-unavailable"
-    || event.signal === "solver-challenge-unsupported")) {
-    return "verification-configuration-failed";
-  }
-  if (events.some((event) => event.signal === "human-assistance-failed")) return "verification-failed";
-  if (events.some((event) => event.stage === "decoding" && event.outcome === "failed")) {
-    return "source-integrity-failed";
-  }
-  if (events.some((event) => event.stage === "validation" && event.outcome === "failed")) {
-    return "source-validation-failed";
-  }
-  // Finalization reports the terminal state; the preceding stage records the
-  // operation that actually failed. No exception text enters the diagnosis.
-  const operation = events.findLast((event) => event.stage !== "finalization");
-  if (operation?.stage === "authentication") {
-    if (error instanceof Error && error.name === "TimeoutError") return "authentication-timeout";
-    if (operation.signal === "login-dialog-interrupted") return "authentication-dialog-interrupted";
-    return "authentication-failed";
-  }
-  if (operation?.stage === "collection" || operation?.stage === "decoding") {
-    return "source-collection-failed";
-  }
-  return "workflow-failed";
 }

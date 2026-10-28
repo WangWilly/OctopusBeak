@@ -13,12 +13,13 @@ import type { WorkflowFinancialCommitPort, WorkflowProductFailure } from "./work
 import {
   collectSelectedProducts,
   interruptedProductCollectionFromOutput,
-  ProductCollectionFatalError,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
   type CollectionProductOutcome,
+  type ProductCollectionStageEvent,
   type ProductStageRequest,
 } from "./product-collection.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
@@ -285,7 +286,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       },
       financialCommit: commitWith(async (_typeId, staged) => result("completed", staged.map(committed))),
       prepare: async (typeId) => {
-        if (typeId === "credit_card") throw new ProductCollectionFatalError("authentication-failed");
+        if (typeId === "credit_card") throw new FailureCodeError("authentication-failed");
       },
     }),
     (error: unknown) => {
@@ -748,6 +749,39 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
     financialCommit: commitWith(async () => { throw new Error("a failed product must not commit"); }),
   }), "source-unavailable");
   assert.equal(summary.products[0]?.errorCode, "source-unavailable", "a typed error outranks a reported stage");
+}
+
+for (const [failure, fail, code, endsRun] of [
+  ["an untyped failure", async () => { throw new Error("synthetic"); }, "source-collection-failed", false],
+  ["a reported validation failure", async (event: ProductCollectionStageEvent) => {
+    await event("validation", "failed", "source-rejected");
+    throw new Error("synthetic");
+  }, "source-validation-failed", false],
+  ["an unavailable source", async () => { throw new SourceUnavailableError(); }, "source-unavailable", true],
+  ["a lost sign-in", async () => { throw new FailureCodeError("authentication-failed"); }, "authentication-failed", true],
+] as const) {
+  const attempted: string[] = [];
+  const ending = await collectSelectedProducts({
+    provider: "hncb",
+    productIds: ["deposit", "loan"],
+    selectedIds: ["deposit", "loan"],
+    signal: signal().signal,
+    collect: async (typeId, product) => {
+      attempted.push(typeId);
+      if (typeId === "deposit") await fail(product.event);
+      product.stage(item(typeId, `${typeId}-1`));
+      return { sourceCaptureCount: 1, rowCount: 1 };
+    },
+    financialCommit: commitWith(async (_typeId, staged) => result("completed", staged.map(committed))),
+  }).then((summary) => summary, (error: unknown) => error as ProductCollectionInterruptedError);
+  if (endsRun) {
+    assert.ok(ending instanceof ProductCollectionInterruptedError && ending.errorCode === code, `${failure} ends the run as ${code}`);
+    assert.deepEqual(attempted, ["deposit"], `${failure} leaves later products uncollected`);
+  } else {
+    assert.ok(!(ending instanceof Error), `${failure} lets the run go on`);
+    assert.deepEqual(attempted, ["deposit", "loan"], `${failure} still collects later products`);
+    assert.equal(ending.products[0]?.errorCode, code, `${failure} names the product ${code}`);
+  }
 }
 
 {

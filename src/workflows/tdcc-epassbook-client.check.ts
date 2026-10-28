@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import {
   TDCC_APP_INFO,
   TDCC_BASE_URL,
@@ -280,4 +281,24 @@ test("a new device identity is the fixed common model with a random 16-hex devic
   assert.equal(first.devType, "Android:14");
   assert.match(first.deviceId, /^[0-9a-f]{16}$/u);
   assert.notEqual(createTdccDeviceIdentity().deviceId, first.deviceId);
+});
+
+test("every TDCC failure names its Failure code wherever it is thrown (ADR 0068)", () => {
+  const cases: ReadonlyArray<readonly [ConstructorParameters<typeof TdccError>[0], TdccFailure, string]> = [
+    ["positions", { reason: "device-untrusted", code: null }, "device-registration-required"],
+    ["positions", { reason: "protocol-outdated", code: "V9999" }, "provider-protocol-outdated"],
+    ["positions", { reason: "session-expired", code: "V0001" }, "authentication-failed"],
+    ["login", { reason: "otp-expired", code: "V0017" }, "authentication-failed"],
+    ["positions", { reason: "http", status: 503 }, "source-unavailable"],
+    ["login", { reason: "rejected", code: "V0002" }, "authentication-failed"],
+    ["initialToken", { reason: "rejected", code: "V0002" }, "authentication-failed"],
+    ["positions", { reason: "rejected", code: "V0002" }, "source-collection-failed"],
+    ["positions", { reason: "malformed-response" }, "source-integrity-failed"],
+    ["tradeDetails", { reason: "pagination", detail: "repeated-cursor" }, "source-collection-failed"],
+  ];
+  for (const [endpoint, failure, expected] of cases) {
+    const error = new TdccError(endpoint, failure);
+    assert.equal(classifyFailure({ error, events: [{ stage: "authentication", outcome: "started" }], stopped: false }), expected,
+      `${endpoint} ${failure.reason}`);
+  }
 });
