@@ -724,7 +724,8 @@ export function boundProductCollection(options: BoundProductCollectionOptions): 
         throw new FailureCodeError("workflow-failed");
       }
       const statementTypes = inputSelection(options.input, "statementTypes");
-      if (statementTypes.some((typeId) => !productIds.includes(typeId as CollectionProductTypeId))) {
+      if (new Set(statementTypes).size !== statementTypes.length
+        || statementTypes.some((typeId) => !productIds.includes(typeId as CollectionProductTypeId))) {
         throw new FailureCodeError("workflow-failed");
       }
       const attachedSelected = inputSelection(options.input, "attachedPreviewProducts");

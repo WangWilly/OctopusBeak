@@ -55,11 +55,7 @@ import {
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 import { withAbort } from "./abort.ts";
 
-const statementTypeSchema = z
-  .enum(["domestic", "foreign_currency", "foreign"])
-  .transform((type) =>
-    type === "foreign" ? ("foreign_currency" as const) : type,
-  );
+const statementTypeSchema = z.enum(["domestic", "foreign_currency"]);
 const dateRangeSchema = z.enum([
   "one_week",
   "one_month",
