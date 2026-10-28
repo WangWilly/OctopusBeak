@@ -199,7 +199,6 @@ function mapOverview(
     product: account.product,
     group: account.group,
     kind: account.kind,
-    typeLabel: account.typeLabel,
     amountLines: account.amounts.map(exactAmountToDto),
     marginAmountLines: account.marginAmounts.map(exactAmountToDto),
     transactionCount: account.transactionCount,

@@ -1334,39 +1334,6 @@ const en = {
     Account: "Account",
   },
   unidentifiedAccount: (ordinal: number) => `Account ${ordinal}`,
-  knownLabels: {
-    "Net position": "Net position",
-    "Asset value": "Asset value",
-    Assets: "Assets",
-    Liabilities: "Liabilities",
-    Bank: "Bank",
-    Foreign: "Foreign",
-    "Credit card": "Credit card",
-    Loan: "Loan",
-    Fund: "Fund",
-    Brokerage: "Brokerage",
-    Investment: "Brokerage",
-    Crypto: "Crypto",
-    "Crypto debt": "Crypto debt",
-    Deposit: "Deposit",
-    Withdrawal: "Withdrawal",
-    Credit: "Credit",
-    Debit: "Debit",
-    Card: "Card",
-    Buy: "Buy",
-    Sell: "Sell",
-    Trade: "Trade",
-    Redemption: "Redemption",
-    Dividend: "Dividend",
-    Conversion: "Conversion",
-    "Convert out": "Convert out",
-    "Convert in": "Convert in",
-    "Trade return": "Trade return",
-    "Deposit return": "Deposit return",
-    "Reward return": "Reward return",
-    Return: "Return",
-    Metric: "Metric",
-  },
 };
 
 const zh: typeof en = {
@@ -2611,39 +2578,6 @@ const zh: typeof en = {
     Account: "帳戶",
   },
   unidentifiedAccount: (ordinal: number) => `帳戶 ${ordinal}`,
-  knownLabels: {
-    "Net position": "淨部位",
-    "Asset value": "資產價值",
-    Assets: "資產",
-    Liabilities: "負債",
-    Bank: "銀行",
-    Foreign: "外幣",
-    "Credit card": "信用卡",
-    Loan: "貸款",
-    Fund: "基金",
-    Brokerage: "券商",
-    Investment: "券商",
-    Crypto: "加密資產",
-    "Crypto debt": "加密資產負債",
-    Deposit: "存入",
-    Withdrawal: "提領",
-    Credit: "入帳",
-    Debit: "扣款",
-    Card: "卡片",
-    Buy: "買進",
-    Sell: "賣出",
-    Trade: "交易",
-    Redemption: "贖回",
-    Dividend: "配息",
-    Conversion: "轉換",
-    "Convert out": "轉出",
-    "Convert in": "轉入",
-    "Trade return": "交易報酬",
-    "Deposit return": "入金報酬",
-    "Reward return": "獎勵報酬",
-    Return: "報酬",
-    Metric: "指標",
-  },
 };
 
 export const translations = {
@@ -2685,9 +2619,6 @@ export function setLocale(value: Locale) {
   locale.set(value);
 }
 
-export function translateKnownLabel(dictionary: Translation, value: string) {
-  return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
-}
 
 locale.subscribe((value) => {
   if (

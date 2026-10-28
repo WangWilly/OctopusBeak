@@ -133,7 +133,6 @@ function mapAccount(account: CanonicalOverviewAccount): AccountRowDto {
     ...(account.unidentifiedOrdinal === undefined ? {} : { unidentifiedOrdinal: account.unidentifiedOrdinal }),
     group: account.group,
     kind: account.kind,
-    typeLabel: account.typeLabel,
     amountLines: account.amounts.map(mapAmount),
     ...(account.marginAmounts.length > 0
       ? { marginAmountLines: account.marginAmounts.map(mapAmount) }

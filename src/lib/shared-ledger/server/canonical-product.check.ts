@@ -24,7 +24,6 @@ test("canonical product rows retain exact signed transaction and position values
         product: "Brokerage",
         group: "asset",
         kind: "brokerage",
-        typeLabel: "Brokerage",
         amounts: [],
         marginAmounts: [],
         positions: [
@@ -36,7 +35,6 @@ test("canonical product rows retain exact signed transaction and position values
             name: "Synthetic position",
             kind: "brokerage",
             group: "asset",
-            typeLabel: "Brokerage",
             currency: "USD",
             amount: {
               currency: "USD",
@@ -61,7 +59,6 @@ test("canonical product rows retain exact signed transaction and position values
         name: "Synthetic position",
         kind: "brokerage",
         group: "asset",
-        typeLabel: "Brokerage",
         currency: "USD",
         amount: {
           currency: "USD",
