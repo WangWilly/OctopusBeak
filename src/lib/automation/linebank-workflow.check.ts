@@ -11,8 +11,11 @@ import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-p
 import type {
   WorkflowContext,
   WorkflowContextWith,
+  WorkflowFinancialCommitPort,
   WorkflowHumanAssistancePort,
 } from "./workflow-executor.ts";
+import { LINEBANK_SOURCE } from "./server/sources/linebank.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import {
@@ -210,6 +213,7 @@ function createContext(options: {
   page?: Page & { setSignedIn?(value: boolean): void };
   signal?: AbortSignal;
   onAssistance?: () => void;
+  financialCommit?: WorkflowFinancialCommitPort;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const commits: unknown[][] = [];
@@ -245,7 +249,7 @@ function createContext(options: {
         assist(stage.stageId);
       },
     },
-    financialCommit: {
+    financialCommit: options.financialCommit ?? {
       async execute(items) {
         commitStarted = true;
         const received = [];
@@ -274,7 +278,14 @@ function createContext(options: {
       events.push(signalRunEvent(signal, { runId: "linebank-typed-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, humanAssistance, events, commits, assistance, page: selectedPage };
+  return {
+    context: withBoundProducts(context, LINEBANK_SOURCE, input),
+    humanAssistance,
+    events,
+    commits,
+    assistance,
+    page: selectedPage,
+  };
 }
 
 const input = {
@@ -287,6 +298,7 @@ const input = {
   endDate: "20260910",
   accountFilters: [],
   currencyFilters: [],
+  statementTypes: ["deposit"],
 };
 
 test("LINE Bank typed workflow admits complete in-memory sources through the injected commit", async () => {
@@ -352,9 +364,9 @@ test("LINE Bank rejects malformed and incomplete sources before any commit", asy
 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`LINE Bank names a ${stop} commit ${errorCode}`, async () => {
-    const harness = createContext();
+    const harness = createContext({ financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(
-      runLineBankProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, input),
+      runLineBankProviderWorkflow(harness.context, input),
       assertStoppedRun("deposit", 2, errorCode),
     );
   });

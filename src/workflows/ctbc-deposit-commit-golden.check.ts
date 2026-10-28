@@ -3,6 +3,8 @@ import test from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
 import {
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
@@ -28,6 +30,7 @@ const input = {
     ctbc_account: "synthetic-account",
     ctbc_password: "synthetic-password",
   },
+  statementTypes: ["deposit"],
 };
 
 function signedInPage(): Page {
@@ -145,7 +148,7 @@ async function run(
     event: recorder.event,
     signalEvent: recorder.signalEvent,
   };
-  const output = await runCtbcProviderWorkflow(context, input, {
+  const output = await runCtbcProviderWorkflow(withBoundProducts(context, CTBC_SOURCE, input), input, {
     collectDeposit: async (_page, parsedInput, productContext, product) => await stageCtbcDeposit(
       snapshot(captures),
       parsedInput,

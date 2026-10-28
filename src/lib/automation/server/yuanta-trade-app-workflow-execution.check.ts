@@ -12,6 +12,7 @@ import type {
   WorkflowFinancialCommitPort,
 } from "../workflow-executor.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { StatementSelectionError } from "../statement-selection.ts";
 
 const [{ taskById }, { executeTaskRunForCheck }, {
   workflowDefinitionForTask,
@@ -49,7 +50,12 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
       yuanta_trade_ca_path: "/synthetic/certificate.pfx",
       yuanta_trade_ca_password: "synthetic-certificate-password",
     },
+    statementTypes: ["securities"],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), [credentialKey("STATEMENT_TYPES")]: "" }),
+    (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
+  );
 
   const root = await mkdtemp(join(tmpdir(), "yuanta-trade-app-workflow-"));
   const previousDirectory = process.cwd();

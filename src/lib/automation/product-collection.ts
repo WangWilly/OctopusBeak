@@ -25,7 +25,13 @@ import type {
 import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
-import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
+import type {
+  PreviewProductCollectors,
+  PreviewProductRun,
+  WorkflowPreviewWritePort,
+} from "../preview-sources/product-collection.ts";
+import { attachedPreviewRun, type AttachedPreviewSource } from "../preview-sources/attached-products.ts";
+import type { PreviewProduct } from "../preview-sources/source-id.ts";
 
 /**
  * Typed against the command name so a rename fails to compile, while the
@@ -657,4 +663,98 @@ function finishProductCollectionRun(
 function withCause(error: ProductCollectionInterruptedError, cause: unknown): ProductCollectionInterruptedError {
   if (cause !== null && cause !== undefined) (error as Error & { cause?: unknown }).cause = cause;
   return error;
+}
+
+/** One product's collector in a Product collection run bound to its source. */
+export type ProductCollector = (product: ProductCollectionHandle) => Promise<ProductCollectionSummary>;
+
+export type ProductCollectOptions = Readonly<{
+  /** Must fail with a FailureCodeError if the source session is no longer valid. */
+  assertSession?: () => Promise<void>;
+  /**
+   * The Attached Preview Products' collectors (ADR 0051), built only once
+   * collection reaches them and read only when one is selected.
+   */
+  attached?: Readonly<{
+    collectors: () => PreviewProductCollectors;
+    assertSession?: () => Promise<void>;
+  }>;
+}>;
+
+/**
+ * The Product collection run bound to its Verified source: the provider,
+ * products and selection come from the source's definition and the run
+ * input, so a workflow supplies only one collector per product.
+ */
+export type ProductCollection = Readonly<{
+  collect(
+    collectors: Readonly<Partial<Record<CollectionProductTypeId, ProductCollector>>>,
+    options?: ProductCollectOptions,
+  ): Promise<ProductCollectionRunSummary>;
+}>;
+
+export type BoundProductCollectionOptions = Readonly<{
+  provider: string;
+  /** The source's Statement Selection products, in stable UI order. */
+  productIds: readonly CollectionProductTypeId[];
+  /** The run input; its `statementTypes` and `attachedPreviewProducts` choose what this run collects. */
+  input: unknown;
+  attachedSource?: AttachedPreviewSource;
+  signal: AbortSignal;
+  event: ProductCollectionStageEvent;
+  productFailure?: (failure: WorkflowProductFailure) => Promise<void>;
+  financialCommit: WorkflowFinancialCommitPort;
+  previewWrite?: WorkflowPreviewWritePort;
+}>;
+
+/** The ids the run input selects under `key`; absent selects none. */
+function inputSelection(input: unknown, key: "statementTypes" | "attachedPreviewProducts"): readonly string[] {
+  const value = typeof input === "object" && input !== null ? (input as Record<string, unknown>)[key] : undefined;
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((id) => typeof id !== "string")) throw new FailureCodeError("workflow-failed");
+  return value;
+}
+
+export function boundProductCollection(options: BoundProductCollectionOptions): ProductCollection {
+  const { provider, productIds, attachedSource, signal, event } = options;
+  return {
+    async collect(collectors, collectOptions = {}) {
+      const supplied = Object.keys(collectors);
+      if (supplied.length !== productIds.length || productIds.some((typeId) => !collectors[typeId])) {
+        throw new FailureCodeError("workflow-failed");
+      }
+      const statementTypes = inputSelection(options.input, "statementTypes");
+      if (new Set(statementTypes).size !== statementTypes.length
+        || statementTypes.some((typeId) => !productIds.includes(typeId as CollectionProductTypeId))) {
+        throw new FailureCodeError("workflow-failed");
+      }
+      const attachedSelected = inputSelection(options.input, "attachedPreviewProducts");
+      let attached: (() => Promise<PreviewProductRun>) | undefined;
+      if (attachedSelected.length > 0) {
+        if (!attachedSource || !collectOptions.attached
+          || attachedSelected.some((product) => !attachedSource.products.includes(product as PreviewProduct))) {
+          throw new FailureCodeError("workflow-failed");
+        }
+        attached = attachedPreviewRun({
+          context: { signal, event, previewWrite: options.previewWrite },
+          source: attachedSource,
+          selected: attachedSelected as readonly PreviewProduct[],
+          collectors: collectOptions.attached.collectors,
+          ...(collectOptions.attached.assertSession ? { assertSession: collectOptions.attached.assertSession } : {}),
+        });
+      }
+      return await collectSelectedProducts({
+        provider,
+        productIds,
+        selectedIds: productIds.filter((typeId) => statementTypes.includes(typeId)),
+        signal,
+        event,
+        ...(options.productFailure ? { productFailure: options.productFailure } : {}),
+        financialCommit: options.financialCommit,
+        ...(collectOptions.assertSession ? { assertSession: collectOptions.assertSession } : {}),
+        collect: (typeId, product) => collectors[typeId]!(product),
+        ...(attached ? { attached } : {}),
+      });
+    },
+  };
 }

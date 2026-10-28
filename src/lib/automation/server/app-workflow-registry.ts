@@ -1,6 +1,7 @@
 import { createExchangeRateWorkflow, type ExchangeRateSyncService } from "../exchange-rate-workflow.ts";
 import type { AutomationProgressEvent } from "../progress.ts";
 import { requiredWorkflowCapabilities, type WorkflowDefinition } from "../workflow-executor.ts";
+import type { CollectionProductTypeId } from "../product-collection.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { attachedStatementType, type AttachedPreviewGroupId } from "../../preview-sources/attached-products.ts";
 import {
@@ -86,12 +87,23 @@ function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.Proce
   };
 }
 
+/** ADR 0071: the source facts its Product collection run is bound to. */
+export function productCollectionFacts(source: VerifiedSource): WorkflowDefinition["productCollection"] {
+  if (!source.workflow.requiresProductCollection) return undefined;
+  return {
+    provider: source.integrationNamespace,
+    productIds: (source.statementSelection?.products ?? []).map(({ id }) => id as CollectionProductTypeId),
+  };
+}
+
 function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegistration {
   const { runtime, verification: _verification, input: _input, load, ...flags } = source.workflow;
+  const productCollection = productCollectionFacts(source);
   return {
     definition: {
       id: source.task.id,
       ...flags,
+      ...(productCollection ? { productCollection } : {}),
       async run(context, input) {
         return await (await load())(context, input);
       },

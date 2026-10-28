@@ -13,11 +13,7 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
-} from "../lib/automation/product-collection.ts";
+import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
@@ -65,6 +61,7 @@ const typedWorkflowInputSchema = z.object({
     post_account: z.string().trim().min(1),
     post_password: z.string().trim().min(1),
   }),
+  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 export type PostCredentials = {
@@ -976,7 +973,7 @@ async function runPostDeposit(
 }
 
 export async function runPostProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit" | "products">,
   rawInput: unknown,
   overrides: PostWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
@@ -991,20 +988,13 @@ export async function runPostProviderWorkflow(
     await signIn(context, page, POST_SOURCE, postSignInPlan(parsed.data.credentials));
 
     let accountCount = 0;
-    const summary = await collectSelectedProducts({
-      provider: "post",
-      productIds: ["deposit"],
-      selectedIds: ["deposit"],
-      signal: context.signal,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      deposit: async (product): Promise<ProductCollectionSummary> => {
         const collected = await collectDeposit(page, parsed.data, context, product);
         // Every admitted account is one source capture.
         accountCount = collected.sourceCaptureCount;
         return collected;
       },
-      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, { counts: { accountCount } });
   });

@@ -154,15 +154,14 @@ export type RecordValidatedTdccExclusions = (exclusions: readonly TdccValidatedE
 
 /**
  * Each instance belongs to one serial run and retains only bounded evidence.
+ * The Product collection run decides which products run; this summary only
+ * refuses a product that is not TDCC's or that runs twice.
  * collect scopes the recorder to the callback and marks completion only on return.
  * summarize is repeatable after a callback settles; receipts remain caller-validated.
  * Cancellation and unknown commits keep their original error outside this module.
  */
-export function createTdccRunSummary(selectedIds: readonly TdccProductId[]) {
-  const selected = new Set(selectedIds);
-  if (selected.size !== selectedIds.length || selectedIds.some((id) => !TDCC_PRODUCT_IDS.includes(id))) {
-    throw new TdccCollectionSummaryInvariantError();
-  }
+export function createTdccRunSummary() {
+  const isTdccProduct = (typeId: string): typeId is TdccProductId => (TDCC_PRODUCT_IDS as readonly string[]).includes(typeId);
   const observations = new Map<TdccProductId, TdccProductCollectionEvidence>();
   const attempted = new Set<TdccProductId>();
   const completed = new Set<TdccProductId>();
@@ -172,7 +171,7 @@ export function createTdccRunSummary(selectedIds: readonly TdccProductId[]) {
       typeId: TdccProductId,
       operation: (record: RecordValidatedTdccExclusions) => Promise<TdccProductCollection>,
     ): Promise<TdccCollectionDecision> {
-      if (active || !selected.has(typeId) || attempted.has(typeId)) throw new TdccCollectionSummaryInvariantError();
+      if (active || !isTdccProduct(typeId) || attempted.has(typeId)) throw new TdccCollectionSummaryInvariantError();
       attempted.add(typeId);
       active = true;
       let recording = true;
@@ -208,8 +207,8 @@ export function createTdccRunSummary(selectedIds: readonly TdccProductId[]) {
       if (active) throw new TdccCollectionSummaryInvariantError();
       const products = base.products.map((product) => {
         if (product.skipReason) return Object.freeze({ ...product });
-        const typeId = product.typeId as TdccProductId;
-        if (!selected.has(typeId)) throw new TdccCollectionSummaryInvariantError();
+        const typeId = product.typeId;
+        if (!isTdccProduct(typeId)) throw new TdccCollectionSummaryInvariantError();
         const observed = observations.get(typeId);
         return Object.freeze({
           ...product,

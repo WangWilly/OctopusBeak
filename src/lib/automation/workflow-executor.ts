@@ -18,8 +18,11 @@ import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-invest
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
 import type { TdccConnection, TdccSessionPort } from "../../workflows/tdcc-session.ts";
 import {
+  boundProductCollection,
   COLLECTION_PRODUCT_TYPE_IDS,
   interruptedProductCollectionFromOutput,
+  type CollectionProductTypeId,
+  type ProductCollection,
 } from "./product-collection.ts";
 import { recordedFinancialCommitPort, type CommitAttemptRecorder } from "./commit-attempt.ts";
 import { reportedVerificationPort, type WorkflowVerificationPort } from "./verification-stage.ts";
@@ -113,6 +116,8 @@ export type WorkflowContext = Readonly<{
   tdcc?: WorkflowTdccPort;
   accountIdentity?: WorkflowAccountIdentityPort;
   previewWrite?: WorkflowPreviewWritePort;
+  /** The Product collection run bound to this run's Verified source. */
+  products?: ProductCollection;
   event(
     stage: WorkflowContextStage,
     outcome: RunEventOutcome,
@@ -136,6 +141,9 @@ export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = 
   requiresPreviewWrite?: boolean;
   /** ADR 0051: the preview products this verified workflow may write beside its canonical commit. */
   attachedPreviewProducts?: AttachedPreviewSource;
+  requiresProductCollection?: boolean;
+  /** The Verified source facts the Product collection run is bound to; present when it is required. */
+  productCollection?: Readonly<{ provider: string; productIds: readonly CollectionProductTypeId[] }>;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -173,28 +181,37 @@ const WORKFLOW_CAPABILITIES = {
 export type WorkflowCapability = keyof typeof WORKFLOW_CAPABILITIES;
 type WorkflowCapabilityFlag<C extends WorkflowCapability> = (typeof WORKFLOW_CAPABILITIES)[C]["flag"];
 
+/**
+ * A context member a definition can require: a capability port, or the
+ * Product collection run, which the executor builds from the definition
+ * instead of serving from a port.
+ */
+export type WorkflowContextCapability = WorkflowCapability | "products";
+
 /** The capabilities whose flag a definition sets to a literal `true`. */
-export type RequiredCapabilities<Flags> = {
-  [C in WorkflowCapability]: Flags extends Readonly<Record<WorkflowCapabilityFlag<C>, true>> ? C : never;
-}[WorkflowCapability];
+export type RequiredCapabilities<Flags> =
+  | {
+    [C in WorkflowCapability]: Flags extends Readonly<Record<WorkflowCapabilityFlag<C>, true>> ? C : never;
+  }[WorkflowCapability]
+  | (Flags extends Readonly<{ requiresProductCollection: true }> ? "products" : never);
 
 /** The ports a definition may carry without requiring: preview writes for its attached products. */
 export type OptionalCapabilities<Flags> = Flags extends Readonly<{ attachedPreviewProducts: object }> ? "previewWrite" : never;
 
 /**
- * A context whose required ports `C` are present, because the executor checks
- * them before every run, and whose other ports are absent, except the optional
+ * A context whose required members `C` are present, because the executor checks
+ * them before every run, and whose other members are absent, except the optional
  * ports `O` the definition may carry.
  */
-export type WorkflowContextWith<C extends WorkflowCapability, O extends WorkflowCapability = never> =
-  Omit<WorkflowContext, WorkflowCapability>
+export type WorkflowContextWith<C extends WorkflowContextCapability, O extends WorkflowCapability = never> =
+  Omit<WorkflowContext, WorkflowContextCapability>
   & Readonly<{ [K in C]-?: NonNullable<WorkflowContext[K]> }>
   & Readonly<{ [K in O]?: WorkflowContext[K] }>
-  & Readonly<{ [K in Exclude<WorkflowCapability, C | O>]?: never }>;
+  & Readonly<{ [K in Exclude<WorkflowContextCapability, C | O>]?: never }>;
 
 /** A run that may use the ports its definition requires, and only those. */
 export type WorkflowRun<
-  C extends WorkflowCapability,
+  C extends WorkflowContextCapability,
   Input = unknown,
   Output extends WorkflowOutput = WorkflowOutput,
   O extends WorkflowCapability = never,
@@ -352,6 +369,23 @@ export function createWorkflowExecutor(
           }),
         });
       }
+      const previewWrite = workflowUsesPreviewWrite(definition) && ports.previewWrite
+        ? reportedPreviewWritePort(ports.previewWrite, event)
+        : undefined;
+      let products: ProductCollection | undefined;
+      if (definition.requiresProductCollection) {
+        if (!definition.productCollection || !financialCommit) throw new Error("Product collection is unavailable.");
+        products = boundProductCollection({
+          ...definition.productCollection,
+          input,
+          ...(definition.attachedPreviewProducts ? { attachedSource: definition.attachedPreviewProducts } : {}),
+          signal,
+          event,
+          productFailure,
+          financialCommit,
+          ...(previewWrite ? { previewWrite } : {}),
+        });
+      }
       const context: WorkflowContext = {
         runId,
         signal,
@@ -361,9 +395,8 @@ export function createWorkflowExecutor(
         verification: reportedVerificationPort({ humanAssistance: ports.humanAssistance, signal, event, signalEvent }),
         ...capabilityPorts,
         ...(financialCommit ? { financialCommit } : {}),
-        ...(workflowUsesPreviewWrite(definition) && ports.previewWrite
-          ? { previewWrite: reportedPreviewWritePort(ports.previewWrite, event) }
-          : {}),
+        ...(previewWrite ? { previewWrite } : {}),
+        ...(products ? { products } : {}),
         event,
         signalEvent,
         productFailure,

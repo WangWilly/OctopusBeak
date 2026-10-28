@@ -13,6 +13,8 @@ import type {
 } from "./product-collection.ts";
 import type { runYuantaAllStatementsWorkflow as runYuantaAllStatementsWorkflowType } from "../../workflows/yuanta-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
+import type { withBoundProducts as withBoundProductsType } from "./product-collection.fixtures.ts";
+import type { VerifiedSource } from "./server/sources/verified-source.ts";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -22,10 +24,24 @@ const server = await createServer({
   appType: "custom",
   logLevel: "silent",
 });
-const loaded = await server
-  .ssrLoadModule("/src/workflows/yuanta-all-statements.ts")
-  .finally(() => server.close());
-const runYuantaAllStatementsWorkflow = loaded.runYuantaAllStatementsWorkflow as typeof runYuantaAllStatementsWorkflowType;
+// The bound Product collection run loads in the workflow's own module graph, as the executor's does.
+const [loaded, fixtures, sources] = await Promise.all([
+  server.ssrLoadModule("/src/workflows/yuanta-all-statements.ts"),
+  server.ssrLoadModule("/src/lib/automation/product-collection.fixtures.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/sources/yuanta.ts"),
+]).finally(() => server.close());
+const runYuantaAllStatementsWorkflowUnbound = loaded.runYuantaAllStatementsWorkflow as typeof runYuantaAllStatementsWorkflowType;
+const withBoundProducts = fixtures.withBoundProducts as typeof withBoundProductsType;
+const YUANTA_SOURCE = sources.YUANTA_SOURCE as VerifiedSource;
+
+/** Runs Yuanta as the executor does: the Product collection run bound to YUANTA_SOURCE and this input. */
+function runYuantaAllStatementsWorkflow(
+  context: WorkflowContextWith<"financialCommit">,
+  input: unknown,
+  overrides?: Parameters<typeof runYuantaAllStatementsWorkflowType>[2],
+) {
+  return runYuantaAllStatementsWorkflowUnbound(withBoundProducts(context, YUANTA_SOURCE, input), input, overrides);
+}
 
 function item(product: string, value = "complete"): ProductStageRequest {
   return {

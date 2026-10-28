@@ -9,6 +9,8 @@ import type { WorkflowContextWith } from "./workflow-executor.ts";
 import type { ProductCollectionInterruptedError, ProductStageRequest } from "./product-collection.ts";
 import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
+import type { withBoundProducts as withBoundProductsType } from "./product-collection.fixtures.ts";
+import type { VerifiedSource } from "./server/sources/verified-source.ts";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -18,10 +20,24 @@ const server = await createServer({
   appType: "custom",
   logLevel: "silent",
 });
-const loaded = await server
-  .ssrLoadModule("/src/workflows/fubon-all-statements.ts")
-  .finally(() => server.close());
-const runFubonAllStatementsWorkflow = loaded.runFubonAllStatementsWorkflow as typeof runFubonAllStatementsWorkflowType;
+// The bound Product collection run loads in the workflow's own module graph, as the executor's does.
+const [loaded, fixtures, sources] = await Promise.all([
+  server.ssrLoadModule("/src/workflows/fubon-all-statements.ts"),
+  server.ssrLoadModule("/src/lib/automation/product-collection.fixtures.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/sources/fubon.ts"),
+]).finally(() => server.close());
+const runFubonAllStatementsWorkflowUnbound = loaded.runFubonAllStatementsWorkflow as typeof runFubonAllStatementsWorkflowType;
+const withBoundProducts = fixtures.withBoundProducts as typeof withBoundProductsType;
+const FUBON_SOURCE = sources.FUBON_SOURCE as VerifiedSource;
+
+/** Runs Fubon as the executor does: the Product collection run bound to FUBON_SOURCE and this input. */
+function runFubonAllStatementsWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "accountIdentity">,
+  input: unknown,
+  overrides?: Parameters<typeof runFubonAllStatementsWorkflowType>[2],
+) {
+  return runFubonAllStatementsWorkflowUnbound(withBoundProducts(context, FUBON_SOURCE, input), input, overrides);
+}
 
 const [depositSource, cardSource, loanSource] = await Promise.all([
   readFile(new URL("../../workflows/fubon-statements.ts", import.meta.url), "utf8"),

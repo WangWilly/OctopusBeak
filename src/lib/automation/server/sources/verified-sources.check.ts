@@ -4,6 +4,7 @@ import test from "node:test";
 import { createMaicoinWorkflow } from "../../maicoin-workflow.ts";
 import { createTdccWorkflow } from "../../tdcc-workflow.ts";
 import { requiredWorkflowCapabilities } from "../../workflow-executor.ts";
+import { COLLECTION_PRODUCT_TYPE_IDS } from "../../product-collection.ts";
 import { workflowDefinitionForTask, workflowInputForTask } from "../app-workflow-registry.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../tasks.ts";
@@ -51,6 +52,27 @@ test("each source declares a usable runtime, products, and attached products", (
       assert.ok(source.statementSelection, `${source.id} offers attached products in its Statement Selection`);
     }
     if (source.workflow.input.statementTypes) assert.ok(source.statementSelection, `${source.id} reads a Statement Selection it offers`);
+  }
+});
+
+test("every source with a Statement Selection collects through its bound run", () => {
+  const unbound = VERIFIED_SOURCES
+    .filter(({ statementSelection, workflow }) => statementSelection && !workflow.requiresProductCollection)
+    .map(({ id }) => id);
+  assert.deepEqual(unbound, []);
+});
+
+test("a source whose workflow collects products binds its run to the source's products and selection", () => {
+  for (const source of VERIFIED_SOURCES.filter(({ workflow }) => workflow.requiresProductCollection)) {
+    const { workflow, statementSelection } = source;
+    assert.ok(statementSelection && workflow.input.statementTypes, `${source.id} collects the products its Statement Selection offers`);
+    assert.equal(workflow.requiresFinancialCommit, true, `${source.id} commits what it collects`);
+    const productIds = statementSelection.products.map(({ id }) => id);
+    assert.ok(productIds.every((id) => (COLLECTION_PRODUCT_TYPE_IDS as readonly string[]).includes(id)), `${source.id} offers collection products`);
+    assert.deepEqual(workflowDefinitionForTask(source.task.id)?.productCollection, {
+      provider: source.integrationNamespace,
+      productIds,
+    });
   }
 });
 

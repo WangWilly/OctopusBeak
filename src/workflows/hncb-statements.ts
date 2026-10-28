@@ -50,16 +50,11 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
+import type {
+  ProductCollectionHandle,
+  ProductCollectionSummary,
+  ProductCollectOptions,
 } from "../lib/automation/product-collection.ts";
-import {
-  ATTACHED_PREVIEW_PRODUCTS,
-  attachedPreviewRun,
-} from "../lib/preview-sources/attached-products.ts";
-import type { PreviewProductRun } from "../lib/preview-sources/product-collection.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
@@ -85,7 +80,7 @@ const typedWorkflowInputSchema = z.object({
     hncb_password: z.string().trim().min(1),
   }),
   /** The verified products selected; HNCB has only `deposit`. */
-  statementTypes: z.array(z.literal("deposit")).default(["deposit"]),
+  statementTypes: z.array(z.literal("deposit")),
   attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 }).refine(
   (input) => input.statementTypes.length > 0 || input.attachedPreviewProducts.length > 0,
@@ -1354,16 +1349,10 @@ const collectHncbDeposit: HncbDepositRunner = async (page, input, context, produ
     ),
   );
 
-export type HncbStatementsContext = Pick<
-  WorkflowContextWith<"financialCommit">,
-  "signal" | "text" | "event" | "productFailure" | "financialCommit"
->;
+export type HncbStatementsContext = Pick<WorkflowContextWith<"products">, "signal" | "text" | "products">;
 
-export type HncbStatementsRun = Readonly<{
-  /** From sign-in: throws a FailureCodeError once the signed-in session is gone. */
-  assertSession?: () => Promise<void>;
-  /** The selected Attached Preview Products, collected after the deposit. */
-  attached?: () => Promise<PreviewProductRun>;
+/** The session check and Attached Preview Product collectors from sign-in, and a check's deposit runner. */
+export type HncbStatementsRun = ProductCollectOptions & Readonly<{
   collectDeposit?: HncbDepositRunner;
 }>;
 
@@ -1375,28 +1364,18 @@ export type HncbStatementsRun = Readonly<{
  */
 export async function runHncbStatements(
   page: Page,
-  input: HncbDepositInput & Readonly<{ statementTypes?: HncbWorkflowInput["statementTypes"] }>,
+  input: HncbDepositInput,
   context: HncbStatementsContext,
   run: HncbStatementsRun = {},
 ): Promise<WorkflowRunResult> {
-  const collectDeposit = run.collectDeposit ?? collectHncbDeposit;
-  const depositSelected = (input.statementTypes ?? ["deposit"]).includes("deposit");
+  const { collectDeposit = collectHncbDeposit, ...collectOptions } = run;
   let deposit: HncbDepositSummary | null = null;
-  const summary = await collectSelectedProducts({
-    provider: "hncb",
-    productIds: ["deposit"],
-    selectedIds: depositSelected ? ["deposit"] : [],
-    signal: context.signal,
-    event: context.event,
-    ...(context.productFailure ? { productFailure: context.productFailure } : {}),
-    ...(run.assertSession ? { assertSession: run.assertSession } : {}),
-    collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+  const summary = await context.products.collect({
+    deposit: async (product): Promise<ProductCollectionSummary> => {
       deposit = await collectDeposit(page, input, context, product);
       return { sourceCaptureCount: deposit.sourceCaptureCount, rowCount: deposit.rowCount };
     },
-    financialCommit: context.financialCommit,
-    ...(run.attached ? { attached: run.attached } : {}),
-  });
+  }, collectOptions);
   const [verified, ...attached] = summary.products;
   const succeeded = verified?.status === "success" ? deposit as HncbDepositSummary | null : null;
   return productRunResult(summary, {
@@ -1408,7 +1387,7 @@ export async function runHncbStatements(
 
 /** App-owned entry point for the HNCB domestic-deposit statement workflow. */
 export async function runHncbProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
   rawInput: unknown,
 ): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
@@ -1421,15 +1400,12 @@ export async function runHncbProviderWorkflow(
     const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(parsed.data.credentials));
     return await runHncbStatements(page, parsed.data, context, {
       ...(assertSession ? { assertSession } : {}),
-      attached: attachedPreviewRun({
-        context,
-        source: ATTACHED_PREVIEW_PRODUCTS.hncb,
-        selected: parsed.data.attachedPreviewProducts,
+      attached: {
         collectors: () => ({
           credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(page), { now: context.now() }),
         }),
-        assertSession,
-      }),
+        ...(assertSession ? { assertSession } : {}),
+      },
     });
   });
 }

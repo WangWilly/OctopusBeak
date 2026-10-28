@@ -85,9 +85,10 @@ export const POST_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     runtime: browser("https://ipost.post.gov.tw/pst/home.html"),
     verification: { rejection: { dialog: { exact: "圖形驗證錯誤" } } },
-    input: { credentials: true },
+    input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/post-statements.ts")).runPostProviderWorkflow;
     },
