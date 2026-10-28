@@ -292,6 +292,36 @@ test("one worker exposes named financial reads/writes and complete live snapshot
   }
 });
 
+test("an exchange-rate update republishes the Assets and Liabilities pages, which convert with those rates", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rates-check-"));
+  const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
+    execArgv: ["--experimental-strip-types"],
+    workerData: { dataDir },
+  });
+  const client = createPGliteViewWorkerClient(worker);
+  const stops: Array<() => Promise<void>> = [];
+  try {
+    for (const view of ["financial.assets.current", "financial.liabilities.current"] as const) {
+      const snapshots: unknown[] = [];
+      stops.push(await client.subscribe(view, {}, (rows) => { snapshots.push(rows[0]); }));
+      await waitFor(() => snapshots.length >= 1);
+      const before = snapshots.length;
+      await client.operationalProvider.exchangeRates.upsertExchangeRates([{
+        rateDate: "2026-09-22",
+        currency: "USD",
+        twdPerUnit: view === "financial.assets.current" ? 31.5 : 31.6,
+        source: "financial-rates-check",
+        fetchedAt: "2026-09-22T00:00:00.000Z",
+      }]);
+      await waitFor(() => snapshots.length > before);
+    }
+  } finally {
+    for (const stop of stops) await stop();
+    await client.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("PGlite overview exposes observed daily balances to exchange-rate requirements", async () => {
   const database = await createTestPGlite("ledger+operational");
   const store = new PGliteStore(database);

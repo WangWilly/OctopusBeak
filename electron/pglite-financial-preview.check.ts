@@ -460,8 +460,8 @@ test("each live view republishes on exactly the dependencies it reads", async ()
     const views = createPGliteFinancialLiveViews(database, shown);
     const expected = {
       "financial.overview.current": { preview: true, exchangeRates: true },
-      "financial.assets.current": { preview: true, exchangeRates: false },
-      "financial.liabilities.current": { preview: true, exchangeRates: false },
+      "financial.assets.current": { preview: true, exchangeRates: true },
+      "financial.liabilities.current": { preview: true, exchangeRates: true },
       "financial.spending.current": { preview: false, exchangeRates: false },
     } satisfies Record<PGliteFinancialLiveView, { preview: boolean; exchangeRates: boolean }>;
     const counts = new Map<string, number>();
