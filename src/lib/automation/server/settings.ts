@@ -4,13 +4,14 @@ import {
   AUTOMATION_SETTINGS_PATH,
   migrateAutomationEnvFile,
   migrateStatementSelectionIds,
+  onAutomationSettingsWritten,
   readAutomationSettingsFile,
   type AutomationSettingsFile,
 } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { attachedPreviewSource, attachedStatementType } from "../../preview-sources/attached-products.ts";
-import { previewVisibility, visibleProducts } from "../../preview-sources/visibility.ts";
+import { previewVisibility, sameVisibility, visibleProducts } from "../../preview-sources/visibility.ts";
 import type { PreviewProduct, PreviewVisibility } from "../../../ledger/pglite/preview-financial-data.ts";
 import type { AutomationCredentialGroup } from "../types.ts";
 import { automationFlagEnabled } from "../statement-selection.ts";
@@ -89,5 +90,29 @@ export function currentPreviewVisibility(settings: AutomationSettingsFile = read
     previewFeaturesEnabled: systemSettings(settings).previewFeaturesEnabled,
     enabledGroups: automationGroupEnabledStatus(settings),
     sources: PREVIEW_SOURCES,
+  });
+}
+
+function initialPreviewVisibility(): PreviewVisibility | null {
+  try {
+    return currentPreviewVisibility();
+  } catch {
+    // An invalid settings file must not stop the app from starting; the first write announces.
+    return null;
+  }
+}
+
+/**
+ * Calls `onChange` after any write of the settings file changes Preview
+ * visibility, comparing with the visibility last seen.
+ */
+export function watchPreviewVisibility(onChange: () => void): () => void {
+  let last = initialPreviewVisibility();
+  return onAutomationSettingsWritten((path, settings) => {
+    if (path !== AUTOMATION_SETTINGS_PATH) return;
+    const next = currentPreviewVisibility(settings);
+    if (last !== null && sameVisibility(next, last)) return;
+    last = next;
+    onChange();
   });
 }
