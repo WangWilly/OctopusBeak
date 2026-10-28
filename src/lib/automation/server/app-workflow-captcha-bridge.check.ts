@@ -342,6 +342,53 @@ test("every text CAPTCHA workflow routes solver exhaustion into one bounded App 
   }
 });
 
+test("a cancellation during the source's retry cooldown ends the campaign without another round", async () => {
+  const store = new PGliteStore(await createTestPGlite("operational"));
+  const controller = new AbortController();
+  try {
+    const provider = createPgliteOperationalProvider(store);
+    const created = await provider.automation.createTaskRun({
+      taskId: "fubon-all-statements",
+      kind: "crawler",
+      status: "running",
+      attempt: 1,
+      maxAttempts: 1,
+      startedAt: new Date().toISOString(),
+    });
+    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
+    const attempts: number[] = [];
+    const started = Date.now();
+    const report = await runCaptchaRetryCampaign({
+      taskId: "fubon-all-statements",
+      appWorkflow: true,
+      pageForRun: noHostedPage,
+      launchVerificationSettings: {},
+      run,
+      captchaRetryCooldownMs: () => 10_000,
+      routeWaitingRunVerification: async (input) => {
+        await input.onChallengeCaptured?.();
+        return { kind: "retryable", reason: "solver-exhausted" };
+      },
+      async execute(options) {
+        attempts.push(options.attempt ?? 1);
+        try {
+          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
+        } catch {
+          // The App route rejects the active worker stage to restart it.
+        }
+        setTimeout(() => run.requestStop("cancelled"), 50);
+        return { failure: { code: "workflow-failed" as const, proven: true }, summary: null };
+      },
+    });
+    assert.ok(Date.now() - started < 2_000, "the stop ends the cooldown at once");
+    assert.deepEqual(attempts, [1], "no round starts after the stop");
+    assert.equal((await run.finish(report)).status, "cancelled");
+  } finally {
+    controller.abort();
+    await store.close();
+  }
+});
+
 test("exhausted App solver retries finalize with a typed verification failure and safe reason", async () => {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const controller = new AbortController();
