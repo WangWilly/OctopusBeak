@@ -1593,7 +1593,6 @@ export async function collectCathayDomesticFinancialRequests(
   options: Readonly<{
     source?: CathayStrictSourceOptions;
     observedAt?: string;
-    prepareStatementQuery?: CathayDomesticQueryPreparation;
     client?: CathayDomesticStatementsClient;
   }>,
 ): Promise<CathayDomesticFinancialCollection> {
@@ -1601,19 +1600,6 @@ export async function collectCathayDomesticFinancialRequests(
   const client = options.client ?? new CathayApiClient(page, options.source);
   const accounts = await withAbort(
     client.fetchDomesticAccounts(cathaySession, accountFilters),
-    options.source?.signal,
-  );
-  await withAbort(
-    openDomesticStatementsPage(page),
-    options.source?.signal,
-  );
-  await withAbort(
-    (options.prepareStatementQuery ?? prepareCathayDomesticStatementQuery)(
-      page,
-      accounts,
-      dateRange,
-      accountFilters.length === 0,
-    ),
     options.source?.signal,
   );
 

@@ -724,217 +724,49 @@ await assert.rejects(
   /account scope does not match/,
 );
 
-function delayedDomesticQueryPage(
-  initialUrl: string,
-  options: {
-    controlsAvailable?: boolean;
-    interactiveControlsAvailable?: boolean;
-    interactiveClickError?: Error;
-    navigationError?: Error;
-  } = {},
-) {
-  const accountOptions: OptionSet = {
-    texts: ["請選擇", "活期存款 0001"],
-    selected: [],
-  };
-  const periodOptions: OptionSet = {
-    texts: ["請選擇", "最近一年"],
-    selected: [],
-  };
-  let currentUrl = initialUrl;
-  let controlsReady = false;
-  let openOptions: OptionSet | null = null;
-  let queryCount = 0;
-  const navigations: string[] = [];
-  const comboboxes = [accountOptions, periodOptions].map((optionSet) => ({
-    click: async () => {
-      throw new Error("synthetic dummy input click must not be used");
-    },
-    locator: (selector: string) => {
-      assert.equal(selector, "..");
-      return {
-        waitFor: async () => {
-          if (options.interactiveControlsAvailable === false) {
-            throw new Error("synthetic interactive control timeout");
-          }
-        },
-        scrollIntoViewIfNeeded: async () => undefined,
-        click: async () => {
-          if (options.interactiveClickError) {
-            throw options.interactiveClickError;
-          }
-          openOptions = optionSet;
-        },
-      };
-    },
-  }));
-
-  return {
-    accountOptions,
-    periodOptions,
-    navigations,
-    queryCount: () => queryCount,
-    page: {
-      url: () => currentUrl,
-      goto: async (url: string) => {
-        if (options.navigationError) throw options.navigationError;
-        navigations.push(url);
-        currentUrl = url;
-      },
-      waitForLoadState: async () => undefined,
-      locator: (selector: string) => {
-        if (selector === '[role="combobox"]') {
-          return {
-            count: async () => (controlsReady ? comboboxes.length : 0),
-            nth: (index: number) => ({
-              ...comboboxes[index],
-              waitFor: async () => {
-                if (options.controlsAvailable === false) {
-                  throw new Error("synthetic controls timeout");
-                }
-                controlsReady = true;
-              },
-            }),
-          };
-        }
-        if (selector === '[role="listbox"] [role="option"]') {
-          if (!openOptions)
-            throw new Error("No Cathay query options are open.");
-          return optionLocator(openOptions);
-        }
-        if (selector === "table") {
-          return { first: () => ({ isVisible: async () => queryCount > 0 }) };
-        }
-        throw new Error(`Unexpected locator: ${selector}`);
-      },
-      getByRole: () => ({
-        count: async () => 1,
-        click: async () => {
-          queryCount += 1;
-        },
-      }),
-      getByText: () => ({ first: () => ({ isVisible: async () => false }) }),
-      keyboard: {
-        press: async () => {
-          openOptions = null;
-        },
-      },
-      waitForTimeout: async () => undefined,
-    },
-  };
-}
-
-const delayedPage = delayedDomesticQueryPage(
-  "https://www.cathaybk.com.tw/OnlineBanking/",
-);
-let transferReads = 0;
-await assert.rejects(
-  () =>
-    collectCathayDomesticFinancialRequests(
-      delayedPage.page as never,
-      "one_year",
-      [],
-      { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {
-        client: {
-          fetchDomesticAccounts: async () => [firstAccount],
-          fetchTransferDetailsRaw: async () => {
-            transferReads += 1;
-            throw new Error("stop after Cathay UI query preparation");
+const directApiPage = new Proxy({}, {
+  get(_target, property) {
+    throw new Error(`Domestic collection unexpectedly accessed page.${String(property)}.`);
+  },
+});
+const localDate = (date: Date) =>
+  `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`;
+const expectedEnd = new Date();
+const expectedStart = new Date(expectedEnd);
+expectedStart.setFullYear(expectedStart.getFullYear() - 1);
+const expectedScope = {
+  startDate: localDate(expectedStart),
+  endDate: localDate(expectedEnd),
+};
+const requestedAccounts: string[] = [];
+const directApiCollection = await collectCathayDomesticFinancialRequests(
+  directApiPage as never,
+  "one_year",
+  [],
+  { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+  {
+    client: {
+      fetchDomesticAccounts: async () => [firstAccount, secondAccount],
+      fetchTransferDetailsRaw: async (_session, accountNo, dateRange) => {
+        assert.equal(dateRange, "one_year");
+        requestedAccounts.push(accountNo);
+        return JSON.stringify({
+          success: true,
+          returnCode: "0000",
+          content: {
+            datas: [{
+              queryStatus: "Success",
+              accountNumber: accountNo,
+              count: 0,
+              ...expectedScope,
+              details: [],
+            }],
           },
-        },
+        });
       },
-    ),
-  /stop after Cathay UI query preparation/,
+    },
+  },
 );
-assert.equal(delayedPage.navigations.length, 1);
-assert.equal(delayedPage.queryCount(), 1);
-assert.equal(transferReads, 1);
-
-const alreadyOpenPage = delayedDomesticQueryPage(
-  "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-);
-await assert.rejects(
-  () =>
-    collectCathayDomesticFinancialRequests(
-      alreadyOpenPage.page as never,
-      "one_year",
-      [],
-      { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {
-        client: {
-          fetchDomesticAccounts: async () => [firstAccount],
-          fetchTransferDetailsRaw: async () => {
-            throw new Error(
-              "stop after already-open Cathay UI query preparation",
-            );
-          },
-        },
-      },
-    ),
-  /stop after already-open Cathay UI query preparation/,
-);
-assert.deepEqual(alreadyOpenPage.navigations, []);
-assert.equal(alreadyOpenPage.queryCount(), 1);
-
-for (const [label, unavailablePage, expectedError] of [
-  [
-    "navigation",
-    delayedDomesticQueryPage("https://www.cathaybk.com.tw/OnlineBanking/", {
-      navigationError: new Error("synthetic Cathay navigation failure"),
-    }),
-    /synthetic Cathay navigation failure/,
-  ],
-  [
-    "controls",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      { controlsAvailable: false },
-    ),
-    /query controls are unavailable/,
-  ],
-  [
-    "interactive control",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      { interactiveControlsAvailable: false },
-    ),
-    /query control is not interactive/,
-  ],
-  [
-    "intercepting content layer",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      {
-        interactiveClickError: new Error(
-          "synthetic Cathay content layer intercepts pointer events",
-        ),
-      },
-    ),
-    /query control is not interactive/,
-  ],
-] as const) {
-  let unavailableTransferReads = 0;
-  await assert.rejects(
-    () =>
-      collectCathayDomesticFinancialRequests(
-        unavailablePage.page as never,
-        "one_year",
-        [],
-        { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-        {
-          client: {
-            fetchDomesticAccounts: async () => [firstAccount],
-            fetchTransferDetailsRaw: async () => {
-              unavailableTransferReads += 1;
-              return "unreachable";
-            },
-          },
-        },
-      ),
-    expectedError,
-    `${label} failure must propagate before statement reads`,
-  );
-  assert.equal(unavailableTransferReads, 0);
-  assert.equal(unavailablePage.queryCount(), 0);
-}
+assert.deepEqual(requestedAccounts, ["0001", "20002"]);
+assert.equal(directApiCollection.captureCount, 2);
+assert.equal(directApiCollection.rowCount, 0);
