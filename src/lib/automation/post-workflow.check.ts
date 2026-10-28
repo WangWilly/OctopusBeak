@@ -18,7 +18,9 @@ import {
 import type { PostCurrentDepositBalanceRow } from "../../workflows/post-current-deposit-balances.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "./product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
-import type { WorkflowContextWith } from "./workflow-executor.ts";
+import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { POST_SOURCE } from "./server/sources/post.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import {
   assertProductFailure,
@@ -231,6 +233,7 @@ function createContext(input: {
   page: Page & { setSignedIn(value: boolean): void };
   signal?: AbortSignal;
   assistance?: () => Promise<void>;
+  financialCommit?: WorkflowFinancialCommitPort;
 }) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
@@ -250,7 +253,7 @@ function createContext(input: {
         await input.assistance?.();
       },
     },
-    financialCommit: {
+    financialCommit: input.financialCommit ?? {
       async execute(items) {
         const materialized = [];
         for await (const item of items) materialized.push(item);
@@ -286,7 +289,7 @@ function createContext(input: {
       events.push(signalRunEvent(signal, { runId: "run-post-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, events, committed };
+  return { context: withBoundProducts(context, POST_SOURCE, workflowInput), events, committed };
 }
 
 const workflowInput = {
@@ -496,8 +499,8 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`Post names a ${stop} commit ${errorCode}`, async () => {
-    const harness = createContext({ page: createPage(true) });
-    await assert.rejects(runPostProviderWorkflow({ ...harness.context, financialCommit: stoppedCommitPort(stop) }, workflowInput,
+    const harness = createContext({ page: createPage(true), financialCommit: stoppedCommitPort(stop) });
+    await assert.rejects(runPostProviderWorkflow(harness.context, workflowInput,
       depositReading(() => [statement])), assertStoppedRun("deposit", 1, errorCode));
   });
 }

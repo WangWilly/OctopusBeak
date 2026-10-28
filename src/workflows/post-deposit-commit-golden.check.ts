@@ -4,6 +4,8 @@ import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { PostCurrentDepositBalanceRow } from "./post-current-deposit-balances.ts";
 import {
@@ -119,7 +121,7 @@ async function run(
   };
   let error: string | null = null;
   let errorCode: string | null = null;
-  const output = await runPostProviderWorkflow(context, input, {
+  const output = await runPostProviderWorkflow(withBoundProducts(context, POST_SOURCE, input), input, {
     collectDeposit: async (_page, parsedInput, runContext, product) => await stagePostDeposit(
       { observedAt: "2026-09-25T20:00:00+08:00", statements },
       parsedInput,
