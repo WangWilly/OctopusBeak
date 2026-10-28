@@ -118,7 +118,6 @@ export type AccountRowDto = {
   unidentifiedOrdinal?: number;
   group: AccountGroup;
   kind: AccountKind;
-  typeLabel: string;
   amountLines: CurrencyAmountDto[];
   marginAmountLines?: CurrencyAmountDto[];
   transactionCount: number;

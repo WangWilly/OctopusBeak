@@ -229,24 +229,24 @@ function productOf(account: AccountRow): InstitutionProduct | null {
   return accountProduct({ integrationNamespace: account.integration_namespace, stream: account.stream, accountType: account.account_type });
 }
 
-function accountClassification(account: AccountRow): Pick<CanonicalOverviewAccount, "group" | "kind" | "typeLabel"> {
+function accountClassification(account: AccountRow): Pick<CanonicalOverviewAccount, "group" | "kind"> {
   const foreign = account.account_type === "depository" &&
     (account.stream === "foreign-currency-deposit" || (account.currency !== null && account.currency !== "TWD"));
   if (account.account_type === "depository")
-    return { group: "asset", kind: foreign ? "foreign" : "bank", typeLabel: foreign ? "Foreign" : "Bank" };
+    return { group: "asset", kind: foreign ? "foreign" : "bank" };
   if (account.account_type === "credit")
-    return { group: "liability", kind: "credit-card", typeLabel: "Credit card" };
+    return { group: "liability", kind: "credit-card" };
   if (account.account_type === "loan")
-    return { group: "liability", kind: "loan", typeLabel: "Loan" };
+    return { group: "liability", kind: "loan" };
   if (account.account_type === "investment") {
     const crypto = account.investment_subtype === "crypto_exchange" ||
       account.investment_subtype === "non_custodial_wallet" ||
       account.stream.includes("crypto") ||
       account.integration_namespace === "maicoin";
     const fund = productOf(account) === "fund";
-    return { group: "investment", kind: crypto ? "crypto" : fund ? "fund" : "brokerage", typeLabel: crypto ? "Crypto" : fund ? "Fund" : "Investment" };
+    return { group: "investment", kind: crypto ? "crypto" : fund ? "fund" : "brokerage" };
   }
-  return { group: "asset", kind: "other", typeLabel: "Other" };
+  return { group: "asset", kind: "other" };
 }
 
 function selectedBalances(account: AccountRow, rows: readonly BalanceRow[]): readonly BalanceRow[] {
@@ -473,7 +473,6 @@ function holdingPosition(
     name: holding.security_name ?? holding.security_key,
     kind: crypto ? "crypto" : fund ? "fund" : "brokerage",
     group: "asset",
-    typeLabel: crypto ? "Crypto" : fund ? "Fund" : "Investment",
     currency: holding.valuation_currency ?? holding.security_currency,
     amount,
     units: holding.quantity_coefficient === null || holding.quantity_scale === null

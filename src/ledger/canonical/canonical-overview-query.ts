@@ -49,7 +49,6 @@ export type CanonicalOverviewPosition = Readonly<{
   name: string;
   kind: "fund" | "brokerage" | "crypto";
   group: "asset";
-  typeLabel: string;
   currency: string;
   amount: CanonicalOverviewAmount | null;
   units: CanonicalOverviewExactAmount | null;
@@ -138,7 +137,6 @@ export type CanonicalOverviewAccount = Readonly<{
     | "credit-card"
     | "loan"
     | "other";
-  typeLabel: string;
   amounts: readonly CanonicalOverviewAmount[];
   marginAmounts: readonly CanonicalOverviewAmount[];
   positions: readonly CanonicalOverviewPosition[];

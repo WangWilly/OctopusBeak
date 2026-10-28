@@ -16,7 +16,6 @@ function account(id: string, overrides: Partial<AccountRowDto>): AccountRowDto {
     product: "Investment account",
     group: "investment",
     kind: "brokerage",
-    typeLabel: "Investment",
     amountLines: [],
     transactionCount: 0,
     assetPositionCount: 0,
