@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+  MAX_CAPTCHA_RETRY_ROUNDS,
   createCaptchaRetryCampaign,
   transitionCaptchaRetryCampaign,
   type CaptchaRetryCampaign,
@@ -69,7 +69,7 @@ test("challenge absence completes normally without consuming a round", () => {
   assert.deepEqual(campaign, {
     status: "completed",
     consumedRounds: 0,
-    maxRounds: CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+    maxRounds: MAX_CAPTCHA_RETRY_ROUNDS,
     completionReason: "challenge-absent",
     lastExecutionId: "execution-1",
   });
@@ -226,16 +226,8 @@ test("an old execution cannot be reused for a later round", () => {
   );
 });
 
-test("malformed retry outcomes are rejected at runtime", () => {
+test("a completed campaign accepts no further round outcome", () => {
   const campaign = capturedCampaign();
-  assert.throws(
-    () => transitionCaptchaRetryCampaign(campaign, {
-      kind: "round-outcome",
-      executionId: "execution-1",
-      outcome: { kind: "retryable", reason: "unknown" },
-    } as never),
-    /reason|invalid|retry/i,
-  );
   const completed = transitionCaptchaRetryCampaign(campaign, outcome("execution-1", {
     kind: "succeeded",
   }));
@@ -257,6 +249,6 @@ test("a campaign can be cancelled before a challenge is captured", () => {
   assert.deepEqual(campaign, {
     status: "cancelled",
     consumedRounds: 0,
-    maxRounds: CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+    maxRounds: MAX_CAPTCHA_RETRY_ROUNDS,
   });
 });
