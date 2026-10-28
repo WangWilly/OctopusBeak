@@ -25,6 +25,6 @@ ADR 0057 put every per-source fact on the Verified Source definition, but each o
 ## Consequences
 
 - `collectSelectedProducts` stays as the bound run's internal seam, tested directly by `product-collection.check.ts`. TDCC's workflow is the one exception that still calls it: it sizes its TDCC run summary from the selection before any product runs, so binding it would derive the selection twice. A registry check pins TDCC as the only source with a Statement Selection outside the bound run.
-- Post, CTBC, LINE Bank and Yuanta-trade now read their Statement Selection. A person who clears the only product is asked to finish setup instead of having it collected anyway.
-- The `statementTypes` defaults in the SinoPac, HNCB and E.SUN input schemas are gone; the registry always supplies the selection, and a default would disagree with the run.
+- Post, CTBC, LINE Bank and Yuanta-trade now read their Statement Selection. A person who clears the only product is asked to finish setup instead of having it collected anyway. Their run input now carries `statementTypes`, so run progress is projected per product for them as it already was for the other sources.
+- The `statementTypes` defaults in the SinoPac, HNCB and E.SUN input schemas are gone; the registry always supplies the selection, and a default would disagree with the run. Cathay's legacy `foreign` alias is gone for the same reason: the run reads the raw input, so a schema transform would disagree with it.
 - Checks that matched `financialCommit: context.financialCommit` in workflow source text are deleted; `workflow-executor.check.ts` checks the binding through `context.products`.

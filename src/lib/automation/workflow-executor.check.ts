@@ -331,6 +331,9 @@ test("the bound run refuses collectors or a selection that disagree with the sou
   await assert.rejects(run({ statementTypes: ["loan"] }, {
     deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
   }), refused);
+  await assert.rejects(run({ statementTypes: ["deposit", "deposit"] }, {
+    deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
+  }), refused);
   await assert.rejects(run({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }, {
     deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
   }), refused, "an attached selection needs the source's attached products and the workflow's attached collectors");
