@@ -6,10 +6,10 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { readAutomationSettings } from "./settings.ts";
 import {
-  captchaRetryCooldownMs,
   runCaptchaRetryCampaign,
   waitForCaptchaRetryCooldown,
 } from "./captcha-retry-coordinator.ts";
+import { captchaRetryCooldownMs } from "./verification-routing.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";

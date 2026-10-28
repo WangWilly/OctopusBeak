@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+  MAX_CAPTCHA_RETRY_ROUNDS,
   createCaptchaRetryCampaign,
   transitionCaptchaRetryCampaign,
   type CaptchaRetryCampaign,
@@ -69,7 +69,7 @@ test("challenge absence completes normally without consuming a round", () => {
   assert.deepEqual(campaign, {
     status: "completed",
     consumedRounds: 0,
-    maxRounds: CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+    maxRounds: MAX_CAPTCHA_RETRY_ROUNDS,
     completionReason: "challenge-absent",
     lastExecutionId: "execution-1",
   });
@@ -163,6 +163,14 @@ test("cancellation completes as a terminal campaign state", () => {
   assert.equal(campaign.consumedRounds, 1);
 });
 
+test("cancelling an ended campaign leaves it unchanged", () => {
+  const exhausted = transitionCaptchaRetryCampaign(
+    transitionCaptchaRetryCampaign(retryableCampaign(2), capture("execution-3")),
+    outcome("execution-3", { kind: "retryable", reason: "solver-exhausted" }),
+  );
+  assert.equal(transitionCaptchaRetryCampaign(exhausted, { kind: "cancelled" }), exhausted);
+});
+
 test("the third retryable round is exhausted and cannot start round four", () => {
   const campaign = retryableCampaign(2);
   const captured = transitionCaptchaRetryCampaign(
@@ -199,9 +207,14 @@ test("outcomes from another execution are stale and cannot advance the campaign"
   assert.equal(campaign.consumedRounds, 1);
 });
 
-test("duplicate capture or duplicate outcome is rejected without advancing state", () => {
+test("a refreshed challenge keeps its round, and a second execution's capture or a duplicate outcome is rejected", () => {
   const campaign = capturedCampaign("execution-1");
-  assert.throws(() => transitionCaptchaRetryCampaign(campaign, capture("execution-1")), /order|capture/i);
+  assert.equal(
+    transitionCaptchaRetryCampaign(campaign, capture("execution-1")),
+    campaign,
+    "an in-page refresh within the active execution consumes no further round (ADR 0046)",
+  );
+  assert.throws(() => transitionCaptchaRetryCampaign(campaign, capture("execution-2")), /order|capture/i);
   const ready = transitionCaptchaRetryCampaign(
     campaign,
     outcome("execution-1", { kind: "retryable", reason: "solver-exhausted" }),
@@ -226,16 +239,8 @@ test("an old execution cannot be reused for a later round", () => {
   );
 });
 
-test("malformed retry outcomes are rejected at runtime", () => {
+test("a completed campaign accepts no further round outcome", () => {
   const campaign = capturedCampaign();
-  assert.throws(
-    () => transitionCaptchaRetryCampaign(campaign, {
-      kind: "round-outcome",
-      executionId: "execution-1",
-      outcome: { kind: "retryable", reason: "unknown" },
-    } as never),
-    /reason|invalid|retry/i,
-  );
   const completed = transitionCaptchaRetryCampaign(campaign, outcome("execution-1", {
     kind: "succeeded",
   }));
@@ -257,6 +262,6 @@ test("a campaign can be cancelled before a challenge is captured", () => {
   assert.deepEqual(campaign, {
     status: "cancelled",
     consumedRounds: 0,
-    maxRounds: CAPTCHA_RETRY_CAMPAIGN_MAX_ROUNDS,
+    maxRounds: MAX_CAPTCHA_RETRY_ROUNDS,
   });
 });
