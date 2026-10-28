@@ -47,8 +47,7 @@ import {
 } from "./pglite-ipc.ts";
 import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
-import { currentPreviewVisibility, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
-import { sameVisibility } from "../src/lib/preview-sources/visibility.ts";
+import { readAutomationSettings, watchPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import { AUTOMATION_CREDENTIAL_KEYS, AUTOMATION_TASKS } from "../src/lib/automation/server/tasks.ts";
 import {
   AUTOMATION_CREDENTIALS_PATH,
@@ -203,16 +202,11 @@ export function registerOctopusBeakIpc({
       trafficLightPositionForScale(percent),
     );
   });
-  function markStaleWhenPreviewVisibilityChanges<T>(write: () => T): T {
-    const before = currentPreviewVisibility();
-    const result = write();
-    if (!sameVisibility(currentPreviewVisibility(), before)) {
-      dataVersionStore.markStale("preview-data-changed");
-      void financialPages.request("financial.preview.visibilityChanged", [])
-        .catch((error) => console.error("preview-visibility-refresh-failed", error));
-    }
-    return result;
-  }
+  const unwatchPreviewVisibility = watchPreviewVisibility(() => {
+    dataVersionStore.markStale("preview-data-changed");
+    void financialPages.request("financial.preview.visibilityChanged", [])
+      .catch((error) => console.error("preview-visibility-refresh-failed", error));
+  });
   const collection: CollectionControl = {
     pauseSchedules,
     whileStopped: (work) => automationRuntime.whileStopped(work),
@@ -223,10 +217,10 @@ export function registerOctopusBeakIpc({
       systemSettings(readAutomationSettings()),
     "settings:save": async (_event, input: SystemSettingsDto) => {
       const value = validateSystemSettings(input);
-      markStaleWhenPreviewVisibilityChanges(() => writeAutomationSettings({
+      writeAutomationSettings({
         ...readAutomationSettings(),
         ...systemSettingsFileEntries(value),
-      }));
+      });
       await onSystemSettingsChanged?.(value);
       return value;
     },
@@ -331,7 +325,7 @@ export function registerOctopusBeakIpc({
           },
         ),
     "automation:saveCredentials": async (_event, updates: Record<string, string>) => {
-        const result = markStaleWhenPreviewVisibilityChanges(() => automationSaveCredentials(updates));
+        const result = automationSaveCredentials(updates);
         if (result.saved) await automationCredentials.refresh();
         return result;
       },
@@ -439,6 +433,7 @@ export function registerOctopusBeakIpc({
     close: async () => {
       unsubscribeFromDataInvalidation();
       unsubscribeFromAutomationRuntime();
+      unwatchPreviewVisibility();
       await pgliteViewRegistration.close();
     },
   };
