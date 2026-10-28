@@ -840,7 +840,7 @@ A compact record of one automation task run's statement collection outcome, incl
 _Avoid_: All-products success assumption, partial financial evidence, failure that hides admitted data
 
 **Product collection run**:
-The part of one verified source's run that collects and commits each selected product in turn, decides every product's outcome, stops on a refusal, cancellation, uncertain commit or lost session, and then collects the selected Attached Preview Products before ending the run with one Statement Run Summary. A workflow supplies only how to collect and commit each product.
+The part of one verified source's run that collects and commits each selected product in turn, decides every product's outcome, stops on a refusal, cancellation, uncertain commit or lost session, and then collects the selected Attached Preview Products before ending the run with one Statement Run Summary. The run is bound to its Verified source: the provider, products and selection come from the source's definition and the run input, never from the workflow, which supplies only how to collect each product (ADR 0071).
 _Avoid_: Product loop, per-workflow product outcome, attached run
 
 **Product staging**:

@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
-import { collectSelectedProducts } from "../product-collection.ts";
 import { FailureCodeError } from "../workflow-failures.ts";
 import type { WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { PGliteWorkflowRunItem, PGliteWorkflowRunResult } from "../../../ledger/pglite/workflow-run.ts";
@@ -530,20 +529,15 @@ test("a product failure inside a partial run appends one correlated diagnostic r
   const definition: WorkflowDefinition = {
     id: "fixture-protocol",
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
+    productCollection: { provider: "fixture", productIds: ["deposit", "credit_card"] },
     async run(context) {
-      return productRunResult(await collectSelectedProducts({
-        provider: "fixture",
-        productIds: ["deposit", "credit_card"],
-        selectedIds: ["deposit", "credit_card"],
-        signal: context.signal,
-        collect: async (typeId, product) => {
-          if (typeId === "credit_card") throw new TypeError("provider row 123-456-789 unreadable");
+      return productRunResult(await context.products!.collect({
+        deposit: async (product) => {
           product.stage(runItem());
           return { sourceCaptureCount: 1, rowCount: 1 };
         },
-        financialCommit: context.financialCommit!,
-        event: context.event,
-        productFailure: context.productFailure,
+        credit_card: async () => { throw new TypeError("provider row 123-456-789 unreadable"); },
       }));
     },
   };
@@ -558,7 +552,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
   try {
     await runAppWorkflowWorker({
       port: channel.port1,
-      workerData: start,
+      workerData: { ...start, input: { statementTypes: ["deposit", "credit_card"] } },
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
       financialCommit: {
