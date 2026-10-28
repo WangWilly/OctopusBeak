@@ -7,6 +7,8 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError, interruptedProductCollectionFromOutput } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import {
@@ -301,6 +303,15 @@ function workflowContext(writes: PreviewWrite[], commits: unknown[][]): Workflow
   };
 }
 
+/** Runs SinoPac as the executor does: the Product collection run bound to SINOPAC_SOURCE and this input. */
+function runSinopac(
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  input: unknown,
+  dependencies: SinopacProviderWorkflowDependencies,
+) {
+  return runSinopacProviderWorkflow(withBoundProducts(context, SINOPAC_SOURCE, input), input, dependencies);
+}
+
 const workflowInput = (selection: Readonly<{ statementTypes: string[]; attachedPreviewProducts: string[] }>) => ({
   credentials: { sinopac_user_id: "synthetic-user", sinopac_account: "synthetic-account", sinopac_password: "synthetic-password" },
   startDate: "20260903",
@@ -335,7 +346,7 @@ test("the SinoPac workflow writes attached cards only through the preview port, 
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
   const { transport } = fakeTransport(bodies());
-  const output = await runSinopacProviderWorkflow(
+  const output = await runSinopac(
     workflowContext(writes, commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
@@ -359,7 +370,7 @@ test("a failing attached card product leaves the verified SinoPac result intact"
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
   const { transport } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
-  const output = await runSinopacProviderWorkflow(
+  const output = await runSinopac(
     workflowContext(writes, commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
@@ -378,7 +389,7 @@ test("an attached-only SinoPac selection signs in, commits nothing canonical, an
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
   const { transport } = fakeTransport(bodies());
-  const output = await runSinopacProviderWorkflow(
+  const output = await runSinopac(
     workflowContext(writes, commits),
     workflowInput({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }),
     { cardTransport: transport },
@@ -390,7 +401,7 @@ test("an attached-only SinoPac selection signs in, commits nothing canonical, an
   assert.equal(output.products?.[1]?.status, "success");
 
   const { transport: failing } = fakeTransport(edit((source) => { source[SINOCARD_OUTSTANDING_PATH].Result.Detail[0].AMT = "bad"; }));
-  await assert.rejects(runSinopacProviderWorkflow(
+  await assert.rejects(runSinopac(
     workflowContext([], []),
     workflowInput({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }),
     { cardTransport: failing },
@@ -401,7 +412,7 @@ test("the SinoPac workflow collects no attached product when none is selected", 
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
   const { transport, calls } = fakeTransport(bodies());
-  const output = await runSinopacProviderWorkflow(
+  const output = await runSinopac(
     workflowContext(writes, commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: [] }),
     { ...verifiedOverrides, cardTransport: transport },
@@ -416,7 +427,7 @@ test("a session loss during the attached card product ends the SinoPac run after
   const { transport } = fakeTransport(edit((source) => {
     source[SINOPAC_CARD_SUMMARY_PATH] = [{ SubInfo: null, Header: "TIMEOUT", Message: "您尚未登入網銀" }];
   }));
-  await assert.rejects(runSinopacProviderWorkflow(
+  await assert.rejects(runSinopac(
     workflowContext([], commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
@@ -459,7 +470,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
       },
     };
     const { transport, calls } = fakeTransport(bodies());
-    await assert.rejects(runSinopacProviderWorkflow(
+    await assert.rejects(runSinopac(
       context,
       workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
       { ...verifiedOverrides, cardTransport: transport },
@@ -504,7 +515,7 @@ test("a refused SinoPac verified commit names the run collection-scope-changed a
     },
   };
   const { transport, calls } = fakeTransport(bodies());
-  await assert.rejects(runSinopacProviderWorkflow(
+  await assert.rejects(runSinopac(
     context,
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     { ...verifiedOverrides, cardTransport: transport },
@@ -524,7 +535,7 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
   const { transport } = fakeTransport(bodies());
-  const output = await runSinopacProviderWorkflow(
+  const output = await runSinopac(
     workflowContext(writes, commits),
     workflowInput({ statementTypes: ["deposit"], attachedPreviewProducts: ["credit_card"] }),
     {

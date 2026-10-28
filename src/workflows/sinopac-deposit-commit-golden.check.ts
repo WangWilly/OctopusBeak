@@ -4,6 +4,8 @@ import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import {
   readSinopacDepositSource,
   runSinopacProviderWorkflow,
@@ -125,8 +127,8 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
   };
 }
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
-  return {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit" | "products"> {
+  return withBoundProducts<never>({
     runId: "sinopac-golden-run",
     signal: new AbortController().signal,
     now: () => "2026-10-01T12:00:00.000+08:00",
@@ -136,7 +138,7 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
     financialCommit: recorder.financialCommit,
     event: recorder.event,
     signalEvent: recorder.signalEvent,
-  };
+  }, SINOPAC_SOURCE, input);
 }
 
 async function record(name: string, scenario: Scenario): Promise<Record<string, unknown>> {
