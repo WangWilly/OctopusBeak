@@ -1,4 +1,5 @@
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+import { exactToNumber } from "../shared-money/exact.ts";
 import type { PurchaseCategory } from "./purchase-category-view.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
@@ -600,6 +601,25 @@ export function reconcileSpendingPageActionSummary(
   return Object.freeze({
     state: "apply-delta",
     summary: applySpendingSummaryDelta(summary, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta),
+  });
+}
+
+/** The canonical view a page action's summary implies, so the worker and the renderer publish the same one. */
+export function spendingCanonicalAt(
+  canonical: CanonicalSpendingView,
+  summary: SpendingPurchaseReportSummaryDto,
+  knowledgeAt: number,
+): CanonicalSpendingView {
+  return Object.freeze({
+    ...canonical,
+    availability: summary.recordCount > 0 ? "available" : "empty",
+    knowledgePoint: knowledgeAt,
+    totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
+      currency: amount.currency,
+      value: exactToNumber(amount),
+      exact: { coefficient: amount.coefficient, scale: amount.scale },
+    })),
+    totalStatus: "complete",
   });
 }
 
