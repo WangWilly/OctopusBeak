@@ -35,7 +35,7 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },
   });
   const previousFetch = globalThis.fetch;
   const channel = new MessageChannel();

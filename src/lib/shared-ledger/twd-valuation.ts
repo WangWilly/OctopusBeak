@@ -218,6 +218,32 @@ export function accountTwdValues(
   }));
 }
 
+/** Current accounts in TWD at the valuation date; null when a verified account has no rate. */
+export function currentNetPosition(
+  accounts: readonly AccountRowDto[],
+  rates: ExchangeRateIndex,
+  valuationDate: string | null,
+): { value: number | null; unconvertedPreviewCurrencies: string[]; includesPreview: boolean } {
+  const unconverted = new Set<string>();
+  const blank = { value: null, unconvertedPreviewCurrencies: [], includesPreview: false };
+  if (!valuationDate || accounts.length === 0) return blank;
+  let total = 0;
+  let includesPreview = false;
+  for (const account of accounts) {
+    if (!account.preview) {
+      const converted = convertToTwd(account.amountLines, valuationDate, rates);
+      if (!converted) return blank;
+      total += account.group === "liability" ? -converted.value : converted.value;
+      continue;
+    }
+    const value = convertAccount(account, rates, valuationDate, unconverted);
+    if (value === null) continue;
+    total += account.group === "liability" ? -value : value;
+    if (account.amountLines.length > 0) includesPreview = true;
+  }
+  return { value: total, unconvertedPreviewCurrencies: [...unconverted].sort(), includesPreview };
+}
+
 export function convertAccount(
   account: AccountRowDto,
   rates: ExchangeRateIndex,

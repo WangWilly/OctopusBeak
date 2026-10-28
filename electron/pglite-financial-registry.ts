@@ -1,7 +1,4 @@
 import { SpendingPageVersionError, type SpendingPageReadResult } from "../src/lib/spending/page-reader.ts";
-import type { AssetsPageDto } from "../src/lib/assets/types.ts";
-import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
-import type { OverviewHoldingPriceDto, OverviewPageDto } from "../src/lib/overview/types.ts";
 import {
   type SpendingCandidatePageDto,
   type SpendingCandidatePageRequest,
@@ -30,45 +27,7 @@ import type {
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
 } from "../src/lib/spending/model.ts";
-import { isProductAccount, mapCanonicalCreditCard, mapCanonicalProduct } from "../src/lib/shared-ledger/server/canonical-product.ts";
-import type { AccountRowDto, CurrencyAmountDto, SummaryMetricDto } from "../src/lib/shared-ledger/types.ts";
-import type {
-  CanonicalOverviewAmount,
-} from "../src/ledger/canonical/canonical-overview-query.ts";
-import {
-  exactAmountToNumber,
-} from "../src/ledger/pglite/overview-amount.ts";
-import type { CanonicalOverviewCurrentQueryResult } from "../src/ledger/canonical/canonical-overview-query.ts";
-import {
-  createPGliteCanonicalOverviewQuery,
-  selectPGliteOverviewAssets,
-  selectPGliteOverviewLiabilities,
-} from "../src/ledger/pglite/overview.ts";
-import { readPGliteDailyHistoryWithAccounts, type PGliteDailyHistory } from "../src/ledger/pglite/daily-history.ts";
-import { readPGliteHoldingPrices, type PGliteHoldingPrice } from "../src/ledger/pglite/holding-prices.ts";
-import {
-  NO_PREVIEW_VISIBILITY,
-  readPreviewAccounts,
-  readPreviewBalanceHistory,
-  readPreviewTransactions,
-  type PreviewVisibility,
-} from "../src/ledger/pglite/preview-financial-data.ts";
-import {
-  readPreviewCreditAccounts,
-  readPreviewCreditBalanceHistory,
-  readPreviewPurchases,
-  readPreviewStatements,
-} from "../src/ledger/pglite/preview-credit.ts";
-import {
-  countableWithRates,
-  previewAccountRow,
-  previewBalanceSeries,
-  previewCreditAccountRow,
-  previewCreditSeries,
-  previewSummaryMarkers,
-  withPreviewHistory,
-  type PreviewBalanceSeries,
-} from "../src/ledger/pglite/preview-overview.ts";
+import { NO_PREVIEW_VISIBILITY, type PreviewVisibility } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
@@ -129,10 +88,10 @@ import {
   type PGliteCanonicalLoanRelationResolutionRequest,
   type PGliteCanonicalInvestmentRelationResolutionRequest,
 } from "../src/ledger/pglite/relations.ts";
-import type { PGliteStore, PGliteTransaction } from "../src/ledger/pglite/transaction.ts";
+import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
-import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import { readAssetsPage, readLiabilitiesPage, readOverviewPage } from "../src/ledger/pglite/financial-pages.ts";
 import {
   appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
@@ -145,15 +104,12 @@ import {
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 
-type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
-type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces: Trace[] };
 
 import {
   isPGliteFinancialOperation,
   PGLITE_FINANCIAL_CONTRACTS,
   PGliteFinancialError,
   type PGliteFinancialCancelRequest,
-  type PGliteFinancialExpectedSources,
   type PGliteFinancialFailureCategory,
   type PGliteFinancialOperation,
   type PGliteFinancialRequest,
@@ -274,252 +230,8 @@ function post(port: RpcPort, response: PGliteFinancialResponse): void {
   }
 }
 
-function exactAmountToDto(amount: CanonicalOverviewAmount): CurrencyAmountDto {
-  return {
-    currency: amount.currency,
-    value: exactAmountToNumber(amount.exact),
-    exact: { ...amount.exact },
-    traces: amount.traces.map((trace) => ({ ...trace })),
-  };
-}
-
-function addExactAmounts(
-  left: AggregatedAmount["exact"],
-  right: AggregatedAmount["exact"],
-): AggregatedAmount["exact"] {
-  const scale = Math.max(left.scale, right.scale);
-  return {
-    coefficient: (
-      BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale)
-      + BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
-    ).toString(),
-    scale,
-  };
-}
-
-function accumulateAmount(
-  target: Map<string, AggregatedAmount>,
-  currency: string,
-  exact: AggregatedAmount["exact"],
-  traces: readonly Trace[],
-): void {
-  const current = target.get(currency);
-  if (!current) target.set(currency, { exact: { ...exact }, traces: [...traces] });
-  else {
-    current.exact = addExactAmounts(current.exact, exact);
-    current.traces.push(...traces);
-  }
-}
-
-function aggregateAmounts(accounts: readonly AccountRowDto[]): Map<string, AggregatedAmount> {
-  const result = new Map<string, AggregatedAmount>();
-  for (const account of accounts) {
-    for (const amount of account.amountLines) {
-      if (!amount.exact) continue;
-      accumulateAmount(result, amount.currency, amount.exact, amount.traces ?? []);
-    }
-  }
-  return result;
-}
-
-function amountLines(amounts: Map<string, AggregatedAmount>): CurrencyAmountDto[] {
-  return [...amounts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currency, value]) => ({
-    currency,
-    value: exactAmountToNumber(value.exact),
-    exact: value.exact,
-    traces: value.traces,
-  }));
-}
-
-function addSigned(
-  target: Map<string, AggregatedAmount>,
-  source: Map<string, AggregatedAmount>,
-  sign: 1 | -1,
-): void {
-  for (const [currency, value] of source) {
-    const signed = sign === 1
-      ? value.exact
-      : { coefficient: (-BigInt(value.exact.coefficient)).toString(), scale: value.exact.scale };
-    accumulateAmount(target, currency, signed, value.traces);
-  }
-}
-
-function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[] {
-  const assets = accounts.filter((account) => account.group === "asset" || account.group === "investment");
-  const liabilities = accounts.filter((account) => account.group === "liability");
-  const assetTotals = aggregateAmounts(accounts.filter((account) => account.group === "asset"));
-  const investmentTotals = aggregateAmounts(accounts.filter((account) => account.group === "investment"));
-  const liabilityTotals = aggregateAmounts(liabilities);
-  const net = new Map<string, AggregatedAmount>();
-  addSigned(net, assetTotals, 1);
-  addSigned(net, investmentTotals, 1);
-  addSigned(net, liabilityTotals, -1);
-  const display = (account: AccountRowDto) => account.kind === "credit-card" ? "Credit card" : account.kind === "loan" ? "Loan" : account.kind === "other" ? "Other" : account.kind[0]!.toUpperCase() + account.kind.slice(1);
-  const assetValue = new Map<string, AggregatedAmount>();
-  addSigned(assetValue, assetTotals, 1);
-  addSigned(assetValue, investmentTotals, 1);
-  const preview = previewSummaryMarkers(accounts);
-  return [
-    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview.net },
-    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview.assets },
-    { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display), ...preview.liabilities },
-  ];
-}
-
-function mapOverview(
-  result: CanonicalOverviewCurrentQueryResult,
-  rates: readonly ExchangeRateRecord[],
-  history: PGliteDailyHistory,
-  prices: readonly PGliteHoldingPrice[],
-  previewAccounts: readonly AccountRowDto[],
-): OverviewPageDto {
-  const projection = result.projection;
-  const canonicalAccounts: AccountRowDto[] = projection.accounts.map((account) => ({
-    id: account.id,
-    canonicalAccountId: account.id,
-    label: account.label,
-    institution: account.institution,
-    institutionKey: account.institutionKey,
-    ...(account.viaSource ? { viaSource: account.viaSource } : {}),
-    product: account.product,
-    group: account.group,
-    kind: account.kind,
-    typeLabel: account.typeLabel,
-    amountLines: account.amounts.map(exactAmountToDto),
-    marginAmountLines: account.marginAmounts.map(exactAmountToDto),
-    transactionCount: account.transactionCount,
-    assetPositionCount: account.positions.length,
-    lastUpdated: account.observedAt ? account.observedAt.slice(0, 10) : null,
-    valueAvailability: account.availability,
-    ...(account.creditCard ? { creditCard: mapCanonicalCreditCard(account.creditCard) } : {}),
-  }));
-  const accounts = [...canonicalAccounts, ...previewAccounts];
-  return {
-    availability: projection.availability,
-    coverage: projection.availability === "unavailable" ? "unavailable" : projection.sourceGaps.length > 0 || projection.availability !== "available" ? "partial" : "complete",
-    historyAvailability: history.dailyHistory.length > 0 ? "available" : "unavailable",
-    sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
-    importedAt: projection.importedAt,
-    summary: overviewSummary(accounts),
-    dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
-    dailyHistoryByAccount: history.dailyHistoryByAccount,
-    accounts,
-    holdingPrices: holdingPricesForPositions(projection.positions, prices),
-    exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-  };
-}
-
-function holdingPricesForPositions(
-  positions: CanonicalOverviewCurrentQueryResult["projection"]["positions"],
-  prices: readonly PGliteHoldingPrice[],
-): OverviewHoldingPriceDto[] {
-  const byPosition = new Map<string, PGliteHoldingPrice[]>();
-  for (const price of prices) {
-    const key = `${price.accountId}:${price.securityId}`;
-    byPosition.set(key, [...(byPosition.get(key) ?? []), price]);
-  }
-  return positions.map((position) => {
-    const observations = byPosition.get(position.id) ?? [];
-    return {
-      accountId: position.accountId,
-      symbol: position.symbol,
-      name: position.name,
-      kind: position.kind,
-      cash: observations.some((observation) => observation.securityType === "cash"),
-      currency: observations.at(-1)?.currency ?? position.currency,
-      observations: observations.map(({ date, price }) => ({ date, price })),
-    };
-  });
-}
-
-type PGliteReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
-
-async function readExchangeRatesOnReader(
-  reader: PGliteReader,
-  currencies?: readonly string[],
-): Promise<ExchangeRateRecord[]> {
-  if (currencies?.length === 0) return [];
-  const params: readonly unknown[] = currencies ?? [];
-  const where = currencies === undefined
-    ? ""
-    : `WHERE currency IN (${currencies.map((_, index) => `$${index + 1}`).join(", ")})`;
-  const result = await reader.query<ExchangeRateRecord>(
-    `SELECT rate_date AS "rateDate", currency,
-            twd_per_unit AS "twdPerUnit", source,
-            fetched_at AS "fetchedAt"
-       FROM exchange_rates
-       ${where}
-      ORDER BY currency, rate_date`,
-    params,
-  );
-  return result.rows.map((row) => ({ ...row }));
-}
-
-function readHeldCurrencyRates(
-  reader: PGliteReader,
-  result: CanonicalOverviewCurrentQueryResult,
-  history: PGliteDailyHistory,
-  preview: PreviewOverview,
-): Promise<ExchangeRateRecord[]> {
-  const currencies = [...new Set([
-    ...result.projection.positions.map((position) => position.currency),
-    ...result.projection.accounts.flatMap((account) => account.amounts.map((amount) => amount.currency)),
-    ...history.dailyHistory.flatMap((row) => [
-      ...row.netAssets,
-      ...row.assets,
-      ...row.liabilities,
-    ].map((amount) => amount.currency)),
-    ...preview.accounts.flatMap((account) => account.amountLines.map((amount) => amount.currency)),
-    ...preview.series.flatMap((series) => series.points.map((point) => point.currency)),
-  ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
-  return currencies.length === 0 ? Promise.resolve([]) : readExchangeRatesOnReader(reader, currencies);
-}
-
-type PreviewOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly PreviewBalanceSeries[] }>;
-
-const NO_PREVIEW: PreviewOverview = { accounts: [], series: [] };
-
-async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<PreviewOverview> {
-  const views = await readPreviewAccounts(reader, visibility);
-  const creditViews = await readPreviewCreditAccounts(reader, visibility);
-  if (views.length === 0 && creditViews.length === 0) return NO_PREVIEW;
-  const accounts: AccountRowDto[] = [];
-  for (const view of views)
-    accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
-  for (const view of creditViews)
-    accounts.push(previewCreditAccountRow(
-      view,
-      await readPreviewPurchases(reader, visibility, view.previewAccountId),
-      await readPreviewStatements(reader, visibility, view.previewAccountId),
-    ));
-  return {
-    accounts,
-    series: [
-      ...previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)),
-      ...previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)),
-    ],
-  };
-}
-
-async function readHistoryWithPreview(
-  reader: PGliteReader,
-  result: CanonicalOverviewCurrentQueryResult,
-  visibility: PreviewVisibility,
-) {
-  const canonical = await readPGliteDailyHistoryWithAccounts(
-    reader,
-    result.projection.knowledgePoint,
-    result.projection.accounts,
-  );
-  const preview = await readPreviewOverview(reader, visibility);
-  const rates = await readHeldCurrencyRates(reader, result, canonical, preview);
-  const history = withPreviewHistory(canonical, preview.series, countableWithRates(rates));
-  return { canonical, history, preview, rates };
-}
-
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
-  exchangeRates: ExchangeRatePersistencePort,
   previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
 ): PGliteFinancialRegistryWithPageActionEvents {
   const spending = createPGliteSpendingQuery(store);
@@ -529,50 +241,13 @@ export function createPGliteFinancialRegistry(
   let latestSettledPageAction: SpendingPageActionResult | null = null;
   const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
   const previewVisibilityListeners = new Set<() => void>();
-  const readProductPage = (product: "assets" | "liabilities", expectedSources: PGliteFinancialExpectedSources) =>
-    store.transaction(async (transaction) => {
-      const result = await createPGliteCanonicalOverviewQuery(
-        transaction,
-        { expectedSources },
-      ).current();
-      const { canonical, history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
-      const projection = product === "assets"
-        ? selectPGliteOverviewAssets(result.projection)
-        : selectPGliteOverviewLiabilities(result.projection);
-      const productDto = mapCanonicalProduct(projection, product, canonical);
-      const previewAccounts = preview.accounts.filter((account) => isProductAccount(product, account));
-      return {
-        ...productDto,
-        accounts: [...productDto.accounts, ...previewAccounts],
-        dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
-        dailyHistoryByAccount: {
-          ...productDto.dailyHistoryByAccount,
-          ...Object.fromEntries(previewAccounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
-        },
-        exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
-      };
-    });
   return Object.freeze({
-    async "financial.overview.current"([expectedSources = []]) {
-      // Keep the canonical projection, history, prices, and rate rows in one
-      // repeatable read transaction so a worker commit between queries cannot
-      // mix snapshots.
-      return store.transaction(async (transaction) => {
-        const result = await createPGliteCanonicalOverviewQuery(
-          transaction,
-          { expectedSources },
-        ).current();
-        const { history, preview, rates } = await readHistoryWithPreview(transaction, result, previewVisibility());
-        const prices = await readPGliteHoldingPrices(transaction, result.projection.knowledgePoint);
-        return mapOverview(result, rates, history, prices, preview.accounts);
-      });
-    },
-    async "financial.assets.current"([expectedSources = []]) {
-      return readProductPage("assets", expectedSources);
-    },
-    async "financial.liabilities.current"([expectedSources = []]) {
-      return readProductPage("liabilities", expectedSources);
-    },
+    "financial.overview.current": ([expectedSources = []]) =>
+      store.transaction((transaction) => readOverviewPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
+    "financial.assets.current": ([expectedSources = []]) =>
+      store.transaction((transaction) => readAssetsPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
+    "financial.liabilities.current": ([expectedSources = []]) =>
+      store.transaction((transaction) => readLiabilitiesPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
     "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),

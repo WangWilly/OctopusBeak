@@ -15,7 +15,7 @@ const base: OverviewPageDto = {
   historyAvailability: "unavailable",
   sourceGaps: [],
   importedAt: null,
-  summary: [],
+  summary: { net: { display: "native", amounts: [], includesPreview: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
   dailyHistory: [],
   dailyHistoryByAccount: {},
   accounts: [],
@@ -64,9 +64,9 @@ test("overview does not render balance-basis notices", () => {
 });
 
 test("an incomplete Net position or Liabilities metric replaces its figure with the incomplete copy", () => {
-  assert.match(source, /netMetric = overview\.summary\.find\(\(metric\) => metric\.label === "Net position"\)/);
-  assert.match(source, /liabilitiesMetric = overview\.summary\.find\(\(metric\) => metric\.label === "Liabilities"\)/);
-  assert.match(source, /sideValue = netMetric\?\.incomplete\s*\? \$t\.preview\.incomplete/);
-  assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{netMetric\?\.incomplete === true\}/);
-  assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\?\.incomplete === true\}/);
+  assert.match(source, /\bnet = overview\.summary\.net;/);
+  assert.match(source, /liabilitiesMetric = overview\.summary\.liabilities;/);
+  assert.match(source, /sideValue = net\.incomplete\s*\? \$t\.preview\.incomplete/);
+  assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{net\.incomplete\}/);
+  assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\.incomplete === true\}/);
 });
