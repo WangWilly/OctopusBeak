@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page, Response } from "playwright";
-import type { WorkflowContextWith } from "./workflow-executor.ts";
+import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { YUANTA_TRADE_SOURCE } from "./server/sources/yuanta-trade.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import { resolveVerificationStage } from "./verification-stage.ts";
@@ -75,6 +77,7 @@ function report(
 function createHarness(options: {
   pages?: YuantaTradeReportPage[];
   signal?: AbortSignal;
+  financialCommit?: WorkflowFinancialCommitPort;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
@@ -94,7 +97,7 @@ function createHarness(options: {
     browser: { async withPage(run) { return run(page); } },
     text: strictSourceText,
     verification: { complete: async () => undefined },
-    financialCommit: {
+    financialCommit: options.financialCommit ?? {
       async execute(items) {
         const materialized: unknown[] = [];
         for await (const item of items) materialized.push(item);
@@ -122,7 +125,7 @@ function createHarness(options: {
       events.push(signalRunEvent(signal, { runId: "run-yuanta-trade-check", occurredAt: "2026-09-25T12:00:00.000Z" }));
     },
   };
-  return { context, events, committed, page };
+  return { context: withBoundProducts(context, YUANTA_TRADE_SOURCE, selectedInput), events, committed, page };
 }
 
 /** The real read and build halves over a fake report source. */
@@ -198,10 +201,10 @@ test("Yuanta Trade typed provider rejects incomplete selected pages before first
 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`Yuanta Trade names a ${stop} commit ${errorCode}`, async () => {
-    const harness = createHarness();
+    const harness = createHarness({ financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(
       runYuantaTradeProviderWorkflow(
-        { ...harness.context, financialCommit: stoppedCommitPort(stop) },
+        harness.context,
         selectedInput,
         readingReports(async (reportType) => reportType === "Stock" ? report("Stock") : report("StockTrade")),
       ),

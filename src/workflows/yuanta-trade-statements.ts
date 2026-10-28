@@ -46,11 +46,7 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
-} from "../lib/automation/product-collection.ts";
+import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
 
@@ -1873,7 +1869,7 @@ const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, inpu
 
 /** App-owned Yuanta Trade path: complete in-memory collection and admission precede one injected commit request. */
 export async function runYuantaTradeProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit" | "products">,
   rawInput: unknown,
   collectSecurities: YuantaTradeProductRunner = collectYuantaTradeSecurities,
 ): Promise<WorkflowRunResult> {
@@ -1912,19 +1908,12 @@ export async function runYuantaTradeProviderWorkflow(
     context.signal.throwIfAborted();
 
     let collected: YuantaTradeCollectedCounts | undefined;
-    const summary = await collectSelectedProducts({
-      provider: "yuanta-trade",
-      productIds: ["securities"],
-      selectedIds: parsedInput.statementTypes,
-      signal: context.signal,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      securities: async (product): Promise<ProductCollectionSummary> => {
         const staged = await collectSecurities(page, input, context, product);
         collected = staged.counts;
         return staged.summary;
       },
-      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, { counts: collected });
   });
