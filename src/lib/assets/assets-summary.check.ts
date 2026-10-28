@@ -11,7 +11,6 @@ function account(id: string, kind: AccountRowDto["kind"], amountLines: CurrencyA
     product: "Account",
     group: ["fund", "brokerage", "crypto"].includes(kind) ? "investment" : "asset",
     kind,
-    typeLabel: kind,
     amountLines,
     transactionCount: 0,
     assetPositionCount: 0,

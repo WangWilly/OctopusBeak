@@ -13,7 +13,7 @@
   import { formatAmountLines, amountValue } from "$lib/shared-money/money.ts";
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import { institutionForNamespace, institutionLogo } from "$lib/institutions/institutions.ts";
-  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import { accountKindLabel, localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import AccountHistoryModal from "./AccountHistoryModal.svelte";
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
@@ -103,9 +103,9 @@
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
-  $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares);
-  $: sortedPreview = sortAccounts(filteredPreview, sortKey, sortDirection, shares);
-  $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares);
+  $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares, $t);
+  $: sortedPreview = sortAccounts(filteredPreview, sortKey, sortDirection, shares, $t);
+  $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares, $t);
   $: listed = [...sorted, ...sortedPreview, ...sortedCovered];
   $: if (listed.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
@@ -156,7 +156,7 @@
         shown.product,
         account.institution,
         account.product,
-        account.typeLabel,
+        accountKindLabel(account.kind, dictionary),
       ]
         .join(" ")
         .toLowerCase();
@@ -169,9 +169,15 @@
     return institution ? dictionary.institutions[institution] : account.coveredBy?.namespace ?? "";
   }
 
-  function sortAccounts(rows: AccountRowDto[], key: SortKey | null, direction: SortDirection, shareOf: ReadonlyMap<string, number>) {
+  function sortAccounts(
+    rows: AccountRowDto[],
+    key: SortKey | null,
+    direction: SortDirection,
+    shareOf: ReadonlyMap<string, number>,
+    dictionary: Translation,
+  ) {
     if (!key) return rows;
-    return [...rows].sort((left, right) => compareAccounts(left, right, key, direction, shareOf));
+    return [...rows].sort((left, right) => compareAccounts(left, right, key, direction, shareOf, dictionary));
   }
 
   function compareAccounts(
@@ -180,9 +186,10 @@
     key: SortKey,
     direction: SortDirection,
     shareOf: ReadonlyMap<string, number>,
+    dictionary: Translation,
   ) {
-    const leftValue = sortValue(left, key, shareOf);
-    const rightValue = sortValue(right, key, shareOf);
+    const leftValue = sortValue(left, key, shareOf, dictionary);
+    const rightValue = sortValue(right, key, shareOf, dictionary);
     const result =
       typeof leftValue === "number" && typeof rightValue === "number"
         ? leftValue - rightValue
@@ -190,10 +197,10 @@
     return direction === "asc" ? result : -result;
   }
 
-  function sortValue(account: AccountRowDto, key: SortKey, shareOf: ReadonlyMap<string, number>) {
+  function sortValue(account: AccountRowDto, key: SortKey, shareOf: ReadonlyMap<string, number>, dictionary: Translation) {
     if (key === "label") return `${account.label} ${account.product}`;
     if (key === "institution") return account.institution;
-    if (key === "type") return account.typeLabel;
+    if (key === "type") return accountKindLabel(account.kind, dictionary);
     if (key === "allocation") return shareOf.get(account.id) ?? -1;
     return amountValue(account.amountLines);
   }
@@ -255,9 +262,6 @@
     return dictionary.preview.ratePercent(term.percent);
   }
 
-  function translateKnownLabel(value: string, dictionary: Translation) {
-    return (dictionary.knownLabels as Record<string, string>)[value] ?? value;
-  }
 </script>
 
 {#snippet accountRow(account: AccountRowDto, group: RowGroup)}
@@ -289,19 +293,19 @@
       {#if covered}
         <span class="account-meta covered-by">{$t.accounts.coveredBy(coveredByName(account, $t))}</span>
       {:else if account.preview}
-        <span class="account-meta">{translateKnownLabel(account.product, $t)} / {$t.preview.collectedAt(formatTime(account.preview.lastCollectedAt))}</span>
+        <span class="account-meta">{account.product} / {$t.preview.collectedAt(formatTime(account.preview.lastCollectedAt))}</span>
         {#if terms.length}
           <span class="account-meta preview-terms" data-time-deposit-terms>{terms.map((term) => termText(term, $t)).join(" · ")}</span>
         {/if}
       {:else}
-        <span class="account-meta">{translateKnownLabel(account.product, $t)} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
+        <span class="account-meta">{account.product} / <span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
       {/if}
     </td>
     <td class="institution-cell">
       {account.institution}
       {#if account.viaSource}<span class="account-meta via-source">{$t.accounts.viaSource[account.viaSource]}</span>{/if}
     </td>
-    <td><span class="chip">{translateKnownLabel(account.typeLabel, $t)}</span></td>
+    <td><span class="chip">{accountKindLabel(account.kind, $t)}</span></td>
     <td class="right">
       <strong
         class="money"

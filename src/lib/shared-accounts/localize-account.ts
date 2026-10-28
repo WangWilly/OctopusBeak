@@ -1,6 +1,21 @@
 import type { Translation } from "../i18n/i18n.ts";
 import { maskedAccountDigits } from "../overview/overview-format.ts";
-import type { AccountRowDto } from "../shared-ledger/types.ts";
+import type { AccountKind, AccountRowDto } from "../shared-ledger/types.ts";
+
+/** The interface-language name of an account's kind; every kind must have one. */
+export function accountKindLabel(kind: AccountKind, dictionary: Translation): string {
+  const labels: Record<AccountKind, string> = {
+    bank: dictionary.accounts.bank,
+    foreign: dictionary.accounts.foreign,
+    fund: dictionary.accounts.fund,
+    brokerage: dictionary.accounts.brokerage,
+    crypto: dictionary.accounts.crypto,
+    "credit-card": dictionary.accounts.creditCard,
+    loan: dictionary.accounts.loan,
+    other: dictionary.accounts.other,
+  };
+  return labels[kind];
+}
 
 /**
  * Account labels arrive composed in English as "institution · product · id";

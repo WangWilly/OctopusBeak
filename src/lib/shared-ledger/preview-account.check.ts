@@ -19,7 +19,6 @@ function row(group: AccountRowDto["group"], preview: Partial<PreviewAccountDto> 
     product: "Credit card",
     group,
     kind: group === "liability" ? "credit-card" : "bank",
-    typeLabel: "",
     amountLines: amount === null ? [] : [{ currency: "TWD", value: amount }],
     transactionCount: 0,
     assetPositionCount: 0,

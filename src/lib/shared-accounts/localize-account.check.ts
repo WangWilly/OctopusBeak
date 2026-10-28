@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { translations } from "../i18n/i18n.ts";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
-import { accountModalTitle, localizeAccount } from "./localize-account.ts";
+import { accountKindLabel, accountModalTitle, localizeAccount } from "./localize-account.ts";
 
 function account(overrides: Partial<AccountRowDto>): AccountRowDto {
   return {
@@ -13,7 +13,6 @@ function account(overrides: Partial<AccountRowDto>): AccountRowDto {
     product: "Bank account",
     group: "asset",
     kind: "bank",
-    typeLabel: "Bank",
     amountLines: [],
     transactionCount: 0,
     assetPositionCount: 0,
@@ -40,4 +39,11 @@ test("an account modal titles an unidentified account without digits", () => {
     accountModalTitle(account({ label: "Cathay United Bank · Bank account · 5678" }), translations["zh-TW"]),
     "國泰世華銀行 · 銀行帳戶 · 5678",
   );
+});
+
+test("every account kind reads in the interface language, including Other", () => {
+  assert.equal(accountKindLabel("other", translations["zh-TW"]), translations["zh-TW"].accounts.other);
+  assert.notEqual(accountKindLabel("other", translations["zh-TW"]), "Other", "the zh-TW table no longer shows English Other");
+  assert.equal(accountKindLabel("credit-card", translations.en), "Credit Card");
+  assert.equal(accountKindLabel("fund", translations["zh-TW"]), translations["zh-TW"].accounts.fund);
 });

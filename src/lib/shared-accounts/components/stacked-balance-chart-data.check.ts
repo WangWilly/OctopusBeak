@@ -160,7 +160,6 @@ function account(id: string, label: string, kind: AccountKind, value: number): A
     product: label,
     group,
     kind,
-    typeLabel: kind,
     amountLines: [{ currency: "TWD", value }],
     transactionCount: 0,
     assetPositionCount: 0,
