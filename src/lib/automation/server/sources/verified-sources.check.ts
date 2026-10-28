@@ -55,6 +55,14 @@ test("each source declares a usable runtime, products, and attached products", (
   }
 });
 
+test("every source with a Statement Selection but TDCC collects through its bound run", () => {
+  const unbound = VERIFIED_SOURCES
+    .filter(({ statementSelection, workflow }) => statementSelection && !workflow.requiresProductCollection)
+    .map(({ id }) => id);
+  // TDCC sizes its run summary from the selection before collecting, so it still calls the run's seam itself.
+  assert.deepEqual(unbound, [TDCC_SOURCE.id]);
+});
+
 test("a source whose workflow collects products binds its run to the source's products and selection", () => {
   for (const source of VERIFIED_SOURCES.filter(({ workflow }) => workflow.requiresProductCollection)) {
     const { workflow, statementSelection } = source;
