@@ -311,6 +311,8 @@ function isHostCallMethod(value: string): value is HostCallMethod {
   return Object.hasOwn(HOST_CALL_CONTRACTS, value);
 }
 
+const STOPPED = Symbol("stopped");
+
 /** Thrown by a host handler that refuses a request it received; the host treats it as a protocol failure. */
 export class HostCallRefusal extends Error {
   constructor() {
@@ -369,6 +371,18 @@ export function createHostCallDispatcher(options: HostCallDispatcherOptions): Ho
     }
   };
 
+  // A "drop" call stops being awaited when the run stops, so a handler still
+  // waiting, such as Human assistance waiting for a person, holds nothing here.
+  const raceStop = <T>(answer: Promise<T>) => new Promise<T>((resolve, reject) => {
+    if (options.signal.aborted) {
+      reject(STOPPED);
+      return;
+    }
+    const onStop = () => reject(STOPPED);
+    options.signal.addEventListener("abort", onStop, { once: true });
+    answer.then(resolve, reject).finally(() => options.signal.removeEventListener("abort", onStop));
+  });
+
   const reply = (contract: RequestContract<HostCallMethod>, frame: HostCallReplyFrame) => {
     if (options.settled()) return;
     if (contract.duringStop === "drop" && options.stopping()) return;
@@ -423,8 +437,10 @@ export function createHostCallDispatcher(options: HostCallDispatcherOptions): Ho
       void (async () => {
         let result: unknown;
         try {
-          result = await handler(request, options.signal);
+          const answer = Promise.resolve().then(() => handler(request, options.signal));
+          result = await (contract.duringStop === "drop" ? raceStop(answer) : answer);
         } catch (error) {
+          if (error === STOPPED) return;
           release();
           if (error instanceof HostCallRefusal || !contract.failureCode) {
             if (!options.stopping()) options.protocolFailure();
