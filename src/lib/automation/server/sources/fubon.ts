@@ -101,6 +101,7 @@ export const FUBON_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     requiresAccountIdentity: true,
     runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
     verification: {

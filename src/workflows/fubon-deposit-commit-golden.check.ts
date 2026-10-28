@@ -32,6 +32,8 @@ registerHooks({
 });
 
 const { runFubonAllStatementsWorkflow } = await import("./fubon-all-statements.ts");
+const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
+const { FUBON_SOURCE } = await import("../lib/automation/server/sources/fubon.ts");
 const { deriveFubonDomesticDepositAccountNumberEvidence, stageFubonDeposit } = await import("./fubon-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
@@ -173,7 +175,7 @@ async function runGolden(
     }
     return stageFubonDeposit({ accounts }, input, context, product, async () => currentRows);
   };
-  const result = await runFubonAllStatementsWorkflow(workflowContext(recorder, accountIdentityContinuity), {
+  const input = {
     managedIdentitySecret: "synthetic-fubon-golden-secret",
     statementTypes: ["deposit"],
     credentials: {
@@ -182,7 +184,12 @@ async function runGolden(
       fubon_password: "synthetic-password",
     },
     statements: { dateRanges, downloadFormat: "EXCEL" },
-  }, {
+  };
+  const context = workflowContext(recorder, accountIdentityContinuity);
+  const result = await runFubonAllStatementsWorkflow({
+    ...withBoundProducts<"accountIdentity">(context, FUBON_SOURCE, input),
+    accountIdentity: context.accountIdentity,
+  }, input, {
     authenticate: async () => ({ usedExistingSession: false }),
     signOut: async () => undefined,
     startSessionKeepAlive: () => () => undefined,
