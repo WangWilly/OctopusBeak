@@ -39,7 +39,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 <article class="card net-worth-card" data-net-worth>
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
-    {#if net.includesPreview || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
+    {#if (net.display === "converted" && net.includesPreview) || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
