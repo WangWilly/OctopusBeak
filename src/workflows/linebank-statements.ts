@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionSummary,
-  type ProductStageRequest,
-} from "../lib/automation/product-collection.ts";
+import type { ProductCollectionSummary, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -1211,7 +1207,7 @@ function sourceValidationError(error: unknown): boolean {
 
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
 export async function runLineBankProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit" | "products">,
   rawInput: unknown,
 ): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
@@ -1232,14 +1228,8 @@ export async function runLineBankProviderWorkflow(
       signal: context.signal,
     });
     let accountCount = 0;
-    const summary = await collectSelectedProducts({
-      provider: "linebank",
-      productIds: ["deposit"],
-      selectedIds: parsed.data.statementTypes,
-      signal: context.signal,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      deposit: async (product): Promise<ProductCollectionSummary> => {
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         await productContext.event("collection", "started", "current-balance-collection-started");
@@ -1464,7 +1454,6 @@ export async function runLineBankProviderWorkflow(
           rowCount: statementRowCount,
         };
       },
-      financialCommit: context.financialCommit,
     });
     return productRunResult(summary, {
       counts: {
