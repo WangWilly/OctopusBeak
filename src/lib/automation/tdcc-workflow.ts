@@ -23,10 +23,11 @@ export type TdccWorkflowOptions = Readonly<{
   fetch?: TdccClientOptions["fetch"];
 }>;
 
-/** Refuses a selection with no product or one TDCC does not offer, before any TDCC request. */
+/** Refuses a selection with no product, a repeated one, or one TDCC does not offer, before any TDCC request. */
 function assertTdccInput(input: unknown): void {
   const statementTypes = (input as Partial<TdccWorkflowInput> | null)?.statementTypes;
   if (!Array.isArray(statementTypes) || statementTypes.length === 0
+    || new Set(statementTypes).size !== statementTypes.length
     || statementTypes.some((id) => !(TDCC_PRODUCT_IDS as readonly unknown[]).includes(id))) {
     throw new FailureCodeError("workflow-failed");
   }
