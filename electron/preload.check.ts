@@ -97,6 +97,21 @@ assert.equal(invokedBy.get("data.getVersion"), "data:getVersion");
 assert.equal(invokedBy.get("spending.loadMerchantStats"), "financial.spending.merchantStats");
 assert.equal(invokedBy.get("spending.loadCandidatePage"), "spending:candidate-page");
 
+// Bridge methods with the same signature (confirm, deny, revoke) would still
+// type-check if their channels were swapped, so pin every financial pairing.
+const IRREGULAR_SPENDING_BRIDGES: Readonly<Record<string, string>> = {
+  applyPageAction: "pageAction",
+  rankPairingCandidates: "pairing",
+};
+for (const [bridge, channel] of invokedBy) {
+  const [namespace, method] = bridge.split(".") as [string, string];
+  if (namespace !== "spending" || !channel.startsWith("financial.spending.")) continue;
+  const operation = channel.slice("financial.spending.".length);
+  const expected = IRREGULAR_SPENDING_BRIDGES[method]
+    ?? (method.startsWith("load") ? method[4]!.toLowerCase() + method.slice(5) : method);
+  assert.equal(operation, expected, `${bridge} forwards to its own operation`);
+}
+
 const automation = api.automation as Record<string, (listener: () => void) => () => void>;
 const data = api.data as Record<string, (listener: () => void) => () => void>;
 automation.onRuntimeChanged!(() => {});
