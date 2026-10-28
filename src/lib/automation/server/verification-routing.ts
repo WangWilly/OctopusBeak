@@ -187,6 +187,11 @@ export function appWorkflowRoutesVerification(taskId: string) {
   return verificationOf(taskId) !== undefined;
 }
 
+/** The wait before the next CAPTCHA retry round, when the source declares one (ADR 0070). */
+export function captchaRetryCooldownMs(taskId: string): number | undefined {
+  return verificationOf(taskId)?.retryCooldownMs;
+}
+
 /** The source's own Verification route, when it replaces the generic solver route. */
 export function sourceVerificationRoute(taskId: string) {
   return verificationOf(taskId)?.route;
