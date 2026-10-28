@@ -57,11 +57,11 @@ const FINANCIAL_LIVE_VIEWS = {
   },
   "financial.assets.current": {
     load: (registry, _params, sources) => registry["financial.assets.current"]([sources]),
-    dependsOn: ["preview"],
+    dependsOn: ["exchangeRates", "preview"],
   },
   "financial.liabilities.current": {
     load: (registry, _params, sources) => registry["financial.liabilities.current"]([sources]),
-    dependsOn: ["preview"],
+    dependsOn: ["exchangeRates", "preview"],
   },
   "financial.spending.current": SPENDING_LIVE_VIEW,
 } as const satisfies Partial<Record<PGliteFinancialOperation, FinancialLiveViewDefinition>>;
