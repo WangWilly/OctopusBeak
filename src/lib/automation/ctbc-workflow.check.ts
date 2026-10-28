@@ -13,7 +13,9 @@ import { createPgliteOperationalProvider } from "../../ledger/pglite/operational
 import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import type { Page, Response } from "playwright";
-import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import { CTBC_SOURCE } from "./server/sources/ctbc.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -178,6 +180,7 @@ function createContext(options: {
   page?: Page;
   signal?: AbortSignal;
   onAssistance?: () => void;
+  financialCommit?: WorkflowFinancialCommitPort;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
@@ -201,7 +204,7 @@ function createContext(options: {
         options.onAssistance?.();
       },
     },
-    financialCommit: {
+    financialCommit: options.financialCommit ?? {
       async execute(items) {
         const materialized: unknown[] = [];
         for await (const item of items) materialized.push(item);
@@ -230,7 +233,7 @@ function createContext(options: {
     },
   };
   return {
-    context,
+    context: withBoundProducts(context, CTBC_SOURCE, input),
     events,
     committed,
     get browserCalls() { return browserCalls; },
@@ -279,14 +282,14 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
     ].entries()) {
       const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
         code: "0000", rsData: { detailList: rows, nextKey: "" },
-      }) }) });
-      const result = await runCtbcProviderWorkflow({ ...harness.context, financialCommit: commit }, input, withCurrentBalances(async () => [currentBalanceRow()]));
+      }) }), financialCommit: commit });
+      const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => [currentBalanceRow()]));
       assert.equal(result.status, "financial-admitted");
     }
     const conflicting = createContext({ page: createPage({ detailResponse: response(detailsResource, {
       code: "0000", rsData: { detailList: [{ ...original, memo1: "Changed provider claim" }], nextKey: "" },
-    }) }) });
-    const conflicted = await runCtbcProviderWorkflow({ ...conflicting.context, financialCommit: commit }, input, withCurrentBalances(async () => [currentBalanceRow()]));
+    }) }), financialCommit: commit });
+    const conflicted = await runCtbcProviderWorkflow(conflicting.context, input, withCurrentBalances(async () => [currentBalanceRow()]));
     assert.equal(conflicted.status, "partial");
     assert.deepEqual(conflicted.products, [
       { typeId: "deposit", status: "failed", itemCount: 2, committedCount: 1, errorCode: "canonical-commit-failed" },
@@ -421,9 +424,9 @@ test("CTBC delayed automatic login does not request human assistance and honors 
 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`CTBC names a ${stop} commit ${errorCode}`, async () => {
-    const harness = createContext();
+    const harness = createContext({ financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(runCtbcProviderWorkflow(
-      { ...harness.context, financialCommit: stoppedCommitPort(stop) },
+      harness.context,
       input,
       withCurrentBalances(async () => [currentBalanceRow()]),
     ), assertStoppedRun("deposit", 2, errorCode));
