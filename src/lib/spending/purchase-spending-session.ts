@@ -1,11 +1,11 @@
 import { writable, type Readable, type Writable } from "svelte/store";
 import type { OctopusBeakApi } from "$lib/desktop/api.ts";
-import { exactToNumber } from "../shared-money/exact.ts";
 import type { SpendingPurchaseRecordView, SpendingPurchaseReportView } from "./purchase-matching.ts";
 import { spendingCategoryCodesForGroup } from "./category-groups.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
   reconcileSpendingPageActionSummary,
+  spendingCanonicalAt,
   spendingPairingReportContext,
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCandidatePageDto,
@@ -641,17 +641,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       isUpdating: false,
       report: nextReport,
       selectedMonth: month,
-      canonical: Object.freeze({
-        ...this.value.canonical,
-        availability: summary.recordCount > 0 ? "available" : "empty",
-        knowledgePoint: result.knowledgeAt,
-        totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
-          currency: amount.currency,
-          value: exactToNumber(amount),
-          exact: { coefficient: amount.coefficient, scale: amount.scale },
-        })),
-        totalStatus: "complete",
-      }),
+      canonical: spendingCanonicalAt(this.value.canonical, summary, result.knowledgeAt),
     });
     // Request keys are implementation state, deliberately kept off the public
     // snapshot while compact reports retain their incremental update path.
