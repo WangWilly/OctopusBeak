@@ -24,7 +24,7 @@ function emptyOverview(): OverviewPageDto {
     historyAvailability: "unavailable",
     sourceGaps: [],
     importedAt: null,
-    summary: [],
+    summary: { net: { display: "native", amounts: [], includesPreview: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
     dailyHistory: [],
     dailyHistoryByAccount: {},
     accounts: [],

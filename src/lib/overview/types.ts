@@ -2,7 +2,7 @@ import type {
   AccountRowDto,
   DailyHistoryRowDto,
   ExchangeRateDto,
-  SummaryMetricDto,
+  OverviewSummaryDto,
 } from "$lib/shared-ledger/types.ts";
 
 /**
@@ -28,7 +28,7 @@ export type OverviewPageDto = {
   historyAvailability: "available" | "unavailable";
   sourceGaps: OverviewSourceGapDto[];
   importedAt: string | null;
-  summary: SummaryMetricDto[];
+  summary: OverviewSummaryDto;
   dailyHistory: DailyHistoryRowDto[];
   /** Native rows on the dates each account changed; carry forward between dates. */
   dailyHistoryByAccount: Record<string, DailyHistoryRowDto[]>;

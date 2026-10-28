@@ -13,7 +13,6 @@ import {
   accountLedger,
   addDays,
   carriedNet,
-  convertAccount,
   readAssetAllocation,
   readLiabilityAllocation,
   TRAILING_DAYS,
@@ -52,15 +51,13 @@ export type NetWorthChip =
   | ({ kind: "trailing-30" } & Change)
   | ({ kind: "since-start"; since: string } & Change);
 
+/** The history around the Net position; the current figure itself comes from the page's summary. */
 export type NetWorth = {
-  /** Current accounts converted to TWD at `valuationDate`; null without data or rates. */
-  value: number | null;
   /** When the newest observation was imported. */
   asOf: string | null;
   valuationDate: string | null;
   chips: NetWorthChip[];
-  unconvertedPreviewCurrencies: string[];
-  includesPreview: boolean;
+  chipsIncludePreview: boolean;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
@@ -119,17 +116,14 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
   const valuationDate = valuationDateFor(history, dto.accounts, options.today);
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
   const liabilityAllocation = readLiabilityAllocation(dto.accounts, rates, valuationDate, assetAllocation.total);
-  const current = currentNetWorth(dto.accounts, rates, valuationDate);
   const chips = netWorthChips(series, ledger, options.today);
   return {
     ticker: readTicker(dto.accounts, rates, dto.holdingPrices),
     netWorth: {
-      value: current.value,
       asOf: dto.importedAt,
       valuationDate,
       chips: chips.chips,
-      unconvertedPreviewCurrencies: current.unconvertedPreviewCurrencies,
-      includesPreview: current.includesPreview || chips.includesPreview,
+      chipsIncludePreview: chips.includesPreview,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
@@ -200,31 +194,6 @@ function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeR
     const converted = convertToTwd(row.netAssets, row.date, rates);
     return converted ? [{ date: row.date, value: converted.value, includesPreview: row.includesPreview === true }] : [];
   });
-}
-
-function currentNetWorth(
-  accounts: readonly AccountRowDto[],
-  rates: ExchangeRateIndex,
-  valuationDate: string | null,
-): { value: number | null; unconvertedPreviewCurrencies: string[]; includesPreview: boolean } {
-  const unconverted = new Set<string>();
-  const blank = { value: null, unconvertedPreviewCurrencies: [], includesPreview: false };
-  if (!valuationDate || accounts.length === 0) return blank;
-  let total = 0;
-  let includesPreview = false;
-  for (const account of accounts) {
-    if (!account.preview) {
-      const converted = convertToTwd(account.amountLines, valuationDate, rates);
-      if (!converted) return blank;
-      total += account.group === "liability" ? -converted.value : converted.value;
-      continue;
-    }
-    const value = convertAccount(account, rates, valuationDate, unconverted);
-    if (value === null) continue;
-    total += account.group === "liability" ? -value : value;
-    if (account.amountLines.length > 0) includesPreview = true;
-  }
-  return { value: total, unconvertedPreviewCurrencies: [...unconverted].sort(), includesPreview };
 }
 
 function changeOf(ledger: AccountLedger, from: string, to: string): Change {

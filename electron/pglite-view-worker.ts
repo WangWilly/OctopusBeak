@@ -72,11 +72,7 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const financialRegistry = createPGliteFinancialRegistry(
-    database,
-    operationalProvider.exchangeRates,
-    () => currentPreviewVisibility(),
-  );
+  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility());
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();

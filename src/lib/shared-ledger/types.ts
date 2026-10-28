@@ -41,13 +41,38 @@ export type ExchangeRateDto = {
 };
 
 export type SummaryMetricDto = {
-  label: string;
   amounts: CurrencyAmountDto[];
-  breakdown: string[];
   includesPreview?: boolean;
   /** A visible preview credit account's used credit is unknown, so this total is not a figure. */
   incomplete?: boolean;
 };
+
+/**
+ * Net position (CONTEXT.md): one TWD total when every account converts at the
+ * valuation date, otherwise each currency's own amount. `includesPreview`
+ * describes only the figure shown.
+ */
+export type NetPositionDto =
+  | Readonly<{
+    display: "converted";
+    twd: number;
+    /** Preview currencies left out of `twd` because they have no rate. */
+    unconvertedPreviewCurrencies: string[];
+    includesPreview: boolean;
+    incomplete: boolean;
+  }>
+  | Readonly<{
+    display: "native";
+    amounts: CurrencyAmountDto[];
+    includesPreview: boolean;
+    incomplete: boolean;
+  }>;
+
+export type OverviewSummaryDto = Readonly<{
+  net: NetPositionDto;
+  assets: SummaryMetricDto;
+  liabilities: SummaryMetricDto;
+}>;
 
 export type DailyHistoryRowDto = {
   date: string;

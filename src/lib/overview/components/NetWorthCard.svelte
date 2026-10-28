@@ -13,7 +13,9 @@
   } from "$lib/overview/overview-model.ts";
   import { formatPct, formatShortDate } from "$lib/overview/overview-format.ts";
 import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
+  import type { NetPositionDto } from "$lib/shared-ledger/types.ts";
 
+  export let net: NetPositionDto;
   export let netWorth: NetWorth;
   export let series: NetWorthPoint[] = [];
   export let asOfLabel = "";
@@ -37,18 +39,18 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 <article class="card net-worth-card" data-net-worth>
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
-    {#if netWorth.includesPreview}<PreviewMarker />{/if}
+    {#if (net.display === "converted" && net.includesPreview) || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
     <p class="net-worth-note">{$t.preview.incompleteNote}</p>
-  {:else if netWorth.value === null}
+  {:else if net.display === "native"}
     <p class="net-worth-figure empty" aria-label={$t.overview.noDataYet}>—</p>
   {:else}
-    <p class="net-worth-figure money" data-sensitive>{formatTwd(netWorth.value, $locale)}</p>
+    <p class="net-worth-figure money" data-sensitive>{formatTwd(net.twd, $locale)}</p>
   {/if}
-  {#if netWorth.unconvertedPreviewCurrencies.length > 0}
-    <p class="net-worth-note">{$t.overview.unconverted(netWorth.unconvertedPreviewCurrencies.join(", "))}</p>
+  {#if net.display === "converted" && net.unconvertedPreviewCurrencies.length > 0}
+    <p class="net-worth-note">{$t.overview.unconverted(net.unconvertedPreviewCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
     {#if !incomplete}
