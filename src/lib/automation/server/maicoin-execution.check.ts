@@ -19,6 +19,7 @@ import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
+import type { WorkflowRunEvent } from "../run-event.ts";
 
 function maxResponse(body: unknown, date = "Wed, 02 Sep 2026 04:05:06 GMT") {
   return new Response(JSON.stringify(body), {
@@ -75,13 +76,14 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
     const terminal = new Promise<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>>((resolve) => {
       channel.port2.on("message", (value: unknown) => {
         const frame = parseAppWorkflowWorkerOutboundFrame(value);
-        if (frame.kind === "event" || frame.kind === "commit-attempt") {
-          if (frame.kind === "event") observedCodes.push(frame.event.code);
+        if (frame.kind === "call" && (frame.method === "event" || frame.method === "commitAttempt")) {
+          if (frame.method === "event") observedCodes.push((frame.request as { event: WorkflowRunEvent }).event.code);
           channel.port2.postMessage({
             protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-            kind: "event-ack",
-            eventId: frame.eventId,
+            kind: "reply",
+            callId: frame.callId,
             ok: true,
+            result: null,
           });
         } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolve(frame);
       });

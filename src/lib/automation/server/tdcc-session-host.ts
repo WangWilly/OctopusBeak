@@ -4,6 +4,7 @@ import {
   type TdccSessionLease,
   type TdccSignInLease,
 } from "../../../workflows/tdcc-session.ts";
+import type { HostCallHandlers } from "./app-workflow-host-calls.ts";
 import type { StoredTdccDevice, StoredTdccSecrets, TdccSecretStore } from "./tdcc-secret-store.ts";
 
 /** The device the stored sign-in identifier may use, or null when it must be registered first. */
@@ -19,6 +20,14 @@ export type TdccSessionHost = Readonly<{
   signInDetails(): TdccSignInLease;
   saveSession(session: TdccIssuedSession): void;
 }>;
+
+/** The host calls a TDCC run's session port makes, answered by `host`. */
+export function tdccSessionHostCalls(host: TdccSessionHost): Pick<HostCallHandlers, "tdccSession" | "tdccSessionRotated"> {
+  return {
+    tdccSession: ({ operation }) => operation === "open" ? host.open() : host.signInDetails(),
+    tdccSessionRotated: ({ session }) => host.saveSession(session),
+  };
+}
 
 /**
  * Serves one run. A session is saved only while the device the run leased is

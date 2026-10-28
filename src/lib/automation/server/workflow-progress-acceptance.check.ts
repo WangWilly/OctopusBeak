@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { WorkerOptions } from "node:worker_threads";
 import test from "node:test";
@@ -15,6 +16,7 @@ import type {
   AppWorkflowWorkerOutboundFrame,
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
+import type { ExchangeRateProgress } from "./app-workflow-host-calls.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { CHECK_PGLITE_RPC, executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
@@ -44,7 +46,11 @@ type WorkerStep = Readonly<{
   event: WorkflowEventInput;
 }>;
 
-type ExchangeRateProgressFrame = Extract<AppWorkflowWorkerOutboundFrame, { kind: "exchange-rate-progress" }>;
+/** An exchange-rate progress call, named like a step so its acknowledgement can be observed. */
+type ExchangeRateProgressStep = Readonly<{
+  eventId: string;
+  progress: ExchangeRateProgress;
+}>;
 
 type TerminalFrameInput = Readonly<{
   kind: "completed" | "failed" | "cancelled";
@@ -52,58 +58,71 @@ type TerminalFrameInput = Readonly<{
   summary?: unknown;
 }>;
 
+/** One scripted outbound frame; a host call carries the step name and run its reply acknowledges. */
+type ScriptedFrame = Readonly<{
+  frame: AppWorkflowWorkerOutboundFrame;
+  acknowledged: Readonly<{ eventId: string; runId: string }> | null;
+}>;
+
+function call(method: string, request: unknown): AppWorkflowWorkerOutboundFrame {
+  return { protocolVersion: 3, kind: "call", callId: randomUUID(), method, request };
+}
+
 class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
   readonly stderr = null;
-  private readonly frames: AppWorkflowWorkerOutboundFrame[];
-  private readonly taskRunId: string;
+  private readonly frames: ScriptedFrame[];
   private readonly onEventAcknowledged: (eventId: string, runId: string) => Promise<void>;
-  private currentEventId: string | null = null;
-  private currentRunId: string | null = null;
+  private current: Readonly<{ callId: string; eventId: string; runId: string }> | null = null;
 
   constructor(
     start: AppWorkflowWorkerStart,
     steps: readonly WorkerStep[],
     terminal: TerminalFrameInput,
     onEventAcknowledged: (eventId: string, runId: string) => Promise<void>,
-    progressFrames: readonly ExchangeRateProgressFrame[] = [],
+    progressSteps: readonly ExchangeRateProgressStep[] = [],
   ) {
     super();
-    this.taskRunId = start.taskRunId;
     this.onEventAcknowledged = onEventAcknowledged;
     this.frames = [
       ...steps.map(({ eventId, event }) => ({
-        protocolVersion: 2 as const,
-        kind: "event" as const,
-        eventId,
-        event: {
-          runId: start.taskRunId,
-          ...event,
-          occurredAt: "2026-10-04T00:00:00.000Z",
-        },
-      } as AppWorkflowWorkerOutboundFrame)),
-      ...progressFrames,
-      terminal.kind === "completed"
-        ? {
-          protocolVersion: 2,
-          kind: "completed",
-          taskRunId: start.taskRunId,
-          summary: terminal.summary === undefined ? null : terminal.summary as never,
-        } as AppWorkflowWorkerOutboundFrame
-        : terminal.kind === "failed"
+        frame: call("event", {
+          event: {
+            runId: start.taskRunId,
+            ...event,
+            occurredAt: "2026-10-04T00:00:00.000Z",
+          },
+        }),
+        acknowledged: { eventId, runId: start.taskRunId },
+      })),
+      ...progressSteps.map(({ eventId, progress }) => ({
+        frame: call("exchangeRateProgress", progress),
+        acknowledged: { eventId, runId: start.taskRunId },
+      })),
+      {
+        frame: terminal.kind === "completed"
           ? {
-            protocolVersion: 2,
-            kind: "failed",
+            protocolVersion: 3,
+            kind: "completed",
             taskRunId: start.taskRunId,
-            errorCode: terminal.errorCode ?? "workflow-failed",
-            ...(terminal.summary === undefined ? {} : { summary: terminal.summary as never }),
-          } as AppWorkflowWorkerOutboundFrame
-          : {
-            protocolVersion: 2,
-            kind: "cancelled",
-            taskRunId: start.taskRunId,
-            ...(terminal.summary === undefined ? {} : { summary: terminal.summary as never }),
-          } as AppWorkflowWorkerOutboundFrame,
+            summary: terminal.summary === undefined ? null : terminal.summary as never,
+          }
+          : terminal.kind === "failed"
+            ? {
+              protocolVersion: 3,
+              kind: "failed",
+              taskRunId: start.taskRunId,
+              errorCode: terminal.errorCode ?? "workflow-failed",
+              ...(terminal.summary === undefined ? {} : { summary: terminal.summary as never }),
+            }
+            : {
+              protocolVersion: 3,
+              kind: "cancelled",
+              taskRunId: start.taskRunId,
+              ...(terminal.summary === undefined ? {} : { summary: terminal.summary as never }),
+            },
+        acknowledged: null,
+      },
     ];
     setImmediate(() => {
       this.emit("online");
@@ -112,11 +131,9 @@ class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerH
   }
 
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind !== "event-ack" || frame.eventId !== this.currentEventId || !this.currentRunId) return;
-    const eventId = this.currentEventId;
-    const runId = this.currentRunId;
-    this.currentEventId = null;
-    this.currentRunId = null;
+    if (frame.kind !== "reply" || frame.callId !== this.current?.callId) return;
+    const { eventId, runId } = this.current;
+    this.current = null;
     void this.onEventAcknowledged(eventId, runId).then(() => {
       this.sendNextFrame();
     }).catch((error: unknown) => this.emit("error", error));
@@ -128,12 +145,10 @@ class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerH
   }
 
   private sendNextFrame() {
-    const frame = this.frames.shift();
-    if (!frame) return;
-    if (frame.kind === "event" || frame.kind === "exchange-rate-progress") {
-      this.currentEventId = frame.eventId;
-      this.currentRunId = frame.kind === "event" ? frame.event.runId : this.taskRunId;
-    }
+    const next = this.frames.shift();
+    if (!next) return;
+    const { frame, acknowledged } = next;
+    if (frame.kind === "call" && acknowledged) this.current = { callId: frame.callId, ...acknowledged };
     setImmediate(() => {
       this.emit("message", frame);
       if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
@@ -416,13 +431,8 @@ test("runner progress spans selected product stages, survives a same-run retry, 
           { kind: "completed", summary: null },
           onEventAcknowledged,
           [{
-            protocolVersion: 2,
-            kind: "exchange-rate-progress",
             eventId: "exchange-complete",
-            phaseCode: "complete",
-            completed: 3,
-            total: 3,
-            percent: 100,
+            progress: { phaseCode: "complete", completed: 3, total: 3, percent: 100 },
           }],
         ),
     });

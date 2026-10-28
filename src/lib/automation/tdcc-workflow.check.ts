@@ -14,7 +14,7 @@ import { PGliteStore } from "../../ledger/pglite/transaction.ts";
 import { TDCC_BASE_URL } from "../../workflows/tdcc-epassbook-client.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { createTdccSecretStore } from "./server/tdcc-secret-store.ts";
-import { createTdccSessionHost } from "./server/tdcc-session-host.ts";
+import { createTdccSessionHost, tdccSessionHostCalls } from "./server/tdcc-session-host.ts";
 import { classifyFailure } from "./failure-classification.ts";
 import { summarizeInterruptedProductCollection } from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow, type TdccWorkflowOptions } from "./tdcc-workflow.ts";
@@ -662,10 +662,12 @@ test("through the supervised worker frames, a rotated token is saved when the ru
       input: { statementTypes: ["settlement"] },
       pgliteRpc,
       signal: new AbortController().signal,
-      appendEvent: async () => undefined,
-      recordCommitAttempt: async () => undefined,
-      requestHumanAssistance: async () => "failed",
-      tdccSession: createTdccSessionHost(secrets),
+      hostCalls: {
+        event: async () => undefined,
+        commitAttempt: async () => undefined,
+        humanAssistance: async () => ({ status: "failed" }),
+        ...tdccSessionHostCalls(createTdccSessionHost(secrets)),
+      },
       workerFactory: (_path, options) => inProcessAppWorkflowWorker(options.workerData, { resolveDefinition: () => tdccDefinition(fake.fetch) }),
     });
     assert.equal(outcome.status, "failed");

@@ -5,7 +5,7 @@ import {
   getAutomationCredentialCodec,
 } from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
-import { createTdccSessionHost, type TdccSessionHost } from "./tdcc-session-host.ts";
+import { createTdccSessionHost, tdccSessionHostCalls, type TdccSessionHost } from "./tdcc-session-host.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
 import { taskById } from "./tasks.ts";
 import { launchedCollectionScope } from "./collection-scope.ts";
@@ -277,21 +277,21 @@ async function executeSupervisedAppWorkflow(
         ...(pgliteRpc ? { pgliteRpc } : {}),
         signal,
         forceSignal,
-        appendEvent: (event) => progressReporter.appendEvent(event),
-        recordCommitAttempt: (report) => context.run.recordCommitAttempt(report),
-        ...(workflowId === "exchange-rates" ? {
-          appendExchangeRateProgress: async (progress: Readonly<{
-            phaseCode: "load-request" | "sync" | "complete";
-            completed: number;
-            total: number;
-            percent: number;
-          }>) => {
-            await progressReporter.appendExchangeRateProgress(progress);
+        hostCalls: {
+          event: ({ event }) => progressReporter.appendEvent(event),
+          commitAttempt: ({ attempt }) => context.run.recordCommitAttempt(attempt),
+          humanAssistance: async ({ contract }, signal) => {
+            try {
+              return { status: await humanAssistance.request(contract, signal) };
+            } catch {
+              return { status: "failed" };
+            }
           },
-        } : {}),
-        requestHumanAssistance: (contract, signal) =>
-          humanAssistance.request(contract, signal),
-        ...(definition.requiresTdcc ? { tdccSession: tdccSessionHost(options) } : {}),
+          ...(definition.reportsExchangeRateProgress ? {
+            exchangeRateProgress: (progress) => progressReporter.appendExchangeRateProgress(progress),
+          } : {}),
+          ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(options)) : {}),
+        },
         ...(options.appWorkflowWorkerFactory
           ? { workerFactory: options.appWorkflowWorkerFactory }
           : {}),
