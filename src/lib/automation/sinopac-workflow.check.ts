@@ -110,7 +110,7 @@ function makeContext(options: Readonly<{
   onEvent?: WorkflowContext["event"];
 }>): WorkflowContextWith<"financialCommit" | "products"> {
   const signal = options.signal ?? new AbortController().signal;
-  return withBoundProducts<never>({
+  return withBoundProducts<WorkflowContextWith<"financialCommit">>({
     runId: "sinopac-test-run",
     signal,
     now: () => "2026-09-24T12:00:00.000+08:00",
