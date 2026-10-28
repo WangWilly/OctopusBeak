@@ -2,10 +2,10 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
+import type {
+  ProductCollectionHandle,
+  ProductCollectionSummary,
+  ProductCollector,
 } from "../lib/automation/product-collection.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { signIn } from "./sign-in.ts";
@@ -83,7 +83,7 @@ export type YuantaAllWorkflowDependencies = Readonly<{
 
 /** Collect selected Yuanta products independently and commit each complete product. */
 export async function runYuantaAllStatementsWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit" | "products">,
   rawInput: unknown,
   overrides: YuantaAllWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
@@ -106,40 +106,34 @@ export async function runYuantaAllStatementsWorkflow(
   const collectFund = overrides.collectFund ?? runYuantaFundStatements;
   const signOut = overrides.signOut ?? logoutYuantaForApp;
 
-  const productIds = ["deposit", "foreign_currency", "credit_card", "loan", "fund"] as const;
-  const selected = parsed.data.statementTypes as readonly (typeof productIds)[number][];
-
   // The outer default({}) skips each component schema's own defaults, so each
   // product parses its component input again.
-  const collectors: Readonly<Record<
-    (typeof productIds)[number],
-    (page: Page, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>
-  >> = {
-    deposit: (page, product) => collectDeposit(page, {
+  const collectors = (page: Page): Readonly<Record<YuantaAllWorkflowInput["statementTypes"][number], ProductCollector>> => ({
+    deposit: (product) => collectDeposit(page, {
       ...yuantaStatementsInputSchema.parse(parsed.data.statements),
       sourceConnectionScope,
       sourceConnectionKey,
     }, context, product),
-    foreign_currency: (page, product) => collectForeign(page, {
+    foreign_currency: (product) => collectForeign(page, {
       ...yuantaForeignCurrencyStatementsInputSchema.parse(parsed.data.foreignCurrency),
       yuantaUserId: credentials.yuanta_user_id,
     }, context, product),
-    credit_card: (page, product) => collectCreditCard(page, {
+    credit_card: (product) => collectCreditCard(page, {
       ...yuantaCreditCardStatementsInputSchema.parse(parsed.data.creditCard),
       canonicalHumanAttestation,
       instrumentFingerprintSecret: secret,
     }, context, product),
-    loan: (page, product) => collectLoan(page, {
+    loan: (product) => collectLoan(page, {
       ...yuantaLoanStatementsInputSchema.parse(parsed.data.loan),
       sourceConnectionScope,
       sourceConnectionKey,
     }, context, product),
-    fund: (page, product) => collectFund(page, {
+    fund: (product) => collectFund(page, {
       ...yuantaFundStatementsInputSchema.parse(parsed.data.fund),
       yuantaUserId: credentials.yuanta_user_id,
       yuantaAccount: credentials.yuanta_account,
     }, context, product),
-  };
+  });
 
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
@@ -147,17 +141,7 @@ export async function runYuantaAllStatementsWorkflow(
     try {
       const { assertSession } = await signIn(context, page, YUANTA_SOURCE, yuantaBankSignInPlan(credentials));
       await context.event("decoding", "started", "source-decoding-started");
-      const summary = await collectSelectedProducts({
-        provider: "yuanta",
-        productIds,
-        selectedIds: selected,
-        signal: context.signal,
-        assertSession,
-        collect: (typeId, product) => collectors[typeId](page, product),
-        financialCommit: context.financialCommit,
-        event: context.event,
-        productFailure: context.productFailure,
-      });
+      const summary = await context.products.collect(collectors(page), { assertSession });
       return productRunResult(summary, {
         counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
       });
