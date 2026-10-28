@@ -443,7 +443,7 @@ export async function seedAppDemo(userData: string) {
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;

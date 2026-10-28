@@ -3,6 +3,7 @@ import {
   type PGlitePreviewFinancialDataPort,
 } from "./preview-financial-data.ts";
 import { randomUUID } from "node:crypto";
+import { readExchangeRateRows } from "./exchange-rate-rows.ts";
 import {
   createHumanAssistanceContract,
   parseHumanAssistanceContract,
@@ -940,24 +941,8 @@ export class PGliteOperationalStore
     });
   }
 
-  async readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]> {
-    if (currencies?.length === 0) return [];
-    const params: readonly unknown[] = currencies ?? [];
-    const where = currencies
-      ? `WHERE currency IN (${currencies.map((_, index) => `$${index + 1}`).join(", ")})`
-      : "";
-    const result = await this.#database.query<ExchangeRateRecord>(
-      `
-      SELECT rate_date AS "rateDate", currency,
-             twd_per_unit AS "twdPerUnit", source,
-             fetched_at AS "fetchedAt"
-      FROM exchange_rates
-      ${where}
-      ORDER BY currency, rate_date
-    `,
-      params,
-    );
-    return result.rows.map((row) => ({ ...row }));
+  readExchangeRates(currencies?: string[]): Promise<ExchangeRateRecord[]> {
+    return readExchangeRateRows(this.#database, currencies);
   }
 
   async upsertExchangeRates(rows: readonly ExchangeRateRecord[]): Promise<void> {

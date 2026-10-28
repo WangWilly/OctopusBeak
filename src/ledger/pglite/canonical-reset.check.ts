@@ -84,7 +84,7 @@ test("a Canonical Reset empties financial state, keeps rates and run history, an
     await assertPgliteBaseline(store);
     assert.equal((await provider.exchangeRates.readExchangeRates(["USD"])).length, 1);
     assert.equal((await provider.automation.latestTaskRuns())["cathay-all-statements"]?.status, "completed");
-    const overview = await createPGliteFinancialRegistry(store, provider.exchangeRates)["financial.overview.current"]([]);
+    const overview = await createPGliteFinancialRegistry(store)["financial.overview.current"]([]);
     assert.deepEqual(overview.accounts, [], "the overview reads the empty store");
 
     await commitCathay(store);
