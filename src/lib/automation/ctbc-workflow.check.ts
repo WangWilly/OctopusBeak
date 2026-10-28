@@ -244,6 +244,7 @@ const input = {
     ctbc_account: "synthetic-account",
     ctbc_password: "synthetic-password",
   },
+  statementTypes: ["deposit"],
 };
 
 test("CTBC preserves exact duplicate deposits as stable occurrence-group slots through the real commit port", async () => {

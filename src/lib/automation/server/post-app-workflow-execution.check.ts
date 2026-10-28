@@ -21,6 +21,7 @@ import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
@@ -50,7 +51,12 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
       post_account: "test-account",
       post_password: "test-password",
     },
+    statementTypes: ["deposit"],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_POST_STATEMENT_TYPES: "" }),
+    (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
+  );
 });
 
 function statementResponse(options: { malformed?: boolean; incomplete?: boolean; onRead(): void }): Response {

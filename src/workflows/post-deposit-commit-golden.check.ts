@@ -24,6 +24,7 @@ const input = {
     post_account: "synthetic-user-account",
     post_password: "synthetic-password",
   },
+  statementTypes: ["deposit"],
 };
 
 function signedInPage(): Page {

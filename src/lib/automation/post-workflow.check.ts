@@ -295,6 +295,7 @@ const workflowInput = {
     post_account: "synthetic-user-account",
     post_password: "synthetic-password",
   },
+  statementTypes: ["deposit" as const],
 };
 
 const observedAt = "2026-09-25T20:00:00+08:00";

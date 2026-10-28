@@ -93,7 +93,7 @@ export const CTBC_SOURCE: VerifiedSource = {
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     runtime: browser("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", "ctbc-login"),
-    input: { credentials: true },
+    input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/ctbc-statements.ts")).runCtbcProviderWorkflow;
     },

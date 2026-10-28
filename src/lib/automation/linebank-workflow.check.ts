@@ -287,6 +287,7 @@ const input = {
   endDate: "20260910",
   accountFilters: [],
   currencyFilters: [],
+  statementTypes: ["deposit"],
 };
 
 test("LINE Bank typed workflow admits complete in-memory sources through the injected commit", async () => {

@@ -40,6 +40,7 @@ try {
   try {
     await runCtbcProviderWorkflow(context, {
       credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
+      statementTypes: ["deposit"],
     });
   } catch (error) {
     failure = error;
@@ -73,6 +74,7 @@ try {
   try {
     await runCtbcProviderWorkflow(acceptedContext, {
       credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
+      statementTypes: ["deposit"],
     });
   } catch (error) {
     acceptedFailure = error;

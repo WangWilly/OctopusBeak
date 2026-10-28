@@ -13,6 +13,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowBrowserProfileForTask, workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
@@ -179,7 +180,12 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       ctbc_account: "synthetic-account",
       ctbc_password: "synthetic-password",
     },
+    statementTypes: ["deposit"],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "" }),
+    (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
+  );
 
   const root = await mkdtemp(join(tmpdir(), "ctbc-app-workflow-"));
   const previousDirectory = process.cwd();
