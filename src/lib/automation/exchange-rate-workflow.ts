@@ -18,6 +18,7 @@ export function createExchangeRateWorkflow(
   return {
     id: "exchange-rates",
     requiresFinancialCommit: false,
+    reportsExchangeRateProgress: true,
     async run(context) {
       let eventQueue = Promise.resolve();
       try {

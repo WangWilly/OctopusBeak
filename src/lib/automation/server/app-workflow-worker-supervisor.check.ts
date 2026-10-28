@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { WorkerOptions } from "node:worker_threads";
@@ -11,6 +12,7 @@ import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   type AppWorkflowWorkerInboundFrame,
 } from "./app-workflow-worker-protocol.ts";
+import { tdccSessionHostCalls } from "./tdcc-session-host.ts";
 
 const base: Omit<RunSupervisedAppWorkflowOptions, "workerPath" | "workerFactory"> = {
   runId: "supervised-run-1",
@@ -18,12 +20,22 @@ const base: Omit<RunSupervisedAppWorkflowOptions, "workerPath" | "workerFactory"
   input: { credential: "secret-test-value" },
   browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
   signal: new AbortController().signal,
-  appendEvent: async () => undefined,
-  recordCommitAttempt: async () => undefined,
-  requestHumanAssistance: async () => "verified" as const,
+  hostCalls: {
+    event: async () => undefined,
+    commitAttempt: async () => undefined,
+    humanAssistance: async () => ({ status: "verified" as const }),
+  },
   cancelGraceMs: 15,
   terminalGraceMs: 15,
 };
+
+function call(method: string, request: unknown, callId: string = randomUUID()) {
+  return { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "call", callId, method, request } as const;
+}
+
+function reply(callId: string, result: unknown = null) {
+  return { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "reply", callId, ok: true, result } as const;
+}
 
 class FakeDataStream extends EventEmitter {
   resumed = false;
@@ -51,11 +63,13 @@ class FakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   exit(code = 0) { this.emit("exit", code); }
 }
 
+/** Handlers in `overrides.hostCalls` replace or add to the base run's handlers. */
 function harness(overrides: Partial<typeof base> = {}) {
   let worker: FakeWorker | undefined;
   const run = runSupervisedAppWorkflow({
     ...base,
     ...overrides,
+    hostCalls: { ...base.hostCalls, ...overrides.hostCalls },
     workerFactory: (_path, options) => {
       worker = new FakeWorker(options.workerData);
       return worker;
@@ -70,11 +84,8 @@ test("worker events are ACKed only after operational event persistence settles",
   let release!: () => void;
   let persisted = false;
   const persistence = new Promise<void>((resolve) => { release = resolve; });
-  const task = harness({ appendEvent: async () => { await persistence; persisted = true; } });
-  task.worker.send({
-    protocolVersion: 2,
-    kind: "event",
-    eventId: "event-1",
+  const task = harness({ hostCalls: { event: async () => { await persistence; persisted = true; } } });
+  const eventCall = call("event", {
     event: {
       runId: base.runId,
       stage: "collection",
@@ -82,18 +93,14 @@ test("worker events are ACKed only after operational event persistence settles",
       occurredAt: "2026-09-26T00:00:00.000Z",
     },
   });
+  task.worker.send(eventCall);
   await tick();
-  assert.equal(task.worker.sent.some((frame) => frame.kind === "event-ack"), false);
+  assert.equal(task.worker.sent.some((frame) => frame.kind === "reply"), false);
   release();
   await tick();
   assert.equal(persisted, true);
-  assert.deepEqual(task.worker.sent.at(-1), {
-    protocolVersion: 2,
-    kind: "event-ack",
-    eventId: "event-1",
-    ok: true,
-  });
-  task.worker.send({ protocolVersion: 2, kind: "completed", taskRunId: base.runId, summary: { counts: { count: 1 } } });
+  assert.deepEqual(task.worker.sent.at(-1), reply(eventCall.callId));
+  task.worker.send({ protocolVersion: 3, kind: "completed", taskRunId: base.runId, summary: { counts: { count: 1 } } });
   task.worker.exit(0);
   assert.deepEqual(await task.run, { status: "completed", errorCode: null, summary: { counts: { count: 1 } } });
   assert.equal(task.worker.stdout.resumed, true);
@@ -106,14 +113,11 @@ test("worker events are ACKed only after operational event persistence settles",
 });
 
 test("human assistance requests return the App's completion status to the worker", async () => {
-  const task = harness({ requestHumanAssistance: async (contract) => {
+  const task = harness({ hostCalls: { humanAssistance: async ({ contract }) => {
     assert.equal(contract.stageId, "verification");
-    return "entered";
-  } });
-  task.worker.send({
-    protocolVersion: 2,
-    kind: "human-assistance-request",
-    requestId: "assist-1",
+    return { status: "entered" };
+  } } });
+  const assistanceCall = call("humanAssistance", {
     contract: {
       stageId: "verification",
       title: "Complete verification",
@@ -123,14 +127,10 @@ test("human assistance requests return the App's completion status to the worker
       focus: { targetId: "answer", contextRegionIds: [] },
     },
   });
+  task.worker.send(assistanceCall);
   await tick();
-  assert.deepEqual(task.worker.sent.at(-1), {
-    protocolVersion: 2,
-    kind: "human-assistance-response",
-    requestId: "assist-1",
-    status: "entered",
-  });
-  task.worker.send({ protocolVersion: 2, kind: "cancelled", taskRunId: base.runId });
+  assert.deepEqual(task.worker.sent.at(-1), reply(assistanceCall.callId, { status: "entered" }));
+  task.worker.send({ protocolVersion: 3, kind: "cancelled", taskRunId: base.runId });
   task.worker.exit(0);
   assert.equal((await task.run).status, "cancelled");
 });
@@ -213,7 +213,7 @@ test("an unexpected exit after startup is classified without leaking worker stat
 
 test("invalid outbound frames are rejected, cancelled, and force-terminated", async () => {
   const task = harness({ cancelGraceMs: 5 });
-  task.worker.send({ protocolVersion: 2, kind: "raw-provider-response", response: "must-not-escape" });
+  task.worker.send({ protocolVersion: 3, kind: "raw-provider-response", response: "must-not-escape" });
   const outcome = await task.run;
   assert.deepEqual(outcome, {
     status: "failed",
@@ -262,40 +262,43 @@ function fakeTdccSessionHost() {
   return { host, saved, calls };
 }
 
-const tdccRequestId = "6f1c2a8e-0b7d-4c3e-9a1f-2d4b6c8e0a1b";
-const rotated = (tokenId: string) => ({
-  protocolVersion: 2,
-  kind: "tdcc-session-rotated",
+const rotated = (tokenId: string) => call("tdccSessionRotated", {
   session: { tokenId, richUrl: null, issuedAt: "2026-10-09T00:00:00.000Z" },
 });
 
 test("TDCC session requests are answered only by the host port of a TDCC run", async () => {
   const tdcc = fakeTdccSessionHost();
-  const task = harness({ tdccSession: tdcc.host });
-  task.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
-  const openResponse = task.worker.sent.at(-1) as unknown as { lease: { status: string } };
-  assert.equal(openResponse.lease.status, "ready");
+  const task = harness({ hostCalls: tdccSessionHostCalls(tdcc.host) });
+  const openCall = call("tdccSession", { operation: "open" });
+  task.worker.send(openCall);
+  await tick();
+  const openResponse = task.worker.sent.at(-1) as unknown as { callId: string; result: { status: string } };
+  assert.equal(openResponse.callId, openCall.callId);
+  assert.equal(openResponse.result.status, "ready");
   assert.equal(JSON.stringify(openResponse).includes("fixture-password"), false, "opening a session never sends the password");
-  task.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: "7f1c2a8e-0b7d-4c3e-9a1f-2d4b6c8e0a1b", operation: "sign-in-details" });
-  assert.deepEqual((task.worker.sent.at(-1) as unknown as { lease: unknown }).lease, {
+  const signInCall = call("tdccSession", { operation: "sign-in-details" });
+  task.worker.send(signInCall);
+  await tick();
+  assert.deepEqual(task.worker.sent.at(-1), reply(signInCall.callId, {
     status: "ready",
     details: { userId: "fixture-user", password: "fixture-password" },
-  });
+  }));
   assert.deepEqual(tdcc.calls, ["open", "sign-in-details"]);
-  task.worker.send({ protocolVersion: 2, kind: "completed", taskRunId: base.runId, summary: null });
+  task.worker.send({ protocolVersion: 3, kind: "completed", taskRunId: base.runId, summary: null });
   task.worker.exit(0);
   assert.equal((await task.run).status, "completed");
 
-  const leaked = harness({ tdccSession: {
+  const leaked = harness({ hostCalls: tdccSessionHostCalls({
     ...tdcc.host,
     open: () => ({ ...tdcc.host.open(), password: "fixture-password" }),
-  } });
-  leaked.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
-  assert.equal(leaked.worker.sent.some((frame) => frame.kind === "tdcc-session-response"), false, "a lease carrying a password is never sent");
+  }) });
+  leaked.worker.send(call("tdccSession", { operation: "open" }));
+  await tick();
+  assert.equal(leaked.worker.sent.some((frame) => frame.kind === "reply"), false, "a lease carrying a password is never sent");
   assert.equal((await leaked.run).errorCode, "protocol-invalid");
 
   const other = harness();
-  other.worker.send({ protocolVersion: 2, kind: "tdcc-session-request", requestId: tdccRequestId, operation: "open" });
+  other.worker.send(call("tdccSession", { operation: "open" }));
   const outcome = await other.run;
   assert.equal(outcome.status, "failed");
   assert.equal(outcome.errorCode, "protocol-invalid");
@@ -303,26 +306,26 @@ test("TDCC session requests are answered only by the host port of a TDCC run", a
 
 test("the newest rotated TDCC session is saved even when the worker fails or exits right after", async () => {
   const failedRun = fakeTdccSessionHost();
-  const failing = harness({ tdccSession: failedRun.host });
+  const failing = harness({ hostCalls: tdccSessionHostCalls(failedRun.host) });
   failing.worker.send(rotated("token-1"));
   failing.worker.send(rotated("token-2"));
-  failing.worker.send({ protocolVersion: 2, kind: "failed", taskRunId: base.runId, errorCode: "source-collection-failed" });
+  failing.worker.send({ protocolVersion: 3, kind: "failed", taskRunId: base.runId, errorCode: "source-collection-failed" });
   failing.worker.exit(1);
   assert.equal((await failing.run).status, "failed");
   assert.deepEqual(failedRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-2"]);
 
   const cancelledRun = fakeTdccSessionHost();
   const controller = new AbortController();
-  const cancelling = harness({ tdccSession: cancelledRun.host, signal: controller.signal });
+  const cancelling = harness({ hostCalls: tdccSessionHostCalls(cancelledRun.host), signal: controller.signal });
   controller.abort();
   cancelling.worker.send(rotated("token-after-cancel"));
-  cancelling.worker.send({ protocolVersion: 2, kind: "cancelled", taskRunId: base.runId });
+  cancelling.worker.send({ protocolVersion: 3, kind: "cancelled", taskRunId: base.runId });
   cancelling.worker.exit(0);
   assert.equal((await cancelling.run).status, "cancelled");
   assert.deepEqual(cancelledRun.saved.map((session) => (session as { tokenId: string }).tokenId), ["token-after-cancel"]);
 
   const crashedRun = fakeTdccSessionHost();
-  const crashing = harness({ tdccSession: crashedRun.host });
+  const crashing = harness({ hostCalls: tdccSessionHostCalls(crashedRun.host) });
   crashing.worker.online();
   crashing.worker.send(rotated("token-3"));
   crashing.worker.exit(1);

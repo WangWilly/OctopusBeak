@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import {
   applyCommitAttemptReport,
@@ -10,6 +11,7 @@ import {
 } from "./commit-attempt.ts";
 import { COLLECTION_PRODUCT_TYPE_IDS } from "./product-collection.ts";
 import { parseAppWorkflowWorkerOutboundFrame } from "./server/app-workflow-worker-protocol.ts";
+import { HOST_CALL_CONTRACTS } from "./server/app-workflow-host-calls.ts";
 
 function attempt(outcome: CommitAttemptOutcome | null, committedCount = 0): CommitAttempt {
   return { attemptId: `attempt-${outcome}-${committedCount}`, product: null, total: 2, outcome, committedCount };
@@ -56,8 +58,9 @@ test("every product a workflow commits under is a valid attempt product, through
     const attempt = { phase: "started", attemptId: "attempt-1", product, total: 1 } as const;
     assert.equal(isCommitAttemptReport(attempt), true, product);
     assert.doesNotThrow(() => parseAppWorkflowWorkerOutboundFrame({
-      protocolVersion: 2, kind: "commit-attempt", eventId: "frame-1", attempt,
+      protocolVersion: 3, kind: "call", callId: randomUUID(), method: "commitAttempt", request: { attempt },
     }), product);
+    assert.doesNotThrow(() => HOST_CALL_CONTRACTS.commitAttempt.parseRequest({ attempt }), product);
   }
   assert.equal(isCommitAttemptReport({ phase: "started", attemptId: "attempt-1", product: "Credit Card", total: 1 }), false);
 });

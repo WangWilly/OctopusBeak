@@ -137,6 +137,8 @@ export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = 
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
   requiresTdcc?: boolean;
+  /** The workflow reports exchange-rate progress, which the host writes to the run's progress (ADR 0072). */
+  reportsExchangeRateProgress?: boolean;
   requiresAccountIdentity?: boolean;
   requiresPreviewWrite?: boolean;
   /** ADR 0051: the preview products this verified workflow may write beside its canonical commit. */

@@ -1,8 +1,5 @@
 import { join } from "node:path";
 import { Worker, type WorkerOptions } from "node:worker_threads";
-import type { HumanAssistanceCompletionStatus, HumanAssistanceContractInput } from "../human-assistance.ts";
-import type { CommitAttemptReport } from "../commit-attempt.ts";
-import type { WorkflowRunEvent } from "../run-event.ts";
 import type { TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import {
@@ -17,12 +14,9 @@ import {
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerStart,
-  type TdccSessionRequestFrame,
-  type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
-import type { TdccSessionHost } from "./tdcc-session-host.ts";
+import { createHostCallDispatcher, HostCallRefusal, type HostCallHandlers } from "./app-workflow-host-calls.ts";
 import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
-import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
 
 export type AppWorkflowWorkerFailureCode = TypedWorkflowErrorCode | "worker-start-failed" | "protocol-invalid";
 
@@ -69,21 +63,11 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   signal: AbortSignal;
   /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
   forceSignal?: AbortSignal;
-  appendEvent(event: WorkflowRunEvent, signal: AbortSignal): Promise<void>;
-  /** ADR 0056: resolves once the attempt phase is recorded; the worker waits on its ACK. */
-  recordCommitAttempt(attempt: CommitAttemptReport, signal: AbortSignal): Promise<void>;
-  appendExchangeRateProgress?(progress: Readonly<{
-    phaseCode: "load-request" | "sync" | "complete";
-    completed: number;
-    total: number;
-    percent: number;
-  }>, signal: AbortSignal): Promise<void>;
-  requestHumanAssistance(
-    contract: HumanAssistanceContractInput,
-    signal: AbortSignal,
-  ): Promise<Exclude<HumanAssistanceCompletionStatus, "pending">>;
-  /** The host side of a TDCC run's session port; absent for every other workflow. */
-  tdccSession?: TdccSessionHost;
+  /**
+   * The host's answer to each host call this run may make (ADR 0072). An event
+   * is answered only after its handler resolves, so after it is persisted.
+   */
+  hostCalls: HostCallHandlers;
   /** Defaults to the sibling bundle emitted by the Electron build. */
   workerPath?: string;
   /** Test seam; production always uses node:worker_threads. */
@@ -99,21 +83,8 @@ function cancelled(summary: WorkflowRunResult | null = null): AppWorkflowWorkerO
 }
 
 const CANCELLED: AppWorkflowWorkerOutcome = cancelled();
-const MAX_EVENTS_PER_RUN = 512;
-const MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN = 128;
 const DEFAULT_CANCEL_GRACE_MS = 2_000;
 const DEFAULT_TERMINAL_GRACE_MS = 1_000;
-const MAX_TDCC_SESSION_REQUESTS_PER_RUN = 8;
-
-function tdccSessionResponse(
-  host: TdccSessionHost,
-  request: TdccSessionRequestFrame,
-): TdccSessionResponseFrame {
-  const frame = { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-response", requestId: request.requestId } as const;
-  return request.operation === "open"
-    ? { ...frame, operation: "open", lease: host.open() }
-    : { ...frame, operation: "sign-in-details", lease: host.signInDetails() };
-}
 
 function failed(
   errorCode: AppWorkflowWorkerFailureCode,
@@ -134,24 +105,6 @@ function failed(
 
 function uncertaintyCannotBeCancelled(outcome: AppWorkflowWorkerOutcome): boolean {
   return outcome.status === "failed" && outcome.errorCode === "commit-outcome-unknown";
-}
-
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(new Error("cancelled"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error("cancelled"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      () => {
-        signal.removeEventListener("abort", onAbort);
-        reject(new Error("operation-failed"));
-      },
-    );
-  });
 }
 
 function defaultWorkerFactory(path: string, options: WorkerOptions): AppWorkflowWorkerHandle {
@@ -209,33 +162,7 @@ export async function runSupervisedAppWorkflow(
   let pendingOutcome: AppWorkflowWorkerOutcome | null = null;
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
   let terminalTimer: ReturnType<typeof setTimeout> | undefined;
-  let eventInFlight = false;
-  let assistanceInFlight = false;
-  let tdccSessionRequestCount = 0;
-  let tdccSession = options.tdccSession;
-  let rotatedTdccSession: TdccIssuedSession | null = null;
-  let rotatedTdccSessionFlush: ReturnType<typeof setImmediate> | undefined;
-  // Rotations arrive once per TDCC request, so only the newest one is written.
-  const flushRotatedTdccSession = () => {
-    if (rotatedTdccSessionFlush) clearImmediate(rotatedTdccSessionFlush);
-    rotatedTdccSessionFlush = undefined;
-    const session = rotatedTdccSession;
-    rotatedTdccSession = null;
-    if (!session || !tdccSession) return;
-    try {
-      tdccSession.saveSession(session);
-    } catch { /* a failed write leaves the previous session, which the next run replaces by signing in */ }
-  };
-  let eventCount = 0;
-  const eventIds = new Set<string>();
-  const assistanceIds = new Set<string>();
   const streamDrains: Array<{ stream: WorkerDataStream; listener: (chunk: unknown) => void }> = [];
-  let appendEvent = options.appendEvent;
-  let recordCommitAttempt = options.recordCommitAttempt;
-  let commitAttemptReportCount = 0;
-  let commitAttemptInFlight = false;
-  let appendExchangeRateProgress = options.appendExchangeRateProgress;
-  let requestHumanAssistance = options.requestHumanAssistance;
 
   return await new Promise<AppWorkflowWorkerOutcome>((resolve) => {
     const clearTimers = () => {
@@ -246,8 +173,7 @@ export async function runSupervisedAppWorkflow(
     };
     const cleanup = () => {
       clearTimers();
-      flushRotatedTdccSession();
-      tdccSession = undefined;
+      hostCalls.close();
       options.signal.removeEventListener("abort", onAbort);
       options.forceSignal?.removeEventListener("abort", onForce);
       worker.off("message", onMessage);
@@ -256,10 +182,6 @@ export async function runSupervisedAppWorkflow(
       worker.off("online", onOnline);
       for (const { stream, listener } of streamDrains) stream.off("data", listener);
       streamDrains.length = 0;
-      appendEvent = undefined as unknown as typeof appendEvent;
-      recordCommitAttempt = undefined as unknown as typeof recordCommitAttempt;
-      appendExchangeRateProgress = undefined;
-      requestHumanAssistance = undefined as unknown as typeof requestHumanAssistance;
       worker = undefined as unknown as AppWorkflowWorkerHandle;
     };
     const settle = (outcome: AppWorkflowWorkerOutcome) => {
@@ -308,101 +230,23 @@ export async function runSupervisedAppWorkflow(
       }, Math.max(0, options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS));
     };
     const protocolFailure = () => requestStop(failed("protocol-invalid", "protocol"), true);
-    const send = (frame: AppWorkflowWorkerInboundFrame): boolean => {
-      if (settled || pendingOutcome) return false;
-      try {
-        worker.postMessage(parseAppWorkflowWorkerInboundFrame(frame));
-        return true;
-      } catch {
-        protocolFailure();
-        return false;
-      }
-    };
-    const finishEvent = async (eventId: string, event: WorkflowRunEvent) => {
-      let ok = false;
-      try {
-        await abortable(Promise.resolve().then(() => appendEvent(event, signal)), signal);
-        ok = true;
-      } catch {
-        ok = false;
-      }
-      eventInFlight = false;
-      if (settled || pendingOutcome || signal.aborted) return;
-      send({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "event-ack",
-        eventId,
-        ok,
-        ...(!ok ? { code: "event-persistence-failed" as const } : {}),
-      });
-    };
-    // ADR 0056: a stop does not discard a settlement in flight. Recording is
-    // not raced against the stop, and its ACK is sent even while the run is
-    // stopping; the cancel grace still bounds how long the worker may take.
-    const finishCommitAttempt = async (eventId: string, attempt: CommitAttemptReport) => {
-      let ok = false;
-      try {
-        await recordCommitAttempt(attempt, signal);
-        ok = true;
-      } catch {
-        ok = false;
-      }
-      commitAttemptInFlight = false;
-      if (settled) return;
-      try {
-        worker.postMessage(parseAppWorkflowWorkerInboundFrame({
-          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-          kind: "event-ack",
-          eventId,
-          ok,
-          ...(!ok ? { code: "event-persistence-failed" as const } : {}),
-        }));
-      } catch {
-        if (!pendingOutcome) protocolFailure();
-      }
-    };
-    const finishExchangeRateProgress = async (
-      frame: Extract<ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>, { kind: "exchange-rate-progress" }>,
-    ) => {
-      let ok = false;
-      try {
-        if (!appendExchangeRateProgress) throw new Error("progress-port-unavailable");
-        await abortable(Promise.resolve().then(() => appendExchangeRateProgress!({
-          phaseCode: frame.phaseCode,
-          completed: frame.completed,
-          total: frame.total,
-          percent: frame.percent,
-        }, signal)), signal);
-        ok = true;
-      } catch {
-        ok = false;
-      }
-      eventInFlight = false;
-      if (settled || pendingOutcome || signal.aborted) return;
-      send({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "event-ack",
-        eventId: frame.eventId,
-        ok,
-        ...(!ok ? { code: "event-persistence-failed" as const } : {}),
-      });
-    };
-    const finishAssistance = async (requestId: string, contract: HumanAssistanceContractInput) => {
-      let status: Exclude<HumanAssistanceCompletionStatus, "pending"> = "failed";
-      try {
-        status = await abortable(Promise.resolve().then(() => requestHumanAssistance(contract, signal)), signal);
-      } catch {
-        status = "failed";
-      }
-      assistanceInFlight = false;
-      if (settled || pendingOutcome || signal.aborted) return;
-      send({
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        kind: "human-assistance-response",
-        requestId,
-        status,
-      });
-    };
+    const appendEvent = options.hostCalls.event;
+    const hostCalls = createHostCallDispatcher({
+      handlers: {
+        ...options.hostCalls,
+        ...(appendEvent ? {
+          event: (request, eventSignal) => {
+            if (request.event.runId !== options.runId) throw new HostCallRefusal();
+            return appendEvent(request, eventSignal);
+          },
+        } : {}),
+      },
+      signal,
+      stopping: () => signal.aborted || pendingOutcome !== null,
+      settled: () => settled,
+      post: (frame) => worker.postMessage(parseAppWorkflowWorkerInboundFrame(frame)),
+      protocolFailure: () => protocolFailure(),
+    });
     const onMessage = (value: unknown) => {
       if (settled) return;
       let frame: ReturnType<typeof parseAppWorkflowWorkerOutboundFrame>;
@@ -412,30 +256,8 @@ export async function runSupervisedAppWorkflow(
         protocolFailure();
         return;
       }
-      if (frame.kind === "tdcc-session-rotated") {
-        if (!tdccSession) {
-          if (!pendingOutcome) protocolFailure();
-          return;
-        }
-        rotatedTdccSession = frame.session;
-        rotatedTdccSessionFlush ??= setImmediate(flushRotatedTdccSession);
-        return;
-      }
-      if (frame.kind === "commit-attempt") {
-        // A stopping run may still have an event write unwinding; only a running one must be idle.
-        if (
-          (eventInFlight && !pendingOutcome)
-          || commitAttemptInFlight
-          || commitAttemptReportCount >= MAX_COMMIT_ATTEMPT_REPORTS_PER_RUN
-          || eventIds.has(frame.eventId)
-        ) {
-          protocolFailure();
-          return;
-        }
-        commitAttemptReportCount += 1;
-        eventIds.add(frame.eventId);
-        commitAttemptInFlight = true;
-        void finishCommitAttempt(frame.eventId, frame.attempt);
+      if (frame.kind === "call") {
+        hostCalls.receive(frame);
         return;
       }
       if (pendingOutcome) {
@@ -458,69 +280,7 @@ export async function runSupervisedAppWorkflow(
         return;
       }
 
-      if (frame.kind === "event") {
-        if (
-          eventInFlight
-          || commitAttemptInFlight
-          || eventCount >= MAX_EVENTS_PER_RUN
-          || eventIds.has(frame.eventId)
-          || frame.event.runId !== options.runId
-        ) {
-          protocolFailure();
-          return;
-        }
-        eventCount += 1;
-        eventIds.add(frame.eventId);
-        eventInFlight = true;
-        void finishEvent(frame.eventId, frame.event);
-        return;
-      }
-      if (frame.kind === "exchange-rate-progress") {
-        if (
-          options.workflowId !== "exchange-rates"
-          || !appendExchangeRateProgress
-          || eventInFlight
-          || commitAttemptInFlight
-          || eventCount >= MAX_EVENTS_PER_RUN
-          || eventIds.has(frame.eventId)
-        ) {
-          protocolFailure();
-          return;
-        }
-        eventCount += 1;
-        eventIds.add(frame.eventId);
-        eventInFlight = true;
-        void finishExchangeRateProgress(frame);
-        return;
-      }
-      if (frame.kind === "human-assistance-request") {
-        if (assistanceInFlight || assistanceIds.has(frame.requestId)) {
-          protocolFailure();
-          return;
-        }
-        assistanceIds.add(frame.requestId);
-        assistanceInFlight = true;
-        void finishAssistance(frame.requestId, frame.contract);
-        return;
-      }
-      if (frame.kind === "tdcc-session-request") {
-        if (!tdccSession || tdccSessionRequestCount >= MAX_TDCC_SESSION_REQUESTS_PER_RUN) {
-          protocolFailure();
-          return;
-        }
-        tdccSessionRequestCount += 1;
-        let response: TdccSessionResponseFrame;
-        try {
-          response = tdccSessionResponse(tdccSession, frame);
-        } catch {
-          protocolFailure();
-          return;
-        }
-        send(response);
-        return;
-      }
-
-      if (eventInFlight || commitAttemptInFlight || assistanceInFlight) {
+      if (!hostCalls.idle()) {
         protocolFailure();
         return;
       }
