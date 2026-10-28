@@ -4,11 +4,7 @@ import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { FUBON_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/fubon-credit-card-human-attestation-contract.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
-} from "../lib/automation/product-collection.ts";
+import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import {
   activateControlWithoutPointer,
 } from "./browser-interaction.ts";
@@ -149,7 +145,7 @@ async function signOutFubon(page: Page): Promise<void> {
 
 export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
 
-type FubonAllWorkflowContext = WorkflowContextWith<"financialCommit" | "accountIdentity">;
+type FubonAllWorkflowContext = WorkflowContextWith<"financialCommit" | "products" | "accountIdentity">;
 
 type FubonProductRunner<Input> = (
   page: Page,
@@ -224,8 +220,6 @@ export async function runFubonAllStatementsWorkflow(
   if (!parsed.success)
     throw new Error("Fubon workflow credentials or input are missing or invalid.");
 
-  const productIds = ["deposit", "credit_card", "loan"] as const;
-  const selectedIds = parsed.data.statementTypes as readonly (typeof productIds)[number][];
   const sourceConnectionScope = fubonStableLoginScope(parsed.data.credentials);
   const sourceConnectionKey = deriveFubonSourceConnectionKey(parsed.data.credentials);
   if (!sourceConnectionScope || !sourceConnectionKey)
@@ -258,21 +252,11 @@ export async function runFubonAllStatementsWorkflow(
     const stop = stopKeepAlive(page);
     try {
       await context.event("decoding", "started", "source-decoding-started");
-      const summary = await collectSelectedProducts({
-        provider: "fubon",
-        productIds,
-        selectedIds,
-        signal: context.signal,
-        assertSession,
-        collect: (typeId, product) => typeId === "deposit"
-          ? collectDeposit(page, depositInput, context, product)
-          : typeId === "credit_card"
-            ? collectCreditCard(page, creditCardInput, context, product)
-            : collectLoan(page, loanInput, context, product),
-        financialCommit: context.financialCommit,
-        event: context.event,
-        productFailure: context.productFailure,
-      });
+      const summary = await context.products.collect({
+        deposit: (product) => collectDeposit(page, depositInput, context, product),
+        credit_card: (product) => collectCreditCard(page, creditCardInput, context, product),
+        loan: (product) => collectLoan(page, loanInput, context, product),
+      }, { assertSession });
       return productRunResult(summary, {
         counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
       });
