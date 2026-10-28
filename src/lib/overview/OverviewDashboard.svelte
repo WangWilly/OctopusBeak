@@ -33,20 +33,16 @@ import { formatTwd } from "$lib/shared-money/money.ts";
 
 
   $: model = readOverview(overview, { today: dateInTimeZone(new Date(), $systemTimezone) });
-  $: netMetric = overview.summary.find((metric) => metric.label === "Net position");
-  $: liabilitiesMetric = overview.summary.find((metric) => metric.label === "Liabilities");
-  $: netAmounts = overview.summary[0]?.amounts ?? [];
-  $: convertedNet = model.netWorth.value;
-  $: sideValue = netMetric?.incomplete
+  $: net = overview.summary.net;
+  $: liabilitiesMetric = overview.summary.liabilities;
+  $: sideValue = net.incomplete
     ? $t.preview.incomplete
-    : convertedNet === null ? formatAmountLines(netAmounts.slice(0, 1), $locale) : formatTwd(convertedNet, $locale);
-  $: nativeRest = convertedNet === null ? netAmounts.slice(1).map((amount) => formatMoney(amount, { locale: $locale })).join(" / ") : "";
+    : net.display === "native" ? formatAmountLines(net.amounts.slice(0, 1), $locale) : formatTwd(net.twd, $locale);
+  $: nativeRest = net.display === "native" ? net.amounts.slice(1).map((amount) => formatMoney(amount, { locale: $locale })).join(" / ") : "";
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
-  $: sideIncludesPreview = convertedNet === null
-    ? overview.summary[0]?.includesPreview === true
-    : model.netWorth.includesPreview;
+  $: sideIncludesPreview = net.includesPreview;
   $: awaitingData = awaitingFirstData(overview);
   $: holdsForeign = overview.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
@@ -96,7 +92,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   {sideValue}
   {sideSub}
   {sideSubSensitive}
-  sideValueSensitive={!netMetric?.incomplete}
+  sideValueSensitive={!net.incomplete}
   {sideIncludesPreview}
   syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
@@ -133,10 +129,11 @@ import { formatTwd } from "$lib/shared-money/money.ts";
         use:registerOnboardingTarget={{ registry: onboardingTargets, id: "overview.summary" }}
       >
         <NetWorthCard
+          {net}
           netWorth={model.netWorth}
           series={model.series}
           asOfLabel={model.netWorth.asOf ? formatImportedAt(model.netWorth.asOf) : ""}
-          incomplete={netMetric?.incomplete === true}
+          incomplete={net.incomplete}
         />
       </section>
     </div>
@@ -170,8 +167,8 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           title={$t.overview.liabilityAllocation}
           total={model.liabilityAllocation.slices.length > 0 ? model.liabilityAllocation.total : null}
           ratio={model.liabilityAllocation.ratio}
-          incomplete={liabilitiesMetric?.incomplete === true}
-          includesPreview={liabilitiesMetric?.includesPreview === true}
+          incomplete={liabilitiesMetric.incomplete === true}
+          includesPreview={liabilitiesMetric.includesPreview === true}
           note={unconvertedNote(model.liabilityAllocation.unconvertedCurrencies)}
           href="#/liabilities"
           linkLabel={$t.nav.liabilities}
