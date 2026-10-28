@@ -202,13 +202,16 @@ export function isCaptchaRetryCampaignReady(
 
 /**
  * Apply one ordered event without mutating the input. Invalid, duplicate,
- * stale, and out-of-order events throw a typed transition error.
+ * stale, and out-of-order events throw a typed transition error. Cancelling
+ * an ended campaign, and a refreshed challenge within the active execution
+ * (ADR 0046), leave it unchanged.
  */
 export function transitionCaptchaRetryCampaign(
   campaign: CaptchaRetryCampaign,
   event: CaptchaRetryCampaignEvent,
 ): CaptchaRetryCampaign {
   if (terminalCampaign(campaign)) {
+    if (event.kind === "cancelled") return campaign;
     throw new CaptchaRetryCampaignTransitionError(
       `Cannot transition terminal CAPTCHA campaign (${campaign.status}).`,
       "invalid-transition",
@@ -242,6 +245,7 @@ export function transitionCaptchaRetryCampaign(
   }
 
   if (campaign.status === "awaiting-outcome") {
+    if (event.kind === "challenge-captured" && event.executionId === campaign.activeExecutionId) return campaign;
     if (event.kind !== "round-outcome") {
       throw new CaptchaRetryCampaignTransitionError(
         "A captured challenge must receive exactly one round outcome before another capture event.",
