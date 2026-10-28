@@ -186,10 +186,7 @@ async function runGolden(
     statements: { dateRanges, downloadFormat: "EXCEL" },
   };
   const context = workflowContext(recorder, accountIdentityContinuity);
-  const result = await runFubonAllStatementsWorkflow({
-    ...withBoundProducts<"accountIdentity">(context, FUBON_SOURCE, input),
-    accountIdentity: context.accountIdentity,
-  }, input, {
+  const result = await runFubonAllStatementsWorkflow(withBoundProducts(context, FUBON_SOURCE, input), input, {
     authenticate: async () => ({ usedExistingSession: false }),
     signOut: async () => undefined,
     startSessionKeepAlive: () => () => undefined,

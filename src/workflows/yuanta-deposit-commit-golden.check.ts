@@ -149,7 +149,7 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
       yuanta_password: "synthetic-password",
     },
   };
-  const result = await runYuantaAllStatementsWorkflow(withBoundProducts<never>(workflowContext(recorder), YUANTA_SOURCE, input), input, {
+  const result = await runYuantaAllStatementsWorkflow(withBoundProducts(workflowContext(recorder), YUANTA_SOURCE, input), input, {
     signOut: async () => undefined,
     collectDeposit,
   });

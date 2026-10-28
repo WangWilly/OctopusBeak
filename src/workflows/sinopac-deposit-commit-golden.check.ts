@@ -128,7 +128,7 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
 }
 
 function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit" | "products"> {
-  return withBoundProducts<never>({
+  return withBoundProducts<WorkflowContextWith<"financialCommit">>({
     runId: "sinopac-golden-run",
     signal: new AbortController().signal,
     now: () => "2026-10-01T12:00:00.000+08:00",

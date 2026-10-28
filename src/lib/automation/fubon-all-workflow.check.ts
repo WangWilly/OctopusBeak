@@ -36,10 +36,7 @@ function runFubonAllStatementsWorkflow(
   input: unknown,
   overrides?: Parameters<typeof runFubonAllStatementsWorkflowType>[2],
 ) {
-  return runFubonAllStatementsWorkflowUnbound({
-    ...withBoundProducts<"accountIdentity">(context, FUBON_SOURCE, input),
-    accountIdentity: context.accountIdentity,
-  }, input, overrides);
+  return runFubonAllStatementsWorkflowUnbound(withBoundProducts(context, FUBON_SOURCE, input), input, overrides);
 }
 
 const [depositSource, cardSource, loanSource] = await Promise.all([

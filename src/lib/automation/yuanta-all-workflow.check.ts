@@ -40,7 +40,7 @@ function runYuantaAllStatementsWorkflow(
   input: unknown,
   overrides?: Parameters<typeof runYuantaAllStatementsWorkflowType>[2],
 ) {
-  return runYuantaAllStatementsWorkflowUnbound(withBoundProducts<never>(context, YUANTA_SOURCE, input), input, overrides);
+  return runYuantaAllStatementsWorkflowUnbound(withBoundProducts(context, YUANTA_SOURCE, input), input, overrides);
 }
 
 function item(product: string, value = "complete"): ProductStageRequest {
