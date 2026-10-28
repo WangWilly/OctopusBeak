@@ -132,7 +132,8 @@ import {
 import type { PGliteStore, PGliteTransaction } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
-import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import type { ExchangeRateRecord } from "../src/ledger/exchange-rates.ts";
+import { readExchangeRateRows } from "../src/ledger/pglite/exchange-rate-rows.ts";
 import {
   appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
@@ -283,6 +284,7 @@ function exactAmountToDto(amount: CanonicalOverviewAmount): CurrencyAmountDto {
   };
 }
 
+/** Keeps the operands' scale: summary amounts show the decimals their sources reported. */
 function addExactAmounts(
   left: AggregatedAmount["exact"],
   right: AggregatedAmount["exact"],
@@ -345,7 +347,6 @@ function addSigned(
 }
 
 function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[] {
-  const assets = accounts.filter((account) => account.group === "asset" || account.group === "investment");
   const liabilities = accounts.filter((account) => account.group === "liability");
   const assetTotals = aggregateAmounts(accounts.filter((account) => account.group === "asset"));
   const investmentTotals = aggregateAmounts(accounts.filter((account) => account.group === "investment"));
@@ -354,15 +355,14 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
   addSigned(net, assetTotals, 1);
   addSigned(net, investmentTotals, 1);
   addSigned(net, liabilityTotals, -1);
-  const display = (account: AccountRowDto) => account.kind === "credit-card" ? "Credit card" : account.kind === "loan" ? "Loan" : account.kind === "other" ? "Other" : account.kind[0]!.toUpperCase() + account.kind.slice(1);
   const assetValue = new Map<string, AggregatedAmount>();
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
   const preview = previewSummaryMarkers(accounts);
   return [
-    { label: "Net position", amounts: amountLines(net), breakdown: [`${assets.length} asset accounts`, `${liabilities.length} debt accounts`], ...preview.net },
-    { label: "Asset value", amounts: amountLines(assetValue), breakdown: assets.map(display), ...preview.assets },
-    { label: "Liabilities", amounts: amountLines(liabilityTotals), breakdown: liabilities.map(display), ...preview.liabilities },
+    { label: "Net position", amounts: amountLines(net), ...preview.net },
+    { label: "Asset value", amounts: amountLines(assetValue), ...preview.assets },
+    { label: "Liabilities", amounts: amountLines(liabilityTotals), ...preview.liabilities },
   ];
 }
 
@@ -434,27 +434,6 @@ function holdingPricesForPositions(
 
 type PGliteReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
 
-async function readExchangeRatesOnReader(
-  reader: PGliteReader,
-  currencies?: readonly string[],
-): Promise<ExchangeRateRecord[]> {
-  if (currencies?.length === 0) return [];
-  const params: readonly unknown[] = currencies ?? [];
-  const where = currencies === undefined
-    ? ""
-    : `WHERE currency IN (${currencies.map((_, index) => `$${index + 1}`).join(", ")})`;
-  const result = await reader.query<ExchangeRateRecord>(
-    `SELECT rate_date AS "rateDate", currency,
-            twd_per_unit AS "twdPerUnit", source,
-            fetched_at AS "fetchedAt"
-       FROM exchange_rates
-       ${where}
-      ORDER BY currency, rate_date`,
-    params,
-  );
-  return result.rows.map((row) => ({ ...row }));
-}
-
 function readHeldCurrencyRates(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
@@ -472,7 +451,7 @@ function readHeldCurrencyRates(
     ...preview.accounts.flatMap((account) => account.amountLines.map((amount) => amount.currency)),
     ...preview.series.flatMap((series) => series.points.map((point) => point.currency)),
   ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
-  return currencies.length === 0 ? Promise.resolve([]) : readExchangeRatesOnReader(reader, currencies);
+  return readExchangeRateRows(reader, currencies);
 }
 
 type PreviewOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly PreviewBalanceSeries[] }>;
@@ -519,7 +498,6 @@ async function readHistoryWithPreview(
 
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
-  exchangeRates: ExchangeRatePersistencePort,
   previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
 ): PGliteFinancialRegistryWithPageActionEvents {
   const spending = createPGliteSpendingQuery(store);

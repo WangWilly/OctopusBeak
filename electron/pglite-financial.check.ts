@@ -326,7 +326,7 @@ test("PGlite overview exposes observed daily balances to exchange-rate requireme
   const database = await createTestPGlite("ledger+operational");
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
-  const registry = createPGliteFinancialRegistry(store, operational.exchangeRates);
+  const registry = createPGliteFinancialRegistry(store);
   try {
     await registry["financial.source.commit"]([sourceCommitRequest("overview-history-source", "123456")]);
     await registry["financial.balance.capture"]([balanceCaptureRequest(

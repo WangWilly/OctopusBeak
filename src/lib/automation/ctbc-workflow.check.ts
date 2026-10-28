@@ -251,7 +251,7 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({ provider: {
-    operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, operational.exchangeRates)),
+    operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)),
   } });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;

@@ -43,7 +43,6 @@ export type ExchangeRateDto = {
 export type SummaryMetricDto = {
   label: string;
   amounts: CurrencyAmountDto[];
-  breakdown: string[];
   includesPreview?: boolean;
   /** A visible preview credit account's used credit is unknown, so this total is not a figure. */
   incomplete?: boolean;

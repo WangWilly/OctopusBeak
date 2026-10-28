@@ -170,14 +170,14 @@ async function withLedger(run: (input: {
   try {
     await applyPglitePreviewFinancialDataSchema(store);
     const operational = createPgliteOperationalProvider(store);
-    const canonical = createPGliteFinancialRegistry(store, operational.exchangeRates);
+    const canonical = createPGliteFinancialRegistry(store);
     await canonical["financial.source.commit"]([depositCommit()]);
     await canonical["financial.balance.capture"]([canonicalBalanceOf100Point1Twd()]);
     const preview = createPGlitePreviewFinancialData(store);
     await run({
       store,
       preview,
-      registry: (visibility) => createPGliteFinancialRegistry(store, operational.exchangeRates, visibility),
+      registry: (visibility) => createPGliteFinancialRegistry(store, visibility),
       writePreview: async (...accounts) => {
         await preview.write({
           sourceId: "synthetic",
