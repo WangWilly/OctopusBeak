@@ -3,7 +3,9 @@ import {
   applySpendingSummaryDelta,
   preserveSpendingMonthSelection,
   reconcileSpendingPageActionSummary,
+  spendingCanonicalAt,
   spendingMonths,
+  type CanonicalSpendingView,
   type SpendingPurchaseReportSummaryDto,
 } from "./model.ts";
 
@@ -87,6 +89,22 @@ assert.deepEqual(
   { state: "newer-live-version", summary: crossMonthConfirmed },
   "a newer live report wins over a delayed action result",
 );
+assert.throws(
+  () => reconcileSpendingPageActionSummary(exactSummary, 5, compactActionResult),
+  /does not match the action result base version/u,
+  "a summary from neither side of the action cannot take its delta; the worker recomputes instead",
+);
+{
+  const before = { availability: "empty", knowledgePoint: 6, totalStatus: "complete", totalsByCurrency: [] } as unknown as CanonicalSpendingView;
+  const canonical = spendingCanonicalAt(before, crossMonthConfirmed, 7);
+  assert.equal(canonical.availability, crossMonthConfirmed.recordCount > 0 ? "available" : "empty");
+  assert.equal(canonical.knowledgePoint, 7, "the canonical view moves to the action version");
+  assert.deepEqual(canonical.totalsByCurrency, crossMonthConfirmed.totalsByCurrency.map((amount) => ({
+    currency: amount.currency,
+    value: Number(amount.coefficient) / 10 ** amount.scale,
+    exact: { coefficient: amount.coefficient, scale: amount.scale },
+  })), "totals keep the exact amount beside its number");
+}
 assert.deepEqual(
   {
     recordCount: crossMonthConfirmed.recordCount,

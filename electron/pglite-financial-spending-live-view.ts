@@ -1,4 +1,8 @@
-import { applySpendingSummaryDelta, type SpendingPageDto } from "../src/lib/spending/model.ts";
+import {
+  reconcileSpendingPageActionSummary,
+  spendingCanonicalAt,
+  type SpendingPageDto,
+} from "../src/lib/spending/model.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { FinancialLiveViewDefinition } from "./pglite-financial-live-views.ts";
 
@@ -22,41 +26,31 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
         let actionResultPublished = false;
         if (result) {
           const previous = lastValue() as SpendingPageDto | undefined;
-          const previousVersion = previous?.purchaseReport.knowledgeAt;
-          if (previous?.purchaseReport.summary && previousVersion === result.baseKnowledgeAt) {
+          if (previous?.purchaseReport.summary) {
             try {
-              const summary = applySpendingSummaryDelta(
+              const reconciliation = reconcileSpendingPageActionSummary(
                 previous.purchaseReport.summary,
-                result.baseKnowledgeAt,
-                result.knowledgeAt,
-                result.summaryDelta,
+                previous.purchaseReport.knowledgeAt,
+                result,
               );
-              const purchaseReport = Object.freeze({
-                ...previous.purchaseReport,
-                knowledgeAt: result.knowledgeAt,
-                totalsByCurrency: summary.totalsByCurrency,
-                summary,
-              });
-              publish(Object.freeze({
-                ...previous,
-                canonical: Object.freeze({
-                  ...previous.canonical,
-                  availability: summary.recordCount > 0 ? "available" : "empty",
-                  knowledgePoint: result.knowledgeAt,
-                  totalsByCurrency: summary.totalsByCurrency.map((amount) => ({
-                    currency: amount.currency,
-                    value: Number(amount.coefficient) / 10 ** amount.scale,
-                    exact: { coefficient: amount.coefficient, scale: amount.scale },
-                  })),
-                  totalStatus: "complete",
-                }),
-                purchaseReport,
-              }) satisfies SpendingPageDto);
-              actionResultPublished = true;
+              if (reconciliation.state === "apply-delta") {
+                const { summary } = reconciliation;
+                publish(Object.freeze({
+                  ...previous,
+                  canonical: spendingCanonicalAt(previous.canonical, summary, result.knowledgeAt),
+                  purchaseReport: Object.freeze({
+                    ...previous.purchaseReport,
+                    knowledgeAt: result.knowledgeAt,
+                    totalsByCurrency: summary.totalsByCurrency,
+                    summary,
+                  }),
+                }) satisfies SpendingPageDto);
+              }
+              actionResultPublished = reconciliation.state !== "newer-live-version";
             } catch {
               // The version check below schedules an authoritative refresh if this delta no longer applies.
             }
-          } else if (previousVersion === result.knowledgeAt) {
+          } else if (previous?.purchaseReport.knowledgeAt === result.knowledgeAt) {
             actionResultPublished = true;
           }
         }
