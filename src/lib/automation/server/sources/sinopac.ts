@@ -96,6 +96,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.sinopac,
     runtime: browser("https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx"),
     verification: { rejection: { dialog: { exact: "驗證碼失效或輸入錯誤，請重新輸入" } } },

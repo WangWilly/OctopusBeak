@@ -14,7 +14,6 @@ import type { VerificationStage } from "../lib/automation/verification-stage.ts"
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
-  collectSelectedProducts,
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
@@ -72,7 +71,6 @@ import {
   type CurrentBalanceCaptureMatching,
 } from "./current-balance-capture-match.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
-import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import {
   collectSinopacCreditCards,
   sinopacCardPageTransport,
@@ -118,7 +116,7 @@ const typedWorkflowInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-  statementTypes: z.array(z.literal("deposit")).default(["deposit"]),
+  statementTypes: z.array(z.literal("deposit")),
   attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
@@ -1715,16 +1713,14 @@ export type SinopacProviderWorkflowDependencies = Readonly<{
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
 export async function runSinopacProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
   rawInput: unknown,
   dependencies: SinopacProviderWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
   const parsed = typedWorkflowInputSchema.safeParse(rawInput);
   if (!parsed.success)
     throw new Error("SinoPac workflow credentials or input are missing or invalid.");
-  const collectsAccounts = parsed.data.statementTypes.includes("deposit");
-  const attachedProducts = parsed.data.attachedPreviewProducts;
-  if (!collectsAccounts && attachedProducts.length === 0)
+  if (parsed.data.statementTypes.length === 0 && parsed.data.attachedPreviewProducts.length === 0)
     throw new Error("SinoPac workflow has no statement type or attached product selected.");
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
@@ -1747,24 +1743,15 @@ export async function runSinopacProviderWorkflow(
     context.signal.throwIfAborted();
 
     let deposit: SinopacDepositCollection | null = null;
-    const summary = await collectSelectedProducts({
-      provider: "sinopac",
-      productIds: ["deposit"],
-      selectedIds: collectsAccounts ? ["deposit"] : [],
-      signal: context.signal,
-      assertSession,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      deposit: async (product): Promise<ProductCollectionSummary> => {
         const { sourceCaptureCount, ...collected } = await collectDeposit(page, workflowInput, context, product);
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },
-      financialCommit: context.financialCommit,
-      attached: attachedPreviewRun({
-        context,
-        source: ATTACHED_PREVIEW_PRODUCTS.sinopac,
-        selected: attachedProducts,
+    }, {
+      assertSession,
+      attached: {
         collectors: () => {
           const transport = dependencies.cardTransport ?? sinopacCardPageTransport(page, context.signal);
           return {
@@ -1773,7 +1760,7 @@ export async function runSinopacProviderWorkflow(
           };
         },
         assertSession,
-      }),
+      },
     });
     // SinoPac's account counts describe the verified deposit only.
     const [verified, ...attached] = summary.products;

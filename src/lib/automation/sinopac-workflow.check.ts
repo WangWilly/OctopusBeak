@@ -27,6 +27,8 @@ import {
 } from "./commit-attempt.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError, type ProductCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
+import { SINOPAC_SOURCE } from "./server/sources/sinopac.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -106,9 +108,9 @@ function makeContext(options: Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   assistance?: WorkflowContext["verification"]["complete"];
   onEvent?: WorkflowContext["event"];
-}>): WorkflowContextWith<"financialCommit"> {
+}>): WorkflowContextWith<"financialCommit" | "products"> {
   const signal = options.signal ?? new AbortController().signal;
-  return {
+  return withBoundProducts<never>({
     runId: "sinopac-test-run",
     signal,
     now: () => "2026-09-24T12:00:00.000+08:00",
@@ -120,7 +122,7 @@ function makeContext(options: Readonly<{
     financialCommit: options.financialCommit,
     event: options.onEvent ?? (async () => undefined),
     signalEvent: async () => undefined,
-  };
+  }, SINOPAC_SOURCE, input);
 }
 
 function financialCommitStub(calls: unknown[][]) : WorkflowFinancialCommitPort {
