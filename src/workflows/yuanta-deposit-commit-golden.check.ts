@@ -29,6 +29,8 @@ registerHooks({
 });
 
 const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
+const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
+const { YUANTA_SOURCE } = await import("../lib/automation/server/sources/yuanta.ts");
 const { stageYuantaDeposit, yuantaObservedAt } = await import("./yuanta-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
@@ -138,7 +140,7 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
       source.readCurrentBalances,
     );
   };
-  const result = await runYuantaAllStatementsWorkflow(workflowContext(recorder), {
+  const input = {
     managedIdentitySecret: "synthetic-yuanta-golden-secret",
     statementTypes: ["deposit"],
     credentials: {
@@ -146,7 +148,8 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
       yuanta_account: "SYNTHETIC-YUANTA-LOGIN",
       yuanta_password: "synthetic-password",
     },
-  }, {
+  };
+  const result = await runYuantaAllStatementsWorkflow(withBoundProducts(workflowContext(recorder), YUANTA_SOURCE, input), input, {
     signOut: async () => undefined,
     collectDeposit,
   });

@@ -8,7 +8,7 @@ import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/investment-funding-contract.ts";
-import { collectSelectedProducts } from "../lib/automation/product-collection.ts";
+import { boundProductCollection } from "../lib/automation/product-collection.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { chromium } from "playwright";
@@ -1671,14 +1671,27 @@ try {
   // account can have several currency balances, each requiring its own receipt.
   const yuantaForeignMultiCurrencyAccount = ["00123456", "789012"].join("");
   const committedProducts: string[] = [];
-  const multiCurrency = await collectSelectedProducts({
+  const multiCurrency = await boundProductCollection({
     provider: "yuanta",
     productIds: ["foreign_currency", "credit_card"],
-    selectedIds: ["foreign_currency", "credit_card"],
+    input: { statementTypes: ["foreign_currency", "credit_card"] },
     signal: new AbortController().signal,
-    collect: async (typeId, product) => {
-      if (typeId === "credit_card")
-        return { sourceCaptureCount: 0, rowCount: 0, noDataEvidence: true };
+    event: async () => undefined,
+    financialCommit: { execute: async (staged, options) => {
+      committedProducts.push(options?.product ?? "");
+      assert.equal(staged.length, 3, "statement and both currency balances remain complete items");
+      assert.equal(new Set(staged.map((item) => item.itemKey)).size, 3);
+      return {
+        status: "completed", committedCount: staged.length, failedCount: 0, diagnostics: [],
+        items: staged.map((item) => ({
+          provider: item.provider, product: item.product, itemKey: item.itemKey,
+          status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
+        })),
+      };
+    } },
+  }).collect({
+    credit_card: async () => ({ sourceCaptureCount: 0, rowCount: 0, noDataEvidence: true }),
+    foreign_currency: async (product) => {
       const multiCurrencyAccount = { value: yuantaForeignMultiCurrencyAccount, label: "外幣綜合存款" };
       return await stageYuantaForeignCurrency(
         {
@@ -1712,18 +1725,6 @@ try {
         product,
       );
     },
-    financialCommit: { execute: async (staged, options) => {
-      committedProducts.push(options?.product ?? "");
-      assert.equal(staged.length, 3, "statement and both currency balances remain complete items");
-      assert.equal(new Set(staged.map((item) => item.itemKey)).size, 3);
-      return {
-        status: "completed", committedCount: staged.length, failedCount: 0, diagnostics: [],
-        items: staged.map((item) => ({
-          provider: item.provider, product: item.product, itemKey: item.itemKey,
-          status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
-        })),
-      };
-    } },
   });
   assert.equal(multiCurrency.status, "completed");
   assert.equal(multiCurrency.committedCount, 3);

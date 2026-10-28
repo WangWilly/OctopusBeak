@@ -80,6 +80,7 @@ export const TDCC_SOURCE: VerifiedSource = {
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
     requiresTdcc: true,
+    requiresProductCollection: true,
     runtime: NONBROWSER,
     input: { statementTypes: true },
     async load() {

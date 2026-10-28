@@ -36,11 +36,10 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
-  type ProductStageRequest,
+import type {
+  ProductCollectionHandle,
+  ProductCollectionSummary,
+  ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
@@ -76,6 +75,7 @@ const typedInputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).optional(),
+  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 export type CtbcStatementsInput = z.infer<typeof typedInputSchema>;
@@ -1276,7 +1276,7 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
 
 /** App-owned CTBC statement provider. Source admission completes before either commit. */
 export async function runCtbcProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit">,
+  context: WorkflowContextWith<"financialCommit" | "products">,
   rawInput: unknown,
   overrides: Readonly<{ collectDeposit?: CtbcDepositRunner }> = {},
 ): Promise<WorkflowRunResult> {
@@ -1291,14 +1291,8 @@ export async function runCtbcProviderWorkflow(
     await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
 
     let count = 0;
-    const summary = await collectSelectedProducts({
-      provider: "ctbc",
-      productIds: ["deposit"],
-      selectedIds: ["deposit"],
-      signal: context.signal,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      deposit: async (product): Promise<ProductCollectionSummary> => {
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         const collected = await collectDeposit(page, parsed.data, productContext, product);
@@ -1306,7 +1300,6 @@ export async function runCtbcProviderWorkflow(
         count = collected.sourceCaptureCount;
         return collected;
       },
-      financialCommit: context.financialCommit,
     });
 
     return productRunResult(summary, { counts: { count } });

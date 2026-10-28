@@ -38,6 +38,7 @@ import {
 import { FailureCodeError } from "./workflow-failures.ts";
 import { parsePreviewWrite, type PreviewCreditCollection, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import {
   CATHAY_PREVIEW_RESPONSES,
   cathayCardTotals,
@@ -60,6 +61,16 @@ const { runCathayAllProviderWorkflow } =
   await import("../../workflows/cathay-all-statements.ts");
 const { collectCathayForeignFinancialCaptures } =
   await import("../../workflows/cathay-foreign-statements.ts");
+const { CATHAY_SOURCE } = await import("./server/sources/cathay.ts");
+
+/** Runs Cathay as the executor does: the Product collection run bound to CATHAY_SOURCE and this input. */
+function runCathay(
+  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  input: unknown,
+  dependencies?: Parameters<typeof runCathayAllProviderWorkflow>[2],
+) {
+  return runCathayAllProviderWorkflow(withBoundProducts(context, CATHAY_SOURCE, input), input, dependencies);
+}
 
 const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
   sourceConnectionId: "synthetic-cathay-connection",
@@ -246,7 +257,7 @@ test("Cathay all workflow collects and commits selected products independently w
   process.chdir(temporaryDirectory);
   try {
     const harness = contextHarness();
-    const output = await runCathayAllProviderWorkflow(
+    const output = await runCathay(
       harness.context,
       bothProductsInput,
       collectionDependencies(),
@@ -303,7 +314,7 @@ test("Cathay all workflow collects and commits selected products independently w
 test("Cathay all workflow never invokes an unselected product collector", async () => {
   const harness = contextHarness();
   let foreignCalls = 0;
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["domestic"] },
     {
@@ -333,7 +344,7 @@ test("Cathay all workflow never invokes an unselected product collector", async 
 test("Cathay all workflow can collect foreign currency without domestic products", async () => {
   const harness = contextHarness();
   let domesticCalls = 0;
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["foreign_currency"] },
     {
@@ -362,7 +373,7 @@ test("Cathay all workflow can collect foreign currency without domestic products
 
 test("Cathay all workflow reports incomplete domestic collection without blocking foreign collection", async () => {
   const harness = contextHarness();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     bothProductsInput,
     collectionDependencies({
@@ -390,7 +401,7 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
 
 test("Cathay balance collection failure discards that product's staged statements and continues", async () => {
   const harness = contextHarness();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     bothProductsInput,
     collectionDependencies({
@@ -454,7 +465,7 @@ test("Cathay balance admission failure keeps product receipts and does not block
       request: {},
     },
   } as unknown as ProductStageRequest;
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     bothProductsInput,
     collectionDependencies({
@@ -484,7 +495,7 @@ test("Cathay balance admission failure keeps product receipts and does not block
 test("Cathay foreign collector reports a missing selected currency without blocking domestic commit", async () => {
   const harness = contextHarness();
   const dependencies = collectionDependencies();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     bothProductsInput,
     {
@@ -547,7 +558,7 @@ test("Cathay foreign collector reports a missing selected currency without block
 
 test("Cathay malformed source decoding is isolated to its product and keeps the summary free of source data", async () => {
   const harness = contextHarness();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     bothProductsInput,
     {
@@ -582,7 +593,7 @@ test("Cathay session health failure after collection stops before commit and ski
   const harness = contextHarness();
   let sessionChecks = 0;
   await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
+    runCathay(harness.context, bothProductsInput, {
       ...collectionDependencies(),
       createSession: async () => {
         sessionChecks += 1;
@@ -620,7 +631,7 @@ test("Cathay session health failure after collection stops before commit and ski
 test("Cathay all workflow cancellation stops later products and retains prior receipts in its summary", async () => {
   const harness = contextHarness();
   await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, bothProductsInput, {
+    runCathay(harness.context, bothProductsInput, {
       ...collectionDependencies(),
       collectForeign: async () => {
         harness.controller.abort(new Error("fixture cancellation"));
@@ -674,7 +685,7 @@ const outcomes = (products: readonly { typeId: string; status: string; skipReaso
 test("a Cathay run with only an attached product signs in and collects only that product", async () => {
   const harness = attachedHarness();
   const fake = fakeCathayAttachedPreviewPort();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["credit_card"] },
     {
@@ -713,7 +724,7 @@ test("a failing attached product leaves the verified and other attached outcomes
   const fake = fakeCathayAttachedPreviewPort({
     C_BILL_Q_RecentBillInfo: CATHAY_PREVIEW_RESPONSES.C_BILL_Q_RecentBillInfo.replace(`"unPaidAmount":1200`, `"unPaidAmount":"x"`),
   });
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: ["credit_card", "time_deposit"] },
     { ...collectionDependencies(), attachedPreviewPort: () => fake.port },
@@ -731,7 +742,7 @@ test("a failing attached product leaves the verified and other attached outcomes
 
 test("an empty attached selection collects nothing and keeps the verified summary", async () => {
   const harness = attachedHarness();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: [] },
     { ...collectionDependencies(), attachedPreviewPort: () => { throw new Error("attached port must not open"); } },
@@ -747,11 +758,11 @@ test("an empty attached selection collects nothing and keeps the verified summar
 test("a Cathay run with neither verified nor attached products is invalid input", async () => {
   const harness = attachedHarness();
   await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: [] }, collectionDependencies()),
+    runCathay(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: [] }, collectionDependencies()),
     /input are invalid/u,
   );
   await assert.rejects(
-    runCathayAllProviderWorkflow(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["deposit"] }, collectionDependencies()),
+    runCathay(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["deposit"] }, collectionDependencies()),
     /input are invalid/u,
   );
 });
@@ -761,7 +772,7 @@ test("a session lost during an attached product ends the run with the verified o
   let sessionChecks = 0;
   const fake = fakeCathayAttachedPreviewPort({ cardStatus: null });
   await assert.rejects(
-    runCathayAllProviderWorkflow(
+    runCathay(
       harness.context,
       { ...bothProductsInput, statementTypes: ["domestic"], attachedPreviewProducts: ["credit_card", "time_deposit"] },
       {
@@ -809,7 +820,7 @@ test("Cathay domestic current balances take their identity from the admitted sta
   assert.ok(parsed);
   const row = { ...parsed, sourceAccountKey: accountKey, uiAccountNumber: accountKey };
   const { collectCurrentBalanceItems: _stubbed, ...dependencies } = collectionDependencies();
-  const output = await runCathayAllProviderWorkflow(
+  const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["domestic"] },
     {

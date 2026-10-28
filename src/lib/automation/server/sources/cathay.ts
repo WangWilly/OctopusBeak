@@ -95,6 +95,7 @@ export const CATHAY_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.cathay,
     runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
     input: { credentials: true, statementTypes: true },

@@ -1,9 +1,7 @@
 import { z } from "zod";
 import type { Page, Response } from "playwright";
 import {
-  collectSelectedProducts,
   type CollectionProductOutcome,
-  type CollectionProductTypeId,
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
@@ -49,10 +47,7 @@ import {
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import {
-  ATTACHED_PREVIEW_PRODUCTS,
-  attachedPreviewRun,
-} from "../lib/preview-sources/attached-products.ts";
+import { ATTACHED_PREVIEW_PRODUCTS } from "../lib/preview-sources/attached-products.ts";
 import {
   cathayAttachedPreviewCollectors,
   type CathayAttachedPreviewPort,
@@ -60,11 +55,7 @@ import {
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 import { withAbort } from "./abort.ts";
 
-const statementTypeSchema = z
-  .enum(["domestic", "foreign_currency", "foreign"])
-  .transform((type) =>
-    type === "foreign" ? ("foreign_currency" as const) : type,
-  );
+const statementTypeSchema = z.enum(["domestic", "foreign_currency"]);
 const dateRangeSchema = z.enum([
   "one_week",
   "one_month",
@@ -230,7 +221,7 @@ function currentBalanceItems(
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
 export async function runCathayAllProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
   rawInput: unknown,
   dependencies: CathayAllProviderWorkflowDependencies = {},
 ): Promise<WorkflowRunResult> {
@@ -243,11 +234,6 @@ export async function runCathayAllProviderWorkflow(
   await context.event("preparation", "completed", "input-validated");
 
   const input = parsed.data;
-  const selectedIds = input.statementTypes;
-  const productIds = [
-    "domestic",
-    "foreign_currency",
-  ] as const satisfies readonly CollectionProductTypeId[];
 
   return await context.browser.withPage(async (page) => {
     const source: CathayStrictSourceOptions = {
@@ -358,77 +344,69 @@ export async function runCathayAllProviderWorkflow(
 
     // A person may select only attached preview products. The run then signs
     // in and reports every verified product as not selected.
-    const summary = await collectSelectedProducts({
-      provider: "cathay",
-      productIds,
-      selectedIds,
-      signal: context.signal,
-      assertSession,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (typeId, product): Promise<ProductCollectionSummary> => {
-        if (typeId === "domestic") {
-          await product.reportActivity("query");
-          const domestic = await withAbort(
-            (
-              dependencies.collectDomestic ??
-              ((target, selection, token, sourceOptions, captureTime) =>
-                collectCathayDomesticFinancialRequests(
-                  target,
-                  selection.dateRange,
-                  selection.domesticAccountFilters ?? selection.accountFilters,
-                  token,
-                  { source: sourceOptions, observedAt: captureTime },
-                ))
-            )(page, input, session, source, observedAt),
-            context.signal,
-          );
-          if (
-            domestic.captureCount === 0 ||
-            domestic.requests.length !== domestic.captureCount
-          ) {
-            throw new Error("Cathay domestic selected source set is incomplete.");
-          }
-          await context.event("collection", "completed", "domestic-collection-completed", {
-            completed: domestic.captureCount,
-            total: domestic.captureCount,
-          });
-          await context.event("validation", "started", "domestic-admission-started", {
-            total: domestic.requests.length,
-          });
-          const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
-          for (const request of domestic.requests) {
-            context.signal.throwIfAborted();
-            statementSteps.push({ kind: "financial", request });
-          }
-          product.stage({
-            product: "domestic-statements",
-            itemKey: `statements:${context.runId}:domestic`,
-            command: {
-              kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-              request: { steps: statementSteps },
-            },
-          });
-          await context.event("validation", "completed", "domestic-admission-completed", {
-            completed: domestic.requests.length,
-            total: domestic.requests.length,
-          });
-          const balances = await collectCurrentBalanceItems(
-            "domestic",
-            domestic,
-            undefined,
-            product.reportActivity,
-          );
-          product.stage(...balances);
-          statementCaptureCount += domestic.captureCount;
-          return {
-            // Keep this legacy field scoped to statement-source captures;
-            // the run counts the staged balance command items.
-            sourceCaptureCount: domestic.captureCount,
-            rowCount: domestic.rowCount,
-          };
+    const summary = await context.products.collect({
+      domestic: async (product): Promise<ProductCollectionSummary> => {
+        await product.reportActivity("query");
+        const domestic = await withAbort(
+          (
+            dependencies.collectDomestic ??
+            ((target, selection, token, sourceOptions, captureTime) =>
+              collectCathayDomesticFinancialRequests(
+                target,
+                selection.dateRange,
+                selection.domesticAccountFilters ?? selection.accountFilters,
+                token,
+                { source: sourceOptions, observedAt: captureTime },
+              ))
+          )(page, input, session, source, observedAt),
+          context.signal,
+        );
+        if (
+          domestic.captureCount === 0 ||
+          domestic.requests.length !== domestic.captureCount
+        ) {
+          throw new Error("Cathay domestic selected source set is incomplete.");
         }
-
+        await context.event("collection", "completed", "domestic-collection-completed", {
+          completed: domestic.captureCount,
+          total: domestic.captureCount,
+        });
+        await context.event("validation", "started", "domestic-admission-started", {
+          total: domestic.requests.length,
+        });
+        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
+        for (const request of domestic.requests) {
+          context.signal.throwIfAborted();
+          statementSteps.push({ kind: "financial", request });
+        }
+        product.stage({
+          product: "domestic-statements",
+          itemKey: `statements:${context.runId}:domestic`,
+          command: {
+            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
+            request: { steps: statementSteps },
+          },
+        });
+        await context.event("validation", "completed", "domestic-admission-completed", {
+          completed: domestic.requests.length,
+          total: domestic.requests.length,
+        });
+        const balances = await collectCurrentBalanceItems(
+          "domestic",
+          domestic,
+          undefined,
+          product.reportActivity,
+        );
+        product.stage(...balances);
+        statementCaptureCount += domestic.captureCount;
+        return {
+          // Keep this legacy field scoped to statement-source captures;
+          // the run counts the staged balance command items.
+          sourceCaptureCount: domestic.captureCount,
+          rowCount: domestic.rowCount,
+        };
+      },
+      foreign_currency: async (product): Promise<ProductCollectionSummary> => {
         await product.reportActivity("query");
         const foreign = await withAbort(
           (
@@ -491,18 +469,16 @@ export async function runCathayAllProviderWorkflow(
           rowCount: foreign.rowCount,
         };
       },
-      financialCommit: context.financialCommit,
-      attached: attachedPreviewRun({
-        context,
-        source: ATTACHED_PREVIEW_PRODUCTS.cathay,
-        selected: input.attachedPreviewProducts,
+    }, {
+      assertSession,
+      attached: {
         collectors: () => cathayAttachedPreviewCollectors(
           (dependencies.attachedPreviewPort ??
             playwrightCathayAttachedPreviewPort)(page, () => session, source),
           context.now,
         ),
         assertSession,
-      }),
+      },
     });
 
     return productRunResult(summary, {

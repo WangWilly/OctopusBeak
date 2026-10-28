@@ -6,12 +6,12 @@ import {
 } from "../../workflows/tdcc-epassbook-collection.ts";
 import type { TdccClientOptions } from "../../workflows/tdcc-epassbook-client.ts";
 import {
-  collectSelectedProducts,
   ProductCollectionInterruptedError,
   StatementComponentAbsentError,
+  type ProductCollectionRunSummary,
+  type ProductCollector,
 } from "./product-collection.ts";
 import { FailureCodeError } from "./workflow-failures.ts";
-import type { ProductCollectionRunSummary } from "./product-collection.ts";
 import { aggregateTdccExclusionCounts, createTdccRunSummary } from "./tdcc-collection-summary.ts";
 import { productRunResult } from "./workflow-run-result.ts";
 import { defineWorkflow, type WorkflowDefinition } from "./workflow-executor.ts";
@@ -23,12 +23,13 @@ export type TdccWorkflowOptions = Readonly<{
   fetch?: TdccClientOptions["fetch"];
 }>;
 
-function selectedProducts(input: unknown): TdccProductId[] {
+/** Refuses a selection with no product or one TDCC does not offer, before any TDCC request. */
+function assertTdccInput(input: unknown): void {
   const statementTypes = (input as Partial<TdccWorkflowInput> | null)?.statementTypes;
-  if (!Array.isArray(statementTypes)) throw new FailureCodeError("workflow-failed");
-  const selected = TDCC_PRODUCT_IDS.filter((id) => statementTypes.includes(id));
-  if (selected.length === 0) throw new FailureCodeError("workflow-failed");
-  return selected;
+  if (!Array.isArray(statementTypes) || statementTypes.length === 0
+    || statementTypes.some((id) => !(TDCC_PRODUCT_IDS as readonly unknown[]).includes(id))) {
+    throw new FailureCodeError("workflow-failed");
+  }
 }
 
 /**
@@ -40,8 +41,9 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
     id: "sync-tdcc",
     requiresFinancialCommit: true,
     requiresTdcc: true,
+    requiresProductCollection: true,
   }, async (context, input: TdccWorkflowInput) => {
-    const selectedIds = selectedProducts(input);
+    assertTdccInput(input);
     const tdcc = context.tdcc;
     await context.event("preparation", "completed", "input-validated");
     await context.event("authentication", "started", "authentication-started");
@@ -55,43 +57,37 @@ export function createTdccWorkflow(options: TdccWorkflowOptions = {}): WorkflowD
       signal: context.signal,
       now: () => new Date(context.now()),
     });
-    const runSummary = createTdccRunSummary(selectedIds);
+    const runSummary = createTdccRunSummary();
+    const collect = (typeId: TdccProductId): ProductCollector => async (product) => {
+      await product.reportActivity("query");
+      const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>
+        TDCC_PRODUCT_COLLECTORS[typeId]({
+          session,
+          runId: context.runId,
+          observedAt: context.now(),
+          recordValidatedExclusions,
+          admittedFundAccounts: tdcc.admittedFundAccounts,
+        }));
+      const collected = decision.collection;
+      if (decision.kind === "absent") {
+        throw new StatementComponentAbsentError(`TDCC reports no ${typeId} account.`, "not_held");
+      }
+      if (decision.kind !== "items") {
+        return {
+          sourceCaptureCount: collected.sourceCaptureCount,
+          rowCount: collected.rowCount,
+          ...(decision.kind === "complete-with-exclusions" ? { completeWithExclusions: true } : {}),
+        };
+      }
+      product.stage(...collected.items);
+      return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount };
+    };
 
     let collectedSummary: ProductCollectionRunSummary;
     try {
-      collectedSummary = await collectSelectedProducts({
-        provider: "tdcc",
-        productIds: TDCC_PRODUCT_IDS,
-        selectedIds,
-        signal: context.signal,
-        event: context.event,
-        productFailure: context.productFailure,
-        async collect(typeId, product) {
-          await product.reportActivity("query");
-          const decision = await runSummary.collect(typeId, (recordValidatedExclusions) =>
-            TDCC_PRODUCT_COLLECTORS[typeId]({
-              session,
-              runId: context.runId,
-              observedAt: context.now(),
-              recordValidatedExclusions,
-              admittedFundAccounts: tdcc.admittedFundAccounts,
-            }));
-          const collected = decision.collection;
-          if (decision.kind === "absent") {
-            throw new StatementComponentAbsentError(`TDCC reports no ${typeId} account.`, "not_held");
-          }
-          if (decision.kind !== "items") {
-            return {
-              sourceCaptureCount: collected.sourceCaptureCount,
-              rowCount: collected.rowCount,
-              ...(decision.kind === "complete-with-exclusions" ? { completeWithExclusions: true } : {}),
-            };
-          }
-          product.stage(...collected.items);
-          return { sourceCaptureCount: collected.sourceCaptureCount, rowCount: collected.rowCount };
-        },
-        financialCommit: context.financialCommit,
-      });
+      collectedSummary = await context.products.collect(
+        Object.fromEntries(TDCC_PRODUCT_IDS.map((typeId) => [typeId, collect(typeId)])),
+      );
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) {
         throw new ProductCollectionInterruptedError(error.errorCode, runSummary.summarize(error.summary));

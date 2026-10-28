@@ -5,7 +5,14 @@ import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-eve
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
 import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
+
+const input = {
+  credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
+  statementTypes: ["deposit"],
+};
 
 const browser = await chromium.launch();
 try {
@@ -38,9 +45,7 @@ try {
   };
   let failure: unknown;
   try {
-    await runCtbcProviderWorkflow(context, {
-      credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
-    });
+    await runCtbcProviderWorkflow(withBoundProducts(context, CTBC_SOURCE, input), input);
   } catch (error) {
     failure = error;
   } finally {
@@ -71,9 +76,7 @@ try {
   };
   let acceptedFailure: unknown;
   try {
-    await runCtbcProviderWorkflow(acceptedContext, {
-      credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
-    });
+    await runCtbcProviderWorkflow(withBoundProducts(acceptedContext, CTBC_SOURCE, input), input);
   } catch (error) {
     acceptedFailure = error;
   } finally {

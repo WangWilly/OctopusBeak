@@ -107,6 +107,7 @@ export const YUANTA_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     runtime: browser("https://ebank.yuantabank.com.tw/nib/ibanc.jsp"),
     verification: { rejection: { dialog: { exact: "驗證碼不正確，請重新輸入" } } },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },

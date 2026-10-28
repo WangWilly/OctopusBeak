@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { strictSourceText } from "./source-text.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import {
+  ProductCollectionInterruptedError,
+  type ProductCollectionHandle,
+  type ProductCollectionRunSummary,
+} from "./product-collection.ts";
+import { FailureCodeError } from "./workflow-failures.ts";
+import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
+import { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import {
   createWorkflowExecutor,
   type WorkflowExecutorPorts,
@@ -249,4 +256,106 @@ test("a workflow's Verification stage reaches the host port and its port reports
       ["run-verification", "advanced", "human-assistance-completed"],
     ],
   );
+});
+
+function stagedCommitPorts(staged: PGliteWorkflowRunItem[]): WorkflowExecutorPorts {
+  return {
+    ...ports([]),
+    financialCommit: {
+      execute: async (items) => {
+        staged.push(...items);
+        return {
+          status: "completed",
+          items: items.map((entry) => ({
+            provider: entry.provider,
+            product: entry.product,
+            itemKey: entry.itemKey,
+            status: "committed" as const,
+            admissionSummaries: [{ captureId: `capture-${entry.itemKey}`, commitSequence: 1 }],
+            value: null,
+            relationWarnings: [],
+          })),
+          diagnostics: [],
+          committedCount: items.length,
+          failedCount: 0,
+        };
+      },
+    },
+  };
+}
+
+const PRODUCT_SOURCE = {
+  id: "product-source",
+  requiresFinancialCommit: true,
+  requiresProductCollection: true,
+  productCollection: { provider: "fubon", productIds: ["deposit", "credit_card"] },
+} as const;
+
+const collectorFor = (product: string, collected: string[]) => async (handle: ProductCollectionHandle) => {
+  collected.push(product);
+  handle.stage({ product, itemKey: `${product}-1`, command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: {} as never } });
+  return { sourceCaptureCount: 1, rowCount: 1 };
+};
+
+test("the bound Product collection run stamps the source's provider and collects only the input's selection", async () => {
+  const staged: PGliteWorkflowRunItem[] = [];
+  const collected: string[] = [];
+  let sessionChecks = 0;
+  let summary: ProductCollectionRunSummary | undefined;
+  const executor = createWorkflowExecutor([{
+    ...PRODUCT_SOURCE,
+    async run(context) {
+      summary = await context.products!.collect({
+        deposit: collectorFor("deposit", collected),
+        credit_card: collectorFor("credit_card", collected),
+      }, { assertSession: async () => { sessionChecks += 1; } });
+    },
+  }], stagedCommitPorts(staged));
+  await executor.run("product-source", "run-products", { statementTypes: ["credit_card"] }, new AbortController().signal);
+  assert.deepEqual(collected, ["credit_card"]);
+  assert.deepEqual(staged.map(({ provider, product }) => [provider, product]), [["fubon", "credit_card"]]);
+  assert.deepEqual(summary?.products.map(({ typeId, status }) => [typeId, status]), [["deposit", "skipped"], ["credit_card", "success"]]);
+  assert.ok(sessionChecks > 0, "the workflow's session check reaches the run");
+});
+
+test("the bound run refuses collectors or a selection that disagree with the source's products", async () => {
+  const run = (input: unknown, collectors: Record<string, ReturnType<typeof collectorFor>>) => createWorkflowExecutor([{
+    ...PRODUCT_SOURCE,
+    async run(context) { await context.products!.collect(collectors); },
+  }], stagedCommitPorts([])).run("product-source", "run-refused", input, new AbortController().signal);
+  const refused = (error: unknown) => error instanceof FailureCodeError && error.errorCode === "workflow-failed";
+  await assert.rejects(run({ statementTypes: ["deposit"] }, { deposit: collectorFor("deposit", []) }), refused);
+  await assert.rejects(run({ statementTypes: ["deposit"] }, {
+    deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []), loan: collectorFor("loan", []),
+  }), refused);
+  await assert.rejects(run({ statementTypes: ["loan"] }, {
+    deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
+  }), refused);
+  await assert.rejects(run({ statementTypes: ["deposit", "deposit"] }, {
+    deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
+  }), refused);
+  await assert.rejects(run({ statementTypes: [], attachedPreviewProducts: ["credit_card"] }, {
+    deposit: collectorFor("deposit", []), credit_card: collectorFor("credit_card", []),
+  }), refused, "an attached selection needs the source's attached products and the workflow's attached collectors");
+});
+
+test("only a workflow that requires product collection receives it, and it fails closed without its source facts", async () => {
+  const seen: Record<string, unknown> = {};
+  const executor = createWorkflowExecutor([
+    { ...PRODUCT_SOURCE, async run(context) { seen.products = context.products; } },
+    { id: "plain", requiresFinancialCommit: true, async run(context) { seen.plain = context.products; } },
+  ], ports([]));
+  await executor.run("product-source", "run-a", { statementTypes: ["deposit"] }, new AbortController().signal);
+  await executor.run("plain", "run-b", null, new AbortController().signal);
+  assert.ok(seen.products);
+  assert.equal(seen.plain, undefined);
+
+  let called = false;
+  const { productCollection: _facts, ...withoutFacts } = PRODUCT_SOURCE;
+  await assert.rejects(
+    createWorkflowExecutor([{ ...withoutFacts, async run() { called = true; } }], ports([]))
+      .run("product-source", "run-c", { statementTypes: ["deposit"] }, new AbortController().signal),
+    /Product collection is unavailable/,
+  );
+  assert.equal(called, false);
 });

@@ -138,6 +138,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     runtime: browser("https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020"),
     verification: {
       async route(request, dependencies) {
@@ -145,7 +146,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
         return await routeYuantaTradeAppAssistanceRequest(request, dependencies);
       },
     },
-    input: { credentials: true },
+    input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/yuanta-trade-statements.ts")).runYuantaTradeProviderWorkflow;
     },

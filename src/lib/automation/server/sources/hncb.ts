@@ -86,6 +86,7 @@ export const HNCB_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.hncb,
     runtime: browser("https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private"),
     verification: {},

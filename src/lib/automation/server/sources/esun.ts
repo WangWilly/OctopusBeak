@@ -93,6 +93,7 @@ export const ESUN_SOURCE: VerifiedSource = {
   },
   workflow: verifiedWorkflow({
     requiresFinancialCommit: true,
+    requiresProductCollection: true,
     attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.esun,
     runtime: browser("https://ebank.esunbank.com.tw/index.jsp", "esun-login"),
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
