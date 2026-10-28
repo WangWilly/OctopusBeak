@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { FailureCodeError } from "../../lib/automation/workflow-failures.ts";
 import {
   admitCanonicalFinancialDepositCapture,
   assignCanonicalFinancialDepositOccurrenceGroups,
@@ -30,9 +31,9 @@ import {
 import { institutionForBankCode, type InstitutionKey } from "../../lib/institutions/institutions.ts";
 
 /** A TSP006 or TSP007 response that breaks the settlement contract. The whole attempted capture is cancelled. */
-export class TdccSettlementContractError extends Error {
+export class TdccSettlementContractError extends FailureCodeError {
   constructor(message: string) {
-    super(message);
+    super("source-validation-failed", message);
     this.name = "TdccSettlementContractError";
   }
 }

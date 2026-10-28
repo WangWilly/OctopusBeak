@@ -8,7 +8,7 @@ import type {
 import type { TextRecognitionEngine } from "../automation/server/text-captcha-solver.ts";
 import { createWorkflowExecutor } from "../automation/workflow-executor.ts";
 import type { WorkflowRunEvent } from "../automation/run-event.ts";
-import { classifyTypedWorkflowFailure } from "../automation/server/typed-workflow-outcome.ts";
+import { classifyFailure } from "../automation/failure-classification.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { PreviewHttp, PreviewHttpOpener, PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 import { classifyTransport } from "./browser-http.ts";
@@ -173,7 +173,7 @@ export async function runPreviewSource(
   } catch (error) {
     return {
       receipt: null, output: null, writes, deposits: deposits(), observations, events, error,
-      errorCode: classifyTypedWorkflowFailure(error, events),
+      errorCode: classifyFailure({ error, events, stopped: false }),
     };
   }
 }

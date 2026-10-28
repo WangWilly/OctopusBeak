@@ -913,6 +913,14 @@ _Avoid_: Event code suffix, rejected outcome, cancelled outcome
 A named Automation Run Event that a reader needs by name, such as the local solver exhausting its rounds. Each signal fixes its Workflow Progress Stage and Run Event Outcome, so it cannot be emitted at another stage.
 _Avoid_: Magic event code
 
+**Failure code**:
+The typed reason one Automation Task Run, or one product within its Product Collection Run, failed. It never carries exception text; the run's final outcome still comes from the Active Automation Task Run's decision over its Commit attempts and stop.
+_Avoid_: Error message, error string, failure reason text
+
+**Failure classification**:
+The single rule that names a Failure Code from the evidence a caller can see, in one order: a thrown typed error, then a source's own error mapping, then a stopped run, then Run Event Signals, then the failed or last operating Workflow Progress Stage. Every caller applies the same order and supplies only the evidence it holds.
+_Avoid_: Error mapping, fatal code, per-caller classifier
+
 **Workflow progress stage**:
 A meaningful, user-recognizable phase of an Automation Task Run, such as signing in, querying statements, downloading, or preparing results. It describes the work currently underway rather than an individual browser interaction and identifies the selected statement type when work is specific to that type.
 _Avoid_: Browser action, verification stage

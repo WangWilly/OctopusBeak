@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { matchesRejectionDialog } from "../lib/automation/sign-in-prompt.ts";
 import {
@@ -137,7 +137,7 @@ test("Yuanta Bank signs in through the step, closes the notice twice, and keeps 
     await signedIn.assertSession();
     await loginFrame(page).goto(LOGIN_URL);
     const lost = await failure(signedIn.assertSession());
-    assert.ok(lost instanceof ProductCollectionFatalError);
+    assert.ok(lost instanceof FailureCodeError);
     assert.equal(lost.errorCode, "authentication-failed");
   }));
 

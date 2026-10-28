@@ -20,6 +20,7 @@ import {
   selectedWorkflowStatementTypes,
 } from "./workflow-run-progress.ts";
 import { reportExecution, type ExecutionEnding } from "./execution-outcome.ts";
+import { lastOperation } from "../failure-classification.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
@@ -88,13 +89,6 @@ export type AutomationTaskExecutionOptions = {
     execution: Pick<WorkflowExecution, "hostPage">;
   }) => WorkflowBrowserPort;
 };
-
-function lastWorkflowStage(events: readonly WorkflowRunEvent[]): WorkflowRunEvent["stage"] | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index]?.stage !== "finalization") return events[index]?.stage;
-  }
-  return undefined;
-}
 
 function createWorkflowProgressReporter(
   context: ExecutionContext,
@@ -229,7 +223,7 @@ async function executeSupervisedAppWorkflow(
     shapes: PreviewResponseShapes = { responses: [], omittedResponses: 0 },
   ) => {
     previewStructureReports.recordFailure(context.task.id, {
-      stage: lastWorkflowStage(events) ?? null,
+      stage: lastOperation(events)?.stage ?? null,
       errorCode,
       shapes,
     });
@@ -341,7 +335,7 @@ async function executeSupervisedAppWorkflow(
     await recordWorkflowFailure(context, options, {
       ...diagnostic,
       errorCode,
-      stage: lastWorkflowStage(events),
+      stage: lastOperation(events)?.stage,
     });
     recordPreviewFailure(errorCode, events, shapes);
   }

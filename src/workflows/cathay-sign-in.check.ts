@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, errors, type Browser, type Page } from "playwright";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   dialogListeners,
   DONE,
@@ -191,7 +191,7 @@ test("Cathay's one-time-code wall ends the sign-in as device-registration-requir
   withCathay("otp()", async (page) => {
     const run = recordedRun(page, noStage);
     const error = await failure(signInCathay(run, page));
-    assert.ok(error instanceof ProductCollectionFatalError);
+    assert.ok(error instanceof FailureCodeError);
     assert.equal(error.errorCode, "device-registration-required");
     assert.deepEqual(run.codes, [STARTED, READY, ...FILLED, ...SUBMIT, "advanced device-registration-required", FAILED]);
     assert.equal(run.classify(error), "device-registration-required");
@@ -221,7 +221,7 @@ test("a Cathay sign-in that never settles after submit fails verification", () =
   withCathay("", async (page) => {
     const run = recordedRun(page, noStage);
     const error = await failure(signInCathay(run, page, { ...planFor(run), timeoutMs: 1_000 }));
-    assert.ok(error instanceof ProductCollectionFatalError);
+    assert.ok(error instanceof FailureCodeError);
     assert.equal(error.errorCode, "verification-failed");
     assert.deepEqual(run.codes, [STARTED, READY, ...FILLED, ...SUBMIT, FAILED, "advanced authentication-sign-in-unconfirmed"]);
     assert.equal(run.classify(error), "verification-failed");

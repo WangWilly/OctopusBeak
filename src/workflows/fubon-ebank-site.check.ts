@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { ProductCollectionFatalError } from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import type { BrowserScope } from "./frame-scope.ts";
@@ -153,7 +153,7 @@ test("a page without the header frame fails as a lost session", () =>
   withFubonShell(async (page) => {
     await assert.rejects(
       fubonEbankSite(page, context()).open(DEPOSITS),
-      (error: unknown) => error instanceof ProductCollectionFatalError && error.errorCode === "authentication-failed",
+      (error: unknown) => error instanceof FailureCodeError && error.errorCode === "authentication-failed",
     );
   }, { shell: "signed-out" }));
 
