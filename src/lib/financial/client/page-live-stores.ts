@@ -5,6 +5,7 @@ import type { OverviewPageDto } from "../../overview/types.ts";
 import type { SpendingPageDto } from "../../spending/model.ts";
 import type { SpendingLoadInput } from "../../spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../../../ledger/canonical/canonical-overview-query.ts";
+import type { FinancialLiveViewDtos, PGliteFinancialLiveView } from "../../../../electron/pglite-financial-live-views.ts";
 import {
   createViewStores,
   type ViewState,
@@ -51,10 +52,14 @@ export function createFinancialPageLiveStores(
       );
     },
   });
+  // The view name decides the DTO type, so a misnamed view or a page type
+  // that drifts from its operation's result fails to compile.
+  const view = <View extends PGliteFinancialLiveView>(name: View, params: object) =>
+    views.get<FinancialLiveViewDtos[View]>(name, params);
   return Object.freeze({
-    overview: (params = {}) => views.get<OverviewPageDto>("financial.overview.current", params),
-    assets: (params = {}) => views.get<AssetsPageDto>("financial.assets.current", params),
-    liabilities: (params = {}) => views.get<LiabilitiesPageDto>("financial.liabilities.current", params),
-    spending: (params = {}) => views.get<SpendingPageDto>("financial.spending.current", params),
+    overview: (params = {}) => view("financial.overview.current", params),
+    assets: (params = {}) => view("financial.assets.current", params),
+    liabilities: (params = {}) => view("financial.liabilities.current", params),
+    spending: (params = {}) => view("financial.spending.current", params),
   });
 }

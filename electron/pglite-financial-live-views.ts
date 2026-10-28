@@ -1,6 +1,7 @@
 import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import type {
   PGliteFinancialExpectedSources,
+  PGliteFinancialHandlerResult,
   PGliteFinancialOperation,
   PGliteFinancialRegistry,
 } from "./pglite-financial-rpc-client.ts";
@@ -67,6 +68,11 @@ const FINANCIAL_LIVE_VIEWS = {
 } as const satisfies Partial<Record<PGliteFinancialOperation, FinancialLiveViewDefinition>>;
 
 export type PGliteFinancialLiveView = keyof typeof FINANCIAL_LIVE_VIEWS;
+
+/** The DTO each live view publishes: the result of the operation it loads. */
+export type FinancialLiveViewDtos = {
+  readonly [View in PGliteFinancialLiveView]: PGliteFinancialHandlerResult<View>;
+};
 
 function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {
   return Object.hasOwn(FINANCIAL_LIVE_VIEWS, view);
