@@ -18,8 +18,10 @@ import {
   type HncbStatementsContext,
 } from "../../workflows/hncb-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import type { WorkflowFinancialCommitPort } from "./workflow-executor.ts";
+import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
+import { HNCB_SOURCE } from "./server/sources/hncb.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -46,17 +48,19 @@ function oneAccount(download: () => Promise<HncbStatementDownload>): HncbDeposit
   );
 }
 
+/** A deposit-only HNCB run, its Product collection run bound to HNCB_SOURCE as the executor binds it. */
 function runContext(
   financialCommit: WorkflowFinancialCommitPort,
-  overrides: Partial<HncbStatementsContext> = {},
+  overrides: Partial<Pick<WorkflowContext, "signal" | "event">> = {},
 ): HncbStatementsContext {
-  return {
+  const context = {
     signal: new AbortController().signal,
     text: strictSourceText,
     event: async () => undefined,
     financialCommit,
     ...overrides,
-  };
+  } as Pick<WorkflowContext, "signal" | "text" | "event"> as WorkflowContextWith<"financialCommit">;
+  return withBoundProducts(context, HNCB_SOURCE, { statementTypes: ["deposit"] });
 }
 
 function reply(response: ServerResponse, status: number, body: string | Buffer): void {
