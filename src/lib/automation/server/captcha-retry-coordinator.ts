@@ -14,6 +14,7 @@ import {
   WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
   appWorkflowRoutesVerification,
   appVerificationSolver,
+  captchaRetryCooldownMs,
   noPostSubmitOutcome,
   routeWaitingRunVerification,
   sourceVerificationRoute,
@@ -85,15 +86,6 @@ function markCaptchaCampaignCancelled(campaign: CaptchaRetryCampaign) {
 
 function failed(report: TaskRunReport): TaskRunReport {
   return { summary: report.summary, failure: report.failure ?? { code: "workflow-failed", proven: false } };
-}
-
-// Fubon refuses a login that follows the previous session within seconds.
-const CAPTCHA_RETRY_COOLDOWN_MS: Readonly<Record<string, number>> = {
-  "fubon-all-statements": 20_000,
-};
-
-export function captchaRetryCooldownMs(taskId: string): number | undefined {
-  return CAPTCHA_RETRY_COOLDOWN_MS[taskId];
 }
 
 /** Resolves false as soon as the run is stopped during the wait. */

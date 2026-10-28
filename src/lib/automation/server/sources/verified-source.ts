@@ -64,6 +64,11 @@ export type VerifiedWorkflow = Readonly<
        * stages. Loads its module only when a stage is requested.
        */
       route?: SourceVerificationRoute;
+      /**
+       * How long the next CAPTCHA retry round waits after the previous one,
+       * for a provider that refuses a sign-in following the last within seconds.
+       */
+      retryCooldownMs?: number;
     }>;
     input: Readonly<{
       /** Each sign-in field `LIBRETTO_CLOUD_<NAME>` becomes the input credential `<name>`. */

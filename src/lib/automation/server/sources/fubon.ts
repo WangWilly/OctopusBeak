@@ -103,7 +103,11 @@ export const FUBON_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     requiresAccountIdentity: true,
     runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
-    verification: { rejection: { frame: "txnFrame", text: { pattern: /^0290\s*驗證碼輸入錯誤$/u } } },
+    verification: {
+      rejection: { frame: "txnFrame", text: { pattern: /^0290\s*驗證碼輸入錯誤$/u } },
+      // Fubon refuses a sign-in that follows the previous session within seconds.
+      retryCooldownMs: 20_000,
+    },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/fubon-all-statements.ts")).runFubonAllStatementsWorkflow;
