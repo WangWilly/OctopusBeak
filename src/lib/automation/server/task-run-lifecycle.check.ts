@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import test, { after } from "node:test";
 import type { WorkerOptions } from "node:worker_threads";
@@ -52,6 +53,7 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly started = deferred();
   readonly start: AppWorkflowWorkerStart;
   readonly mode: WorkerMode;
+  private readonly startCallId = randomUUID();
   constructor(start: AppWorkflowWorkerStart, mode: WorkerMode) {
     super();
     this.start = start;
@@ -59,25 +61,28 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
     setImmediate(() => {
       this.emit("online");
       this.emit("message", {
-        protocolVersion: 2,
-        kind: "event",
-        eventId: "lifecycle-start",
-        event: {
-          runId: start.taskRunId,
-          stage: "preparation",
-          outcome: "started",
-          code: "run-started",
-          occurredAt: "2026-10-20T00:00:00.000Z",
+        protocolVersion: 3,
+        kind: "call",
+        callId: this.startCallId,
+        method: "event",
+        request: {
+          event: {
+            runId: start.taskRunId,
+            stage: "preparation",
+            outcome: "started",
+            code: "run-started",
+            occurredAt: "2026-10-20T00:00:00.000Z",
+          },
         },
       });
     });
   }
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind === "event-ack" && frame.eventId === "lifecycle-start") {
+    if (frame.kind === "reply" && frame.callId === this.startCallId) {
       this.started.resolve();
       if (this.mode === "completes") {
         setImmediate(() => {
-          this.emit("message", { protocolVersion: 2, kind: "completed", taskRunId: this.start.taskRunId, summary: null });
+          this.emit("message", { protocolVersion: 3, kind: "completed", taskRunId: this.start.taskRunId, summary: null });
           this.emit("exit", 0);
         });
       }

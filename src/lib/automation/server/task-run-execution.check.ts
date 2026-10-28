@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,11 +63,26 @@ const assistanceContract = {
   focus: { targetId: "answer", contextRegionIds: [] },
 } as const;
 
+/** Builds the host calls a scripted worker makes, naming each so its reply can be recognised. */
+class ScriptedHostCalls {
+  private readonly names = new Map<string, string>();
+  call(name: string, method: string, request: unknown) {
+    const callId = randomUUID();
+    this.names.set(callId, name);
+    return { protocolVersion: 3, kind: "call", callId, method, request } as const;
+  }
+  /** The name of the call a reply answers, if the frame is one. */
+  answered(frame: AppWorkflowWorkerInboundFrame) {
+    return frame.kind === "reply" ? this.names.get(frame.callId) : undefined;
+  }
+}
+
 class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
   readonly stderr = null;
   eventAckAfterPersistence = false;
   readonly workerData: WorkerOptions["workerData"];
+  private readonly calls = new ScriptedHostCalls();
   private readonly scenario: WorkerScenario;
   private readonly isEventPersisted: () => boolean;
   constructor(
@@ -81,42 +97,62 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     setImmediate(() => {
       this.emit("online");
       const start = this.workerData as AppWorkflowWorkerStart;
-      this.emit("message", {
-        protocolVersion: 2,
-        kind: "event",
-        eventId: "worker-start-event",
+      this.emit("message", this.calls.call("worker-start-event", "event", {
         event: {
           runId: start.taskRunId,
           stage: "preparation",
           outcome: "started", code: "worker-check-started",
           occurredAt: "2026-09-26T00:00:00.000Z",
         },
-      });
+      }));
     });
   }
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind === "event-ack" && frame.eventId === "worker-commit-settled") {
+    const answered = this.calls.answered(frame);
+    if (answered === "worker-commit-settled") {
       // The settlement crossed a stop; the worker now ends the cancelled run.
       const start = this.workerData as AppWorkflowWorkerStart;
       setImmediate(() => {
-        this.emit("message", { protocolVersion: 2, kind: "cancelled", taskRunId: start.taskRunId });
+        this.emit("message", { protocolVersion: 3, kind: "cancelled", taskRunId: start.taskRunId });
         this.emit("exit", 0);
       });
       return;
     }
-    if (frame.kind === "event-ack") {
+    if (frame.kind === "reply" && answered === "worker-assistance-request") {
+      if (this.scenario === "assistance-completion") {
+        const start = this.workerData as AppWorkflowWorkerStart;
+        const status = frame.ok ? (frame.result as { status: string }).status : null;
+        setImmediate(() => {
+          this.emit("message", status === "entered"
+            ? {
+              protocolVersion: 3,
+              kind: "completed",
+              taskRunId: start.taskRunId,
+              summary: { status: "financial-admitted", counts: { invoiceCount: 1 } },
+            }
+            : {
+              protocolVersion: 3,
+              kind: "failed",
+              taskRunId: start.taskRunId,
+              errorCode: "workflow-failed",
+            });
+          this.emit("exit", 0);
+        });
+      }
+      return;
+    }
+    if (frame.kind === "reply") {
       this.eventAckAfterPersistence = this.isEventPersisted();
       if (this.scenario === "product-invariant") {
         const start = this.workerData as AppWorkflowWorkerStart;
         setImmediate(() => {
-          if (frame.eventId === "worker-start-event") {
-            this.emit("message", {
-              protocolVersion: 2, kind: "event", eventId: "foreign-collection",
+          if (answered === "worker-start-event") {
+            this.emit("message", this.calls.call("foreign-collection", "event", {
               event: { runId: start.taskRunId, stage: "collection", outcome: "started", code: "foreign-currency-collection-started", occurredAt: "2026-10-03T08:17:23.000Z" },
-            });
+            }));
           } else {
             this.emit("message", {
-              protocolVersion: 2, kind: "failed", taskRunId: start.taskRunId, errorCode: "workflow-failed",
+              protocolVersion: 3, kind: "failed", taskRunId: start.taskRunId, errorCode: "workflow-failed",
               summary: { status: "partial", counts: { committedCount: 4, itemCount: 4 }, products: [
                 { typeId: "deposit", status: "success", itemCount: 4, committedCount: 4 },
                 { typeId: "foreign_currency", status: "failed", itemCount: 6, committedCount: 0, errorCode: "workflow-failed" },
@@ -127,18 +163,17 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
         });
         return;
       }
-      if (this.scenario === "assistance-completion" && frame.eventId === "worker-start-event") {
-        setImmediate(() => this.emit("message", {
-          protocolVersion: 2,
-          kind: "human-assistance-request",
-          requestId: "worker-assistance-request",
-          contract: assistanceContract,
-        }));
-      } else if (this.scenario === "validation-failure" && frame.eventId === "worker-start-event") {
+      if (this.scenario === "assistance-completion" && answered === "worker-start-event") {
+        setImmediate(() => this.emit("message", this.calls.call(
+          "worker-assistance-request",
+          "humanAssistance",
+          { contract: assistanceContract },
+        )));
+      } else if (this.scenario === "validation-failure" && answered === "worker-start-event") {
         const start = this.workerData as AppWorkflowWorkerStart;
         setImmediate(() => {
           this.emit("message", {
-            protocolVersion: 2,
+            protocolVersion: 3,
             kind: "failed",
             taskRunId: start.taskRunId,
             errorCode: "source-validation-failed",
@@ -153,62 +188,34 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           });
           this.emit("exit", 1);
         });
-      } else if (this.scenario !== "assistance-completion" && frame.eventId === "worker-commit-started") {
+      } else if (this.scenario !== "assistance-completion" && answered === "worker-commit-started") {
         if (this.scenario === "commit-crash") {
           setImmediate(() => {
             this.emit("error", new Error("untrusted provider detail"));
             this.emit("exit", 1);
           });
         }
-      } else if (this.scenario !== "assistance-completion" && frame.eventId === "worker-start-event") {
+      } else if (this.scenario !== "assistance-completion" && answered === "worker-start-event") {
         const start = this.workerData as AppWorkflowWorkerStart;
-        setImmediate(() => this.emit("message", {
-          protocolVersion: 2,
-          kind: "commit-attempt",
-          eventId: "worker-commit-started",
+        setImmediate(() => this.emit("message", this.calls.call("worker-commit-started", "commitAttempt", {
           attempt: { phase: "started", attemptId: `attempt-${start.taskRunId}`, product: "financial", total: 1 },
-        }));
-      }
-      return;
-    }
-    if (frame.kind === "human-assistance-response") {
-      if (this.scenario === "assistance-completion") {
-        const start = this.workerData as AppWorkflowWorkerStart;
-        setImmediate(() => {
-          this.emit("message", frame.status === "entered"
-            ? {
-              protocolVersion: 2,
-              kind: "completed",
-              taskRunId: start.taskRunId,
-              summary: { status: "financial-admitted", counts: { invoiceCount: 1 } },
-            }
-            : {
-              protocolVersion: 2,
-              kind: "failed",
-              taskRunId: start.taskRunId,
-              errorCode: "workflow-failed",
-            });
-          this.emit("exit", 0);
-        });
+        })));
       }
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel-settled") {
       const start = this.workerData as AppWorkflowWorkerStart;
       // The canonical request stops between items and returns a known cancelled result.
-      setImmediate(() => this.emit("message", {
-        protocolVersion: 2,
-        kind: "commit-attempt",
-        eventId: "worker-commit-settled",
+      setImmediate(() => this.emit("message", this.calls.call("worker-commit-settled", "commitAttempt", {
         attempt: { phase: "settled", attemptId: `attempt-${start.taskRunId}`, outcome: "cancelled", committedCount: 0 },
-      }));
+      })));
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel") {
       const start = this.workerData as AppWorkflowWorkerStart;
       setImmediate(() => {
         this.emit("message", {
-          protocolVersion: 2,
+          protocolVersion: 3,
           kind: "cancelled",
           taskRunId: start.taskRunId,
         });
@@ -327,43 +334,39 @@ class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
   readonly stderr = null;
   readonly start: AppWorkflowWorkerStart;
   readonly exchange: boolean;
+  private readonly calls = new ScriptedHostCalls();
   constructor(start: AppWorkflowWorkerStart) {
     super();
     this.start = start;
     this.exchange = start.workflowId === "exchange-rates";
     setImmediate(() => {
       this.emit("online");
-      this.emit("message", {
-        protocolVersion: 2,
-        kind: "event",
-        eventId: "run-started-id",
+      this.emit("message", this.calls.call("run-started-id", "event", {
         event: {
           runId: start.taskRunId,
           stage: "preparation",
           outcome: "started", code: "run-started",
           occurredAt: "2026-09-26T00:00:00.000Z",
         },
-      });
+      }));
     });
   }
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind === "event-ack" && frame.eventId === "run-started-id") {
+    const answered = this.calls.answered(frame);
+    if (answered === "run-started-id") {
       if (this.exchange) {
-        setImmediate(() => this.emit("message", {
-          protocolVersion: 2,
-          kind: "exchange-rate-progress",
-          eventId: "progress-id",
+        setImmediate(() => this.emit("message", this.calls.call("progress-id", "exchangeRateProgress", {
           phaseCode: "complete",
           completed: 3,
           total: 3,
           percent: 100,
-        }));
+        })));
       } else this.complete();
-    } else if (frame.kind === "event-ack" && frame.eventId === "progress-id") {
+    } else if (answered === "progress-id") {
       this.complete();
     } else if (frame.kind === "cancel") {
       setImmediate(() => {
-        this.emit("message", { protocolVersion: 2, kind: "cancelled", taskRunId: this.start.taskRunId });
+        this.emit("message", { protocolVersion: 3, kind: "cancelled", taskRunId: this.start.taskRunId });
         this.emit("exit", 0);
       });
     }
@@ -371,7 +374,7 @@ class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
   private complete() {
     setImmediate(() => {
       this.emit("message", {
-        protocolVersion: 2,
+        protocolVersion: 3,
         kind: "completed",
         taskRunId: this.start.taskRunId,
         summary: null,

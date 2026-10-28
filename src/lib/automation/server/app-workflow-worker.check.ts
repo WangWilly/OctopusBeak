@@ -4,6 +4,7 @@ import { productRunResult } from "../workflow-run-result.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { MessageChannel, Worker } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
@@ -17,6 +18,11 @@ import {
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerOutboundFrame,
 } from "./app-workflow-worker-protocol.ts";
+import {
+  HOST_CALL_CONTRACTS,
+  type HostCallMethod,
+  type HostCallRequest,
+} from "./app-workflow-host-calls.ts";
 import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
@@ -41,16 +47,47 @@ const contract = {
   focus: { targetId: "answer", contextRegionIds: [] },
 };
 
+type CallFrame = Extract<AppWorkflowWorkerOutboundFrame, { kind: "call" }>;
+
+function call(method: string, request: unknown) {
+  return { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "call", callId: randomUUID(), method, request } as const;
+}
+
+function reply(callId: string, result: unknown = null) {
+  return { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "reply", callId, ok: true, result } as const;
+}
+
+/** Validates a host call the way the host does: the envelope, then its method's request contract. */
+function parseCall<M extends HostCallMethod>(method: M, request: unknown): HostCallRequest<M> {
+  const frame = parseAppWorkflowWorkerOutboundFrame(call(method, request));
+  assert.equal(frame.kind, "call");
+  return HOST_CALL_CONTRACTS[method].parseRequest((frame as CallFrame).request);
+}
+
+function isCall<M extends HostCallMethod>(
+  frame: AppWorkflowWorkerOutboundFrame,
+  method: M,
+): frame is CallFrame & Readonly<{ method: M; request: HostCallRequest<M> }> {
+  return frame.kind === "call" && frame.method === method;
+}
+
+/** An event or commit attempt, which a healthy host acknowledges once it is persisted. */
+function isAcknowledgedCall(frame: AppWorkflowWorkerOutboundFrame): frame is CallFrame {
+  return isCall(frame, "event") || isCall(frame, "commitAttempt");
+}
+
+function eventCodes(frames: readonly AppWorkflowWorkerOutboundFrame[]) {
+  return frames.flatMap((frame) => isCall(frame, "event") ? [frame.request.event.code] : []);
+}
+
 test("worker protocol preserves a character OCR strategy and rejects unregistered settings", () => {
-  const frame = { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "human-assistance-request",
-    requestId: "character-verification", contract: { ...contract, challengeKind: "text-captcha", ocrAttemptPlan: [
-      { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
-    ] } };
-  const parsed = parseAppWorkflowWorkerOutboundFrame(frame);
-  assert.equal(parsed.kind, "human-assistance-request");
-  if (parsed.kind === "human-assistance-request") assert.deepEqual(parsed.contract.ocrAttemptPlan, frame.contract.ocrAttemptPlan);
-  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({ ...frame,
-    contract: { ...frame.contract, ocrAttemptPlan: [{ ocrCharacterSegmentation: "unknown" }] },
+  const request = { contract: { ...contract, challengeKind: "text-captcha", ocrAttemptPlan: [
+    { imagePreprocessing: ["rakuten-teal-foreground"], ocrCharacterSegmentation: "rakuten-four-slots" },
+  ] } };
+  const parsed = parseCall("humanAssistance", request);
+  assert.deepEqual(parsed.contract.ocrAttemptPlan, request.contract.ocrAttemptPlan);
+  assert.throws(() => parseCall("humanAssistance", {
+    contract: { ...request.contract, ocrAttemptPlan: [{ ocrCharacterSegmentation: "unknown" }] },
   }), /protocol rejected/);
 });
 
@@ -82,18 +119,34 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     () => parseAppWorkflowWorkerStart({ ...start, unexpected: "raw provider response" }),
     /protocol rejected/u,
   );
+  const assistance = HOST_CALL_CONTRACTS.humanAssistance;
+  assert.equal(assistance.kind, "request");
+  const assistanceReply = parseAppWorkflowWorkerInboundFrame(reply(randomUUID(), { status: "pending" }));
   assert.throws(
-    () => parseAppWorkflowWorkerInboundFrame({ protocolVersion: 2, kind: "human-assistance-response", requestId: "x", status: "pending" }),
+    () => assistance.kind === "request"
+      && assistance.parseResult(assistanceReply.kind === "reply" && assistanceReply.ok ? assistanceReply.result : null, { contract }),
+    /protocol rejected/u,
+    "a pending assistance status is not an answer",
+  );
+  assert.throws(
+    () => parseAppWorkflowWorkerInboundFrame({ ...reply(randomUUID()), callId: "x" }),
+    /protocol rejected/u,
+    "a reply is correlated by a UUID",
+  );
+  assert.throws(
+    () => parseAppWorkflowWorkerOutboundFrame({ ...call("event", {}), callId: "e1" }),
+    /protocol rejected/u,
+    "a call is correlated by a UUID",
+  );
+  assert.throws(
+    () => parseAppWorkflowWorkerOutboundFrame({ ...call("event", {}), protocolVersion: 2 }),
     /protocol rejected/u,
   );
   assert.throws(
-    () => parseAppWorkflowWorkerOutboundFrame({ protocolVersion: 2, kind: "event", eventId: "e1", event: { runId: "run-fixture-1", stage: "collection", outcome: "advanced", code: "valid-code", occurredAt: "2026-09-26T00:00:00.000Z", raw: "source bytes" } }),
+    () => parseCall("event", { event: { runId: "run-fixture-1", stage: "collection", outcome: "advanced", code: "valid-code", occurredAt: "2026-09-26T00:00:00.000Z", raw: "source bytes" } }),
     /protocol rejected/u,
   );
-  const scopedProgressEvent = parseAppWorkflowWorkerOutboundFrame({
-    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-    kind: "event",
-    eventId: "scoped-progress",
+  const scopedProgressEvent = parseCall("event", {
     event: {
       runId: "run-fixture-1",
       stage: "collection",
@@ -104,12 +157,9 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
       retrying: true,
     },
   });
-  assert.equal(scopedProgressEvent.kind, "event");
-  if (scopedProgressEvent.kind === "event") {
-    assert.equal(scopedProgressEvent.event.statementType, "deposit");
-    assert.equal(scopedProgressEvent.event.activity, "download");
-    assert.equal(scopedProgressEvent.event.retrying, true);
-  }
+  assert.equal(scopedProgressEvent.event.statementType, "deposit");
+  assert.equal(scopedProgressEvent.event.activity, "download");
+  assert.equal(scopedProgressEvent.event.retrying, true);
   for (const metadata of [
     { activity: { value: "download" } },
     { activity: "delete" },
@@ -117,10 +167,7 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     { statementType: 42 },
     { retrying: "true" },
   ]) {
-    assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
-      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-      kind: "event",
-      eventId: "invalid-progress",
+    assert.throws(() => parseCall("event", {
       event: {
         runId: "run-fixture-1",
         stage: "collection",
@@ -152,19 +199,13 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     input: null,
     pgliteRpc: undefined,
   }), /protocol rejected/u);
-  assert.equal(parseAppWorkflowWorkerOutboundFrame({
-    protocolVersion: 2,
-    kind: "exchange-rate-progress",
-    eventId: "progress-1",
+  assert.equal(parseCall("exchangeRateProgress", {
     phaseCode: "complete",
     completed: 3,
     total: 3,
     percent: 100,
-  }).kind, "exchange-rate-progress");
-  assert.throws(() => parseAppWorkflowWorkerOutboundFrame({
-    protocolVersion: 2,
-    kind: "exchange-rate-progress",
-    eventId: "progress-2",
+  }).phaseCode, "complete");
+  assert.throws(() => parseCall("exchangeRateProgress", {
     phaseCode: "private-value",
     completed: 1,
     total: 3,
@@ -250,15 +291,12 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
       activeWorker.on("error", (error) => { clearTimeout(timeout); reject(error); });
       activeWorker.on("message", (value: unknown) => {
         const frame = parseAppWorkflowWorkerOutboundFrame(value);
-        if (frame.kind === "event" || frame.kind === "exchange-rate-progress") {
-          if (frame.kind === "event") codes.push(frame.event.code);
-          else phases.push(frame.phaseCode);
-          activeWorker.postMessage({
-            protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-            kind: "event-ack",
-            eventId: frame.eventId,
-            ok: true,
-          });
+        if (isCall(frame, "event")) {
+          codes.push(frame.request.event.code);
+          activeWorker.postMessage(reply(frame.callId));
+        } else if (isCall(frame, "exchangeRateProgress")) {
+          phases.push(frame.request.phaseCode);
+          activeWorker.postMessage(reply(frame.callId));
         } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
           clearTimeout(timeout);
           resolve(frame);
@@ -302,7 +340,7 @@ test("bundled internal worker validates workerData and returns a sanitized frame
     });
   });
   assert.deepEqual(terminal, {
-    protocolVersion: 2,
+    protocolVersion: 3,
     kind: "failed",
     taskRunId: null,
     errorCode: "protocol-invalid",
@@ -350,20 +388,10 @@ test("worker runs a definition through typed ports and the bounded host request 
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     observed.push(frame);
     if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolveTerminal(frame);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({
-        protocolVersion: 2,
-        kind: "event-ack",
-        eventId: frame.eventId,
-        ok: true,
-      });
-    } else if (frame.kind === "human-assistance-request") {
-      channel.port2.postMessage({
-        protocolVersion: 2,
-        kind: "human-assistance-response",
-        requestId: frame.requestId,
-        status: "verified",
-      });
+    if (isCall(frame, "humanAssistance")) {
+      channel.port2.postMessage(reply(frame.callId, { status: "verified" }));
+    } else if (isAcknowledgedCall(frame)) {
+      channel.port2.postMessage(reply(frame.callId));
     }
   });
 
@@ -385,7 +413,7 @@ test("worker runs a definition through typed ports and the bounded host request 
       assert.deepEqual(terminal.summary, { status: "completed", counts: { count: 1 } });
     }
     assert.equal(JSON.stringify(observed).includes("sensitive-fixture"), false);
-    assert.deepEqual(observed.flatMap((frame) => frame.kind === "event" ? [frame.event.code] : []), [
+    assert.deepEqual(eventCodes(observed), [
       "run-started",
       "fixture-started",
       "human-assistance-requested",
@@ -395,10 +423,10 @@ test("worker runs a definition through typed ports and the bounded host request 
       "run-completed",
     ]);
     assert.deepEqual(
-      observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt.phase] : []),
+      observed.flatMap((frame) => isCall(frame, "commitAttempt") ? [frame.request.attempt.phase] : []),
       ["started", "settled"],
     );
-    assert.equal(observed.filter((frame) => frame.kind === "human-assistance-request").length, 1);
+    assert.equal(observed.filter((frame) => isCall(frame, "humanAssistance")).length, 1);
     assert.equal(browserCalls, 1);
     assert.equal(commitCalls, 1);
   } finally {
@@ -433,13 +461,8 @@ test("a browser workflow that needs only account identity reaches it through the
   const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
     channel.port2.on("message", (value: unknown) => {
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
-      if (frame.kind === "event" || frame.kind === "commit-attempt") {
-        channel.port2.postMessage({
-          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-          kind: "event-ack",
-          eventId: frame.eventId,
-          ok: true,
-        });
+      if (isAcknowledgedCall(frame)) {
+        channel.port2.postMessage(reply(frame.callId));
       } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
         resolve(frame);
       }
@@ -483,8 +506,8 @@ test("a workflow output that is not exactly a run result fails the run without c
   const terminal = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => {
     channel.port2.on("message", (value: unknown) => {
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
-      if (frame.kind === "event" || frame.kind === "commit-attempt") {
-        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      if (isAcknowledgedCall(frame)) {
+        channel.port2.postMessage(reply(frame.callId));
       } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
         resolve(frame);
       }
@@ -520,8 +543,8 @@ test("a product failure inside a partial run appends one correlated diagnostic r
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    if (isAcknowledgedCall(frame)) {
+      channel.port2.postMessage(reply(frame.callId));
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
     }
@@ -599,8 +622,8 @@ test("worker failures cross the boundary only as a stable error code", async () 
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    if (isAcknowledgedCall(frame)) {
+      channel.port2.postMessage(reply(frame.callId));
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
     }
@@ -638,8 +661,8 @@ test("a Cathay run that needs device registration keeps that code across the wor
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     frames.push(frame);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    if (isAcknowledgedCall(frame)) {
+      channel.port2.postMessage(reply(frame.callId));
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
     }
@@ -662,7 +685,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
     assert.equal(terminal.kind === "failed" ? terminal.errorCode : null, "device-registration-required");
-    assert.ok(frames.some((frame) => frame.kind === "event" && frame.event.code === "device-registration-required"));
+    assert.ok(eventCodes(frames).includes("device-registration-required"));
     assert.doesNotMatch(JSON.stringify(frames), /required workflow condition|private/u);
   } finally {
     channel.port1.close();
@@ -696,8 +719,8 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
     channel.port2.on("message", (value: unknown) => {
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
       frames.push(frame);
-      if (frame.kind === "event" || frame.kind === "commit-attempt") {
-        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      if (isAcknowledgedCall(frame)) {
+        channel.port2.postMessage(reply(frame.callId));
       } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
         resolveTerminal(frame);
       }
@@ -738,8 +761,8 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
   const terminalReceived = new Promise<AppWorkflowWorkerOutboundFrame>((resolve) => { resolveTerminal = resolve; });
   channel.port2.on("message", (value: unknown) => {
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+    if (isAcknowledgedCall(frame)) {
+      channel.port2.postMessage(reply(frame.callId));
     } else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") {
       resolveTerminal(frame);
     }
@@ -790,9 +813,7 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     const frame = parseAppWorkflowWorkerOutboundFrame(value);
     observed.push(frame);
     if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolveTerminal(frame);
-    if (frame.kind === "event" || frame.kind === "commit-attempt") {
-      channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
-    }
+    if (isAcknowledgedCall(frame)) channel.port2.postMessage(reply(frame.callId));
   });
   try {
     const running = runAppWorkflowWorker({
@@ -802,7 +823,7 @@ test("worker cancellation aborts a pending definition and emits no provider exce
       browser: { async withPage() { throw new Error("unused"); } },
     });
     await hasStarted;
-    channel.port2.postMessage({ protocolVersion: 2, kind: "cancel" });
+    channel.port2.postMessage({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "cancel" });
     await running;
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "cancelled");
@@ -845,12 +866,12 @@ test("a settlement that finishes after cancellation still reaches the host", asy
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
       observed.push(frame);
       if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolve(frame);
-      if (frame.kind === "commit-attempt" || (frame.kind === "event" && !stopping)) {
-        channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      if (isCall(frame, "commitAttempt") || (isCall(frame, "event") && !stopping)) {
+        channel.port2.postMessage(reply(frame.callId));
       }
-      if (frame.kind === "commit-attempt" && frame.attempt.phase === "started") {
+      if (isCall(frame, "commitAttempt") && frame.request.attempt.phase === "started") {
         stopping = true;
-        channel.port2.postMessage({ protocolVersion: 2, kind: "cancel" });
+        channel.port2.postMessage({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "cancel" });
       }
     });
   });
@@ -864,7 +885,7 @@ test("a settlement that finishes after cancellation still reaches the host", asy
     });
     assert.equal((await terminal).kind, "cancelled");
     assert.deepEqual(
-      observed.flatMap((frame) => frame.kind === "commit-attempt" ? [frame.attempt] : []).map((attempt) =>
+      observed.flatMap((frame) => isCall(frame, "commitAttempt") ? [frame.request.attempt] : []).map((attempt) =>
         attempt.phase === "settled" ? [attempt.phase, attempt.outcome] : [attempt.phase]),
       [["started"], ["settled", "cancelled"]],
     );

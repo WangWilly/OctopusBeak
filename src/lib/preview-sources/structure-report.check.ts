@@ -165,7 +165,9 @@ test("a failed preview run sanitizes its observations inside the worker and rele
     channel.port2.on("message", (value: unknown) => {
       raw.push(JSON.stringify(value));
       const frame = parseAppWorkflowWorkerOutboundFrame(value);
-      if (frame.kind === "event") channel.port2.postMessage({ protocolVersion: 2, kind: "event-ack", eventId: frame.eventId, ok: true });
+      if (frame.kind === "call" && frame.method === "event") {
+        channel.port2.postMessage({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "reply", callId: frame.callId, ok: true, result: null });
+      }
       else if (frame.kind === "failed" || frame.kind === "completed" || frame.kind === "cancelled") resolve(frame);
     });
   });
@@ -205,7 +207,7 @@ class TerminalFakeWorker extends EventEmitter {
     const start = workerData as { taskRunId: string };
     setImmediate(() => {
       this.emit("online");
-      this.emit("message", { protocolVersion: 2, ...terminal(start.taskRunId) });
+      this.emit("message", { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, ...terminal(start.taskRunId) });
       this.emit("exit", 0);
     });
   }

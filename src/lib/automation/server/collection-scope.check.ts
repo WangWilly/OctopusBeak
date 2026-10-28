@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -184,11 +185,10 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     void this.work();
   }
   private readonly acks = new Map<string, () => void>();
-  private nextEventId = 0;
   private async record(attempt: CommitAttemptReport) {
-    const eventId = `attempt-event-${this.nextEventId += 1}`;
-    const acked = new Promise<void>((resolve) => this.acks.set(eventId, resolve));
-    this.emit("message", { protocolVersion: 2, kind: "commit-attempt", eventId, attempt });
+    const callId = randomUUID();
+    const acked = new Promise<void>((resolve) => this.acks.set(callId, resolve));
+    this.emit("message", { protocolVersion: 3, kind: "call", callId, method: "commitAttempt", request: { attempt } });
     await acked;
   }
   private async work() {
@@ -227,13 +227,13 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     // The worker's own code is generic; only the refused Commit attempt can name the cause.
     this.emit("message", second
       ? {
-        protocolVersion: 2,
+        protocolVersion: 3,
         kind: "completed",
         taskRunId: start.taskRunId,
         summary: { status: "financial-admitted", counts: { committedCount: 2, itemCount: 2 } },
       }
       : {
-        protocolVersion: 2,
+        protocolVersion: 3,
         kind: "failed",
         taskRunId: start.taskRunId,
         errorCode: "workflow-failed",
@@ -245,9 +245,9 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     this.emit("exit", second ? 0 : 1);
   }
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind !== "event-ack") return;
-    this.acks.get(frame.eventId)?.();
-    this.acks.delete(frame.eventId);
+    if (frame.kind !== "reply") return;
+    this.acks.get(frame.callId)?.();
+    this.acks.delete(frame.callId);
   }
   terminate() {
     setImmediate(() => this.emit("exit", 1));
