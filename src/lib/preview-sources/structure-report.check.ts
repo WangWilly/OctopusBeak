@@ -207,7 +207,7 @@ class TerminalFakeWorker extends EventEmitter {
     const start = workerData as { taskRunId: string };
     setImmediate(() => {
       this.emit("online");
-      this.emit("message", { protocolVersion: 2, ...terminal(start.taskRunId) });
+      this.emit("message", { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, ...terminal(start.taskRunId) });
       this.emit("exit", 0);
     });
   }
