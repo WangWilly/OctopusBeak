@@ -2,7 +2,9 @@ import type { AssetsPageDto } from "../../lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../../lib/liabilities/types.ts";
 import type { OverviewHoldingPriceDto, OverviewPageDto } from "../../lib/overview/types.ts";
 import { isProductAccount, mapCanonicalCreditCard, mapCanonicalProduct } from "../../lib/shared-ledger/server/canonical-product.ts";
-import type { AccountRowDto, CurrencyAmountDto, SummaryMetricDto } from "../../lib/shared-ledger/types.ts";
+import { currentNetPosition, valuationDateFor } from "../../lib/shared-ledger/twd-valuation.ts";
+import type { AccountRowDto, CurrencyAmountDto, NetPositionDto, OverviewSummaryDto } from "../../lib/shared-ledger/types.ts";
+import { indexExchangeRates } from "../../lib/shared-money/exchange-rates.ts";
 import type {
   CanonicalOverviewAmount,
   CanonicalOverviewCurrentQueryResult,
@@ -128,7 +130,38 @@ function addSigned(
   }
 }
 
-function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[] {
+/**
+ * Without history, the renderer valued accounts at today's date; a date past
+ * every stored rate picks the same latest rates without a clock.
+ */
+const LATEST_RATES = "9999-12-31";
+
+function netPosition(
+  accounts: readonly AccountRowDto[],
+  net: Map<string, AggregatedAmount>,
+  history: PGliteDailyHistory,
+  rates: readonly ExchangeRateRecord[],
+  markers: ReturnType<typeof previewSummaryMarkers>["net"],
+): NetPositionDto {
+  const valuationDate = valuationDateFor(history.dailyHistory, accounts, LATEST_RATES);
+  const current = currentNetPosition(accounts, indexExchangeRates(rates), valuationDate);
+  const incomplete = markers.incomplete === true;
+  return current.value === null
+    ? { display: "native", amounts: amountLines(net), includesPreview: markers.includesPreview === true, incomplete }
+    : {
+      display: "converted",
+      twd: current.value,
+      unconvertedPreviewCurrencies: current.unconvertedPreviewCurrencies,
+      includesPreview: current.includesPreview,
+      incomplete,
+    };
+}
+
+function overviewSummary(
+  accounts: readonly AccountRowDto[],
+  history: PGliteDailyHistory,
+  rates: readonly ExchangeRateRecord[],
+): OverviewSummaryDto {
   const liabilities = accounts.filter((account) => account.group === "liability");
   const assetTotals = aggregateAmounts(accounts.filter((account) => account.group === "asset"));
   const investmentTotals = aggregateAmounts(accounts.filter((account) => account.group === "investment"));
@@ -141,11 +174,11 @@ function overviewSummary(accounts: readonly AccountRowDto[]): SummaryMetricDto[]
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
   const preview = previewSummaryMarkers(accounts);
-  return [
-    { label: "Net position", amounts: amountLines(net), ...preview.net },
-    { label: "Asset value", amounts: amountLines(assetValue), ...preview.assets },
-    { label: "Liabilities", amounts: amountLines(liabilityTotals), ...preview.liabilities },
-  ];
+  return {
+    net: netPosition(accounts, net, history, rates, preview.net),
+    assets: { amounts: amountLines(assetValue), ...preview.assets },
+    liabilities: { amounts: amountLines(liabilityTotals), ...preview.liabilities },
+  };
 }
 
 function mapOverview(
@@ -182,7 +215,7 @@ function mapOverview(
     historyAvailability: history.dailyHistory.length > 0 ? "available" : "unavailable",
     sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
     importedAt: projection.importedAt,
-    summary: overviewSummary(accounts),
+    summary: overviewSummary(accounts, history, rates),
     dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
     dailyHistoryByAccount: history.dailyHistoryByAccount,
     accounts,
