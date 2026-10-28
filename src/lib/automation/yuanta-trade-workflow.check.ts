@@ -137,6 +137,7 @@ function readingReports(
 
 const selectedInput = {
   credentials,
+  statementTypes: ["securities"],
   ...dateRange,
   includeHoldings: true,
   includeTrades: true,

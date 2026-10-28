@@ -145,7 +145,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
         return await routeYuantaTradeAppAssistanceRequest(request, dependencies);
       },
     },
-    input: { credentials: true },
+    input: { credentials: true, statementTypes: true },
     async load() {
       return (await import("../../../../workflows/yuanta-trade-statements.ts")).runYuantaTradeProviderWorkflow;
     },

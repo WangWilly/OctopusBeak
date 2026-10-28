@@ -255,6 +255,7 @@ const typedInputSchema = z.object({
   includeTrades: z.boolean().default(true),
   holdingTypes: z.array(holdingTypeSchema).default(holdingTypeSchema.options),
   tradeTypes: z.array(tradeTypeSchema).default(tradeTypeSchema.options),
+  statementTypes: z.array(z.literal("securities")).min(1),
   credentials: z.object({
     yuanta_trade_user_id: z.string().trim().min(1),
     yuanta_trade_password: z.string().trim().min(1),
@@ -1914,7 +1915,7 @@ export async function runYuantaTradeProviderWorkflow(
     const summary = await collectSelectedProducts({
       provider: "yuanta-trade",
       productIds: ["securities"],
-      selectedIds: ["securities"],
+      selectedIds: parsedInput.statementTypes,
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,

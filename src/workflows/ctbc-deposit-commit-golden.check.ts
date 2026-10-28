@@ -28,6 +28,7 @@ const input = {
     ctbc_account: "synthetic-account",
     ctbc_password: "synthetic-password",
   },
+  statementTypes: ["deposit"],
 };
 
 function signedInPage(): Page {

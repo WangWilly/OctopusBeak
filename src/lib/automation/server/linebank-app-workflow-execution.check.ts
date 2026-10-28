@@ -14,6 +14,7 @@ import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
@@ -229,9 +230,14 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       linebank_account: "synthetic-account",
       linebank_password: "synthetic-password",
     },
+    statementTypes: ["deposit"],
     accountFilters: [],
     currencyFilters: [],
   });
+  assert.throws(
+    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "" }),
+    (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
+  );
 
   const root = await mkdtemp(join(tmpdir(), "linebank-app-workflow-"));
   const previousDirectory = process.cwd();

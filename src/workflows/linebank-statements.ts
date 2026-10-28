@@ -53,6 +53,7 @@ const typedInputSchema = z.object({
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
+  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 type DateRange = {
@@ -1234,7 +1235,7 @@ export async function runLineBankProviderWorkflow(
     const summary = await collectSelectedProducts({
       provider: "linebank",
       productIds: ["deposit"],
-      selectedIds: ["deposit"],
+      selectedIds: parsed.data.statementTypes,
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,

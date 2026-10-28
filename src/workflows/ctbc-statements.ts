@@ -76,6 +76,7 @@ const typedInputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).optional(),
+  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 export type CtbcStatementsInput = z.infer<typeof typedInputSchema>;
@@ -1294,7 +1295,7 @@ export async function runCtbcProviderWorkflow(
     const summary = await collectSelectedProducts({
       provider: "ctbc",
       productIds: ["deposit"],
-      selectedIds: ["deposit"],
+      selectedIds: parsed.data.statementTypes,
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,

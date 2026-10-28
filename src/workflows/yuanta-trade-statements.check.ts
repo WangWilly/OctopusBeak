@@ -932,6 +932,7 @@ test("records how many reports were collected when one report source fails", asy
         yuanta_trade_ca_path: "fixture",
         yuanta_trade_ca_password: "fixture",
       },
+      statementTypes: ["securities"],
     }, async (_page, input, runContext, product: ProductCollectionHandle) => {
       const snapshot = await readYuantaTradeSource({
         captureReport: async (reportType) => {

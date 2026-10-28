@@ -65,6 +65,7 @@ const typedWorkflowInputSchema = z.object({
     post_account: z.string().trim().min(1),
     post_password: z.string().trim().min(1),
   }),
+  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 export type PostCredentials = {
@@ -994,7 +995,7 @@ export async function runPostProviderWorkflow(
     const summary = await collectSelectedProducts({
       provider: "post",
       productIds: ["deposit"],
-      selectedIds: ["deposit"],
+      selectedIds: parsed.data.statementTypes,
       signal: context.signal,
       event: context.event,
       productFailure: context.productFailure,
