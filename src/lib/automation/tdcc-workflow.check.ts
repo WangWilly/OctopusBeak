@@ -689,9 +689,9 @@ test("through the supervised worker frames, a rotated token is saved when the ru
   });
 });
 
-test("a selection with no TDCC product fails before it reports valid input or opens a session", async () => {
+test("a selection with no, a repeated, or an unknown TDCC product fails before it reports valid input or opens a session", async () => {
   await withHarness(async ({ run, events }) => {
-    for (const statementTypes of [[], ["unknown"]]) {
+    for (const statementTypes of [[], ["fund", "fund"], ["unknown"]]) {
       const fake = fakeTdcc();
       const error = await run({ statementTypes }, fake).then(() => null, (rejection: unknown) => rejection);
       assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "workflow-failed");
