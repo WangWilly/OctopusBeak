@@ -19,7 +19,6 @@ const account = (kind: AccountRowDto["kind"], value: number, extra: Partial<Acco
   product: kind,
   group: kind === "credit-card" || kind === "loan" ? "liability" : "asset",
   kind,
-  typeLabel: kind,
   amountLines: [{ currency: "TWD", value }],
   transactionCount: 0,
   assetPositionCount: 0,

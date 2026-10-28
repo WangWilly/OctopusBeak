@@ -19,7 +19,6 @@ function account(id: string, kind: "credit-card" | "loan", value: number, credit
     product: kind,
     group: "liability",
     kind,
-    typeLabel: kind,
     amountLines: twd(value),
     transactionCount: 0,
     assetPositionCount: 0,

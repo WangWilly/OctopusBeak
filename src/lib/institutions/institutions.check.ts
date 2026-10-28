@@ -61,7 +61,6 @@ const account = (overrides: Partial<AccountRowDto> = {}): AccountRowDto => ({
   product: "Bank account",
   group: "asset",
   kind: "bank",
-  typeLabel: "Bank",
   amountLines: [],
   transactionCount: 0,
   assetPositionCount: 0,

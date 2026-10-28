@@ -35,7 +35,6 @@ test("margin exposure keeps an independent investment-kind filter", () => {
     product: id,
     group: "liability",
     kind: "loan",
-    typeLabel: id,
     amountLines: [],
     transactionCount: 0,
     assetPositionCount: 0,
