@@ -43,6 +43,8 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import {
@@ -923,17 +925,18 @@ test("records how many reports were collected when one report source fails", asy
     },
   };
   const failingReport = 16;
+  const runInput = {
+    credentials: {
+      yuanta_trade_user_id: "fixture",
+      yuanta_trade_password: "fixture",
+      yuanta_trade_ca_path: "fixture",
+      yuanta_trade_ca_password: "fixture",
+    },
+    statementTypes: ["securities"],
+  };
 
   await assert.rejects(
-    runYuantaTradeProviderWorkflow(context, {
-      credentials: {
-        yuanta_trade_user_id: "fixture",
-        yuanta_trade_password: "fixture",
-        yuanta_trade_ca_path: "fixture",
-        yuanta_trade_ca_password: "fixture",
-      },
-      statementTypes: ["securities"],
-    }, async (_page, input, runContext, product: ProductCollectionHandle) => {
+    runYuantaTradeProviderWorkflow(withBoundProducts(context, YUANTA_TRADE_SOURCE, runInput), runInput, async (_page, input, runContext, product: ProductCollectionHandle) => {
       const snapshot = await readYuantaTradeSource({
         captureReport: async (reportType) => {
           requestedReportTypes.push(reportType);
