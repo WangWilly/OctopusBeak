@@ -163,6 +163,14 @@ test("cancellation completes as a terminal campaign state", () => {
   assert.equal(campaign.consumedRounds, 1);
 });
 
+test("cancelling an ended campaign leaves it unchanged", () => {
+  const exhausted = transitionCaptchaRetryCampaign(
+    transitionCaptchaRetryCampaign(retryableCampaign(2), capture("execution-3")),
+    outcome("execution-3", { kind: "retryable", reason: "solver-exhausted" }),
+  );
+  assert.equal(transitionCaptchaRetryCampaign(exhausted, { kind: "cancelled" }), exhausted);
+});
+
 test("the third retryable round is exhausted and cannot start round four", () => {
   const campaign = retryableCampaign(2);
   const captured = transitionCaptchaRetryCampaign(
@@ -199,9 +207,14 @@ test("outcomes from another execution are stale and cannot advance the campaign"
   assert.equal(campaign.consumedRounds, 1);
 });
 
-test("duplicate capture or duplicate outcome is rejected without advancing state", () => {
+test("a refreshed challenge keeps its round, and a second execution's capture or a duplicate outcome is rejected", () => {
   const campaign = capturedCampaign("execution-1");
-  assert.throws(() => transitionCaptchaRetryCampaign(campaign, capture("execution-1")), /order|capture/i);
+  assert.equal(
+    transitionCaptchaRetryCampaign(campaign, capture("execution-1")),
+    campaign,
+    "an in-page refresh within the active execution consumes no further round (ADR 0046)",
+  );
+  assert.throws(() => transitionCaptchaRetryCampaign(campaign, capture("execution-2")), /order|capture/i);
   const ready = transitionCaptchaRetryCampaign(
     campaign,
     outcome("execution-1", { kind: "retryable", reason: "solver-exhausted" }),

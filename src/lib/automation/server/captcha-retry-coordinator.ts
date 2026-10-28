@@ -6,7 +6,6 @@ import {
   createCaptchaRetryCampaign,
   isCaptchaRetryCampaignReady,
   transitionCaptchaRetryCampaign,
-  CaptchaRetryCampaignTransitionError,
   type CaptchaRetryCampaign,
 } from "./captcha-retry-campaign.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
@@ -44,38 +43,11 @@ export type CaptchaRetryCoordinatorDependencies = {
   captchaRetryCooldownMs?: typeof captchaRetryCooldownMs;
 };
 
-function recordCapturedChallenge(
-  campaign: CaptchaRetryCampaign,
-  executionId: string,
-) {
-  if (campaign.status === "ready") {
-    return transitionCaptchaRetryCampaign(campaign, {
-      kind: "challenge-captured",
-      executionId,
-    });
-  }
-  if (
-    campaign.status === "awaiting-outcome" &&
-    campaign.activeExecutionId === executionId
-  ) {
-    return campaign;
-  }
-  if (campaign.status === "awaiting-outcome") {
-    throw new CaptchaRetryCampaignTransitionError(
-      `A second CAPTCHA challenge was captured by execution ${executionId} before execution ${campaign.activeExecutionId} reported its round outcome.`,
-      "invalid-transition",
-    );
-  }
-  return campaign;
+function recordCapturedChallenge(campaign: CaptchaRetryCampaign, executionId: string) {
+  return transitionCaptchaRetryCampaign(campaign, { kind: "challenge-captured", executionId });
 }
 
 function markCaptchaCampaignCancelled(campaign: CaptchaRetryCampaign) {
-  if (
-    campaign.status === "completed" ||
-    campaign.status === "failed" ||
-    campaign.status === "cancelled" ||
-    campaign.status === "exhausted"
-  ) return campaign;
   return transitionCaptchaRetryCampaign(campaign, {
     kind: "cancelled",
     executionId: campaign.status === "awaiting-outcome"
