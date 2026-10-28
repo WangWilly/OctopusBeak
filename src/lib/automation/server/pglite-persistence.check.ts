@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { WorkerOptions } from "node:worker_threads";
 import {
@@ -26,42 +27,50 @@ class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorke
   readonly stdout = null;
   readonly stderr = null;
   readonly start: AppWorkflowWorkerStart;
+  private readonly startCallId = randomUUID();
+  private readonly completeCallId = randomUUID();
   constructor(start: AppWorkflowWorkerStart) {
     super();
     this.start = start;
     setImmediate(() => {
       this.emit("online");
       this.emit("message", {
-        protocolVersion: 2,
-        kind: "event",
-        eventId: "pglite-exchange-start",
-        event: {
-          runId: start.taskRunId,
-          stage: "preparation",
-          outcome: "started", code: "run-started",
-          occurredAt: "2026-09-26T00:00:00.000Z",
+        protocolVersion: 3,
+        kind: "call",
+        callId: this.startCallId,
+        method: "event",
+        request: {
+          event: {
+            runId: start.taskRunId,
+            stage: "preparation",
+            outcome: "started", code: "run-started",
+            occurredAt: "2026-09-26T00:00:00.000Z",
+          },
         },
       });
     });
   }
   postMessage(frame: AppWorkflowWorkerInboundFrame) {
-    if (frame.kind === "event-ack" && frame.eventId === "pglite-exchange-start") {
+    if (frame.kind === "reply" && frame.callId === this.startCallId) {
       setImmediate(() => {
         this.emit("message", {
-          protocolVersion: 2,
-          kind: "event",
-          eventId: "pglite-exchange-complete",
-          event: {
-            runId: this.start.taskRunId,
-            stage: "finalization",
-            outcome: "completed", code: "run-completed",
-            occurredAt: "2026-09-26T00:00:01.000Z",
+          protocolVersion: 3,
+          kind: "call",
+          callId: this.completeCallId,
+          method: "event",
+          request: {
+            event: {
+              runId: this.start.taskRunId,
+              stage: "finalization",
+              outcome: "completed", code: "run-completed",
+              occurredAt: "2026-09-26T00:00:01.000Z",
+            },
           },
         });
       });
-    } else if (frame.kind === "event-ack" && frame.eventId === "pglite-exchange-complete") {
+    } else if (frame.kind === "reply" && frame.callId === this.completeCallId) {
       setImmediate(() => {
-        this.emit("message", { protocolVersion: 2, kind: "completed", taskRunId: this.start.taskRunId, summary: null });
+        this.emit("message", { protocolVersion: 3, kind: "completed", taskRunId: this.start.taskRunId, summary: null });
         this.emit("exit", 0);
       });
     }

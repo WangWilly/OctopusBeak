@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { MessagePort } from "node:worker_threads";
 import type {
   WorkflowBrowserPort,
@@ -9,6 +8,7 @@ import type {
   WorkflowCapabilityPorts,
 } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
+import { createHostCallClient } from "./app-workflow-host-calls.ts";
 import type { TdccSessionPort } from "../../../workflows/tdcc-session.ts";
 import { isWorkflowRunResult } from "../workflow-run-result.ts";
 import {
@@ -19,7 +19,7 @@ import {
 } from "../workflow-executor.ts";
 import { strictSourceText } from "../source-text.ts";
 import { createWorkflowFinancialCommitPort } from "../workflow-financial-commit.ts";
-import type { CommitAttemptRecorder, CommitAttemptReport } from "../commit-attempt.ts";
+import type { CommitAttemptRecorder } from "../commit-attempt.ts";
 import { classifyFailure } from "../failure-classification.ts";
 import { summarizeInterruptedProductCollection } from "./typed-workflow-outcome.ts";
 import {
@@ -37,8 +37,6 @@ import {
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerOutboundFrame,
   type AppWorkflowWorkerStart,
-  type TdccSessionOperation,
-  type TdccSessionResponseFrame,
 } from "./app-workflow-worker-protocol.ts";
 import {
   workflowDefinitionForTask,
@@ -151,17 +149,6 @@ export async function runAppWorkflowWorker(
   }
 
   const controller = new AbortController();
-  const pendingEvents = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
-  /** Survives cancellation: a settlement must still reach the host (ADR 0056). */
-  const pendingCommitAttempts = new Map<string, Readonly<{
-    resolve(frame: AppWorkflowWorkerInboundFrame): void;
-    reject(error: Error): void;
-  }>>();
-  const pendingAssistance = new Map<string, (frame: AppWorkflowWorkerInboundFrame) => void>();
-  const pendingTdccSession = new Map<string, Readonly<{
-    operation: TdccSessionOperation;
-    resolve(frame: TdccSessionResponseFrame): void;
-  }>>();
   const events: WorkflowRunEvent[] = [];
   let protocolFailure = false;
   let terminal = false;
@@ -170,13 +157,16 @@ export async function runAppWorkflowWorker(
     const validated = parseAppWorkflowWorkerOutboundFrame(frame);
     options.port.postMessage(validated);
   };
-  const failPending = () => {
-    pendingEvents.clear();
-    pendingAssistance.clear();
-    pendingTdccSession.clear();
+  const failProtocol = () => {
+    protocolFailure = true;
+    if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
   };
-  const onAbort = () => failPending();
-  controller.signal.addEventListener("abort", onAbort, { once: true });
+  const hostCalls = createHostCallClient({
+    post: send,
+    signal: controller.signal,
+    abortError,
+    protocolFailure: failProtocol,
+  });
 
   const onMessage = (value: unknown) => {
     if (terminal) return;
@@ -184,168 +174,34 @@ export async function runAppWorkflowWorker(
     try {
       frame = parseAppWorkflowWorkerInboundFrame(value);
     } catch {
-      protocolFailure = true;
-      if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
+      failProtocol();
       return;
     }
     if (frame.kind === "cancel") {
       if (!controller.signal.aborted) controller.abort(abortError());
       return;
     }
-    if (frame.kind === "event-ack") {
-      const commitAttempt = pendingCommitAttempts.get(frame.eventId);
-      if (commitAttempt) {
-        pendingCommitAttempts.delete(frame.eventId);
-        commitAttempt.resolve(frame);
-        return;
-      }
-      const resolve = pendingEvents.get(frame.eventId);
-      if (!resolve) {
-        protocolFailure = true;
-        if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
-        return;
-      }
-      pendingEvents.delete(frame.eventId);
-      resolve(frame);
-      return;
-    }
-    if (frame.kind === "tdcc-session-response") {
-      const pending = pendingTdccSession.get(frame.requestId);
-      if (!pending || pending.operation !== frame.operation) {
-        protocolFailure = true;
-        if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
-        return;
-      }
-      pendingTdccSession.delete(frame.requestId);
-      pending.resolve(frame);
-      return;
-    }
-    const resolve = pendingAssistance.get(frame.requestId);
-    if (!resolve) {
-      protocolFailure = true;
-      if (!controller.signal.aborted) controller.abort(throwOnProtocolFailure());
-      return;
-    }
-    pendingAssistance.delete(frame.requestId);
-    resolve(frame);
+    hostCalls.receive(frame);
   };
 
   options.port.on("message", onMessage);
 
-  const request = <T extends Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" | "human-assistance-response" }>>(
-    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "human-assistance-request" | "exchange-rate-progress" }>,
-    pending: Map<string, (response: AppWorkflowWorkerInboundFrame) => void>,
-    id: string,
-  ): Promise<T> => new Promise<T>((resolve, reject) => {
-    if (controller.signal.aborted) {
-      reject(abortError());
-      return;
-    }
-    if (pending.size >= 32) {
-      reject(new AppWorkflowWorkerProtocolError());
-      return;
-    }
-    const onAbortRequest = () => {
-      pending.delete(id);
-      reject(abortError());
-    };
-    controller.signal.addEventListener("abort", onAbortRequest, { once: true });
-    pending.set(id, (value) => {
-      controller.signal.removeEventListener("abort", onAbortRequest);
-      resolve(value as T);
-    });
-    try {
-      send(frame);
-    } catch {
-      controller.signal.removeEventListener("abort", onAbortRequest);
-      pending.delete(id);
-      reject(new AppWorkflowWorkerProtocolError());
-    }
-  });
-
-  const requestTdccSession = (operation: TdccSessionOperation): Promise<TdccSessionResponseFrame> =>
-    new Promise((resolve, reject) => {
-      if (controller.signal.aborted) {
-        reject(abortError());
-        return;
-      }
-      const requestId = randomUUID();
-      const onAbortRequest = () => {
-        pendingTdccSession.delete(requestId);
-        reject(abortError());
-      };
-      controller.signal.addEventListener("abort", onAbortRequest, { once: true });
-      pendingTdccSession.set(requestId, {
-        operation,
-        resolve: (value) => {
-          controller.signal.removeEventListener("abort", onAbortRequest);
-          resolve(value);
-        },
-      });
-      try {
-        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-request", requestId, operation });
-      } catch {
-        controller.signal.removeEventListener("abort", onAbortRequest);
-        pendingTdccSession.delete(requestId);
-        reject(new AppWorkflowWorkerProtocolError());
-      }
-    });
-
   const tdccSessionPort: TdccSessionPort = {
     async open() {
-      const response = await requestTdccSession("open");
-      if (response.operation !== "open") throw new AppWorkflowWorkerProtocolError();
-      return response.lease;
+      return await hostCalls.call("tdccSession", { operation: "open" }) as Awaited<ReturnType<TdccSessionPort["open"]>>;
     },
     async signInDetails() {
-      const response = await requestTdccSession("sign-in-details");
-      if (response.operation !== "sign-in-details") throw new AppWorkflowWorkerProtocolError();
-      return response.lease;
+      return await hostCalls.call("tdccSession", { operation: "sign-in-details" }) as Awaited<ReturnType<TdccSessionPort["signInDetails"]>>;
     },
     saveSession(session) {
       // Sent even after cancellation: the rotated token is what the next run signs in with.
-      try {
-        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "tdcc-session-rotated", session });
-      } catch { /* an unsendable session leaves the previous one; the next run signs in again */ }
+      hostCalls.notify("tdccSessionRotated", { session });
     },
   };
 
   let childRpc: PGliteChildRpcClient | undefined;
   let previewWorkflow = false;
   let progressQueue = Promise.resolve();
-  let acknowledgedEventQueue = Promise.resolve();
-  const sendAcknowledgedEvent = (
-    frame: Extract<AppWorkflowWorkerOutboundFrame, { kind: "event" | "exchange-rate-progress" }>,
-  ) => {
-    const result = acknowledgedEventQueue.then(async () => {
-      const ack = await request<Extract<AppWorkflowWorkerInboundFrame, { kind: "event-ack" }>>(
-        frame, pendingEvents, frame.eventId,
-      );
-      if (!ack.ok) throw new Error("event-persistence-failed");
-    });
-    acknowledgedEventQueue = result.catch(() => undefined);
-    return result;
-  };
-  const sendCommitAttempt = (attempt: CommitAttemptReport) => {
-    const eventId = randomUUID();
-    const result = acknowledgedEventQueue.then(() => new Promise<void>((resolve, reject) => {
-      pendingCommitAttempts.set(eventId, {
-        resolve: (frame) => {
-          if (frame.kind === "event-ack" && frame.ok) resolve();
-          else reject(new Error("event-persistence-failed"));
-        },
-        reject,
-      });
-      try {
-        send({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "commit-attempt", eventId, attempt });
-      } catch {
-        pendingCommitAttempts.delete(eventId);
-        reject(new AppWorkflowWorkerProtocolError());
-      }
-    }));
-    acknowledgedEventQueue = result.catch(() => undefined);
-    return result;
-  };
   const connectChildRpc = async (rpc: NonNullable<AppWorkflowWorkerStart["pgliteRpc"]>) => {
     childRpc = createPGliteChildRpcClient({
       endpoint: rpc.endpoint,
@@ -367,11 +223,7 @@ export async function runAppWorkflowWorker(
         }),
         exchangeRateProgress: (event) => {
           progressQueue = progressQueue.then(async () => {
-            const eventId = randomUUID();
-            await sendAcknowledgedEvent({
-              protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-              kind: "exchange-rate-progress",
-              eventId,
+            await hostCalls.call("exchangeRateProgress", {
               phaseCode: event.phaseCode as "load-request" | "sync" | "complete",
               completed: event.completed ?? 0,
               total: event.total ?? 3,
@@ -406,33 +258,18 @@ export async function runAppWorkflowWorker(
       async append(event) {
         if (events.length >= 512) events.shift();
         events.push(event);
-        const eventId = randomUUID();
-        await sendAcknowledgedEvent({
-          protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-          kind: "event",
-          eventId,
-          event,
-        });
+        await hostCalls.call("event", { event });
       },
     };
-    const commitAttempts: CommitAttemptRecorder = { record: sendCommitAttempt };
+    const commitAttempts: CommitAttemptRecorder = {
+      record: (attempt) => hostCalls.call("commitAttempt", { attempt }),
+    };
     const humanAssistance: WorkflowExecutorPorts["humanAssistance"] = {
       async request(contract, signal) {
         signal.throwIfAborted();
-        const requestId = randomUUID();
-        const response = await request(
-          {
-            protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-            kind: "human-assistance-request",
-            requestId,
-            contract,
-          },
-          pendingAssistance,
-          requestId,
-        );
+        const { status } = await hostCalls.call("humanAssistance", { contract });
         signal.throwIfAborted();
-        if (response.kind !== "human-assistance-response") throw new AppWorkflowWorkerProtocolError();
-        return response.status;
+        return status;
       },
     };
     const browser = options.browser ?? appBrowserPort(start);
@@ -522,10 +359,7 @@ export async function runAppWorkflowWorker(
   } finally {
     terminal = true;
     options.port.off("message", onMessage);
-    controller.signal.removeEventListener("abort", onAbort);
-    failPending();
-    for (const pending of pendingCommitAttempts.values()) pending.reject(abortError());
-    pendingCommitAttempts.clear();
+    hostCalls.close();
     childRpc?.close();
   }
 }

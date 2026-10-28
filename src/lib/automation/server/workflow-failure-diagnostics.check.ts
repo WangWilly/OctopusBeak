@@ -115,7 +115,7 @@ test("hashed Electron chunks survive worker capture and host protocol validation
     assert.deepEqual(sanitizeSafeWorkflowFailureError(captured, appRoot), captured);
 
     const revalidated = parseAppWorkflowWorkerOutboundFrame({
-      protocolVersion: 2,
+      protocolVersion: 3,
       kind: "failed",
       taskRunId: "worker-run-1",
       errorCode: "workflow-failed",

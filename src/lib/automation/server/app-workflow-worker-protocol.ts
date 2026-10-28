@@ -1,15 +1,5 @@
-import {
-  createHumanAssistanceContract,
-  type HumanAssistanceCompletionStatus,
-  type HumanAssistanceContractInput,
-} from "../human-assistance.ts";
-import { hasValidRunEventMeaning, type WorkflowRunEvent } from "../run-event.ts";
-import { isCommitAttemptReport, type CommitAttemptReport } from "../commit-attempt.ts";
-import { WORKFLOW_STAGES } from "../task-row.ts";
-import { WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS } from "../workflow-executor.ts";
 import { isWorkflowRunResult, type WorkflowRunResult } from "../workflow-run-result.ts";
 import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
-import type { TdccIssuedSession, TdccSessionLease, TdccSignInLease } from "../../../workflows/tdcc-session.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import {
@@ -19,21 +9,16 @@ import {
 } from "./workflow-failure-diagnostics.ts";
 import { parsePreviewResponseShapes, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
-export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 2 as const;
+export const APP_WORKFLOW_WORKER_PROTOCOL_VERSION = 3 as const;
 export const APP_WORKFLOW_WORKER_MAX_FRAME_BYTES = 1_048_576;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u;
 const SAFE_WORKFLOW_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const SAFE_CODE = /^[a-z][a-z0-9-]{0,63}$/u;
+const SAFE_METHOD = /^[a-z][A-Za-z0-9]{0,63}$/u;
 const SAFE_TARGET_ID = /^[A-Za-z0-9._:-]{1,200}$/u;
 const PGLITE_TOKEN = /^[A-Za-z0-9_-]{32,128}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const stages = new Set<WorkflowRunEvent["stage"]>(WORKFLOW_STAGES);
-const progressActivities = new Set(["query", "download"]);
-const progressStatementTypes = new Set<string>(WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS);
-const completionStatuses = new Set<Exclude<HumanAssistanceCompletionStatus, "pending">>([
-  "entered", "verified", "failed",
-]);
 const failureCodes = new Set([
   ...TYPED_WORKFLOW_ERROR_CODES,
   "worker-start-failed",
@@ -49,92 +34,34 @@ export type AppWorkflowWorkerStart = Readonly<{
   pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
+/** A host call (ADR 0072); its method's contract in app-workflow-host-calls.ts validates the request. */
+export type HostCallFrame = Readonly<{
+  protocolVersion: 3;
+  kind: "call";
+  callId: string;
+  method: string;
+  request: unknown;
+}>;
+
+/** The answer to one host call; its method's contract validates the result. */
+export type HostCallReplyFrame =
+  | Readonly<{ protocolVersion: 3; kind: "reply"; callId: string; ok: true; result: unknown }>
+  | Readonly<{ protocolVersion: 3; kind: "reply"; callId: string; ok: false; code: string }>;
+
 export type AppWorkflowWorkerInboundFrame =
-  | Readonly<{ protocolVersion: 2; kind: "cancel" }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "event-ack";
-    eventId: string;
-    ok: boolean;
-    code?: "event-persistence-failed";
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "human-assistance-response";
-    requestId: string;
-    status: Exclude<HumanAssistanceCompletionStatus, "pending">;
-  }>
-  | TdccSessionResponseFrame;
-
-export type TdccSessionOperation = "open" | "sign-in-details";
-
-export type TdccSessionRequestFrame = Readonly<{
-  protocolVersion: 2;
-  kind: "tdcc-session-request";
-  requestId: string;
-  operation: TdccSessionOperation;
-}>;
-
-/** One-way: the host saves the session without acknowledging, so it survives a run that stops right after. */
-export type TdccSessionRotatedFrame = Readonly<{
-  protocolVersion: 2;
-  kind: "tdcc-session-rotated";
-  session: TdccIssuedSession;
-}>;
-
-export type TdccSessionResponseFrame =
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "tdcc-session-response";
-    requestId: string;
-    operation: "open";
-    lease: TdccSessionLease;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "tdcc-session-response";
-    requestId: string;
-    operation: "sign-in-details";
-    lease: TdccSignInLease;
-  }>;
+  | Readonly<{ protocolVersion: 3; kind: "cancel" }>
+  | HostCallReplyFrame;
 
 export type AppWorkflowWorkerOutboundFrame =
+  | HostCallFrame
   | Readonly<{
-    protocolVersion: 2;
-    kind: "event";
-    eventId: string;
-    event: WorkflowRunEvent;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "human-assistance-request";
-    requestId: string;
-    contract: HumanAssistanceContractInput;
-  }>
-  /** ADR 0056: acknowledged by event-ack once the host has recorded it. */
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "commit-attempt";
-    eventId: string;
-    attempt: CommitAttemptReport;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
-    kind: "exchange-rate-progress";
-    eventId: string;
-    phaseCode: "load-request" | "sync" | "complete";
-    completed: number;
-    total: number;
-    percent: number;
-  }>
-  | Readonly<{
-    protocolVersion: 2;
+    protocolVersion: 3;
     kind: "completed";
     taskRunId: string;
     summary: WorkflowRunResult | null;
   }>
   | Readonly<{
-    protocolVersion: 2;
+    protocolVersion: 3;
     kind: "failed";
     taskRunId: string | null;
     errorCode: string;
@@ -143,13 +70,11 @@ export type AppWorkflowWorkerOutboundFrame =
     previewResponses?: PreviewResponseShapes;
   }>
   | Readonly<{
-    protocolVersion: 2;
+    protocolVersion: 3;
     kind: "cancelled";
     taskRunId: string;
     summary?: WorkflowRunResult | null;
-  }>
-  | TdccSessionRequestFrame
-  | TdccSessionRotatedFrame;
+  }>;
 
 export class AppWorkflowWorkerProtocolError extends Error {
   readonly code = "invalid-frame";
@@ -172,13 +97,13 @@ function invalid(): never {
   throw new AppWorkflowWorkerProtocolError();
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
-function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
+export function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []) {
   const allowed = new Set([...required, ...optional]);
   if (required.some((key) => !Object.hasOwn(value, key))) return false;
   return Object.keys(value).every((key) => allowed.has(key));
@@ -207,63 +132,13 @@ function jsonDepthAndSize(value: unknown, depth = 0, seen = new Set<object>()): 
   seen.delete(value);
 }
 
-function boundedJson(value: unknown): boolean {
+export function boundedJson(value: unknown): boolean {
   try {
     jsonDepthAndSize(value);
     return Buffer.byteLength(JSON.stringify(value), "utf8") <= APP_WORKFLOW_WORKER_MAX_FRAME_BYTES;
   } catch {
     return false;
   }
-}
-
-const CONNECTION_KEY = /^sha256:[A-Za-z0-9_-]{43}$/u;
-const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
-
-function boundedText(value: unknown, maxLength: number): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= maxLength;
-}
-
-function nullableBoundedText(value: unknown, maxLength: number) {
-  return value === null || boundedText(value, maxLength);
-}
-
-function validTdccSession(value: unknown): value is TdccIssuedSession {
-  return isRecord(value)
-    && exactKeys(value, ["tokenId", "richUrl", "issuedAt"])
-    && nullableBoundedText(value.tokenId, 512)
-    && nullableBoundedText(value.richUrl, 2_048)
-    && typeof value.issuedAt === "string"
-    && ISO_INSTANT.test(value.issuedAt);
-}
-
-function validTdccSessionLease(value: unknown): value is TdccSessionLease {
-  if (!isRecord(value)) return false;
-  if (value.status === "device-registration-required") return exactKeys(value, ["status"]);
-  return value.status === "ready"
-    && exactKeys(value, ["status", "connection", "device", "session"])
-    && isRecord(value.connection)
-    && exactKeys(value.connection, ["sourceConnectionKey", "identityEpochKey"])
-    && typeof value.connection.sourceConnectionKey === "string"
-    && CONNECTION_KEY.test(value.connection.sourceConnectionKey)
-    && typeof value.connection.identityEpochKey === "string"
-    && CONNECTION_KEY.test(value.connection.identityEpochKey)
-    && isRecord(value.device)
-    && exactKeys(value.device, ["deviceId", "devType", "devModel"])
-    && boundedText(value.device.deviceId, 64)
-    && boundedText(value.device.devType, 64)
-    && boundedText(value.device.devModel, 64)
-    && (value.session === null || validTdccSession(value.session));
-}
-
-function validTdccSignInLease(value: unknown): value is TdccSignInLease {
-  if (!isRecord(value)) return false;
-  if (value.status === "device-registration-required") return exactKeys(value, ["status"]);
-  return value.status === "ready"
-    && exactKeys(value, ["status", "details"])
-    && isRecord(value.details)
-    && exactKeys(value.details, ["userId", "password"])
-    && boundedText(value.details.userId, 64)
-    && boundedText(value.details.password, 256);
 }
 
 function validLoopbackConnection(value: unknown): value is AppWorkflowWorkerStart["browserConnection"] {
@@ -320,106 +195,16 @@ export function parseAppWorkflowWorkerInboundFrame(value: unknown): AppWorkflowW
   if (value.kind === "cancel" && exactKeys(value, ["protocolVersion", "kind"])) {
     return value as unknown as AppWorkflowWorkerInboundFrame;
   }
-  if (value.kind === "event-ack" && exactKeys(value, ["protocolVersion", "kind", "eventId", "ok"], ["code"])) {
+  if (value.kind === "reply" && typeof value.ok === "boolean"
+    && exactKeys(value, ["protocolVersion", "kind", "callId", "ok", value.ok ? "result" : "code"])) {
     if (
-      typeof value.eventId !== "string"
-      || !SAFE_ID.test(value.eventId)
-      || typeof value.ok !== "boolean"
-      || (value.ok && Object.hasOwn(value, "code"))
-      || (!value.ok && value.code !== "event-persistence-failed")
-    ) invalid();
-    return value as unknown as AppWorkflowWorkerInboundFrame;
-  }
-  if (value.kind === "human-assistance-response" && exactKeys(value, ["protocolVersion", "kind", "requestId", "status"])) {
-    if (
-      typeof value.requestId !== "string"
-      || !SAFE_ID.test(value.requestId)
-      || typeof value.status !== "string"
-      || !completionStatuses.has(value.status as Exclude<HumanAssistanceCompletionStatus, "pending">)
-    ) invalid();
-    return value as unknown as AppWorkflowWorkerInboundFrame;
-  }
-  if (value.kind === "tdcc-session-response" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation", "lease"])) {
-    if (
-      typeof value.requestId !== "string"
-      || !UUID.test(value.requestId)
-      || !(value.operation === "open" ? validTdccSessionLease(value.lease)
-        : value.operation === "sign-in-details" && validTdccSignInLease(value.lease))
+      typeof value.callId !== "string"
+      || !UUID.test(value.callId)
+      || (!value.ok && (typeof value.code !== "string" || !SAFE_CODE.test(value.code)))
     ) invalid();
     return value as unknown as AppWorkflowWorkerInboundFrame;
   }
   invalid();
-}
-
-const contractKeys = [
-  "stageId", "title", "targets", "contextRegions", "completion", "focus", "challengeKind",
-  "challengeImageRegion", "challengeAudioSource", "charset", "imagePreprocessing",
-  "ocrPageSegmentationMode", "ocrAttemptPlan", "solveAcceptancePolicy",
-  "solverConfidenceThreshold", "expectedAnswerLength", "prompt",
-] as const;
-
-function allowNestedKeys(value: unknown, keys: readonly string[]): boolean {
-  return isRecord(value) && Object.keys(value).every((key) => keys.includes(key));
-}
-
-function validRect(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
-  if (!allowNestedKeys(value, ["x", "y", "width", "height"])) return false;
-  const rect = value as Record<string, unknown>;
-  return ["x", "y", "width", "height"].every((key) => typeof rect[key] === "number" && Number.isFinite(rect[key]));
-}
-
-function validHumanContract(value: unknown): value is HumanAssistanceContractInput {
-  if (!allowNestedKeys(value, contractKeys)) return false;
-  const contract = value as HumanAssistanceContractInput;
-  if (!Array.isArray(contract.targets) || !Array.isArray(contract.contextRegions)) return false;
-  if (!contract.targets.every((target) => allowNestedKeys(target, ["id", "label", "semanticId", "modes", "rect"]))) return false;
-  if (!contract.contextRegions.every((region) => allowNestedKeys(region, ["id", "label", "semanticId", "rect"]))) return false;
-  if (!contract.targets.every((target) => validRect(target.rect))) return false;
-  if (!contract.contextRegions.every((region) => validRect(region.rect))) return false;
-  if (!allowNestedKeys(contract.completion, ["mode", "targetIds", "status"])) return false;
-  if (!allowNestedKeys(contract.focus, ["targetId", "contextRegionIds", "initialZoom"])) return false;
-  if (contract.challengeImageRegion !== undefined && (
-    !allowNestedKeys(contract.challengeImageRegion, ["id", "label", "semanticId", "rect"])
-    || !validRect(contract.challengeImageRegion.rect)
-  )) return false;
-  if (contract.challengeAudioSource !== undefined && !allowNestedKeys(contract.challengeAudioSource, ["id", "label", "semanticId"])) return false;
-  if (contract.solveAcceptancePolicy !== undefined && !allowNestedKeys(contract.solveAcceptancePolicy, ["mode", "conflictResolution"])) return false;
-  if (contract.ocrAttemptPlan !== undefined && !contract.ocrAttemptPlan.every((plan) => allowNestedKeys(plan, ["imagePreprocessing", "ocrPageSegmentationMode", "ocrOutputStage", "ocrCharacterSegmentation"]))) return false;
-  try {
-    createHumanAssistanceContract(contract, 1);
-    return boundedJson(contract);
-  } catch {
-    return false;
-  }
-}
-
-function validEvent(value: unknown): value is WorkflowRunEvent {
-  if (!isRecord(value) || !exactKeys(value, ["runId", "stage", "outcome", "code", "occurredAt"], [
-    "signal", "completed", "total", "activity", "statementType", "retrying",
-  ])) return false;
-  if (
-    typeof value.runId !== "string"
-    || !SAFE_ID.test(value.runId)
-    || typeof value.stage !== "string"
-    || !stages.has(value.stage as WorkflowRunEvent["stage"])
-    || typeof value.code !== "string"
-    || !SAFE_CODE.test(value.code)
-    || !hasValidRunEventMeaning(value)
-    || typeof value.occurredAt !== "string"
-    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value.occurredAt)
-    || !Number.isFinite(Date.parse(value.occurredAt))
-  ) return false;
-  for (const key of ["completed", "total"] as const) {
-    if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || Number(value[key]) < 0 || Number(value[key]) > 1_000_000_000)) return false;
-  }
-  if (value.completed !== undefined && value.total !== undefined && Number(value.completed) > Number(value.total)) return false;
-  if (value.activity !== undefined
-    && (typeof value.activity !== "string" || !progressActivities.has(value.activity))) return false;
-  if (value.statementType !== undefined
-    && (typeof value.statementType !== "string" || !progressStatementTypes.has(value.statementType))) return false;
-  if (value.retrying !== undefined && typeof value.retrying !== "boolean") return false;
-  return true;
 }
 
 function validSummary(value: unknown): value is WorkflowRunResult | null {
@@ -431,39 +216,13 @@ export function parseAppWorkflowWorkerOutboundFrame(
   diagnosticRepoRoot = workflowFailureDiagnosticRepoRoot(),
 ): AppWorkflowWorkerOutboundFrame {
   if (!isRecord(value) || value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION || !boundedJson(value)) invalid();
-  if (value.kind === "exchange-rate-progress" && exactKeys(value, ["protocolVersion", "kind", "eventId", "phaseCode", "completed", "total", "percent"])) {
+  if (value.kind === "call" && exactKeys(value, ["protocolVersion", "kind", "callId", "method", "request"])) {
     if (
-      typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId)
-      || (value.phaseCode !== "load-request" && value.phaseCode !== "sync" && value.phaseCode !== "complete")
-      || !Number.isSafeInteger(value.completed) || Number(value.completed) < 0 || Number(value.completed) > 3
-      || value.total !== 3
-      || !Number.isSafeInteger(value.percent) || Number(value.percent) < 0 || Number(value.percent) > 100
-      || Number(value.completed) > Number(value.total)
+      typeof value.callId !== "string"
+      || !UUID.test(value.callId)
+      || typeof value.method !== "string"
+      || !SAFE_METHOD.test(value.method)
     ) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
-  if (value.kind === "event" && exactKeys(value, ["protocolVersion", "kind", "eventId", "event"])) {
-    if (typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId) || !validEvent(value.event)) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
-  if (value.kind === "commit-attempt" && exactKeys(value, ["protocolVersion", "kind", "eventId", "attempt"])) {
-    if (typeof value.eventId !== "string" || !SAFE_ID.test(value.eventId) || !isCommitAttemptReport(value.attempt)) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
-  if (value.kind === "human-assistance-request" && exactKeys(value, ["protocolVersion", "kind", "requestId", "contract"])) {
-    if (typeof value.requestId !== "string" || !SAFE_ID.test(value.requestId) || !validHumanContract(value.contract)) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
-  if (value.kind === "tdcc-session-request" && exactKeys(value, ["protocolVersion", "kind", "requestId", "operation"])) {
-    if (
-      typeof value.requestId !== "string"
-      || !UUID.test(value.requestId)
-      || (value.operation !== "open" && value.operation !== "sign-in-details")
-    ) invalid();
-    return value as unknown as AppWorkflowWorkerOutboundFrame;
-  }
-  if (value.kind === "tdcc-session-rotated" && exactKeys(value, ["protocolVersion", "kind", "session"])) {
-    if (!validTdccSession(value.session)) invalid();
     return value as unknown as AppWorkflowWorkerOutboundFrame;
   }
   if (value.kind === "completed" && exactKeys(value, ["protocolVersion", "kind", "taskRunId", "summary"])) {
