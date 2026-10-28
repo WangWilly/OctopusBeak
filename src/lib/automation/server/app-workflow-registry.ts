@@ -88,7 +88,7 @@ function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.Proce
 }
 
 /** ADR 0071: the source facts its Product collection run is bound to. */
-function productCollectionFacts(source: VerifiedSource): WorkflowDefinition["productCollection"] {
+export function productCollectionFacts(source: VerifiedSource): WorkflowDefinition["productCollection"] {
   if (!source.workflow.requiresProductCollection) return undefined;
   return {
     provider: source.integrationNamespace,
