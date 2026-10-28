@@ -33,14 +33,9 @@ import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/s
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
-import {
-  collectSelectedProducts,
-  type ProductCollectionHandle,
-  type ProductCollectionSummary,
-} from "../lib/automation/product-collection.ts";
+import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
-import { ATTACHED_PREVIEW_PRODUCTS, attachedPreviewRun } from "../lib/preview-sources/attached-products.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
 import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
@@ -1154,8 +1149,8 @@ const typedInputSchema = z.object({
   }),
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
-  /** The verified selection. Absent means the card, as before attached products existed. */
-  statementTypes: z.array(z.literal("credit_card")).default(["credit_card"]),
+  /** The verified selection; empty when only attached products are selected. */
+  statementTypes: z.array(z.literal("credit_card")),
   attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
@@ -1382,14 +1377,13 @@ async function collectEsunCreditCard(
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
 export async function runEsunCreditCardProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit", "previewWrite">,
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
   rawInput: unknown,
 ): Promise<WorkflowRunResult> {
   const parsed = typedInputSchema.safeParse(rawInput);
   if (!parsed.success) throw new Error("E.SUN workflow credentials are missing or invalid.");
   const input = parsed.data;
-  const creditCardSelected = input.statementTypes.includes("credit_card");
-  if (!creditCardSelected && input.attachedPreviewProducts.length === 0) {
+  if (input.statementTypes.length === 0 && input.attachedPreviewProducts.length === 0) {
     throw new FailureCodeError("collection-scope-changed");
   }
   if (input.startDate || input.endDate) {
@@ -1402,31 +1396,22 @@ export async function runEsunCreditCardProviderWorkflow(
     await authenticateEsunPage(page, input.credentials, context);
 
     let creditCard: EsunCreditCardCollection | null = null;
-    const summary = await collectSelectedProducts({
-      provider: "esun",
-      productIds: ["credit_card"],
-      selectedIds: creditCardSelected ? ["credit_card"] : [],
-      signal: context.signal,
-      event: context.event,
-      productFailure: context.productFailure,
-      collect: async (_typeId, product): Promise<ProductCollectionSummary> => {
+    const summary = await context.products.collect({
+      credit_card: async (product): Promise<ProductCollectionSummary> => {
         const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product.stage);
         creditCard = collected;
         return { sourceCaptureCount: 1, rowCount: collected.count };
       },
-      financialCommit: context.financialCommit,
+    }, {
       // ADR 0051: the attached deposit product, read in the same signed-in page. It writes only Preview Financial Data.
-      attached: attachedPreviewRun({
-        context,
-        source: ATTACHED_PREVIEW_PRODUCTS.esun,
-        selected: input.attachedPreviewProducts,
+      attached: {
         collectors: () => ({
           deposit: async () => {
             await withAbort(waitForEsunPortalSession(page), context.signal);
             return await collectEsunDeposits(createEsunPortalTransport(page, context.signal), context.now());
           },
         }),
-      }),
+      },
     });
     const admitted = summary.products[0]?.status === "success"
       ? creditCard as EsunCreditCardCollection | null
