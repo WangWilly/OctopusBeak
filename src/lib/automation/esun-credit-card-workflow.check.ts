@@ -7,6 +7,8 @@ import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import type { WorkflowRunResult } from "./workflow-run-result.ts";
 import { strictSourceText } from "./source-text.ts";
 import { runEsunCreditCardProviderWorkflow } from "../../workflows/esun-credit-card-statements.ts";
+import { ESUN_SOURCE } from "./server/sources/esun.ts";
+import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
 import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import type { EsunPortalReply } from "../preview-sources/esun-portal.ts";
@@ -159,6 +161,11 @@ function createPage(options: {
   return page as unknown as Page;
 }
 
+/** Runs E.SUN as the executor does: the Product collection run bound to ESUN_SOURCE and this input. */
+function runEsun(context: WorkflowContextWith<"financialCommit", "previewWrite">, input: unknown) {
+  return runEsunCreditCardProviderWorkflow(withBoundProducts(context, ESUN_SOURCE, input), input);
+}
+
 function createContext(page: Page) {
   const events: Array<{ stage: string; code: string; counts?: unknown }> = [];
   const committed: unknown[][] = [];
@@ -227,13 +234,14 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
   try {
     for (const monthCount of [12, 13]) {
       const harness = createContext(createPage({ monthCount }));
-      const output = await runEsunCreditCardProviderWorkflow(harness.context, {
+      const output = await runEsun(harness.context, {
         managedIdentitySecret: "synthetic-esun-managed-secret",
         credentials: {
           esun_user_id: "synthetic-user",
           esun_account: "synthetic-account",
           esun_password: "synthetic-password",
         },
+        statementTypes: ["credit_card"],
       });
 
       assert.equal(harness.committed.length, 1);
@@ -284,13 +292,14 @@ test("E.SUN typed workflow rejects malformed text and incomplete timelines befor
     ]) {
       const harness = createContext(page);
       await assert.rejects(
-        runEsunCreditCardProviderWorkflow(harness.context, {
+        runEsun(harness.context, {
           managedIdentitySecret: "synthetic-esun-managed-secret",
           credentials: {
             esun_user_id: "synthetic-user",
             esun_account: "synthetic-account",
             esun_password: "synthetic-password",
           },
+          statementTypes: ["credit_card"],
         }),
       );
       assert.equal(harness.committed.length, 0);
@@ -307,13 +316,14 @@ test("E.SUN typed workflow honors cancellation before opening a page or committi
   controller.abort(new Error("cancelled"));
   const context = { ...harness.context, signal: controller.signal };
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(context, {
+    runEsun(context, {
       managedIdentitySecret: "synthetic-esun-managed-secret",
       credentials: {
         esun_user_id: "synthetic-user",
         esun_account: "synthetic-account",
         esun_password: "synthetic-password",
       },
+      statementTypes: ["credit_card"],
     }),
     /cancelled/u,
   );
@@ -355,6 +365,7 @@ const workflowInput = (extra: Readonly<Record<string, unknown>> = {}) => ({
     esun_account: "synthetic-account",
     esun_password: "synthetic-password",
   },
+  statementTypes: ["credit_card"],
   ...extra,
 });
 
@@ -375,7 +386,7 @@ const outcomes = (output: Pick<WorkflowRunResult, "products">) => (output.produc
 test("the attached deposit writes Preview Financial Data for the E.SUN group after the card commits", () => withManagedSecret(async () => {
   const deposit = depositPortal();
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 1, "the card still commits canonically");
   assert.deepEqual(harness.committed.flat().map((item) => (item as { product?: string }).product), ["credit-card"]);
@@ -396,7 +407,7 @@ test("the attached deposit writes Preview Financial Data for the E.SUN group aft
 test("a failing attached deposit leaves the card committed and reported", () => withManagedSecret(async () => {
   const deposit = depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } });
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 1);
   assert.equal(harness.previewWrites.length, 0, "a failed product writes nothing");
@@ -408,7 +419,7 @@ test("a failing attached deposit leaves the card committed and reported", () => 
 test("an attached-only selection signs in, skips the card, and writes the deposit", () => withManagedSecret(async () => {
   const deposit = depositPortal();
   const harness = createContext(createPage({ portal: deposit.portal }));
-  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsun(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
 
   assert.equal(harness.committed.length, 0, "no canonical commit without the card");
   assert.equal(harness.previewWrites.length, 1);
@@ -420,18 +431,18 @@ test("an attached-only selection signs in, skips the card, and writes the deposi
 test("an attached-only run fails with the deposit's own error and reports a stated absence as not_held", () => withManagedSecret(async () => {
   const failing = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("系統維護中") }).portal }));
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(failing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
+    runEsun(failing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
     (error: unknown) => (error as { reason?: string }).reason === "unexpected-response",
   );
 
   const absent = createContext(createPage({ portal: depositPortal({ preQueryTWTransactionDetail: portalNotHeld("查無臺幣帳號，或您尚未開立臺幣帳戶") }).portal }));
-  const output = await runEsunCreditCardProviderWorkflow(absent.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
+  const output = await runEsun(absent.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] }));
   assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "not_held", null]]);
   assert.equal(absent.previewWrites.length, 0, "not_held writes no account and no zero balance");
 
   const nothing = createContext(createPage());
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(nothing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: [] })),
+    runEsun(nothing.context, workflowInput({ statementTypes: [], attachedPreviewProducts: [] })),
     (error: unknown) => (error as { errorCode?: string }).errorCode === "collection-scope-changed",
   );
   assert.equal(nothing.withPageCount, 0);
@@ -439,7 +450,7 @@ test("an attached-only run fails with the deposit's own error and reports a stat
 
 test("no attached selection never touches the deposit portal", () => withManagedSecret(async () => {
   const harness = createContext(createPage());
-  const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: [] }));
+  const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] }));
   assert.equal(harness.previewWrites.length, 0);
   assert.deepEqual(outcomes(output), [["credit_card", "success", null]]);
 }));
@@ -451,7 +462,7 @@ test("a card failure reports the card failed with its classified code beside the
   ];
   for (const [name, page, errorCode] of cases) {
     const harness = createContext(createPage({ ...page, portal: depositPortal().portal }));
-    const output = await runEsunCreditCardProviderWorkflow(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
     assert.equal(harness.committed.length, 0, name);
     assert.equal(harness.previewWrites.length, 1, name);
     assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
@@ -473,14 +484,14 @@ test("a card failure with no deposit data fails the run with the card's own erro
     portal: depositPortal({ queryTWTransactionDetail: { kind: "json", httpStatus: 200, text: "{\"resultCode\":\"E999\"}", date: null } }).portal,
   }));
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    runEsun(failedDeposit.context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
     cardFailure,
   );
   assert.equal(failedDeposit.previewWrites.length, 0);
 
   const cardOnly = createContext(createPage({ monthCount: 11, portal: depositPortal().portal }));
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
+    runEsun(cardOnly.context, workflowInput({ attachedPreviewProducts: [] })),
     cardFailure,
   );
   assert.equal(cardOnly.previewWrites.length, 0);
@@ -507,7 +518,7 @@ test("a refused E.SUN card commit names the run collection-scope-changed and ski
     },
   };
   await assert.rejects(
-    runEsunCreditCardProviderWorkflow(context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
+    runEsun(context, workflowInput({ attachedPreviewProducts: ["deposit"] })),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
       assert.equal(error.errorCode, "collection-scope-changed");

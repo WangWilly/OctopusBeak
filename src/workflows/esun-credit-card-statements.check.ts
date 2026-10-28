@@ -4,6 +4,8 @@ import test from "node:test";
 import type { Page } from "playwright";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
+import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { PGlite } from "@electric-sql/pglite";
 import {
@@ -880,12 +882,13 @@ for (const scenario of ["unavailable portal", "cancellation while waiting for th
       event: async () => undefined,
       previewWrite: { write: async () => { throw new Error("no incomplete product may write"); } },
     } as unknown as WorkflowContextWith<"financialCommit">;
-    await assert.rejects(runEsunCreditCardProviderWorkflow(context, {
+    const input = {
       managedIdentitySecret: "synthetic-identity-secret",
       credentials: { esun_user_id: "synthetic-user", esun_account: "synthetic-account", esun_password: "synthetic-password" },
       statementTypes: [],
       attachedPreviewProducts: ["deposit"],
-    }), (error: unknown) => {
+    };
+    await assert.rejects(runEsunCreditCardProviderWorkflow(withBoundProducts(context, ESUN_SOURCE, input), input), (error: unknown) => {
       if (scenario === "unavailable portal") {
         assert.ok(error instanceof PreviewSourceFailure);
         assert.equal(error.reason, "unexpected-response", "keep the sole product's existing failure classification");
