@@ -937,6 +937,10 @@ _Avoid_: Time remaining estimate, financial completeness, elapsed-time percentag
 The App-owned production runtime that starts typed workflow definitions, injects their capabilities, supervises their workers, and owns run state and progress events. It injects the existing Canonical Financial Commit capability into financial workflows without granting them a database handle.
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
+**Host call**:
+One request a workflow worker makes of the App host: a run event, a Commit attempt, exchange-rate progress, a Human assistance request, or the TDCC session. Each is declared once in the host-call contract table with its lane, its per-run cap, and whether a stop abandons it; a rotated TDCC session is a one-way host call the host keeps only the newest of (ADR 0072).
+_Avoid_: Worker frame, ACK, worker message
+
 **Commit attempt**:
 One request an Automation Task Run makes to the Canonical Financial Commit capability, recorded durably before the request starts and settled afterward with a known outcome: completed, failed, cancelled, or refused. A refused attempt is one the App turned away before admission because the run's Collection scope version changed, so it wrote nothing after its earlier receipts. It is the only authority for whether a run's financial writes happened; stage events only report it.
 _Avoid_: Commit event, commit stage, financial write
