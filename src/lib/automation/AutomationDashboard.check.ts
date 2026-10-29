@@ -81,7 +81,7 @@ assert.match(source, /workflowEventFailureLabel\(event, \$t\)/);
 assert.match(source, /<code>\{event\.code\}<\/code>/);
 assert.match(source, /formatTime\(event\.occurredAt\)/);
 assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
-assert.match(source, /task\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /\{#if present\(task\)\.failure\}/);
 assert.match(source, /Object\.entries\(task\.appWorkflowOutcome\.summary\.counts\)/);
 assert.doesNotMatch(source, /eventDisplayMode/);
 assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
@@ -233,7 +233,7 @@ assert.match(source, /export async function retryOnboardingWorkflow\(\)/);
 assert.match(source, /export async function openCredentialsForOnboarding\(\)/);
 assert.match(source, /credentialState\(key\) !== "ready"/);
 assert.match(source, /statementSelectionConfirmed = Boolean\(group\?\.selectedStatementTypeIds\.length\)/);
-assert.match(source, /workflowFailureExplanation\(task\.appWorkflowOutcome\.errorCode, \$locale\)/);
+assert.equal(source.match(/<span>\{failure\.explanation\}<\/span>/g)?.length, 2, "the run list and the run details both show the explanation");
 assert.match(source, /\$t\.automation\.viewOverview/);
 assert.match(
   source,
