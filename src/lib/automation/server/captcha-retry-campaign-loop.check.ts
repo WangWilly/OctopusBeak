@@ -19,7 +19,11 @@ import {
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import type { ActiveTaskRunFields, TaskRunOutcome, TaskRunReport } from "./active-task-run.ts";
 import { readAutomationSettings } from "./settings.ts";
-import { captchaRetryCooldownMs } from "./verification-routing.ts";
+import {
+  appWorkflowRoutesVerification,
+  captchaRetryCooldownMs,
+  sourceVerificationRoute,
+} from "./verification-routing.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { openTaskRunForCheck } from "./task-run-check-support.ts";
 
@@ -102,6 +106,7 @@ for (const taskId of [
   "einvoice-personal-invoices",
 ]) {
   test(`${taskId} retries solver exhaustion in one more round`, async () => {
+    assert.equal(appWorkflowRoutesVerification(taskId), true, `${taskId} routes its verification`);
     const { run, updates, transitions } = fakeRun();
     const round = fakeRound([exhaustedRound(), { result: { report: SUCCEEDED } }]);
     const report = await runCaptchaRetryCampaign({
@@ -125,6 +130,8 @@ for (const taskId of [
 }
 
 test("Yuanta Trade audio solver exhaustion restarts without a cooldown", async () => {
+  assert.ok(sourceVerificationRoute("yuanta-trade-statements"), "Yuanta Trade routes through its own source route");
+  assert.equal(captchaRetryCooldownMs("yuanta-trade-statements"), undefined, "Yuanta Trade declares no cooldown");
   const { run } = fakeRun();
   const round = fakeRound([exhaustedRound(), { result: { report: SUCCEEDED } }]);
   const report = await runCaptchaRetryCampaign({
@@ -423,6 +430,11 @@ const summary = { status: "failed", counts: { itemCount: 1, committedCount: 0 },
 const ROUND_REPORT: TaskRunReport = { summary, failure: null };
 
 for (const row of [
+  {
+    name: "an unknown commit outcome outranks a failed route",
+    input: { campaign: capturedAt(1), assessed: assessedAs("failed", "commit-outcome-unknown"), routing: { kind: "failed" } as const, aborted: false },
+    expected: { kind: "stop", report: ROUND_REPORT, status: "awaiting-outcome", exhausted: false },
+  },
   {
     name: "an unknown commit outcome stops with the report, before a stop or a retry",
     input: { campaign: capturedAt(1), assessed: assessedAs("failed", "commit-outcome-unknown"), routing: SOLVER_EXHAUSTED, aborted: true },
