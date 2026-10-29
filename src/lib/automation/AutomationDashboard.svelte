@@ -71,7 +71,6 @@ import {
     countsOutsideTdccExclusions,
     presentTaskRow,
     tdccExclusionLines,
-    verificationSolverExhausted,
     workflowEventFailureLabel,
     type TaskRowViewContext,
   } from "$lib/automation/task-row-view.ts";
@@ -1408,13 +1407,14 @@ import type {
                         <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
-                    {#if ["failed", "cancelled"].includes(task.status) && task.appWorkflowOutcome?.errorCode}
+                    {#if ["failed", "cancelled"].includes(task.status) && present(task).failure}
+                      {@const failure = present(task).failure!}
                       <div class="workflow-failure-summary" role="status">
-                        <code>{task.appWorkflowOutcome.errorCode}</code>
-                        {#if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
-                          <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                        <code>{failure.code}</code>
+                        {#if failure.explanation}
+                          <span>{failure.explanation}</span>
                         {/if}
-                        {#if task.appWorkflowOutcome.errorCode === "device-registration-required" && deviceRegistrationSource(task.credentialGroupId)}
+                        {#if failure.userAction === "register-device" && deviceRegistrationSource(task.credentialGroupId)}
                           <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
                             {$t.automation.deviceRegistrationOpenSettings}
                           </button>
@@ -1498,31 +1498,19 @@ import type {
                           <ChevronUp size={16} strokeWidth={2.2} aria-hidden="true" />
                         </button>
                       </div>
-                      {#if task.appWorkflowOutcome?.errorCode}
-                        {@const solverExhausted = verificationSolverExhausted(task.events)}
-                        {@const errorCode = task.appWorkflowOutcome.errorCode}
+                      {#if present(task).failure}
+                        {@const failure = present(task).failure!}
+                        {@const errorCode = failure.code}
                         <div class="workflow-outcome-error">
                           <CircleAlert size={16} strokeWidth={2.2} aria-hidden="true" />
                           <code>{errorCode}</code>
-                          {#if task.appWorkflowOutcome.errorCode === "device-registration-required"}
-                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
-                            {#if deviceRegistrationSource(task.credentialGroupId)}
-                              <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
-                                {$t.automation.deviceRegistrationOpenSettings}
-                              </button>
-                            {/if}
-                          {:else if solverExhausted}
-                            <span>{$t.automation.verificationSolverExhausted}</span>
-                          {:else if task.appWorkflowOutcome.errorCode === "source-access-challenged"}
-                            <span>{$locale === "zh-TW"
-                              ? "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。"
-                              : "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying."}</span>
-                          {:else if task.appWorkflowOutcome.errorCode === "source-unavailable"}
-                            <span>{$locale === "zh-TW"
-                              ? "來源網站未提供可用的登入表單（系統忙碌或空白回應）。請稍後重試。"
-                              : "The provider did not return a usable login form (busy or blank response). Try again later."}</span>
-                          {:else if workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}
-                            <span>{workflowFailureExplanation(task.appWorkflowOutcome.errorCode, $locale)}</span>
+                          {#if failure.explanation}
+                            <span>{failure.explanation}</span>
+                          {/if}
+                          {#if failure.userAction === "register-device" && deviceRegistrationSource(task.credentialGroupId)}
+                            <button class="button secondary device-registration-action" type="button" onclick={() => void openDeviceRegistration(task.credentialGroupId)}>
+                              {$t.automation.deviceRegistrationOpenSettings}
+                            </button>
                           {/if}
                           {#if structureReport?.taskId === task.id}
                             <button class="button secondary structure-report-action" type="button" onclick={openStructureReport}>

@@ -185,6 +185,32 @@ test("a solver-exhausted authentication event is the one labelled verification f
   assert.equal(translations["zh-TW"].automation.statusLabels.waiting_for_human, "驗證中");
 });
 
+test("a failed row explains its Failure code the same way wherever the page shows it", () => {
+  const failed = (errorCode: string, events: AutomationTaskRow["events"] = []) =>
+    row({ status: "failed", isActive: false, events, appWorkflowOutcome: { errorCode, summary: null } as AutomationTaskRow["appWorkflowOutcome"] });
+  const exhausted = [{ stage: "authentication", outcome: "failed", signal: "verification-solver-exhausted", code: "verification-solver-exhausted" }] as unknown as AutomationTaskRow["events"];
+
+  assert.equal(presentTaskRow(row(), context("en")).failure, null);
+  for (const locale of ["en", "zh-TW"] as const) {
+    for (const code of ["source-access-challenged", "source-unavailable"]) {
+      const { failure } = presentTaskRow(failed(code), context(locale));
+      assert.equal(failure?.code, code);
+      assert.ok(failure?.explanation, `${code} is explained in ${locale}`);
+      assert.equal(failure.userAction, null);
+    }
+  }
+  assert.deepEqual(presentTaskRow(failed("authentication-failed", exhausted), context("en")).failure, {
+    code: "authentication-failed",
+    explanation: translations.en.automation.verificationSolverExhausted,
+    userAction: "check-sign-in-details",
+  });
+  const device = presentTaskRow(failed("device-registration-required", exhausted), context("en")).failure;
+  assert.equal(device?.userAction, "register-device");
+  assert.notEqual(device?.explanation, translations.en.automation.verificationSolverExhausted, "registering the device outranks the solver");
+  assert.deepEqual(presentTaskRow(failed("commit-outcome-unknown"), context("en")).failure,
+    { code: "commit-outcome-unknown", explanation: null, userAction: null });
+});
+
 test("the dashboard no longer offers manual verification", () => {
   const dashboard = readFileSync(new URL("./AutomationDashboard.svelte", import.meta.url), "utf8");
   assert.doesNotMatch(dashboard, /shouldOfferManualVerification|verificationActorsByCredentialGroup|openHumanViewer/);

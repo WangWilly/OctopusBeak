@@ -5,7 +5,7 @@ import type { WorkflowRunEvent } from "./run-event.ts";
 import type { TypedWorkflowOutcome } from "./server/typed-workflow-outcome.ts";
 import { TDCC_EXCLUSION_COUNT_NAMES } from "./tdcc-collection-summary.ts";
 import { isTerminalAutomationStatus, isWorkflowStage } from "./task-row.ts";
-import { workflowFailureExplanation } from "./workflow-failures.ts";
+import { userActionForFailure, workflowFailureExplanation, type UserAction } from "./workflow-failures.ts";
 
 /**
  * Everything the Automation page writes about one task row, in the person's
@@ -24,6 +24,14 @@ export type TaskRowViewContext = Readonly<{
 export type TaskRowTone = "good" | "warn" | "bad" | "muted" | "active";
 export type TaskRowStatusLine = Readonly<{ tone: TaskRowTone; label: string; time: string }>;
 
+/** What the row says about its run's Failure code, wherever the page shows it. */
+export type TaskRowFailure = Readonly<{
+  code: string;
+  /** Plain words for the failure, or null when the code alone is shown. */
+  explanation: string | null;
+  userAction: UserAction | null;
+}>;
+
 export type TaskRowView = Readonly<{
   statusLabel: string;
   /** The latest run's outcome with its time, or "never" without one. */
@@ -38,6 +46,7 @@ export type TaskRowView = Readonly<{
   showProgress: boolean;
   showProgressStatus: boolean;
   isOnboardingProgress: boolean;
+  failure: TaskRowFailure | null;
 }>;
 
 export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewContext): TaskRowView {
@@ -59,7 +68,18 @@ export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewConte
       || (isTerminalAutomationStatus(row.status) && (row.status !== "completed" || isOnboardingProgress)),
     showProgressStatus: row.status === "waiting_for_human" || row.status === "cancelling",
     isOnboardingProgress,
+    failure: failure(row, context),
   };
+}
+
+function failure(row: AutomationTaskRow, context: TaskRowViewContext): TaskRowFailure | null {
+  const code = row.appWorkflowOutcome?.errorCode;
+  if (!code) return null;
+  const userAction = userActionForFailure(code);
+  const explanation = userAction !== "register-device" && verificationSolverExhausted(row.events)
+    ? context.dictionary.automation.verificationSolverExhausted
+    : workflowFailureExplanation(code, context.locale);
+  return { code, explanation, userAction };
 }
 
 /** A failure label for one run event, when the event names a known failure. */

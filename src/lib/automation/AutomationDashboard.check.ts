@@ -233,7 +233,6 @@ assert.match(source, /export async function retryOnboardingWorkflow\(\)/);
 assert.match(source, /export async function openCredentialsForOnboarding\(\)/);
 assert.match(source, /credentialState\(key\) !== "ready"/);
 assert.match(source, /statementSelectionConfirmed = Boolean\(group\?\.selectedStatementTypeIds\.length\)/);
-assert.match(source, /workflowFailureExplanation\(task\.appWorkflowOutcome\.errorCode, \$locale\)/);
 assert.match(source, /\$t\.automation\.viewOverview/);
 assert.match(
   source,
