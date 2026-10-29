@@ -15,7 +15,7 @@
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
   } from "$lib/desktop/api.ts";
-  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
@@ -363,10 +363,7 @@
     if (nextRoute === "assets") return { eyebrow: $t.assets.eyebrow, title: $t.assets.title };
     if (nextRoute === "liabilities") return { eyebrow: $t.liabilities.eyebrow, title: $t.liabilities.title };
     if (nextRoute === "spending") {
-      return {
-        eyebrow: $locale === "zh-TW" ? "消費" : "Spending",
-        title: $locale === "zh-TW" ? "個人消費" : "Personal spending",
-      };
+      return { eyebrow: $t.spending.eyebrow, title: $t.spending.title };
     }
     if (nextRoute === "automation") return { eyebrow: $t.automation.eyebrow, title: $t.automation.title };
     return { eyebrow: $t.settings.eyebrow, title: $t.settings.title };
@@ -1023,7 +1020,7 @@
 
 {#if financialLiveEnabled && financialLiveError}
   <p role="status" data-financial-live-error>
-    {$locale === "zh-TW" ? "即時財務資料暫時無法更新，正在顯示最近可用資料。" : "Live financial data is temporarily unavailable; showing the latest available data."}
+    {$t.common.financialLiveUnavailable}
   </p>
 {/if}
 

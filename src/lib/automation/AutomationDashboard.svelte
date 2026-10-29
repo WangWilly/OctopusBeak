@@ -96,7 +96,7 @@ import type {
     AutomationTaskRow,
   } from "./types.ts";
   import { mergeAutomationRuntime } from "./runtime-sync.ts";
-  import { workflowFailureExplanation } from "./workflow-failures.ts";
+  import { workflowFailureExplanation, workflowFailureShortExplanation } from "./workflow-failures.ts";
   import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
   import { productFailures, runStageTrack } from "./run-stage-track.ts";
   import type { Readable } from "svelte/store";
@@ -1414,7 +1414,7 @@ import type {
                                     <span class="run-stage-note">{failureLabel}</span>
                                   {:else if stageFailures}
                                     <span class="run-stage-note">{$t.automation.productFailures(
-                                      stageFailures.typeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join($locale === "zh-TW" ? "、" : ", "),
+                                      stageFailures.typeIds.map((typeId) => $t.automation.statementTypeLabels[typeId] ?? typeId).join($t.automation.changeListSeparator),
                                       stageFailures.typeIds.length,
                                       stageFailures.attempted,
                                     )}</span>
@@ -2145,16 +2145,8 @@ import type {
                   <td class="history-error">
                     {#if run.appWorkflowOutcome?.errorCode}
                       <code>{run.appWorkflowOutcome.errorCode}</code>
-                      {#if run.appWorkflowOutcome.errorCode === "source-access-challenged"}
-                        <small>{$locale === "zh-TW"
-                          ? "網站安全驗證阻擋登入"
-                          : "Site verification blocked sign-in"}</small>
-                      {:else if run.appWorkflowOutcome.errorCode === "source-unavailable"}
-                        <small>{$locale === "zh-TW"
-                          ? "來源網站登入頁不可用"
-                          : "Provider login unavailable"}</small>
-                      {:else if workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}
-                        <small>{workflowFailureExplanation(run.appWorkflowOutcome.errorCode, $locale)}</small>
+                      {#if workflowFailureShortExplanation(run.appWorkflowOutcome.errorCode, $locale)}
+                        <small>{workflowFailureShortExplanation(run.appWorkflowOutcome.errorCode, $locale)}</small>
                       {/if}
                     {:else}--{/if}
                   </td>

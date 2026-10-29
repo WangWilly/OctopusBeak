@@ -11,7 +11,7 @@ import {
   workflowEventFailureLabel,
   type TaskRowViewContext,
 } from "./task-row-view.ts";
-import { workflowFailureExplanation } from "./workflow-failures.ts";
+import { workflowFailureExplanation, workflowFailureShortExplanation } from "./workflow-failures.ts";
 
 function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
   return {
@@ -245,4 +245,19 @@ test("TDCC exclusions read as plain counts and leave out what the run did not re
   ]);
   assert.deepEqual(tdccExclusionLines({ rowCount: 40 }, translations.en), []);
   assert.deepEqual(countsOutsideTdccExclusions(counts), [["rowCount", 40]], "exclusions are not repeated as raw counts");
+});
+
+test("the history table's short failure words fall back to the full explanation", () => {
+  for (const locale of ["en", "zh-TW"] as const) {
+    for (const code of ["source-access-challenged", "source-unavailable"]) {
+      const short = workflowFailureShortExplanation(code, locale);
+      assert.ok(short, `${code} has short words in ${locale}`);
+      assert.notEqual(short, workflowFailureExplanation(code, locale));
+    }
+    assert.equal(
+      workflowFailureShortExplanation("authentication-failed", locale),
+      workflowFailureExplanation("authentication-failed", locale),
+    );
+  }
+  assert.equal(workflowFailureShortExplanation("commit-outcome-unknown", "en"), null);
 });
