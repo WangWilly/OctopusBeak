@@ -314,8 +314,6 @@ function runSinopac(
 
 const workflowInput = (selection: Readonly<{ statementTypes: string[]; attachedPreviewProducts: string[] }>) => ({
   credentials: { sinopac_user_id: "synthetic-user", sinopac_account: "synthetic-account", sinopac_password: "synthetic-password" },
-  startDate: "20260903",
-  endDate: "20260903",
   ...selection,
 });
 
@@ -334,10 +332,13 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
 
 const verifiedSource: SinopacDepositSource = {
   listAccounts: async () => [{ DataText: "Synthetic TWD account", DataValue: accountId, DisplayText: "TWD" }],
-  queryTransactions: async () => ({
-    Header: "SUCCESS",
-    SubInfo: [{ DataText1: "2026/09/03 09:21", DataText2: "2026/09/03", DataText3: "Synthetic salary", DataText4: "-100", DataText5: "900", DataText7: "", DataText8: "" }],
-  }),
+  // The salary falls in one window of the run's period; every other window has none.
+  queryTransactions: async (_account, window) => window.startDate <= "20260903" && "20260903" <= window.endDate
+    ? {
+      Header: "SUCCESS",
+      SubInfo: [{ DataText1: "2026/09/03 09:21", DataText2: "2026/09/03", DataText3: "Synthetic salary", DataText4: "-100", DataText5: "900", DataText7: "", DataText8: "" }],
+    }
+    : { Header: "FAIL", Message: "查無資料", SubInfo: [] },
   readCurrentBalances: async () => [],
 };
 const verifiedOverrides = depositFrom(verifiedSource);

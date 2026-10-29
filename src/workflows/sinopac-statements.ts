@@ -8,7 +8,13 @@ import {
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
-import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import { SINOPAC_MAX_WINDOW, SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import {
+  collectionPeriod,
+  collectionWindows,
+  type CalendarDate,
+  type CollectionWindow,
+} from "../lib/automation/collection-period.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -112,8 +118,6 @@ const typedWorkflowInputSchema = z.object({
     sinopac_account: z.string().trim().min(1),
     sinopac_password: z.string().trim().min(1),
   }),
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
   statementTypes: z.array(z.literal("deposit")),
@@ -429,91 +433,28 @@ function rowsToCsv(rows: string[][]): string {
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
-function dateFromYYYYMMDD(value: string): Date {
-  const match = value.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (!match) throw new Error(`Invalid date: ${value}`);
-  return new Date(
-    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
-  );
-}
-
-function formatYYYYMMDD(date: Date): string {
-  return [
-    date.getUTCFullYear(),
-    String(date.getUTCMonth() + 1).padStart(2, "0"),
-    String(date.getUTCDate()).padStart(2, "0"),
-  ].join("");
-}
-
 function formatSlashDate(value: string): string {
   return `${value.slice(0, 4)}/${value.slice(4, 6)}/${value.slice(6, 8)}`;
 }
 
-function addDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
+const isoDate = (value: string): CalendarDate => `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+
+/** SinoPac's YYYYMMDD request range for one window. */
+function sinopacWindow({ start, end }: CollectionWindow): DateRange {
+  return { startDate: start.replaceAll("-", ""), endDate: end.replaceAll("-", "") };
 }
 
-function addMonths(date: Date, months: number): Date {
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth() + months;
-  const day = date.getUTCDate();
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(year, month, Math.min(day, lastDay)));
-}
-
-function defaultEndDate(): string {
-  const today = new Date();
-  return [
-    today.getFullYear(),
-    String(today.getMonth() + 1).padStart(2, "0"),
-    String(today.getDate()).padStart(2, "0"),
-  ].join("");
-}
-
-function resolveDateRange(
-  input: Pick<SinopacWorkflowInput, "startDate" | "endDate">,
-): DateRange {
-  const endDate = input.endDate ?? defaultEndDate();
-  const startDate =
-    input.startDate ??
-    formatYYYYMMDD(addDays(addMonths(dateFromYYYYMMDD(endDate), -12), 1));
-  if (dateFromYYYYMMDD(startDate) > dateFromYYYYMMDD(endDate)) {
-    throw new Error("startDate must be on or before endDate.");
-  }
-  return { startDate, endDate };
-}
-
-export function sinopacQueryWindows(
-  dateRange: DateRange,
-  maxMonths = 1,
-): DateRange[] {
-  // Keep the low-level argument for compatibility, but never permit a
-  // provider request wider than one calendar month.
-  const windowMonths =
-    Number.isSafeInteger(maxMonths) && maxMonths > 0
-      ? Math.min(maxMonths, 1)
-      : 1;
-  const firstStart = dateFromYYYYMMDD(dateRange.startDate);
-  let end = dateFromYYYYMMDD(dateRange.endDate);
-  const windows: DateRange[] = [];
-
-  while (end >= firstStart) {
-    const maxStart = addMonths(end, -windowMonths);
-    const start = maxStart > firstStart ? maxStart : firstStart;
-    windows.push({
-      startDate: formatYYYYMMDD(start),
-      endDate: formatYYYYMMDD(end),
-    });
-    if (formatYYYYMMDD(start) === dateRange.startDate) break;
-    // Keep adjacent provider requests disjoint.  A transaction at a window
-    // boundary is therefore never replayed merely because the provider
-    // accepts inclusive start/end dates.
-    end = addDays(start, -1);
-  }
-
-  return windows;
+/**
+ * Splits a range into SinoPac requests, each no wider than the deposit
+ * product declares, newest first and disjoint, so a transaction on a
+ * window boundary is never replayed by SinoPac's inclusive dates.
+ */
+export function sinopacQueryWindows(dateRange: DateRange): DateRange[] {
+  return collectionWindows({
+    start: isoDate(dateRange.startDate),
+    end: isoDate(dateRange.endDate),
+    maxWindow: SINOPAC_MAX_WINDOW,
+  }).map(sinopacWindow);
 }
 
 function splitDateTime(value: string): { date: string; time: string } {
@@ -1054,27 +995,6 @@ class SinopacApiClient {
     return payload as T;
   }
 
-  async fetchAccounts(dateRange: DateRange): Promise<SinopacAccount[]> {
-    const endDate = dateFromYYYYMMDD(dateRange.endDate);
-    const body = new URLSearchParams({
-      Acct: "",
-      AcctValue: "",
-      CurrName: "",
-      QueryType: "",
-      AcctName: "",
-      Curr: "",
-      TextType: "",
-      BusinessDate: dateRange.endDate,
-      StartDate: formatYYYYMMDD(addMonths(endDate, -1)),
-      EndDate: dateRange.endDate,
-    });
-    const response = await this.postJson<unknown>(
-      `${ACCOUNT_ENDPOINT}?${Date.now()}`,
-      body,
-    );
-    return accountListFromResponse(response);
-  }
-
   async fetchTransactions(
     account: SinopacAccount,
     dateRange: DateRange,
@@ -1188,18 +1108,18 @@ function identityValidationOverlapRange(
     startDate: validation.startDate,
     endDate: validation.endDate,
   };
-  const defaultStart = formatYYYYMMDD(
-    addMonths(dateFromYYYYMMDD(primary.endDate), -6),
-  );
+  // Six months back from the primary end, clamped to the month end.
+  const defaultStart = collectionPeriod({
+    today: isoDate(primary.endDate),
+    lookBack: { months: 6, days: 1 },
+  }).start.replaceAll("-", "");
   const startDate = validation.overlapStartDate ??
-    (dateFromYYYYMMDD(defaultStart) < dateFromYYYYMMDD(primary.startDate)
-      ? primary.startDate
-      : defaultStart);
+    (defaultStart < primary.startDate ? primary.startDate : defaultStart);
   const endDate = validation.overlapEndDate ?? primary.endDate;
   if (
-    dateFromYYYYMMDD(startDate) < dateFromYYYYMMDD(primary.startDate) ||
-    dateFromYYYYMMDD(endDate) > dateFromYYYYMMDD(primary.endDate) ||
-    dateFromYYYYMMDD(startDate) > dateFromYYYYMMDD(endDate)
+    startDate < primary.startDate ||
+    endDate > primary.endDate ||
+    startDate > endDate
   ) {
     throw new Error("identityValidation overlap range must be within the primary range.");
   }
@@ -1229,7 +1149,7 @@ export async function runSinopacIdentityValidation(
     startDate: validation.startDate,
     endDate: validation.endDate,
   };
-  if (dateFromYYYYMMDD(primaryRange.startDate) > dateFromYYYYMMDD(primaryRange.endDate))
+  if (primaryRange.startDate > primaryRange.endDate)
     throw new Error("identityValidation startDate must be on or before endDate.");
   const overlapRange = identityValidationOverlapRange(validation);
   const apiClient = new SinopacApiClient(page);
@@ -1472,8 +1392,9 @@ export async function readSinopacDepositSource(
     total: listed.length,
   });
   const observedAt = context.now();
-  const dateRange = resolveDateRange(input);
-  const windows = sinopacQueryWindows(dateRange);
+  const period = product.collectionPeriod();
+  const windows = period.windows.map(sinopacWindow);
+  const businessDate = period.end.replaceAll("-", "");
   const accounts = sinopacFilterAccounts(
     listed,
     input.accountFilters,
@@ -1513,7 +1434,7 @@ export async function readSinopacDepositSource(
       let response: SinopacTransactionResponse;
       try {
         response = validateSinopacTransactionRows(await withAbort(
-          source.queryTransactions(account, window, dateRange.endDate),
+          source.queryTransactions(account, window, businessDate),
           signal,
         ));
       } catch (error) {
@@ -1556,7 +1477,7 @@ export async function readSinopacDepositSource(
     const structural = admitSinopacStatementCaptureEvidence(
       buildSinopacCapture(
         account,
-        dateRange,
+        sinopacWindow(period),
         observedAt,
         pending,
         explicitNoData,
@@ -1729,23 +1650,12 @@ export async function runSinopacProviderWorkflow(
   return await context.browser.withPage(async (page) => {
     const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(parsed.data.credentials));
 
-    const endDate = parsed.data.endDate ?? formatYYYYMMDD(new Date(context.now()));
-    const startDate = parsed.data.startDate ?? formatYYYYMMDD(
-      addDays(addMonths(dateFromYYYYMMDD(endDate), -12), 1),
-    );
-    const workflowInput = {
-      ...parsed.data,
-      startDate,
-      endDate,
-    };
-    // An inverted range fails the run before any product starts.
-    resolveDateRange(workflowInput);
     context.signal.throwIfAborted();
 
     let deposit: SinopacDepositCollection | null = null;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
-        const { sourceCaptureCount, ...collected } = await collectDeposit(page, workflowInput, context, product);
+        const { sourceCaptureCount, ...collected } = await collectDeposit(page, parsed.data, context, product);
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },
