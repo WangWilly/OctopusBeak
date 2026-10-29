@@ -276,10 +276,10 @@ test("App verification routes the waiting run's contract against that run's page
     const outcome = await routeWaitingRunVerification({
       ...recorded.seams,
       run: {
-        taskId: "sinopac-statements",
         taskRunId,
         current: () => run as unknown as AutomationTaskRun,
       },
+      task: { workflowId: "sinopac-statements" },
       settings: {},
     });
     assert.deepEqual(outcome, { kind: "resumed" });

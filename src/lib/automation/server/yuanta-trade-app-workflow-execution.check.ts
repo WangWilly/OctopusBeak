@@ -15,9 +15,8 @@ import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.
 import { StatementSelectionError } from "../statement-selection.ts";
 
 const [{ taskById }, { executeTaskRunForCheck }, {
-  workflowDefinitionForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowStartUrlForWorkflow,
 }, { YUANTA_TRADE_LOGIN_URL }] = await Promise.all([
   import("./tasks.ts"),
   import("./task-run-check-support.ts"),
@@ -40,10 +39,10 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
   assert.deepEqual(task.externalPrerequisites?.map(({ id }) => id), ["yuanta-servisign"]);
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "yuanta-trade-statements");
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
-  assert.equal(workflowStartUrlForTask(task.workflowId), YUANTA_TRADE_LOGIN_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.id, "yuanta-trade-statements");
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), YUANTA_TRADE_LOGIN_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       yuanta_trade_user_id: "synthetic-user-id",
       yuanta_trade_password: "synthetic-password",
@@ -53,7 +52,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     statementTypes: ["securities"],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), [credentialKey("STATEMENT_TYPES")]: "" }),
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), [credentialKey("STATEMENT_TYPES")]: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 
@@ -91,7 +90,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },

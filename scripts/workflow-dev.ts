@@ -22,16 +22,15 @@ import { workflowRunResult, type WorkflowRunResult } from "../src/lib/automation
 import { parsePreviewWrite } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   APP_WORKFLOW_DEFINITIONS,
-  workflowBrowserProfileForTask,
-  workflowDefinitionForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowBrowserProfileForWorkflow,
+  workflowStartUrlForWorkflow,
 } from "../src/lib/automation/server/app-workflow-registry.ts";
 import type { PGliteWorkflowRunItem } from "../src/ledger/pglite/workflow-run.ts";
 import type { PageForRun } from "../src/lib/automation/server/automation-viewer.ts";
 import {
   appVerificationSolver,
-  appWorkflowRoutesVerification,
+  sourceVerificationFacts,
   noPostSubmitOutcome,
   routeVerificationActor,
   verificationConfidenceThreshold,
@@ -288,7 +287,7 @@ export function createLocalSolverHumanAssistancePort(
       const contract = createHumanAssistanceContract(input, version);
       const plan = verificationPlanForContract(contract).kind;
       if (
-        !appWorkflowRoutesVerification(options.workflowId)
+        !sourceVerificationFacts(options.workflowId)?.routesVerification
         || (plan !== "solve" && plan !== "click")
       ) {
         throw new Error("App workflow solver route is unavailable for this verification stage.");
@@ -497,10 +496,11 @@ async function main(args = process.argv.slice(2)) {
     let browserProfile = flagValue(flags, "--browser-profile") as BrowserRuntimeProfileId | undefined;
     if (command === "run-app") {
       if (!workflowId || !SAFE_WORKFLOW_ID.test(workflowId)) fail("usage");
-      definition = workflowDefinitionForTask(workflowId);
-      input = workflowInputForTask(workflowId, process.env);
-      startUrl = safeUrl(startUrl ?? workflowStartUrlForTask(workflowId));
-      browserProfile ??= workflowBrowserProfileForTask(workflowId);
+      const registration = appWorkflowRegistration(workflowId);
+      definition = registration?.definition ?? null;
+      input = registration?.inputFromEnvironment(process.env);
+      startUrl = safeUrl(startUrl ?? workflowStartUrlForWorkflow(workflowId));
+      browserProfile ??= workflowBrowserProfileForWorkflow(workflowId);
     } else {
       definition = await loadDefinition(modulePath ?? "", exportName ?? "");
       input = jsonInputFromEnvironment(flagValue(flags, "--input-env"));

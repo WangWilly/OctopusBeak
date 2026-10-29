@@ -19,18 +19,20 @@ import {
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import type { ActiveTaskRunFields, TaskRunOutcome, TaskRunReport } from "./active-task-run.ts";
 import { readAutomationSettings } from "./settings.ts";
-import {
-  appWorkflowRoutesVerification,
-  captchaRetryCooldownMs,
-  sourceVerificationRoute,
-} from "./verification-routing.ts";
+import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, routingPlanForCheck } from "./task-run-check-support.ts";
 
 const SUCCEEDED: TaskRunReport = { summary: null, failure: null };
 const WORKFLOW_FAILED: TaskRunReport = { summary: null, failure: { code: "workflow-failed", proven: true } };
 const SOLVER_EXHAUSTED = { kind: "retryable", reason: "solver-exhausted" } as const;
-const noCooldown = () => undefined;
+
+/** The task's verification facts with the cooldown a check waits out in place of the source's. */
+function planWithCooldown(taskId: string, cooldownMs: number | undefined) {
+  const verification = sourceVerificationFacts(taskId);
+  assert.ok(verification, `${taskId} is a Verified source`);
+  return { verification: { ...verification, cooldownMs } };
+}
 
 /** The outcome a real run gives a report when no stop and no Commit attempt applies. */
 function assessReport(report: TaskRunReport): TaskRunOutcome {
@@ -106,14 +108,13 @@ for (const taskId of [
   "einvoice-personal-invoices",
 ]) {
   test(`${taskId} retries solver exhaustion in one more round`, async () => {
-    assert.equal(appWorkflowRoutesVerification(taskId), true, `${taskId} routes its verification`);
+    assert.equal(sourceVerificationFacts(taskId)?.routesVerification, true, `${taskId} routes its verification`);
     const { run, updates, transitions } = fakeRun();
     const round = fakeRound([exhaustedRound(), { result: { report: SUCCEEDED } }]);
     const report = await runCaptchaRetryCampaign({
-      taskId,
+      plan: planWithCooldown(taskId, undefined),
       run,
       executeRound: round.executeRound,
-      captchaRetryCooldownMs: noCooldown,
     });
     assert.deepEqual(report, SUCCEEDED);
     assert.deepEqual(round.attempts(), [1, 2]);
@@ -130,12 +131,13 @@ for (const taskId of [
 }
 
 test("Yuanta Trade audio solver exhaustion restarts without a cooldown", async () => {
-  assert.ok(sourceVerificationRoute("yuanta-trade-statements"), "Yuanta Trade routes through its own source route");
-  assert.equal(captchaRetryCooldownMs("yuanta-trade-statements"), undefined, "Yuanta Trade declares no cooldown");
+  const facts = sourceVerificationFacts("yuanta-trade-statements");
+  assert.ok(facts?.sourceRoute, "Yuanta Trade routes through its own source route");
+  assert.equal(facts.cooldownMs, undefined, "Yuanta Trade declares no cooldown");
   const { run } = fakeRun();
   const round = fakeRound([exhaustedRound(), { result: { report: SUCCEEDED } }]);
   const report = await runCaptchaRetryCampaign({
-    taskId: "yuanta-trade-statements",
+    plan: { verification: sourceVerificationFacts("yuanta-trade-statements") },
     run,
     executeRound: round.executeRound,
   });
@@ -153,10 +155,9 @@ test("a captured challenge records its round on the run before the round ends", 
     { capture: true, result: { report: SUCCEEDED }, during },
   ]);
   await runCaptchaRetryCampaign({
-    taskId: "sinopac-statements",
+    plan: planWithCooldown("sinopac-statements", undefined),
     run,
     executeRound: round.executeRound,
-    captchaRetryCooldownMs: noCooldown,
   });
   assert.deepEqual(seenDuringRounds.map((seen) => seen.at(-1)?.attempt), [1, 2, 3]);
   assert.ok(updates.every((fields) => fields.maxAttempts === MAX_CAPTCHA_RETRY_ROUNDS));
@@ -171,10 +172,9 @@ test("exhausted solver retries finish with a typed verification failure and a ru
     exhaustedRound({ summary, failure: { code: "workflow-failed", proven: true } }),
   ]);
   const report = await runCaptchaRetryCampaign({
-    taskId: "fubon-all-statements",
+    plan: planWithCooldown("fubon-all-statements", undefined),
     run,
     executeRound: round.executeRound,
-    captchaRetryCooldownMs: noCooldown,
   });
   assert.deepEqual(report, { summary, failure: { code: "verification-failed", proven: true } });
   assert.deepEqual(round.attempts(), [1, 2, 3]);
@@ -194,10 +194,9 @@ for (const scenario of [
     const { run, transitions } = fakeRun();
     const round = fakeRound([scenario.step]);
     const report = await runCaptchaRetryCampaign({
-      taskId: "fubon-all-statements",
+      plan: planWithCooldown("fubon-all-statements", undefined),
       run,
       executeRound: round.executeRound,
-      captchaRetryCooldownMs: noCooldown,
     });
     assert.deepEqual(report, WORKFLOW_FAILED);
     assert.deepEqual(round.attempts(), [1]);
@@ -222,10 +221,9 @@ test("a run the store refused until a Canonical Reset is never retried", async (
   };
   const round = fakeRound([exhaustedRound(report)]);
   const result = await runCaptchaRetryCampaign({
-    taskId: "fubon-all-statements",
+    plan: planWithCooldown("fubon-all-statements", undefined),
     run,
     executeRound: round.executeRound,
-    captchaRetryCooldownMs: noCooldown,
   });
   assert.equal(result, report);
   assert.deepEqual(round.attempts(), [1]);
@@ -239,10 +237,9 @@ test("a cancellation during the source's retry cooldown ends the campaign withou
   }]);
   const started = Date.now();
   const report = await runCaptchaRetryCampaign({
-    taskId: "fubon-all-statements",
+    plan: planWithCooldown("fubon-all-statements", 10_000),
     run,
     executeRound: round.executeRound,
-    captchaRetryCooldownMs: () => 10_000,
   });
   assert.ok(Date.now() - started < 2_000, "the stop ends the cooldown at once");
   assert.deepEqual(round.attempts(), [1], "no round starts after the stop");
@@ -250,15 +247,15 @@ test("a cancellation during the source's retry cooldown ends the campaign withou
 });
 
 test("Fubon waits out its login cooldown before the next CAPTCHA round", async () => {
-  assert.ok((captchaRetryCooldownMs("fubon-all-statements") ?? 0) >= 20_000);
-  assert.equal(captchaRetryCooldownMs("sinopac-statements"), undefined);
+  assert.ok((sourceVerificationFacts("fubon-all-statements")?.cooldownMs ?? 0) >= 20_000);
+  assert.equal(sourceVerificationFacts("sinopac-statements")?.cooldownMs, undefined);
   const { run } = fakeRun();
   let firstRoundEnded = 0;
   let secondRoundStarted = 0;
   const steps = [exhaustedRound(), { result: { report: SUCCEEDED } }];
   const round = fakeRound(steps);
   const report = await runCaptchaRetryCampaign({
-    taskId: "fubon-all-statements",
+    plan: planWithCooldown("fubon-all-statements", 60),
     run,
     executeRound: async (request) => {
       if (request.attempt === 2) secondRoundStarted = Date.now();
@@ -266,7 +263,6 @@ test("Fubon waits out its login cooldown before the next CAPTCHA round", async (
       if (request.attempt === 1) firstRoundEnded = Date.now();
       return result;
     },
-    captchaRetryCooldownMs: () => 60,
   });
   assert.deepEqual(report, SUCCEEDED);
   assert.ok(secondRoundStarted - firstRoundEnded >= 55);
@@ -275,17 +271,16 @@ test("Fubon waits out its login cooldown before the next CAPTCHA round", async (
 test("a refused admission ends the campaign: failed while running, as reported once stopped", async () => {
   const running = fakeRun({ admit: false });
   const report = await runCaptchaRetryCampaign({
-    taskId: "sinopac-statements",
+    plan: planWithCooldown("sinopac-statements", undefined),
     run: running.run,
     executeRound: fakeRound([exhaustedRound({ summary: null, failure: null })]).executeRound,
-    captchaRetryCooldownMs: noCooldown,
   });
   assert.deepEqual(report, { summary: null, failure: { code: "workflow-failed", proven: false } });
 
   const stopped = fakeRun({ admit: false });
   const stoppedReport: TaskRunReport = { summary: null, failure: null };
   const result = await runCaptchaRetryCampaign({
-    taskId: "sinopac-statements",
+    plan: planWithCooldown("sinopac-statements", undefined),
     run: {
       ...stopped.run,
       // The stop lands after the round's decision, while admission is refused.
@@ -295,7 +290,6 @@ test("a refused admission ends the campaign: failed while running, as reported o
       },
     },
     executeRound: fakeRound([exhaustedRound(stoppedReport)]).executeRound,
-    captchaRetryCooldownMs: noCooldown,
   });
   assert.equal(result, stoppedReport);
 });
@@ -328,15 +322,15 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
     const run = await openTaskRunForCheck(provider.automation, taskRunId);
     let executions = 0;
     let verificationRoutes = 0;
+    const plan = routingPlanForCheck("exchange-rates", readAutomationSettings());
+    assert.equal(plan.verification, null, "exchange rates have no Verified source");
     const report = await runCaptchaRetryCampaign({
-      taskId: "exchange-rates",
+      plan,
       run,
       executeRound: captchaRoundExecution({
-        taskId: "exchange-rates",
-        appWorkflow: false,
+        plan,
         pageForRun: noHostedPage,
         run,
-        launchVerificationSettings: readAutomationSettings(),
         routeWaitingRunVerification: async () => {
           verificationRoutes += 1;
           return { kind: "resumed" };
@@ -360,15 +354,14 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
     const run = await openTaskRunForCheck(provider.automation, taskRunId);
     await run.requestStop("cancelled");
     let executions = 0;
+    const plan = routingPlanForCheck("sinopac-statements", readAutomationSettings());
     const report = await runCaptchaRetryCampaign({
-      taskId: "sinopac-statements",
+      plan,
       run,
       executeRound: captchaRoundExecution({
-        taskId: "sinopac-statements",
-        appWorkflow: true,
+        plan,
         pageForRun: noHostedPage,
         run,
-        launchVerificationSettings: readAutomationSettings(),
         async execute() {
           executions += 1;
           await run.recordCommitAttempt({ phase: "started", attemptId: "sinopac-attempt", product: null, total: 1 });
@@ -392,10 +385,9 @@ for (const stop of ["cancelled", "forced", "shutdown"] as const) {
         setTimeout(() => resolve(run.requestStop(stop)), 20);
       });
       const report = await runCaptchaRetryCampaign({
-        taskId: "fubon-all-statements",
+        plan: planWithCooldown("fubon-all-statements", 10_000),
         run,
         executeRound: round.executeRound,
-        captchaRetryCooldownMs: () => 10_000,
       });
       assert.ok(Date.now() - started < 1_000);
       assert.equal(report, WORKFLOW_FAILED);

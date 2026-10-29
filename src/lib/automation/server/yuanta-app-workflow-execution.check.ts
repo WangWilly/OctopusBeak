@@ -25,9 +25,8 @@ registerHooks({
 });
 
 const [{ taskById }, { executeTaskRunForCheck }, {
-  workflowDefinitionForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowStartUrlForWorkflow,
 }, { YUANTA_ENTRY_URL }] = await Promise.all([
   import("./tasks.ts"),
   import("./task-run-check-support.ts"),
@@ -50,10 +49,10 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   assert.equal(task.workflowId, "yuanta-all-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "yuanta-all-statements");
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
-  assert.equal(workflowStartUrlForTask(task.workflowId), YUANTA_ENTRY_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.id, "yuanta-all-statements");
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), YUANTA_ENTRY_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     managedIdentitySecret: "synthetic-yuanta-managed-secret",
     credentials: {
       yuanta_user_id: "synthetic-user-id",
@@ -63,7 +62,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     statementTypes: ["deposit", "fund"],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, {
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "fund,unknown",
     }),
@@ -103,7 +102,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },

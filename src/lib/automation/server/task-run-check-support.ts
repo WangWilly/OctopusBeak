@@ -19,9 +19,17 @@ import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
 import {
   runAutomationTaskExecution,
-  type AutomationTaskExecutionOptions,
+  type AutomationTaskExecutionSeams,
+  type WorkflowExecutionRound,
 } from "./task-run-execution.ts";
-import type { taskById } from "./tasks.ts";
+import {
+  resolveTaskRunPlan,
+  type TaskRunPlan,
+  type TaskRunPlanDependencies,
+} from "./task-run-plan.ts";
+import { taskById, type AutomationTask } from "./tasks.ts";
+import type { AutomationSettingsFile } from "./config-files.ts";
+import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
 /** A well-formed PGlite endpoint for checks whose worker never dials it. */
@@ -29,6 +37,34 @@ export const CHECK_PGLITE_RPC: PGliteWorkflowRpc = Object.freeze({
   endpoint: "http://127.0.0.1:43121/rpc",
   token: "a".repeat(32),
 });
+
+/** The task's plan as the runner resolves it, with the check's PGlite endpoint unless the check names one. */
+export function planForCheck(
+  task: AutomationTask,
+  dependencies: Partial<TaskRunPlanDependencies> = {},
+): TaskRunPlan {
+  return resolveTaskRunPlan(task, { pgliteRpc: CHECK_PGLITE_RPC, ...dependencies });
+}
+
+/**
+ * The part of a task's plan the CAPTCHA Retry Campaign and its round adapter
+ * read, without the workflow input a full plan builds from settings.
+ */
+export function routingPlanForCheck(
+  taskId: string,
+  launchVerificationSettings: AutomationSettingsFile = {},
+): Pick<TaskRunPlan, "task" | "verification" | "launchVerificationSettings"> {
+  const task = taskById(taskId);
+  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
+  return { task, verification: sourceVerificationFacts(taskId), launchVerificationSettings };
+}
+
+/** A run's first round, as the CAPTCHA Retry Campaign opens it. */
+export function firstRoundForCheck(
+  round: Partial<WorkflowExecutionRound> = {},
+): WorkflowExecutionRound {
+  return { attempt: 1, maxAttempts: 1, retrying: false, executionId: randomUUID(), ...round };
+}
 
 /** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
 export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "workerData">;
@@ -69,15 +105,14 @@ const hostPageForWorker: WorkflowBrowserPort = {
 
 /** The host keeps its production wiring; the page and RPC-backed ports reach the worker from the check. */
 function supervisedWithCheckWorker(
-  options: AutomationTaskExecutionOptions,
+  seams: AutomationTaskExecutionSeams,
   workerPorts: CheckWorkerPorts,
-): AutomationTaskExecutionOptions {
+): AutomationTaskExecutionSeams {
   let workerBrowser: WorkflowBrowserPort | undefined;
   return {
-    ...options,
-    pgliteRpc: options.pgliteRpc ?? CHECK_PGLITE_RPC,
-    workflowBrowserPortFactory: (input) => {
-      workerBrowser = options.workflowBrowserPortFactory?.(input);
+    ...seams,
+    workflowBrowserPort: (input) => {
+      workerBrowser = seams.workflowBrowserPort?.(input);
       return hostPageForWorker;
     },
     appWorkflowBrowserConnectionForRun: (runId) => ({
@@ -137,7 +172,7 @@ export async function openExecutionForCheck(
  */
 export async function requestAssistanceForCheck(
   run: ActiveAutomationTaskRun,
-  options: Pick<AutomationTaskExecutionOptions, "assistanceRoute">,
+  options: Pick<WorkflowExecutionRound, "assistanceRoute">,
   contract: HumanAssistanceContractInput,
   signal: AbortSignal,
 ) {
@@ -151,30 +186,51 @@ export async function requestAssistanceForCheck(
 
 /** Execute one workflow round over an existing run and finish it, as the runner does. */
 export async function executeTaskRunForCheck(
-  task: NonNullable<ReturnType<typeof taskById>>,
+  task: AutomationTask,
   persistence: AutomationPersistencePort,
-  options: AutomationTaskExecutionOptions & Readonly<{
-    taskRunId: string;
-    onRunOpened?: (run: ActiveAutomationTaskRun) => void;
-    /** Receives each Workflow execution the round begins. */
-    executions?: WorkflowExecution[];
-    /** Run the production supervised path against an in-process worker holding these ports. */
-    workerPorts?: CheckWorkerPorts;
-  }>,
+  options: Partial<TaskRunPlanDependencies>
+    & Partial<WorkflowExecutionRound>
+    & AutomationTaskExecutionSeams
+    & Readonly<{
+      taskRunId: string;
+      onRunOpened?: (run: ActiveAutomationTaskRun) => void;
+      /** Receives each Workflow execution the round begins. */
+      executions?: WorkflowExecution[];
+      /** Run the production supervised path against an in-process worker holding these ports. */
+      workerPorts?: CheckWorkerPorts;
+    }>,
 ): Promise<{
   status: AutomationTaskRun["status"];
   taskRunId: string;
   run: AutomationTaskRun;
   outcome: TypedWorkflowOutcome;
 }> {
-  const { taskRunId, onRunOpened, executions, workerPorts, ...executionOptions } = options;
+  const {
+    taskRunId, onRunOpened, executions, workerPorts,
+    pgliteRpc, launchEnv, launchVerificationSettings,
+    attempt, maxAttempts, retrying, executionId, assistanceRoute,
+    ...seams
+  } = options;
+  const plan = planForCheck(task, {
+    ...(pgliteRpc ? { pgliteRpc } : {}),
+    launchEnv,
+    launchVerificationSettings,
+  });
+  const round = firstRoundForCheck({
+    ...(attempt === undefined ? {} : { attempt }),
+    ...(maxAttempts === undefined ? {} : { maxAttempts }),
+    ...(retrying === undefined ? {} : { retrying }),
+    ...(executionId === undefined ? {} : { executionId }),
+    assistanceRoute,
+  });
   const opened = await openTaskRunForCheck(persistence, taskRunId);
   const active = executions ? observingExecutions(opened, executions) : opened;
   onRunOpened?.(active);
   const report = await runAutomationTaskExecution(
-    task,
+    plan,
     active,
-    workerPorts ? supervisedWithCheckWorker(executionOptions, workerPorts) : executionOptions,
+    round,
+    workerPorts ? supervisedWithCheckWorker(seams, workerPorts) : seams,
   );
   const run = await active.finish(report);
   return { status: run.status, taskRunId, run, outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } };

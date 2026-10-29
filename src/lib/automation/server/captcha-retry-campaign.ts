@@ -18,10 +18,8 @@ import type {
   TaskRunOutcome,
   TaskRunReport,
 } from "./active-task-run.ts";
-import {
-  captchaRetryCooldownMs,
-  type VerificationRoutingOutcome,
-} from "./verification-routing.ts";
+import type { VerificationRoutingOutcome } from "./verification-routing.ts";
+import type { TaskRunPlan } from "./task-run-plan.ts";
 
 export const MAX_CAPTCHA_RETRY_ROUNDS = 3 as const;
 
@@ -426,11 +424,10 @@ export type CaptchaRetryCampaignRun = Pick<
 >;
 
 export type CaptchaRetryCampaignDependencies = Readonly<{
-  taskId: string;
+  /** The source's cooldown between rounds comes from `verification`. */
+  plan: Pick<TaskRunPlan, "verification">;
   run: CaptchaRetryCampaignRun;
   executeRound: CaptchaRound;
-  /** Injection point so checks do not wait out real cooldowns. */
-  captchaRetryCooldownMs?: typeof captchaRetryCooldownMs;
 }>;
 
 export type CaptchaRoundDecision =
@@ -507,7 +504,7 @@ export function decideAfterRound(input: Readonly<{
 export async function runCaptchaRetryCampaign(
   dependencies: CaptchaRetryCampaignDependencies,
 ): Promise<TaskRunReport> {
-  const { taskId, run, executeRound } = dependencies;
+  const { plan, run, executeRound } = dependencies;
   let campaign: CaptchaRetryCampaign = createCaptchaRetryCampaign();
   // Round one keeps the run's single attempt until it captures a challenge.
   let round = 1;
@@ -552,7 +549,7 @@ export async function runCaptchaRetryCampaign(
       maxAttempts: MAX_CAPTCHA_RETRY_ROUNDS,
     });
     if (!admitted) return run.signal.aborted ? report : failed(report);
-    const cooldownMs = (dependencies.captchaRetryCooldownMs ?? captchaRetryCooldownMs)(taskId);
+    const cooldownMs = plan.verification?.cooldownMs;
     const cooledDown = cooldownMs === undefined
       ? !run.signal.aborted
       : await waitForCaptchaRetryCooldown(cooldownMs, run.signal);

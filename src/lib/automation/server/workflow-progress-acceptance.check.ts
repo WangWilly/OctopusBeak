@@ -18,7 +18,7 @@ import type {
 } from "./app-workflow-worker-protocol.ts";
 import type { ExchangeRateProgress } from "./app-workflow-host-calls.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, openTaskRunForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -268,12 +268,11 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     }) => {
       const taskRunId = input.run.taskRunId;
       startingProgress.delete(taskRunId);
-      const outcome = await runAutomationTaskExecution(task, input.run, {
+      const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), input.run, firstRoundForCheck({
         attempt: input.attempt,
         maxAttempts: 3,
-        pgliteRpc: CHECK_PGLITE_RPC,
-        launchEnv,
-        workflowBrowserPortFactory: () => ({
+      }), {
+        workflowBrowserPort: () => ({
           async withPage(run) { return await run({} as never); },
         }),
         appWorkflowBrowserConnectionForRun: (runId) => ({
@@ -421,7 +420,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       maxAttempts: 1,
       pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
-      workflowBrowserPortFactory: () => {
+      workflowBrowserPort: () => {
         throw new Error("Exchange-rate progress must not open a browser.");
       },
       appWorkflowWorkerFactory: (_workerPath, options: WorkerOptions) =>

@@ -26,6 +26,8 @@ import { openSyntheticPage, scriptedSolver } from "./verification-page-check-sup
 const noHostedPage = () => null;
 
 const TASK_ID = "yuanta-trade-statements";
+/** The run's task as its Task run plan carries it. */
+const YUANTA_TRADE_TASK = { workflowId: TASK_ID };
 const AUDIO_INPUT_RECT = { x: 10, y: 80, width: 120, height: 30 };
 const CHECKBOX_RECT = { x: 10, y: 20, width: 32, height: 32 };
 const AUDIO_PATH = "/NexusWebTrade/Login/VerificationCodeSound";
@@ -225,6 +227,7 @@ test("Yuanta Trade audio and checkbox stages continue through one App run", asyn
     return { answer: "123456", confidence: 0.99 };
   });
   const dependencies: YuantaTradeAppAssistanceDependencies = {
+    task: YUANTA_TRADE_TASK,
     settings: solverSettings,
     pageForRun: hostedPage(run.taskRunId, page, lookups),
     solver,
@@ -260,6 +263,7 @@ test("Yuanta Trade fails closed when the CAPTCHA checkbox does not reach its ver
   const page = await openLoginPage({ checkboxSticks: false });
   try {
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
       settings: solverSettings,
       pageForRun: hostedPage(run.taskRunId, page),
     });
@@ -280,6 +284,7 @@ test("Yuanta Trade solver exhaustion ends the stage as retryable", async () => {
   const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.1 }));
   try {
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
       settings: solverSettings,
       pageForRun: hostedPage(run.taskRunId, page),
       solver,
@@ -307,6 +312,7 @@ test("Yuanta Trade image challenge fails explicitly in solver mode", async () =>
   const { store, provider, run } = await createRun();
   try {
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
       settings: solverSettings,
       pageForRun: noHostedPage,
     });
@@ -325,6 +331,7 @@ test("Yuanta Trade fails closed when the audio challenge cannot be fetched", asy
   const solver = scriptedSolver(() => ({ answer: "123456", confidence: 0.99 }));
   try {
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
       settings: solverSettings,
       pageForRun: hostedPage(run.taskRunId, page),
       solver,
@@ -351,7 +358,7 @@ test("Yuanta Trade unsupported native verification fails closed in solver mode",
         ...opened,
         contract: certificateContract(),
         signal: new AbortController().signal,
-      }, { settings: {}, pageForRun: noHostedPage }),
+      }, { task: YUANTA_TRADE_TASK, settings: {}, pageForRun: noHostedPage }),
       /not supported by the automatic solver/u,
     );
     const saved = await provider.automation.taskRunById(run.taskRunId);
@@ -373,6 +380,7 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
   try {
     const controller = new AbortController();
     const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
       settings: solverSettings,
       pageForRun: hostedPage(run.taskRunId, page),
       solver: {
