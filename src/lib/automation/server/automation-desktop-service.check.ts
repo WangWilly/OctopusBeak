@@ -265,3 +265,18 @@ test("runtime changes are published until the service closes", () => {
   state.upsert({ ...task, status: "completed" });
   assert.equal(published.length, 1);
 });
+
+test("clearing sign-in data cancels registrations, erases under the user data directory and rereads credentials", async () => {
+  const erased: unknown[] = [];
+  const { service, calls, credentialReads } = harness({
+    eraseSignInDetails: (options) => {
+      erased.push(options.userDataDirectory);
+    },
+  });
+  await settle();
+  const before = credentialReads();
+  await service.clearSignInData();
+  assert.deepEqual(calls, [["registration.cancelAll"]]);
+  assert.deepEqual(erased, [directory]);
+  assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");
+});

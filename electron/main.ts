@@ -127,8 +127,12 @@ const handleBeforeQuit = createBeforeQuitHandler({
     collectionScheduler?.stop();
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
-    await ipcRegistration?.close();
-    automationDesktopService?.close();
+    try {
+      await ipcRegistration?.close();
+    } finally {
+      // Stop runtime broadcasts even when closing the IPC views fails.
+      automationDesktopService?.close();
+    }
     if (automationRuntime?.hasActive()) await automationRuntime.shutdown();
   },
   cleanupWaitMs: QUIT_CLEANUP_WAIT_MS,
