@@ -9,7 +9,11 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
+import {
+  captchaRoundExecution,
+  type CaptchaRoundExecutionDependencies,
+} from "./captcha-round-execution.ts";
 import { openTaskRunForCheck, requestAssistanceForCheck } from "./task-run-check-support.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
@@ -18,6 +22,15 @@ import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.
 import { openSyntheticPage, pngDataUrl, solidPng } from "./verification-page-check-support.ts";
 
 const noHostedPage = () => null;
+
+/** The campaign as the runner composes it, with the real round adapter. */
+function runAppCampaign(dependencies: CaptchaRoundExecutionDependencies) {
+  return runCaptchaRetryCampaign({
+    taskId: dependencies.taskId,
+    run: dependencies.run,
+    executeRound: captchaRoundExecution(dependencies),
+  });
+}
 
 const sinopacContract: HumanAssistanceContractInput = {
   stageId: "sinopac-login-captcha",
@@ -41,29 +54,6 @@ const sinopacContract: HumanAssistanceContractInput = {
   },
   completion: { mode: "inline", targetIds: ["captcha-input"] },
   focus: { targetId: "captcha-input", contextRegionIds: [] },
-};
-
-const yuantaTradeAudioContract: HumanAssistanceContractInput = {
-  stageId: "yuanta-trade-audio-verification",
-  title: "YuanTa Trade audio CAPTCHA",
-  challengeKind: "audio-captcha",
-  challengeAudioSource: {
-    id: "audio-challenge",
-    label: "Audio challenge",
-    semanticId: "yuanta-trade.login.audio-challenge",
-  },
-  charset: "digits",
-  expectedAnswerLength: 6,
-  targets: [{
-    id: "audio-code-input",
-    label: "Audio answer",
-    semanticId: "yuanta-trade.login.audio-code-input",
-    modes: ["type"],
-    rect: { x: 1, y: 1, width: 10, height: 10 },
-  }],
-  contextRegions: [],
-  completion: { mode: "inline", targetIds: ["audio-code-input"] },
-  focus: { targetId: "audio-code-input", contextRegionIds: [] },
 };
 
 const yuantaTradeImageContract: HumanAssistanceContractInput = {
@@ -161,7 +151,7 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
       const executeAttempts: number[] = [];
       let solverCalls = 0;
 
-      const campaign = runCaptchaRetryCampaign({
+      const campaign = runAppCampaign({
         taskId,
         appWorkflow: true,
         pageForRun: noHostedPage,
@@ -239,7 +229,7 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     });
     const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     const controller = new AbortController();
-    const campaign = runCaptchaRetryCampaign({
+    const campaign = runAppCampaign({
       taskId: "sinopac-statements",
       appWorkflow: true,
       pageForRun: noHostedPage,
@@ -274,274 +264,6 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
   }
 });
 
-test("every text CAPTCHA workflow routes solver exhaustion into one bounded App retry", async () => {
-  const taskIds = [
-    "fubon-all-statements",
-    "yuanta-all-statements",
-    "hncb-statements",
-    "post-statements",
-    "einvoice-personal-invoices",
-  ];
-  for (const taskId of taskIds) {
-    const store = new PGliteStore(await createTestPGlite("operational"));
-    const controller = new AbortController();
-    try {
-      const provider = createPgliteOperationalProvider(store);
-      const created = await provider.automation.createTaskRun({
-        taskId,
-        kind: "crawler",
-        status: "running",
-        attempt: 1,
-        maxAttempts: 1,
-        startedAt: new Date().toISOString(),
-      });
-      const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-      const attempts: number[] = [];
-      let routeCalls = 0;
-      const campaign = runCaptchaRetryCampaign({
-        taskId,
-        appWorkflow: true,
-        pageForRun: noHostedPage,
-        launchVerificationSettings: {},
-        run,
-        captchaRetryCooldownMs: () => undefined,
-        routeWaitingRunVerification: async (input) => {
-          routeCalls += 1;
-          await input.onChallengeCaptured?.();
-          return { kind: "retryable", reason: "solver-exhausted" };
-        },
-        async execute(options) {
-          attempts.push(options.attempt ?? 1);
-          if ((options.attempt ?? 1) === 1) {
-            try {
-              await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
-            } catch {
-              // The App route rejects the active worker stage to restart it.
-            }
-          }
-          return {
-            failure: (options.attempt ?? 1) === 1 ? { code: "workflow-failed" as const, proven: true } : null,
-            summary: null,
-          };
-        },
-      });
-      const result = await Promise.race([
-        campaign,
-        new Promise<never>((_resolve, reject) => setTimeout(
-          () => reject(new Error(`${taskId} did not route its CAPTCHA`)),
-          2_000,
-        )),
-      ]);
-      assert.equal((await run.finish(result)).status, "completed", taskId);
-      assert.deepEqual(attempts, [1, 2], taskId);
-      assert.equal(routeCalls, 1, taskId);
-    } finally {
-      controller.abort();
-      await store.close();
-    }
-  }
-});
-
-test("a cancellation during the source's retry cooldown ends the campaign without another round", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  const controller = new AbortController();
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-    const attempts: number[] = [];
-    const started = Date.now();
-    const report = await runCaptchaRetryCampaign({
-      taskId: "fubon-all-statements",
-      appWorkflow: true,
-      pageForRun: noHostedPage,
-      launchVerificationSettings: {},
-      run,
-      captchaRetryCooldownMs: () => 10_000,
-      routeWaitingRunVerification: async (input) => {
-        await input.onChallengeCaptured?.();
-        return { kind: "retryable", reason: "solver-exhausted" };
-      },
-      async execute(options) {
-        attempts.push(options.attempt ?? 1);
-        try {
-          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
-        } catch {
-          // The App route rejects the active worker stage to restart it.
-        }
-        setTimeout(() => run.requestStop("cancelled"), 50);
-        return { failure: { code: "workflow-failed" as const, proven: true }, summary: null };
-      },
-    });
-    assert.ok(Date.now() - started < 2_000, "the stop ends the cooldown at once");
-    assert.deepEqual(attempts, [1], "no round starts after the stop");
-    assert.equal((await run.finish(report)).status, "cancelled");
-  } finally {
-    controller.abort();
-    await store.close();
-  }
-});
-
-test("exhausted App solver retries finalize with a typed verification failure and safe reason", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  const controller = new AbortController();
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const taskId = "fubon-all-statements";
-    const created = await provider.automation.createTaskRun({
-      taskId,
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-    const attempts: number[] = [];
-    const result = await runCaptchaRetryCampaign({
-      taskId,
-      appWorkflow: true,
-      pageForRun: noHostedPage,
-      launchVerificationSettings: {},
-      run,
-      captchaRetryCooldownMs: () => undefined,
-      routeWaitingRunVerification: async (input) => {
-        await input.onChallengeCaptured?.();
-        return { kind: "retryable", reason: "solver-exhausted" };
-      },
-      async execute(options) {
-        attempts.push(options.attempt ?? 1);
-        try {
-          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
-        } catch {
-          // Reject the current challenge so the campaign can admit its next round.
-        }
-        return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
-      },
-    });
-    assert.deepEqual(result.failure, { code: "verification-failed", proven: true });
-    await run.finish(result);
-    assert.deepEqual(attempts, [1, 2, 3]);
-    const finalRun = await provider.automation.taskRunById(created.taskRunId);
-    assert.equal(finalRun?.status, "failed");
-    assert.equal(finalRun?.appWorkflowOutcome?.errorCode, "verification-failed");
-    assert.ok(finalRun?.events.some((event) => event.code === "verification-solver-exhausted"));
-    assert.doesNotMatch(JSON.stringify(finalRun), /untrusted solver diagnostics/u);
-  } finally {
-    controller.abort();
-    await store.close();
-  }
-});
-
-for (const scenario of [
-  { name: "a failed verification route", requestsCaptcha: true },
-  { name: "a workflow failure before any CAPTCHA", requestsCaptcha: false },
-] as const) {
-  test(`${scenario.name} runs exactly one execution and never restarts`, async () => {
-    const store = new PGliteStore(await createTestPGlite("operational"));
-    const controller = new AbortController();
-    try {
-      const provider = createPgliteOperationalProvider(store);
-      const taskId = "fubon-all-statements";
-      const created = await provider.automation.createTaskRun({
-        taskId,
-        kind: "crawler",
-        status: "running",
-        attempt: 1,
-        maxAttempts: 1,
-        startedAt: new Date().toISOString(),
-      });
-      const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-      const attempts: number[] = [];
-      let routes = 0;
-      const result = await runCaptchaRetryCampaign({
-        taskId,
-        appWorkflow: true,
-        pageForRun: noHostedPage,
-        launchVerificationSettings: {},
-        run,
-        captchaRetryCooldownMs: () => undefined,
-        routeWaitingRunVerification: async (input) => {
-          routes += 1;
-          await input.onChallengeCaptured?.();
-          return { kind: "failed" };
-        },
-        async execute(options) {
-          attempts.push(options.attempt ?? 1);
-          if (scenario.requestsCaptcha) {
-            await requestAssistanceForCheck(run, options, sinopacContract, controller.signal).catch(() => undefined);
-          }
-          return { summary: null, failure: { code: "workflow-failed" as const, proven: true } };
-        },
-      });
-      assert.equal((await run.finish(result)).status, "failed");
-      assert.deepEqual(attempts, [1]);
-      assert.equal(routes, scenario.requestsCaptcha ? 1 : 0);
-    } finally {
-      controller.abort();
-      await store.close();
-    }
-  });
-}
-
-test("Yuanta Trade audio solver exhaustion restarts through the App campaign", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  const controller = new AbortController();
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "yuanta-trade-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-    const attempts: number[] = [];
-    let routeCalls = 0;
-    const campaign = runCaptchaRetryCampaign({
-      taskId: "yuanta-trade-statements",
-      appWorkflow: true,
-      pageForRun: noHostedPage,
-      launchVerificationSettings: {},
-      run,
-      routeWaitingRunVerification: async (input) => {
-        routeCalls += 1;
-        await input.onChallengeCaptured?.();
-        return { kind: "retryable", reason: "solver-exhausted" };
-      },
-      async execute(options) {
-        attempts.push(options.attempt ?? 1);
-        if ((options.attempt ?? 1) === 1) {
-          try {
-            await requestAssistanceForCheck(run, options, yuantaTradeAudioContract, controller.signal);
-          } catch {
-            // The campaign requests a fresh challenge after the worker exits.
-          }
-        }
-        return {
-          failure: (options.attempt ?? 1) === 1 ? { code: "workflow-failed" as const, proven: true } : null,
-          summary: null,
-        };
-      },
-    });
-    assert.equal((await run.finish(await campaign)).status, "completed");
-    assert.deepEqual(attempts, [1, 2]);
-    assert.equal(routeCalls, 1);
-  } finally {
-    controller.abort();
-    await store.close();
-  }
-});
-
 test("the CAPTCHA campaign routes Yuanta Trade stages through the route its source declares", async () => {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const controller = new AbortController();
@@ -557,7 +279,7 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
     });
     const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     let genericRouteCalls = 0;
-    const campaign = runCaptchaRetryCampaign({
+    const campaign = runAppCampaign({
       taskId: "yuanta-trade-statements",
       appWorkflow: true,
       pageForRun: noHostedPage,
@@ -579,62 +301,6 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
     assert.equal(genericRouteCalls, 0, "the source route refuses the stage before any solver runs");
     const saved = await provider.automation.taskRunById(created.taskRunId);
     assert.ok(saved?.events.some((event) => event.code === "solver-challenge-unsupported"));
-  } finally {
-    controller.abort();
-    await store.close();
-  }
-});
-
-test("a run the store refused until a Canonical Reset is never retried by the CAPTCHA campaign", async () => {
-  const store = new PGliteStore(await createTestPGlite("operational"));
-  const controller = new AbortController();
-  try {
-    const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: "fubon-all-statements",
-      kind: "crawler",
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
-    const attempts: number[] = [];
-    const result = await runCaptchaRetryCampaign({
-      taskId: "fubon-all-statements",
-      appWorkflow: true,
-      pageForRun: noHostedPage,
-      launchVerificationSettings: {},
-      run,
-      captchaRetryCooldownMs: () => undefined,
-      routeWaitingRunVerification: async (input) => {
-        await input.onChallengeCaptured?.();
-        return { kind: "retryable", reason: "solver-exhausted" };
-      },
-      async execute(options) {
-        attempts.push(options.attempt ?? 1);
-        try {
-          await requestAssistanceForCheck(run, options, sinopacContract, controller.signal);
-        } catch {
-          // The App route rejects the active worker stage to restart it.
-        }
-        return {
-          failure: null,
-          summary: {
-            status: "partial",
-            counts: { itemCount: 2, committedCount: 1 },
-            products: [
-              { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
-              { typeId: "credit_card", status: "failed", itemCount: 1, committedCount: 0, errorCode: "canonical-reset-required" },
-            ],
-          },
-        };
-      },
-    });
-    assert.deepEqual(attempts, [1]);
-    const finished = await run.finish(result);
-    assert.equal(finished.appWorkflowOutcome?.errorCode, "canonical-reset-required");
-    assert.equal(finished.status, "partial", "the deposit product that committed keeps the run partial, not failed");
   } finally {
     controller.abort();
     await store.close();

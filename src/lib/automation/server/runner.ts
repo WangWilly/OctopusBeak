@@ -13,7 +13,8 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
-import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
+import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import {
@@ -147,14 +148,18 @@ export function createAutomationRunner(options: Readonly<{
       const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
         taskId: task.id,
-        appWorkflow: task.kind === "crawler",
         run,
-        pageForRun,
-        launchVerificationSettings: { ...readAutomationSettings() },
-        execute: (executionOptions) => runExecution(task, run, {
-          ...executionOptions,
-          launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
-          pgliteRpc,
+        executeRound: captchaRoundExecution({
+          taskId: task.id,
+          appWorkflow: task.kind === "crawler",
+          run,
+          pageForRun,
+          launchVerificationSettings: { ...readAutomationSettings() },
+          execute: (executionOptions) => runExecution(task, run, {
+            ...executionOptions,
+            launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
+            pgliteRpc,
+          }),
         }),
       });
     } finally {
