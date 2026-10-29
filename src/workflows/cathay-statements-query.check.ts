@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
+  CathayApiClient,
   type CathayDateTimeSuffixShape,
   classifyCathayRowDateShapes,
   classifyCathayDateScopeMismatch,
@@ -381,18 +383,34 @@ const directSecondAccount = {
   branchName: "Synthetic branch 2",
 };
 
-const directApiPage = new Proxy({}, {
+const injectedClientPage = new Proxy({}, {
   get(_target, property) {
-    throw new Error(`Domestic collection unexpectedly accessed page.${String(property)}.`);
+    throw new Error(`Injected-client collection unexpectedly accessed page.${String(property)}.`);
   },
 });
 const expectedScope = {
   startDate: "2025-10-29",
   endDate: "2026-10-29",
 };
+function emptyTransferResponse(accountNo: string): string {
+  return JSON.stringify({
+    success: true,
+    returnCode: "0000",
+    content: {
+      datas: [{
+        queryStatus: "Success",
+        accountNumber: accountNo,
+        count: 0,
+        ...expectedScope,
+        details: [],
+      }],
+    },
+  });
+}
+
 const requestedAccounts: string[] = [];
 const directApiCollection = await collectCathayDomesticFinancialRequests(
-  directApiPage as never,
+  injectedClientPage as never,
   "one_year",
   [],
   { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
@@ -402,19 +420,7 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
       fetchTransferDetailsRaw: async (_session, accountNo, bounds) => {
         assert.deepEqual(bounds, expectedScope);
         requestedAccounts.push(accountNo);
-        return JSON.stringify({
-          success: true,
-          returnCode: "0000",
-          content: {
-            datas: [{
-              queryStatus: "Success",
-              accountNumber: accountNo,
-              count: 0,
-              ...expectedScope,
-              details: [],
-            }],
-          },
-        });
+        return emptyTransferResponse(accountNo);
       },
     },
     now: new Date(2026, 9, 29, 23, 59, 59),
@@ -423,3 +429,90 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);
 assert.equal(directApiCollection.captureCount, 2);
 assert.equal(directApiCollection.rowCount, 0);
+
+const evaluatedRequests: unknown[] = [];
+const apiOnlyPage = new Proxy(
+  {
+    evaluate: async (_callback: unknown, request: unknown) => {
+      evaluatedRequests.push(request);
+      return emptyTransferResponse("0001");
+    },
+  },
+  {
+    get(target, property, receiver) {
+      if (property === "evaluate") return Reflect.get(target, property, receiver);
+      throw new Error(`Cathay API client unexpectedly accessed page.${String(property)}.`);
+    },
+  },
+);
+const apiOnlyClient = new CathayApiClient(apiOnlyPage as never);
+await apiOnlyClient.fetchTransferDetailsRaw(
+  { jwtToken: "synthetic-token", customerId: "synthetic-customer", idType: "id" },
+  "0001",
+  expectedScope,
+);
+assert.deepEqual(evaluatedRequests, [{
+  path: "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
+  token: "synthetic-token",
+  body: {
+    functionSeqNo: (evaluatedRequests[0] as { body: { functionSeqNo: string } }).body.functionSeqNo,
+    content: {
+      customerId: "synthetic-customer",
+      queryFilters: [{
+        accountNumber: "0001",
+        ...expectedScope,
+      }],
+    },
+  },
+}]);
+
+const failedAccounts: string[] = [];
+await assert.rejects(
+  collectCathayDomesticFinancialRequests(
+    injectedClientPage as never,
+    "one_year",
+    [],
+    { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+    {
+      client: {
+        fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
+        fetchTransferDetailsRaw: async (_session, accountNo) => {
+          failedAccounts.push(accountNo);
+          if (accountNo === directSecondAccount.accountNo) {
+            throw new Error("synthetic transfer failure");
+          }
+          return emptyTransferResponse(accountNo);
+        },
+      },
+      now: new Date(2026, 9, 29, 23, 59, 59),
+    },
+  ),
+  /synthetic transfer failure/,
+);
+assert.deepEqual(failedAccounts, ["0001", "20002"]);
+
+const cancellation = new AbortController();
+const cancellationReason = new Error("synthetic cancellation");
+const cancelledAccounts: string[] = [];
+await assert.rejects(
+  collectCathayDomesticFinancialRequests(
+    injectedClientPage as never,
+    "one_year",
+    [],
+    { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+    {
+      source: { text: strictSourceText, signal: cancellation.signal },
+      client: {
+        fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
+        fetchTransferDetailsRaw: async (_session, accountNo) => {
+          cancelledAccounts.push(accountNo);
+          cancellation.abort(cancellationReason);
+          return emptyTransferResponse(accountNo);
+        },
+      },
+      now: new Date(2026, 9, 29, 23, 59, 59),
+    },
+  ),
+  (error) => error === cancellationReason,
+);
+assert.deepEqual(cancelledAccounts, ["0001"]);
