@@ -25,9 +25,8 @@ registerHooks({
 });
 
 const [{ taskById }, { executeTaskRunForCheck }, {
-  workflowDefinitionForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowStartUrlForWorkflow,
 }] = await Promise.all([
   import("./tasks.ts"),
   import("./task-run-check-support.ts"),
@@ -50,11 +49,11 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
   assert.equal(task.workflowId, "fubon-all-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.id, "fubon-all-statements");
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresFinancialCommit, true);
-  assert.equal(workflowDefinitionForTask(task.workflowId)?.requiresAccountIdentity, true);
-  assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.id, "fubon-all-statements");
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresFinancialCommit, true);
+  assert.equal(appWorkflowRegistration(task.workflowId)?.definition?.requiresAccountIdentity, true);
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     managedIdentitySecret: "synthetic-fubon-managed-secret",
     credentials: {
       fubon_user_id: "synthetic-user-id",
@@ -64,7 +63,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     statementTypes: ["deposit"],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, {
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
     }),
@@ -111,7 +110,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit, accountIdentity },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },

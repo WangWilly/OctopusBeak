@@ -1,5 +1,5 @@
 import { isWorkflowRunResult, type WorkflowRunResult } from "../workflow-run-result.ts";
-import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
+import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import {
@@ -173,10 +173,14 @@ export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerSt
   if (!isRecord(value) || !exactKeys(value, [
     "protocolVersion", "workflowId", "taskRunId", "input",
   ], ["browserConnection", "pgliteRpc"])) invalid();
-  const nonbrowser = typeof value.workflowId === "string"
-    && workflowRuntimeForTask(value.workflowId).kind === "nonbrowser";
+  // An unregistered workflow has no runtime to check the start against.
+  const runtime = typeof value.workflowId === "string"
+    ? appWorkflowRegistration(value.workflowId)?.runtime
+    : undefined;
+  const nonbrowser = runtime?.kind === "nonbrowser";
   if (
     value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION
+    || !runtime
     || typeof value.workflowId !== "string"
     || !SAFE_WORKFLOW_ID.test(value.workflowId)
     || typeof value.taskRunId !== "string"

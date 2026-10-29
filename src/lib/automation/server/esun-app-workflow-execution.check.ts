@@ -15,7 +15,7 @@ import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
-import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
@@ -181,8 +181,8 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
   assert.equal(task.workflowId, "esun-credit-card-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowStartUrlForTask(task.workflowId), BANK_ENTRY_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, testEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), BANK_ENTRY_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(testEnvironment()), {
     credentials: {
       esun_user_id: "synthetic-user-id",
       esun_account: "synthetic-account",
@@ -192,7 +192,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     statementTypes: ["credit_card"],
     attachedPreviewProducts: [],
   });
-  assert.deepEqual(workflowInputForTask(task.workflowId, {
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
     ...testEnvironment(),
     [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "deposit",
   }), {
@@ -205,12 +205,12 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     statementTypes: [],
     attachedPreviewProducts: [],
   }, "an attached-only selection selects no verified product, and Preview features off drop the attachment");
-  assert.deepEqual((workflowInputForTask(task.workflowId, {
+  assert.deepEqual((appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
     ...testEnvironment(),
     PREVIEW_FEATURES_ENABLED: "true",
     [["LIBRETTO", "CLOUD", "ESUN", "STATEMENT", "TYPES"].join("_")]: "credit_card,deposit",
   }) as { statementTypes?: unknown; attachedPreviewProducts?: unknown }), {
-    ...workflowInputForTask(task.workflowId, testEnvironment()) as object,
+    ...appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(testEnvironment()) as object,
     statementTypes: ["credit_card"],
     attachedPreviewProducts: ["deposit"],
   });
@@ -253,7 +253,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         financialCommit,
         now: () => now.toISOString(),
       },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browserPort;
       },
@@ -308,7 +308,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         financialCommit,
         now: () => now.toISOString(),
       },
-      workflowBrowserPortFactory: () => cancelBrowser,
+      workflowBrowserPort: () => cancelBrowser,
     });
     assert.equal(cancelledResult.status, "cancelled");
     assert.equal((await provider.automation.taskRunById(cancelRunId))?.status, "cancelled");
@@ -342,7 +342,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
         financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
         now: () => now.toISOString(),
       },
-      workflowBrowserPortFactory: () => ({ async withPage(run) { return run(hostPage.page); } }),
+      workflowBrowserPort: () => ({ async withPage(run) { return run(hostPage.page); } }),
     });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "failed");

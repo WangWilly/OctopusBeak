@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
-import { workflowDefinitionForTask } from "./server/app-workflow-registry.ts";
+import { appWorkflowRegistration } from "./server/app-workflow-registry.ts";
 import { strictSourceText } from "./source-text.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
@@ -25,7 +25,7 @@ import {
   type LineBankTransactionsResponse,
 } from "../../workflows/linebank-statements.ts";
 
-const linebankStatementsWorkflow = workflowDefinitionForTask("linebank-statements")!;
+const linebankStatementsWorkflow = appWorkflowRegistration("linebank-statements")?.definition!;
 
 const account: LineBankAccount = {
   acctNbr: "123456789012",

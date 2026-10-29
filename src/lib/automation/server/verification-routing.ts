@@ -22,11 +22,12 @@ import {
 import { localVerificationSolver } from "./local-verification-solver.ts";
 import { automationViewer, type PageForRun } from "./automation-viewer.ts";
 import { createProviderVerificationHost } from "./provider-verification.ts";
-import { taskById } from "./tasks.ts";
+import type { AutomationTask } from "./tasks.ts";
 import { VERIFIED_SOURCES } from "./sources/index.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
+import type { SourceVerificationRoute } from "./sources/verified-source.ts";
 
 /** What the provider made of a submitted answer once the workflow resumed. */
 export type VerificationPostSubmitOutcome =
@@ -179,31 +180,33 @@ export type VerificationRoutingOutcome =
     reason: "solver-exhausted" | "provider-rejected";
   };
 
-const verificationOf = (taskId: string) =>
-  VERIFIED_SOURCES.find((source) => source.task.id === taskId)?.workflow.verification;
+/** What a Verified source declares about routing its verification stages. */
+export type SourceVerificationFacts = Readonly<{
+  /** The workflow's verification stages reach the solver route. */
+  routesVerification: boolean;
+  /** The wait before the next CAPTCHA retry round, when the source declares one (ADR 0070). */
+  cooldownMs: number | undefined;
+  /** The source's own Verification route, when it replaces the generic solver route. */
+  sourceRoute: SourceVerificationRoute | undefined;
+  /**
+   * The workflow classifies submission results itself. The route joins the
+   * completed execution instead of racing a second owner of browser dialogs.
+   */
+  workflowOwnsCaptchaOutcome: boolean;
+}>;
 
-/** App browser workflows whose verification stages reach the solver route. */
-export function appWorkflowRoutesVerification(taskId: string) {
-  return verificationOf(taskId) !== undefined;
+/** The verification facts of the task's Verified source, or null for a task without one. */
+export function sourceVerificationFacts(taskId: string): SourceVerificationFacts | null {
+  const source = VERIFIED_SOURCES.find((candidate) => candidate.task.id === taskId);
+  if (!source) return null;
+  const verification = source.workflow.verification;
+  return {
+    routesVerification: verification !== undefined,
+    cooldownMs: verification?.retryCooldownMs,
+    sourceRoute: verification?.route,
+    workflowOwnsCaptchaOutcome: verification?.rejection !== undefined,
+  };
 }
-
-/** The wait before the next CAPTCHA retry round, when the source declares one (ADR 0070). */
-export function captchaRetryCooldownMs(taskId: string): number | undefined {
-  return verificationOf(taskId)?.retryCooldownMs;
-}
-
-/** The source's own Verification route, when it replaces the generic solver route. */
-export function sourceVerificationRoute(taskId: string) {
-  return verificationOf(taskId)?.route;
-}
-
-/**
- * These providers classify submission results inside the workflow. Join the
- * completed execution instead of racing a second owner of browser dialogs.
- */
-export const WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS: ReadonlySet<string> = new Set(
-  VERIFIED_SOURCES.filter((source) => source.workflow.verification?.rejection !== undefined).map((source) => source.task.id),
-);
 
 export async function routeVerificationActor(input: {
   contract: HumanAssistanceContract | null;
@@ -315,12 +318,13 @@ export function verificationConfidenceThreshold(
 
 export async function routeWaitingRunVerification(input: VerificationRoutingSeams & {
   /** The run whose current human assistance stage this routes. */
-  run: Pick<ActiveAutomationTaskRun, "taskId" | "taskRunId" | "current">;
+  run: Pick<ActiveAutomationTaskRun, "taskRunId" | "current">;
+  /** The run's task, from its Task run plan. */
+  task: Pick<AutomationTask, "workflowId">;
   settings?: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
-  const { run: activeRun, settings: givenSettings, ...seams } = input;
-  const task = taskById(activeRun.taskId);
-  if (!task?.workflowId) {
+  const { run: activeRun, task, settings: givenSettings, ...seams } = input;
+  if (!task.workflowId) {
     await seams.finalizeFailed("Verification routing requires an App browser workflow.");
     return { kind: "failed" };
   }

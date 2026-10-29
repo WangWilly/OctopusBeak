@@ -12,7 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
-import { workflowBrowserProfileForTask, workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -172,9 +172,9 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   assert.equal(task.workflowId, "ctbc-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
-  assert.equal(workflowBrowserProfileForTask(task.workflowId), "ctbc-login");
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
+  assert.equal(workflowBrowserProfileForWorkflow(task.workflowId), "ctbc-login");
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       ctbc_user_id: "synthetic-user-id",
       ctbc_account: "synthetic-account",
@@ -183,7 +183,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     statementTypes: ["deposit"],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "" }),
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 
@@ -212,7 +212,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
       },
-      workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
+      workflowBrowserPort: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
         observedBrowserProfile = browserProfile;
         return browser;
@@ -258,7 +258,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: () => incompleteBrowser,
+      workflowBrowserPort: () => incompleteBrowser,
     });
     assert.equal(incomplete.status, "failed");
     assert.equal(incomplete.outcome.errorCode, "source-validation-failed");
@@ -278,7 +278,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: () => malformedBrowser,
+      workflowBrowserPort: () => malformedBrowser,
     });
     assert.equal(malformed.status, "failed");
     assert.equal(malformed.outcome.errorCode, "source-integrity-failed");
@@ -308,7 +308,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
       },
-      workflowBrowserPortFactory: () => cancellationBrowser,
+      workflowBrowserPort: () => cancellationBrowser,
     });
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.outcome.errorCode, "cancelled");
@@ -340,7 +340,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
           },
         },
       },
-      workflowBrowserPortFactory: () => ambiguousBrowser,
+      workflowBrowserPort: () => ambiguousBrowser,
     });
     assert.equal(ambiguous.status, "failed");
     assert.equal(ambiguous.outcome.errorCode, "commit-outcome-unknown");

@@ -14,9 +14,12 @@ import {
 } from "./app-workflow-worker-protocol.ts";
 import { tdccSessionHostCalls } from "./tdcc-session-host.ts";
 
+/** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
+const FIXTURE_WORKFLOW_ID = "ctbc-statements";
+
 const base: Omit<RunSupervisedAppWorkflowOptions, "workerPath" | "workerFactory"> = {
   runId: "supervised-run-1",
-  workflowId: "fixture-protocol",
+  workflowId: FIXTURE_WORKFLOW_ID,
   input: { credential: "secret-test-value" },
   browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
   signal: new AbortController().signal,

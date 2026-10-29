@@ -20,7 +20,7 @@ import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
-import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -44,8 +44,8 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
   assert.equal(task.workflowId, "post-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowStartUrlForTask(task.workflowId), HOME_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), HOME_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       post_user_id: "test-user-id",
       post_account: "test-account",
@@ -54,7 +54,7 @@ test("Chunghwa Post task is catalogued as an App-owned typed workflow", () => {
     statementTypes: ["deposit"],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_POST_STATEMENT_TYPES: "" }),
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_POST_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 });
@@ -269,7 +269,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
         financialCommit: commitPort,
         now: () => "2026-09-25T12:00:00.000Z",
       },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },
@@ -319,7 +319,7 @@ test("Post App dispatch rejects malformed and incomplete EndBracket sources befo
         taskRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         workerPorts: { financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) },
-        workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
+        workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
       });
       assert.equal(result.status, "failed");
       assert.equal(committed.length, 0);
@@ -359,7 +359,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
       workerPorts: {
         financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
       },
-      workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
+      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
     });
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
@@ -391,7 +391,7 @@ test("Post App dispatch without a verification route fails with a configuration 
       workerPorts: {
         financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2),
       },
-      workflowBrowserPortFactory: () => ({ async withPage(run) { return run(page); } }),
+      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
     });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
