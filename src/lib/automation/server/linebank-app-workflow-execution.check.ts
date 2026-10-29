@@ -13,7 +13,7 @@ import { linebankEpochMillisecondsFromSourceDateTime } from "../../../workflows/
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
-import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -223,8 +223,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   assert.equal(task.workflowId, "linebank-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       linebank_user_id: "synthetic-user-id",
       linebank_account: "synthetic-account",
@@ -235,7 +235,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     currencyFilters: [],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, { ...syntheticEnvironment(), LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "" }),
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({ ...syntheticEnvironment(), LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "" }),
     (error: unknown) => error instanceof StatementSelectionError && error.reason === "missing-selection",
   );
 
@@ -266,7 +266,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
       },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },
@@ -299,7 +299,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(malformedPage); } }),
+      workflowBrowserPort: () => ({ async withPage(runPage) { return runPage(malformedPage); } }),
     });
     assert.equal(malformed.status, "failed");
     assert.equal(committed.length, 1, "malformed LINE Bank response is rejected before commit");
@@ -312,7 +312,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(incompletePage); } }),
+      workflowBrowserPort: () => ({ async withPage(runPage) { return runPage(incompletePage); } }),
     });
     assert.equal(incomplete.status, "failed");
     assert.equal(committed.length, 1, "incomplete LINE Bank pagination is rejected before commit");
@@ -335,7 +335,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
         cancellationRun = active;
       },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }),
+      workflowBrowserPort: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }),
     });
     assert.equal(cancelled.status, "cancelled");
     assert.ok(

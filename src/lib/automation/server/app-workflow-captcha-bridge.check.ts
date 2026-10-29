@@ -14,10 +14,10 @@ import {
   captchaRoundExecution,
   type CaptchaRoundExecutionDependencies,
 } from "./captcha-round-execution.ts";
-import { openTaskRunForCheck, requestAssistanceForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, requestAssistanceForCheck, routingPlanForCheck } from "./task-run-check-support.ts";
 import { routeWaitingRunVerification } from "./verification-routing.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
-import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import type { WorkflowExecutionRound } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { openSyntheticPage, pngDataUrl, solidPng } from "./verification-page-check-support.ts";
 
@@ -26,7 +26,7 @@ const noHostedPage = () => null;
 /** The campaign as the runner composes it, with the real round adapter. */
 function runAppCampaign(dependencies: CaptchaRoundExecutionDependencies) {
   return runCaptchaRetryCampaign({
-    taskId: dependencies.taskId,
+    plan: dependencies.plan,
     run: dependencies.run,
     executeRound: captchaRoundExecution(dependencies),
   });
@@ -152,10 +152,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
       let solverCalls = 0;
 
       const campaign = runAppCampaign({
-        taskId,
-        appWorkflow: true,
+        plan: routingPlanForCheck(taskId, settings),
         pageForRun: noHostedPage,
-        launchVerificationSettings: settings,
         run,
         routeWaitingRunVerification: (input) => routeWaitingRunVerification({
           ...input,
@@ -173,8 +171,8 @@ for (const providerId of ["sinopac", "post", "einvoice", "yuanta-bank"] as const
             },
           },
         }),
-        async execute(options: AutomationTaskExecutionOptions) {
-          const attempt = options.attempt ?? 1;
+        async execute(options: WorkflowExecutionRound) {
+          const attempt = options.attempt;
           executeAttempts.push(attempt);
           const controller = new AbortController();
           try {
@@ -230,10 +228,8 @@ test("App SinoPac CAPTCHA assistance aborts its route when the live run is cance
     const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     const controller = new AbortController();
     const campaign = runAppCampaign({
-      taskId: "sinopac-statements",
-      appWorkflow: true,
+      plan: routingPlanForCheck("sinopac-statements"),
       pageForRun: noHostedPage,
-      launchVerificationSettings: {},
       // A route still solving when the App closes.
       routeWaitingRunVerification: () => new Promise((_resolve, reject) => {
         controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
@@ -280,10 +276,8 @@ test("the CAPTCHA campaign routes Yuanta Trade stages through the route its sour
     const run = await openTaskRunForCheck(provider.automation, created.taskRunId);
     let genericRouteCalls = 0;
     const campaign = runAppCampaign({
-      taskId: "yuanta-trade-statements",
-      appWorkflow: true,
+      plan: routingPlanForCheck("yuanta-trade-statements"),
       pageForRun: noHostedPage,
-      launchVerificationSettings: {},
       run,
       routeWaitingRunVerification: async () => {
         genericRouteCalls += 1;

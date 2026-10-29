@@ -16,14 +16,21 @@ import type {
 import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, observingExecutions, openTaskRunForCheck } from "./task-run-check-support.ts";
-import { runAutomationTaskExecution, type AutomationTaskExecutionOptions } from "./task-run-execution.ts";
+import {
+  CHECK_PGLITE_RPC,
+  executeTaskRunForCheck,
+  firstRoundForCheck,
+  observingExecutions,
+  openTaskRunForCheck,
+  planForCheck,
+} from "./task-run-check-support.ts";
+import { runAutomationTaskExecution, type AutomationTaskExecutionSeams } from "./task-run-execution.ts";
 import {
   completeAppWorkflowHumanAssistance,
   type AppWorkflowHumanAssistanceRequest,
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
-import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
+import { workflowBrowserProfileForWorkflow } from "./app-workflow-registry.ts";
 import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -249,7 +256,7 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
         OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: diagnosticPath,
         OCTOPUSBEAK_APP_ROOT: process.cwd(),
       },
-      workflowBrowserPortFactory: () => ({
+      workflowBrowserPort: () => ({
         async withPage(run) { return await run({} as never); },
       }),
       appWorkflowBrowserConnectionForRun: (runId) => ({
@@ -293,20 +300,12 @@ test("command-only tasks are rejected before persistence or execution", async ()
     id: "legacy-command-task",
     workflowId: undefined,
   };
-  let runCalls = 0;
-  const run = new Proxy({ signal: new AbortController().signal }, {
-    get(target, property) {
-      if (property === "signal") return target.signal;
-      runCalls += 1;
-      return async () => undefined;
-    },
-  });
-
-  await assert.rejects(
-    () => runAutomationTaskExecution(task, run as never, {}),
-    /App workflow definition is unavailable/,
+  // A task without a plan has nothing to execute.
+  assert.throws(() => planForCheck(task), /not registered with the App executor/u);
+  assert.throws(
+    () => planForCheck({ ...task, workflowId: "legacy-command-workflow" }),
+    /App workflow definition is unavailable/u,
   );
-  assert.equal(runCalls, 0);
 });
 
 test("resuming a missing App run fails closed without invoking a workflow", async () => {
@@ -399,7 +398,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
         taskRunId,
         pgliteRpc: { endpoint: "/tmp/worker-test.sock", token: "a".repeat(32) },
         launchEnv: {},
-        workflowBrowserPortFactory: () => { throw new Error("Nonbrowser task opened a browser."); },
+        workflowBrowserPort: () => { throw new Error("Nonbrowser task opened a browser."); },
         appWorkflowWorkerFactory: (_path, options) => {
           start = options.workerData as AppWorkflowWorkerStart;
           return new NonBrowserFakeWorker(start);
@@ -464,7 +463,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
         onRunOpened: (run) => {
           active = run;
         },
-        workflowBrowserPortFactory: () => ({
+        workflowBrowserPort: () => ({
           async withPage(run) { return await run({} as never); },
         }),
         appWorkflowBrowserConnectionForRun: (runId) => ({
@@ -579,7 +578,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
   const task = taskById("einvoice-personal-invoices");
   assert.ok(task);
   assert.ok(task.workflowId);
-  assert.equal(workflowBrowserProfileForTask(task.workflowId), undefined);
+  assert.equal(workflowBrowserProfileForWorkflow(task.workflowId), undefined);
   const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
   try {
@@ -597,10 +596,8 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     let workerStart: AppWorkflowWorkerStart | undefined;
     let hostInput: Record<string, unknown> | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
-    const outcome = await runAutomationTaskExecution(task, active, {
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv,
-      workflowBrowserPortFactory: (input) => {
+    const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), active, firstRoundForCheck(), {
+      workflowBrowserPort: (input) => {
         hostInput = input as unknown as Record<string, unknown>;
         return {
           async withPage(run) {
@@ -666,7 +663,7 @@ test("runtime identity remains on a failed run when browser launch fails before 
       taskRunId,
       pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
-      workflowBrowserPortFactory: (input) => ({
+      workflowBrowserPort: (input) => ({
         async withPage() {
           const callback = (input as unknown as { onRuntimeIdentity?: (identity: typeof runtimeIdentity) => void }).onRuntimeIdentity;
           callback?.(runtimeIdentity);
@@ -704,7 +701,7 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
         LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
         [einvoicePasswordFixtureEnvKey]: "fixture-password",
       },
-      workflowBrowserPortFactory: () => {
+      workflowBrowserPort: () => {
         throw new BrowserRuntimeConfigurationError("unsupported-profile");
       },
       appWorkflowWorkerFactory: () => {
@@ -782,7 +779,7 @@ test("supervised product invariant failures retain the worker code instead of gu
         LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
         LIBRETTO_CLOUD_CTBC_PASSWORD: "synthetic-password",
       },
-      workflowBrowserPortFactory: () => ({ async withPage(run) { return await run({} as never); } }),
+      workflowBrowserPort: () => ({ async withPage(run) { return await run({} as never); } }),
       appWorkflowBrowserConnectionForRun: (id) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${id}` }),
       appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(options.workerData, "product-invariant", () => true),
     });
@@ -800,8 +797,8 @@ const ctbcLaunchEnv = {
   [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
   [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
 };
-const checkHostPage: Pick<AutomationTaskExecutionOptions, "workflowBrowserPortFactory" | "appWorkflowBrowserConnectionForRun"> = {
-  workflowBrowserPortFactory: () => ({
+const checkHostPage: Pick<AutomationTaskExecutionSeams, "workflowBrowserPort" | "appWorkflowBrowserConnectionForRun"> = {
+  workflowBrowserPort: () => ({
     async withPage(run) { return await run({} as never); },
   }),
   appWorkflowBrowserConnectionForRun: (runId) => ({
@@ -863,13 +860,13 @@ test("two executions of one run each log only their own events, and only the ret
     const taskRunId = await createRun(provider, task);
     const executions: WorkflowExecution[] = [];
     const run = observingExecutions(await openTaskRunForCheck(provider.automation, taskRunId), executions);
-    const execute = (attempt: number) => runAutomationTaskExecution(task, run, {
+    const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
+    const execute = (attempt: number) => runAutomationTaskExecution(plan, run, {
       attempt,
       maxAttempts: 2,
       executionId: `round-${attempt}`,
       retrying: attempt > 1,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: ctbcLaunchEnv,
+    }, {
       ...checkHostPage,
       appWorkflowWorkerFactory: (_path, options) =>
         new TaskExecutionFakeWorker(options.workerData, "validation-failure", () => true),

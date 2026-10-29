@@ -12,6 +12,7 @@ import {
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
 import type { PageForRun } from "./automation-viewer.ts";
+import type { AutomationTask } from "./tasks.ts";
 import type { VerificationSolver } from "./verification-solver.ts";
 import {
   YUANTA_TRADE_AUDIO_SEMANTIC_ID,
@@ -22,6 +23,7 @@ import {
 } from "../yuanta-trade-captcha.ts";
 
 export type YuantaTradeAppAssistanceDependencies = Readonly<{
+  task: Pick<AutomationTask, "workflowId">;
   settings: AutomationSettingsFile;
   pageForRun: PageForRun;
   route?: typeof routeWaitingRunVerification;
@@ -93,6 +95,7 @@ export async function routeYuantaTradeAppAssistanceRequest(
   let assistanceResumed = false;
   const outcome = await route({
     run: request.run,
+    task: dependencies.task,
     pageForRun: dependencies.pageForRun,
     settings: dependencies.settings,
     // The route performs no page operation once the request is cancelled.

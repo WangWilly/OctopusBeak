@@ -15,7 +15,7 @@ const { AUTOMATION_CREDENTIAL_GROUPS, AUTOMATION_TASKS, enabledAutomationTasks }
 const { currentPreviewVisibility, offeredAutomationSources } = await import("../automation/server/settings.ts");
 const { buildAutomationPageModel } = await import("../automation/server/page-model.ts");
 const { scheduledCollectionTaskIds } = await import("../automation/server/scheduled-collection.ts");
-const { workflowDefinitionForTask, workflowInputForTask } = await import("../automation/server/app-workflow-registry.ts");
+const { appWorkflowRegistration } = await import("../automation/server/app-workflow-registry.ts");
 const { createWorkflowExecutor } = await import("../automation/workflow-executor.ts");
 const { assertPreviewRegistry } = await import("./registry.ts");
 const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
@@ -62,16 +62,16 @@ test("a registry entry derives its sign-in group, task, and preview-only workflo
   assert.equal(group?.preview, true);
   assert.equal(group?.enabledKey, "PREVIEW_SYNTHETIC_ENABLED");
   assert.equal(AUTOMATION_TASKS.find((task) => task.id === "preview-synthetic")?.credentialGroupId, "synthetic");
-  const definition = workflowDefinitionForTask("preview-synthetic");
+  const definition = appWorkflowRegistration("preview-synthetic")?.definition;
   assert.equal(definition?.requiresFinancialCommit, false, "a preview workflow never receives the canonical commit");
   assert.equal(definition?.requiresPreviewWrite, true);
-  assert.deepEqual(workflowInputForTask("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u", PREVIEW_FEATURES_ENABLED: "true" }), {
+  assert.deepEqual(appWorkflowRegistration("preview-synthetic")?.inputFromEnvironment({ PREVIEW_SYNTHETIC_USER_ID: "u", PREVIEW_FEATURES_ENABLED: "true" }), {
     startUrl: "https://preview-fixture.invalid/",
     credentials: { PREVIEW_SYNTHETIC_USER_ID: "u" },
     products: ["deposit"],
   }, "a single product is the selection");
   assert.deepEqual(
-    (workflowInputForTask("preview-synthetic", { PREVIEW_SYNTHETIC_USER_ID: "u" }) as { products: unknown }).products,
+    (appWorkflowRegistration("preview-synthetic")?.inputFromEnvironment({ PREVIEW_SYNTHETIC_USER_ID: "u" }) as { products: unknown }).products,
     [],
     "Preview features off offers no product",
   );
@@ -127,7 +127,7 @@ test("Preview features off removes preview sources from sign-in settings, Sync a
 test("a preview workflow writes only through its bound preview port", async () => {
   const writes: PreviewWrite[] = [];
   let seenContextKeys: string[] = [];
-  const definition = workflowDefinitionForTask("preview-synthetic")!;
+  const definition = appWorkflowRegistration("preview-synthetic")?.definition!;
   const observing = {
     ...definition,
     run: (context: Parameters<typeof definition.run>[0], input: unknown) => {
@@ -250,13 +250,13 @@ test("a covered product is left out of a source's selection, and a verified run 
   const cathay = { LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,credit_card", LIBRETTO_CLOUD_CATHAY_ENABLED: "true" };
   assert.deepEqual(selectedAttachedPreviewProducts("cathay", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }), ["credit_card"]);
   assert.deepEqual(selectedAttachedPreviewProducts("cathay", cathay), [], "Preview features off collects no attached product");
-  const input = workflowInputForTask("cathay-all-statements", { ...cathay, PREVIEW_FEATURES_ENABLED: "true" }) as Record<string, unknown>;
+  const input = appWorkflowRegistration("cathay-all-statements")?.inputFromEnvironment({ ...cathay, PREVIEW_FEATURES_ENABLED: "true" }) as Record<string, unknown>;
   assert.deepEqual(input.statementTypes, ["domestic"], "the verified selection tolerates the attached id without collecting it");
   assert.deepEqual(input.attachedPreviewProducts, ["credit_card"]);
-  assert.deepEqual((workflowInputForTask("cathay-all-statements", cathay) as Record<string, unknown>).attachedPreviewProducts, []);
-  assert.equal(workflowDefinitionForTask("cathay-all-statements")?.attachedPreviewProducts?.sourceId, "cathay");
-  assert.equal(workflowDefinitionForTask("hncb-statements")?.attachedPreviewProducts?.sourceId, "hncb");
-  assert.equal(workflowDefinitionForTask("sinopac-statements")?.attachedPreviewProducts?.sourceId, "sinopac");
-  assert.equal(workflowDefinitionForTask("esun-credit-card-statements")?.attachedPreviewProducts?.sourceId, "esun");
-  assert.equal(workflowDefinitionForTask("ctbc-statements")?.attachedPreviewProducts, undefined, "CTBC credit cards are a separate Preview Source");
+  assert.deepEqual((appWorkflowRegistration("cathay-all-statements")?.inputFromEnvironment(cathay) as Record<string, unknown>).attachedPreviewProducts, []);
+  assert.equal(appWorkflowRegistration("cathay-all-statements")?.definition?.attachedPreviewProducts?.sourceId, "cathay");
+  assert.equal(appWorkflowRegistration("hncb-statements")?.definition?.attachedPreviewProducts?.sourceId, "hncb");
+  assert.equal(appWorkflowRegistration("sinopac-statements")?.definition?.attachedPreviewProducts?.sourceId, "sinopac");
+  assert.equal(appWorkflowRegistration("esun-credit-card-statements")?.definition?.attachedPreviewProducts?.sourceId, "esun");
+  assert.equal(appWorkflowRegistration("ctbc-statements")?.definition?.attachedPreviewProducts, undefined, "CTBC credit cards are a separate Preview Source");
 });

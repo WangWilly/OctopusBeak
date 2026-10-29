@@ -162,7 +162,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
       workerPorts: { financialCommit: committedFinancialCommit() },
-      workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
+      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
     assert.equal(firstResult.status, "completed");
     const completedRun = await provider.automation.taskRunById(firstRun.taskRunId);
@@ -209,7 +209,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       taskRunId: rejectedRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
       workerPorts: { financialCommit: rejectedCommit },
-      workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
+      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
     });
     assert.equal(rejectedResult.status, "failed");
     const rejectedRecord = await provider.automation.taskRunById(rejectedRun.taskRunId);
@@ -226,7 +226,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       },
       launchEnv: testCredentialEnvironment(),
       workerPorts: { financialCommit: committedFinancialCommit() },
-      workflowBrowserPortFactory: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000),
+      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000),
     });
     // Wait until the run is actively executing, then shut down.
     await new Promise((resolve) => setTimeout(resolve, 500));

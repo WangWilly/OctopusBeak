@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS } from "./server/verification-routing.ts";
+import { sourceVerificationFacts } from "./server/verification-routing.ts";
 import { VERIFIED_SOURCES } from "./server/sources/index.ts";
 import { matchesDialogText, matchesRejectionDialog, matchesTakeoverDialog } from "./sign-in-prompt.ts";
 
@@ -43,9 +43,12 @@ test("a takeover is a confirm and a rejection is an alert, never the other way r
   assert.equal(matchesRejectionDialog(undefined, { type: "alert", message: "圖形驗證錯誤" }), false);
 });
 
-test("the sources that prove their own CAPTCHA rejection are the ones the coordinator joins", () => {
+test("the sources that prove their own CAPTCHA rejection are the ones the round adapter joins", () => {
+  const owned = VERIFIED_SOURCES
+    .filter((source) => sourceVerificationFacts(source.task.id)?.workflowOwnsCaptchaOutcome)
+    .map((source) => source.task.id);
   assert.deepEqual(
-    [...WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS].sort(),
+    owned.sort(),
     ["einvoice-personal-invoices", "fubon-all-statements", "post-statements", "sinopac-statements", "yuanta-all-statements"],
   );
   const probed = VERIFIED_SOURCES

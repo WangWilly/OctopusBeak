@@ -239,7 +239,7 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
         taskRunId,
         pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv: {},
-        workflowBrowserPortFactory: () => ({ async withPage(work) { return await work({} as never); } }),
+        workflowBrowserPort: () => ({ async withPage(work) { return await work({} as never); } }),
         appWorkflowBrowserConnectionForRun: (runId) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${runId}` }),
         appWorkflowWorkerFactory: (_path, options) => new TerminalFakeWorker(options.workerData, terminal),
       });

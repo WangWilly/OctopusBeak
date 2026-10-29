@@ -9,7 +9,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { activeRunPageLookup, openActiveTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { workflowBrowserProfileForTask } from "./app-workflow-registry.ts";
+import { workflowBrowserProfileForWorkflow } from "./app-workflow-registry.ts";
 import {
   BrowserRuntimeConfigurationError,
   createBrowserRuntime,
@@ -61,7 +61,7 @@ test("Cathay login drops retained Cathay session cookies but keeps the trusted-d
 });
 
 test("E.SUN App execution starts without stale E.SUN session cookies", () => {
-  const profile = workflowBrowserProfileForTask("esun-credit-card-statements");
+  const profile = workflowBrowserProfileForWorkflow("esun-credit-card-statements");
   const cookies = [
     { name: "old-session", value: "synthetic", domain: "ebank.esunbank.com.tw", path: "/" },
     { name: "shared-session", value: "synthetic", domain: ".esunbank.com.tw", path: "/" },
