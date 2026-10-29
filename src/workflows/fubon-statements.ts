@@ -56,6 +56,7 @@ import {
   type ProductCollectionSummary,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   readFubonCurrentDepositBalances,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
@@ -112,10 +113,6 @@ export const fubonStatementDateRangeSchema = z.enum([
 ]);
 
 export const fubonStatementsInputSchema = z.object({
-  dateRanges: z
-    .array(fubonStatementDateRangeSchema)
-    .min(1)
-    .default(["180", "180_365"]),
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]).default("EXCEL"),
 });
 
@@ -1767,71 +1764,33 @@ function nextTimestamp(): string {
   return String(lastTimestamp);
 }
 
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}/${month}/${day}`;
+/** One deposit query: Fubon's range option and the dates it posts with it, as YYYY/MM/DD. */
+export type FubonDepositQuery = Readonly<{
+  rangeCode: "180" | "180_365";
+  startDate: string;
+  endDate: string;
+}>;
+
+/**
+ * Fubon's queries for the deposit product's collection period: the window
+ * ending today posts the "180" option, the older one "180_365". The older
+ * window ends the day before the newer starts, so no day is queried twice.
+ */
+export function fubonDepositQueries(period: CollectionPeriod): readonly FubonDepositQuery[] {
+  if (period.windows.length > 2)
+    throw new Error("Fubon deposit collection period needs more ranges than Fubon offers.");
+  return period.windows.map((window) => ({
+    rangeCode: window.end === period.end ? "180" : "180_365",
+    startDate: window.start.replaceAll("-", "/"),
+    endDate: window.end.replaceAll("-", "/"),
+  }));
 }
 
-function addDays(date: Date, days: number): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
-}
-
-function addMonthsClamped(date: Date, months: number): Date {
-  const targetYear = date.getFullYear();
-  const targetMonth = date.getMonth() + months;
-  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
-  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
-}
-
-function depositDateRangeFields(
-  dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
-): Record<string, string> {
-  const today = new Date();
-  const endDate = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate(),
-  );
-  const dayOffsets: Partial<
-    Record<z.infer<typeof fubonStatementDateRangeSchema>, number>
-  > = {
-    "1": 0,
-    "3": 2,
-    "7": 6,
-    "14": 13,
-    "21": 20,
-  };
-  const monthOffsets: Partial<
-    Record<z.infer<typeof fubonStatementDateRangeSchema>, number>
-  > = {
-    "30": 1,
-    "60": 2,
-    "90": 3,
-    "180": 6,
-  };
-
-  if (dateRange === "180_365") {
-    return {
-      "form1:rdoGroup3": dateRange,
-      "form1:startDate": formatDate(addMonthsClamped(endDate, -12)),
-      "form1:endDate": formatDate(addMonthsClamped(endDate, -6)),
-      "resultGrid:dataGridCurrentPage": "1",
-    };
-  }
-
-  const dayOffset = dayOffsets[dateRange];
-  const monthOffset = monthOffsets[dateRange];
-  const startDate =
-    dayOffset !== undefined
-      ? addDays(endDate, -dayOffset)
-      : addMonthsClamped(endDate, -(monthOffset ?? 0));
-
+function depositDateRangeFields(query: FubonDepositQuery): Record<string, string> {
   return {
-    "form1:rdoGroup3": dateRange,
-    "form1:startDate": formatDate(startDate),
-    "form1:endDate": formatDate(endDate),
+    "form1:rdoGroup3": query.rangeCode,
+    "form1:startDate": query.startDate,
+    "form1:endDate": query.endDate,
     "resultGrid:dataGridCurrentPage": "1",
   };
 }
@@ -2180,19 +2139,19 @@ export async function parseFubonDepositStatementHtml(
 
 async function fetchDepositStatement(
   site: FubonEbankSite,
-  dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
+  query: FubonDepositQuery,
   accountOption: FubonDepositAccountOption,
 ): Promise<FubonParsedDepositStatement> {
   const { page } = site.frames;
   const scope = await site.frames.scopeWith(depositSubmitSelector);
-  const dateRangeId = `input[id="form1:rdoDay${dateRange}"]`;
+  const dateRangeId = `input[id="form1:rdoDay${query.rangeCode}"]`;
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
   const html = await site.postback(
     scope.locator("form").first(),
     "form1:doValidateAndSubmit",
-    depositDateRangeFields(dateRange),
+    depositDateRangeFields(query),
   );
   const pages = [await parseDepositStatementHtml(page, html, 0, 1)];
   await site.replaceDocument(scope, html);
@@ -2740,7 +2699,7 @@ export async function runFubonStatements(
 ): Promise<ProductCollectionSummary> {
   fubonDepositSourceIdentity(input);
   const site = fubonEbankSite(page, context);
-  const snapshot = await readFubonDepositSourceSnapshot(site, input, context, product);
+  const snapshot = await readFubonDepositSourceSnapshot(site, context, product);
   return stageFubonDeposit(snapshot, input, context, product, async (request) => {
     await product.reportActivity("query");
     const rows = await readFubonCurrentDepositBalances(site, request);
@@ -2752,10 +2711,10 @@ export async function runFubonStatements(
 /** The read half: every account's statements, read before anything is staged (ADR 0065). */
 export async function readFubonDepositSourceSnapshot(
   site: FubonEbankSite,
-  input: FubonStatementsInput,
   context: Pick<FubonDepositProductContext, "signal" | "text">,
-  product: Pick<ProductCollectionHandle, "reportActivity">,
+  product: Pick<ProductCollectionHandle, "reportActivity" | "collectionPeriod">,
 ): Promise<FubonDepositSourceSnapshot> {
+  const queries = fubonDepositQueries(product.collectionPeriod());
   await product.reportActivity("query");
   await openTransactionDetailForAccountIndex(site, 0);
   const accounts = await readFubonDepositAccountOptions(site);
@@ -2764,10 +2723,10 @@ export async function readFubonDepositSourceSnapshot(
     context.signal.throwIfAborted();
     await selectDepositAccount(site, account);
     const statements: FubonParsedDepositStatement[] = [];
-    for (const dateRange of input.dateRanges) {
+    for (const query of queries) {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      const statement = await fetchDepositStatement(site, dateRange, account);
+      const statement = await fetchDepositStatement(site, query, account);
       context.text.assertIntact(JSON.stringify(statement));
       statements.push(statement);
     }

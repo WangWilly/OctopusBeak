@@ -32,6 +32,7 @@ import {
   type ProductCollectionSummary,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
+import { periodSpans, type CollectionPeriod } from "../lib/automation/collection-period.ts";
 
 const LOAN_ACCOUNT_SELECTOR = "#form1\\:loanAccountCombo";
 const LOAN_FORM_SELECTOR = "form#form1";
@@ -68,19 +69,34 @@ type QueryItem = z.infer<typeof queryItemSchema>;
 const DEFAULT_QUERY_ITEMS: QueryItem[] = ["TRANSACTION_DETAIL_QUERY"];
 const SUPPORTED_NORMALIZED_QUERY_ITEM: QueryItem = "TRANSACTION_DETAIL_QUERY";
 
-const quickMonthsSchema = z.enum(["1", "3", "6"]);
+/** Fubon's quick loan periods: the option value and the span it covers, both ends inclusive. */
+const QUICK_LOAN_PERIODS = [
+  { quickMonths: "1", span: { months: 1, days: 1 } },
+  { quickMonths: "3", span: { months: 3, days: 1 } },
+  { quickMonths: "6", span: { months: 6, days: 1 } },
+] as const;
+
+/** One loan query: a quick option when one covers the period exactly, and its dates as YYYY/MM/DD. */
+export type FubonLoanQuery = Readonly<{
+  quickMonths?: (typeof QUICK_LOAN_PERIODS)[number]["quickMonths"];
+  startDate: string;
+  endDate: string;
+}>;
+
+/** The loan query for the product's collection period; dates are entered when no quick option fits. */
+export function fubonLoanQuery(period: CollectionPeriod): FubonLoanQuery {
+  const quick = QUICK_LOAN_PERIODS.find(({ span }) => periodSpans(period, span));
+  return {
+    ...(quick ? { quickMonths: quick.quickMonths } : {}),
+    startDate: period.start.replaceAll("-", "/"),
+    endDate: period.end.replaceAll("-", "/"),
+  };
+}
 
 const inputSchema = z.object({
   loanAccountLabels: z.array(z.string()).default([]),
   queryItem: queryItemSchema.optional(),
   queryItems: z.array(queryItemSchema).optional(),
-  quickMonths: quickMonthsSchema.default("6"),
-  dateRange: z
-    .object({
-      startDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-      endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-    })
-    .optional(),
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]).default("EXCEL"),
 });
 
@@ -670,49 +686,6 @@ function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
   );
 }
 
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}/${month}/${day}`;
-}
-
-function addMonthsClamped(date: Date, months: number): Date {
-  const targetYear = date.getFullYear();
-  const targetMonth = date.getMonth() + months;
-  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
-  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
-}
-
-function loanQueryPeriod(input: FubonLoanStatementsInput): string {
-  const { startDate, endDate } = canonicalLoanDateRange(input);
-  return `${startDate.replaceAll("-", "/")}~${endDate.replaceAll("-", "/")}`;
-}
-
-function canonicalLoanDateRange(input: FubonLoanStatementsInput): {
-  startDate: string;
-  endDate: string;
-} {
-  if (input.dateRange) {
-    return {
-      startDate: input.dateRange.startDate.replaceAll("/", "-"),
-      endDate: input.dateRange.endDate.replaceAll("/", "-"),
-    };
-  }
-
-  const today = new Date();
-  const endDate = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate(),
-  );
-  const startDate = addMonthsClamped(endDate, -Number(input.quickMonths));
-  return {
-    startDate: formatDate(startDate).replaceAll("/", "-"),
-    endDate: formatDate(endDate).replaceAll("/", "-"),
-  };
-}
-
 async function readLoanAccountOptions(
   site: FubonEbankSite,
   scope: BrowserScope,
@@ -796,7 +769,7 @@ async function readAvailableLoanQueryItems(
 
 async function configureLoanQuery(
   site: FubonEbankSite,
-  input: FubonLoanStatementsInput,
+  query: FubonLoanQuery,
   queryItem: QueryItem,
 ): Promise<BrowserScope> {
   const { frames } = site;
@@ -813,24 +786,24 @@ async function configureLoanQuery(
   );
   await site.waitForMaskToClear();
 
-  if (input.dateRange) {
+  if (query.quickMonths) {
+    await site.activate(scope.locator('input.queryPeriod[value="quick"]'));
+    await site.activate(
+      scope.locator(`input.quickKind[value="${query.quickMonths}"]`),
+    );
+  } else {
     await site.activate(scope.locator('input.queryPeriod[value="custom"]'));
     await frames.race(
       fillInputWithoutPointer(
         scope.locator("#form1\\:startDate"),
-        input.dateRange.startDate,
+        query.startDate,
       ),
     );
     await frames.race(
       fillInputWithoutPointer(
         scope.locator("#form1\\:endDate"),
-        input.dateRange.endDate,
+        query.endDate,
       ),
-    );
-  } else {
-    await site.activate(scope.locator('input.queryPeriod[value="quick"]'));
-    await site.activate(
-      scope.locator(`input.quickKind[value="${input.quickMonths}"]`),
     );
   }
 
@@ -944,7 +917,7 @@ async function fetchLoanQueryHtml(site: FubonEbankSite): Promise<string> {
 export function assembleFubonLoanStatement(
   pages: readonly ParsedFubonLoanPage[],
   account: LoanAccountOption,
-  input: FubonLoanStatementsInput,
+  query: FubonLoanQuery,
 ): ParsedLoanStatement {
   const firstPage = pages[0];
   if (!firstPage)
@@ -964,7 +937,7 @@ export function assembleFubonLoanStatement(
     ...(accountNumber ? { accountNumber } : {}),
     loanAccountId: loanAccountIdFor(account.label, account.label),
     sourceAccountValue: account.value,
-    queryPeriod: loanQueryPeriod(input),
+    queryPeriod: `${query.startDate}~${query.endDate}`,
     branchName: firstPage.branchName,
     accountType: firstPage.accountType,
     currency: firstPage.currency,
@@ -990,7 +963,7 @@ async function fetchFubonLoanStatementPages(
   site: FubonEbankSite,
   firstHtml: string,
   account: LoanAccountOption,
-  input: FubonLoanStatementsInput,
+  query: FubonLoanQuery,
   silent = false,
 ): Promise<ParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
@@ -1022,14 +995,14 @@ async function fetchFubonLoanStatementPages(
     await site.frames.scopeWith(loanResultTable, "loan result table");
   }
 
-  return assembleFubonLoanStatement(pages, account, input);
+  return assembleFubonLoanStatement(pages, account, query);
 }
 
 export async function parseFubonLoanStatementForCollection(
   site: FubonEbankSite,
   html: string,
   account: LoanAccountOption,
-  input: FubonLoanStatementsInput,
+  query: FubonLoanQuery,
   sourceText: SourceTextPort,
 ): Promise<ParsedLoanStatement> {
   sourceText.assertIntact(html);
@@ -1037,7 +1010,7 @@ export async function parseFubonLoanStatementForCollection(
     site,
     html,
     account,
-    input,
+    query,
     true,
   );
   sourceText.assertIntact(JSON.stringify(parsed));
@@ -1068,7 +1041,9 @@ export async function runFubonLoanStatements(
   const loanAccounts = await readLoanAccountOptions(site, scope, input.loanAccountLabels);
   const queryItems = requestedQueryItems(input);
   const explicitQueryItems = hasExplicitQueryItems(input);
-  const dateRange = canonicalLoanDateRange(input);
+  const period = product.collectionPeriod();
+  const query = fubonLoanQuery(period);
+  const dateRange = { startDate: period.start, endDate: period.end };
   const skippedReasons: string[] = [];
   const items: ProductStageRequest[] = [];
   let rowCount = 0;
@@ -1094,14 +1069,14 @@ export async function runFubonLoanStatements(
 
     for (const queryItem of accountQueryItems) {
       context.signal.throwIfAborted();
-      scope = await configureLoanQuery(site, input, queryItem);
+      scope = await configureLoanQuery(site, query, queryItem);
       await product.reportActivity("query");
       const html = await fetchLoanQueryHtml(site);
       const parsed = await parseFubonLoanStatementForCollection(
         site,
         html,
         account,
-        input,
+        query,
         context.text,
       );
       const completeness = parsed.completeness;
