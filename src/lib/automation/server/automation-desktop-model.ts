@@ -1,7 +1,6 @@
 import {
   AUTOMATION_CREDENTIAL_GROUPS,
   AUTOMATION_CREDENTIAL_KEYS,
-  AUTOMATION_TASKS,
   enabledAutomationTasks,
   taskById,
 } from "./tasks.ts";
@@ -12,8 +11,6 @@ import {
 import {
   credentialStatusFromValues,
   readAutomationCredentialsFile,
-  splitAutomationUpdates,
-  writeAutomationConfigFiles,
 } from "./config-files.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
@@ -22,10 +19,9 @@ import {
   offeredAutomationSources,
   readAutomationSettings,
 } from "./settings.ts";
-import {
-  type AutomationPersistenceProvider,
-  type AutomationTaskHistoryRow,
-  type AutomationTaskPrerequisiteNoticeRecord,
+import type {
+  AutomationPersistenceProvider,
+  AutomationTaskPrerequisiteNoticeRecord,
 } from "./store.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import {
@@ -37,13 +33,12 @@ import type {
   AutomationCredentialGroupCoreDto,
   AutomationCredentialStateDto,
   AutomationDesktopModel,
-  AutomationRunManyResult,
-  AutomationRunManyTaskResult,
   AutomationRuntimeSnapshot,
 } from "$lib/desktop/api.ts";
 
 const optionalCredentialKeys = new Set(["MAX_SUB_ACCOUNT"]);
-const certificateFileCredentialKeys = new Set([
+/** Credentials whose value is a certificate file path rather than a secret. */
+export const CERTIFICATE_FILE_CREDENTIAL_KEYS: ReadonlySet<string> = new Set([
   "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
 ]);
 
@@ -81,7 +76,7 @@ function currentCredentialState() {
       settingValue ||
       process.env[key]?.trim() ||
       "";
-    if (certificateFileCredentialKeys.has(key)) {
+    if (CERTIFICATE_FILE_CREDENTIAL_KEYS.has(key)) {
       if (storedValue) fileNames[key] = certificateFilename(storedValue);
       const validation = storedValue
         ? validateCertificateFilePath(storedValue)
@@ -252,46 +247,6 @@ export async function loadAutomationDesktopModel(
   );
 }
 
-export function externalPrerequisiteById(prerequisiteId: string) {
-  for (const task of AUTOMATION_TASKS) {
-    const prerequisite = task.externalPrerequisites?.find(
-      (candidate) => candidate.id === prerequisiteId,
-    );
-    if (prerequisite && isValidExternalPrerequisiteMetadata(prerequisite))
-      return prerequisite;
-  }
-  return null;
-}
-
-export function automationSetupGuideLink(
-  groupId: string,
-  linkId: string,
-  locale: "en" | "zh-TW" = "zh-TW",
-) {
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
-    (candidate) => candidate.id === groupId,
-  );
-  const guideLink = group?.setupGuide.links.find(
-    (candidate) => candidate.id === linkId,
-  );
-  if (!guideLink) return null;
-  const selectedUrl =
-    locale === "en" && guideLink.englishUrl
-      ? guideLink.englishUrl
-      : guideLink.url;
-  try {
-    const url = new URL(selectedUrl);
-    if (
-      url.protocol !== "https:" ||
-      !guideLink.allowedHosts.includes(url.hostname)
-    )
-      return null;
-  } catch {
-    return null;
-  }
-  return { ...guideLink, url: selectedUrl };
-}
-
 function missingCredentialKeys(
   taskId: string,
   status = currentCredentialState().status,
@@ -335,55 +290,4 @@ export function assertAutomationTaskCanStartInModel(
   if (missing.length > 0)
     throw new Error(`Missing credentials: ${missing.join(", ")}`);
   return task;
-}
-
-export function assertAutomationTasksCanStart(
-  taskIds: readonly string[],
-  model: AutomationDesktopModel,
-) {
-  return [...new Set(taskIds)].map((taskId) =>
-    assertAutomationTaskCanStartInModel(taskId, model),
-  );
-}
-
-export function automationSaveCredentials(updates: Record<string, string>) {
-  for (const key of certificateFileCredentialKeys) {
-    if (!Object.hasOwn(updates, key)) continue;
-    const validation = validateCertificateFilePath(updates[key] ?? "");
-    if (!validation.valid) {
-      return {
-        saved: false as const,
-        error: "invalid-certificate-file" as const,
-        credentialKey: key,
-        reason: validation.reason,
-      };
-    }
-    updates[key] = validation.path;
-  }
-  const split = splitAutomationUpdates(updates);
-  const nextSettings = { ...readAutomationSettings(), ...split.settings };
-  for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
-    if (!isStatementSelectionGroup(group)) continue;
-    const selection = selectStatementTypes(group, nextSettings, "strict");
-    if (Object.hasOwn(split.settings, group.statementSelectionKey)) {
-      nextSettings[group.statementSelectionKey] =
-        selection.selectedIds.join(",");
-    }
-  }
-  const nextCredentials =
-    Object.keys(split.credentials).length > 0
-      ? {
-          ...readAutomationCredentialsFile(),
-          ...split.credentials,
-        }
-      : undefined;
-  writeAutomationConfigFiles(nextSettings, nextCredentials);
-  return { saved: true as const };
-}
-
-export function automationRunHistory(
-  provider: AutomationPersistenceProvider,
-  limit = 100,
-): Promise<AutomationTaskHistoryRow[]> {
-  return provider.automation.recentTaskRuns(limit);
 }
