@@ -99,8 +99,8 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
 
 /** Run the production execution path with a scripted supervised worker. */
 function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): typeof runAutomationTaskExecution {
-  return (task, run, options) => runAutomationTaskExecution(task, run, {
-    ...options,
+  return (plan, run, round, seams) => runAutomationTaskExecution(plan, run, round, {
+    ...seams,
     appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
       const worker = new ScriptedWorker(workerOptions.workerData as AppWorkflowWorkerStart, mode);
       workers.push(worker);

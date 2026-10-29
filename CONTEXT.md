@@ -965,6 +965,10 @@ _Avoid_: Pending run, running task, in-flight execution
 One start of the provider workflow within an Active automation task run. A CAPTCHA Retry Campaign starts a new one for each round. It owns that start's events, human assistance wait, launched Collection scope version and browser page, and they end with it (ADR 0067).
 _Avoid_: Run attempt, round, execution attempt
 
+**Task run plan**:
+What an Active automation task run executes with, resolved once when the run leaves the queue: its task, its workflow registration and input builder, its Verified source's verification facts, its launch configuration and verification settings, and its PGlite endpoint. Every round of the run reads the same plan; a task the App cannot run fails when the plan is resolved (ADR 0075).
+_Avoid_: Run context, task lookup, launch options
+
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session. The Active automation task run decides the outcome from its Commit attempts, its stop, and what its execution observed; a run no live process owns is decided the same way from its stored attempts.
 

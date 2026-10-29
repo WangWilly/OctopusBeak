@@ -1,33 +1,25 @@
-import type { AutomationSettingsFile } from "./config-files.ts";
 import type { CaptchaRound } from "./captcha-retry-campaign.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport } from "./active-task-run.ts";
 import {
-  WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS,
-  appWorkflowRoutesVerification,
   appVerificationSolver,
   noPostSubmitOutcome,
   routeWaitingRunVerification,
-  sourceVerificationRoute,
   type VerificationRoutingOutcome,
 } from "./verification-routing.ts";
 import {
   completeAppWorkflowHumanAssistance,
   type HumanAssistanceRoute,
 } from "./app-workflow-human-assistance.ts";
-import type { AutomationTaskExecutionOptions } from "./task-run-execution.ts";
-import { taskById } from "./tasks.ts";
-import { workflowRuntimeForTask } from "./app-workflow-registry.ts";
+import type { WorkflowExecutionRound } from "./task-run-execution.ts";
+import type { TaskRunPlan } from "./task-run-plan.ts";
 import type { PageForRun } from "./automation-viewer.ts";
 
 export type CaptchaRoundExecutionDependencies = Readonly<{
-  taskId: string;
-  /** Browser workflows and the App-owned nonbrowser workflows route explicitly. */
-  appWorkflow: boolean;
+  plan: Pick<TaskRunPlan, "task" | "verification" | "launchVerificationSettings">;
   run: ActiveAutomationTaskRun;
   /** Finds the page each round's Workflow execution hosts, for verification routing. */
   pageForRun: PageForRun;
-  launchVerificationSettings: AutomationSettingsFile;
-  execute: (options: AutomationTaskExecutionOptions) => Promise<TaskRunReport>;
+  execute: (round: WorkflowExecutionRound) => Promise<TaskRunReport>;
   /** Injection point for deterministic routing checks. */
   routeWaitingRunVerification?: typeof routeWaitingRunVerification;
 }>;
@@ -40,33 +32,17 @@ export type CaptchaRoundExecutionDependencies = Readonly<{
 export function captchaRoundExecution(
   dependencies: CaptchaRoundExecutionDependencies,
 ): CaptchaRound {
-  const {
-    taskId,
-    run,
-    pageForRun,
-    launchVerificationSettings,
-    execute,
-  } = dependencies;
-  const task = taskById(taskId);
-  if (!task) throw new Error(`Unknown automation task: ${taskId}`);
-  const appWorkflow = Boolean(task.workflowId && task.kind === "crawler");
-  if (dependencies.appWorkflow !== appWorkflow) {
-    throw new Error(`Automation task routing does not match the App catalog: ${taskId}`);
-  }
-  if (!appWorkflow && workflowRuntimeForTask(task.workflowId).kind !== "nonbrowser") {
-    throw new Error(`Automation task is not an App workflow or supported nonbrowser task: ${taskId}`);
-  }
+  const { plan, run, pageForRun, execute } = dependencies;
+  const { task, verification, launchVerificationSettings } = plan;
   const route = dependencies.routeWaitingRunVerification
     ?? routeWaitingRunVerification;
-  const sourceRoute = sourceVerificationRoute(taskId);
-  const routesCaptcha = appWorkflow && appWorkflowRoutesVerification(taskId);
-  const workflowOwnsCaptchaOutcome = WORKFLOW_OWNED_CAPTCHA_OUTCOME_TASK_IDS.has(taskId);
 
-  if (!routesCaptcha) {
+  if (!verification?.routesVerification) {
     return async ({ attempt, maxAttempts, retrying, executionId }) => ({
       report: await execute({ attempt, maxAttempts, retrying, executionId }),
     });
   }
+  const { sourceRoute, workflowOwnsCaptchaOutcome } = verification;
 
   return async (round) => {
     const { onChallengeCaptured: recordCapture, ...executionOptions } = round;
@@ -89,6 +65,7 @@ export function captchaRoundExecution(
         try {
           const routeOutcome = sourceRoute
             ? await sourceRoute(request, {
+                task,
                 settings: launchVerificationSettings,
                 route,
                 onChallengeCaptured,
@@ -96,6 +73,7 @@ export function captchaRoundExecution(
               })
             : await route({
               run: request.run,
+              task,
               pageForRun,
               signal: request.signal,
               solver: appVerificationSolver,

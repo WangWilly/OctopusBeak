@@ -15,6 +15,7 @@ import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-as
 import type { AutomationSettingsFile } from "../config-files.ts";
 import type { routeWaitingRunVerification, VerificationRoutingOutcome } from "../verification-routing.ts";
 import type { PageForRun } from "../automation-viewer.ts";
+import type { AutomationTask } from "../tasks.ts";
 
 /**
  * How the App hosts a workflow. A browser workflow gets a run-scoped page; a
@@ -56,8 +57,8 @@ export type VerifiedWorkflow = Readonly<
     /** Present when the workflow's verification stages reach the solver route. */
     verification?: Readonly<{
       /**
-       * How the workflow proves a CAPTCHA rejection; the coordinator then joins
-       * its execution instead of probing the page after submit.
+       * How the workflow proves a CAPTCHA rejection; the round adapter then
+       * joins its execution instead of probing the page after submit.
        */
       rejection?: RejectionEvidence;
       /**
@@ -85,6 +86,8 @@ export type VerifiedWorkflow = Readonly<
 
 /** What the CAPTCHA Retry Campaign hands a source's own Verification route. */
 export type SourceVerificationRouteDependencies = Readonly<{
+  /** The run's task, from its Task run plan. */
+  task: Pick<AutomationTask, "workflowId">;
   settings: AutomationSettingsFile;
   route: typeof routeWaitingRunVerification;
   onChallengeCaptured: () => Promise<void>;

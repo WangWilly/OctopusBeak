@@ -12,7 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
-import { workflowInputForTask, workflowStartUrlForTask } from "./app-workflow-registry.ts";
+import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 const TRANSACTION_URL = "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx";
@@ -149,8 +149,8 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
   assert.equal(task.workflowId, "sinopac-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  assert.equal(workflowStartUrlForTask(task.workflowId), SINOPAC_LOGIN_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), SINOPAC_LOGIN_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       sinopac_user_id: "synthetic-user-id",
       sinopac_account: "synthetic-account",
@@ -179,7 +179,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
-      workflowBrowserPortFactory: ({ startUrl }) => {
+      workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
         return browser;
       },
@@ -205,7 +205,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       taskRunId: rejectedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
-      workflowBrowserPortFactory: () => invalidBrowser,
+      workflowBrowserPort: () => invalidBrowser,
     });
     assert.equal(rejected.status, "failed");
     assert.equal(committed.length, 1, "malformed source is rejected before Canonical Financial Commit");

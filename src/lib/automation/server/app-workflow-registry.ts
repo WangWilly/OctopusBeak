@@ -30,11 +30,14 @@ export function workflowNeedsPgliteRpc(
   return runtime.kind === "nonbrowser" || requiredWorkflowCapabilities(definition).length > 0;
 }
 
-type AppWorkflowRegistration = Readonly<{
+export type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
-  definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
   runtime: AppWorkflowRuntime;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
+}>;
+
+type AppWorkflowCatalogEntry = AppWorkflowRegistration & Readonly<{
+  definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
 }>;
 
 export type AppWorkflowRegistryDependencies = Readonly<{
@@ -118,7 +121,7 @@ const exchangeRateServiceUnavailable: ExchangeRateSyncService = async () => {
 };
 
 /** One registration catalog for workflows activated on the App executor. */
-const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
+const appWorkflowCatalog: readonly AppWorkflowCatalogEntry[] = [
   {
     definition: createExchangeRateWorkflow(exchangeRateServiceUnavailable, { emitProgress: () => undefined }),
     definitionForDependencies(dependencies) {
@@ -135,8 +138,8 @@ const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
 
 export function appWorkflowCatalogForEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
-): readonly AppWorkflowRegistration[] {
-  const packagedBrowserFixtureRegistrations: readonly AppWorkflowRegistration[] =
+): readonly AppWorkflowCatalogEntry[] {
+  const packagedBrowserFixtureRegistrations: readonly AppWorkflowCatalogEntry[] =
     packagedBrowserFixtureEnabled(environment)
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
       definition: packagedBrowserFixtureDefinition(workflowId),
@@ -144,7 +147,7 @@ export function appWorkflowCatalogForEnvironment(
       inputFromEnvironment() { return null; },
     }))
     : [];
-  const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
+  const previewRegistrations: readonly AppWorkflowCatalogEntry[] = PREVIEW_SOURCES.map((source) => ({
     definition: previewWorkflowDefinition(source) as WorkflowDefinition,
     runtime: browser(source.startUrl),
     inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
@@ -153,43 +156,35 @@ export function appWorkflowCatalogForEnvironment(
 }
 
 /** Test-only local workflow registrations are absent during ordinary App startup. */
-export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = appWorkflowCatalogForEnvironment();
+export const APP_WORKFLOW_CATALOG: readonly AppWorkflowCatalogEntry[] = appWorkflowCatalogForEnvironment();
 
 export const APP_WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] =
   APP_WORKFLOW_CATALOG.map(({ definition }) => definition);
 
-function workflowRegistration(workflowId: string | undefined) {
-  if (!workflowId) return undefined;
-  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
-}
-
-export function workflowDefinitionForTask(
+/**
+ * The registration of a workflow on the App executor, or undefined for an
+ * unknown id. `dependencies` reach a definition built from them, which only
+ * the worker supplies.
+ */
+export function appWorkflowRegistration(
   workflowId: string | undefined,
   dependencies: AppWorkflowRegistryDependencies = {},
-) {
-  const registration = workflowRegistration(workflowId);
-  if (!registration) return null;
-  return registration.definitionForDependencies?.(dependencies) ?? registration.definition;
+): AppWorkflowRegistration | undefined {
+  if (!workflowId) return undefined;
+  const entry = APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
+  if (!entry) return undefined;
+  const { definitionForDependencies, ...registration } = entry;
+  return definitionForDependencies
+    ? { ...registration, definition: definitionForDependencies(dependencies) }
+    : registration;
 }
 
-export function workflowInputForTask(
-  workflowId: string | undefined,
-  environment: NodeJS.ProcessEnv,
-) {
-  return workflowRegistration(workflowId)?.inputFromEnvironment(environment);
+export function workflowStartUrlForWorkflow(workflowId: string) {
+  const runtime = appWorkflowRegistration(workflowId)?.runtime;
+  return runtime?.kind === "browser" ? runtime.startUrl : undefined;
 }
 
-/** An unregistered workflow is treated as a browser workflow, which requires a page. */
-export function workflowRuntimeForTask(workflowId: string | undefined): AppWorkflowRuntime {
-  return workflowRegistration(workflowId)?.runtime ?? browser();
-}
-
-export function workflowStartUrlForTask(workflowId: string | undefined) {
-  const runtime = workflowRuntimeForTask(workflowId);
-  return runtime.kind === "browser" ? runtime.startUrl : undefined;
-}
-
-export function workflowBrowserProfileForTask(workflowId: string | undefined) {
-  const runtime = workflowRuntimeForTask(workflowId);
-  return runtime.kind === "browser" ? runtime.browserProfile : undefined;
+export function workflowBrowserProfileForWorkflow(workflowId: string) {
+  const runtime = appWorkflowRegistration(workflowId)?.runtime;
+  return runtime?.kind === "browser" ? runtime.browserProfile : undefined;
 }

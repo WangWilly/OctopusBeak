@@ -26,9 +26,12 @@ import {
 import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
+/** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
+const FIXTURE_WORKFLOW_ID = "ctbc-statements";
+
 const start = {
   protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-  workflowId: "fixture-protocol",
+  workflowId: FIXTURE_WORKFLOW_ID,
   taskRunId: "run-fixture-1",
   input: { credential: "sensitive-fixture" },
   browserConnection: {
@@ -115,6 +118,10 @@ function successfulCommit(items: readonly PGliteWorkflowRunItem[] = [runItem()])
 
 test("worker protocol rejects malformed, oversized, and unexpected frames", () => {
   assert.equal(parseAppWorkflowWorkerStart(start).taskRunId, "run-fixture-1");
+  assert.throws(
+    () => parseAppWorkflowWorkerStart({ ...start, workflowId: "unregistered-workflow" }),
+    "a start frame for a workflow the App does not register is refused",
+  );
   assert.throws(
     () => parseAppWorkflowWorkerStart({ ...start, unexpected: "raw provider response" }),
     /protocol rejected/u,
@@ -364,7 +371,7 @@ test("worker runs a definition through typed ports and the bounded host request 
     },
   };
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: true,
     async run(context, input) {
       assert.deepEqual(input, start.input);
@@ -469,7 +476,7 @@ test("a browser workflow that needs only account identity reaches it through the
     });
   });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     requiresAccountIdentity: true,
     async run(context) {
@@ -514,7 +521,7 @@ test("a workflow output that is not exactly a run result fails the run without c
     });
   });
   const definition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     async run() {
       return { status: "completed", counts: { count: 1 }, accountNumber: "must-not-cross-worker-boundary" };
@@ -550,7 +557,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
     }
   });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: true,
     requiresProductCollection: true,
     productCollection: { provider: "fixture", productIds: ["deposit", "credit_card"] },
@@ -595,7 +602,7 @@ test("a product failure inside a partial run appends one correlated diagnostic r
     const lines = (await readFile(diagnosticPath, "utf8")).trim().split("\n");
     assert.equal(lines.length, 1, "one product failure appends exactly one record");
     const record = JSON.parse(lines[0]!) as Record<string, unknown>;
-    assert.equal(record.workflowId, "fixture-protocol");
+    assert.equal(record.workflowId, FIXTURE_WORKFLOW_ID);
     assert.equal(record.taskRunId, "run-fixture-1");
     assert.equal(record.source, "workflow-worker");
     assert.equal(record.errorCode, "source-collection-failed");
@@ -629,7 +636,7 @@ test("worker failures cross the boundary only as a stable error code", async () 
     }
   });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     async run() {
       throw new Error("provider returned account number 123-456-789 and raw invoice text");
@@ -668,7 +675,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
     }
   });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     async run(context) {
       await context.event("authentication", "advanced", "device-registration-required");
@@ -726,7 +733,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       }
     });
     const definition: WorkflowDefinition = {
-      id: "fixture-protocol",
+      id: FIXTURE_WORKFLOW_ID,
       requiresFinancialCommit: false,
       async run(context) {
         for (const step of scenario.events) {
@@ -768,7 +775,7 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
     }
   });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     async run() {
       throw new CaptchaProviderRejectedError();
@@ -800,7 +807,7 @@ test("worker cancellation aborts a pending definition and emits no provider exce
   let started!: () => void;
   const hasStarted = new Promise<void>((resolve) => { started = resolve; });
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: false,
     async run(context) {
       started();
@@ -838,7 +845,7 @@ test("a settlement that finishes after cancellation still reaches the host", asy
   const channel = new MessageChannel();
   const observed: AppWorkflowWorkerOutboundFrame[] = [];
   const definition: WorkflowDefinition = {
-    id: "fixture-protocol",
+    id: FIXTURE_WORKFLOW_ID,
     requiresFinancialCommit: true,
     async run(context) {
       await context.browser.withPage(async () => undefined);
