@@ -57,7 +57,7 @@ assert.match(mainSource, /const automation = createAutomationDesktopService/);
 assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc\(\{\s*automation,/);
 assert.match(
   mainSource,
-  /await ipcRegistration\?\.close\(\);\s*automationDesktopService\?\.close\(\);\s*if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\);/,
+  /try \{\s*await ipcRegistration\?\.close\(\);\s*\} finally \{[^}]*automationDesktopService\?\.close\(\);\s*\}\s*if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\);/,
   "IPC stops answering, then the service stops publishing, then runs shut down",
 );
 assert.match(mainSource, /exchange-rate-scheduler-error/);
