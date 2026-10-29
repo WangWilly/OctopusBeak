@@ -659,8 +659,9 @@
     return onboardingController;
   }
 
-  function completeFirstRunWelcome() {
+  function completeFirstRunWelcome(_choice: "start" | "later", usageStatistics: boolean) {
     if (!firstRunWelcomeState) return;
+    if (usageStatistics) void enableUsageStatistics();
     const destination = resolveCompletedFirstRunWelcome(firstRunWelcomeState);
     if (!destination) return;
     if (destination.onboardingState) {
@@ -669,6 +670,16 @@
     }
     navigateToRoute(destination.route);
     completingFirstRunWelcome = false;
+  }
+
+  /** The First-run Welcome opt-in for usage statistics (ADR 0077). */
+  async function enableUsageStatistics() {
+    try {
+      const current = await window.octopusBeak.settings.load();
+      applySystemSettings(await window.octopusBeak.settings.save({ ...current, usageStatisticsEnabled: true }));
+    } catch (error) {
+      console.error("usage-statistics-opt-in-failed", error);
+    }
   }
 
   async function restartOnboarding() {

@@ -84,6 +84,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "settings:deleteFinancialData",
   "settings:deletePreviewData",
   "settings:load",
+  "settings:previewUsagePing",
   "settings:save",
   "spending:candidate-page",
   "spending:candidate-page-cancel",

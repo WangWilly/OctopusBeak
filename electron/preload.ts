@@ -67,6 +67,7 @@ const INVOKE_CHANNELS = {
   settings: {
     load: "settings:load",
     save: "settings:save",
+    previewUsagePing: "settings:previewUsagePing",
     deletePreviewData: "settings:deletePreviewData",
     deleteFinancialData: "settings:deleteFinancialData",
     clearSignInData: "settings:clearSignInData",

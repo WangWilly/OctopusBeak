@@ -20,7 +20,7 @@ OctopusBeak signs in to the user's financial service websites, downloads their s
 
 These two commitments are what set it apart. Future work must protect both:
 
-1. **Local-only privacy.** Ledger data, automation settings, credentials, and run summaries all stay on the user's Mac. Credentials are encrypted with Electron `safeStorage`, and the app refuses to start rather than store them in plaintext. Source downloads, generated CSV/JSON files, and raw logs are processed in memory and never persisted; structured run events are kept for 30 days. CAPTCHA, OTP, session cookies, and other verification material are never handed to a model.
+1. **Local-only privacy.** Ledger data, automation settings, credentials, and run summaries all stay on the user's Mac. The one exception is the opt-in anonymous daily usage ping (ADR 0077): off by default, a fixed payload with no identifier and no financial data, and stored only as daily totals. Credentials are encrypted with Electron `safeStorage`, and the app refuses to start rather than store them in plaintext. Source downloads, generated CSV/JSON files, and raw logs are processed in memory and never persisted; structured run events are kept for 30 days. CAPTCHA, OTP, session cookies, and other verification material are never handed to a model.
 2. **Every number is traceable** (每個數字都查得到出處). Any figure can be followed back to the source statement or transaction it came from, through source-scoped lineage and strict canonical admission (see ADR 0008 and ADR 0035).
 
 ## Operating Context
@@ -50,7 +50,7 @@ These two commitments are what set it apart. Future work must protect both:
 
 ## Product Principles
 
-1. **Your data never leaves the Mac.** No feature, integration, or design may imply cloud sync or remote processing that does not exist.
+1. **Your data never leaves the Mac.** No feature, integration, or design may imply cloud sync or remote processing that does not exist. Anonymous usage statistics are the only thing the app sends to us, and only when the person turns them on (ADR 0077); no financial data, sign-in detail, or run result is ever part of them.
 2. **Show the source.** A number without a traceable origin is a defect, and UI should make provenance reachable.
 3. **Be honest when a person is needed.** When a site requires CAPTCHA or OTP, say so plainly and guide the user through it. Never hide the step or pretend it was automated.
 4. **Fail closed.** If something can't be done safely (encryption, integrity checks, admission), stop and explain why rather than degrading silently.

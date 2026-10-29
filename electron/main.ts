@@ -1,5 +1,5 @@
 import path from "node:path";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, Notification, shell } from "electron";
@@ -8,10 +8,12 @@ import {
   type AutomationRuntime,
 } from "../src/lib/automation/server/automation-runtime.ts";
 import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
+import { createUsagePinger, postUsagePing } from "../src/lib/settings/usage-statistics.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
@@ -81,6 +83,7 @@ let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 let collectionScheduler: ReturnType<typeof createScheduledCollectionScheduler> | null = null;
+let usagePinger: ReturnType<typeof createUsagePinger> | null = null;
 let stopBrowserStateCleanup: (() => void) | null = null;
 let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
@@ -125,6 +128,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
     scheduler?.stop();
     collectionScheduler?.stop();
+    usagePinger?.stop();
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     try {
@@ -463,13 +467,28 @@ async function start() {
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
   automationDesktopService = automation;
+  usagePinger = createUsagePinger({
+    now: () => new Date(),
+    readSettings: () => readAutomationSettings(),
+    writeSettings: (patch) => writeAutomationSettings({ ...readAutomationSettings(), ...patch }),
+    appVersion: () => app.getVersion(),
+    systemVersion: () => process.getSystemVersion(),
+    locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
+    firstLaunch: () => statSync(userData).birthtime,
+    send: postUsagePing,
+    setInterval: (callback, ms) => setInterval(callback, ms).unref(),
+    clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
+    reportError: (message) => console.error(message),
+  });
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     collection,
     onSystemSettingsChanged: () => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
+      void usagePinger?.check();
     },
+    usagePing: usagePinger,
     pgliteViews: {
       dataDir: operationalRuntime.dataDir,
     },
@@ -490,6 +509,8 @@ async function start() {
     );
     scheduler?.start();
     collectionScheduler?.start();
+    // Development builds and fixtures never ping, so they cannot count as users.
+    if (app.isPackaged && !cdpFixture && !packagedBrowserFixture) usagePinger?.start();
   }).catch(() => {
     // The shared readiness rejection already reports the fatal runtime error.
   });

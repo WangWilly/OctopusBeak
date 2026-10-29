@@ -19,7 +19,7 @@ Any answer to "who keeps using it" needs the app to send something off the Mac, 
   | `appVersion` | `0.9.5` | Version adoption |
   | `osVersion` | `15.4` | macOS major and minor only |
   | `arch` | `arm64` | Release target |
-  | `locale` | `zh-TW` | `zh-TW` or `en` |
+  | `locale` | `zh-TW` | `zh-TW` when the macOS language is Chinese, else `en`, as for notifications |
   | `cohortWeek` | `2026-W44` | ISO week of the app's first launch, for retention |
   | `firstThisWeek` | `true` | First ping of this ISO week |
   | `firstThisMonth` | `false` | First ping of this calendar month |
@@ -27,7 +27,8 @@ Any answer to "who keeps using it" needs the app to send something off the Mac, 
   No install ID, no account, source, institution, balance, run, failure, or count of anything in the ledger. The receiving date is the day.
 - **One calendar.** The app and the receiver both cut days, ISO weeks, and months in Asia/Taipei (a fixed UTC+8). With UTC days, two local days of a Taiwan user could land in one UTC day and be counted twice.
 - **Counting without an identifier.** Each install pings at most once a day, so pings per day approximate daily active users. Pings with `firstThisWeek` count weekly active users and pings with `firstThisMonth` count monthly active users. Grouping those by `cohortWeek` gives retention: of the installs first launched in week N, how many were active in a later week or month.
-- **Local state.** The first-launch week and the last ping date are stored in the app's own settings, not in the ledger. They never leave the Mac except as the fields above.
+- **Local state.** `USAGE_STATISTICS_ENABLED`, `USAGE_COHORT_WEEK`, and `USAGE_LAST_SENT_DAY` live in the app's `settings.json`, not in the ledger. The cohort week is fixed the first time a version with this decision starts, from the creation time of the app's data folder, whether or not statistics are on; it is clamped to the range the receiver accepts. These values never leave the Mac except as the fields above.
+- **Only released builds ping.** The main process checks once an hour and when settings change; development builds (`app.isPackaged` false) and test fixtures never start the pinger.
 - **Transport.** One HTTPS `POST` with a JSON body to a fixed endpoint built into the app, no cookies, a 5-second timeout. A day counts as sent only after a 2xx response. `429`, `503`, and network failures are retried at the next hourly check on the same day and dropped at the end of it; any other 4xx is not retried that day; `410` stops pinging for good. Failures are silent to the person and are logged without the payload.
 - **Receiver.** A Cloudflare Worker on `workers.dev`, kept in the private repository `WangWilly/OctopusBeak-Telemetry` and deployed by its GitHub Actions workflow after reviewer approval. Its README holds the ping contract. For each accepted ping it adds one to a D1 row keyed by the Taipei day and the payload values; no individual ping is stored, so the database holds only daily aggregates. Workers logs and observability are off. The connecting address is used only as the rate-limit key and is never stored. A nightly workflow in that repository renders the daily, weekly, and monthly counts and the cohort retention table to its `reports` branch, so the numbers stay private.
 - **Protection.** A ping cannot be authenticated: the app is open source and any embedded key could be extracted. The receiver bounds what a forged ping can do instead:
@@ -37,7 +38,7 @@ Any answer to "who keeps using it" needs the app to send something off the Mac, 
   - The Workers Free plan fails requests above its daily limit instead of billing them.
   - The report marks a day with more than three times the median of the 7 days before it as suspect, and such a day can be deleted.
   - A `PINGS_ACCEPTED` switch makes every ping get `410`, which retires collection without an app release.
-- **Visibility.** Settings shows the exact JSON the next ping will send. One module builds the payload, and a check fails if it produces a field outside the allow-list or if any other renderer or main-process code makes a network request to the usage endpoint.
+- **Visibility.** Settings shows the exact JSON the next ping will send. One module, `src/lib/settings/usage-statistics.ts`, builds and sends the payload; its check fails if the payload has a field outside the allow-list or if any other file under `src/` or `electron/` names the usage endpoint.
 
 ## Considered options
 
