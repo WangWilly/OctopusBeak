@@ -233,6 +233,7 @@ assert.match(source, /export async function retryOnboardingWorkflow\(\)/);
 assert.match(source, /export async function openCredentialsForOnboarding\(\)/);
 assert.match(source, /credentialState\(key\) !== "ready"/);
 assert.match(source, /statementSelectionConfirmed = Boolean\(group\?\.selectedStatementTypeIds\.length\)/);
+assert.equal(source.match(/<span>\{failure\.explanation\}<\/span>/g)?.length, 2, "the run list and the run details both show the explanation");
 assert.match(source, /\$t\.automation\.viewOverview/);
 assert.match(
   source,

@@ -11,6 +11,7 @@ import {
   workflowEventFailureLabel,
   type TaskRowViewContext,
 } from "./task-row-view.ts";
+import { workflowFailureExplanation } from "./workflow-failures.ts";
 
 function row(overrides: Partial<AutomationTaskRow> = {}): AutomationTaskRow {
   return {
@@ -206,7 +207,7 @@ test("a failed row explains its Failure code the same way wherever the page show
   });
   const device = presentTaskRow(failed("device-registration-required", exhausted), context("en")).failure;
   assert.equal(device?.userAction, "register-device");
-  assert.notEqual(device?.explanation, translations.en.automation.verificationSolverExhausted, "registering the device outranks the solver");
+  assert.equal(device?.explanation, workflowFailureExplanation("device-registration-required", "en"), "registering the device outranks the solver");
   assert.deepEqual(presentTaskRow(failed("commit-outcome-unknown"), context("en")).failure,
     { code: "commit-outcome-unknown", explanation: null, userAction: null });
 });
