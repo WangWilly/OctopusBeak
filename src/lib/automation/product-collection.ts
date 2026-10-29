@@ -24,6 +24,12 @@ import type {
 } from "./workflow-executor.ts";
 import { sanitizeTdccProductEvidence } from "./tdcc-collection-summary.ts";
 import { productRunStatus } from "./product-run-status.ts";
+import {
+  collectionPeriod,
+  taipeiToday,
+  type CollectionPeriod,
+  type CollectionPeriodDeclaration,
+} from "./collection-period.ts";
 import type { TdccProductCollectionEvidence } from "./tdcc-collection-summary.ts";
 import type {
   PreviewProductCollectors,
@@ -188,6 +194,12 @@ export type ProductCollectionHandle = Readonly<{
    * untyped error.
    */
   event: ProductCollectionStageEvent;
+  /**
+   * ADR 0077: the dates this product queries, from its declaration and the
+   * run's Taipei date, the same for every call in one run. Throws
+   * `FailureCodeError` for a product that declares none.
+   */
+  collectionPeriod: () => CollectionPeriod;
 }>;
 
 /** Explicit evidence classification for a selected product with no records. */
@@ -253,6 +265,8 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
   /** Must fail with a FailureCodeError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
   collect: (typeId: TId, product: ProductCollectionHandle) => Promise<ProductCollectionSummary>;
+  /** The product's collection period; absent when no product declares one. */
+  collectionPeriod?: (typeId: TId) => CollectionPeriod;
   /** Commits each non-empty, fully collected product staging group, labelled with its product type id. */
   financialCommit: WorkflowFinancialCommitPort;
   event?: ProductCollectionStageEvent;
@@ -411,6 +425,10 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         stage: productStager(options.provider, stagedItems),
         reportActivity,
         event: collectorEvent,
+        collectionPeriod: () => {
+          if (!options.collectionPeriod) throw new FailureCodeError("workflow-failed");
+          return options.collectionPeriod(typeId);
+        },
       });
       await options.assertSession?.();
 
@@ -693,10 +711,16 @@ export type ProductCollection = Readonly<{
   ): Promise<ProductCollectionRunSummary>;
 }>;
 
+/** ADR 0077: the collection period each product declares. */
+export type CollectionPeriods = Readonly<Partial<Record<CollectionProductTypeId, CollectionPeriodDeclaration>>>;
+
 export type BoundProductCollectionOptions = Readonly<{
   provider: string;
   /** The source's Statement Selection products, in stable UI order. */
   productIds: readonly CollectionProductTypeId[];
+  collectionPeriods?: CollectionPeriods;
+  /** The run's clock; its Taipei date is read once, when a product first asks for its period. */
+  now: () => string;
   /** The run input; its `statementTypes` and `attachedPreviewProducts` choose what this run collects. */
   input: unknown;
   attachedSource?: AttachedPreviewSource;
@@ -717,6 +741,19 @@ function inputSelection(input: unknown, key: "statementTypes" | "attachedPreview
 
 export function boundProductCollection(options: BoundProductCollectionOptions): ProductCollection {
   const { provider, productIds, attachedSource, signal, event } = options;
+  let today: string | undefined;
+  const periods = new Map<CollectionProductTypeId, CollectionPeriod>();
+  const productPeriod = (typeId: CollectionProductTypeId): CollectionPeriod => {
+    const declaration = options.collectionPeriods?.[typeId];
+    if (!declaration) throw new FailureCodeError("workflow-failed");
+    let period = periods.get(typeId);
+    if (!period) {
+      today ??= taipeiToday(options.now());
+      period = collectionPeriod({ today, ...declaration });
+      periods.set(typeId, period);
+    }
+    return period;
+  };
   return {
     async collect(collectors, collectOptions = {}) {
       const supplied = Object.keys(collectors);
@@ -753,6 +790,7 @@ export function boundProductCollection(options: BoundProductCollectionOptions): 
         financialCommit: options.financialCommit,
         ...(collectOptions.assertSession ? { assertSession: collectOptions.assertSession } : {}),
         collect: (typeId, product) => collectors[typeId]!(product),
+        collectionPeriod: productPeriod,
         ...(attached ? { attached } : {}),
       });
     },

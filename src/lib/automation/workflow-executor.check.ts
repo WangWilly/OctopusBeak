@@ -339,6 +339,39 @@ test("the bound run refuses collectors or a selection that disagree with the sou
   }), refused, "an attached selection needs the source's attached products and the workflow's attached collectors");
 });
 
+test("a product reads its declared collection period from the run's Taipei date, once per run", async () => {
+  // 15:59:30Z is 23:59:30 in Taipei; the clock crosses Taipei midnight while the run collects.
+  let crossedMidnight = false;
+  const periods: unknown[] = [];
+  const executor = createWorkflowExecutor([{
+    ...PRODUCT_SOURCE,
+    productCollection: {
+      ...PRODUCT_SOURCE.productCollection,
+      collectionPeriods: { deposit: { lookBack: { months: 1, days: 1 } } },
+    },
+    async run(context) {
+      await context.products!.collect({
+        deposit: async (handle) => {
+          periods.push(handle.collectionPeriod());
+          crossedMidnight = true;
+          periods.push(handle.collectionPeriod());
+          return { sourceCaptureCount: 0, rowCount: 0, noDataEvidence: true };
+        },
+        credit_card: async (handle) => {
+          assert.throws(() => handle.collectionPeriod(), FailureCodeError, "a product without a declaration has no period");
+          return { sourceCaptureCount: 0, rowCount: 0, noDataEvidence: true };
+        },
+      });
+    },
+  }], {
+    ...stagedCommitPorts([]),
+    now: () => crossedMidnight ? "2026-03-31T16:00:30.000Z" : "2026-03-31T15:59:30.000Z",
+  });
+  await executor.run("product-source", "run-period", { statementTypes: ["deposit", "credit_card"] }, new AbortController().signal);
+  const expected = { start: "2026-02-28", end: "2026-03-31", windows: [{ start: "2026-02-28", end: "2026-03-31" }] };
+  assert.deepEqual(periods, [expected, expected]);
+});
+
 test("only a workflow that requires product collection receives it, and it fails closed without its source facts", async () => {
   const seen: Record<string, unknown> = {};
   const executor = createWorkflowExecutor([

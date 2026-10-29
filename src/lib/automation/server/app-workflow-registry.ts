@@ -93,9 +93,12 @@ function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.Proce
 /** ADR 0071: the source facts its Product collection run is bound to. */
 export function productCollectionFacts(source: VerifiedSource): WorkflowDefinition["productCollection"] {
   if (!source.workflow.requiresProductCollection) return undefined;
+  const products = source.statementSelection?.products ?? [];
   return {
     provider: source.integrationNamespace,
-    productIds: (source.statementSelection?.products ?? []).map(({ id }) => id as CollectionProductTypeId),
+    productIds: products.map(({ id }) => id as CollectionProductTypeId),
+    collectionPeriods: Object.fromEntries(products.flatMap(({ id, collectionPeriod }) =>
+      collectionPeriod ? [[id, collectionPeriod]] : [])),
   };
 }
 

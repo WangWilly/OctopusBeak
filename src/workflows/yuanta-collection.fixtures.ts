@@ -37,5 +37,8 @@ export function yuantaStagingHandle(
       activities.push(activity);
     },
     event: async () => undefined,
+    collectionPeriod: () => {
+      throw new Error("This check supplies no collection period.");
+    },
   };
 }
