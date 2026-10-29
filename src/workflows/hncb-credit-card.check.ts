@@ -257,20 +257,17 @@ function depositRun(options: Readonly<{
 }> = {}) {
   const context = {
     signal: options.signal ?? new AbortController().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
     text: strictSourceText,
     event: async () => undefined,
     financialCommit: options.financialCommit ?? { execute: committedResult },
     previewWrite: { write: async (input: PreviewWrite) => previewReceipt(input) },
-  } as Pick<WorkflowContext, "signal" | "text" | "event"> as WorkflowContextWith<"financialCommit", "previewWrite">;
+  } as Pick<WorkflowContext, "signal" | "now" | "text" | "event"> as WorkflowContextWith<"financialCommit", "previewWrite">;
   const input = {
     statementTypes: options.statementTypes ?? ["deposit"],
     attachedPreviewProducts: options.cards ? ["credit_card"] : [],
   };
-  return runHncbStatements({} as Page, {
-    startDate: "2026/08/01",
-    endDate: "2026/08/31",
-    accountFilters: [],
-  }, withBoundProducts(context, HNCB_SOURCE, input), {
+  return runHncbStatements({} as Page, { accountFilters: [] }, withBoundProducts(context, HNCB_SOURCE, input), {
     ...(options.cards
       ? { attached: { collectors: options.cards, ...(options.cardSession ? { assertSession: options.cardSession } : {}) } }
       : {}),
