@@ -203,7 +203,6 @@ async function collectFubon(
   };
   const items: PGliteWorkflowRunItem[] = [];
   await stageFubonDeposit({ accounts: [{ account: FUBON_ACCOUNT, statements: [statement] }] }, {
-    dateRanges: ["180"],
     downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
