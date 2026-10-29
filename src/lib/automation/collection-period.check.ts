@@ -53,6 +53,14 @@ test("windows are no wider than the widest request, disjoint, and newest first",
     [{ start: "2025-07-06", end: "2026-07-05" }],
   );
   assert.deepEqual(
+    collectionWindows({ start: "2024-01-01", end: "2026-07-05", maxWindow: { months: 12 } }),
+    [
+      { start: "2025-07-06", end: "2026-07-05" },
+      { start: "2024-07-06", end: "2025-07-05" },
+      { start: "2024-01-01", end: "2024-07-05" },
+    ],
+  );
+  assert.deepEqual(
     collectionPeriod({ today: "2026-07-05", lookBack: { months: 12 }, maxWindow: { months: 1, days: 1 } }).windows,
     [
       { start: "2026-06-05", end: "2026-07-05" },
