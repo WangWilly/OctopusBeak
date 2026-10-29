@@ -75,6 +75,8 @@ async function setupFixture(options: Readonly<{
   invoiceOneDate?: string;
   transactionOneDate?: string;
   transactionOneScale?: number;
+  /** A card consume date for transaction one, distinct from its effective (posting) date. */
+  transactionOneConsumeDate?: string;
 }> = {}): Promise<Fixture> {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
@@ -242,6 +244,21 @@ async function setupFixture(options: Readonly<{
   const datedInvoiceRevisionSql = invoiceRevisionSql.replace("'2026-09-01', 'date'", "$14, 'date'");
   await store.query(datedInvoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", options.invoiceOneAmount ?? "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1", options.invoiceOneDate ?? "2026-09-01", options.invoiceOneScale ?? 2, E_INVOICE_CONTRACT_VERSION]);
   await store.query(datedInvoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2", "2026-09-01", 2, E_INVOICE_CONTRACT_VERSION]);
+  if (options.transactionOneConsumeDate) {
+    const instrument = id(26);
+    await store.query(
+      `INSERT INTO canonical_credit_card_instruments(instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle)
+       VALUES ($1, 'fubon', $2, 'fixture-card', '****0001', 'primary', NULL)`,
+      [instrument, account],
+    );
+    await store.query(
+      `INSERT INTO canonical_credit_card_transaction_details(
+         integration_namespace, account_id, transaction_id, revision_id, source_record_id,
+         capture_id, instrument_id, billing_status, consume_date, posting_date, effective_date_basis, statement_key
+       ) VALUES ('fubon', $1, $2, $3, $4, $5, $6, 'billed', $7, $8, 'consume-date', NULL)`,
+      [account, transactionOne, transactionRevisionOne, bankRecordOne, bankCapture, instrument, options.transactionOneConsumeDate, transactionOneDate],
+    );
+  }
 
   return {
     database,
@@ -790,6 +807,55 @@ test("PGlite compact direct confirm and revoke deltas preserve exact amounts and
     assert.equal(revoke.after.purchaseReport.dayTotals.find((day) => day.date === "2026-10-02")?.recordCount, 1);
   } finally {
     await fixture.store.close();
+  }
+});
+
+test("PGlite compact deltas date a card payment by its consume date, as the summary buckets it", async () => {
+  // Invoice 09-30, card consumed 10-02 but posted (effective) 10-05: the
+  // summary counts the bank-only record on 10-02, so the delta must remove it there.
+  for (const kind of ["candidate", "direct"] as const) {
+    const fixture = await setupFixture({
+      invoiceOneDate: "2026-09-30",
+      transactionOneDate: "2026-10-05",
+      transactionOneConsumeDate: "2026-10-02",
+    });
+    try {
+      const query = createPGliteSpendingQuery(fixture.store);
+      const current = await query.current();
+      const payment = current.purchaseReport.records.find((record) => record.purchaseId === `transaction:${fixture.transactionOne}`);
+      assert.equal(payment?.occurrence.value, "2026-10-02");
+      const candidate = current.purchaseReport.candidates.find((entry) =>
+        entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne);
+      assert.ok(candidate);
+      const confirm = await assertCompactActionSummaryParity(fixture, kind === "candidate" ? {
+        action: "confirm",
+        kind: "candidate",
+        candidateId: candidate.candidateId,
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: current.purchaseReport.knowledgeAt,
+      } : {
+        action: "confirm",
+        kind: "direct",
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: current.purchaseReport.knowledgeAt,
+      });
+      assert.deepEqual(confirm.result.summaryDelta.before.map((line) => line.date).sort(), ["2026-09-30", "2026-10-02"]);
+      assert.equal(confirm.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-02"), false);
+
+      const revoke = await assertCompactActionSummaryParity(fixture, {
+        action: "revoke",
+        kind: "revoke",
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: confirm.after.knowledgeAt,
+      });
+      assert.deepEqual(revoke.result.summaryDelta.after.map((line) => line.date).sort(), ["2026-09-30", "2026-10-02"]);
+      assert.equal(revoke.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-05"), false);
+    } finally {
+      await fixture.store.close();
+    }
   }
 });
 
