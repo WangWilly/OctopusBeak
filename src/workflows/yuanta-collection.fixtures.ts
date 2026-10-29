@@ -1,5 +1,6 @@
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 
@@ -24,10 +25,16 @@ export function yuantaCollectionContext(
   };
 }
 
+/** A one-window period, for a check that queries fixed dates. */
+export function fixedPeriod(start: string, end: string): CollectionPeriod {
+  return { start, end, windows: [{ start, end }] };
+}
+
 /** A product handle that records staged items with the provider the run adds. */
 export function yuantaStagingHandle(
   staged: PGliteWorkflowRunItem[],
   activities: string[] = [],
+  period?: CollectionPeriod,
 ): ProductCollectionHandle {
   return {
     stage: (...requests) => {
@@ -38,7 +45,8 @@ export function yuantaStagingHandle(
     },
     event: async () => undefined,
     collectionPeriod: () => {
-      throw new Error("This check supplies no collection period.");
+      if (!period) throw new Error("This check supplies no collection period.");
+      return period;
     },
   };
 }

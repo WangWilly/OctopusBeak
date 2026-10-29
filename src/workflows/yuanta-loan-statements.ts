@@ -16,6 +16,7 @@ import {
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { periodSpans, type CollectionPeriod } from "../lib/automation/collection-period.ts";
 import type {
   LoanCapturePage,
   LoanSourceCompletenessEvidence,
@@ -71,16 +72,7 @@ type ParsedYuantaLoanPage = {
   pagination: YuantaLoanPaginationSignal;
 };
 
-const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
-
-const customDateRangeSchema = z.object({
-  startDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-  endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-});
-
 export const yuantaLoanStatementsInputSchema = z.object({
-  dateRange: quickDateRangeSchema.default("one_year"),
-  customDateRange: customDateRangeSchema.optional(),
   loanAccountFilters: z.array(z.string()).default([]),
 });
 
@@ -91,11 +83,21 @@ export type YuantaLoanCollectionInput = WorkflowInput & Readonly<{
   sourceConnectionKey: string;
 }>;
 
-const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
-  three_months: "三個月",
-  six_months: "六個月",
-  one_year: "一年",
-};
+/** Yuanta's quick loan ranges: the link text and the span it covers, both ends inclusive. */
+const QUICK_LOAN_RANGES = [
+  { label: "三個月", span: { months: 3, days: 1 } },
+  { label: "六個月", span: { months: 6, days: 1 } },
+  { label: "一年", span: { months: 12, days: 1 } },
+] as const;
+
+/** A loan query's dates as YYYY-MM-DD, and the quick link that covers them, if any. */
+export type YuantaLoanQueryRange = Readonly<{ quickLabel?: string; startDate: string; endDate: string }>;
+
+/** The loan query for the product's collection period; dates are entered when no quick link fits. */
+export function yuantaLoanQueryRange(period: CollectionPeriod): YuantaLoanQueryRange {
+  const quick = QUICK_LOAN_RANGES.find(({ span }) => periodSpans(period, span));
+  return { ...(quick ? { quickLabel: quick.label } : {}), startDate: period.start, endDate: period.end };
+}
 
 const sourceStatementColumnCount = 6;
 
@@ -488,37 +490,6 @@ function isUnavailableAccountOption(value: string, label: string): boolean {
   );
 }
 
-function addMonthsClamped(date: Date, months: number): Date {
-  const targetYear = date.getFullYear();
-  const targetMonth = date.getMonth() + months;
-  const lastDay = new Date(targetYear, targetMonth + 1, 0).getDate();
-  return new Date(targetYear, targetMonth, Math.min(date.getDate(), lastDay));
-}
-
-function canonicalLoanDateRange(input: WorkflowInput): {
-  startDate: string;
-  endDate: string;
-} {
-  if (input.customDateRange) {
-    return {
-      startDate: input.customDateRange.startDate.replaceAll("/", "-"),
-      endDate: input.customDateRange.endDate.replaceAll("/", "-"),
-    };
-  }
-
-  const months = {
-    three_months: 3,
-    six_months: 6,
-    one_year: 12,
-  }[input.dateRange];
-  const today = new Date();
-  const endDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const startDate = addMonthsClamped(endDate, -months);
-  const format = (date: Date) =>
-    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-  return { startDate: format(startDate), endDate: format(endDate) };
-}
-
 function splitDatePair(value: string): [string, string] {
   const normalized = toAsciiDigits(cleanText(value));
   const dates = normalized.match(/\d{4}\/\d{2}\/\d{2}/g) ?? [];
@@ -607,14 +578,14 @@ async function findLoanStatementForm(
 
 async function chooseDateRange(
   site: YuantaEbankSite,
-  input: WorkflowInput,
+  { quickLabel, startDate, endDate }: YuantaLoanQueryRange,
 ): Promise<void> {
   const scope = await findLoanStatementForm(site);
   await site.chooseDuration(
     scope,
-    input.customDateRange
-      ? { customLabel: "自訂", ...input.customDateRange }
-      : { label: dateRangeLabels[input.dateRange] },
+    quickLabel
+      ? { label: quickLabel }
+      : { customLabel: "自訂", startDate: startDate.replaceAll("-", "/"), endDate: endDate.replaceAll("-", "/") },
   );
 }
 
@@ -696,13 +667,13 @@ export function yuantaLoanSelectorAccountEvidence(
 
 async function queryLoanAccount(
   site: YuantaEbankSite,
-  input: WorkflowInput,
+  range: YuantaLoanQueryRange,
   account: LoanAccountOption,
 ): Promise<void> {
   const { frames } = site;
   const scope = await findLoanStatementForm(site);
   await frames.race(scope.locator("#acctno").selectOption(account.value));
-  await chooseDateRange(site, input);
+  await chooseDateRange(site, range);
   await frames.race(clickAndWaitForNavigation(scope, "#submitbutton"));
   await frames.scopeWith("#resultdiv");
 }
@@ -963,7 +934,7 @@ export async function readYuantaLoanSource(
 ): Promise<YuantaLoanSourceSnapshot> {
   const { signal, text: sourceText } = context;
   signal.throwIfAborted();
-  const range = canonicalLoanDateRange(input);
+  const range = yuantaLoanQueryRange(product.collectionPeriod());
   const site = yuantaEbankSite(page, context);
   await site.open(LOAN_TRANSACTION_DETAILS_ROUTE);
   signal.throwIfAborted();
@@ -971,7 +942,7 @@ export async function readYuantaLoanSource(
   for (const account of await readYuantaLoanAccountOptions(site, input.loanAccountFilters)) {
     signal.throwIfAborted();
     await product.reportActivity("query");
-    await queryLoanAccount(site, input, account);
+    await queryLoanAccount(site, range, account);
     signal.throwIfAborted();
     await product.reportActivity("query");
     const statement = await traverseYuantaLoanStatementPages(site, maskAccountLabel(account.label), {
