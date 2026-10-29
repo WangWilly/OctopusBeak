@@ -386,14 +386,9 @@ const directApiPage = new Proxy({}, {
     throw new Error(`Domestic collection unexpectedly accessed page.${String(property)}.`);
   },
 });
-const localDate = (date: Date) =>
-  `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`;
-const expectedEnd = new Date();
-const expectedStart = new Date(expectedEnd);
-expectedStart.setFullYear(expectedStart.getFullYear() - 1);
 const expectedScope = {
-  startDate: localDate(expectedStart),
-  endDate: localDate(expectedEnd),
+  startDate: "2025-10-29",
+  endDate: "2026-10-29",
 };
 const requestedAccounts: string[] = [];
 const directApiCollection = await collectCathayDomesticFinancialRequests(
@@ -404,8 +399,8 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
   {
     client: {
       fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
-      fetchTransferDetailsRaw: async (_session, accountNo, dateRange) => {
-        assert.equal(dateRange, "one_year");
+      fetchTransferDetailsRaw: async (_session, accountNo, bounds) => {
+        assert.deepEqual(bounds, expectedScope);
         requestedAccounts.push(accountNo);
         return JSON.stringify({
           success: true,
@@ -422,6 +417,7 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
         });
       },
     },
+    now: new Date(2026, 9, 29, 23, 59, 59),
   },
 );
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);

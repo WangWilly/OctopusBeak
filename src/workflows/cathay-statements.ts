@@ -41,6 +41,11 @@ const dateRangeSchema = z.enum([
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
+export type CathayDateBounds = Readonly<{
+  startDate: string;
+  endDate: string;
+}>;
+
 export type CathayDomesticStatementsClient = {
   fetchDomesticAccounts(
     session: CathaySession,
@@ -49,7 +54,7 @@ export type CathayDomesticStatementsClient = {
   fetchTransferDetailsRaw(
     session: CathaySession,
     accountNo: string,
-    dateRange: CathayDateRange,
+    bounds: CathayDateBounds,
   ): Promise<string>;
 };
 
@@ -779,11 +784,11 @@ function accountLabel(account: CathayAccount): string {
   );
 }
 
-function dateRangeBounds(dateRange: z.infer<typeof dateRangeSchema>): {
-  startDate: string;
-  endDate: string;
-} {
-  const end = new Date();
+function dateRangeBounds(
+  dateRange: z.infer<typeof dateRangeSchema>,
+  now = new Date(),
+): CathayDateBounds {
+  const end = new Date(now);
   const start = new Date(end);
 
   if (dateRange === "one_week") {
@@ -915,7 +920,7 @@ export class CathayApiClient {
     const raw = await this.fetchTransferDetailsRaw(
       session,
       accountNo,
-      dateRange,
+      dateRangeBounds(dateRange),
     );
     return parseCathayTransferResponse(raw, accountNo);
   }
@@ -924,9 +929,8 @@ export class CathayApiClient {
   async fetchTransferDetailsRaw(
     session: CathaySession,
     accountNo: string,
-    dateRange: z.infer<typeof dateRangeSchema>,
+    bounds: CathayDateBounds,
   ): Promise<string> {
-    const bounds = dateRangeBounds(dateRange);
     return await this.apiPostRaw(
       "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
       session,
@@ -1213,6 +1217,7 @@ export async function collectCathayDomesticFinancialRequests(
     source?: CathayStrictSourceOptions;
     observedAt?: string;
     client?: CathayDomesticStatementsClient;
+    now?: Date;
   }>,
 ): Promise<CathayDomesticFinancialCollection> {
   options.source?.signal?.throwIfAborted();
@@ -1226,7 +1231,7 @@ export async function collectCathayDomesticFinancialRequests(
     process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
   const identityEpoch =
     process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
-  const bounds = dateRangeBounds(dateRange);
+  const bounds = dateRangeBounds(dateRange, options.now);
   const scope = { startDate: bounds.startDate, endDate: bounds.endDate };
   const observedAt = options.observedAt ?? new Date().toISOString();
   const stagedPages: CathayStagedCapturePage[] = [];
@@ -1237,7 +1242,7 @@ export async function collectCathayDomesticFinancialRequests(
       client.fetchTransferDetailsRaw(
         cathaySession,
         account.accountNo,
-        dateRange,
+        bounds,
       ),
       options.source?.signal,
     );
@@ -1268,7 +1273,6 @@ export async function collectCathayDomesticFinancialRequests(
       "Cathay domestic selected account source set is incomplete.",
     );
   }
-  const boundsForAdmission = dateRangeBounds(dateRange);
   let validatedSync: ReturnType<
     typeof validateCathayDomesticDepositSyncInputForPGlite
   >;
@@ -1280,13 +1284,7 @@ export async function collectCathayDomesticFinancialRequests(
       stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
       syncState: { cursor: null },
       observedAt,
-      pages: stagedPages.map((entry) => ({
-        ...entry,
-        scope: {
-          startDate: boundsForAdmission.startDate,
-          endDate: boundsForAdmission.endDate,
-        },
-      })),
+      pages: stagedPages,
     });
   } catch {
     throw new Error(
