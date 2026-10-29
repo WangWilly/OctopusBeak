@@ -8,9 +8,9 @@ import {
   PGLITE_PAIRING_PERFORMANCE_TARGET,
 } from "./spending-performance-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import { confirmPGliteSpendingCandidate } from "./spending-command.ts";
-import { applySpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
-import { spendingPairingReportContext } from "../../lib/spending/model.ts";
+import { queryCurrentSpendingSummary } from "./purchase-report.ts";
+import { applyPGliteSpendingPageAction } from "./spending-command.ts";
+import { applySpendingSummaryDelta, type SpendingPageActionRequest } from "../../lib/spending/model.ts";
 import { rankSpendingManualPaymentCandidates } from "../canonical/spending-manual-pairing.ts";
 
 const transactions = Number(process.env.PGLITE_BENCHMARK_TRANSACTIONS ?? 100_000);
@@ -77,26 +77,36 @@ const coldFixtureReport = await coldFixtureQuery.current();
 const coldCandidate = coldFixtureReport.purchaseReport.candidates.find((value) => value.invoiceId === targetInvoiceId && value.transactionId === targetTransactionId);
 if (!coldCandidate) throw new Error("cold confirm target candidate missing");
 const coldWriter = new PGliteStore(coldFixture.database);
-const hintedInput = (report: typeof before.purchaseReport, targetCandidateId: string) => {
-  const invoiceRecord = report.records.find((record) => record.purchaseId === `invoice:${targetInvoiceId}`);
-  const paymentRecord = report.records.find((record) => record.purchaseId === `transaction:${targetTransactionId}`);
-  if (!invoiceRecord || !paymentRecord) throw new Error("target report pair is missing");
-  return {
-    kind: "candidate" as const,
-    candidateId: targetCandidateId,
-    invoiceIdentityId: targetInvoiceId,
-    transactionIdentityId: targetTransactionId,
-    dataVersion: report.knowledgeAt,
-    totalsByCurrency: report.totalsByCurrency,
-    pairingReportContext: spendingPairingReportContext(report, invoiceRecord, paymentRecord, targetCandidateId),
-  };
-};
-const coldConfirmStart = performance.now();
-const coldConfirmed = await confirmPGliteSpendingCandidate(coldWriter, hintedInput(coldFixtureReport.purchaseReport, coldCandidate.candidateId));
-const coldConfirmMs = performance.now() - coldConfirmStart;
-const coldAfter = await coldFixtureQuery.current();
-const coldPatched = applySpendingPurchaseReportPatch(coldFixtureReport.purchaseReport, coldConfirmed.patch);
-if (JSON.stringify(coldPatched) !== JSON.stringify(coldAfter.purchaseReport)) throw new Error("cold candidate patch does not reproduce the committed report");
+const candidateAction = (knowledgeAt: number, targetCandidateId: string): SpendingPageActionRequest => ({
+  action: "confirm",
+  kind: "candidate",
+  candidateId: targetCandidateId,
+  invoiceIdentityId: targetInvoiceId,
+  transactionIdentityId: targetTransactionId,
+  dataVersion: knowledgeAt,
+});
+/** Time one page action, then require its summary delta to reproduce the recomputed summary. */
+async function timedPageAction(writer: PGliteStore, request: SpendingPageActionRequest, label: string) {
+  const summaryBefore = await queryCurrentSpendingSummary(writer);
+  const startedAt = performance.now();
+  const result = await applyPGliteSpendingPageAction(writer, request);
+  const elapsedMs = performance.now() - startedAt;
+  const summaryAfter = await queryCurrentSpendingSummary(writer);
+  const patched = applySpendingSummaryDelta(summaryBefore.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
+  if (patched.recordCount !== summaryAfter.purchaseReport.recordCount
+      || JSON.stringify(patched.totalsByCurrency.map(reduced)) !== JSON.stringify(summaryAfter.purchaseReport.totalsByCurrency.map(reduced)))
+    throw new Error(`${label} summary delta does not reproduce the committed summary`);
+  if (!result.affectedRecords.some((record) => record.basis === "linked")) throw new Error(`${label} did not return its linked record`);
+  return { result, elapsedMs };
+}
+function reduced(amount: Readonly<{ currency: string; coefficient: string; scale: number; count: number }>) {
+  let coefficient = BigInt(amount.coefficient);
+  let scale = amount.scale;
+  while (scale > 0 && coefficient % 10n === 0n) { coefficient /= 10n; scale -= 1; }
+  return { ...amount, coefficient: coefficient.toString(), scale };
+}
+const coldConfirmed = await timedPageAction(coldWriter, candidateAction(coldFixtureReport.purchaseReport.knowledgeAt, coldCandidate.candidateId), "cold candidate");
+const coldConfirmMs = coldConfirmed.elapsedMs;
 await coldWriter.close();
 const rankStart = performance.now();
 const ranked = await query.pairingCandidates({ invoiceIdentityId: targetInvoiceId, dataVersion: before.purchaseReport.knowledgeAt, limit: 50 });
@@ -128,38 +138,23 @@ const independentOrder = rankSpendingManualPaymentCandidates({
   .map((value) => value.transactionId);
 if (independentOrder.length !== pagedIds.length || independentOrder.some((id, index) => id !== pagedIds[index]))
   throw new Error("all pairing pages differ from the independent canonical rank order");
-const warmStart = performance.now();
-const confirmed = await confirmPGliteSpendingCandidate(store, hintedInput(before.purchaseReport, candidate.candidateId));
-const warmConfirmMs = performance.now() - warmStart;
+const confirmed = await timedPageAction(store, candidateAction(before.purchaseReport.knowledgeAt, candidate.candidateId), "warm candidate");
+const warmConfirmMs = confirmed.elapsedMs;
 const directFixture = await createFixture();
-const directQuery = createPGliteSpendingQuery(directFixture.store);
-const directBefore = await directQuery.current();
-const directAction = () => {
-  const report = directBefore.purchaseReport;
-  const invoiceRecord = report.records.find((record) => record.purchaseId === `invoice:${targetInvoiceId}`);
-  const paymentRecord = report.records.find((record) => record.purchaseId === `transaction:${targetTransactionId}`);
-  if (!invoiceRecord || !paymentRecord) throw new Error("direct report pair is missing");
-  const pairCandidate = report.candidates.find((entry) => entry.invoiceId === targetInvoiceId && entry.transactionId === targetTransactionId);
-  return {
-    kind: "direct" as const,
-    invoiceIdentityId: targetInvoiceId,
-    transactionIdentityId: targetTransactionId,
-    dataVersion: report.knowledgeAt,
-    totalsByCurrency: report.totalsByCurrency,
-    pairingReportContext: spendingPairingReportContext(report, invoiceRecord, paymentRecord, pairCandidate?.candidateId),
-  };
-};
+const directBefore = await createPGliteSpendingQuery(directFixture.store).current();
 const directColdWriter = new PGliteStore(directFixture.database);
-const coldDirectStart = performance.now();
-const directConfirmed = await confirmPGliteSpendingCandidate(directColdWriter, directAction());
-const coldDirectConfirmMs = performance.now() - coldDirectStart;
-const directAfter = await directQuery.current();
-if (JSON.stringify(applySpendingPurchaseReportPatch(directBefore.purchaseReport, directConfirmed.patch)) !== JSON.stringify(directAfter.purchaseReport))
-  throw new Error("cold direct patch does not reproduce the committed report");
+const directConfirmed = await timedPageAction(directColdWriter, {
+  action: "confirm",
+  kind: "direct",
+  invoiceIdentityId: targetInvoiceId,
+  transactionIdentityId: targetTransactionId,
+  dataVersion: directBefore.purchaseReport.knowledgeAt,
+}, "cold direct");
+const coldDirectConfirmMs = directConfirmed.elapsedMs;
 const totalStart = performance.now();
 const after = await query.current();
-if (JSON.stringify(applySpendingPurchaseReportPatch(before.purchaseReport, confirmed.patch)) !== JSON.stringify(after.purchaseReport))
-  throw new Error("warm candidate patch does not reproduce the committed report");
+if (after.purchaseReport.knowledgeAt !== confirmed.result.knowledgeAt)
+  throw new Error("warm candidate action version differs from the committed report");
 const verifyMs = performance.now() - totalStart;
 const actualCounts = {
   transactions: Number(countRows.transactions),
@@ -198,13 +193,13 @@ console.log(JSON.stringify({
     electron: process.versions.electron ?? electronVersion.version ?? null,
     benchmark: "pglite-spending-performance",
     requested: { transactions, invoices, links },
-    fixture: { linkRange: "1..links", reservedTarget: "invoice/transaction 0", targetRemainsUnlinked: true, coldSemantics: "command store report cache cold; click-time compact context from displayed report included; same PGlite WASM database warm" },
+    fixture: { linkRange: "1..links", reservedTarget: "invoice/transaction 0", targetRemainsUnlinked: true, coldSemantics: "fresh command store on the same warm PGlite WASM database; times the renderer's pageAction" },
   },
   setupMs,
   coldFixtureSetupMs: coldFixture.setupMs,
   coldRankMs,
   coldConfirmMs,
-  coldConfirmPatchOperations: coldConfirmed.patch.recordOperations.length,
+  coldConfirmAffectedRecords: coldConfirmed.result.affectedRecords.length,
   coldRankedCount: coldRanked.totalCandidateCount,
   coldOpenMs,
   rankMs,
@@ -217,7 +212,7 @@ console.log(JSON.stringify({
   afterKnowledge: after.purchaseReport.knowledgeAt,
   candidateCount: before.purchaseReport.candidates.length,
   rankedCount: ranked.totalCandidateCount,
-  patchOperations: confirmed.patch.recordOperations.length,
+  affectedRecords: confirmed.result.affectedRecords.length,
   actualCounts,
   timingGates,
   adr0028Pass,

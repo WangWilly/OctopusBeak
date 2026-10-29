@@ -8,12 +8,8 @@ import {
   type SpendingRecordPageRequest,
 } from "../src/lib/spending/model.ts";
 import type {
-  SpendingCandidateActionInput,
-  SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
-  SpendingLinkActionInput,
-  SpendingPurchaseActionResult,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
   SpendingMergeLogDto,
@@ -301,15 +297,6 @@ export function createPGliteFinancialRegistry(
           }
         }
       });
-    },
-    "financial.spending.confirmCandidate"([input]) {
-      return commands.confirmCandidate(input);
-    },
-    "financial.spending.denyCandidate"([input]) {
-      return commands.denyCandidate(input);
-    },
-    "financial.spending.revokeLink"([input]) {
-      return commands.revokeLink(input);
     },
     "financial.spending.setPurchaseCategory"([input]) {
       return commands.setPurchaseCategory(input);

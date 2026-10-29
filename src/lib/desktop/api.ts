@@ -13,15 +13,11 @@ import type {
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type {
-  SpendingCandidateActionInput,
-  SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
   SpendingPairingPrewarmInput,
   SpendingPairingPrewarmResult,
-  SpendingLinkActionInput,
   SpendingPageDto,
-  SpendingPurchaseActionResult,
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
   SpendingRecordPageDto,
@@ -251,9 +247,6 @@ export type OctopusBeakApi = {
     confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
     rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
-    confirmCandidate(input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult>;
-    denyCandidate(input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult>;
-    revokeLink(input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult>;
   };
   automation: {
     loadBlock(block: DashboardBlockKey, options?: DataReadOptions): Promise<DashboardBlockPayload>;

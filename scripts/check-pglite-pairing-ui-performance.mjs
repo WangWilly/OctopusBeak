@@ -11,7 +11,6 @@ import { PGlite } from "@electric-sql/pglite";
 import { createPGliteViewWorkerClient } from "../electron/pglite-view-worker-client.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { createPGlitePairingPerformanceFixture } from "../src/ledger/pglite/spending-performance-fixture.ts";
-import { spendingPairingReportContext } from "../src/lib/spending/model.ts";
 import { record, singleCategory, view } from "./spending-canonical-fixture.mjs";
 import { chooseSpendingMonth } from "./spending-month.mjs";
 import {
@@ -288,29 +287,27 @@ async function runSingle(runNumber) {
     const invoiceRecord = rendererModel.purchaseReport.records.find((record) => record.purchaseId === `invoice:${fixture.targetInvoiceId}`);
     const paymentRecord = rendererModel.purchaseReport.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === fixture.targetTransactionId);
     assert.ok(invoiceRecord && paymentRecord, "renderer fixture must expose the direct-confirm target records");
-    const pairingReportContext = spendingPairingReportContext(rendererModel.purchaseReport, invoiceRecord, paymentRecord);
     const directConfirmInput = {
+      action: "confirm",
       kind: "direct",
       invoiceIdentityId: fixture.targetInvoiceId,
       transactionIdentityId: fixture.targetTransactionId,
       dataVersion,
-      totalsByCurrency: rendererModel.purchaseReport.totalsByCurrency,
-      pairingReportContext,
     };
     const warmConfirmStartedAt = performance.now();
-    const warmConfirmation = await preflight.client.financial.request("financial.spending.confirmCandidate", [directConfirmInput]).catch((error) => {
+    const warmConfirmation = await preflight.client.financial.request("financial.spending.pageAction", [directConfirmInput]).catch((error) => {
       progress(`warm confirmation RPC failed: ${String(error)}`);
       throw error;
     });
     const warmConfirmRpcMs = performance.now() - warmConfirmStartedAt;
     progress(`warm confirm completed (${warmConfirmRpcMs.toFixed(1)}ms)`);
-    assert.ok(warmConfirmation.patch.recordOperations.length > 0, "warm confirmation must return the targeted affected-record patch");
+    assert.ok(warmConfirmation.affectedRecords.some((record) => record.basis === "linked"), "warm confirmation must return its linked record");
     await preflight.client.close();
     preflight = null;
 
     coldConfirmWorker = await startWorker(coldConfirmDataDir);
     const coldConfirmStartedAt = performance.now();
-    const coldConfirmation = await coldConfirmWorker.client.financial.request("financial.spending.confirmCandidate", [{
+    const coldConfirmation = await coldConfirmWorker.client.financial.request("financial.spending.pageAction", [{
       ...directConfirmInput,
       dataVersion: coldConfirmWorker.dataVersion,
     }]).catch((error) => {
@@ -319,7 +316,7 @@ async function runSingle(runNumber) {
     });
     const coldConfirmRpcMs = performance.now() - coldConfirmStartedAt;
     progress(`cold confirm completed (${coldConfirmRpcMs.toFixed(1)}ms)`);
-    assert.ok(coldConfirmation.patch.recordOperations.length > 0, "cold confirmation must return the targeted affected-record patch");
+    assert.ok(coldConfirmation.affectedRecords.some((record) => record.basis === "linked"), "cold confirmation must return its linked record");
     await coldConfirmWorker.client.close();
     coldConfirmWorker = null;
 
@@ -523,7 +520,6 @@ async function runSingle(runNumber) {
         return performance.getEntriesByName(`pairing-${kind}`).at(-1).duration;
       };
       window.octopusBeak.spending.rankPairingCandidates = (input) => window.__pairingRankThroughWorker(input);
-      window.octopusBeak.spending.confirmCandidate = (input) => window.__pairingConfirmThroughWorker(input);
       window.octopusBeak.spending.prewarmPairingCandidates = async (input) => {
         window.__pairingPrewarmStarted = true;
         const result = await window.__pairingPrewarmThroughWorker(input);
@@ -709,8 +705,8 @@ async function runSingle(runNumber) {
       rankBridgeCallCount,
       confirmBridgeCallCount,
       prewarmBridgeCallCount,
-      coldConfirmationPatchOperations: coldConfirmation.patch.recordOperations.length,
-      warmConfirmationPatchOperations: warmConfirmation.patch.recordOperations.length,
+      coldConfirmationAffectedRecords: coldConfirmation.affectedRecords.length,
+      warmConfirmationAffectedRecords: warmConfirmation.affectedRecords.length,
       timingGates,
       adr0028Pass,
       transport: "Playwright Svelte UI -> exposed Node binding -> PGliteFinancialRpcClient -> named worker_threads RPC -> PGlite store",

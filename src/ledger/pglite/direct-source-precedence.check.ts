@@ -17,6 +17,7 @@ import {
 import { commitPGliteCanonicalEInvoiceCapture } from "./einvoice.ts";
 import { createPGliteCanonicalOverviewQuery, selectPGliteOverviewAssets } from "./overview.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
+import { commitPGliteSpendingRefundRevision } from "./spending-command.ts";
 import { fixtureInvoice } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
 import { mapCanonicalProduct } from "../../lib/shared-ledger/server/canonical-product.ts";
@@ -291,5 +292,31 @@ test("purchase-basis Spending and pairing leave out a covered account's purchase
       totals: ["1 × 1500e-0 TWD"],
       pendingPairs: 0,
     });
+
+    // A refund of the covered purchase does not count either, in the
+    // summary or in the complete Purchase report (ADR 0076).
+    const [outflow] = (await store.query<{ transaction_id: Uint8Array }>(
+      "SELECT transaction_id FROM current_transaction_enrichment WHERE field_name = 'kind' AND producer_id = 'test'",
+    )).rows;
+    const [route] = (await store.query<{ authority_route: string }>(
+      "SELECT authority_route FROM source_authority_routes ORDER BY authority_route LIMIT 1",
+    )).rows;
+    const hex = Buffer.from(outflow!.transaction_id).toString("hex");
+    await store.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, {
+      stableRefundKey: "covered-refund",
+      transactionId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+      sourceRevisionKey: "covered-refund-v1",
+      revisionNumber: 1,
+      revisionKind: "asserted",
+      amount: { coefficient: "-500", scale: 0, currency: "TWD" },
+      occurrence: { value: "2026-08-05", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
+      authorityRoute: route!.authority_route,
+      provenanceReference: "fixture/covered-refund",
+      evidence: { sourceProvesRefund: true },
+    }));
+    assert.deepEqual((await purchaseSpending(store)).totals, ["1 × 1500e-0 TWD"]);
+    const complete = (await createPGliteSpendingQuery(store).current()).purchaseReport;
+    assert.deepEqual(complete.records.map((record) => record.basis), ["invoice"]);
+    assert.deepEqual(complete.totalsByCurrency, [{ currency: "TWD", coefficient: "1500", scale: 0, count: 1 }]);
   });
 });
