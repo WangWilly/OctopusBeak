@@ -126,6 +126,8 @@ type ServiceForward<Channel extends ForwardedAutomationChannel> =
  * Whether two parameter lists take the same number of arguments, so a service
  * method that drops one (an optional `expectedRunId`, say) does not pass.
  * The types may still differ: a service method may accept `unknown` and validate.
+ * Optional parameters must match too, so a service `(a, b?)` behind a bridge
+ * `(a, b)` is also rejected.
  */
 type SameArity<A extends readonly unknown[], B extends readonly unknown[]> =
   [A["length"]] extends [B["length"]] ? [B["length"]] extends [A["length"]] ? true : false : false;
