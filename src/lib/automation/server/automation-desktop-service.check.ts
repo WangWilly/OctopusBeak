@@ -173,7 +173,10 @@ test("credentials are reread only after a save succeeds", async () => {
   await settle();
   assert.equal(credentialReads(), 1);
 
-  const saved = await service.saveCredentials({ LIBRETTO_CLOUD_FUBON_ENABLED: "true" });
+  const saved = await service.saveCredentials({
+    LIBRETTO_CLOUD_FUBON_ENABLED: "true",
+    LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
+  });
   assert.equal(saved.saved, true);
   assert.equal(credentialReads(), 2);
 });
