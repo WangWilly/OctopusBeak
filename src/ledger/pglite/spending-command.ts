@@ -8,7 +8,7 @@ import {
   pendingPairInMonth,
   queryPendingSpendingCandidates,
 } from "./spending-query.ts";
-import { querySpendingRecognition, recordedAtIso } from "./spending-facts.ts";
+import { querySpendingRecognition, recordedAtIso, refundFromRow } from "./spending-facts.ts";
 import { decide } from "./purchase-report.ts";
 import { bytes, idString, latest, pgliteQuery, type Row } from "./spending-sql.ts";
 import type {
@@ -380,10 +380,20 @@ export async function commitPGliteSpendingRefundRevision(
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [revisionId, identity.refund_id, sourceRevisionKey, input.revisionNumber, input.revisionKind, revoked ? "revoked" : "active", amountCoefficient, exactAmount?.scale ?? null, revoked ? null : required(input.amount!.currency, "Refund currency"), revoked ? null : required(input.occurrence!.value, "Refund occurrence"), revoked ? null : input.occurrence!.precision, revoked ? null : required(input.occurrence!.timeZone, "Refund occurrence time zone"), revoked ? null : input.occurrence!.basis, authorityRoute, required(input.provenanceReference, "Refund provenance reference"), stableJson(objectJson(input.evidence, "Refund evidence"), "Refund evidence"), created.id],
   );
-  const recognition = await querySpendingRecognition(transaction, { knowledgeAt: created.sequence });
-  const result = recognition.refunds.find((refund) => refund.revisionId === idString(revisionId));
-  if (!result) throw new Error("Committed refund revision cannot be read back.");
-  return result;
+  // Read the revision itself: recognition lists only active refunds, so a
+  // withdrawal would never be found there.
+  const committed = await pgliteQuery<Row>(
+    transaction,
+    `SELECT revision.*, identity.stable_refund_key, identity.transaction_id, commit_row.commit_sequence
+       FROM spending_refund_revisions revision
+       JOIN spending_refund_identities identity ON identity.refund_id = revision.refund_id
+       JOIN canonical_commits commit_row ON commit_row.commit_id = revision.commit_id
+      WHERE revision.revision_id = ?`,
+    [revisionId],
+  );
+  const row = committed.rows[0];
+  if (!row) throw new Error("Committed refund revision cannot be read back.");
+  return refundFromRow(row);
 }
 
 /**

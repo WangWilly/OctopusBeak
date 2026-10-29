@@ -682,16 +682,22 @@ export async function queryCurrentSpendingRecordPage(
   const transactionIds = [...new Set(visibleRows.flatMap((row) => row.transaction_id ? [idString(row.transaction_id, "Spending page transaction")] : []))];
   const composed = await purchaseRecordsByIdentity(reader, current, { invoiceIds, transactionIds });
   const recordById = new Map(composed.records.map((record) => [record.purchaseId, record]));
-  const pageRecords = visibleRows.map((row) => {
+  const unbuilt: string[] = [];
+  const pageRecords = visibleRows.flatMap((row) => {
     const purchaseId = stringValue(row.purchase_id, "Spending purchase identity");
     const record = recordById.get(purchaseId);
-    // purchaseRowsCte selected this row, so the record builder must produce
-    // it under the same rules. A missing record means the two renditions
-    // disagree; fail the read instead of listing records the summary counts
-    // differently.
-    if (!record) throw new Error(`Spending purchase ${purchaseId} was selected but not built; the purchase rules disagree.`);
-    return record;
+    if (record) return [record];
+    unbuilt.push(purchaseId);
+    return [];
   });
+  // purchaseRowsCte selected these rows, so the record builder should produce
+  // them under the same rules. A miss means the two renditions disagree.
+  // Report it loudly but keep the page usable: one disagreeing row must not
+  // take the person's whole month away. The month parity checks compare pages
+  // with the complete report.
+  if (unbuilt.length > 0) {
+    console.error("spending-purchase-rules-disagree", { month, day, purchaseIds: unbuilt });
+  }
   const last = visibleRows.at(-1);
   const page: SpendingRecordPageDto = Object.freeze({
     schemaVersion: 1,
@@ -743,7 +749,8 @@ function summaryLine(record: PurchaseRecord): SpendingSummaryDeltaLine {
   return Object.freeze({
     date: record.occurrence.value.slice(0, 10),
     amount: record.amount
-      ? { currency: record.amount.currency, coefficient: record.amount.coefficient, scale: record.amount.scale }
+      // The summary groups by upper-cased currency, so the delta must name the same bucket.
+      ? { currency: record.amount.currency.toUpperCase(), coefficient: record.amount.coefficient, scale: record.amount.scale }
       : null,
     category: record.category,
   });
