@@ -555,6 +555,10 @@ _Avoid_: Duplicate import, one transaction, cross-source group
 A distinct occurrence position within an Indistinguishable Occurrence Group that preserves its transaction count without asserting individual historical continuity. It is separate from the position of a row in a page or query result.
 _Avoid_: Provider transaction ID, global row sequence, proven individual identity
 
+**Collection period**:
+The dates a Verified product queries before a Source Capture: a look-back and the widest provider request it declares, ending on the run's Asia/Taipei date, which the Product collection run computes once per run (ADR 0077). A Collection period chooses what to query before a capture; a Query bucket records what a capture queried.
+_Avoid_: Date range input, query window, today's range
+
 **Query bucket**:
 One source-side interval that a Source Capture queried, such as a billing statement period, the unbilled listing, or a timeline month, including a month the provider returned only in part. An admitted occurrence lives in the Query Bucket of its most recent inventoried capture, and its absence is evidence only when a later complete capture queried that same bucket.
 _Avoid_: Page, grid tab, statement file
