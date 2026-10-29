@@ -7,7 +7,8 @@ import {
   createPGlitePairingPerformanceFixture,
   PGLITE_PAIRING_PERFORMANCE_TARGET,
 } from "./spending-performance-fixture.ts";
-import { createPGliteSpendingQuery, queryCurrentSpendingSummary } from "./spending-query.ts";
+import { createPGliteSpendingQuery } from "./spending-query.ts";
+import { queryCurrentSpendingSummary } from "./purchase-report.ts";
 import { applyPGliteSpendingPageAction } from "./spending-command.ts";
 import { applySpendingSummaryDelta, type SpendingPageActionRequest } from "../../lib/spending/model.ts";
 import { rankSpendingManualPaymentCandidates } from "../canonical/spending-manual-pairing.ts";

@@ -2,19 +2,15 @@ import { randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit, type PGliteCanonicalCommitRef } from "./canonical-commit.ts";
 import {
-  queryCurrentSpendingActionRecords,
   queryPGliteSpendingDirectPair,
-  querySpendingRecognition,
   resolvePGliteSpendingCandidate,
-  itemCategorizationRows,
   pendingPairRef,
   pendingPairInMonth,
   queryPendingSpendingCandidates,
-  recordedAtIso,
-  type PGliteSpendingReader,
 } from "./spending-query.ts";
-import { purchaseRecordCategory } from "../canonical/spending-purchase-report-core.ts";
-import type { PurchaseCategory } from "../canonical/purchase-category.ts";
+import { querySpendingRecognition, recordedAtIso } from "./spending-facts.ts";
+import { decide } from "./purchase-report.ts";
+import { bytes, idString, latest, pgliteQuery, type Row } from "./spending-sql.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -27,34 +23,17 @@ import type {
 import type {
   SpendingPageActionRequest,
   SpendingPageActionResult,
-  SpendingSummaryDeltaLine,
   SpendingCandidatePairRef,
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
 } from "../../lib/spending/model.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
-import { transactionPurchaseDate } from "../../lib/spending/purchase-matching.ts";
 import type { SpendingPurchaseCategoryRequest } from "../../lib/spending/model.ts";
 
 /** A command may only see the async transaction capability. */
 export type PGliteSpendingWriter = Pick<PGliteStore, "query" | "transaction">;
 
-type Row = Readonly<Record<string, unknown>>;
-
-/** Translate the shared SQLite-style placeholders at the PGlite boundary. */
-async function txQuery<T>(
-  transaction: PGliteTransaction,
-  sql: string,
-  params: readonly unknown[] = [],
-): Promise<{ rows: readonly T[] }> {
-  let index = 0;
-  const postgresSql = sql.replace(/\?/gu, () => `$${++index}`);
-  return transaction.query<T>(postgresSql, params);
-}
-
 const LOCAL_USER_ID = "local-user";
-const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
-const HEX_ID = /^[0-9a-f]{32}$/iu;
 
 function required(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${label} is required.`);
@@ -64,23 +43,6 @@ function required(value: unknown, label: string): string {
 function storedString(value: unknown, label: string): string {
   if (value === null || value === undefined || String(value).trim() === "") throw new Error(`${label} is missing.`);
   return String(value);
-}
-
-function bytes(value: string, label: string): Uint8Array {
-  const clean = required(value, label).toLowerCase();
-  if (!UUID.test(clean) && !HEX_ID.test(clean)) throw new Error(`${label} must be a canonical UUID.`);
-  return Uint8Array.from(Buffer.from(clean.replaceAll("-", ""), "hex"));
-}
-
-function idString(value: unknown): string {
-  if (typeof value === "string") {
-    const clean = value.toLowerCase();
-    if (UUID.test(clean)) return clean;
-    if (HEX_ID.test(clean)) return `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}`;
-  }
-  const hex = Buffer.from(value as Uint8Array).toString("hex");
-  if (hex.length !== 32) throw new Error("Canonical identity is not a UUID.");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function numberValue(value: unknown, label: string): number {
@@ -140,11 +102,6 @@ function parseJson(value: unknown): Readonly<Record<string, unknown>> {
   return parsed as Readonly<Record<string, unknown>>;
 }
 
-async function latest(reader: PGliteSpendingReader): Promise<number> {
-  const result = await reader.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits");
-  return Number(result.rows[0]?.value ?? 0);
-}
-
 type CommitRef = PGliteCanonicalCommitRef;
 
 function commit(
@@ -161,9 +118,9 @@ function commit(
 async function requirePair(transaction: PGliteTransaction, pair: SpendingPair): Promise<Readonly<{ invoice: Uint8Array; transaction: Uint8Array }>> {
   const invoice = bytes(pair.invoiceId, "Invoice identity");
   const transactionId = bytes(pair.transactionId, "Transaction identity");
-  const invoiceResult = await txQuery(transaction, "SELECT 1 FROM einvoice_invoices WHERE invoice_id = ?", [invoice]);
+  const invoiceResult = await pgliteQuery(transaction, "SELECT 1 FROM einvoice_invoices WHERE invoice_id = ?", [invoice]);
   if (invoiceResult.rows.length === 0) throw new Error("Spending recognition invoice identity does not exist.");
-  const transactionResult = await txQuery(transaction, "SELECT 1 FROM financial_transactions WHERE transaction_id = ?", [transactionId]);
+  const transactionResult = await pgliteQuery(transaction, "SELECT 1 FROM financial_transactions WHERE transaction_id = ?", [transactionId]);
   if (transactionResult.rows.length === 0) throw new Error("Spending recognition transaction identity does not exist.");
   return { invoice, transaction: transactionId };
 }
@@ -171,13 +128,13 @@ async function requirePair(transaction: PGliteTransaction, pair: SpendingPair): 
 async function requireCurrentPair(transaction: PGliteTransaction, pair: SpendingPair): Promise<void> {
   const invoice = bytes(pair.invoiceId, "Invoice identity");
   const transactionId = bytes(pair.transactionId, "Transaction identity");
-  const invoiceState = await txQuery<{ state: string }>(transaction,
+  const invoiceState = await pgliteQuery<{ state: string }>(transaction,
     `SELECT state FROM einvoice_invoice_revisions
       WHERE invoice_id = ? ORDER BY revision_number DESC, revision_id DESC LIMIT 1`,
     [invoice],
   );
   if (invoiceState.rows[0]?.state !== "active") throw new Error("Direct Spending confirmation invoice identity is stale or inactive.");
-  const transactionState = await txQuery<{ administrative_state: string }>(transaction,
+  const transactionState = await pgliteQuery<{ administrative_state: string }>(transaction,
     `SELECT revision.administrative_state
        FROM current_transactions current_row
        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
@@ -196,7 +153,7 @@ export async function recordPGliteSpendingMatchCandidate(
   const algorithmVersion = required(input.algorithmVersion, "Candidate algorithm version");
   const candidateKey = required(input.candidateKey, "Candidate key");
   const evidenceJson = stableJson(objectJson(input.similarityEvidence, "Similarity evidence"), "Similarity evidence");
-  const existing = await txQuery<{ candidate_id: unknown; invoice_id: unknown; transaction_id: unknown; algorithm: string; algorithm_version: string; similarity_evidence_json: string; created_commit_id: unknown }>(transaction,
+  const existing = await pgliteQuery<{ candidate_id: unknown; invoice_id: unknown; transaction_id: unknown; algorithm: string; algorithm_version: string; similarity_evidence_json: string; created_commit_id: unknown }>(transaction,
     "SELECT candidate_id, invoice_id, transaction_id, algorithm, algorithm_version, similarity_evidence_json, created_commit_id FROM spending_match_candidates WHERE candidate_key = ?",
     [candidateKey],
   );
@@ -205,12 +162,12 @@ export async function recordPGliteSpendingMatchCandidate(
     if (String(current.algorithm) !== algorithm || String(current.algorithm_version) !== algorithmVersion || String(current.similarity_evidence_json) !== evidenceJson || idString(current.invoice_id) !== input.invoiceId || idString(current.transaction_id) !== input.transactionId) {
       throw new Error("Candidate identity conflicts with earlier evidence.");
     }
-    const created = await txQuery<{ commit_sequence: number | string }>(transaction, "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?", [current.created_commit_id]);
+    const created = await pgliteQuery<{ commit_sequence: number | string }>(transaction, "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?", [current.created_commit_id]);
     return { candidateId: idString(current.candidate_id), commitSequence: numberValue(created.rows[0]?.commit_sequence, "Candidate commit sequence") };
   }
   const created = await commit(transaction, "spending/candidate-similarity/v1");
   const candidateId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
-  await txQuery(
+  await pgliteQuery(
     transaction,
     `INSERT INTO spending_match_candidates(
        candidate_id, candidate_key, invoice_id, transaction_id, algorithm,
@@ -223,7 +180,7 @@ export async function recordPGliteSpendingMatchCandidate(
 
 type DecisionResult = SpendingDedupLinkView | SpendingPair;
 
-async function decide(
+async function recordDecision(
   transaction: PGliteTransaction,
   input: SpendingDecisionInput,
   kind: "confirmed" | "denied",
@@ -237,7 +194,7 @@ async function decide(
   const currentKnowledge = await latest(transaction);
   if (evidenceKnowledgeSequence < 0 || evidenceKnowledgeSequence > currentKnowledge) throw new Error("Decision evidence knowledge sequence is outside canonical history.");
   const evidenceJson = stableJson(objectJson(input.evidence, "Decision evidence"), "Decision evidence");
-  const previous = await txQuery<{ event_id: unknown; event_kind: string; invoice_id: unknown; transaction_id: unknown; evidence_json: string; commit_id: unknown; evidence_knowledge_sequence: number | string; decision_origin: string; user_id: string | null; authority_route: string | null; stable_cross_source_reference: string | null }>(transaction,
+  const previous = await pgliteQuery<{ event_id: unknown; event_kind: string; invoice_id: unknown; transaction_id: unknown; evidence_json: string; commit_id: unknown; evidence_knowledge_sequence: number | string; decision_origin: string; user_id: string | null; authority_route: string | null; stable_cross_source_reference: string | null }>(transaction,
     "SELECT event_id, event_kind, invoice_id, transaction_id, evidence_json, commit_id, evidence_knowledge_sequence, decision_origin, user_id, authority_route, stable_cross_source_reference FROM spending_dedup_decision_events WHERE decision_key = ?",
     [decisionKey],
   );
@@ -245,7 +202,7 @@ async function decide(
   if (prior) {
     if (prior.event_kind !== kind || idString(prior.invoice_id) !== input.invoiceId || idString(prior.transaction_id) !== input.transactionId || prior.evidence_json !== evidenceJson) throw new Error("Decision key conflicts with an earlier decision.");
     if (kind === "denied") return input;
-    const commitRow = await txQuery<{ commit_sequence: number | string; recorded_at_utc_us: number | string }>(transaction, "SELECT commit_sequence, recorded_at_utc_us FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
+    const commitRow = await pgliteQuery<{ commit_sequence: number | string; recorded_at_utc_us: number | string }>(transaction, "SELECT commit_sequence, recorded_at_utc_us FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
     return {
       invoiceId: input.invoiceId,
       transactionId: input.transactionId,
@@ -260,15 +217,15 @@ async function decide(
       stableCrossSourceReference: prior.stable_cross_source_reference,
     };
   }
-  const activeInvoice = await txQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ?", [pair.invoice]);
-  const activeTransaction = await txQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE transaction_id = ?", [pair.transaction]);
+  const activeInvoice = await pgliteQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ?", [pair.invoice]);
+  const activeTransaction = await pgliteQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE transaction_id = ?", [pair.transaction]);
   if (kind === "confirmed" && (activeInvoice.rows.length || activeTransaction.rows.length)) throw new Error("Spending deduplication is one invoice to one transaction.");
   if (kind === "denied" && (activeInvoice.rows.length || activeTransaction.rows.length)) throw new Error("An active spending link must be revoked before denial.");
   if (input.origin.kind !== "user") throw new Error("PGlite Spending user commands may only use user decision origin.");
   const userId = required(input.origin.userId, "Decision user");
   const created = sharedCommit ?? await commit(transaction, "user/local");
   const eventId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
-  await txQuery(
+  await pgliteQuery(
     transaction,
     `INSERT INTO spending_dedup_decision_events(
        event_id, decision_key, invoice_id, transaction_id, event_kind,
@@ -278,7 +235,7 @@ async function decide(
     [eventId, decisionKey, pair.invoice, pair.transaction, kind, userId, evidenceJson, evidenceKnowledgeSequence, created.id],
   );
   if (kind === "confirmed") {
-    await txQuery(
+    await pgliteQuery(
       transaction,
       `INSERT INTO current_spending_dedup_links(invoice_id, transaction_id, confirmed_event_id, projection_commit_id)
        VALUES (?, ?, ?, ?)`,
@@ -306,7 +263,7 @@ export async function confirmPGliteSpendingDedupLink(
   input: SpendingDecisionInput | SpendingDirectUserConfirmationInput,
 ): Promise<SpendingDedupLinkView> {
   if ("invoiceIdentityId" in input) {
-    return await decide(transaction, {
+    return await recordDecision(transaction, {
       invoiceId: input.invoiceIdentityId,
       transactionId: input.transactionIdentityId,
       decisionKey: input.decisionKey,
@@ -315,17 +272,17 @@ export async function confirmPGliteSpendingDedupLink(
       evidence: input.evidence,
     }, "confirmed", true) as SpendingDedupLinkView;
   }
-  return await decide(transaction, input, "confirmed") as SpendingDedupLinkView;
+  return await recordDecision(transaction, input, "confirmed") as SpendingDedupLinkView;
 }
 
 export async function denyPGliteSpendingDedupCandidate(transaction: PGliteTransaction, input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }): Promise<SpendingPair> {
-  return await decide(transaction, input, "denied") as SpendingPair;
+  return await recordDecision(transaction, input, "denied") as SpendingPair;
 }
 
 export async function revokePGliteSpendingDedupLink(transaction: PGliteTransaction, input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }): Promise<SpendingPair> {
   const pair = await requirePair(transaction, input);
   const decisionKey = required(input.decisionKey, "Decision key");
-  const prior = await txQuery<{ event_id: unknown; event_kind: string; invoice_id: unknown; transaction_id: unknown }>(transaction,
+  const prior = await pgliteQuery<{ event_id: unknown; event_kind: string; invoice_id: unknown; transaction_id: unknown }>(transaction,
     "SELECT event_id, event_kind, invoice_id, transaction_id FROM spending_dedup_decision_events WHERE decision_key = ?",
     [decisionKey],
   );
@@ -334,12 +291,12 @@ export async function revokePGliteSpendingDedupLink(transaction: PGliteTransacti
     if (existing.event_kind === "revoked" && idString(existing.invoice_id) === input.invoiceId && idString(existing.transaction_id) === input.transactionId) return input;
     throw new Error("Decision key is already used.");
   }
-  const active = await txQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ? AND transaction_id = ?", [pair.invoice, pair.transaction]);
+  const active = await pgliteQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ? AND transaction_id = ?", [pair.invoice, pair.transaction]);
   if (active.rows.length === 0) throw new Error("Cannot revoke an inactive spending deduplication link.");
   const evidenceKnowledgeSequence = numberValue(input.evidenceKnowledgeSequence, "Decision evidence knowledge sequence");
   if (evidenceKnowledgeSequence < 0 || evidenceKnowledgeSequence > await latest(transaction)) throw new Error("Decision evidence knowledge sequence is outside canonical history.");
   const created = await commit(transaction, "user/local");
-  await txQuery(
+  await pgliteQuery(
     transaction,
     `INSERT INTO spending_dedup_decision_events(
        event_id, decision_key, invoice_id, transaction_id, event_kind,
@@ -348,7 +305,7 @@ export async function revokePGliteSpendingDedupLink(transaction: PGliteTransacti
      ) VALUES (?, ?, ?, ?, 'revoked', 'user', ?, NULL, NULL, ?, ?, ?)`,
     [Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex")), decisionKey, pair.invoice, pair.transaction, required(input.origin.userId, "Decision user"), stableJson(objectJson(input.evidence, "Decision evidence"), "Decision evidence"), evidenceKnowledgeSequence, created.id],
   );
-  await txQuery(transaction, "DELETE FROM current_spending_dedup_links WHERE invoice_id = ? AND transaction_id = ?", [pair.invoice, pair.transaction]);
+  await pgliteQuery(transaction, "DELETE FROM current_spending_dedup_links WHERE invoice_id = ? AND transaction_id = ?", [pair.invoice, pair.transaction]);
   return input;
 }
 
@@ -357,24 +314,24 @@ export async function commitPGliteSpendingRefundRevision(
   input: SpendingRefundRevisionInput,
 ): Promise<SpendingRefundView> {
   const transactionId = bytes(input.transactionId, "Refund transaction identity");
-  if ((await txQuery(transaction, "SELECT 1 FROM financial_transactions WHERE transaction_id = ?", [transactionId])).rows.length === 0) throw new Error("Refund transaction identity does not exist.");
+  if ((await pgliteQuery(transaction, "SELECT 1 FROM financial_transactions WHERE transaction_id = ?", [transactionId])).rows.length === 0) throw new Error("Refund transaction identity does not exist.");
   const stableRefundKey = required(input.stableRefundKey, "Stable refund key");
   const sourceRevisionKey = required(input.sourceRevisionKey, "Refund source revision key");
   if (!Number.isSafeInteger(input.revisionNumber) || input.revisionNumber < 1) throw new Error("Refund revision number must be positive.");
   const authorityRoute = required(input.authorityRoute, "Refund source authority");
   if (/invoice.*cancel|cancel.*invoice/iu.test(authorityRoute) || ("kind" in input.evidence && String(input.evidence.kind).toLowerCase().includes("invoice-cancellation"))) throw new Error("Invoice cancellation is not refund evidence.");
-  if ((await txQuery(transaction, "SELECT 1 FROM source_authority_routes WHERE authority_route = ?", [authorityRoute])).rows.length === 0) throw new Error("Refund source authority is not registered.");
-  const identityRows = await txQuery<{ refund_id: unknown; transaction_id: unknown }>(transaction, "SELECT refund_id, transaction_id FROM spending_refund_identities WHERE stable_refund_key = ?", [stableRefundKey]);
+  if ((await pgliteQuery(transaction, "SELECT 1 FROM source_authority_routes WHERE authority_route = ?", [authorityRoute])).rows.length === 0) throw new Error("Refund source authority is not registered.");
+  const identityRows = await pgliteQuery<{ refund_id: unknown; transaction_id: unknown }>(transaction, "SELECT refund_id, transaction_id FROM spending_refund_identities WHERE stable_refund_key = ?", [stableRefundKey]);
   let identity = identityRows.rows[0];
   const priorRows = identity
-    ? await txQuery<Row>(transaction, "SELECT * FROM spending_refund_revisions WHERE refund_id = ? AND source_revision_key = ?", [identity.refund_id, sourceRevisionKey])
+    ? await pgliteQuery<Row>(transaction, "SELECT * FROM spending_refund_revisions WHERE refund_id = ? AND source_revision_key = ?", [identity.refund_id, sourceRevisionKey])
     : { rows: [] as readonly Row[] };
   if (priorRows.rows[0]) {
     const recognition = await querySpendingRecognition(transaction);
     const existing = recognition.refunds.find((refund) => refund.revisionId === idString(priorRows.rows[0]!.revision_id));
     if (existing) return existing;
     const prior = priorRows.rows[0]!;
-    const commitRow = await txQuery<{ commit_sequence: number | string }>(transaction, "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
+    const commitRow = await pgliteQuery<{ commit_sequence: number | string }>(transaction, "SELECT commit_sequence FROM canonical_commits WHERE commit_id = ?", [prior.commit_id]);
     return {
       refundId: idString(prior.refund_id),
       stableRefundKey: stableRefundKey,
@@ -396,7 +353,7 @@ export async function commitPGliteSpendingRefundRevision(
       commitSequence: numberValue(commitRow.rows[0]?.commit_sequence, "Refund commit sequence"),
     };
   }
-  const countRows = identity ? await txQuery<{ value: number | string }>(transaction, "SELECT COALESCE(MAX(revision_number), 0) AS value FROM spending_refund_revisions WHERE refund_id = ?", [identity.refund_id]) : { rows: [{ value: 0 }] };
+  const countRows = identity ? await pgliteQuery<{ value: number | string }>(transaction, "SELECT COALESCE(MAX(revision_number), 0) AS value FROM spending_refund_revisions WHERE refund_id = ?", [identity.refund_id]) : { rows: [{ value: 0 }] };
   const count = Number(countRows.rows[0]?.value ?? 0);
   if (input.revisionNumber !== count + 1) throw new Error("Refund revisions must be contiguous.");
   if (identity && idString(identity.transaction_id) !== input.transactionId) throw new Error("Refund revision cannot move to a replacement transaction identity.");
@@ -409,11 +366,11 @@ export async function commitPGliteSpendingRefundRevision(
   const created = await commit(transaction, authorityRoute);
   if (!identity) {
     const refundId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
-    await txQuery(transaction, "INSERT INTO spending_refund_identities(refund_id, transaction_id, stable_refund_key, created_commit_id) VALUES (?, ?, ?, ?)", [refundId, transactionId, stableRefundKey, created.id]);
+    await pgliteQuery(transaction, "INSERT INTO spending_refund_identities(refund_id, transaction_id, stable_refund_key, created_commit_id) VALUES (?, ?, ?, ?)", [refundId, transactionId, stableRefundKey, created.id]);
     identity = { refund_id: refundId, transaction_id: transactionId };
   }
   const revisionId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
-  await txQuery(
+  await pgliteQuery(
     transaction,
     `INSERT INTO spending_refund_revisions(
        revision_id, refund_id, source_revision_key, revision_number,
@@ -432,159 +389,107 @@ export async function commitPGliteSpendingRefundRevision(
 /**
  * Apply a visible month-page decision without rebuilding the 100k-row report.
  * Pair facts, candidate identity, and the data version are all revalidated in
- * the write transaction. The returned compact page is captured at the commit
- * version; the renderer then reloads only its visible month records.
+ * the write transaction. The Purchase report's decide() reads the pair's
+ * records before and after the write and returns the summary delta between
+ * them; the renderer then reloads only its visible month records.
  */
 export async function applyPGliteSpendingPageAction(
   writer: PGliteSpendingWriter,
   input: SpendingPageActionRequest,
 ): Promise<SpendingPageActionResult> {
-  const result = await writer.transaction(async (transaction) => {
+  return writer.transaction(async (transaction) => {
     const current = await latest(transaction);
     if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
       throw new Error("Spending action data version is stale; reload Spending before pairing.");
-
-    let summaryBefore: readonly SpendingSummaryDeltaLine[] = Object.freeze([]);
-    if (input.kind === "revoke") {
-      const beforeRecords = await queryCurrentSpendingActionRecords(transaction, {
-        knowledgeAt: current,
-        invoiceIdentityId: input.invoiceIdentityId,
-        transactionIdentityId: input.transactionIdentityId,
-      });
-      const linkedRecord = beforeRecords.find((record) => record.basis === "linked");
-      if (!linkedRecord) throw new Error("Spending revoke selection is stale or no longer linked.");
-      summaryBefore = Object.freeze([summaryLineFromRecord(linkedRecord)]);
-      await revokePGliteSpendingDedupLink(transaction, {
-        invoiceId: input.invoiceIdentityId,
-        transactionId: input.transactionIdentityId,
-        decisionKey: `spending/user/revoke/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
-        origin: { kind: "user", userId: LOCAL_USER_ID },
-        evidenceKnowledgeSequence: current,
-        evidence: { reason: "user-revoked-link" },
-      });
-    } else if (input.kind === "direct") {
-      const { invoice, payment } = await queryPGliteSpendingDirectPair(
-        transaction,
-        input.invoiceIdentityId,
-        input.transactionIdentityId,
-        current,
-      );
-      summaryBefore = await standaloneSummaryLines(transaction, invoice, payment);
-      await confirmPGliteSpendingDedupLink(transaction, {
-        invoiceIdentityId: input.invoiceIdentityId,
-        transactionIdentityId: input.transactionIdentityId,
-        decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
-        userId: LOCAL_USER_ID,
-        evidenceKnowledgeSequence: current,
-        evidence: {
-          decisionOrigin: "explicit-user-selection",
-          invoice: { identityId: invoice.invoiceId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
-          payment: { identityId: payment.transactionId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
-        },
-      });
-    } else {
-      const resolved = await resolvePGliteSpendingCandidate(transaction, input.candidateId, {
-        invoiceId: input.invoiceIdentityId,
-        transactionId: input.transactionIdentityId,
-      });
-      if (input.action === "confirm") {
-        const { invoice, payment } = await queryPGliteSpendingDirectPair(
-          transaction,
-          input.invoiceIdentityId,
-          input.transactionIdentityId,
-          current,
-        );
-        summaryBefore = await standaloneSummaryLines(transaction, invoice, payment);
-      }
-      const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
-        invoiceId: resolved.candidate.invoiceId,
-        transactionId: resolved.candidate.transactionId,
-        candidateKey: resolved.candidate.candidateKey,
-        algorithm: resolved.candidate.algorithm,
-        algorithmVersion: resolved.candidate.algorithmVersion,
-        similarityEvidence: resolved.candidate.similarityEvidence,
-      });
-      const decision: SpendingDecisionInput = {
-        invoiceId: resolved.candidate.invoiceId,
-        transactionId: resolved.candidate.transactionId,
-        decisionKey: `spending/user/${input.action}/${resolved.candidate.candidateKey}`,
-        origin: { kind: "user", userId: LOCAL_USER_ID },
-        evidenceKnowledgeSequence: Math.max(current, materialized.commitSequence),
-        evidence: {
-          candidateKey: resolved.candidate.candidateKey,
-          algorithm: resolved.candidate.algorithm,
-          algorithmVersion: resolved.candidate.algorithmVersion,
-          similarityEvidence: resolved.candidate.similarityEvidence,
-          decisionOrigin: "local-user",
-        },
-      };
-      if (input.action === "confirm") await confirmPGliteSpendingDedupLink(transaction, decision);
-      else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
-    }
-
-    const knowledgeAt = await latest(transaction);
-    const affectedRecords = await queryCurrentSpendingActionRecords(transaction, {
-      knowledgeAt,
-      invoiceIdentityId: input.invoiceIdentityId,
-      transactionIdentityId: input.transactionIdentityId,
-    });
-    const summaryAfter = input.action === "deny"
-      ? Object.freeze([])
-      : Object.freeze(affectedRecords.map(summaryLineFromRecord));
-    if (input.action === "confirm" && !affectedRecords.some((record) => record.basis === "linked"))
+    const pair = { invoiceIdentityId: input.invoiceIdentityId, transactionIdentityId: input.transactionIdentityId };
+    const decision = await decide(transaction, pair, (tx) => writePageAction(tx, input, current));
+    if (input.action === "revoke" && !decision.beforeRecords.some((record) => record.basis === "linked"))
+      throw new Error("Spending revoke selection is stale or no longer linked.");
+    if (input.action === "confirm" && !decision.affectedRecords.some((record) => record.basis === "linked"))
       throw new Error("Spending confirmation did not produce its linked record.");
-    if (input.action === "revoke" && affectedRecords.some((record) => record.basis === "linked"))
+    if (input.action === "revoke" && decision.affectedRecords.some((record) => record.basis === "linked"))
       throw new Error("Spending revoke did not restore standalone records.");
     return Object.freeze({
       action: input.action,
       kind: input.kind,
-      baseKnowledgeAt: current,
-      knowledgeAt,
+      baseKnowledgeAt: decision.baseKnowledgeAt,
+      knowledgeAt: decision.knowledgeAt,
       invoiceIdentityId: input.invoiceIdentityId,
       transactionIdentityId: input.transactionIdentityId,
-      summaryDelta: Object.freeze({ before: summaryBefore, after: summaryAfter }),
-      affectedRecords,
+      summaryDelta: decision.summaryDelta,
+      affectedRecords: decision.affectedRecords,
     });
   });
-  return result;
 }
 
-function summaryLine(
-  date: string,
-  amount: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
-  category: PurchaseCategory,
-): SpendingSummaryDeltaLine {
-  return Object.freeze({ date: date.slice(0, 10), amount, category });
-}
-
-function summaryLineFromRecord(
-  record: SpendingPageActionResult["affectedRecords"][number],
-): SpendingSummaryDeltaLine {
-  return summaryLine(record.occurrence.value, record.amount
-    ? { currency: record.amount.currency, coefficient: record.amount.coefficient, scale: record.amount.scale }
-    : null, record.category);
-}
-
-/**
- * The invoice-only and bank-only lines a direct confirmation replaces, with
- * their Purchase categories. The bank line is dated by the purchase date the
- * summary buckets it under (consume, then posting, then effective date).
- */
-async function standaloneSummaryLines(
+/** The recognition write one page action makes, after validating its pair at `current`. */
+async function writePageAction(
   transaction: PGliteTransaction,
-  invoice: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["invoice"],
-  payment: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["payment"],
-): Promise<readonly SpendingSummaryDeltaLine[]> {
-  const itemCategorizations = (await itemCategorizationRows(transaction, [invoice.invoiceId])).get(invoice.invoiceId) ?? [];
-  const invoiceAmount = invoice.revision.total
-    ? { currency: invoice.revision.total.currency, coefficient: invoice.revision.total.coefficient, scale: invoice.revision.total.scale }
-    : null;
-  return Object.freeze([
-    summaryLine(invoice.revision.occurrence.value, invoiceAmount,
-      purchaseRecordCategory({ basis: "invoice", amount: invoiceAmount, invoice, transaction: null, itemCategorizations })),
-    summaryLine(transactionPurchaseDate(payment).value, payment.amount,
-      purchaseRecordCategory({ basis: "bank-transaction", amount: payment.amount, invoice: null, transaction: payment, itemCategorizations: [] })),
-  ]);
+  input: SpendingPageActionRequest,
+  current: number,
+): Promise<void> {
+  if (input.kind === "revoke") {
+    await revokePGliteSpendingDedupLink(transaction, {
+      invoiceId: input.invoiceIdentityId,
+      transactionId: input.transactionIdentityId,
+      decisionKey: `spending/user/revoke/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+      origin: { kind: "user", userId: LOCAL_USER_ID },
+      evidenceKnowledgeSequence: current,
+      evidence: { reason: "user-revoked-link" },
+    });
+    return;
+  }
+  if (input.kind === "direct") {
+    const { invoice, payment } = await queryPGliteSpendingDirectPair(
+      transaction,
+      input.invoiceIdentityId,
+      input.transactionIdentityId,
+      current,
+    );
+    await confirmPGliteSpendingDedupLink(transaction, {
+      invoiceIdentityId: input.invoiceIdentityId,
+      transactionIdentityId: input.transactionIdentityId,
+      decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+      userId: LOCAL_USER_ID,
+      evidenceKnowledgeSequence: current,
+      evidence: {
+        decisionOrigin: "explicit-user-selection",
+        invoice: { identityId: invoice.invoiceId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
+        payment: { identityId: payment.transactionId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
+      },
+    });
+    return;
+  }
+  const resolved = await resolvePGliteSpendingCandidate(transaction, input.candidateId, {
+    invoiceId: input.invoiceIdentityId,
+    transactionId: input.transactionIdentityId,
+  });
+  if (input.action === "confirm")
+    await queryPGliteSpendingDirectPair(transaction, input.invoiceIdentityId, input.transactionIdentityId, current);
+  const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
+    invoiceId: resolved.candidate.invoiceId,
+    transactionId: resolved.candidate.transactionId,
+    candidateKey: resolved.candidate.candidateKey,
+    algorithm: resolved.candidate.algorithm,
+    algorithmVersion: resolved.candidate.algorithmVersion,
+    similarityEvidence: resolved.candidate.similarityEvidence,
+  });
+  const decision: SpendingDecisionInput = {
+    invoiceId: resolved.candidate.invoiceId,
+    transactionId: resolved.candidate.transactionId,
+    decisionKey: `spending/user/${input.action}/${resolved.candidate.candidateKey}`,
+    origin: { kind: "user", userId: LOCAL_USER_ID },
+    evidenceKnowledgeSequence: Math.max(current, materialized.commitSequence),
+    evidence: {
+      candidateKey: resolved.candidate.candidateKey,
+      algorithm: resolved.candidate.algorithm,
+      algorithmVersion: resolved.candidate.algorithmVersion,
+      similarityEvidence: resolved.candidate.similarityEvidence,
+      decisionOrigin: "local-user",
+    },
+  };
+  if (input.action === "confirm") await confirmPGliteSpendingDedupLink(transaction, decision);
+  else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
 }
 
 function strongConfirmPairs(input: SpendingStrongConfirmRequest): readonly SpendingCandidatePairRef[] {
@@ -634,7 +539,7 @@ export function confirmPGliteSpendingStrongCandidates(
     const confirmed: (SpendingCandidatePairRef & Readonly<{ eventId: string }>)[] = [];
     for (const shownPair of shown) {
       const pair = strongByPair.get(`${shownPair.invoiceIdentityId}/${shownPair.transactionIdentityId}`)!;
-      const link = await decide(transaction, {
+      const link = await recordDecision(transaction, {
         invoiceId: pair.invoiceId,
         transactionId: pair.transactionId,
         decisionKey: `spending/user/confirmed/${pair.candidateId}`,

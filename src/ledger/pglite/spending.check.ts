@@ -5,14 +5,13 @@ import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   createPGliteSpendingQuery,
-  queryCurrentSpending,
-  queryCurrentSpendingRecordPage,
-  queryCurrentSpendingSummary,
-  queryHistoricalSpending,
-  querySpendingRecognition,
   rankPGliteSpendingPaymentCandidates,
   resolvePGliteSpendingCandidate,
 } from "./spending-query.ts";
+import {
+  queryCurrentSpendingRecordPage,
+  queryCurrentSpendingSummary,
+} from "./purchase-report.ts";
 import type { PurchaseReport } from "../canonical/spending-purchase-contracts.ts";
 import {
   commitPGliteSpendingRefundRevision,
