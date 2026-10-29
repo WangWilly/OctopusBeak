@@ -17,13 +17,15 @@ import {
   cathaySignInPlan,
   signInCathayForApp,
   collectCathayDomesticFinancialRequests,
+  cathayQueryPeriod,
   type CathayDomesticFinancialCollection,
+  type CathayQueryPeriod,
 } from "./cathay-statements.js";
 import {
   collectCathayForeignFinancialCaptures,
   collectCathayCurrentForeignDepositBalanceCaptures,
   type CathayForeignFinancialCollection,
-  type CathayForeignDateRange,
+  type CathayForeignQueryRange,
 } from "./cathay-foreign-statements.js";
 import {
   buildCathayCurrentDepositBalanceCaptures,
@@ -54,16 +56,9 @@ import {
 } from "./cathay-attached-preview.ts";
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 import { withAbort } from "./abort.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 
 const statementTypeSchema = z.enum(["domestic", "foreign_currency"]);
-const dateRangeSchema = z.enum([
-  "one_week",
-  "one_month",
-  "three_months",
-  "six_months",
-  "one_year",
-]);
-
 const typedCathayInputSchema = z.object({
   credentials: z.object({
     cathay_user_id: z.string().trim().min(1),
@@ -74,7 +69,6 @@ const typedCathayInputSchema = z.object({
   attachedPreviewProducts: z
     .array(z.enum(ATTACHED_PREVIEW_PRODUCTS.cathay.products))
     .default([]),
-  dateRange: dateRangeSchema.default("one_year"),
   accountFilters: z.array(z.string()).default([]),
   domesticAccountFilters: z.array(z.string()).optional(),
   foreignAccountFilters: z.array(z.string()).optional(),
@@ -98,6 +92,7 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
     session: CathaySession,
     source: CathayStrictSourceOptions,
     observedAt: string,
+    period: CathayQueryPeriod,
   ) => Promise<CathayDomesticFinancialCollection>;
   collectForeign?: (
     page: Page,
@@ -105,6 +100,7 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
     session: CathaySession,
     source: CathayStrictSourceOptions,
     observedAt: () => string,
+    range: CathayForeignQueryRange,
   ) => Promise<CathayForeignFinancialCollection>;
   readCurrentBalances?: (
     page: Page,
@@ -124,6 +120,11 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
   ) => CathayAttachedPreviewPort;
 }>;
 
+
+/** The foreign API takes the period's dates directly. */
+function cathayForeignQueryRange({ start, end }: CollectionPeriod): CathayForeignQueryRange {
+  return { startDate: start, endDate: end };
+}
 
 function cathayBalanceResponseMatches(
   kind: "domestic" | "foreign",
@@ -350,15 +351,15 @@ export async function runCathayAllProviderWorkflow(
         const domestic = await withAbort(
           (
             dependencies.collectDomestic ??
-            ((target, selection, token, sourceOptions, captureTime) =>
+            ((target, selection, token, sourceOptions, captureTime, period) =>
               collectCathayDomesticFinancialRequests(
                 target,
-                selection.dateRange,
+                period,
                 selection.domesticAccountFilters ?? selection.accountFilters,
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, source, observedAt),
+          )(page, input, session, source, observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
         if (
@@ -411,16 +412,16 @@ export async function runCathayAllProviderWorkflow(
         const foreign = await withAbort(
           (
             dependencies.collectForeign ??
-            ((target, selection, token, sourceOptions, captureTime) =>
+            ((target, selection, token, sourceOptions, captureTime, range) =>
               collectCathayForeignFinancialCaptures(
                 target,
-                selection.dateRange as CathayForeignDateRange,
+                range,
                 selection.foreignAccountFilters ?? selection.accountFilters,
                 selection.currencyFilters,
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, source, () => context.now()),
+          )(page, input, session, source, () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
           context.signal,
         );
         if (
