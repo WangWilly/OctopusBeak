@@ -93,11 +93,19 @@ export const YUANTA_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES",
     products: [
-      { id: "deposit", stream: "domestic-deposit" },
-      { id: "foreign_currency", stream: "foreign-currency-deposit" },
+      // Three months and one day, Yuanta's 三個月 link.
+      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
+      { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
       { id: "credit_card", stream: "credit-card" },
-      { id: "loan", stream: "loan" },
-      { id: "fund", stream: "investment", integrationNamespace: "yuanta-fund" },
+      // Twelve months and one day, Yuanta's 一年 loan link.
+      { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 12, days: 1 } } },
+      // 365 days ending today, entered as dates.
+      {
+        id: "fund",
+        stream: "investment",
+        integrationNamespace: "yuanta-fund",
+        collectionPeriod: { lookBack: { days: 365 } },
+      },
     ],
   },
   task: {

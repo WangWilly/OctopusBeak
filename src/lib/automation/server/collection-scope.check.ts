@@ -290,7 +290,7 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
       launchEnv: {
         ...automationConfigEnv({ baseEnv: {} }),
       },
-      workflowBrowserPortFactory: () => ({
+      workflowBrowserPort: () => ({
         async withPage(run) { return await run({} as never); },
       }),
       appWorkflowBrowserConnectionForRun: (runId) => ({

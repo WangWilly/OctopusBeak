@@ -3,9 +3,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAutomationRunner, requirePGliteWorkflowRpc } from "./runner.ts";
+import { createAutomationRunner } from "./runner.ts";
+import { resolveTaskRunPlan, type TaskRunPlan } from "./task-run-plan.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { AUTOMATION_TASKS } from "./tasks.ts";
+import { AUTOMATION_TASKS, taskById } from "./tasks.ts";
 import type {
   AutomationPersistencePort,
   AutomationPersistenceProvider,
@@ -87,9 +88,15 @@ function aborted(signal: AbortSignal) {
 
 const freshRunner = () => createAutomationRunner({ runtime: createAutomationRuntimeState() });
 
+const exchangeRates = () => {
+  const task = taskById("exchange-rates");
+  assert.ok(task);
+  return task;
+};
+
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
-  assert.deepEqual(requirePGliteWorkflowRpc(provider), {
+  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
     endpoint: "http://127.0.0.1:43121/rpc",
     token: "test-token",
   });
@@ -97,13 +104,14 @@ test("typed workflow runtime uses the authenticated PGlite capability", () => {
 
 test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
   assert.throws(
-    () => requirePGliteWorkflowRpc({ automation: {} } as unknown as AutomationPersistenceProvider),
+    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, launchEnv: {}, launchVerificationSettings: {} }),
     /PGlite workflow transport is unavailable/u,
   );
   assert.throws(
-    () => requirePGliteWorkflowRpc({
-      ...providerStub({}),
-      pgliteWorkflow: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
+    () => resolveTaskRunPlan(exchangeRates(), {
+      pgliteRpc: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
+      launchEnv: {},
+      launchVerificationSettings: {},
     }),
     /PGlite workflow transport is unavailable/u,
   );
@@ -113,16 +121,16 @@ test("the runner hands the PGlite capability to the execution as a typed value, 
   const runner = freshRunner();
   const provider = providerStub();
   const finished = deferred<AutomationTaskRun>();
-  let options: Parameters<typeof runAutomationTaskExecution>[2] | undefined;
-  const runExecution: typeof runAutomationTaskExecution = async (_task, _run, executionOptions) => {
-    options = executionOptions;
+  let plan: TaskRunPlan | undefined;
+  const runExecution: typeof runAutomationTaskExecution = async (executionPlan) => {
+    plan = executionPlan;
     return { summary: null, failure: null };
   };
   await runner.start("exchange-rates", provider, { runExecution, onFinished: finished.resolve });
   await finished.promise;
-  assert.deepEqual(options?.pgliteRpc, provider.pgliteWorkflow);
+  assert.deepEqual(plan?.pgliteRpc, provider.pgliteWorkflow);
   assert.equal(
-    Object.keys(options?.launchEnv ?? {}).some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
+    Object.keys(plan?.launchEnv ?? {}).some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
     false,
   );
 });
@@ -321,7 +329,7 @@ test("an execution that throws after starting a commit still ends commit outcome
   const runner = freshRunner();
   const { automation } = memoryAutomation();
   const finished = deferred<AutomationTaskRun>();
-  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     await run.transition("running");
     await run.recordCommitAttempt({ phase: "started", attemptId: "lost-attempt", product: null, total: 1 });
     throw new Error("worker host crashed mid-commit");
@@ -341,7 +349,7 @@ test("cancellation reaches the typed execution through the run's signal and ends
   const provider = providerStub(automation);
   const started = deferred();
   const finished = deferred<AutomationTaskRun>();
-  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.signal);
     throw new Error("typed workflow observed cancellation");
@@ -372,7 +380,7 @@ test("work held for a data deletion runs only after every active run is cancelle
   const { runs, automation } = memoryAutomation();
   const provider = providerStub(automation);
   const started = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.signal);
     return { summary: null, failure: { code: "cancelled", proven: true } };
@@ -397,7 +405,7 @@ test("force-quit aborts the run's force signal and settles only after the execut
   const forced = deferred();
   const releaseExecution = deferred();
   const finished = deferred<AutomationTaskRun>();
-  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.forceSignal);
     forced.resolve();
@@ -446,7 +454,7 @@ test("a cancellation still persisting for a finished run never reaches the task'
   const provider = providerStub(automation);
   const executions: ActiveAutomationTaskRun[] = [];
   const releaseNext = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async (_task, run) => {
+  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     executions.push(run);
     if (executions.length === 1) await aborted(run.signal);
     else await releaseNext.promise;

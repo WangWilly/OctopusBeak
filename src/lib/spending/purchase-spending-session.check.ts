@@ -259,9 +259,6 @@ function makeTransport(overrides: Record<string, (...args: any[]) => unknown> = 
       calls.prewarms.push(input.dataVersion);
       return { status: "ready", dataVersion: input.dataVersion, reused: false };
     },
-    confirmCandidate: async () => ({ patch: {} }),
-    denyCandidate: async () => ({ patch: {} }),
-    revokeLink: async () => ({ patch: {} }),
     ...overrides,
   };
   return { calls, transport: base as unknown as PurchaseSpendingTransport };

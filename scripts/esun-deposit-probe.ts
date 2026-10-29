@@ -3,7 +3,7 @@ import { stderr, stdout } from "node:process";
 import { authenticateEsunPage, type EsunCredentials } from "../src/workflows/esun-credit-card-statements.ts";
 import { createWorkflowExecutor, type WorkflowDefinition } from "../src/lib/automation/workflow-executor.ts";
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
-import { workflowBrowserProfileForTask } from "../src/lib/automation/server/app-workflow-registry.ts";
+import { workflowBrowserProfileForWorkflow } from "../src/lib/automation/server/app-workflow-registry.ts";
 import { createDevelopmentBrowserPort } from "./workflow-dev.ts";
 import { runDepositProbe, type ProbeReport } from "./esun-deposit-probe/probe.ts";
 import { createPageTransport, observePortalRequests, waitForPortalSession } from "./esun-deposit-probe/page.ts";
@@ -73,7 +73,7 @@ async function main(args: readonly string[]) {
   const executor = createWorkflowExecutor([probeDefinition as WorkflowDefinition], {
     browser: createDevelopmentBrowserPort(controller.signal, undefined, undefined, {
       headless: args.includes("--headless"),
-      profile: workflowBrowserProfileForTask("esun-credit-card-statements"),
+      profile: workflowBrowserProfileForWorkflow("esun-credit-card-statements"),
     }),
     text: strictSourceText,
     humanAssistance: { request: async () => { throw new Error("The deposit probe has no verification route."); } },

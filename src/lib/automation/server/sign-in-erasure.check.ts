@@ -23,7 +23,7 @@ import {
   writeAutomationSettingsFile,
   type AutomationCredentialCodec,
 } from "./config-files.ts";
-import { loadAutomationDesktopModel } from "./desktop-api.ts";
+import { loadAutomationDesktopModel } from "./automation-desktop-model.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { eraseSignInDetails } from "./sign-in-erasure.ts";
 

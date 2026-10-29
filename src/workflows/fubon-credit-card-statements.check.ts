@@ -64,6 +64,7 @@ function cardCollection(observedAt: string) {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
+    collectionPeriod: () => assert.fail("Fubon credit cards declare no collection period"),
   };
   return { staged, context, product };
 }

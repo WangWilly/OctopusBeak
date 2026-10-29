@@ -12,7 +12,9 @@ import {
 } from "./yuanta-loan-statements.fixtures.ts";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { fixedPeriod, yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { chromium } from "playwright";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
@@ -33,6 +35,7 @@ const {
   readYuantaLoanAccountOptions,
   readYuantaLoanSource,
   yuantaLoanStatementsInputSchema,
+  yuantaLoanQueryRange,
   parseYuantaLoanStatementRows,
   runYuantaLoanStatements,
   stageYuantaLoan,
@@ -218,8 +221,6 @@ test("Yuanta loan typed collection admits complete source without writing or com
       }],
     },
     {
-      dateRange: "one_year",
-      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
       loanAccountFilters: [],
       sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
       sourceConnectionKey: deriveSourceConnectionIdentityKey(
@@ -253,7 +254,6 @@ test("Yuanta loan typed collection rejects an incomplete source before yielding 
         }],
       },
       {
-        dateRange: "one_year",
         loanAccountFilters: [],
         sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
         sourceConnectionKey: deriveSourceConnectionIdentityKey(
@@ -556,6 +556,15 @@ assert.deepEqual(
   ],
 );
 
+test("Yuanta loans query the 一年 link for one year and one day ending on the run's Taipei date", () => {
+  const declaration = YUANTA_SOURCE.statementSelection!.products.find(({ id }) => id === "loan")!.collectionPeriod!;
+  // 16:30Z on Feb 28 is 00:30 on Feb 29 in Taipei; a year back clamps to Feb 28.
+  assert.deepEqual(
+    yuantaLoanQueryRange(collectionPeriod({ today: taipeiToday("2028-02-28T16:30:00.000Z"), ...declaration })),
+    { quickLabel: "一年", startDate: "2027-02-28", endDate: "2028-02-29" },
+  );
+});
+
 // The read half against a synthetic signed-in frameset (ADR 0066): the site
 // opens the loan route in fmain, each account is queried over the custom
 // range, and a paged result is followed to its terminal page.
@@ -566,9 +575,7 @@ test("Yuanta loan source reads every account through the loantransactiondetails 
     { value: "12345678901235", label: "信用貸款 - 12345678901235" },
   ];
   const loanInput = {
-    ...yuantaLoanStatementsInputSchema.parse({
-      customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-    }),
+    ...yuantaLoanStatementsInputSchema.parse({}),
     sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
     sourceConnectionKey: deriveSourceConnectionIdentityKey(
       "yuanta",
@@ -644,7 +651,8 @@ test("Yuanta loan source reads every account through the loantransactiondetails 
         page,
         loanInput,
         yuantaCollectionContext({ signal: options.signal, now: "2026-02-01T00:00:00.000Z" }),
-        yuantaStagingHandle([], activities),
+        // January matches no quick link, so the query enters its dates under 自訂.
+        yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31")),
       );
       const picked = await page.evaluate(() => (window as { picked?: string[] }).picked ?? []);
       return { snapshot, served, queried, activities, picked };

@@ -134,10 +134,6 @@ export function canonicalPurchasePair(pair: SpendingPair): SpendingPair {
   };
 }
 
-function decimal(value: { coefficient: string; scale: number }): Decimal {
-  return { coefficient: BigInt(value.coefficient), scale: value.scale };
-}
-
 function add(left: Decimal, right: Decimal): Decimal {
   const scale = Math.max(left.scale, right.scale);
   return {
@@ -146,6 +142,74 @@ function add(left: Decimal, right: Decimal): Decimal {
       left.coefficient * 10n ** BigInt(scale - left.scale) +
       right.coefficient * 10n ** BigInt(scale - right.scale),
   };
+}
+
+/** A money total by key, before it is reduced; see purchaseMoneyTotals. */
+export type PurchaseMoneyAccumulator<K extends string = string> = Map<K, { currency: string; value: Decimal; count: number }>;
+
+/**
+ * Add one amount to a Purchase report total. Every purchase-basis total goes
+ * through here: the currency is upper-cased and the key defaults to it, so
+ * `twd` and `TWD` never become two totals.
+ */
+export function addPurchaseMoney<K extends string>(
+  totals: PurchaseMoneyAccumulator<K>,
+  amount: ExactMoney,
+  key: (currency: string) => K = (currency) => currency as K,
+): void {
+  const currency = amount.currency.toUpperCase();
+  const entryKey = key(currency);
+  const previous = totals.get(entryKey);
+  const value = { coefficient: BigInt(amount.coefficient), scale: amount.scale };
+  totals.set(entryKey, {
+    currency,
+    value: previous ? add(previous.value, value) : value,
+    count: (previous?.count ?? 0) + 1,
+  });
+}
+
+/** Reduce an exact amount to its canonical scale: no trailing zero digits after the point. */
+export function reducedPurchaseMoney<T extends Readonly<{ coefficient: string; scale: number }>>(amount: T): T {
+  let coefficient = BigInt(amount.coefficient);
+  let scale = amount.scale;
+  while (scale > 0 && coefficient % 10n === 0n) {
+    coefficient /= 10n;
+    scale -= 1;
+  }
+  return { ...amount, coefficient: coefficient.toString(), scale };
+}
+
+/** The accumulated totals at canonical scale, sorted by key. */
+export function purchaseMoneyTotals<K extends string>(
+  totals: PurchaseMoneyAccumulator<K>,
+): readonly Readonly<{ key: K; currency: string; coefficient: string; scale: number; count: number }>[] {
+  return [...totals.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => reducedPurchaseMoney({
+      key,
+      currency: entry.currency,
+      coefficient: entry.value.coefficient.toString(),
+      scale: entry.value.scale,
+      count: entry.count,
+    }));
+}
+
+/**
+ * The refunds a Purchase report counts. Only an active refund recognition
+ * with an amount and an occurrence counts, and never one of a transaction
+ * that Direct source precedence covers. A counted refund replaces its
+ * transaction's bank-only purchase; any other refund leaves that purchase
+ * standing. purchaseRowsCte applies the same rule in SQL.
+ */
+export function countedPurchaseRefunds(
+  refunds: readonly SpendingRefundView[],
+  coveredTransactionIds: ReadonlySet<string> = new Set(),
+): readonly (SpendingRefundView & Readonly<{ amount: ExactMoney; occurrence: NonNullable<SpendingRefundView["occurrence"]> }>)[] {
+  return refunds.flatMap((refund) => {
+    const transactionId = canonicalPurchaseUuid(refund.transactionId, "Purchase refund transaction identity");
+    if (refund.state !== "active" || !refund.amount || !refund.occurrence || coveredTransactionIds.has(transactionId)) return [];
+    return [{ ...refund, transactionId, amount: refund.amount, occurrence: refund.occurrence }];
+  });
 }
 
 function dateAllowed(value: string, request: PurchaseReportRequest): boolean {
@@ -298,6 +362,8 @@ export function composePurchaseReport(input: Readonly<{
   recognition: SpendingRecognitionSnapshot;
   itemCategorizations?: PurchaseItemCategorizationIndex;
   paymentSources?: PurchasePaymentSourceIndex;
+  /** Transactions Direct source precedence covers; their refunds do not count. */
+  coveredTransactionIds?: ReadonlySet<string>;
 }>): PurchaseReport {
   const { request, knowledgeAt, invoices, transactions, recognition } = input;
   const paymentSourceOf = (transaction: CanonicalSpendingTransaction | null): PurchasePaymentSource | null =>
@@ -385,10 +451,7 @@ export function composePurchaseReport(input: Readonly<{
       paymentSource: null,
     });
   }
-  const normalizedRefunds = recognition.refunds.map((refund) => ({
-    ...refund,
-    transactionId: canonicalPurchaseUuid(refund.transactionId, "Purchase refund transaction identity"),
-  }));
+  const normalizedRefunds = countedPurchaseRefunds(recognition.refunds, input.coveredTransactionIds);
   const refundTransactions = new Set(normalizedRefunds.map((refund) => refund.transactionId));
   for (const transaction of transactionById.values()) {
     if (linkedTransactions.has(transaction.transactionId) || refundTransactions.has(transaction.transactionId)) continue;
@@ -415,7 +478,7 @@ export function composePurchaseReport(input: Readonly<{
     });
   }
   for (const refund of normalizedRefunds) {
-    if (!refund.amount || !refund.occurrence || !dateAllowed(refund.occurrence.value, request)) continue;
+    if (!dateAllowed(refund.occurrence.value, request)) continue;
     records.push({
       purchaseId: `refund:${refund.refundId}`,
       basis: "refund",
@@ -438,14 +501,8 @@ export function composePurchaseReport(input: Readonly<{
       paymentSource: paymentSourceOf(transactionById.get(refund.transactionId) ?? null),
     });
   }
-  const totals = new Map<string, { value: Decimal; count: number }>();
-  for (const record of records) if (record.amount) {
-    const old = totals.get(record.amount.currency);
-    totals.set(record.amount.currency, {
-      value: old ? add(old.value, decimal(record.amount)) : decimal(record.amount),
-      count: (old?.count ?? 0) + 1,
-    });
-  }
+  const totals: PurchaseMoneyAccumulator = new Map();
+  for (const record of records) if (record.amount) addPurchaseMoney(totals, record.amount);
   records.sort((a, b) => a.occurrence.value.localeCompare(b.occurrence.value) || a.purchaseId.localeCompare(b.purchaseId));
   return Object.freeze({
     status: "ok",
@@ -453,15 +510,70 @@ export function composePurchaseReport(input: Readonly<{
     knowledgeAt,
     financialAt: request.financialAt ?? null,
     records: Object.freeze(records),
-    totalsByCurrency: Object.freeze([...totals].sort().map(([currency, entry]) => ({
-      currency,
-      coefficient: entry.value.coefficient.toString(),
-      scale: entry.value.scale,
-      count: entry.count,
-    }))),
+    totalsByCurrency: Object.freeze(purchaseMoneyTotals(totals).map(({ currency, coefficient, scale, count }) => ({ currency, coefficient, scale, count }))),
     totalStatus: records.some((item) => item.possibleDuplicate)
       ? "includes-pending-confirmation"
       : "complete",
     candidates: recognition.candidates,
+  });
+}
+
+/**
+ * Opening Spending must not write a similarity candidate, but it still needs
+ * to show deterministic possible duplicates. Mark every unlinked record that
+ * a pending candidate, durable or deterministic, touches. A linked record is
+ * a decided purchase and never carries candidates, the same as on the record
+ * page.
+ */
+export function withPossibleDuplicates(
+  report: PurchaseReport,
+  invoices: readonly CanonicalEInvoiceView[],
+  transactions: readonly CanonicalSpendingTransaction[],
+): PurchaseReport {
+  const activePairs = new Set(
+    report.records
+      .filter((record) => record.basis === "linked" && record.link)
+      .map((record) => key(record.link!)),
+  );
+  const durableByPair = new Map(report.candidates.map((candidate) => [key(candidate), candidate]));
+  const inferred = evaluateSpendingMatchCandidates(invoices, transactions)
+    .filter((candidate) => !activePairs.has(key(candidate)))
+    .flatMap((candidate): SpendingCandidateView[] => {
+      const durable = durableByPair.get(key(candidate));
+      if (durable && durable.status !== "candidate") return [];
+      return [durable ?? {
+        invoiceId: candidate.invoiceId,
+        transactionId: candidate.transactionId,
+        candidateId: candidate.candidateKey,
+        algorithm: candidate.algorithm,
+        algorithmVersion: candidate.algorithmVersion,
+        similarityEvidence: candidate.similarityEvidence,
+        status: "candidate",
+      }];
+    });
+  const candidates = [...report.candidates];
+  const known = new Set(candidates.map((candidate) => candidate.candidateId));
+  for (const candidate of inferred) if (!known.has(candidate.candidateId)) candidates.push(candidate);
+  const byInvoice = new Map<string, string[]>();
+  const byTransaction = new Map<string, string[]>();
+  for (const candidate of candidates) {
+    if (candidate.status !== "candidate") continue;
+    (byInvoice.get(candidate.invoiceId) ?? byInvoice.set(candidate.invoiceId, []).get(candidate.invoiceId)!).push(candidate.candidateId);
+    (byTransaction.get(candidate.transactionId) ?? byTransaction.set(candidate.transactionId, []).get(candidate.transactionId)!).push(candidate.candidateId);
+  }
+  const records = report.records.map((record) => {
+    if (record.basis === "linked") return record;
+    const ids = [
+      ...(record.invoice ? byInvoice.get(record.invoice.invoiceId) ?? [] : []),
+      ...(record.transaction ? byTransaction.get(record.transaction.transactionId) ?? [] : []),
+    ];
+    if (ids.length === 0) return record;
+    return { ...record, candidateIds: Object.freeze([...new Set([...record.candidateIds, ...ids])]), possibleDuplicate: true };
+  });
+  return Object.freeze({
+    ...report,
+    records: Object.freeze(records),
+    totalStatus: records.some((record) => record.possibleDuplicate) ? "includes-pending-confirmation" : report.totalStatus,
+    candidates: Object.freeze(candidates),
   });
 }

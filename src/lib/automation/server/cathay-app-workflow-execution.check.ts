@@ -24,10 +24,9 @@ registerHooks({
 });
 
 const [{ taskById }, { executeTaskRunForCheck }, {
-  workflowDefinitionForTask,
-  workflowBrowserProfileForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowBrowserProfileForWorkflow,
+  workflowStartUrlForWorkflow,
 }] = await Promise.all([
   import("./tasks.ts"),
   import("./task-run-check-support.ts"),
@@ -49,12 +48,12 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
   assert.equal(task.workflowId, "cathay-all-statements");
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
-  const definition = workflowDefinitionForTask(task.workflowId);
+  const definition = appWorkflowRegistration(task.workflowId)?.definition;
   assert.equal(definition?.id, "cathay-all-statements");
   assert.equal(definition?.requiresFinancialCommit, true);
-  assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
-  assert.equal(workflowBrowserProfileForTask(task.workflowId), "cathay-login");
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
+  assert.equal(workflowBrowserProfileForWorkflow(task.workflowId), "cathay-login");
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       cathay_user_id: "synthetic-user-id",
       cathay_account: "synthetic-account",
@@ -64,14 +63,14 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     attachedPreviewProducts: [],
   });
   assert.throws(
-    () => workflowInputForTask(task.workflowId, {
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: "domestic,unknown",
     }),
     /Unknown Cathay statement type: unknown/u,
   );
   assert.throws(
-    () => workflowInputForTask(task.workflowId, {
+    () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
       ...syntheticEnvironment(),
       LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES: undefined,
     }),
@@ -112,7 +111,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       workerPorts: { financialCommit },
-      workflowBrowserPortFactory: ({ startUrl, browserProfile }) => {
+      workflowBrowserPort: ({ startUrl, browserProfile }) => {
         observedStartUrl = startUrl;
         observedBrowserProfile = browserProfile;
         return browser;

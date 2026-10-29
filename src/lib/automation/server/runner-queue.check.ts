@@ -54,15 +54,15 @@ function harness() {
     },
   } as unknown as AutomationPersistenceProvider;
   const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
-  const execute: typeof runAutomationTaskExecution = async (task, run) => {
+  const execute: typeof runAutomationTaskExecution = async (plan, run) => {
     active += 1;
     peak = Math.max(peak, active);
     // A waiting verification continues to own its execution slot.
     await run.transition("running");
     await run.transition("waiting_for_human");
-    entered.push(task.id);
+    entered.push(plan.task.id);
     try {
-      await new Promise<void>((resolve) => releases.set(task.id, resolve));
+      await new Promise<void>((resolve) => releases.set(plan.task.id, resolve));
       throw new Error("Synthetic source failure releases the workflow slot.");
     } finally { active -= 1; }
   };

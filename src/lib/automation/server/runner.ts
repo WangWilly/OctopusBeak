@@ -1,8 +1,6 @@
 import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
-import {
-  automationProcessEnv as workflowEnvironmentFromSettings,
-  runAutomationTaskExecution,
-} from "./task-run-execution.ts";
+import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { resolveTaskRunPlan } from "./task-run-plan.ts";
 import type {
   AutomationPersistenceProvider,
   AutomationTaskRun,
@@ -13,7 +11,8 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
-import { runCaptchaRetryCampaign } from "./captcha-retry-coordinator.ts";
+import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
+import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
 import { SourceDeviceBusyError, sourceDeviceForTask } from "./source-device-lock.ts";
 import {
@@ -23,7 +22,6 @@ import {
   type ActiveAutomationTaskRun,
   type TaskRunReport,
 } from "./active-task-run.ts";
-import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 
 export async function hydrateAutomationRuntimeState(
   provider: AutomationPersistenceProvider,
@@ -45,17 +43,6 @@ export type StartAutomationTaskOptions = {
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
-
-/** The authenticated PGlite endpoint typed App workflows commit through. */
-export function requirePGliteWorkflowRpc(
-  provider: AutomationPersistenceProvider,
-): PGliteWorkflowRpc {
-  const rpc = provider.pgliteWorkflow;
-  if (!rpc?.endpoint.trim() || !rpc.token.trim()) {
-    throw new Error("PGlite workflow transport is unavailable.");
-  }
-  return rpc;
-}
 
 export type StartedAutomationTask = {
   taskId: string;
@@ -142,19 +129,17 @@ export function createAutomationRunner(options: Readonly<{
         return CANCELLED;
       }
       if (run.signal.aborted) return CANCELLED;
-      const workflowEnvironment = workflowEnvironmentFromSettings();
-      const pgliteRpc = requirePGliteWorkflowRpc(provider);
+      // Resolved after admission so settings edited while the run queued apply.
+      const plan = resolveTaskRunPlan(task, { pgliteRpc: provider.pgliteWorkflow });
       const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
-        taskId: task.id,
-        appWorkflow: task.kind === "crawler",
+        plan,
         run,
-        pageForRun,
-        launchVerificationSettings: { ...readAutomationSettings() },
-        execute: (executionOptions) => runExecution(task, run, {
-          ...executionOptions,
-          launchEnv: { ...workflowEnvironment, ...(executionOptions.launchEnv ?? {}) },
-          pgliteRpc,
+        executeRound: captchaRoundExecution({
+          plan,
+          run,
+          pageForRun,
+          execute: (round) => runExecution(plan, run, round),
         }),
       });
     } finally {

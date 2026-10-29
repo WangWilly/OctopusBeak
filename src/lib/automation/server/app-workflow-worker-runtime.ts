@@ -39,8 +39,7 @@ import {
   type AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
 import {
-  workflowDefinitionForTask,
-  workflowRuntimeForTask,
+  appWorkflowRegistration,
   type AppWorkflowRegistryDependencies,
 } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
@@ -212,7 +211,9 @@ export async function runAppWorkflowWorker(
     return childRpc;
   };
   try {
-    if (start.pgliteRpc && workflowRuntimeForTask(start.workflowId).kind === "nonbrowser") {
+    const runtime = appWorkflowRegistration(start.workflowId)?.runtime;
+    if (!runtime) throw new Error("worker-start-failed");
+    if (start.pgliteRpc && runtime.kind === "nonbrowser") {
       await connectChildRpc(start.pgliteRpc);
     }
     const definitionDependencies: AppWorkflowRegistryDependencies = {
@@ -234,7 +235,9 @@ export async function runAppWorkflowWorker(
         },
       } : {}),
     };
-    const definition = (options.resolveDefinition ?? workflowDefinitionForTask)(start.workflowId, definitionDependencies);
+    const definition = options.resolveDefinition
+      ? options.resolveDefinition(start.workflowId, definitionDependencies)
+      : appWorkflowRegistration(start.workflowId, definitionDependencies)?.definition;
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
     previewWorkflow = definition.requiresPreviewWrite === true;
     const previewWrite = workflowUsesPreviewWrite(definition) ? options.previewWrite : undefined;

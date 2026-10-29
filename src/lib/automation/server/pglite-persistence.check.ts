@@ -9,7 +9,7 @@ import type { AutomationPersistenceProvider } from "./store.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
-} from "./desktop-api.ts";
+} from "./automation-desktop-service.ts";
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,
@@ -205,11 +205,12 @@ try {
 
   let exchangeWorkerStarts = 0;
   const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
-  const exchangeExecution: typeof runAutomationTaskExecution = (task, activeRun, options) => runAutomationTaskExecution(
-    task,
+  const exchangeExecution: typeof runAutomationTaskExecution = (plan, activeRun, round, seams) => runAutomationTaskExecution(
+    plan,
     activeRun,
+    round,
     {
-      ...options,
+      ...seams,
       appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
         const start = workerOptions.workerData as AppWorkflowWorkerStart;
         exchangeWorkerStarts += 1;

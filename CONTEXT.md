@@ -487,6 +487,14 @@ _Avoid_: Canonical identity merge, source-confirmed Transaction Relation, automa
 An unconfirmed report-level indication that separately included records may represent the same purchase. Both amounts remain included until a spending deduplication link is established, with the records marked as possible duplicates and the total marked as including items awaiting confirmation.
 _Avoid_: Confirmed duplicate, canonical identity conflict, automatic exclusion
 
+**Purchase record**:
+One row of purchase-basis spending, identified by its purchase id: a linked invoice/payment pair (`link:`), an invoice-only purchase (`invoice:`), a bank-only purchase (`transaction:`), or a counted refund (`refund:`). It carries its counted amount, its occurrence date, its Purchase category, and its source views. The Purchase report builds every record under one set of rules (ADR 0076): a linked record never carries pending candidates, a record with a transaction names its payment source, and only an active refund with an amount and an occurrence, of a transaction Direct source precedence does not cover, counts and replaces its transaction's bank-only record.
+_Avoid_: Spending row, transaction record, purchase line
+
+**Pairing decision**:
+One confirm, deny, or revoke of an invoice/payment pair, applied in one write transaction together with the change it makes to purchase-basis spending: the pair's Purchase records before and after the write, and the summary delta between them. A denial changes no record's amount, date, or category, so its delta is empty.
+_Avoid_: Report patch, targeted patch, summary-line rebuild
+
 **Financial report inclusion**:
 A versioned query policy that determines whether and how a Financial Transaction participates in a financial total from account type, direction, Transaction Kind, relations, posting status, Statement facts, and other admitted financial semantics before consulting Personal Category. Category, Tags, Counterparty display, alias, and notes may organize an included amount but never admit, exclude, or change it; if a report requires an absent optional Kind, the query returns an explicit eligibility coverage gap and affected amount rather than silently counting, dropping, or persisting an `unknown` status.
 _Avoid_: Category-controlled cash flow, tag exclusion, silent incomplete total, user financial override
@@ -546,6 +554,10 @@ _Avoid_: Duplicate import, one transaction, cross-source group
 **Group slot**:
 A distinct occurrence position within an Indistinguishable Occurrence Group that preserves its transaction count without asserting individual historical continuity. It is separate from the position of a row in a page or query result.
 _Avoid_: Provider transaction ID, global row sequence, proven individual identity
+
+**Collection period**:
+The dates a Verified product queries before a Source Capture: a look-back and the widest provider request it declares, ending on the Asia/Taipei date when the product first asks, which the Product collection run keeps for that product (ADR 0077). A Collection period chooses what to query before a capture; a Query bucket records what a capture queried.
+_Avoid_: Date range input, query window, today's range
 
 **Query bucket**:
 One source-side interval that a Source Capture queried, such as a billing statement period, the unbilled listing, or a timeline month, including a month the provider returned only in part. An admitted occurrence lives in the Query Bucket of its most recent inventoried capture, and its absence is evidence only when a later complete capture queried that same bucket.
@@ -964,6 +976,10 @@ _Avoid_: Pending run, running task, in-flight execution
 **Workflow execution**:
 One start of the provider workflow within an Active automation task run. A CAPTCHA Retry Campaign starts a new one for each round. It owns that start's events, human assistance wait, launched Collection scope version and browser page, and they end with it (ADR 0067).
 _Avoid_: Run attempt, round, execution attempt
+
+**Task run plan**:
+What an Active automation task run executes with, resolved once when the run leaves the queue: its task, its workflow registration and input builder, its Verified source's verification facts, its launch configuration and verification settings, and its PGlite endpoint. Every round of the run reads the same plan; a task the App cannot run fails when the plan is resolved (ADR 0075).
+_Avoid_: Run context, task lookup, launch options
 
 **Automation task run finalization**:
 The act of deciding an automation task run's terminal outcome, recording its safe result summary, and ending its active automation session. The Active automation task run decides the outcome from its Commit attempts, its stop, and what its execution observed; a run no live process owns is decided the same way from its stored attempts.

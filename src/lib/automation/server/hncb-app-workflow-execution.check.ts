@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  workflowDefinitionForTask,
-  workflowInputForTask,
-  workflowStartUrlForTask,
+  appWorkflowRegistration,
+  workflowStartUrlForWorkflow,
 } from "./app-workflow-registry.ts";
 import { taskById } from "./tasks.ts";
 
@@ -22,11 +21,11 @@ test("HNCB statements resolve to the App-owned typed workflow", () => {
   assert.equal(Object.hasOwn(task, "script"), false);
   assert.equal(Object.hasOwn(task, "command"), false);
 
-  const definition = workflowDefinitionForTask(task.workflowId);
+  const definition = appWorkflowRegistration(task.workflowId)?.definition;
   assert.equal(definition?.id, "hncb-statements");
   assert.equal(definition?.requiresFinancialCommit, true);
-  assert.equal(workflowStartUrlForTask(task.workflowId), LOGIN_URL);
-  assert.deepEqual(workflowInputForTask(task.workflowId, syntheticEnvironment()), {
+  assert.equal(workflowStartUrlForWorkflow(task.workflowId), LOGIN_URL);
+  assert.deepEqual(appWorkflowRegistration(task.workflowId)?.inputFromEnvironment(syntheticEnvironment()), {
     credentials: {
       hncb_user_id: "synthetic-user-id",
       hncb_account: "synthetic-account",

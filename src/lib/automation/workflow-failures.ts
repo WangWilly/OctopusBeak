@@ -128,7 +128,22 @@ export function userActionMessage(action: UserAction, locale: string): string {
   return locale === "zh-TW" ? message.zh : message.en;
 }
 
-const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }>>> = {
+/** Every Failure code decides its explanation; `null` means the code alone is shown. */
+const explanations = {
+  "captcha-provider-rejected": null,
+  cancelled: null,
+  "source-integrity-failed": null,
+  "source-access-challenged": {
+    zh: "來源網站以安全驗證或 HTTP 403 阻擋登入，未取得登入表單。請確認網站可正常開啟後再重試。",
+    en: "The provider blocked sign-in with a security challenge or HTTP 403. The login form was unavailable; check the site before retrying.",
+  },
+  "source-unavailable": {
+    zh: "來源網站未提供可用的登入表單（系統忙碌或空白回應）。請稍後重試。",
+    en: "The provider did not return a usable login form (busy or blank response). Try again later.",
+  },
+  "verification-configuration-failed": null,
+  "canonical-commit-failed": null,
+  "commit-outcome-unknown": null,
   "authentication-timeout": {
     zh: "登入步驟等待逾時，尚未確認登入成功。",
     en: "A sign-in step timed out before successful authentication was confirmed.",
@@ -181,10 +196,23 @@ const explanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string
     zh: "執行失敗，現有紀錄不足以判定詳細原因。",
     en: "Execution failed; the available record does not establish the specific cause.",
   },
+} as const satisfies Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }> | null>;
+
+/** Shorter words for a table cell, where the full explanation would not fit. */
+const shortExplanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }>>> = {
+  "source-access-challenged": { zh: "網站安全驗證阻擋登入", en: "Site verification blocked sign-in" },
+  "source-unavailable": { zh: "來源網站登入頁不可用", en: "Provider login unavailable" },
 };
+
+/** A Failure code's short words, falling back to its full explanation. */
+export function workflowFailureShortExplanation(code: string, locale: string): string | null {
+  const short = Object.hasOwn(shortExplanations, code) ? shortExplanations[code as TypedWorkflowErrorCode] : undefined;
+  if (short) return locale === "zh-TW" ? short.zh : short.en;
+  return workflowFailureExplanation(code, locale);
+}
 
 export function workflowFailureExplanation(code: string, locale: string): string | null {
   if (!Object.hasOwn(explanations, code)) return null;
-  const explanation = explanations[code as TypedWorkflowErrorCode];
+  const explanation: Readonly<{ zh: string; en: string }> | null = explanations[code as TypedWorkflowErrorCode];
   return explanation ? locale === "zh-TW" ? explanation.zh : explanation.en : null;
 }

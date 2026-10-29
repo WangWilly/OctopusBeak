@@ -203,7 +203,6 @@ async function collectFubon(
   };
   const items: PGliteWorkflowRunItem[] = [];
   await stageFubonDeposit({ accounts: [{ account: FUBON_ACCOUNT, statements: [statement] }] }, {
-    dateRanges: ["180"],
     downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
@@ -284,8 +283,7 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     downloads: [{ account: YUANTA_FX_ACCOUNT, currency: { label: "美元", value: "USD" }, rows }],
     currentBalances: [current],
   }, {
-    dateRange: "three_months",
-    customDateRange: { startDate: slash(addDays(date, -179)), endDate: slash(date) },
+    queryRange: { startDate: addDays(date, -179), endDate: date },
     accountFilters: [],
     currencyFilters: [],
     channelType: "all",

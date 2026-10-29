@@ -76,7 +76,8 @@ export const HNCB_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES",
     products: [
-      { id: "deposit", stream: "domestic-deposit" },
+      // Two years and one day, both ends inclusive, in one request.
+      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 2, days: 1 } } },
     ],
   },
   task: {

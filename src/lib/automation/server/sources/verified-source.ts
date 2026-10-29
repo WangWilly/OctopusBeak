@@ -8,6 +8,7 @@ import type {
 } from "../../types.ts";
 import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
+import type { CollectionPeriodDeclaration } from "../../collection-period.ts";
 import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
@@ -15,6 +16,7 @@ import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-as
 import type { AutomationSettingsFile } from "../config-files.ts";
 import type { routeWaitingRunVerification, VerificationRoutingOutcome } from "../verification-routing.ts";
 import type { PageForRun } from "../automation-viewer.ts";
+import type { AutomationTask } from "../tasks.ts";
 
 /**
  * How the App hosts a workflow. A browser workflow gets a run-scoped page; a
@@ -40,6 +42,8 @@ export type VerifiedProduct = Readonly<{
   id: string;
   stream: string;
   integrationNamespace?: string;
+  /** ADR 0077: the dates this product queries, from the run's Taipei date. */
+  collectionPeriod?: CollectionPeriodDeclaration;
 }>;
 
 export type VerifiedWorkflow = Readonly<
@@ -56,8 +60,8 @@ export type VerifiedWorkflow = Readonly<
     /** Present when the workflow's verification stages reach the solver route. */
     verification?: Readonly<{
       /**
-       * How the workflow proves a CAPTCHA rejection; the coordinator then joins
-       * its execution instead of probing the page after submit.
+       * How the workflow proves a CAPTCHA rejection; the round adapter then
+       * joins its execution instead of probing the page after submit.
        */
       rejection?: RejectionEvidence;
       /**
@@ -85,6 +89,8 @@ export type VerifiedWorkflow = Readonly<
 
 /** What the CAPTCHA Retry Campaign hands a source's own Verification route. */
 export type SourceVerificationRouteDependencies = Readonly<{
+  /** The run's task, from its Task run plan. */
+  task: Pick<AutomationTask, "workflowId">;
   settings: AutomationSettingsFile;
   route: typeof routeWaitingRunVerification;
   onChallengeCaptured: () => Promise<void>;

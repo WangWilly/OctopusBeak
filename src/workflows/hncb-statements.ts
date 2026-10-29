@@ -55,6 +55,7 @@ import type {
   ProductCollectionSummary,
   ProductCollectOptions,
 } from "../lib/automation/product-collection.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
@@ -68,11 +69,7 @@ const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
 const BANK_BASE_URL = "https://netbank.hncb.com.tw";
 
-const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
-
 const typedWorkflowInputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   credentials: z.object({
     hncb_user_id: z.string().trim().min(1),
@@ -93,10 +90,7 @@ type HncbCredentials = {
   hncb_password?: string;
 };
 export type HncbWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
-export type HncbDepositInput = Pick<
-  HncbWorkflowInput,
-  "startDate" | "endDate" | "accountFilters"
->;
+export type HncbDepositInput = Pick<HncbWorkflowInput, "accountFilters">;
 export type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
 /** HNCB's own account count beside the product summary for one deposit collection. */
 export type HncbDepositSummary = ProductCollectionSummary & Readonly<{ accountCount: number }>;
@@ -402,46 +396,9 @@ function parseDateString(value: string): DateParts {
   return parts;
 }
 
-function formatDate(parts: DateParts): string {
-  return [
-    String(parts.year).padStart(4, "0"),
-    String(parts.month).padStart(2, "0"),
-    String(parts.day).padStart(2, "0"),
-  ].join("/");
-}
-
-function daysInMonth(year: number, month: number): number {
-  return new Date(year, month, 0).getDate();
-}
-
-function addYearsClamped(parts: DateParts, years: number): DateParts {
-  const year = parts.year + years;
-  return {
-    year,
-    month: parts.month,
-    day: Math.min(parts.day, daysInMonth(year, parts.month)),
-  };
-}
-
-function todayParts(): DateParts {
-  const today = new Date();
-  return {
-    year: today.getFullYear(),
-    month: today.getMonth() + 1,
-    day: today.getDate(),
-  };
-}
-
-function resolveDateRange(input: HncbDepositInput): HncbDateRange {
-  const end = input.endDate ? parseDateString(input.endDate) : todayParts();
-  const start = input.startDate
-    ? parseDateString(input.startDate)
-    : addYearsClamped(end, -2);
-
-  return {
-    startDate: formatDate(start),
-    endDate: formatDate(end),
-  };
+/** HNCB's YYYY/MM/DD form of a collection period. */
+function hncbDateRange({ start, end }: CollectionPeriod): HncbDateRange {
+  return { startDate: start.replaceAll("-", "/"), endDate: end.replaceAll("-", "/") };
 }
 
 function rocYearValue(year: number): string {
@@ -1161,7 +1118,7 @@ export async function readHncbDepositSource(
   context: Pick<WorkflowContext, "signal">,
   product: ProductCollectionHandle,
 ): Promise<HncbDepositSourceSnapshot> {
-  const dateRange = resolveDateRange(input);
+  const dateRange = hncbDateRange(product.collectionPeriod());
   const observedAt = hncbObservedAt();
   const captures: HncbDomesticDepositValidatedEvidence[] = [];
   const admit = (account: HncbDepositAccount, statement?: HncbStatementDownload) => {

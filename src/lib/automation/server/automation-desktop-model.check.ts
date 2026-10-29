@@ -7,12 +7,12 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
+import { loadAutomationDesktopModel } from "./automation-desktop-model.ts";
 import {
   automationRunHistory,
   automationSaveCredentials,
   automationSetupGuideLink,
-  loadAutomationDesktopModel,
-} from "./desktop-api.ts";
+} from "./automation-desktop-service.ts";
 import { readAutomationSettings } from "./settings.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";

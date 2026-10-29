@@ -10,6 +10,7 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { hasAttachedLocator } from "./browser-interaction.js";
 import type { BrowserScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
@@ -63,15 +64,35 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-const dateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
-const dateRangeLabels: Record<z.infer<typeof dateRangeSchema>, string> = {
-  one_week: "一週",
-  one_month: "一個月",
-  three_months: "三個月",
-};
+/** Yuanta's quick date-range links: the link text and the span it covers, both ends inclusive. */
+export const YUANTA_QUICK_RANGES = [
+  { dateRange: "one_week", label: "一週", span: { days: 7 } },
+  { dateRange: "one_month", label: "一個月", span: { months: 1, days: 1 } },
+  { dateRange: "three_months", label: "三個月", span: { months: 3, days: 1 } },
+] as const satisfies readonly Readonly<{ dateRange: string; label: string; span: CollectionSpan }>[];
+
+type YuantaQuickRange = (typeof YUANTA_QUICK_RANGES)[number];
+
+/** The quick link that covers the collection period exactly, if any. */
+export function yuantaQuickRange(period: CollectionPeriod): YuantaQuickRange | undefined {
+  return YUANTA_QUICK_RANGES.find(({ span }) => periodSpans(period, span));
+}
+
+/** The range a deposit query records: its quick link and dates as YYYY-MM-DD. */
+export type YuantaDepositQueryRange = Readonly<{
+  dateRange: YuantaQuickRange["dateRange"];
+  startDate: string;
+  endDate: string;
+}>;
+
+/** The deposit query for the product's collection period; the deposit page offers only quick links. */
+export function yuantaDepositQueryRange(period: CollectionPeriod): YuantaDepositQueryRange {
+  const quick = yuantaQuickRange(period);
+  if (!quick) throw new Error("No Yuanta quick range covers the deposit collection period.");
+  return { dateRange: quick.dateRange, startDate: period.start, endDate: period.end };
+}
 
 export const yuantaStatementsInputSchema = z.object({
-  dateRange: dateRangeSchema.default("three_months"),
   accountFilters: z.array(z.string()).default([]),
 });
 
@@ -292,10 +313,6 @@ export const yuantaCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
   },
 };
 
-function formatDateOnly(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
 /** Produce a bank-local observation timestamp without exposing user data. */
 export function yuantaObservedAt(date = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -314,46 +331,6 @@ export function yuantaObservedAt(date = new Date()): string {
       return result;
     }, {});
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
-}
-
-/**
- * The bank's date-link semantics are intentionally not asserted here. This
- * records only the bounded range requested by the UI and the local date used
- * to anchor it, for later evidence review.
- */
-export function deriveYuantaDomesticDepositQueryRange(
-  dateRange: z.infer<typeof dateRangeSchema>,
-  observedAt: string,
-): {
-  dateRange: z.infer<typeof dateRangeSchema>;
-  startDate: string;
-  endDate: string;
-} {
-  const endDate = new Date(`${observedAt.slice(0, 10)}T00:00:00.000Z`);
-  if (!Number.isFinite(endDate.getTime()))
-    throw new Error("Yuanta telemetry observedAt has an invalid local date.");
-  const startDate = new Date(endDate);
-  if (dateRange === "one_week") {
-    startDate.setUTCDate(startDate.getUTCDate() - 6);
-  } else {
-    const monthOffset = dateRange === "one_month" ? 1 : 3;
-    const targetMonth = endDate.getUTCMonth() - monthOffset;
-    const targetYear = endDate.getUTCFullYear() + Math.floor(targetMonth / 12);
-    const normalizedMonth = ((targetMonth % 12) + 12) % 12;
-    const lastTargetDay = new Date(
-      Date.UTC(targetYear, normalizedMonth + 1, 0),
-    ).getUTCDate();
-    startDate.setUTCFullYear(
-      targetYear,
-      normalizedMonth,
-      Math.min(endDate.getUTCDate(), lastTargetDay),
-    );
-  }
-  return {
-    dateRange,
-    startDate: formatDateOnly(startDate),
-    endDate: formatDateOnly(endDate),
-  };
 }
 
 const downloadedBankHeaders = [
@@ -575,10 +552,11 @@ const QUERY_SUBMIT_PAUSE_MS = 750;
 
 async function prepareYuantaDepositPage(
   site: YuantaEbankSite,
-  dateRange: z.infer<typeof dateRangeSchema>,
+  queryRange: YuantaDepositQueryRange,
 ): Promise<void> {
   const scope = await site.open(TRANSACTION_DETAILS_ROUTE);
-  await site.chooseDuration(scope, { label: dateRangeLabels[dateRange] });
+  const { label } = YUANTA_QUICK_RANGES.find(({ dateRange }) => dateRange === queryRange.dateRange)!;
+  await site.chooseDuration(scope, { label });
   await site.frames.scopeWith("#acctno");
 }
 
@@ -718,7 +696,7 @@ function digestAccountValue(value: string): `sha256:${string}` {
 
 export function buildYuantaCapture(
   account: { label: string; value: string },
-  queryRange: ReturnType<typeof deriveYuantaDomesticDepositQueryRange>,
+  queryRange: YuantaDepositQueryRange,
   observedAt: string,
   download: YuantaStatementDownload,
 ): YuantaDomesticDepositCaptureEvidence {
@@ -808,8 +786,9 @@ export type YuantaDepositAccountRead =
   | Readonly<{ account: YuantaDepositAccount; query: "download-ready"; download: YuantaStatementDownload }>;
 
 export type YuantaDepositSourceSnapshot = Readonly<{
-  /** Taken before the range is selected, so the query range matches the bank's date. */
   observedAt: string;
+  /** The range the read half selected, from the product's collection period. */
+  queryRange: YuantaDepositQueryRange;
   accounts: readonly YuantaDepositAccountRead[];
 }>;
 
@@ -828,11 +807,12 @@ export async function readYuantaDepositSource(
   product: ProductCollectionHandle,
 ): Promise<YuantaDepositSourceSnapshot> {
   const observedAt = yuantaObservedAt(new Date(context.now()));
+  const queryRange = yuantaDepositQueryRange(product.collectionPeriod());
   // The canonical domestic scope is all visible TWD selectors. Input
   // accountFilters remains accepted for compatibility but never narrows it.
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
-  await prepareYuantaDepositPage(site, input.dateRange);
+  await prepareYuantaDepositPage(site, queryRange);
   context.signal.throwIfAborted();
   const accounts: YuantaDepositAccountRead[] = [];
   for (const account of await readYuantaDepositAccountOptions(site, [])) {
@@ -849,7 +829,7 @@ export async function readYuantaDepositSource(
     context.text.assertIntact(JSON.stringify(download));
     accounts.push({ account, query, download });
   }
-  return { observedAt, accounts };
+  return { observedAt, queryRange, accounts };
 }
 
 /** Build and stage domestic-deposit source items from a read snapshot. */
@@ -867,11 +847,7 @@ export async function stageYuantaDeposit(
     sourceConnectionKey,
   } as const;
   const nextTimestamp = createTimestampGenerator();
-  const { observedAt } = snapshot;
-  const queryRange = deriveYuantaDomesticDepositQueryRange(
-    input.dateRange,
-    observedAt,
-  );
+  const { observedAt, queryRange } = snapshot;
   let rowCount = 0;
   let sourceCaptureCount = 0;
   const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitYuantaDomesticDepositFinancialCapture>["capture"]>> = [];

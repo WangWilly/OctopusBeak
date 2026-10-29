@@ -5,7 +5,7 @@ import { createMaicoinWorkflow } from "../../maicoin-workflow.ts";
 import { createTdccWorkflow } from "../../tdcc-workflow.ts";
 import { requiredWorkflowCapabilities } from "../../workflow-executor.ts";
 import { COLLECTION_PRODUCT_TYPE_IDS } from "../../product-collection.ts";
-import { workflowDefinitionForTask, workflowInputForTask } from "../app-workflow-registry.ts";
+import { appWorkflowRegistration } from "../app-workflow-registry.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../tasks.ts";
 import { TDCC_FUND_STREAM } from "../../../../ledger/canonical/tdcc-investment-contract.ts";
@@ -69,15 +69,17 @@ test("a source whose workflow collects products binds its run to the source's pr
     assert.equal(workflow.requiresFinancialCommit, true, `${source.id} commits what it collects`);
     const productIds = statementSelection.products.map(({ id }) => id);
     assert.ok(productIds.every((id) => (COLLECTION_PRODUCT_TYPE_IDS as readonly string[]).includes(id)), `${source.id} offers collection products`);
-    assert.deepEqual(workflowDefinitionForTask(source.task.id)?.productCollection, {
+    assert.deepEqual(appWorkflowRegistration(source.task.id)?.definition?.productCollection, {
       provider: source.integrationNamespace,
       productIds,
+      collectionPeriods: Object.fromEntries(statementSelection.products.flatMap(({ id, collectionPeriod }) =>
+        collectionPeriod ? [[id, collectionPeriod]] : [])),
     });
   }
 });
 
 test("MaiCoin and TDCC keep the capabilities their modules declare", () => {
-  const definition = (taskId: string) => workflowDefinitionForTask(taskId)!;
+  const definition = (taskId: string) => appWorkflowRegistration(taskId)?.definition!;
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-maicoin")), requiredWorkflowCapabilities(createMaicoinWorkflow()));
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-tdcc")), requiredWorkflowCapabilities(createTdccWorkflow()));
 });
@@ -91,7 +93,7 @@ test("first-run settings start every source disabled", () => {
 });
 
 test("workflow input is derived from the sign-in fields and selections", () => {
-  assert.deepEqual(workflowInputForTask("hncb-statements", {
+  assert.deepEqual(appWorkflowRegistration("hncb-statements")?.inputFromEnvironment({
     LIBRETTO_CLOUD_HNCB_USER_ID: "example-id",
     LIBRETTO_CLOUD_HNCB_ACCOUNT: "example-code",
     LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES: "deposit,credit_card",
@@ -101,7 +103,7 @@ test("workflow input is derived from the sign-in fields and selections", () => {
     statementTypes: ["deposit"],
     attachedPreviewProducts: ["credit_card"],
   });
-  assert.deepEqual(workflowInputForTask("fubon-all-statements", {
+  assert.deepEqual(appWorkflowRegistration("fubon-all-statements")?.inputFromEnvironment({
     LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "loan",
     [CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: "secret",
   }), {
@@ -109,8 +111,8 @@ test("workflow input is derived from the sign-in fields and selections", () => {
     credentials: { fubon_user_id: "", fubon_account: "", fubon_password: "" },
     statementTypes: ["loan"],
   });
-  assert.deepEqual(workflowInputForTask("sync-tdcc", { LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
-  assert.deepEqual(workflowInputForTask("sync-maicoin", { MAX_SUB_ACCOUNT: " " }), {
+  assert.deepEqual(appWorkflowRegistration("sync-tdcc")?.inputFromEnvironment({ LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
+  assert.deepEqual(appWorkflowRegistration("sync-maicoin")?.inputFromEnvironment({ MAX_SUB_ACCOUNT: " " }), {
     credentials: { accessKey: "", secretKey: "", subAccount: "main" },
   });
 });
