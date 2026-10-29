@@ -4,6 +4,7 @@ import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
 import {
   hncbCurrentDepositBalances,
@@ -27,7 +28,13 @@ import {
 const NOW = Date.parse("2026-09-01T04:00:00.000Z");
 const accountA = ["9000", "0000", "0011"].join("");
 const accountB = ["9000", "0000", "0022"].join("");
-const input = { startDate: "2026/08/01", endDate: "2026/08/31", accountFilters: [] };
+const input = { accountFilters: [] };
+/** The goldens record one August query, which a period ending on the run's date cannot express. */
+const august: CollectionPeriod = {
+  start: "2026-08-01",
+  end: "2026-08-31",
+  windows: [{ start: "2026-08-01", end: "2026-08-31" }],
+};
 
 type Statement = HncbStatementDownload;
 type CurrentRows = Awaited<ReturnType<HncbReadCurrentDepositBalances>>;
@@ -123,12 +130,15 @@ async function record(
       statementTypes: ["deposit"],
     });
     const output = await runHncbStatements({} as Page, input, context, {
-      collectDeposit: async (_page, depositInput, depositContext, product) => await stageHncbDeposit(
-        await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
-        depositContext,
-        product,
-        hncbCurrentDepositBalances(async () => current.overview ?? [], async () => current.detail ?? []),
-      ),
+      collectDeposit: async (_page, depositInput, depositContext, bound) => {
+        const product = { ...bound, collectionPeriod: () => august };
+        return await stageHncbDeposit(
+          await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
+          depositContext,
+          product,
+          hncbCurrentDepositBalances(async () => current.overview ?? [], async () => current.detail ?? []),
+        );
+      },
     });
     const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);

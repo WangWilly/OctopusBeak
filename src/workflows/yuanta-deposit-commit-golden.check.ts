@@ -31,7 +31,7 @@ registerHooks({
 const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
 const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
 const { YUANTA_SOURCE } = await import("../lib/automation/server/sources/yuanta.ts");
-const { stageYuantaDeposit, yuantaObservedAt } = await import("./yuanta-statements.ts");
+const { stageYuantaDeposit, yuantaDepositQueryRange, yuantaObservedAt } = await import("./yuanta-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
 
@@ -133,7 +133,11 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
     _page, input, context, product,
   ) => {
     return await stageYuantaDeposit(
-      { observedAt: yuantaObservedAt(new Date(context.now())), accounts: source.accounts },
+      {
+        observedAt: yuantaObservedAt(new Date(context.now())),
+        queryRange: yuantaDepositQueryRange(product.collectionPeriod()),
+        accounts: source.accounts,
+      },
       input,
       context,
       product,

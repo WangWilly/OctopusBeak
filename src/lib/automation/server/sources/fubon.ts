@@ -89,9 +89,15 @@ export const FUBON_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES",
     products: [
-      { id: "deposit", stream: "domestic-deposit" },
+      // Twelve months and one day: the "180" option ending today, then "180_365" for the six months before it.
+      {
+        id: "deposit",
+        stream: "domestic-deposit",
+        collectionPeriod: { lookBack: { months: 12, days: 1 }, maxWindow: { months: 6, days: 1 } },
+      },
       { id: "credit_card", stream: "credit-card" },
-      { id: "loan", stream: "loan" },
+      // Six months and one day, Fubon's six-month quick period.
+      { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 6, days: 1 } } },
     ],
   },
   task: {

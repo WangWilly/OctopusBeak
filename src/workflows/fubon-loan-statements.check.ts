@@ -23,9 +23,11 @@ import {
 } from "./fubon-loan-statements.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
+import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonEbankSite } from "./fubon-ebank-site.ts";
 
-const { runFubonLoanStatements, fubonLoanStatementsInputSchema } = await import("./fubon-loan-statements.ts");
+const { runFubonLoanStatements, fubonLoanStatementsInputSchema, fubonLoanQuery } = await import("./fubon-loan-statements.ts");
 const { buildFubonLoanCapture, assertFubonLoanCaptureAccountNumberEvidence } =
   await import("../ledger/canonical/fubon-loan-admission.ts");
 const { FUBON_LOAN_CONTRACT_VERSION } =
@@ -115,13 +117,7 @@ const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCo
   site: FubonEbankSite,
   html: string,
   account: { label: string; value: string },
-  input: {
-    loanAccountLabels: string[];
-    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
-    quickMonths: "1" | "3" | "6";
-    downloadFormat: "EXCEL";
-    dateRange: { startDate: string; endDate: string };
-  },
+  query: { quickMonths?: "1" | "3" | "6"; startDate: string; endDate: string },
   sourceText: { assertIntact(value: string): void },
 ) => Promise<{ completeness: { terminal: true } | null }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
@@ -139,13 +135,7 @@ const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
     };
   }>,
   account: { label: string; value: string },
-  input: {
-    loanAccountLabels: string[];
-    queryItems: Array<"TRANSACTION_DETAIL_QUERY">;
-    quickMonths: "1" | "3" | "6";
-    downloadFormat: "EXCEL";
-    dateRange: { startDate: string; endDate: string };
-  },
+  query: { quickMonths?: "1" | "3" | "6"; startDate: string; endDate: string },
 ) => {
   accountNumber?: {
     value: string;
@@ -209,13 +199,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
         label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
         value: "opaque-synthetic-loan-option",
       },
-      {
-        loanAccountLabels: [],
-        queryItems: ["TRANSACTION_DETAIL_QUERY"],
-        quickMonths: "6",
-        downloadFormat: "EXCEL",
-        dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-      },
+      { startDate: "2026/01/01", endDate: "2026/01/31" },
       { assertIntact: (value) => assert.ok(value.length > 0) },
     );
 
@@ -225,6 +209,22 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });
   }
+});
+
+test("Fubon loans query the six-month quick period ending on the run's Taipei date", () => {
+  const declaration = FUBON_SOURCE.statementSelection!.products.find(({ id }) => id === "loan")!.collectionPeriod!;
+  // 16:30Z on Aug 30 is 00:30 on Aug 31 in Taipei; six months back clamps to Feb 28.
+  const today = taipeiToday("2026-08-30T16:30:00.000Z");
+  assert.deepEqual(fubonLoanQuery(collectionPeriod({ today, ...declaration })), {
+    quickMonths: "6",
+    startDate: "2026/02/28",
+    endDate: "2026/08/31",
+  });
+  assert.deepEqual(
+    fubonLoanQuery({ start: "2026-01-01", end: "2026-01-31", windows: [{ start: "2026-01-01", end: "2026-01-31" }] }),
+    { startDate: "2026/01/01", endDate: "2026/01/31" },
+    "a period no quick option covers is entered as dates",
+  );
 });
 
 test("extracts only a complete unmasked Fubon loan selector account", () => {
@@ -439,13 +439,7 @@ test("Fubon multi-page traversal preserves page ordinals and terminal evidence",
       },
     ],
     { label: `${syntheticFubonLoanAccountNumber} (學貸-留貸)`, value: "opaque-loan" },
-    {
-      loanAccountLabels: [],
-      queryItems: ["TRANSACTION_DETAIL_QUERY"],
-      quickMonths: "6",
-      downloadFormat: "EXCEL",
-      dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-    },
+    { startDate: "2026/01/01", endDate: "2026/01/31" },
   );
 
   assert.equal(parsed.completeness?.pageCount, 2);
@@ -740,9 +734,7 @@ async function readLoanThroughShell(
     const summary = await runFubonLoanStatements(
       shellPage,
       {
-        ...fubonLoanStatementsInputSchema.parse({
-          dateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
-        }),
+        ...fubonLoanStatementsInputSchema.parse({}),
         sourceConnectionScope: fubonStableLoginScope(credentials)!,
         sourceConnectionKey: deriveFubonSourceConnectionKey(credentials)!,
       },
@@ -755,6 +747,12 @@ async function readLoanThroughShell(
         stage: (...items: readonly ProductStageRequest[]) => { staged.push(...items); },
         reportActivity: async (activity: string) => { activities.push(activity); },
         event: async () => {},
+        // January matches no quick period, so the query enters its dates.
+        collectionPeriod: () => ({
+          start: "2026-01-01",
+          end: "2026-01-31",
+          windows: [{ start: "2026-01-01", end: "2026-01-31" }],
+        }),
       } as unknown as Parameters<typeof runFubonLoanStatements>[3],
     );
     const menuOpens = await shellPage.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
