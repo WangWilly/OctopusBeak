@@ -15,7 +15,9 @@ import { CanonicalInvestmentAdmissionError } from "../ledger/canonical/investmen
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { YuantaFundSourceSnapshot } from "./yuanta-fund-statements.ts";
-import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { fixedPeriod, yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { test } from "node:test";
@@ -197,10 +199,8 @@ const position = {
   label: "SANITIZED FUND",
 };
 const fundKey = "S:FS00000001:YT01";
-const fundHistoryDateRange = {
-  startDate: "2026/08/01",
-  endDate: "2026/09/08",
-};
+/** The history the fixtures cover; the run's collection period queries it. */
+const fundHistoryPeriod = fixedPeriod("2026-08-01", "2026-09-08");
 const fundHistoryProof = {
   transactionHistory: {
     startDate: "2026-08-01",
@@ -465,7 +465,6 @@ const fundHistoryInput = yuantaFundStatementsInputSchema.parse({
   includePortfolioSummary: false,
   includeInvestmentDetails: true,
   includeHistoricalTransactions: true,
-  customDateRange: fundHistoryDateRange,
 });
 const validFundSource: YuantaFundSourceSnapshot = {
   positions: [position],
@@ -513,7 +512,7 @@ const collectFund = (input: typeof fundInput, run: FundRun) =>
     run.snapshot,
     { ...input, yuantaUserId: "synthetic-login", yuantaAccount: "synthetic-account" },
     yuantaCollectionContext({ now: run.now ?? "2026-09-09T12:00:00.000Z", signal: run.signal }),
-    yuantaStagingHandle(run.items),
+    yuantaStagingHandle(run.items, [], fundHistoryPeriod),
   );
 const committedInvestmentCapture = (items: readonly PGliteWorkflowRunItem[]) => {
   const command = items[0]?.command;
@@ -1064,7 +1063,7 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
       page,
       yuantaFundStatementsInputSchema.parse(options.input),
       yuantaCollectionContext({ signal: options.signal }),
-      yuantaStagingHandle([], activities),
+      yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31")),
     );
     const menuCalls = await page.evaluate(() => (window as { menuCalls?: unknown }).menuCalls);
     return { snapshot, served, posted, activities, menuCalls };
@@ -1076,7 +1075,6 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
 test("Yuanta fund source reads every page through the fund routes and submits each query from its page", async () => {
   const browser = await chromium.launch({ headless: true });
   const input = {
-    customDateRange: { startDate: "2026/01/01", endDate: "2026/01/31" },
     includeOffHourOrders: true,
   };
   try {
@@ -1162,4 +1160,11 @@ test("Yuanta fund summary falls back to the fund menu's menuaction() when its ro
   } finally {
     await browser.close();
   }
+});
+
+test("Yuanta funds query 365 days ending on the run's Taipei date", () => {
+  const declaration = YUANTA_SOURCE.statementSelection!.products.find(({ id }) => id === "fund")!.collectionPeriod!;
+  // 16:30Z on Feb 28 is 00:30 on Mar 1 in Taipei; the period starts 364 days earlier.
+  const period = collectionPeriod({ today: taipeiToday("2026-02-28T16:30:00.000Z"), ...declaration });
+  assert.deepEqual([period.start, period.end], ["2025-03-02", "2026-03-01"]);
 });

@@ -26,6 +26,7 @@ import {
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
 import { yuantaFundAdditionalEventRows } from "./yuanta-fund-events.ts";
 import { resolveYuantaFundIdentity } from "./yuanta-fund-identity.ts";
@@ -76,16 +77,7 @@ type TableOutputConfig = {
   normalize: (columns: Record<string, string>) => string[];
 };
 
-const quickDateRangeSchema = z.enum(["three_months", "six_months", "one_year"]);
-
-const customDateRangeSchema = z.object({
-  startDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-  endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-});
-
 export const yuantaFundStatementsInputSchema = z.object({
-  dateRange: quickDateRangeSchema.default("one_year"),
-  customDateRange: customDateRangeSchema.optional(),
   fundFilters: z.array(z.string()).default([]),
   includePortfolioSummary: z.boolean().default(true),
   includeInvestmentDetails: z.boolean().default(false),
@@ -100,12 +92,6 @@ export type YuantaFundCollectionInput = WorkflowInput & Readonly<{
   yuantaUserId: string;
   yuantaAccount: string;
 }>;
-
-const dateRangeDays: Record<z.infer<typeof quickDateRangeSchema>, number> = {
-  three_months: 92,
-  six_months: 183,
-  one_year: 364,
-};
 
 const cashDividendHeaders = [
   "入帳日期",
@@ -577,32 +563,14 @@ function splitFundNameAndTransactionNo(value: string): [string, string] {
   return [match[1] ?? "", match[2] ?? ""];
 }
 
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}/${month}/${day}`;
-}
-
-function resolveDateRange(input: WorkflowInput): {
+/** The fund query's dates as YYYY/MM/DD and the label its captured tables carry. */
+function yuantaFundQueryRange({ start, end }: CollectionPeriod): {
   startDate: string;
   endDate: string;
   label: string;
 } {
-  if (input.customDateRange) {
-    return {
-      startDate: input.customDateRange.startDate,
-      endDate: input.customDateRange.endDate,
-      label: `${input.customDateRange.startDate}-${input.customDateRange.endDate}`,
-    };
-  }
-
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(start.getDate() - dateRangeDays[input.dateRange]);
-  const startDate = formatDate(start);
-  const endDate = formatDate(end);
-
+  const startDate = start.replaceAll("-", "/");
+  const endDate = end.replaceAll("-", "/");
   return { startDate, endDate, label: `${startDate}-${endDate}` };
 }
 
@@ -1927,6 +1895,7 @@ type YuantaFundHistoryProof = Readonly<{
 function validateYuantaFundHistoryProof(
   source: YuantaFundSourceSnapshot,
   input: WorkflowInput,
+  period: () => CollectionPeriod,
 ): YuantaFundHistoryProof | undefined {
   const historicalTables = source.tables.filter(
     (table) => table.category === "historical-transactions",
@@ -1941,7 +1910,7 @@ function validateYuantaFundHistoryProof(
   const coverage = source.occurrenceGroupCoverage;
   if (!source.accountHistoryQueryCoverage)
     throw new Error("Yuanta fund history requires the complete account-wide report inventory.");
-  const requestedRange = resolveDateRange(input);
+  const requestedRange = yuantaFundQueryRange(period());
   const startDate = canonicalSourceDate(requestedRange.startDate);
   const endDate = canonicalSourceDate(requestedRange.endDate);
   if (!history?.complete || history.startDate !== startDate || history.endDate !== endDate ||
@@ -1984,7 +1953,7 @@ export async function readYuantaFundSource(
 ): Promise<YuantaFundSourceSnapshot> {
   const site = yuantaEbankSite(page, context);
   const sourceText = context.text;
-  const dateRange = resolveDateRange(input);
+  const dateRange = yuantaFundQueryRange(product.collectionPeriod());
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
   const historyEndDate = canonicalSourceDate(dateRange.endDate);
   const tables: ParsedTable[] = [];
@@ -2110,7 +2079,7 @@ export async function stageYuantaFund(
     input,
     snapshot.positions,
     snapshot.tables,
-    validateYuantaFundHistoryProof(snapshot, input),
+    validateYuantaFundHistoryProof(snapshot, input, product.collectionPeriod),
     () => context.now(),
   );
   context.signal.throwIfAborted();
