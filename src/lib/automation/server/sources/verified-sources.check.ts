@@ -72,6 +72,8 @@ test("a source whose workflow collects products binds its run to the source's pr
     assert.deepEqual(appWorkflowRegistration(source.task.id)?.definition?.productCollection, {
       provider: source.integrationNamespace,
       productIds,
+      collectionPeriods: Object.fromEntries(statementSelection.products.flatMap(({ id, collectionPeriod }) =>
+        collectionPeriod ? [[id, collectionPeriod]] : [])),
     });
   }
 });
