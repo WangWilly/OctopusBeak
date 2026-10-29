@@ -39,34 +39,26 @@
     type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
   import { locale, t, type Locale, type Translation } from "$lib/i18n/i18n.ts";
-import {
-  canSubmitCredentials,
-  onboardingTaskDisclosure,
-} from "$lib/onboarding/state.ts";
-  import {
-    buildCredentialSetupPlan,
-    firstInvalidCredentialGroup,
-  } from "$lib/automation/credential-setup.ts";
+import { onboardingTaskDisclosure } from "$lib/onboarding/state.ts";
   import { credentialInputValue } from "$lib/automation/credential-redaction.ts";
   import {
-    NO_CREDENTIAL_CHANGES,
-    closeCredentialEditor,
-    confirmCredentialEditor,
-    credentialSetupInput,
     effectiveGroupEnabled,
     effectiveStatementSelection,
-    openCredentialEditor,
-    pendingCredentialChanges,
-    revertCredential,
-    selectAllStatementTypes as selectAllStatementTypeChanges,
-    setGroupEnabled,
-    stageCredentialFile,
-    stageCredentialValue,
-    toggleStatementType as toggleStatementTypeChange,
-    updateCredentialEditor,
-    type CredentialChanges,
     type PendingCredentialChange,
   } from "$lib/automation/credential-changes.ts";
+  import {
+    CLOSED_CREDENTIAL_SHEET,
+    applyCredentialSaveResult,
+    certificateFileValidationMessage as certificateFileMessage,
+    credentialGroupAltName as groupAltName,
+    credentialGroupName as groupName,
+    credentialSheetView,
+    planCredentialSave,
+    reduceCredentialSheet,
+    type CredentialSheetAction,
+    type CredentialSheetContext,
+    type CredentialSheetState,
+  } from "$lib/automation/credential-sheet.ts";
   import {
     countsOutsideTdccExclusions,
     presentTaskRow,
@@ -165,8 +157,7 @@ import type {
       : undefined;
   }
 
-  let credentialsOpen = false;
-  let credentialPresentation: "picker" | "details" = "details";
+  let sheet: CredentialSheetState = CLOSED_CREDENTIAL_SHEET;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
@@ -250,17 +241,9 @@ import type {
   });
   onDestroy(actions.dispose);
   let actionError = "";
-  let statementSelectionError = "";
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
-  let credentialChanges: CredentialChanges = NO_CREDENTIAL_CHANGES;
-  let credentialFileErrors: Record<string, string> = {};
-  let focusedCredentialKey: string | null = null;
   let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
-  let statementSelectionConfirmed = false;
-  let selectedCredentialGroupId = "";
-  let credentialSearch = "";
-  let setupGuideOpen = false;
   let stageOpen: Record<string, boolean> = { sync: true };
 
   $: sideValue = automation.active
@@ -279,16 +262,6 @@ import type {
   $: taskStages = taskStagesFor(automation);
   $: pendingTaskIds = new Set(pendingActions.map((action) => action.taskId));
   $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
-  $: pendingChanges = pendingCredentialChanges(credentialGroups, credentialChanges);
-  $: credentialsDirty = pendingChanges.length > 0 || Boolean(credentialChanges.editor?.draft.trim());
-  $: savedEnabledGroupCount = credentialGroups.filter((group) => group.enabled).length;
-  $: railEnabledGroups = visibleCredentialGroups.filter((group) =>
-    effectiveGroupEnabled(credentialGroups, credentialChanges, group.id));
-  $: railAvailableGroups = visibleCredentialGroups.filter((group) =>
-    !effectiveGroupEnabled(credentialGroups, credentialChanges, group.id));
-  $: selectedGroupTask = selectedCredentialGroup
-    ? credentialGroupTask(selectedCredentialGroup.id, automation)
-    : undefined;
   $: collectionGroupIds = new Set(
     automation.tasks
       .filter((task) => task.credentialGroupId)
@@ -300,43 +273,21 @@ import type {
     automation.tasks,
   );
   $: revealOnboardingTask(onboardingDisclosure);
-  $: visibleCredentialGroups = credentialGroups.filter((group) => {
-    const term = credentialSearch.trim().toLowerCase();
-    if (!term) return true;
-    return [
-      group.label,
-      group.displayName.en,
-      group.displayName["zh-TW"],
-      ...group.searchAliases,
-    ].join(" ").toLowerCase().includes(term);
-  });
-  $: selectedCredentialGroup =
-    visibleCredentialGroups.find((group) => group.id === selectedCredentialGroupId)
-    ?? (!onboardingSourceSelection ? visibleCredentialGroups[0] : undefined);
-  $: onboardingMissingCredentialKey = onboardingSourceSelection && selectedCredentialGroup
-    ? selectedCredentialGroup.credentialKeys.find(
-        (key) => !(key in credentialChanges.credentials) && credentialState(key) !== "ready",
-      ) ?? null
-    : null;
-  $: onboardingSourceEnabled = Boolean(
-    selectedCredentialGroup
-    && effectiveGroupEnabled(credentialGroups, credentialChanges, selectedCredentialGroup.id),
-  );
-  $: onboardingNeedsStatements = Boolean(
-    onboardingSourceSelection
-    && selectedCredentialGroup?.statementTypes?.length
-    && (
-      !effectiveStatementSelection(credentialGroups, credentialChanges, selectedCredentialGroup.id).length
-      || !statementSelectionConfirmed
-    ),
-  );
-  $: onboardingCredentialsReady = Boolean(
-    onboardingSourceSelection
-    && selectedCredentialGroup
-    && onboardingSourceEnabled
-    && !onboardingMissingCredentialKey
-    && !onboardingNeedsStatements,
-  );
+  $: sheetContext = {
+    dictionary: $t,
+    locale: $locale,
+    credentialGroups,
+    collectionGroupIds,
+    onboardingSourceSelection,
+    onboardingSingleSource,
+    onboardingNodeId,
+    onboardingSelectedCredentialGroupId,
+    credentialState: (key: string) => credentialState(key, automation),
+  } satisfies CredentialSheetContext;
+  $: sheetView = credentialSheetView(sheet, sheetContext);
+  $: selectedGroupTask = sheetView.selectedGroup
+    ? credentialGroupTask(sheetView.selectedGroup.id, automation)
+    : undefined;
   $: catalogHistoryRows = filterHistoryToCurrentTasks(historyRows, automation.tasks);
   $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
@@ -517,19 +468,12 @@ import type {
     return value[$locale];
   }
 
-  function credentialGroupShortName(group: CredentialGroupDto, language: "en" | "zh-TW") {
-    const name = group.displayName[language];
-    const suffix = `（${group.displayName.en}）`;
-    return language === "zh-TW" && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
-  }
-
   function credentialGroupName(group: CredentialGroupDto) {
-    return credentialGroupShortName(group, $locale);
+    return groupName(group, $locale);
   }
 
   function credentialGroupAltName(group: CredentialGroupDto) {
-    const other = credentialGroupShortName(group, $locale === "zh-TW" ? "en" : "zh-TW");
-    return other === credentialGroupName(group) ? "" : other;
+    return groupAltName(group, $locale);
   }
 
   function credentialGroupTask(groupId: string, sourceAutomation: AutomationPageModel) {
@@ -542,7 +486,7 @@ import type {
     if (change.kind === "credential") {
       const field = group?.credentialFields.find((candidate) => candidate.key === change.key);
       const label = field ? localizedText(field.label) : change.key;
-      return change.groupId === selectedCredentialGroupId ? label : `${groupName} · ${label}`;
+      return change.groupId === sheet.selectedGroupId ? label : `${groupName} · ${label}`;
     }
     if (change.kind === "enabled") {
       return `${groupName} · ${change.enabled ? dictionary.automation.changeEnableSync : dictionary.automation.changeDisableSync}`;
@@ -551,7 +495,7 @@ import type {
   }
 
   function editorFieldLabel(dictionary: Translation) {
-    const editor = credentialChanges.editor;
+    const editor = sheet.changes.editor;
     const field = editor
       ? credentialGroups.find((group) => group.id === editor.groupId)?.credentialFields.find((candidate) => candidate.key === editor.key)
       : undefined;
@@ -562,54 +506,37 @@ import type {
     reason: CertificateFileValidationReason,
     storedFile: boolean,
   ) {
-    if (reason === "invalid-extension") return $t.automation.invalidCertificateExtension;
-    return storedFile
-      ? $t.automation.missingCertificateFile
-      : $t.automation.unreadableCertificateFile;
+    return certificateFileMessage(reason, storedFile, $t);
   }
 
-  function resetCredentialChanges() {
-    credentialChanges = NO_CREDENTIAL_CHANGES;
-    credentialFileErrors = {};
-    focusedCredentialKey = null;
-    statementSelectionConfirmed = false;
-    statementSelectionError = "";
+  function dispatchSheet(action: CredentialSheetAction) {
+    sheet = reduceCredentialSheet(sheet, action, sheetContext);
   }
 
   function openCredentials() {
-    resetCredentialChanges();
-    const remembered = onboardingSelectedCredentialGroupId;
-    selectCredentialGroup(
-      onboardingSourceSelection
-        ? remembered && collectionGroupIds.has(remembered) ? remembered : ""
-        : selectedCredentialGroupId || credentialGroups[0]?.id || "",
-    );
-    credentialSearch = "";
-    credentialPresentation = onboardingSourceSelection
-      && ["source-entry", "source-selection"].includes(onboardingNodeId ?? "")
-      ? "picker"
-      : "details";
-    credentialsOpen = true;
+    dispatchSheet({ type: "open" });
   }
 
   function openCredentialsFromStoryEntry() {
     openCredentials();
     if (onboardingSourceSelection && onboardingNodeId === "source-entry") {
       onOnboardingStoryEvent({ type: "open-picker" });
-      credentialPresentation = "picker";
+      dispatchSheet({ type: "present", presentation: "picker" });
     }
+  }
+
+  function storyChoosesSource() {
+    return onboardingSourceSelection && onboardingNodeId === "source-selection";
   }
 
   function chooseCredentialGroup(groupId: string) {
-    selectCredentialGroup(groupId);
-    if (onboardingSourceSelection && onboardingNodeId === "source-selection") {
-      credentialPresentation = "details";
-      onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
-    }
+    const choosing = storyChoosesSource();
+    dispatchSheet({ type: "choose-group", groupId });
+    if (choosing) onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
   }
 
   export async function openCredentialsForOnboarding() {
-    if (!credentialsOpen) openCredentials();
+    if (!sheet.open) openCredentials();
     await tick();
   }
 
@@ -619,15 +546,15 @@ import type {
   ) {
     if (presentation === "none") return;
     if (presentation === "close-credentials") {
-      credentialsOpen = false;
+      dispatchSheet({ type: "close" });
       await tick();
       return;
     }
-    if (!credentialsOpen) openCredentials();
-    if (credentialGroupId && credentialGroups.some((group) => group.id === credentialGroupId)) {
-      if (selectedCredentialGroupId !== credentialGroupId) selectCredentialGroup(credentialGroupId);
-    }
-    credentialPresentation = presentation === "show-picker" ? "picker" : "details";
+    dispatchSheet({
+      type: "present-onboarding",
+      presentation: presentation === "show-picker" ? "picker" : "details",
+      groupId: credentialGroupId,
+    });
     await tick();
   }
 
@@ -667,22 +594,20 @@ import type {
 
   function closeCredentials() {
     if (onboardingSourceSelection) return;
-    if (credentialsDirty && !confirm($t.automation.discardCredentialChanges)) return;
-    resetCredentialChanges();
-    credentialsOpen = false;
+    if (sheetView.dirty && !confirm($t.automation.discardCredentialChanges)) return;
+    dispatchSheet({ type: "close" });
   }
 
   function discardCredentialChanges() {
     if (onboardingSourceSelection) return;
-    resetCredentialChanges();
-    credentialsOpen = false;
+    dispatchSheet({ type: "close" });
   }
 
   function closeCredentialsOnEscape(event: KeyboardEvent) {
-    if (!credentialsOpen || event.key !== "Escape") return;
-    if (credentialChanges.editor) {
+    if (!sheet.open || event.key !== "Escape") return;
+    if (sheet.changes.editor) {
       event.preventDefault();
-      credentialChanges = closeCredentialEditor(credentialChanges);
+      dispatchSheet({ type: "editor-cancel" });
       return;
     }
     if (onboardingSourceSelection) return;
@@ -692,7 +617,7 @@ import type {
 
   function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key !== "Escape") return;
-    if (syncOpen && !credentialsOpen) {
+    if (syncOpen && !sheet.open) {
       event.preventDefault();
       syncOpen = false;
       return;
@@ -701,63 +626,47 @@ import type {
   }
 
   function toggleGroup(groupId: string) {
-    statementSelectionError = "";
-    credentialChanges = setGroupEnabled(
-      credentialGroups,
-      credentialChanges,
-      groupId,
-      !effectiveGroupEnabled(credentialGroups, credentialChanges, groupId),
-    );
+    dispatchSheet({ type: "toggle-group", groupId });
   }
 
   function toggleStatementType(groupId: string, typeId: string) {
-    statementSelectionError = "";
-    statementSelectionConfirmed = true;
-    credentialChanges = toggleStatementTypeChange(credentialGroups, credentialChanges, groupId, typeId);
+    dispatchSheet({ type: "toggle-statement-type", groupId, typeId });
   }
 
   function selectAllStatementTypes(group: CredentialGroupDto) {
-    statementSelectionError = "";
-    statementSelectionConfirmed = true;
-    credentialChanges = selectAllStatementTypeChanges(credentialGroups, credentialChanges, group.id);
+    dispatchSheet({ type: "select-all-statement-types", groupId: group.id });
   }
 
   function enableAndSelectGroup(groupId: string) {
-    chooseCredentialGroup(groupId);
-    credentialChanges = setGroupEnabled(credentialGroups, credentialChanges, groupId, true);
+    const choosing = storyChoosesSource();
+    dispatchSheet({ type: "enable-and-select-group", groupId });
+    if (choosing) onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
   }
 
   function updateCredentialDraft(key: string, event: Event) {
-    credentialChanges = stageCredentialValue(
-      credentialChanges,
-      key,
-      (event.currentTarget as HTMLInputElement).value,
-    );
+    dispatchSheet({ type: "stage-value", key, value: (event.currentTarget as HTMLInputElement).value });
   }
 
   function updateEditorDraft(event: Event) {
-    credentialChanges = updateCredentialEditor(
-      credentialChanges,
-      (event.currentTarget as HTMLInputElement).value,
-    );
+    dispatchSheet({ type: "editor-draft", draft: (event.currentTarget as HTMLInputElement).value });
   }
 
   function credentialFieldText(key: string) {
-    if (credentialChanges.editor?.key === key) return credentialChanges.editor.draft;
-    const staged = credentialChanges.credentials[key];
+    if (sheet.changes.editor?.key === key) return sheet.changes.editor.draft;
+    const staged = sheet.changes.credentials[key];
     return staged?.kind === "value" ? staged.value : "";
   }
 
   function startCredentialEdit(groupId: string, key: string) {
-    credentialChanges = openCredentialEditor(credentialChanges, groupId, key);
+    dispatchSheet({ type: "editor-start", groupId, key });
   }
 
   function confirmCredentialEdit() {
-    credentialChanges = confirmCredentialEditor(credentialChanges);
+    dispatchSheet({ type: "editor-confirm" });
   }
 
   function cancelCredentialEdit() {
-    credentialChanges = closeCredentialEditor(credentialChanges);
+    dispatchSheet({ type: "editor-cancel" });
   }
 
   function confirmCredentialEditOnEnter(event: KeyboardEvent) {
@@ -775,7 +684,7 @@ import type {
     redaction: AutomationCredentialRedaction,
     event: FocusEvent,
   ) {
-    focusedCredentialKey = key;
+    dispatchSheet({ type: "focus-field", key });
     const input = event.currentTarget as HTMLInputElement;
     input.value = credentialInputValue(credentialFieldText(key), redaction, true);
   }
@@ -785,56 +694,35 @@ import type {
     redaction: AutomationCredentialRedaction,
     event: FocusEvent,
   ) {
-    if (focusedCredentialKey !== key) return;
-    focusedCredentialKey = null;
+    if (sheet.focusedKey !== key) return;
+    dispatchSheet({ type: "blur-field", key });
     const input = event.currentTarget as HTMLInputElement;
     input.value = credentialInputValue(credentialFieldText(key), redaction, false);
   }
 
   async function selectCertificateFile(key: string) {
+    actionError = "";
+    dispatchSheet({ type: "certificate-file-started", key });
+    const generation = sheet.generation;
     try {
-      actionError = "";
-      credentialFileErrors = { ...credentialFileErrors, [key]: "" };
       const result = await window.octopusBeak.automation.selectCertificateFile($locale);
-      if (result.cancelled) return;
-      if ("error" in result) {
-        credentialFileErrors = {
-          ...credentialFileErrors,
-          [key]: certificateFileValidationMessage(result.error, false),
-        };
-        return;
-      }
-      credentialChanges = stageCredentialFile(credentialChanges, key, result.path, result.filename);
+      dispatchSheet({ type: "certificate-file-selected", generation, key, result });
     } catch (error) {
-      credentialFileErrors = {
-        ...credentialFileErrors,
-        [key]: error instanceof Error ? error.message : String(error),
-      };
+      dispatchSheet({
+        type: "certificate-file-failed",
+        generation,
+        key,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
-  async function updateCredentialSearch(event: Event) {
-    statementSelectionError = "";
-    credentialSearch = (event.currentTarget as HTMLInputElement).value;
-    await tick();
-    if (!visibleCredentialGroups.some((group) => group.id === selectedCredentialGroupId)) {
-      if (onboardingSourceSelection) selectCredentialGroup("");
-      else selectedCredentialGroupId = visibleCredentialGroups[0]?.id ?? "";
-    }
+  function updateCredentialSearch(event: Event) {
+    dispatchSheet({ type: "search", search: (event.currentTarget as HTMLInputElement).value });
   }
 
   function selectCredentialGroup(groupId: string) {
-    statementSelectionError = "";
-    const group = credentialGroups.find((candidate) => candidate.id === groupId);
-    statementSelectionConfirmed = Boolean(group?.selectedStatementTypeIds.length);
-    if (selectedCredentialGroupId !== groupId) setupGuideOpen = false;
-    selectedCredentialGroupId = groupId;
-    if (onboardingSourceSelection && onboardingSingleSource && groupId) {
-      for (const group of credentialGroups) {
-        if (group.id === groupId || !collectionGroupIds.has(group.id)) continue;
-        credentialChanges = setGroupEnabled(credentialGroups, credentialChanges, group.id, false);
-      }
-    }
+    dispatchSheet({ type: "select-group", groupId });
   }
 
   async function runTask(task: AutomationTaskRow) {
@@ -983,7 +871,7 @@ import type {
       openCredentials();
       selectCredentialGroup(task.credentialGroupId ?? "");
       await tick();
-      document.getElementById(`${selectedCredentialGroupId}-statement-selection`)?.focus();
+      document.getElementById(`${sheet.selectedGroupId}-statement-selection`)?.focus();
       return;
     }
     if (task.primaryAction !== "Cancel") {
@@ -1034,56 +922,31 @@ import type {
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
-    if (!canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)) return;
-    if (credentialChanges.editor) return;
-    const setupInput = credentialSetupInput(credentialGroups, credentialChanges);
-    const invalid = firstInvalidCredentialGroup(
-      credentialGroups,
-      setupInput.enabled,
-      setupInput.statementSelections,
-    );
-    if (invalid) {
-      credentialSearch = "";
-      selectedCredentialGroupId = invalid.id;
-      actionError = "";
-      const invalidDisplayGroup = credentialGroups.find((group) => group.id === invalid.id);
-      statementSelectionError = $t.automation.selectOneStatementType(
-        invalidDisplayGroup ? credentialGroupName(invalidDisplayGroup) : invalid.label,
-      );
+    const save = planCredentialSave(sheet, sheetContext);
+    if (save.kind === "blocked") return;
+    sheet = save.state;
+    actionError = "";
+    if (save.kind === "invalid") {
       await tick();
-      document.getElementById(`${invalid.id}-statement-selection`)?.focus();
+      document.getElementById(`${save.groupId}-statement-selection`)?.focus();
       return;
     }
-    statementSelectionError = "";
-    const plan = buildCredentialSetupPlan({
-      groups: credentialGroups,
-      enabled: setupInput.enabled,
-      statementSelections: setupInput.statementSelections,
-      credentialDrafts: setupInput.credentialDrafts,
-      selectedCredentialGroupId,
-      onboardingSingleSource,
-      collectionGroupIds,
-    });
+    const { generation } = sheet;
     try {
-      actionError = "";
-      const savedGroupId = plan.selectedCredentialGroupId;
-      const result = await window.octopusBeak.automation.saveCredentials(plan.updates);
-      if (!result.saved) {
-        credentialFileErrors = {
-          ...credentialFileErrors,
-          [result.credentialKey]: certificateFileValidationMessage(result.reason, false),
-        };
-        return;
-      }
-      resetCredentialChanges();
+      const result = await window.octopusBeak.automation.saveCredentials(save.plan.updates);
+      sheet = applyCredentialSaveResult(sheet, generation, { kind: "result", result }, sheetContext);
+      if (!result.saved) return;
+      // The sheet stays open, still saving, while the page reloads.
       await reload();
+      if (sheet.generation !== generation) return;
+      const savedGroupId = save.savedGroupId;
       if (onboardingSourceSelection && savedGroupId) {
         onOnboardingStoryEvent({
           type: "source-saved",
           credentialGroupId: savedGroupId,
           configuredAt: new Date().toISOString(),
         });
-        credentialsOpen = false;
+        dispatchSheet({ type: "saved-and-reloaded", generation });
         const selectedTask = automation.tasks.find(
           (task) => task.credentialGroupId === savedGroupId,
         );
@@ -1091,9 +954,10 @@ import type {
           await runTask(selectedTask);
         }
       } else {
-        credentialsOpen = false;
+        dispatchSheet({ type: "saved-and-reloaded", generation });
       }
     } catch {
+      sheet = applyCredentialSaveResult(sheet, generation, { kind: "failed" }, sheetContext);
       actionError = $t.automation.saveCredentialsFailed;
     }
   }
@@ -1158,7 +1022,7 @@ import type {
         registry: onboardingTargets,
         id: onboardingSourceSelection
         && onboardingNodeId === "source-entry"
-        && !credentialsOpen
+        && !sheet.open
           ? "automation.credentials"
           : null,
       }}
@@ -1737,7 +1601,7 @@ import type {
   </aside>
 {/if}
 
-{#if credentialsOpen}
+{#if sheet.open}
   <div
     class="modal"
     class:onboarding-guided={onboardingSourceSelection}
@@ -1765,7 +1629,7 @@ import type {
         <span class="credential-head-icon" aria-hidden="true"><KeyRound size={20} /></span>
         <div class="credential-head-copy">
           <h2 id="credentials-title">{$t.automation.credentialsTitle}</h2>
-          <p>{$t.automation.credentialsSummary(savedEnabledGroupCount)}</p>
+          <p>{$t.automation.credentialsSummary(sheetView.savedEnabledGroupCount)}</p>
         </div>
         {#if !onboardingSourceSelection}
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
@@ -1783,20 +1647,20 @@ import type {
         >
           <label class="modal-search">
             <Search size={16} />
-            <input value={credentialSearch} oninput={updateCredentialSearch} placeholder={$t.automation.credentialSearch} />
+            <input value={sheet.search} oninput={updateCredentialSearch} placeholder={$t.automation.credentialSearch} />
           </label>
           <nav aria-label={$t.automation.credentialsTitle} tabindex="-1">
-            {#if railEnabledGroups.length}
-              <h3 class="rail-heading"><span>{$t.automation.credentialGroupsEnabled}</span><span class="tabular">{railEnabledGroups.length}</span></h3>
+            {#if sheetView.railEnabledGroups.length}
+              <h3 class="rail-heading"><span>{$t.automation.credentialGroupsEnabled}</span><span class="tabular">{sheetView.railEnabledGroups.length}</span></h3>
               <ul class="rail-list">
-                {#each railEnabledGroups as group (group.id)}
+                {#each sheetView.railEnabledGroups as group (group.id)}
                   {@const syncStatus = groupSyncStatus(group)}
                   <li>
                     <button
                       type="button"
                       class="rail-row"
-                      class:selected={group.id === selectedCredentialGroupId}
-                      aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
+                      class:selected={group.id === sheet.selectedGroupId}
+                      aria-current={group.id === sheet.selectedGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
                       <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
@@ -1809,22 +1673,22 @@ import type {
                           </span>
                         {/if}
                       </span>
-                      {#if group.id === selectedCredentialGroupId}<ChevronRight size={16} aria-hidden="true" />{/if}
+                      {#if group.id === sheet.selectedGroupId}<ChevronRight size={16} aria-hidden="true" />{/if}
                     </button>
                   </li>
                 {/each}
               </ul>
             {/if}
-            {#if railAvailableGroups.length}
-              <h3 class="rail-heading"><span>{$t.automation.credentialGroupsAvailable}</span><span class="tabular">{railAvailableGroups.length}</span></h3>
+            {#if sheetView.railAvailableGroups.length}
+              <h3 class="rail-heading"><span>{$t.automation.credentialGroupsAvailable}</span><span class="tabular">{sheetView.railAvailableGroups.length}</span></h3>
               <ul class="rail-list">
-                {#each railAvailableGroups as group (group.id)}
+                {#each sheetView.railAvailableGroups as group (group.id)}
                   <li class="rail-available">
                     <button
                       type="button"
                       class="rail-row"
-                      class:selected={group.id === selectedCredentialGroupId}
-                      aria-current={group.id === selectedCredentialGroupId ? "true" : undefined}
+                      class:selected={group.id === sheet.selectedGroupId}
+                      aria-current={group.id === sheet.selectedGroupId ? "true" : undefined}
                       onclick={() => chooseCredentialGroup(group.id)}
                     >
                       <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
@@ -1843,10 +1707,10 @@ import type {
             {/if}
           </nav>
         </aside>
-        {#if selectedCredentialGroup && (!onboardingSourceSelection || credentialPresentation === "details")}
-          {@const group = selectedCredentialGroup}
-          {@const groupOn = effectiveGroupEnabled(credentialGroups, credentialChanges, group.id)}
-          {@const selectedTypes = effectiveStatementSelection(credentialGroups, credentialChanges, group.id)}
+        {#if sheetView.selectedGroup && (!onboardingSourceSelection || sheet.presentation === "details")}
+          {@const group = sheetView.selectedGroup}
+          {@const groupOn = effectiveGroupEnabled(credentialGroups, sheet.changes, group.id)}
+          {@const selectedTypes = effectiveStatementSelection(credentialGroups, sheet.changes, group.id)}
           <section class="credential-body" aria-labelledby={`${group.id}-credentials-title`}>
             <div class="credential-section-head">
               <InstitutionLogo institution={sourceLogo(group.id)} size={40} />
@@ -1856,7 +1720,7 @@ import type {
               </div>
               <button
                 class="switch credential-switch"
-                class:dirty={group.id in credentialChanges.enabled}
+                class:dirty={group.id in sheet.changes.enabled}
                 type="button"
                 aria-pressed={groupOn}
                 onclick={() => toggleGroup(group.id)}
@@ -1905,7 +1769,7 @@ import type {
                 {#each group.credentialFields as credentialField (credentialField.key)}
                   {@const key = credentialField.key}
                   {@const fieldLabel = localizedText(credentialField.label)}
-                  {@const staged = credentialChanges.credentials[key]}
+                  {@const staged = sheet.changes.credentials[key]}
                   {@const storedState = credentialState(key)}
                   {#if credentialField.input === "certificate-file"}
                     {@const selectedFileName = staged?.kind === "file" ? staged.filename : group.storedCredentialFileNames[key]}
@@ -1917,7 +1781,7 @@ import type {
                       <span class="credential-row-meta">
                         {#if staged}
                           <span class="credential-badge staged">{$t.automation.credentialStaged}</span>
-                          <button class="text-action" type="button" onclick={() => (credentialChanges = revertCredential(credentialChanges, key))}>{$t.automation.credentialRevert}</button>
+                          <button class="text-action" type="button" onclick={() => dispatchSheet({ type: "revert", key })}>{$t.automation.credentialRevert}</button>
                         {:else}
                           <button
                             id={`credential-input-${key}`}
@@ -1930,11 +1794,11 @@ import type {
                       {#if !staged && storedFileError}
                         <p class="credential-error file-error">{certificateFileValidationMessage(storedFileError, true)}</p>
                       {/if}
-                      {#if credentialFileErrors[key]}
-                        <p class="credential-error file-error" aria-live="polite">{credentialFileErrors[key]}</p>
+                      {#if sheet.fileErrors[key]}
+                        <p class="credential-error file-error" aria-live="polite">{sheet.fileErrors[key]}</p>
                       {/if}
                     </li>
-                  {:else if credentialChanges.editor?.key === key}
+                  {:else if sheet.changes.editor?.key === key}
                     <li class="credential-row editing">
                       <label class="credential-label" for={`credential-input-${key}`}>{fieldLabel}</label>
                       <span class="credential-editor-input">
@@ -1944,9 +1808,9 @@ import type {
                           name={key}
                           type={credentialField.input}
                           value={credentialInputValue(
-                            credentialChanges.editor.draft,
+                            sheet.changes.editor.draft,
                             credentialField.redaction,
-                            focusedCredentialKey === key,
+                            sheet.focusedKey === key,
                           )}
                           use:focusOnMount
                           onfocus={(event) => focusCredentialInput(key, credentialField.redaction, event)}
@@ -1963,7 +1827,7 @@ import type {
                         <button
                           class="button primary"
                           type="button"
-                          disabled={!credentialChanges.editor.draft.trim()}
+                          disabled={!sheet.changes.editor.draft.trim()}
                           onclick={confirmCredentialEdit}
                         >{$t.automation.confirmCredentialUpdate}</button>
                       </div>
@@ -1979,7 +1843,7 @@ import type {
                         value={credentialInputValue(
                           credentialFieldText(key),
                           credentialField.redaction,
-                          focusedCredentialKey === key,
+                          sheet.focusedKey === key,
                         )}
                         onfocus={(event) => focusCredentialInput(key, credentialField.redaction, event)}
                         onblur={(event) => blurCredentialInput(key, credentialField.redaction, event)}
@@ -2005,7 +1869,7 @@ import type {
                       <span class="credential-row-meta">
                         {#if staged}
                           <span class="credential-badge staged">{$t.automation.credentialStaged}</span>
-                          <button class="text-action" type="button" onclick={() => (credentialChanges = revertCredential(credentialChanges, key))}>{$t.automation.credentialRevert}</button>
+                          <button class="text-action" type="button" onclick={() => dispatchSheet({ type: "revert", key })}>{$t.automation.credentialRevert}</button>
                         {:else}
                           {#if storedState === "read_failed"}
                             <span class="credential-badge bad">{$t.automation.credentialReadFailed}</span>
@@ -2052,7 +1916,7 @@ import type {
               <SourceDeviceRegistration
                 {source}
                 signInDetailsSaved={group.credentialFields.every((credentialField) =>
-                  credentialState(credentialField.key) === "ready" && !credentialChanges.credentials[credentialField.key])}
+                  credentialState(credentialField.key) === "ready" && !sheet.changes.credentials[credentialField.key])}
                 syncActive={Boolean(selectedGroupTask?.isActive)}
                 bind:registering={deviceRegistering[source]}
               />
@@ -2063,7 +1927,7 @@ import type {
                 class="statement-selection"
                 id={`${group.id}-statement-selection`}
                 tabindex="-1"
-                aria-describedby={statementSelectionError ? `${group.id}-statement-error` : undefined}
+                aria-describedby={sheet.statementSelectionError ? `${group.id}-statement-error` : undefined}
               >
                 <legend class="visually-hidden">{$t.automation.statementsToCollect}</legend>
                 <div class="statement-selection-head" aria-hidden="true">
@@ -2079,8 +1943,8 @@ import type {
                         <input
                           type="checkbox"
                           {checked}
-                          aria-describedby={statementSelectionError ? `${group.id}-statement-error` : undefined}
-                          aria-invalid={statementSelectionError ? "true" : undefined}
+                          aria-describedby={sheet.statementSelectionError ? `${group.id}-statement-error` : undefined}
+                          aria-invalid={sheet.statementSelectionError ? "true" : undefined}
                           onchange={() => toggleStatementType(group.id, type.id)}
                         />
                         <span class="statement-type-name">
@@ -2103,7 +1967,7 @@ import type {
                     id={`${group.id}-statement-error`}
                     class="credential-error statement-selection-error"
                     aria-live="polite"
-                  >{statementSelectionError}</p>
+                  >{sheet.statementSelectionError}</p>
                   {#if selectedTypes.length < group.statementTypes.length}
                     <button type="button" class="text-action" onclick={() => selectAllStatementTypes(group)}>
                       {$t.automation.selectAllStatements}
@@ -2113,14 +1977,14 @@ import type {
               </fieldset>
             {/if}
 
-            <section class="setup-guide" class:open={setupGuideOpen} aria-labelledby={`${group.id}-setup-guide-title`}>
+            <section class="setup-guide" class:open={sheet.setupGuideOpen} aria-labelledby={`${group.id}-setup-guide-title`}>
               <div class="setup-guide-head">
                 <button
                   class="setup-guide-toggle"
                   type="button"
-                  aria-expanded={setupGuideOpen}
+                  aria-expanded={sheet.setupGuideOpen}
                   aria-controls={`${group.id}-setup-guide-body`}
-                  onclick={() => (setupGuideOpen = !setupGuideOpen)}
+                  onclick={() => dispatchSheet({ type: "toggle-setup-guide" })}
                 >
                   <BookOpen size={16} aria-hidden="true" />
                   <span>
@@ -2136,7 +2000,7 @@ import type {
                   </button>
                 {/if}
               </div>
-              {#if setupGuideOpen}
+              {#if sheet.setupGuideOpen}
                 <div class="setup-guide-body" id={`${group.id}-setup-guide-body`} transition:disclosureSlide>
                   <h5>{$t.automation.whatYouNeed}</h5>
                   <ul>
@@ -2179,26 +2043,24 @@ import type {
         <p class="credential-footer-summary">
           {#if actionError}
             <span class="credential-error">{actionError}</span>
-          {:else if credentialChanges.editor}
+          {:else if sheet.changes.editor}
             {$t.automation.editingCredential(editorFieldLabel($t))}
-          {:else if pendingChanges.length}
-            <strong>{$t.automation.pendingChangeSummary(pendingChanges.length, pendingChanges.map((change) => pendingChangeLabel(change, $t)).join($t.automation.changeListSeparator))}</strong>
-            {#if pendingChanges.some((change) => change.kind === "credential")}
+          {:else if sheetView.pendingChanges.length}
+            <strong>{$t.automation.pendingChangeSummary(sheetView.pendingChanges.length, sheetView.pendingChanges.map((change) => pendingChangeLabel(change, $t)).join($t.automation.changeListSeparator))}</strong>
+            {#if sheetView.pendingChanges.some((change) => change.kind === "credential")}
               <span> · {$t.automation.pendingCredentialNote}</span>
             {/if}
           {:else}
             {$t.automation.noPendingChanges}
           {/if}
         </p>
-        {#if !onboardingSourceSelection && !credentialChanges.editor}
+        {#if !onboardingSourceSelection && !sheet.changes.editor}
           <button class="button" type="button" onclick={discardCredentialChanges}>{$t.common.cancel}</button>
         {/if}
         <button
           class="button primary"
           type="submit"
-          disabled={Boolean(credentialChanges.editor)
-            || !canSubmitCredentials(onboardingSourceSelection, onboardingCredentialsReady)
-            || (!onboardingSourceSelection && !pendingChanges.length)}
+          disabled={!sheetView.canSubmit}
         >{$t.automation.saveChanges}</button>
       </div>
     </form>
