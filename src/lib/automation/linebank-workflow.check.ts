@@ -93,6 +93,7 @@ function createPage(options: {
   incompleteTransactions?: boolean;
   noTransactions?: boolean;
   onSourceRead?: () => void;
+  onTransactionQuery?: (body: Readonly<Record<string, unknown>>) => void;
   signInAfterPolls?: number;
   onPoll?: () => void;
   notice?: boolean;
@@ -178,6 +179,7 @@ function createPage(options: {
     ) {
       options.onSourceRead?.();
       const isAccount = argument.path.includes("/v1/account/common/payables");
+      if (!isAccount) options.onTransactionQuery?.(argument.body ?? {});
       const body = isAccount
         ? accountBody
         : JSON.stringify(transactionResponse({
@@ -294,8 +296,6 @@ const input = {
     linebank_account: "synthetic-account",
     linebank_password: "synthetic-password",
   },
-  startDate: "20260910",
-  endDate: "20260910",
   accountFilters: [],
   currencyFilters: [],
   statementTypes: ["deposit"],
@@ -330,6 +330,17 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
     process.chdir(previousDirectory);
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("LINE Bank queries twelve months inclusive ending on the run's Taipei date in one request", async () => {
+  const queried: string[] = [];
+  const page = createPage({
+    onTransactionQuery: (body) => { queried.push(`${String(body.inqrStrtDt)}-${String(body.inqrEndDt)}`); },
+  });
+  const harness = createContext({ page });
+  // 2026-09-25T12:00Z is 20:00 on 2026-09-25 in Taipei.
+  await runLineBankProviderWorkflow(harness.context, input);
+  assert.deepEqual([...new Set(queried)], ["20250926-20260925"]);
 });
 
 test("a LINE Bank run that commits a zero-record capture is financial-admitted, not source-only", async () => {

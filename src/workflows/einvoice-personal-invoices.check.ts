@@ -113,7 +113,7 @@ const captureInput = (
   records,
   pages: [{ month, pageIndex: 0, rowCount: records.length }],
   months: ["2026-09"],
-}, credentials, { captureId, observedAt, today: new Date("2026-09-10T00:00:00Z") });
+}, credentials, { captureId, observedAt, today: "2026-09-10" });
 
 // A malformed item number never silently becomes a different number: it is
 // recorded as missing and the item is admitted as incomplete.
@@ -250,7 +250,7 @@ const duplicateAcrossPages = buildCanonicalEInvoiceCaptureFromApp({
 }, credentials, {
   captureId: "einvoice-workflow-identical-duplicate-pages",
   observedAt: "2026-09-10T05:00:03Z",
-  today: new Date("2026-09-10T00:00:00Z"),
+  today: "2026-09-10",
 });
 assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.rowCount), [1, 0]);
 assert.deepEqual(duplicateAcrossPages.pages.map((page) => page.metadata.providerRowCount), [1, 1]);
@@ -277,7 +277,7 @@ const appCapture = buildCanonicalEInvoiceCaptureFromApp({
 }, credentials, {
   captureId: "einvoice-app-protocol-capture",
   observedAt: "2026-09-10T05:00:04Z",
-  today: new Date("2026-09-10T00:00:00Z"),
+  today: "2026-09-10",
 });
 assert.equal(appCapture.invoices.length, 1);
 assert.equal(appCapture.scope.completeness, "complete-range");

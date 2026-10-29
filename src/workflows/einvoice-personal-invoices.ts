@@ -2,6 +2,7 @@ import { randomUUID, createHash, randomBytes } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import { taipeiToday, type CalendarDate } from "../lib/automation/collection-period.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
@@ -85,8 +86,13 @@ function compareYearMonth(left: YearMonth, right: YearMonth): number {
     : left.year - right.year;
 }
 
-function availableInvoiceMonths(today = new Date()): YearMonth[] {
-  const current = { year: today.getFullYear(), month: today.getMonth() + 1 };
+function yearMonthOf(date: CalendarDate): YearMonth {
+  return { year: Number(date.slice(0, 4)), month: Number(date.slice(5, 7)) };
+}
+
+/** The months the App lists as of the run's Taipei date. */
+function availableInvoiceMonths(today: CalendarDate): YearMonth[] {
+  const current = yearMonthOf(today);
   const start = addMonths(current, current.month % 2 === 0 ? -7 : -8);
   const months: YearMonth[] = [];
   for (
@@ -99,14 +105,10 @@ function availableInvoiceMonths(today = new Date()): YearMonth[] {
   return months;
 }
 
-function monthEndDay(month: YearMonth, today = new Date()): number {
-  if (
-    month.year === today.getFullYear() &&
-    month.month === today.getMonth() + 1
-  ) {
-    return today.getDate();
-  }
-  return new Date(month.year, month.month, 0).getDate();
+/** The month's last day, or today within the current month. */
+function monthEndDay(month: YearMonth, today: CalendarDate): number {
+  if (compareYearMonth(month, yearMonthOf(today)) === 0) return Number(today.slice(8, 10));
+  return new Date(Date.UTC(month.year, month.month, 0)).getUTCDate();
 }
 
 // Only App statuses actually observed are admitted.
@@ -363,6 +365,7 @@ const MAX_HEADER_PAGES_PER_MONTH = 100;
 async function readAppProtocolInvoices(
   client: EinvoiceAppClient,
   session: EInvoiceAppSession,
+  today: CalendarDate,
   signal: AbortSignal,
   onMonthComplete: (completed: number, total: number) => Promise<void>,
 ): Promise<{
@@ -374,12 +377,12 @@ async function readAppProtocolInvoices(
   const records: InvoiceCaptureRecord[] = [];
   const pages: AppInvoicePage[] = [];
   let invoiceCount = 0;
-  const months = availableInvoiceMonths();
+  const months = availableInvoiceMonths(today);
 
   for (const [monthIndex, month] of months.entries()) {
     signal.throwIfAborted();
     const startDate = `${month.year}/${String(month.month).padStart(2, "0")}/01`;
-    const endDate = `${month.year}/${String(month.month).padStart(2, "0")}/${String(monthEndDay(month)).padStart(2, "0")}`;
+    const endDate = `${month.year}/${String(month.month).padStart(2, "0")}/${String(monthEndDay(month, today)).padStart(2, "0")}`;
     let pageIndex = 0;
     for (;;) {
       signal.throwIfAborted();
@@ -413,7 +416,7 @@ export function buildCanonicalEInvoiceCaptureFromApp(
     months: readonly string[];
   }>,
   credentials: EinvoiceCredentials,
-  options: Readonly<{ captureId?: string; observedAt?: string; today?: Date }> = {},
+  options: Readonly<{ captureId?: string; observedAt?: string; today: CalendarDate }>,
 ): CanonicalEInvoiceCaptureInput {
   if (result.months.length === 0) throw new Error("E-Invoice capture requires at least one month.");
   const firstMonth = parseMonthLabel(result.months[0]!);
@@ -507,10 +510,12 @@ export async function runEinvoiceProviderWorkflow(
 
       await context.event("collection", "started", "collection-started");
       await context.event("decoding", "started", "source-decoding-started");
-      const result = await readAppProtocolInvoices(client, session, context.signal, async (completed, total) => {
+      // One Taipei date decides both the months queried and the scope recorded.
+      const today = taipeiToday(context.now());
+      const result = await readAppProtocolInvoices(client, session, today, context.signal, async (completed, total) => {
         await context.event("collection", "advanced", "month-completed", { completed, total });
       });
-      const capture = buildCanonicalEInvoiceCaptureFromApp(result, credentials);
+      const capture = buildCanonicalEInvoiceCaptureFromApp(result, credentials, { today });
       const admittedInvoiceCount = capture.invoices.length;
       await context.event("decoding", "completed", "source-decoding-completed");
       await context.event("validation", "completed", "source-validation-completed", {

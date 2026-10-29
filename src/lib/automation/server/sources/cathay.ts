@@ -84,8 +84,9 @@ export const CATHAY_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES",
     products: [
-      { id: "domestic", stream: "domestic-deposit" },
-      { id: "foreign_currency", stream: "foreign-currency-deposit" },
+      // One year and one day, Cathay's one-year period option.
+      { id: "domestic", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
+      { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
     ],
   },
   task: {

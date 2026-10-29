@@ -1,6 +1,9 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
+/** The widest SinoPac deposit request: one month and one more day, both ends inclusive. */
+export const SINOPAC_MAX_WINDOW = { months: 1, days: 1 } as const;
+
 export const SINOPAC_SOURCE: VerifiedSource = {
   id: "sinopac",
   label: "SinoPac",
@@ -86,7 +89,8 @@ export const SINOPAC_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
     products: [
-      { id: "deposit", stream: "domestic-deposit" },
+      // Twelve months inclusive, in requests of one month and one day.
+      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: SINOPAC_MAX_WINDOW } },
     ],
   },
   task: {

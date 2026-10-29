@@ -127,7 +127,8 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
     products: [
-      { id: "securities", stream: "investment" },
+      // 91 days: today and the 90 days before it.
+      { id: "securities", stream: "investment", collectionPeriod: { lookBack: { days: 91 } } },
     ],
   },
   task: {

@@ -43,6 +43,7 @@ import {
 } from "../lib/automation/yuanta-trade-captcha.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
@@ -215,7 +216,6 @@ type YuantaTradeCredentials = {
   yuanta_trade_ca_password?: string;
 };
 
-const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
 const holdingTypeSchema = z.enum([
   "Stock",
@@ -244,8 +244,6 @@ const tradeTypeSchema = z.enum([
 ]);
 
 const typedInputSchema = z.object({
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
   accountIndex: z.number().int().default(-1),
   includeHoldings: z.boolean().default(true),
   includeTrades: z.boolean().default(true),
@@ -333,22 +331,6 @@ function requireCredential(
     throw new Error(`Missing credential ${name}.`);
   }
   return value;
-}
-
-function pad2(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function formatDate(date: Date): string {
-  return `${date.getFullYear()}/${pad2(date.getMonth() + 1)}/${pad2(
-    date.getDate(),
-  )}`;
-}
-
-function defaultStartDate(endDate: Date): Date {
-  const startDate = new Date(endDate);
-  startDate.setDate(startDate.getDate() - 90);
-  return startDate;
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -1890,27 +1872,24 @@ export async function runYuantaTradeProviderWorkflow(
 
   context.signal.throwIfAborted();
   await context.event("preparation", "completed", "input-validated");
-  const now = new Date(context.now());
-  const input: YuantaTradeCollectionInput = {
+  /** The securities query over the product's collection period, as YuanTa's YYYY/MM/DD dates. */
+  const collectionInput = ({ start, end }: CollectionPeriod): YuantaTradeCollectionInput => ({
     credentials: parsedInput.credentials,
     accountIndex: parsedInput.accountIndex,
     holdingTypes: parsedInput.holdingTypes,
     tradeTypes: parsedInput.tradeTypes,
-    dateRange: {
-      startDate: parsedInput.startDate ?? formatDate(defaultStartDate(now)),
-      endDate: parsedInput.endDate ?? formatDate(now),
-    },
-  };
+    dateRange: { startDate: start.replaceAll("-", "/"), endDate: end.replaceAll("-", "/") },
+  });
 
   return context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
-    await authenticateYuantaTradePage(page, input.credentials, context);
+    await authenticateYuantaTradePage(page, parsedInput.credentials, context);
     context.signal.throwIfAborted();
 
     let collected: YuantaTradeCollectedCounts | undefined;
     const summary = await context.products.collect({
       securities: async (product): Promise<ProductCollectionSummary> => {
-        const staged = await collectSecurities(page, input, context, product);
+        const staged = await collectSecurities(page, collectionInput(product.collectionPeriod()), context, product);
         collected = staged.counts;
         return staged.summary;
       },

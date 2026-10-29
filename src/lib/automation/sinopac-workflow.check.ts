@@ -28,6 +28,7 @@ import {
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError, type ProductCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
+import type { CollectionPeriod } from "./collection-period.ts";
 import { SINOPAC_SOURCE } from "./server/sources/sinopac.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
@@ -57,8 +58,6 @@ const input: SinopacWorkflowInput = {
     sinopac_account: "synthetic-account",
     sinopac_password: "synthetic-password",
   },
-  startDate: "20260903",
-  endDate: "20260903",
   accountFilters: [],
   currencyFilters: [],
   statementTypes: ["deposit"],
@@ -108,12 +107,14 @@ function makeContext(options: Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
   assistance?: WorkflowContext["verification"]["complete"];
   onEvent?: WorkflowContext["event"];
+  now?: string;
 }>): WorkflowContextWith<"financialCommit" | "products"> {
   const signal = options.signal ?? new AbortController().signal;
+  const now = options.now ?? "2026-09-24T12:00:00.000+08:00";
   return withBoundProducts<WorkflowContextWith<"financialCommit">>({
     runId: "sinopac-test-run",
     signal,
-    now: () => "2026-09-24T12:00:00.000+08:00",
+    now: () => now,
     browser: { withPage: async (run) => await run(options.page) },
     text: strictSourceText,
     verification: {
@@ -169,7 +170,11 @@ const salaryRow = {
 function fakeSource(overrides: Partial<SinopacDepositSource> = {}): SinopacDepositSource {
   return {
     listAccounts: async () => [account],
-    queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [salaryRow] }),
+    // The salary falls in one window of the run's period; every other window has none.
+    queryTransactions: async (_account, window) =>
+      window.startDate <= "20260903" && "20260903" <= window.endDate
+        ? { Header: "SUCCESS", SubInfo: [salaryRow] }
+        : { Header: "FAIL", Message: "查無資料", SubInfo: [] },
     readCurrentBalances: async () => [],
     ...overrides,
   };
@@ -207,11 +212,19 @@ test("SinoPac production execution exposes only the typed App provider path", as
   );
 });
 
+/** A one-day period, so a read-half check sees one window per account. */
+const salaryDay: CollectionPeriod = {
+  start: "2026-09-03",
+  end: "2026-09-03",
+  windows: [{ start: "2026-09-03", end: "2026-09-03" }],
+};
+
 function productHandle(staged: ProductStageRequest[], codes: string[]): ProductCollectionHandle {
   return {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
+    collectionPeriod: () => salaryDay,
   };
 }
 
@@ -276,6 +289,36 @@ test("the SinoPac read half lists accounts, then reads and admits each account's
     "source-validation-started",
     "source-validation-completed",
   ]);
+});
+
+test("SinoPac queries twelve months inclusive in one-month-and-one-day windows ending on the run's Taipei date", async () => {
+  const queried: string[] = [];
+  // 16:30Z on Sep 24 is 00:30 on Sep 25 in Taipei; the period used to end on Sep 24 from UTC getters.
+  const context = makeContext({
+    page: pageFixture(),
+    financialCommit: financialCommitStub([]),
+    now: "2026-09-24T16:30:00.000Z",
+  });
+  await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
+    queryTransactions: async (_account, window, businessDate) => {
+      queried.push(`${window.startDate}-${window.endDate} ${businessDate}`);
+      return { Header: "FAIL", Message: "查無資料", SubInfo: [] };
+    },
+  })));
+  assert.deepEqual(queried, [
+    "20260825-20260925",
+    "20260724-20260824",
+    "20260623-20260723",
+    "20260522-20260622",
+    "20260421-20260521",
+    "20260320-20260420",
+    "20260219-20260319",
+    "20260118-20260218",
+    "20251217-20260117",
+    "20251116-20251216",
+    "20251015-20251115",
+    "20250926-20251014",
+  ].map((window) => `${window} 20260925`));
 });
 
 test("the SinoPac read half reports an undecodable window before it fails", async () => {

@@ -3,7 +3,7 @@ import { productCollectionFacts } from "./server/app-workflow-registry.ts";
 import type { VerifiedSource } from "./server/sources/verified-source.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 
-type ProductRunContext = Pick<WorkflowContext, "signal" | "event" | "productFailure" | "previewWrite">
+type ProductRunContext = Pick<WorkflowContext, "signal" | "now" | "event" | "productFailure" | "previewWrite">
   & Readonly<{ financialCommit: WorkflowFinancialCommitPort }>;
 
 /**
@@ -23,6 +23,7 @@ export function withBoundProducts<T extends ProductRunContext>(
     ...context,
     products: boundProductCollection({
       ...facts,
+      now: context.now,
       input,
       ...(attachedSource ? { attachedSource } : {}),
       signal: context.signal,

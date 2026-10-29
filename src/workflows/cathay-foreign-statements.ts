@@ -24,15 +24,8 @@ import {
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
 
-const dateRangeSchema = z.enum([
-  "one_week",
-  "one_month",
-  "three_months",
-  "six_months",
-  "one_year",
-]);
-
-export type CathayForeignDateRange = z.infer<typeof dateRangeSchema>;
+/** The dates Cathay's foreign API is asked for, as YYYY-MM-DD, both inclusive. */
+export type CathayForeignQueryRange = Readonly<{ startDate: string; endDate: string }>;
 
 type CathayApiResponse<T> = {
   content?: Partial<T> & {
@@ -238,38 +231,6 @@ function foreignAccountLabel(account: CathayForeignAccount): string {
   );
 }
 
-function dateRangeBounds(dateRange: z.infer<typeof dateRangeSchema>): {
-  startDate: string;
-  endDate: string;
-} {
-  const end = new Date();
-  const start = new Date(end);
-
-  if (dateRange === "one_week") {
-    start.setDate(start.getDate() - 7);
-  } else if (dateRange === "one_month") {
-    start.setMonth(start.getMonth() - 1);
-  } else if (dateRange === "three_months") {
-    start.setMonth(start.getMonth() - 3);
-  } else if (dateRange === "six_months") {
-    start.setMonth(start.getMonth() - 6);
-  } else {
-    start.setFullYear(start.getFullYear() - 1);
-  }
-
-  return {
-    startDate: formatDate(start),
-    endDate: formatDate(end),
-  };
-}
-
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function exactCathayAmount(
   value: number | string | null | undefined,
   label: string,
@@ -325,13 +286,12 @@ function cathayDirection(value: string | undefined): "inflow" | "outflow" {
 export function buildCathayForeignCurrencyCaptureInput(
   account: CathayForeignAccount,
   currency: string,
-  dateRange: CathayForeignDateRange,
+  bounds: CathayForeignQueryRange,
   statement: CathayForeignTransferResult,
   observedAt = new Date().toISOString(),
   captureOccurrenceId = "",
   zeroResultAuthority?: "provider-explicit-no-data",
 ): ForeignCurrencyDepositCaptureInput {
-  const bounds = dateRangeBounds(dateRange);
   const baseCaptureOccurrenceId = captureOccurrenceId.trim();
   if (!baseCaptureOccurrenceId)
     throw new Error("Cathay foreign capture occurrence identity is required.");
@@ -416,7 +376,7 @@ export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
  * Retries reset the pending batch before recollecting; only a successfully
  * completed attempt is committed by the workflow that owns the retry. */
 export function createCathayForeignCanonicalCaptureCollector(
-  dateRange: CathayForeignDateRange,
+  range: CathayForeignQueryRange,
   captureOccurrenceId: string = randomUUID(),
   observedAt: () => string = () => new Date().toISOString(),
 ): CathayForeignCanonicalCaptureCollector {
@@ -436,7 +396,7 @@ export function createCathayForeignCanonicalCaptureCollector(
           buildCathayForeignCurrencyCaptureInput(
             account,
             currency,
-            dateRange,
+            range,
             statement,
             observedAt(),
             captureOccurrenceId,
@@ -589,9 +549,8 @@ class CathayForeignApiClient {
   async fetchTransferDetails(
     session: CathaySession,
     account: CathayForeignAccount,
-    dateRange: z.infer<typeof dateRangeSchema>,
+    bounds: CathayForeignQueryRange,
   ): Promise<CathayForeignTransferResult[]> {
-    const bounds = dateRangeBounds(dateRange);
     const currencyList = (account.currencyList ?? [])
       .map(currencyCodeOf)
       .filter((currency): currency is string => Boolean(currency));
@@ -675,7 +634,7 @@ export type CathayForeignStatementsClient = Readonly<{
   fetchTransferDetails(
     session: CathaySession,
     account: CathayForeignAccount,
-    dateRange: CathayForeignDateRange,
+    range: CathayForeignQueryRange,
   ): Promise<CathayForeignTransferResult[]>;
 }>;
 
@@ -690,7 +649,7 @@ export type CathayForeignFinancialCollection = Readonly<{
  * memory. The returned captures are not committed and no files are written. */
 export async function collectCathayForeignFinancialCaptures(
   page: Page,
-  dateRange: CathayForeignDateRange,
+  range: CathayForeignQueryRange,
   accountFilters: string[],
   currencyFilters: string[],
   cathaySession: CathaySession,
@@ -712,7 +671,7 @@ export async function collectCathayForeignFinancialCaptures(
     currencyFilters,
   );
   const collector = createCathayForeignCanonicalCaptureCollector(
-    dateRange,
+    range,
     options.captureOccurrenceId,
     options.observedAt,
   );
@@ -731,7 +690,7 @@ export async function collectCathayForeignFinancialCaptures(
     const statements = await apiClient.fetchTransferDetails(
       cathaySession,
       account,
-      dateRange,
+      range,
     );
     const statementsByCurrency = new Map<string, CathayForeignTransferResult>();
     for (const statement of statements) {

@@ -18,6 +18,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
+import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const DOMESTIC_STATEMENTS_URL =
@@ -44,6 +45,29 @@ const dateRangeSchema = z.enum([
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
+/** The dates Cathay's API is asked for, as YYYY-MM-DD, both inclusive. */
+export type CathayQueryRange = Readonly<{ startDate: string; endDate: string }>;
+
+/** A domestic query: the query form's period option and the dates the API is asked for. */
+export type CathayQueryPeriod = CathayQueryRange & Readonly<{ option: CathayDateRange }>;
+
+/** The span each of Cathay's period options covers, ending today with both ends inclusive. */
+const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> = {
+  one_week: { days: 8 },
+  one_month: { months: 1, days: 1 },
+  three_months: { months: 3, days: 1 },
+  six_months: { months: 6, days: 1 },
+  one_year: { years: 1, days: 1 },
+};
+
+/** The Cathay period option that covers the product's collection period exactly. */
+export function cathayQueryPeriod(period: CollectionPeriod): CathayQueryPeriod {
+  const option = (Object.keys(CATHAY_PERIOD_OPTIONS) as CathayDateRange[])
+    .find((candidate) => periodSpans(period, CATHAY_PERIOD_OPTIONS[candidate]));
+  if (!option) throw new Error("No Cathay period option covers the collection period.");
+  return { option, startDate: period.start, endDate: period.end };
+}
+
 export type CathayDomesticStatementsClient = {
   fetchDomesticAccounts(
     session: CathaySession,
@@ -52,7 +76,7 @@ export type CathayDomesticStatementsClient = {
   fetchTransferDetailsRaw(
     session: CathaySession,
     accountNo: string,
-    dateRange: CathayDateRange,
+    range: CathayQueryRange,
   ): Promise<string>;
 };
 
@@ -1160,38 +1184,6 @@ function accountLabel(account: CathayAccount): string {
   );
 }
 
-function dateRangeBounds(dateRange: z.infer<typeof dateRangeSchema>): {
-  startDate: string;
-  endDate: string;
-} {
-  const end = new Date();
-  const start = new Date(end);
-
-  if (dateRange === "one_week") {
-    start.setDate(start.getDate() - 7);
-  } else if (dateRange === "one_month") {
-    start.setMonth(start.getMonth() - 1);
-  } else if (dateRange === "three_months") {
-    start.setMonth(start.getMonth() - 3);
-  } else if (dateRange === "six_months") {
-    start.setMonth(start.getMonth() - 6);
-  } else {
-    start.setFullYear(start.getFullYear() - 1);
-  }
-
-  return {
-    startDate: formatDate(start),
-    endDate: formatDate(end),
-  };
-}
-
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 export class CathayApiClient {
   private readonly page: Page;
   private readonly strictSource?: CathayStrictSourceOptions;
@@ -1291,12 +1283,12 @@ export class CathayApiClient {
   async fetchTransferDetails(
     session: CathaySession,
     accountNo: string,
-    dateRange: z.infer<typeof dateRangeSchema>,
+    range: CathayQueryRange,
   ): Promise<CathayTransferResult> {
     const raw = await this.fetchTransferDetailsRaw(
       session,
       accountNo,
-      dateRange,
+      range,
     );
     return parseCathayTransferResponse(raw, accountNo);
   }
@@ -1305,9 +1297,8 @@ export class CathayApiClient {
   async fetchTransferDetailsRaw(
     session: CathaySession,
     accountNo: string,
-    dateRange: z.infer<typeof dateRangeSchema>,
+    range: CathayQueryRange,
   ): Promise<string> {
-    const bounds = dateRangeBounds(dateRange);
     return await this.apiPostRaw(
       "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
       session,
@@ -1318,8 +1309,8 @@ export class CathayApiClient {
           queryFilters: [
             {
               accountNumber: accountNo,
-              startDate: bounds.startDate,
-              endDate: bounds.endDate,
+              startDate: range.startDate,
+              endDate: range.endDate,
             },
           ],
         },
@@ -1587,7 +1578,7 @@ export type CathayDomesticFinancialCollection = Readonly<{
  * file output. The App executor owns the single later commit. */
 export async function collectCathayDomesticFinancialRequests(
   page: Page,
-  dateRange: CathayDateRange,
+  period: CathayQueryPeriod,
   accountFilters: string[],
   cathaySession: CathaySession,
   options: Readonly<{
@@ -1611,7 +1602,7 @@ export async function collectCathayDomesticFinancialRequests(
     (options.prepareStatementQuery ?? prepareCathayDomesticStatementQuery)(
       page,
       accounts,
-      dateRange,
+      period.option,
       accountFilters.length === 0,
     ),
     options.source?.signal,
@@ -1621,8 +1612,7 @@ export async function collectCathayDomesticFinancialRequests(
     process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
   const identityEpoch =
     process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
-  const bounds = dateRangeBounds(dateRange);
-  const scope = { startDate: bounds.startDate, endDate: bounds.endDate };
+  const scope = { startDate: period.startDate, endDate: period.endDate };
   const observedAt = options.observedAt ?? new Date().toISOString();
   const stagedPages: CathayStagedCapturePage[] = [];
   const stagedStatements: CathayTransferResult[] = [];
@@ -1632,7 +1622,7 @@ export async function collectCathayDomesticFinancialRequests(
       client.fetchTransferDetailsRaw(
         cathaySession,
         account.accountNo,
-        dateRange,
+        period,
       ),
       options.source?.signal,
     );
@@ -1663,7 +1653,6 @@ export async function collectCathayDomesticFinancialRequests(
       "Cathay domestic selected account source set is incomplete.",
     );
   }
-  const boundsForAdmission = dateRangeBounds(dateRange);
   let validatedSync: ReturnType<
     typeof validateCathayDomesticDepositSyncInputForPGlite
   >;
@@ -1675,13 +1664,7 @@ export async function collectCathayDomesticFinancialRequests(
       stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
       syncState: { cursor: null },
       observedAt,
-      pages: stagedPages.map((entry) => ({
-        ...entry,
-        scope: {
-          startDate: boundsForAdmission.startDate,
-          endDate: boundsForAdmission.endDate,
-        },
-      })),
+      pages: stagedPages,
     });
   } catch {
     throw new Error(

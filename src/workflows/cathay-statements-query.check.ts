@@ -5,10 +5,14 @@ import {
   classifyCathayDomesticAccountScope,
   classifyCathayRowDateShapes,
   classifyCathayDateScopeMismatch,
+  cathayQueryPeriod,
   collectCathayDomesticFinancialRequests,
   prepareCathayDomesticStatementQuery,
   resolveCathayDomesticQueryPlan,
+  type CathayQueryPeriod,
 } from "./cathay-statements.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
+import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 
 const dateScopeTelemetry = classifyCathayDateScopeMismatch(
   { startDate: "2025-01-01", endDate: "2025-12-31" },
@@ -824,6 +828,30 @@ function delayedDomesticQueryPage(
   };
 }
 
+const oneYear: CathayQueryPeriod = { option: "one_year", startDate: "2025-09-25", endDate: "2026-09-25" };
+
+// Cathay's one-year option covers one year and one day ending on the run's
+// Taipei date; a year back from Feb 29 clamps to Feb 28 instead of Mar 1.
+{
+  const declaration = CATHAY_SOURCE.statementSelection!.products.find(({ id }) => id === "domestic")!.collectionPeriod!;
+  // 16:30Z on Feb 28 is 00:30 on Feb 29 in Taipei.
+  const today = taipeiToday("2028-02-28T16:30:00.000Z");
+  assert.deepEqual(cathayQueryPeriod(collectionPeriod({ today, ...declaration })), {
+    option: "one_year",
+    startDate: "2027-02-28",
+    endDate: "2028-02-29",
+  });
+  assert.deepEqual(
+    cathayQueryPeriod(collectionPeriod({ today: "2026-03-31", lookBack: { months: 1, days: 1 } })),
+    { option: "one_month", startDate: "2026-02-28", endDate: "2026-03-31" },
+    "a month back from Mar 31 clamps to Feb 28 instead of rolling over to Mar 3",
+  );
+  assert.throws(
+    () => cathayQueryPeriod(collectionPeriod({ today: "2026-03-31", lookBack: { months: 2, days: 1 } })),
+    /No Cathay period option/,
+  );
+}
+
 const delayedPage = delayedDomesticQueryPage(
   "https://www.cathaybk.com.tw/OnlineBanking/",
 );
@@ -832,7 +860,7 @@ await assert.rejects(
   () =>
     collectCathayDomesticFinancialRequests(
       delayedPage.page as never,
-      "one_year",
+      oneYear,
       [],
       { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
       {
@@ -858,7 +886,7 @@ await assert.rejects(
   () =>
     collectCathayDomesticFinancialRequests(
       alreadyOpenPage.page as never,
-      "one_year",
+      oneYear,
       [],
       { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
       {
@@ -919,7 +947,7 @@ for (const [label, unavailablePage, expectedError] of [
     () =>
       collectCathayDomesticFinancialRequests(
         unavailablePage.page as never,
-        "one_year",
+        oneYear,
         [],
         { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
         {

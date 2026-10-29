@@ -11,6 +11,8 @@ import { deriveYuantaForeignSettlementLinkageKey } from "../ledger/canonical/inv
 import { boundProductCollection } from "../lib/automation/product-collection.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { chromium } from "playwright";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
@@ -47,6 +49,7 @@ const {
   stageYuantaForeignCurrency,
   yuantaForeignCurrencyStatementsInputSchema,
   yuantaForeignCurrentBalanceCaptureMatching,
+  yuantaForeignQueryRange,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { matchCurrentBalanceCaptures } = await import("./current-balance-capture-match.ts");
 
@@ -1177,7 +1180,7 @@ const yuantaForeignCapture = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-observation-1",
@@ -1226,7 +1229,7 @@ const yuantaNumberedCapture = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   syntheticYuantaForeignAccountNumber,
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-numbered-account",
@@ -1307,8 +1310,7 @@ const yuantaMultipleRowsFromOneAccount =
       },
     ],
     {
-      dateRange: "three_months",
-      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
+      queryRange: fixedForeignDateRange,
       accountFilters: [],
       currencyFilters: [],
       channelType: "all",
@@ -1355,7 +1357,7 @@ const yuantaZeroPaddedInflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-zero-padded-inflow",
@@ -1398,7 +1400,7 @@ const yuantaZeroPaddedOutflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-zero-padded-outflow",
@@ -1433,7 +1435,7 @@ const yuantaUnpaddedInflow = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-unpadded-inflow",
@@ -1466,7 +1468,7 @@ const yuantaDifferentForeignAmount = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T12:00:00+08:00",
   "yuanta-foreign-check-different-amount",
@@ -1501,7 +1503,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+      { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-both-nonzero",
@@ -1534,7 +1536,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+      { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-both-zero",
@@ -1567,7 +1569,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "three_months", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+      { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-invalid-amount",
@@ -1598,7 +1600,7 @@ const yuantaCorrectedMutableFacts = buildYuantaForeignCurrencyCaptureInput(
       sortTime: null,
     },
   ],
-  { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+  { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
   "fx-1",
   "2026-08-24T13:00:00+08:00",
   "yuanta-foreign-check-observation-2",
@@ -1620,7 +1622,7 @@ assert.throws(
           sortTime: null,
         },
       ],
-      { dateRange: "one_week", customDateRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
+      { queryRange: fixedForeignDateRange, accountFilters: [], currencyFilters: [], channelType: "all" },
       "fx-1",
       "2026-08-24T12:00:00+08:00",
       "yuanta-foreign-check-observation-invalid",
@@ -1633,9 +1635,8 @@ const typedForeignOriginalCwd = process.cwd();
 process.chdir(typedForeignTemp);
 try {
   const typedForeignInput = {
-    ...yuantaForeignCurrencyStatementsInputSchema.parse({
-      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
-    }),
+    ...yuantaForeignCurrencyStatementsInputSchema.parse({}),
+    queryRange: fixedForeignDateRange,
     yuantaUserId: "synthetic-yuanta-login",
   };
   const typedForeignAccount = { value: "00123456789012", label: "外幣綜合存款" };
@@ -1674,6 +1675,7 @@ try {
   const multiCurrency = await boundProductCollection({
     provider: "yuanta",
     productIds: ["foreign_currency", "credit_card"],
+    now: () => "2026-08-24T12:00:00+08:00",
     input: { statementTypes: ["foreign_currency", "credit_card"] },
     signal: new AbortController().signal,
     event: async () => undefined,
@@ -1772,7 +1774,12 @@ function yuantaForeignWindowCapture(
 ) {
   return admitForeignCurrencyDepositCapture(buildYuantaForeignCurrencyCaptureInput(
     rows,
-    { dateRange: "one_month", customDateRange: range, accountFilters: [], currencyFilters: [], channelType: "all" },
+    {
+      queryRange: { startDate: range.startDate.replaceAll("/", "-"), endDate: range.endDate.replaceAll("/", "-") },
+      accountFilters: [],
+      currencyFilters: [],
+      channelType: "all",
+    },
     "fx-1",
     `${range.endDate.replaceAll("/", "-")}T12:00:00+08:00`,
     occurrenceId,
@@ -1825,13 +1832,25 @@ function yuantaForeignWindowCapture(
 }
 
 {
+  // The FX product's declared period, from the run's Taipei date.
+  const declaration = YUANTA_SOURCE.statementSelection!.products.find(({ id }) => id === "foreign_currency")!.collectionPeriod!;
+  assert.deepEqual(
+    yuantaForeignQueryRange(collectionPeriod({ today: "2026-05-31", ...declaration })),
+    { quickLabel: "三個月", startDate: "2026-02-28", endDate: "2026-05-31" },
+    "the declared period is the 三個月 link, clamped to February's end",
+  );
   const threeMonthCapture = (
     rows: ReturnType<typeof yuantaForeignRow>[],
     observedAt: string,
     occurrenceId: string,
   ) => admitForeignCurrencyDepositCapture(buildYuantaForeignCurrencyCaptureInput(
     rows,
-    { dateRange: "three_months", accountFilters: [], currencyFilters: [], channelType: "all" },
+    {
+      queryRange: yuantaForeignQueryRange(collectionPeriod({ today: taipeiToday(observedAt), ...declaration })),
+      accountFilters: [],
+      currencyFilters: [],
+      channelType: "all",
+    },
     "fx-1",
     observedAt,
     occurrenceId,
@@ -1900,9 +1919,8 @@ function yuantaForeignWindowCapture(
     "",
   ].join("\r\n"));
   const fxInput = {
-    ...yuantaForeignCurrencyStatementsInputSchema.parse({
-      customDateRange: { startDate: "2026/08/14", endDate: "2026/08/24" },
-    }),
+    ...yuantaForeignCurrencyStatementsInputSchema.parse({}),
+    queryRange: fixedForeignDateRange,
     yuantaUserId: "synthetic-yuanta-login",
   };
 

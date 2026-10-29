@@ -161,7 +161,6 @@ function workflowContext(
 async function runGolden(
   name: string,
   { accountIdentityContinuity, statements, currentRows }: DepositStubs,
-  dateRanges: readonly string[] = ["30"],
 ): Promise<void> {
   const recorder = recordDepositCommit();
   const collectDeposit: NonNullable<FubonAllWorkflowDependencies["collectDeposit"]> = async (
@@ -169,8 +168,8 @@ async function runGolden(
   ) => {
     const accounts = [];
     for (const entry of statements.values()) {
-      const read: FubonParsedDepositStatement[] = [];
-      for (const _dateRange of input.dateRanges) read.push(entry);
+      // One query per account, as the goldens were recorded.
+      const read: FubonParsedDepositStatement[] = [entry];
       accounts.push({ account: entry.accountOption, statements: read });
     }
     return stageFubonDeposit({ accounts }, input, context, product, async () => currentRows);
@@ -183,7 +182,7 @@ async function runGolden(
       fubon_account: "SYNTHETIC-FUBON-LOGIN",
       fubon_password: "synthetic-password",
     },
-    statements: { dateRanges, downloadFormat: "EXCEL" },
+    statements: { downloadFormat: "EXCEL" },
   };
   const context = workflowContext(recorder, accountIdentityContinuity);
   const result = await runFubonAllStatementsWorkflow(withBoundProducts(context, FUBON_SOURCE, input), input, {
