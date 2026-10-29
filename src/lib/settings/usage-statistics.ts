@@ -1,10 +1,19 @@
 import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
 import { automationFlagEnabled } from "../automation/statement-selection.ts";
 
-/** ADR 0077: the only request the app makes to a host we operate. */
-export const USAGE_PING_URL = "https://octopusbeak-telemetry.REPLACE-WITH-SUBDOMAIN.workers.dev/v1/ping";
+declare const __OCTOPUSBEAK_USAGE_PING_URL__: string | undefined;
+
+/**
+ * ADR 0077: the only request the app makes to a host we operate. The release build sets it from
+ * OCTOPUSBEAK_USAGE_PING_URL (electron.vite.config.ts) so the address stays out of the source.
+ * Source checkouts, tests and builds without the variable get "", and then nothing is sent or asked.
+ */
+export const USAGE_PING_URL: string =
+  typeof __OCTOPUSBEAK_USAGE_PING_URL__ === "string" ? __OCTOPUSBEAK_USAGE_PING_URL__ : "";
 
 export const USAGE_STATISTICS_ENABLED_KEY = "USAGE_STATISTICS_ENABLED";
+/** Set once the person has answered the one-time question, or changed the switch in Settings. */
+export const USAGE_STATISTICS_PROMPTED_KEY = "USAGE_STATISTICS_PROMPTED";
 export const USAGE_COHORT_WEEK_KEY = "USAGE_COHORT_WEEK";
 export const USAGE_LAST_SENT_DAY_KEY = "USAGE_LAST_SENT_DAY";
 
@@ -98,6 +107,8 @@ export function usagePingOutcome(status: number | null): "sent" | "retry" | "ref
 }
 
 export type UsagePingerDependencies = {
+  /** USAGE_PING_URL in the app; "" means this build cannot send. */
+  url: string;
   now(): Date;
   readSettings(): AutomationSettingsFile;
   writeSettings(patch: Record<string, string>): void;
@@ -142,6 +153,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
   }
 
   async function attempt() {
+    if (!deps.url) return;
     const settings = deps.readSettings();
     if (!automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])) return;
     const today = taipeiDay(deps.now());
@@ -149,7 +161,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
     const ping = preview();
     let status: number | null;
     try {
-      status = await deps.send(USAGE_PING_URL, JSON.stringify(ping, [...USAGE_PING_FIELDS]));
+      status = await deps.send(deps.url, JSON.stringify(ping, [...USAGE_PING_FIELDS]));
     } catch {
       status = null;
     }
@@ -172,9 +184,28 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
     return inFlight;
   }
 
+  /** True when the one-time question should be shown: this build can send, and the person has neither opted in nor answered. */
+  function shouldAsk(): boolean {
+    if (!deps.url) return false;
+    const settings = deps.readSettings();
+    return !automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])
+      && !automationFlagEnabled(settings[USAGE_STATISTICS_PROMPTED_KEY]);
+  }
+
+  /** Records the answer to the one-time question; a yes sends today's ping if it is due. */
+  function answer(enabled: boolean) {
+    deps.writeSettings({
+      [USAGE_STATISTICS_ENABLED_KEY]: enabled ? "true" : "false",
+      [USAGE_STATISTICS_PROMPTED_KEY]: "true",
+    });
+    void check();
+  }
+
   return {
     preview,
     check,
+    shouldAsk,
+    answer,
     start() {
       active = true;
       // Fix the cohort week at the first launch, whether or not statistics are on.

@@ -4,6 +4,7 @@
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
+  import UsageStatisticsPrompt from "$lib/settings/UsageStatisticsPrompt.svelte";
   import {
     createAutomationRuntimeController,
     createAutomationBlockRefreshCoordinator,
@@ -207,6 +208,25 @@
   $: liabilitiesValue = viewData(liabilities);
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
+  /** ADR 0077: the one-time usage statistics question waits for the welcome and onboarding to finish. */
+  let usageStatisticsAsk = false;
+  let firstRunWelcomeResolved = false;
+  $: showUsageStatisticsPrompt = usageStatisticsAsk
+    && firstRunWelcomeResolved
+    && firstRunWelcomeState?.status !== "active"
+    && !completingFirstRunWelcome
+    && onboardingState?.status !== "active";
+
+  async function answerUsageStatistics(enabled: boolean) {
+    usageStatisticsAsk = false;
+    try {
+      applySystemSettings(await window.octopusBeak.settings.answerUsageStatistics(enabled));
+    } catch (error) {
+      // Unrecorded, so the question comes back on the next launch.
+      console.error("usage-statistics-answer-failed", error);
+    }
+  }
+
   $: onboardingStory = onboardingState
     ? onboardingController?.getStoryView(onboardingRestartPending) ?? null
     : null;
@@ -659,9 +679,8 @@
     return onboardingController;
   }
 
-  function completeFirstRunWelcome(_choice: "start" | "later", usageStatistics: boolean) {
+  function completeFirstRunWelcome() {
     if (!firstRunWelcomeState) return;
-    if (usageStatistics) void enableUsageStatistics();
     const destination = resolveCompletedFirstRunWelcome(firstRunWelcomeState);
     if (!destination) return;
     if (destination.onboardingState) {
@@ -670,16 +689,6 @@
     }
     navigateToRoute(destination.route);
     completingFirstRunWelcome = false;
-  }
-
-  /** The First-run Welcome opt-in for usage statistics (ADR 0077). */
-  async function enableUsageStatistics() {
-    try {
-      const current = await window.octopusBeak.settings.load();
-      applySystemSettings(await window.octopusBeak.settings.save({ ...current, usageStatisticsEnabled: true }));
-    } catch (error) {
-      console.error("usage-statistics-opt-in-failed", error);
-    }
   }
 
   async function restartOnboarding() {
@@ -910,6 +919,11 @@
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error));
+    void window.octopusBeak.settings.shouldAskUsageStatistics()
+      .then((ask) => {
+        if (mounted) usageStatisticsAsk = ask;
+      })
+      .catch((error) => console.warn("usage-statistics-ask-failed", error));
     // Financial routes are PGlite-live-only, so resolve the capability before
     // the first route load and never start legacy page/block reads.
     void Promise.resolve(window.octopusBeak?.dataViews?.enabled?.() ?? false)
@@ -922,7 +936,9 @@
         }
         routeCapabilityResolved = true;
         void resolveFirstRunWelcome().finally(() => {
-          if (mounted) normalizeRoute();
+          if (!mounted) return;
+          firstRunWelcomeResolved = true;
+          normalizeRoute();
         });
       });
     const dataVersionLifecycle = installDataVersionLifecycle({
@@ -1165,6 +1181,10 @@
     onRetryOverview={() => onboardingController?.retryOverview() ?? Promise.resolve()}
     onCancelWorkflow={cancelOnboardingWorkflow}
   />
+{/if}
+
+{#if showUsageStatisticsPrompt}
+  <UsageStatisticsPrompt onAnswer={answerUsageStatistics} />
 {/if}
 
 <style>

@@ -17,12 +17,15 @@ import {
   type UsagePingerDependencies,
 } from "./usage-statistics.ts";
 
-function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = [204]) {
+const TEST_URL = "https://usage.example.test/v1/ping";
+
+function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = [204], url = TEST_URL) {
   let settings: AutomationSettingsFile = { ...initial };
   const sent: { url: string; body: string }[] = [];
   const errors: string[] = [];
   let now = new Date("2026-10-29T02:00:00Z");
   const deps: UsagePingerDependencies = {
+    url,
     now: () => now,
     readSettings: () => settings,
     writeSettings: (patch) => {
@@ -128,7 +131,7 @@ test("one ping per day, retried after a temporary failure", async () => {
   await run.pinger.check();
   await run.pinger.check();
   assert.equal(run.sent.length, 2);
-  assert.equal(run.sent[0].url, USAGE_PING_URL);
+  assert.equal(run.sent[0].url, TEST_URL);
   assert.equal(run.settings().USAGE_LAST_SENT_DAY, "2026-10-29");
   assert.deepEqual(JSON.parse(run.sent[1].body), {
     schema: 1,
@@ -169,9 +172,37 @@ test("errors never carry the payload", async () => {
   assert.deepEqual(run.errors, ["usage-ping-retry"]);
 });
 
-test("only this module names the usage endpoint", () => {
+test("a build without the endpoint neither sends nor asks", async () => {
+  assert.equal(USAGE_PING_URL, "", "source checkouts and tests carry no endpoint");
+  const run = harness({ USAGE_STATISTICS_ENABLED: "true" }, [204], "");
+  run.pinger.start();
+  await run.pinger.check();
+  assert.equal(run.sent.length, 0);
+  assert.equal(harness({}, [204], "").pinger.shouldAsk(), false);
+});
+
+test("the question is asked once, until an answer is recorded", async () => {
+  const declined = harness({});
+  assert.equal(declined.pinger.shouldAsk(), true);
+  declined.pinger.answer(false);
+  assert.equal(declined.settings().USAGE_STATISTICS_PROMPTED, "true");
+  assert.equal(declined.settings().USAGE_STATISTICS_ENABLED, "false");
+  assert.equal(declined.pinger.shouldAsk(), false);
+
+  const accepted = harness({});
+  accepted.pinger.start();
+  await accepted.pinger.check();
+  assert.equal(accepted.sent.length, 0);
+  accepted.pinger.answer(true);
+  await accepted.pinger.check();
+  assert.equal(accepted.sent.length, 1, "a yes sends today's ping");
+  assert.equal(accepted.pinger.shouldAsk(), false);
+
+  assert.equal(harness({ USAGE_STATISTICS_ENABLED: "true" }).pinger.shouldAsk(), false, "people who already opted in are not asked");
+});
+
+test("no source file carries the endpoint or reads its build constant", () => {
   const root = fileURLToPath(new URL("../../..", import.meta.url));
-  const host = new URL(USAGE_PING_URL).host.split(".")[0];
   const self = "src/lib/settings/usage-statistics.ts";
   const offenders: string[] = [];
   const walk = (directory: string) => {
@@ -180,7 +211,9 @@ test("only this module names the usage endpoint", () => {
       if (entry.isDirectory()) walk(path);
       else if (/\.(?:ts|cjs|mjs|js|svelte)$/u.test(entry.name) && !/\.check\.ts$/u.test(entry.name)) {
         const file = relative(root, path).split("\\").join("/");
-        if (file !== self && readFileSync(path, "utf8").includes(host)) offenders.push(file);
+        const source = readFileSync(path, "utf8");
+        if (/workers\.dev|octopusbeak-telemetry/u.test(source)) offenders.push(file);
+        if (file !== self && source.includes("__OCTOPUSBEAK_USAGE_PING_URL__")) offenders.push(file);
       }
     }
   };

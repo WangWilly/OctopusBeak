@@ -220,6 +220,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          OCTOPUSBEAK_USAGE_PING_URL: ${{ secrets.OCTOPUSBEAK_USAGE_PING_URL }}
         run: |
           set -euo pipefail
           missing=()
@@ -228,6 +229,8 @@ jobs:
           [[ -n "$APPLE_ID" ]] || missing+=(APPLE_ID)
           [[ -n "$APPLE_APP_SPECIFIC_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
           [[ -n "$APPLE_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          # ADR 0077: a release without the usage endpoint would silently never ask or send.
+          [[ -n "$OCTOPUSBEAK_USAGE_PING_URL" ]] || missing+=(OCTOPUSBEAK_USAGE_PING_URL)
 
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing release secrets: %s\n' "${missing[*]}" >&2
@@ -297,6 +300,8 @@ jobs:
             --password "$APPLE_APP_SPECIFIC_PASSWORD"
 
       - name: Build signed and notarized app
+        env:
+          OCTOPUSBEAK_USAGE_PING_URL: ${{ secrets.OCTOPUSBEAK_USAGE_PING_URL }}
         run: |
           set -euo pipefail
           npm run desktop:make:signed

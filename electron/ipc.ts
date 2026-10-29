@@ -59,7 +59,7 @@ export function registerOctopusBeakIpc({
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
-  usagePing: { preview(): UsagePing };
+  usagePing: { preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void };
   pgliteViews: {
     dataDir?: string;
     workerPath?: string;
@@ -113,14 +113,24 @@ export function registerOctopusBeakIpc({
       systemSettings(readAutomationSettings()),
     "settings:save": async (_event, input: SystemSettingsDto) => {
       const value = validateSystemSettings(input);
+      const current = readAutomationSettings();
+      // Changing the switch in Settings answers the one-time usage statistics question too.
+      const usageAnswered = systemSettings(current).usageStatisticsEnabled !== value.usageStatisticsEnabled;
       writeAutomationSettings({
-        ...readAutomationSettings(),
+        ...current,
         ...systemSettingsFileEntries(value),
+        ...(usageAnswered ? { USAGE_STATISTICS_PROMPTED: "true" } : {}),
       });
       await onSystemSettingsChanged?.(value);
       return value;
     },
     "settings:previewUsagePing": () => usagePing.preview(),
+    "settings:shouldAskUsageStatistics": () => usagePing.shouldAsk(),
+    "settings:answerUsageStatistics": (_event, enabled: boolean) => {
+      if (typeof enabled !== "boolean") throw new TypeError("The usage statistics answer must be a boolean.");
+      usagePing.answer(enabled);
+      return systemSettings(readAutomationSettings());
+    },
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
     "settings:deleteFinancialData": () => deleteAllFinancialData(
