@@ -19,7 +19,7 @@ import type { CanonicalEInvoiceInput, CanonicalEInvoiceItemInput } from "../cano
  * categories. Not a .check file: it holds no tests.
  */
 
-const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
+export const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
 const CONNECTION = "sha256:spending-category-fixture-connection";
 const EPOCH = "sha256:spending-category-fixture-epoch";
 const SUBJECT = "sha256:spending-category-fixture-subject";

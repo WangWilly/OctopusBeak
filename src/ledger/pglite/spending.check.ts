@@ -5,33 +5,25 @@ import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
 import {
   createPGliteSpendingQuery,
-  queryCurrentSpending,
-  queryCurrentSpendingRecordPage,
-  queryCurrentSpendingSummary,
-  queryHistoricalSpending,
-  querySpendingRecognition,
   rankPGliteSpendingPaymentCandidates,
   resolvePGliteSpendingCandidate,
 } from "./spending-query.ts";
+import {
+  queryCurrentSpendingRecordPage,
+  queryCurrentSpendingSummary,
+} from "./purchase-report.ts";
 import type { PurchaseReport } from "../canonical/spending-purchase-contracts.ts";
 import {
   commitPGliteSpendingRefundRevision,
   applyPGliteSpendingPageAction,
-  confirmPGliteSpendingCandidate,
-  denyPGliteSpendingCandidate,
   recordPGliteSpendingMatchCandidate,
-  revokePGliteSpendingLink,
 } from "./spending-command.ts";
 import {
   E_INVOICE_CONTRACT_VERSION,
   E_INVOICE_COMPLETENESS_RULE_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
 } from "../canonical/einvoice-contract.ts";
-import { applySpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
-import {
-  applySpendingSummaryDelta,
-  spendingPairingReportContext,
-} from "../../lib/spending/model.ts";
+import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 
 const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
 const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
@@ -75,6 +67,8 @@ async function setupFixture(options: Readonly<{
   invoiceOneDate?: string;
   transactionOneDate?: string;
   transactionOneScale?: number;
+  /** A card consume date for transaction one, distinct from its effective (posting) date. */
+  transactionOneConsumeDate?: string;
 }> = {}): Promise<Fixture> {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
@@ -242,6 +236,21 @@ async function setupFixture(options: Readonly<{
   const datedInvoiceRevisionSql = invoiceRevisionSql.replace("'2026-09-01', 'date'", "$14, 'date'");
   await store.query(datedInvoiceRevisionSql, [invoiceRevisionOne, invoiceOne, invoiceRecordOne, invoiceCaptureOne, sourceCommit, "invoice-1-v1", "INV-0001", "Seed seller 1", options.invoiceOneAmount ?? "1234", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/1", "fingerprint-1", options.invoiceOneDate ?? "2026-09-01", options.invoiceOneScale ?? 2, E_INVOICE_CONTRACT_VERSION]);
   await store.query(datedInvoiceRevisionSql, [invoiceRevisionTwo, invoiceTwo, invoiceRecordTwo, invoiceCaptureTwo, sourceCommit, "invoice-2-v1", "INV-0002", "Seed seller 2", "2345", E_INVOICE_CURRENCY_AUTHORITY, E_INVOICE_CONTRACT_VERSION, "fixture/invoice/2", "fingerprint-2", "2026-09-01", 2, E_INVOICE_CONTRACT_VERSION]);
+  if (options.transactionOneConsumeDate) {
+    const instrument = id(26);
+    await store.query(
+      `INSERT INTO canonical_credit_card_instruments(instrument_id, integration_namespace, account_id, instrument_key, card_mask, role, lifecycle)
+       VALUES ($1, 'fubon', $2, 'fixture-card', '****0001', 'primary', NULL)`,
+      [instrument, account],
+    );
+    await store.query(
+      `INSERT INTO canonical_credit_card_transaction_details(
+         integration_namespace, account_id, transaction_id, revision_id, source_record_id,
+         capture_id, instrument_id, billing_status, consume_date, posting_date, effective_date_basis, statement_key
+       ) VALUES ('fubon', $1, $2, $3, $4, $5, $6, 'billed', $7, $8, 'consume-date', NULL)`,
+      [account, transactionOne, transactionRevisionOne, bankRecordOne, bankCapture, instrument, options.transactionOneConsumeDate, transactionOneDate],
+    );
+  }
 
   return {
     database,
@@ -466,11 +475,19 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     assert.ok(candidateOne);
     assert.ok(candidateTwo);
 
-    const confirmed = await confirmPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: candidateOne.candidateId });
-    assert.equal(confirmed.patch.knowledgeAt, 3);
+    const confirmed = await assertCompactActionSummaryParity(fixture, {
+      action: "confirm", kind: "candidate", candidateId: candidateOne.candidateId,
+      invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+      dataVersion: before.purchaseReport.knowledgeAt,
+    });
+    assert.equal(confirmed.result.knowledgeAt, 3);
     await assert.rejects(
-      confirmPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: candidateTwo.candidateId }),
-      /stale or missing/u,
+      applyPGliteSpendingPageAction(fixture.store, {
+        action: "confirm", kind: "candidate", candidateId: candidateTwo.candidateId,
+        invoiceIdentityId: fixture.invoiceTwo, transactionIdentityId: fixture.transactionTwo,
+        dataVersion: before.purchaseReport.knowledgeAt,
+      }),
+      /data version is stale/u,
       "a candidate opened from the previous report version must not be confirmed after a commit",
     );
 
@@ -479,24 +496,28 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     assert.deepEqual(summaryAfterConfirm.purchaseReport.totalsByCurrency, [
       { currency: "TWD", coefficient: "5924", scale: 2, count: 3 },
     ]);
-    assert.deepEqual(applySpendingPurchaseReportPatch(before.purchaseReport, confirmed.patch), afterConfirm.purchaseReport);
     assert.deepEqual(afterConfirm.purchaseReport.records.map((record) => record.basis), ["invoice", "linked", "bank-transaction"]);
     assert.deepEqual(afterConfirm.purchaseReport.totalsByCurrency, [{ currency: "TWD", coefficient: "5924", scale: 2, count: 3 }]);
     assert.equal((await query.recognition()).activeLinks.length, 1);
 
-    const denied = await denyPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: candidateTwo.candidateId });
-    assert.ok(denied.patch.knowledgeAt > confirmed.patch.knowledgeAt);
+    const denied = await assertCompactActionSummaryParity(fixture, {
+      action: "deny", kind: "candidate", candidateId: candidateTwo.candidateId,
+      invoiceIdentityId: fixture.invoiceTwo, transactionIdentityId: fixture.transactionTwo,
+      dataVersion: afterConfirm.purchaseReport.knowledgeAt,
+    });
+    assert.ok(denied.result.knowledgeAt > confirmed.result.knowledgeAt);
     const afterDeny = await query.current();
     await assertSummaryMatches(query, afterDeny.purchaseReport);
-    assert.deepEqual(applySpendingPurchaseReportPatch(afterConfirm.purchaseReport, denied.patch), afterDeny.purchaseReport);
     assert.equal((await query.recognition()).denied.length, 1);
 
-    const beforeRevoke = afterDeny;
-    const revoked = await revokePGliteSpendingLink(fixture.store, { invoiceId: fixture.invoiceOne, transactionId: fixture.transactionOne });
-    assert.ok(revoked.patch.recordOperations.some((operation) => operation.kind === "upsert"));
+    const revoked = await assertCompactActionSummaryParity(fixture, {
+      action: "revoke", kind: "revoke",
+      invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+      dataVersion: afterDeny.purchaseReport.knowledgeAt,
+    });
+    assert.deepEqual(revoked.result.affectedRecords.map((record) => record.basis).sort(), ["bank-transaction", "invoice"]);
     const afterRevoke = await query.current();
     await assertSummaryMatches(query, afterRevoke.purchaseReport);
-    assert.deepEqual(applySpendingPurchaseReportPatch(beforeRevoke.purchaseReport, revoked.patch), afterRevoke.purchaseReport);
     assert.equal(afterRevoke.purchaseReport.records.some((record) => record.basis === "linked"), false);
     assert.equal(afterRevoke.purchaseReport.records.filter((record) => record.basis === "invoice").length, 2);
     assert.equal(afterRevoke.purchaseReport.records.filter((record) => record.basis === "bank-transaction").length, 2);
@@ -557,7 +578,8 @@ test("PGlite Spending summary uses linked payment money instead of the invoice a
     assert.equal(before.purchaseReport.totalsByCurrency[0]?.coefficient, "7058");
     await assertSummaryMatches(query, before.purchaseReport);
 
-    await confirmPGliteSpendingCandidate(fixture.store, {
+    await applyPGliteSpendingPageAction(fixture.store, {
+      action: "confirm",
       kind: "direct",
       invoiceIdentityId: fixture.invoiceOne,
       transactionIdentityId: fixture.transactionOne,
@@ -602,7 +624,11 @@ test("PGlite month candidate pages include invoice-or-payment month and reject a
     }));
     assert.equal(modalPage.totalCandidateCount, 2, "the invoice modal keeps global transaction coverage across both months");
     assert.equal(modalPage.candidates[0]?.transactionId, fixture.transactionOne);
-    await confirmPGliteSpendingCandidate(fixture.store, { kind: "candidate", candidateId: crossMonthCandidate.candidateId });
+    await applyPGliteSpendingPageAction(fixture.store, {
+      action: "confirm", kind: "candidate", candidateId: crossMonthCandidate.candidateId,
+      invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+      dataVersion: before.purchaseReport.knowledgeAt,
+    });
     await assert.rejects(fixture.store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, {
       invoiceIdentityId: fixture.invoiceOne,
       dataVersion: before.purchaseReport.knowledgeAt,
@@ -628,7 +654,11 @@ test("PGlite candidate resolution stays isolated across equal-version databases"
     assert.ok(secondCandidate);
     assert.equal(firstBefore.purchaseReport.knowledgeAt, secondBefore.purchaseReport.knowledgeAt);
     assert.equal(firstCandidate.candidateId, secondCandidate.candidateId);
-    await confirmPGliteSpendingCandidate(first.store, { kind: "candidate", candidateId: firstCandidate.candidateId });
+    await applyPGliteSpendingPageAction(first.store, {
+      action: "confirm", kind: "candidate", candidateId: firstCandidate.candidateId,
+      invoiceIdentityId: first.invoiceOne, transactionIdentityId: first.transactionOne,
+      dataVersion: firstBefore.purchaseReport.knowledgeAt,
+    });
     const isolated = await resolvePGliteSpendingCandidate(second.store, secondCandidate.candidateId);
     assert.equal(isolated.candidate.invoiceId, second.invoiceOne);
     assert.equal(isolated.candidate.transactionId, second.transactionOne);
@@ -639,53 +669,42 @@ test("PGlite candidate resolution stays isolated across equal-version databases"
   }
 });
 
-test("PGlite cold hinted candidate decisions and direct confirmation patches equal recomputed reports", async () => {
-  for (const action of ["candidate", "candidate-deny", "direct"] as const) {
+test("PGlite page actions from a cold writer keep the summary delta exact and reject a mismatched hint", async () => {
+  for (const action of ["confirm", "deny", "direct"] as const) {
     const fixture = await setupFixture();
     try {
       const query = createPGliteSpendingQuery(fixture.store);
       const before = await query.current();
-      const invoiceRecord = before.purchaseReport.records.find((record) => record.purchaseId === `invoice:${fixture.invoiceOne}`)!;
-      const paymentRecord = before.purchaseReport.records.find((record) => record.purchaseId === `transaction:${fixture.transactionOne}`)!;
       const candidate = before.purchaseReport.candidates.find((entry) => entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne)!;
       const coldWriter = new PGliteStore(fixture.database);
-      const context = spendingPairingReportContext(before.purchaseReport, invoiceRecord, paymentRecord, candidate.candidateId);
-      const input = action !== "direct" ? {
-        kind: "candidate" as const, candidateId: candidate.candidateId,
-        invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
-        dataVersion: before.purchaseReport.knowledgeAt,
-        totalsByCurrency: before.purchaseReport.totalsByCurrency,
-        pairingReportContext: context,
-      } : {
-        kind: "direct" as const, invoiceIdentityId: fixture.invoiceOne,
-        transactionIdentityId: fixture.transactionOne,
-        dataVersion: before.purchaseReport.knowledgeAt,
-        totalsByCurrency: before.purchaseReport.totalsByCurrency,
-        pairingReportContext: context,
-      };
       if (action !== "direct") {
         await assert.rejects(
-          confirmPGliteSpendingCandidate(coldWriter, { kind: "candidate", candidateId: candidate.candidateId,
+          applyPGliteSpendingPageAction(coldWriter, {
+            action, kind: "candidate", candidateId: candidate.candidateId,
             invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionTwo,
             dataVersion: before.purchaseReport.knowledgeAt,
-            totalsByCurrency: before.purchaseReport.totalsByCurrency,
-            pairingReportContext: context }),
+          }),
           /hint does not match/u,
         );
         assert.equal((await fixture.store.query<{ value: string | number }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits")).rows[0]?.value, 1);
       }
-      const confirmed = action === "candidate-deny"
-        ? await denyPGliteSpendingCandidate(coldWriter, input as Extract<typeof input, { kind: "candidate" }>)
-        : await confirmPGliteSpendingCandidate(coldWriter, input);
-      const after = await query.current();
-      assert.deepEqual(applySpendingPurchaseReportPatch(before.purchaseReport, confirmed.patch), after.purchaseReport);
+      const coldFixture = { ...fixture, store: coldWriter };
+      await assertCompactActionSummaryParity(coldFixture, action === "direct" ? {
+        action: "confirm", kind: "direct",
+        invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+        dataVersion: before.purchaseReport.knowledgeAt,
+      } : {
+        action, kind: "candidate", candidateId: candidate.candidateId,
+        invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+        dataVersion: before.purchaseReport.knowledgeAt,
+      });
     } finally {
       await fixture.store.close();
     }
   }
 });
 
-test("PGlite direct targeted patch preserves a durable candidate's decided row", async () => {
+test("PGlite direct confirmation of a materialized candidate keeps the summary delta exact", async () => {
   const fixture = await setupFixture();
   try {
     const query = createPGliteSpendingQuery(fixture.store);
@@ -698,18 +717,14 @@ test("PGlite direct targeted patch preserves a durable candidate's decided row",
       similarityEvidence: inferred.similarityEvidence,
     }));
     const before = await query.current();
-    const candidate = before.purchaseReport.candidates.find((entry) => entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne)!;
-    const invoiceRecord = before.purchaseReport.records.find((record) => record.purchaseId === `invoice:${fixture.invoiceOne}`)!;
-    const paymentRecord = before.purchaseReport.records.find((record) => record.purchaseId === `transaction:${fixture.transactionOne}`)!;
-    const coldWriter = new PGliteStore(fixture.database);
-    const result = await confirmPGliteSpendingCandidate(coldWriter, {
-      kind: "direct", invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
+    const { result } = await assertCompactActionSummaryParity(fixture, {
+      action: "confirm", kind: "direct",
+      invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
       dataVersion: before.purchaseReport.knowledgeAt,
-      totalsByCurrency: before.purchaseReport.totalsByCurrency,
-      pairingReportContext: spendingPairingReportContext(before.purchaseReport, invoiceRecord, paymentRecord, candidate.candidateId),
     });
+    assert.deepEqual(result.affectedRecords.map((record) => record.basis), ["linked"]);
     const after = await query.current();
-    assert.deepEqual(applySpendingPurchaseReportPatch(before.purchaseReport, result.patch), after.purchaseReport);
+    assert.equal(after.purchaseReport.records.filter((record) => record.basis === "linked").length, 1);
   } finally {
     await fixture.store.close();
   }
@@ -790,6 +805,55 @@ test("PGlite compact direct confirm and revoke deltas preserve exact amounts and
     assert.equal(revoke.after.purchaseReport.dayTotals.find((day) => day.date === "2026-10-02")?.recordCount, 1);
   } finally {
     await fixture.store.close();
+  }
+});
+
+test("PGlite compact deltas date a card payment by its consume date, as the summary buckets it", async () => {
+  // Invoice 09-30, card consumed 10-02 but posted (effective) 10-05: the
+  // summary counts the bank-only record on 10-02, so the delta must remove it there.
+  for (const kind of ["candidate", "direct"] as const) {
+    const fixture = await setupFixture({
+      invoiceOneDate: "2026-09-30",
+      transactionOneDate: "2026-10-05",
+      transactionOneConsumeDate: "2026-10-02",
+    });
+    try {
+      const query = createPGliteSpendingQuery(fixture.store);
+      const current = await query.current();
+      const payment = current.purchaseReport.records.find((record) => record.purchaseId === `transaction:${fixture.transactionOne}`);
+      assert.equal(payment?.occurrence.value, "2026-10-02");
+      const candidate = current.purchaseReport.candidates.find((entry) =>
+        entry.invoiceId === fixture.invoiceOne && entry.transactionId === fixture.transactionOne);
+      assert.ok(candidate);
+      const confirm = await assertCompactActionSummaryParity(fixture, kind === "candidate" ? {
+        action: "confirm",
+        kind: "candidate",
+        candidateId: candidate.candidateId,
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: current.purchaseReport.knowledgeAt,
+      } : {
+        action: "confirm",
+        kind: "direct",
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: current.purchaseReport.knowledgeAt,
+      });
+      assert.deepEqual(confirm.result.summaryDelta.before.map((line) => line.date).sort(), ["2026-09-30", "2026-10-02"]);
+      assert.equal(confirm.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-02"), false);
+
+      const revoke = await assertCompactActionSummaryParity(fixture, {
+        action: "revoke",
+        kind: "revoke",
+        invoiceIdentityId: fixture.invoiceOne,
+        transactionIdentityId: fixture.transactionOne,
+        dataVersion: confirm.after.knowledgeAt,
+      });
+      assert.deepEqual(revoke.result.summaryDelta.after.map((line) => line.date).sort(), ["2026-09-30", "2026-10-02"]);
+      assert.equal(revoke.after.purchaseReport.dayTotals.some((day) => day.date === "2026-10-05"), false);
+    } finally {
+      await fixture.store.close();
+    }
   }
 });
 

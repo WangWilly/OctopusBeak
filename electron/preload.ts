@@ -87,9 +87,6 @@ const INVOKE_CHANNELS = {
     confirmStrongCandidates: "financial.spending.confirmStrongCandidates",
     rankPairingCandidates: "financial.spending.pairing",
     prewarmPairingCandidates: "spending:pairing-prewarm",
-    confirmCandidate: "financial.spending.confirmCandidate",
-    denyCandidate: "financial.spending.denyCandidate",
-    revokeLink: "financial.spending.revokeLink",
   },
   automation: {
     loadBlock: "automation:block",
