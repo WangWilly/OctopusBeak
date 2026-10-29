@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { collectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   CathayApiClient,
   type CathayDateTimeSuffixShape,
   classifyCathayRowDateShapes,
   classifyCathayDateScopeMismatch,
+  cathayQueryPeriod,
   collectCathayDomesticFinancialRequests,
 } from "./cathay-statements.ts";
 
@@ -392,6 +394,16 @@ const expectedScope = {
   startDate: "2025-10-29",
   endDate: "2026-10-29",
 };
+const domesticPeriod = cathayQueryPeriod(
+  collectionPeriod({
+    today: "2026-10-29",
+    lookBack: { years: 1, days: 1 },
+  }),
+);
+assert.deepEqual(domesticPeriod, {
+  option: "one_year",
+  ...expectedScope,
+});
 function emptyTransferResponse(accountNo: string): string {
   return JSON.stringify({
     success: true,
@@ -411,7 +423,7 @@ function emptyTransferResponse(accountNo: string): string {
 const requestedAccounts: string[] = [];
 const directApiCollection = await collectCathayDomesticFinancialRequests(
   injectedClientPage as never,
-  "one_year",
+  domesticPeriod,
   [],
   { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
   {

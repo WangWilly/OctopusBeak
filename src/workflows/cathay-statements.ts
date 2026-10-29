@@ -18,6 +18,11 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
+import {
+  periodSpans,
+  type CollectionPeriod,
+  type CollectionSpan,
+} from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 export type CathayCredentials = {
@@ -41,10 +46,36 @@ const dateRangeSchema = z.enum([
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
+export type CathayQueryPeriod = CathayDateBounds & Readonly<{
+  option: CathayDateRange;
+}>;
+
 export type CathayDateBounds = Readonly<{
   startDate: string;
   endDate: string;
 }>;
+
+const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> = {
+  one_week: { days: 8 },
+  one_month: { months: 1, days: 1 },
+  three_months: { months: 3, days: 1 },
+  six_months: { months: 6, days: 1 },
+  one_year: { years: 1, days: 1 },
+};
+
+/** Match a product's exact collection period to a Cathay query-form option. */
+export function cathayQueryPeriod(period: CollectionPeriod): CathayQueryPeriod {
+  const option = (Object.keys(CATHAY_PERIOD_OPTIONS) as CathayDateRange[])
+    .find((candidate) => periodSpans(period, CATHAY_PERIOD_OPTIONS[candidate]));
+  if (!option) {
+    throw new Error("No Cathay period option covers the collection period.");
+  }
+  return {
+    option,
+    startDate: period.start,
+    endDate: period.end,
+  };
+}
 
 export type CathayDomesticStatementsClient = {
   fetchDomesticAccounts(
@@ -1210,7 +1241,7 @@ export type CathayDomesticFinancialCollection = Readonly<{
  * file output. The App executor owns the single later commit. */
 export async function collectCathayDomesticFinancialRequests(
   page: Page,
-  dateRange: CathayDateRange,
+  period: CathayDateRange | CathayQueryPeriod,
   accountFilters: string[],
   cathaySession: CathaySession,
   options: Readonly<{
@@ -1231,7 +1262,9 @@ export async function collectCathayDomesticFinancialRequests(
     process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
   const identityEpoch =
     process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
-  const bounds = dateRangeBounds(dateRange, options.now);
+  const bounds = typeof period === "string"
+    ? dateRangeBounds(period, options.now)
+    : { startDate: period.startDate, endDate: period.endDate };
   const scope = { startDate: bounds.startDate, endDate: bounds.endDate };
   const observedAt = options.observedAt ?? new Date().toISOString();
   const stagedPages: CathayStagedCapturePage[] = [];
