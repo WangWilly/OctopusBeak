@@ -339,7 +339,7 @@ test("the bound run refuses collectors or a selection that disagree with the sou
   }), refused, "an attached selection needs the source's attached products and the workflow's attached collectors");
 });
 
-test("a product reads its declared collection period from the run's Taipei date, once per run", async () => {
+test("a product reads its declared collection period from its own Taipei date, once per run", async () => {
   // 15:59:30Z is 23:59:30 in Taipei; the clock crosses Taipei midnight while the run collects.
   let crossedMidnight = false;
   const periods: unknown[] = [];

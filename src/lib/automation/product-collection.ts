@@ -196,7 +196,8 @@ export type ProductCollectionHandle = Readonly<{
   event: ProductCollectionStageEvent;
   /**
    * ADR 0077: the dates this product queries, from its declaration and the
-   * run's Taipei date, the same for every call in one run. Throws
+   * Taipei date when the product first asks, the same for every call for
+   * this product. Throws
    * `FailureCodeError` for a product that declares none.
    */
   collectionPeriod: () => CollectionPeriod;
@@ -741,15 +742,15 @@ function inputSelection(input: unknown, key: "statementTypes" | "attachedPreview
 
 export function boundProductCollection(options: BoundProductCollectionOptions): ProductCollection {
   const { provider, productIds, attachedSource, signal, event } = options;
-  let today: string | undefined;
+  // Each product fixes its Taipei date when it first asks, close to when a
+  // bank computes its own dates from a quick link the product clicks.
   const periods = new Map<CollectionProductTypeId, CollectionPeriod>();
   const productPeriod = (typeId: CollectionProductTypeId): CollectionPeriod => {
     const declaration = options.collectionPeriods?.[typeId];
     if (!declaration) throw new FailureCodeError("workflow-failed");
     let period = periods.get(typeId);
     if (!period) {
-      today ??= taipeiToday(options.now());
-      period = collectionPeriod({ today, ...declaration });
+      period = collectionPeriod({ today: taipeiToday(options.now()), ...declaration });
       periods.set(typeId, period);
     }
     return period;

@@ -556,7 +556,7 @@ A distinct occurrence position within an Indistinguishable Occurrence Group that
 _Avoid_: Provider transaction ID, global row sequence, proven individual identity
 
 **Collection period**:
-The dates a Verified product queries before a Source Capture: a look-back and the widest provider request it declares, ending on the run's Asia/Taipei date, which the Product collection run computes once per run (ADR 0077). A Collection period chooses what to query before a capture; a Query bucket records what a capture queried.
+The dates a Verified product queries before a Source Capture: a look-back and the widest provider request it declares, ending on the Asia/Taipei date when the product first asks, which the Product collection run keeps for that product (ADR 0077). A Collection period chooses what to query before a capture; a Query bucket records what a capture queried.
 _Avoid_: Date range input, query window, today's range
 
 **Query bucket**:
