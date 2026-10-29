@@ -6,6 +6,7 @@ import { ProductCollectionInterruptedError } from "../lib/automation/product-col
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   readSinopacDepositSource,
   runSinopacProviderWorkflow,
@@ -37,8 +38,6 @@ const input: SinopacWorkflowInput = {
     sinopac_account: "synthetic-account",
     sinopac_password: "synthetic-password",
   },
-  startDate: "20260901",
-  endDate: "20260930",
   accountFilters: [],
   currencyFilters: [],
   statementTypes: ["deposit"],
@@ -114,16 +113,26 @@ type Scenario = Readonly<{
   current?: readonly SinopacCurrentDepositBalanceRow[];
 }>;
 
+/** The goldens record one September window, which a period ending on the run's date cannot express. */
+const september: CollectionPeriod = {
+  start: "2026-09-01",
+  end: "2026-09-30",
+  windows: [{ start: "2026-09-01", end: "2026-09-30" }],
+};
+
 // The real read and build halves over a fake SinoPac source.
 function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDependencies {
   return {
-    collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
-      await readSinopacDepositSource(source, depositInput, context, product),
-      depositInput,
-      context,
-      product,
-      source.readCurrentBalances,
-    ),
+    collectDeposit: async (_page, depositInput, context, bound) => {
+      const product = { ...bound, collectionPeriod: () => september };
+      return await stageSinopacDeposit(
+        await readSinopacDepositSource(source, depositInput, context, product),
+        depositInput,
+        context,
+        product,
+        source.readCurrentBalances,
+      );
+    },
   };
 }
 

@@ -164,10 +164,6 @@ assert.deepEqual(
   [{ startDate: "20240229", endDate: "20240331" }],
 );
 assert.deepEqual(
-  sinopacQueryWindows({ startDate: "20260701", endDate: "20260731" }, 3),
-  sinopacQueryWindows({ startDate: "20260701", endDate: "20260731" }),
-);
-assert.deepEqual(
   sinopacQueryWindows({ startDate: "20240101", endDate: "20240331" }),
   [
     { startDate: "20240229", endDate: "20240331" },
