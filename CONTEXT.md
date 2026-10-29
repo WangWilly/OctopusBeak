@@ -966,7 +966,7 @@ One start of the provider workflow within an Active automation task run. A CAPTC
 _Avoid_: Run attempt, round, execution attempt
 
 **Task run plan**:
-What an Active automation task run executes with, resolved once when the run leaves the queue: its task, its workflow registration and input, its Verified source's verification facts, its launch configuration and verification settings, and its PGlite endpoint. Every round of the run reads the same plan; a task the App cannot run fails when the plan is resolved (ADR 0075).
+What an Active automation task run executes with, resolved once when the run leaves the queue: its task, its workflow registration and input builder, its Verified source's verification facts, its launch configuration and verification settings, and its PGlite endpoint. Every round of the run reads the same plan; a task the App cannot run fails when the plan is resolved (ADR 0075).
 _Avoid_: Run context, task lookup, launch options
 
 **Automation task run finalization**:

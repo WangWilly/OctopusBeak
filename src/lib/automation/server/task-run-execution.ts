@@ -76,9 +76,9 @@ export type AutomationTaskExecutionSeams = Readonly<{
   workflowBrowserPort?: (input: AppWorkflowBrowserHostInput) => WorkflowBrowserPort;
 }>;
 
-function createWorkflowProgressReporter(context: ExecutionContext) {
+function createWorkflowProgressReporter(context: ExecutionContext, input: unknown) {
   let progress = context.run.current().progress ?? indeterminateProgress(context.run.current().attempt);
-  const selectedStatementTypes = selectedWorkflowStatementTypes(context.plan.registration.input);
+  const selectedStatementTypes = selectedWorkflowStatementTypes(input);
   let retrying = context.round.retrying;
 
   const persistProgress = async (next: AutomationTaskProgress): Promise<void> => {
@@ -182,7 +182,7 @@ function tdccSessionHost(seams: AutomationTaskExecutionSeams): TdccSessionHost {
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
   const { plan, seams } = context;
   const { task, workflowId, launchEnv } = plan;
-  const { definition, runtime, input } = plan.registration;
+  const { definition, runtime } = plan.registration;
 
   previewStructureReports.clear(task.id);
   const recordPreviewFailure = (
@@ -202,7 +202,8 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
   let workerOutcome: Awaited<ReturnType<typeof runSupervisedAppWorkflow>> | undefined;
   const browserRuntimeIdentity = createBrowserRuntimeIdentityRecorder(context);
   try {
-    const progressReporter = createWorkflowProgressReporter(context);
+    const input = plan.registration.inputFromEnvironment(launchEnv);
+    const progressReporter = createWorkflowProgressReporter(context, input);
     const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime) ? plan.pgliteRpc : undefined;
     const browser = runtime.kind === "nonbrowser"
       ? undefined

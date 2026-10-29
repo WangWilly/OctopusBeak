@@ -119,6 +119,10 @@ function successfulCommit(items: readonly PGliteWorkflowRunItem[] = [runItem()])
 test("worker protocol rejects malformed, oversized, and unexpected frames", () => {
   assert.equal(parseAppWorkflowWorkerStart(start).taskRunId, "run-fixture-1");
   assert.throws(
+    () => parseAppWorkflowWorkerStart({ ...start, workflowId: "unregistered-workflow" }),
+    "a start frame for a workflow the App does not register is refused",
+  );
+  assert.throws(
     () => parseAppWorkflowWorkerStart({ ...start, unexpected: "raw provider response" }),
     /protocol rejected/u,
   );
