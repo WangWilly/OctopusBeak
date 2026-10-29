@@ -44,7 +44,9 @@
 
   export let state: FirstRunWelcomeState;
   export let onStateChange: (next: FirstRunWelcomeState) => void;
-  export let onComplete: (choice: "start" | "later") => void;
+  /** usageStatistics is the ADR 0077 opt-in, unselected unless the person ticks it. */
+  export let onComplete: (choice: "start" | "later", usageStatistics: boolean) => void;
+  let usageStatistics = false;
 
   type TourSlide = 3 | 4 | 5;
 
@@ -167,7 +169,7 @@
     transitionLocked = true;
     onStateChange(next);
     clearTimeout(completeTimer);
-    completeTimer = setTimeout(() => onComplete(choice), reducedMotion ? 0 : 160);
+    completeTimer = setTimeout(() => onComplete(choice, usageStatistics), reducedMotion ? 0 : 160);
   }
 
   async function restoreFocus(nextSlide: number) {
@@ -388,6 +390,13 @@
             <span class="institutions-more">{$t.firstRunWelcome.moreInstitutions}</span>
           </div>
         </div>
+        <label class="usage-opt-in">
+          <input type="checkbox" bind:checked={usageStatistics} />
+          <span>
+            <span class="usage-opt-in-label">{$t.firstRunWelcome.usageStatisticsOptIn}</span>
+            <small>{$t.firstRunWelcome.usageStatisticsOptInHint}</small>
+          </span>
+        </label>
         <div class="final-actions">
           <button class="round-button" type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
             <ArrowLeft size={20} aria-hidden="true" />
@@ -1059,10 +1068,41 @@
     border-radius: 6px;
   }
 
+  .usage-opt-in {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    max-width: 480px;
+    margin-top: 32px;
+    color: rgb(7 31 74 / 80%);
+    font-size: 14px;
+    line-height: 1.5;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .usage-opt-in input {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin-top: 3px;
+  }
+
+  .usage-opt-in-label {
+    display: block;
+    font-weight: 700;
+  }
+
+  .usage-opt-in small {
+    display: block;
+    color: rgb(7 31 74 / 60%);
+    font-size: 12px;
+  }
+
   .final-actions {
     display: flex;
     gap: 12px;
-    margin-top: 40px;
+    margin-top: 24px;
   }
 
   .final-actions .round-button {

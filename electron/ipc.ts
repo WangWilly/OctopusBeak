@@ -28,6 +28,7 @@ import {
   validateSystemSettings,
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
+import type { UsagePing } from "../src/lib/settings/usage-statistics.ts";
 import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
@@ -48,6 +49,7 @@ export function registerOctopusBeakIpc({
   automation,
   collection,
   onSystemSettingsChanged,
+  usagePing,
   pgliteViews,
   pgliteOperational,
   pgliteFinancial,
@@ -57,6 +59,7 @@ export function registerOctopusBeakIpc({
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
+  usagePing: { preview(): UsagePing };
   pgliteViews: {
     dataDir?: string;
     workerPath?: string;
@@ -117,6 +120,7 @@ export function registerOctopusBeakIpc({
       await onSystemSettingsChanged?.(value);
       return value;
     },
+    "settings:previewUsagePing": () => usagePing.preview(),
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
     "settings:deleteFinancialData": () => deleteAllFinancialData(

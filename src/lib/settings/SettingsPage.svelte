@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import {
+    ChartColumn,
     Check,
     ChevronsUpDown,
     CircleAlert,
@@ -34,6 +35,7 @@
     applySystemSettings,
     exchangeRateUpdateTime,
     previewFeaturesEnabled,
+    usageStatisticsEnabled,
     scheduledCollection,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
@@ -57,6 +59,7 @@
     { id: "settings-schedule", icon: Clock },
     { id: "settings-display", icon: Languages },
     { id: "settings-preview", icon: FlaskConical },
+    { id: "settings-usage", icon: ChartColumn },
     { id: "settings-data", icon: DatabaseZap },
     { id: "settings-onboarding", icon: Compass },
   ] as const;
@@ -80,6 +83,9 @@
   let collectionEnabled = $scheduledCollection.enabled;
   let [collectionHour, collectionMinute] = $scheduledCollection.time.split(":");
   let previewEnabled = $previewFeaturesEnabled;
+  let usageEnabled = $usageStatisticsEnabled;
+  let usagePayload: string | null = null;
+  let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
   let previewDeleteConfirming = false;
   let previewDeleteStatus: "idle" | "pending" | "deleted" | "error" = "idle";
   type DataActionStatus = "idle" | "confirming" | "pending" | "done" | "error";
@@ -96,6 +102,7 @@
     "settings-schedule": $t.settings.scheduleSettings,
     "settings-display": $t.settings.languageDisplaySettings,
     "settings-preview": $t.settings.previewFeatures,
+    "settings-usage": $t.settings.usageStatistics,
     "settings-data": $t.settings.dataSection,
     "settings-onboarding": $t.settings.onboardingSection,
   };
@@ -206,6 +213,7 @@
       scheduledCollectionEnabled: collectionEnabled,
       scheduledCollectionTime: `${collectionHour}:${collectionMinute}`,
       previewFeaturesEnabled: previewEnabled,
+      usageStatisticsEnabled: usageEnabled,
     };
     saveStatus = "pending";
     saveError = "";
@@ -219,6 +227,7 @@
         collectionEnabled = value.scheduledCollectionEnabled;
         [collectionHour, collectionMinute] = value.scheduledCollectionTime.split(":");
         previewEnabled = value.previewFeaturesEnabled;
+        usageEnabled = value.usageStatisticsEnabled;
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
@@ -241,6 +250,25 @@
   function togglePreviewFeatures() {
     previewEnabled = !previewEnabled;
     saveSystemSettings();
+  }
+
+  function toggleUsageStatistics() {
+    usageEnabled = !usageEnabled;
+    saveSystemSettings();
+  }
+
+  async function toggleUsagePayload() {
+    if (usagePayload !== null) {
+      usagePayload = null;
+      return;
+    }
+    usagePayloadStatus = "pending";
+    try {
+      usagePayload = JSON.stringify(await window.octopusBeak.settings.previewUsagePing(), null, 2);
+      usagePayloadStatus = "idle";
+    } catch {
+      usagePayloadStatus = "error";
+    }
   }
 
   async function deletePreviewData() {
@@ -576,6 +604,63 @@
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
               <span>{$t.settings.deletePreviewDataFailed}</span>
+            </div>
+          {/if}
+        </div>
+      </section>
+
+      <section id="settings-usage" class="settings-section" aria-labelledby="settings-usage-title">
+        <header>
+          <h2 id="settings-usage-title">{$t.settings.usageStatistics}</h2>
+          <p>{$t.settings.usageStatisticsDescription}</p>
+        </header>
+        <div class="card settings-card">
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="usage-statistics-label">{$t.settings.usageStatistics}</span>
+              <small class="setting-hint">{$t.settings.usageStatisticsHint}</small>
+            </div>
+            <div class="setting-control">
+              <button
+                id="usage-statistics-toggle"
+                class="switch collection-switch"
+                type="button"
+                aria-pressed={usageEnabled}
+                aria-labelledby="usage-statistics-label"
+                onclick={toggleUsageStatistics}
+              >
+                <span>{usageEnabled ? $t.settings.usageStatisticsOn : $t.settings.usageStatisticsOff}</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.settings.usagePayload}</span>
+              <small class="setting-hint">{$t.settings.usagePayloadHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              <button
+                id="usage-payload-toggle"
+                class="button"
+                type="button"
+                aria-expanded={usagePayload !== null}
+                aria-controls="usage-payload"
+                disabled={usagePayloadStatus === "pending"}
+                aria-busy={usagePayloadStatus === "pending"}
+                onclick={toggleUsagePayload}
+              >
+                {usagePayload === null ? $t.settings.showUsagePayload : $t.settings.hideUsagePayload}
+              </button>
+            </div>
+          </div>
+          {#if usagePayload !== null}
+            <pre id="usage-payload" class="usage-payload">{usagePayload}</pre>
+          {/if}
+          {#if usagePayloadStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.settings.usagePayloadFailed}</span>
             </div>
           {/if}
         </div>
@@ -1059,6 +1144,18 @@
   .scale-shortcuts kbd:not(:first-child) { margin-left: var(--space-1); }
 
   .onboarding-row { grid-template-columns: minmax(0, 1fr) auto; }
+
+  .usage-payload {
+    margin: 0;
+    padding: var(--space-3);
+    overflow-x: auto;
+    border-radius: 8px;
+    background: var(--surface-soft);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+  }
 
   .onboarding-setting-actions {
     display: flex;

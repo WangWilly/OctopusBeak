@@ -8,6 +8,8 @@ export type SystemSettingsDto = {
   scheduledCollectionEnabled: boolean;
   scheduledCollectionTime: string;
   previewFeaturesEnabled: boolean;
+  /** ADR 0077: the opt-in anonymous daily usage ping. */
+  usageStatisticsEnabled: boolean;
 };
 
 const DAILY_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -28,6 +30,9 @@ export function validateSystemSettings(input: SystemSettingsDto): SystemSettings
   if (typeof input.previewFeaturesEnabled !== "boolean") {
     throw new TypeError("Preview features enabled must be a boolean.");
   }
+  if (typeof input.usageStatisticsEnabled !== "boolean") {
+    throw new TypeError("Usage statistics enabled must be a boolean.");
+  }
   return input;
 }
 
@@ -40,6 +45,7 @@ export function systemSettings(settings: AutomationSettingsFile = {}): SystemSet
     scheduledCollectionEnabled: automationFlagEnabled(settings.SCHEDULED_COLLECTION_ENABLED),
     scheduledCollectionTime: String(settings.SCHEDULED_COLLECTION_TIME ?? "07:00"),
     previewFeaturesEnabled: automationFlagEnabled(settings.PREVIEW_FEATURES_ENABLED),
+    usageStatisticsEnabled: automationFlagEnabled(settings.USAGE_STATISTICS_ENABLED),
   });
 }
 
@@ -50,5 +56,6 @@ export function systemSettingsFileEntries(value: SystemSettingsDto) {
     SCHEDULED_COLLECTION_ENABLED: value.scheduledCollectionEnabled ? "true" : "false",
     SCHEDULED_COLLECTION_TIME: value.scheduledCollectionTime,
     PREVIEW_FEATURES_ENABLED: value.previewFeaturesEnabled ? "true" : "false",
+    USAGE_STATISTICS_ENABLED: value.usageStatisticsEnabled ? "true" : "false",
   };
 }
