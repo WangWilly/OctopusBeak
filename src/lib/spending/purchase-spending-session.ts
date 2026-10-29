@@ -6,7 +6,6 @@ import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
-  spendingPairingReportContext,
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCandidatePageDto,
   type SpendingCandidatePageItem,
@@ -18,7 +17,6 @@ import {
   preserveSpendingMonthSelection,
   spendingMonths,
 } from "./model.ts";
-import { applySpendingPurchaseReportPatch } from "./purchase-report-patch.ts";
 import { createSpendingPageReader } from "./page-reader.ts";
 
 export type PurchaseSpendingReport = SpendingPurchaseReportView & Readonly<{
@@ -35,9 +33,6 @@ export type PurchaseSpendingTransport = Pick<SpendingApi,
   | "applyPageAction"
   | "rankPairingCandidates"
   | "prewarmPairingCandidates"
-  | "confirmCandidate"
-  | "denyCandidate"
-  | "revokeLink"
 >;
 
 export type PurchaseSpendingTimer = ReturnType<typeof setTimeout>;
@@ -153,9 +148,6 @@ export function createDesktopPurchaseSpendingTransport(): PurchaseSpendingTransp
     applyPageAction: (input) => api().applyPageAction(input),
     rankPairingCandidates: (input) => api().rankPairingCandidates(input),
     prewarmPairingCandidates: (input) => api().prewarmPairingCandidates(input),
-    confirmCandidate: (input) => api().confirmCandidate(input),
-    denyCandidate: (input) => api().denyCandidate(input),
-    revokeLink: (input) => api().revokeLink(input),
   };
 }
 
@@ -198,7 +190,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private pairingDataVersion: number | null = null;
   private pairingPrewarmVersion: number | null = null;
   private readonly monthsCache = new WeakMap<object, readonly string[]>();
-  private readonly candidateRecordsCache = new WeakMap<object, Map<string, PurchaseRecord>>();
 
   constructor(options: PurchaseSpendingSessionOptions, clock: PurchaseSpendingClock, sessionId: number) {
     this.options = options;
@@ -573,20 +564,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     }
   }
 
-  private candidateRecordsByKey(sourceReport: PurchaseSpendingReport) {
-    const cached = this.candidateRecordsCache.get(sourceReport);
-    if (cached) return cached;
-    const index = new Map<string, PurchaseRecord>();
-    for (const record of sourceReport.records) {
-      for (const candidateId of record.candidateIds) {
-        if (record.invoice) index.set(`${candidateId}:invoice`, record);
-        if (record.transaction) index.set(`${candidateId}:transaction`, record);
-      }
-    }
-    this.candidateRecordsCache.set(sourceReport, index);
-    return index;
-  }
-
   private async acceptCompactPageAction(result: SpendingPageActionResult) {
     const report = this.value.report;
     const pendingReport = this.pendingReport;
@@ -710,8 +687,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     }
   }
 
-  private activeReportForActions() { return this.value.report; }
-
   async confirmCandidate(pair: SpendingCandidatePairRef) {
     await this.decideCandidate(pair, "confirmCandidate");
   }
@@ -720,11 +695,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     await this.decideCandidate(pair, "denyCandidate");
   }
 
-  /**
-   * A compact page decides a pair by identity, so the merge modal can decide
-   * pairs from any month. The legacy full report still resolves the pair's
-   * records for its report context.
-   */
+  /** A compact page decides a pair by identity, so the merge modal can decide pairs from any month. */
   private async decideCandidate(pair: SpendingCandidatePairRef, action: "confirmCandidate" | "denyCandidate") {
     if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return;
     const candidateId = pair.candidateId;
@@ -732,42 +703,17 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `${action}:${candidateId}`, actionError: null });
     try {
-      const report = this.activeReportForActions();
-      if (report.summary) {
-        const result = await this.options.transport.applyPageAction({
-          action: action === "confirmCandidate" ? "confirm" : "deny",
-          kind: "candidate",
-          candidateId,
-          invoiceIdentityId: pair.invoiceIdentityId,
-          transactionIdentityId: pair.transactionIdentityId,
-          dataVersion: report.knowledgeAt,
-        });
-        if (!this.isCurrentAction(requestToken)) return;
-        await this.acceptCompactPageAction(result);
-        if (!this.disposed) this.publish({ selectedMonth: this.value.activeMonth });
-        return;
-      }
-      const candidate = report.candidates.find((entry) => entry.candidateId === candidateId);
-      const recordsByKey = this.candidateRecordsByKey(report);
-      const invoiceRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:invoice`) ?? null : null;
-      const paymentRecord = candidate ? recordsByKey.get(`${candidate.candidateId}:transaction`) ?? null : null;
-      const context = candidate && invoiceRecord && paymentRecord
-        ? spendingPairingReportContext(report, invoiceRecord, paymentRecord, candidateId) : null;
-      const request = candidate && context ? {
-        kind: "candidate" as const,
+      const result = await this.options.transport.applyPageAction({
+        action: action === "confirmCandidate" ? "confirm" : "deny",
+        kind: "candidate",
         candidateId,
-        invoiceIdentityId: invoiceRecord!.invoice!.invoiceId,
-        transactionIdentityId: paymentRecord!.transaction!.transactionId,
-        dataVersion: report.knowledgeAt,
-        totalsByCurrency: report.totalsByCurrency,
-        pairingReportContext: context,
-      } : { kind: "candidate" as const, candidateId };
-      const next = action === "confirmCandidate"
-        ? await this.options.transport.confirmCandidate(request)
-        : await this.options.transport.denyCandidate(request);
+        invoiceIdentityId: pair.invoiceIdentityId,
+        transactionIdentityId: pair.transactionIdentityId,
+        dataVersion: this.value.report.knowledgeAt,
+      });
       if (!this.isCurrentAction(requestToken)) return;
-      const nextReport = applySpendingPurchaseReportPatch(report, next.patch);
-      this.publish({ report: nextReport, selectedMonth: this.value.activeMonth });
+      await this.acceptCompactPageAction(result);
+      if (!this.disposed) this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -940,38 +886,16 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `direct:${invoiceIdentityId}/${selectedPaymentId}`, actionError: null });
     try {
-      const report = this.value.report;
-      if (report.summary) {
-        const result = await this.options.transport.applyPageAction({
-          action: "confirm",
-          kind: "direct",
-          invoiceIdentityId,
-          transactionIdentityId: selectedPaymentId,
-          dataVersion: report.knowledgeAt,
-        });
-        if (!this.isCurrentAction(requestToken)) return;
-        this.dismissPairing(false);
-        await this.acceptCompactPageAction(result);
-        return;
-      }
-      const paymentRecord = report.records.find((record) => record.basis === "bank-transaction" && record.transaction?.transactionId === selectedPaymentId);
-      const pairCandidate = report.candidates.find((candidate) =>
-        this.candidateRecordsByKey(report).get(`${candidate.candidateId}:invoice`)?.invoice?.invoiceId === invoiceIdentityId
-        && this.candidateRecordsByKey(report).get(`${candidate.candidateId}:transaction`)?.transaction?.transactionId === selectedPaymentId);
-      const context = this.value.pairingInvoice && paymentRecord
-        ? spendingPairingReportContext(report, this.value.pairingInvoice, paymentRecord, pairCandidate?.candidateId)
-        : undefined;
-      const next = await this.options.transport.confirmCandidate({
+      const result = await this.options.transport.applyPageAction({
+        action: "confirm",
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
-        dataVersion: report.knowledgeAt,
-        totalsByCurrency: report.totalsByCurrency,
-        pairingReportContext: context,
+        dataVersion: this.value.report.knowledgeAt,
       });
       if (!this.isCurrentAction(requestToken)) return;
-      this.publish({ report: applySpendingPurchaseReportPatch(report, next.patch) });
-      this.closePairing();
+      this.dismissPairing(false);
+      await this.acceptCompactPageAction(result);
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -991,26 +915,16 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`, actionError: null });
     try {
-      const report = this.value.report;
-      if (report.summary) {
-        const result = await this.options.transport.applyPageAction({
-          action: "revoke",
-          kind: "revoke",
-          invoiceIdentityId: record.link.invoiceId,
-          transactionIdentityId: record.link.transactionId,
-          dataVersion: report.knowledgeAt,
-        });
-        if (!this.isCurrentAction(requestToken)) return;
-        await this.acceptCompactPageAction(result);
-        this.publish({ selectedMonth: this.value.activeMonth });
-        return;
-      }
-      const next = await this.options.transport.revokeLink({
-        invoiceId: record.link.invoiceId,
-        transactionId: record.link.transactionId,
+      const result = await this.options.transport.applyPageAction({
+        action: "revoke",
+        kind: "revoke",
+        invoiceIdentityId: record.link.invoiceId,
+        transactionIdentityId: record.link.transactionId,
+        dataVersion: this.value.report.knowledgeAt,
       });
       if (!this.isCurrentAction(requestToken)) return;
-      this.publish({ report: applySpendingPurchaseReportPatch(report, next.patch), selectedMonth: this.value.activeMonth });
+      await this.acceptCompactPageAction(result);
+      this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {

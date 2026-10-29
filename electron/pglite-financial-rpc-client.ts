@@ -2,12 +2,8 @@ import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type {
-  SpendingCandidateActionInput,
-  SpendingConfirmActionInput,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
-  SpendingLinkActionInput,
-  SpendingPurchaseActionResult,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
   SpendingPageDto,
@@ -237,18 +233,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 1 && plainRecord(args[0])
       && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion),
-    { lane: "interactive" },
-  ),
-  "financial.spending.confirmCandidate": operation<[input: SpendingConfirmActionInput], SpendingPurchaseActionResult>(
-    (args) => args.length === 1 && plainRecord(args[0]),
-    { lane: "interactive" },
-  ),
-  "financial.spending.denyCandidate": operation<[input: SpendingCandidateActionInput], SpendingPurchaseActionResult>(
-    (args) => args.length === 1 && plainRecord(args[0]),
-    { lane: "interactive" },
-  ),
-  "financial.spending.revokeLink": operation<[input: SpendingLinkActionInput], SpendingPurchaseActionResult>(
-    (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
   ),
   "financial.spending.setPurchaseCategory": operation<[input: SpendingPurchaseCategoryRequest], SpendingPurchaseCategoryResult>(

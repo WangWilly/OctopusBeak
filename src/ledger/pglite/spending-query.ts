@@ -34,7 +34,6 @@ import type {
 import {
   composePurchaseReport,
   evaluateSpendingMatchCandidates,
-  purchaseRecordCategory,
   type PurchaseItemCategorizationIndex,
 } from "../canonical/spending-purchase-report-core.ts";
 import {
@@ -57,7 +56,6 @@ import type {
 import {
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCategoryMonthTotal,
-  type SpendingInvoiceDto,
   type SpendingPageDto,
   type SpendingRecordPageRequest,
   type SpendingRecordPageDto,
@@ -84,7 +82,6 @@ import {
 import {
   calendarDayDistance,
   calendarDayNumber,
-  exactMoneyEqual,
   exactMoneyKey,
   type SpendingMatchingInvoice,
   type SpendingMatchingTransaction,
@@ -114,34 +111,6 @@ import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 /** A read-only capability accepted by the PGlite Spending query seam. */
 export type PGliteSpendingReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
 export type PGliteSpendingStore = Pick<PGliteStore, "query" | "transaction">;
-
-/**
- * A report snapshot captured by the worker's read transaction.  Commands may
- * reuse this immutable snapshot when their writer is the same store instance;
- * the command still validates the current commit sequence inside its own
- * transaction before applying a mutation.
- */
-export type PGliteSpendingSnapshot = CurrentSpendingQueryResult;
-
-const currentSnapshotCache = new WeakMap<object, PGliteSpendingSnapshot>();
-const pairingSnapshotCache = new WeakMap<object, Readonly<{
-  transactions: readonly CanonicalSpendingTransaction[];
-  byId: ReadonlyMap<string, CanonicalSpendingTransaction>;
-  index: ReturnType<typeof createSpendingManualPairingIndex>;
-}>>();
-
-export function cachePGliteSpendingSnapshot(
-  store: PGliteSpendingStore,
-  snapshot: PGliteSpendingSnapshot,
-): void {
-  currentSnapshotCache.set(store, snapshot);
-}
-
-export function cachedPGliteSpendingSnapshot(
-  store: object,
-): PGliteSpendingSnapshot | null {
-  return currentSnapshotCache.get(store) ?? null;
-}
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -1721,10 +1690,6 @@ function matchingInvoice(invoice: CanonicalEInvoiceView): SpendingMatchingInvoic
   return { revision: { seller: { name: invoice.revision.seller.name }, occurrence: { value: invoice.revision.occurrence.value }, total: invoice.revision.total ? { coefficient: invoice.revision.total.coefficient, scale: invoice.revision.total.scale, currency: invoice.revision.total.currency } : null } };
 }
 
-function matchingTransaction(transaction: CanonicalSpendingTransaction): SpendingMatchingTransaction {
-  return { transactionId: transaction.transactionId, effectiveOn: transaction.effectiveOn, consumeDate: transaction.consumeDate, postingDate: transaction.postingDate, description: transaction.description, amount: transaction.amount };
-}
-
 /**
  * Opening Spending must not write a similarity candidate, but it still needs
  * to show deterministic possible duplicates. Keep those hints ephemeral just
@@ -1792,257 +1757,6 @@ function withEphemeralCandidates(
     totalStatus: records.some((record) => record.possibleDuplicate)
       ? "includes-pending-confirmation"
       : report.totalStatus,
-    candidates: Object.freeze(candidates),
-  });
-}
-
-export type PGliteRecognitionMutation = Readonly<{
-  kind: "confirmed" | "denied" | "revoked";
-  invoiceId: string;
-  transactionId: string;
-}>;
-
-export function linkedPurchaseRecord(
-  invoice: CanonicalEInvoiceView,
-  payment: CanonicalSpendingTransaction,
-  link: SpendingDedupLinkView,
-  candidateIds: readonly string[],
-  itemCategorizations: readonly PurchaseItemCategorization[],
-): PurchaseReport["records"][number] {
-  const invoiceAmount = invoice.revision.total
-    ? { coefficient: invoice.revision.total.coefficient, scale: invoice.revision.total.scale, currency: invoice.revision.total.currency }
-    : null;
-  return {
-    purchaseId: `link:${link.eventId}`,
-    basis: "linked",
-    amount: payment.amount,
-    occurrence: {
-      value: invoice.revision.occurrence.value,
-      precision: invoice.revision.occurrence.precision,
-      timeZone: invoice.revision.occurrence.timeZone,
-      basis: invoice.revision.occurrence.origin === "source-reported" ? "purchase-date" : "posting-date-fallback",
-    },
-    description: invoice.revision.seller.name ?? payment.description,
-    invoice,
-    transaction: payment,
-    items: invoice.revision.items,
-    possibleDuplicate: candidateIds.length > 0,
-    candidateIds: Object.freeze([...candidateIds]),
-    link,
-    difference: {
-      invoiceAmount,
-      bankAmount: payment.amount,
-      sameCurrency: invoiceAmount?.currency === payment.amount.currency,
-      exactAmountEqual: invoiceAmount ? exactMoneyEqual(invoiceAmount, payment.amount) : false,
-    },
-    refund: null,
-    category: purchaseRecordCategory({ basis: "linked", amount: payment.amount, invoice, transaction: payment, itemCategorizations }),
-    itemCategorizations,
-    paymentSource: null,
-  };
-}
-
-export function subtractInvoiceTotal(
-  totals: PurchaseReport["totalsByCurrency"],
-  removed: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
-): PurchaseReport["totalsByCurrency"] {
-  if (!removed) return totals;
-  return totals.map((entry) => {
-    if (entry.currency !== removed.currency) return entry;
-    const scale = Math.max(entry.scale, removed.scale);
-    const coefficient = BigInt(entry.coefficient) * 10n ** BigInt(scale - entry.scale) -
-      BigInt(removed.coefficient) * 10n ** BigInt(scale - removed.scale);
-    return { currency: entry.currency, coefficient: coefficient.toString(), scale, count: entry.count - 1 };
-  }).filter((entry) => entry.count > 0);
-}
-
-function insertPurchaseRecord(
-  records: readonly PurchaseReport["records"][number][],
-  value: PurchaseReport["records"][number],
-): readonly PurchaseReport["records"][number][] {
-  const next = [...records];
-  let index = next.findIndex((candidate) =>
-    candidate.occurrence.value.localeCompare(value.occurrence.value) > 0 ||
-    (candidate.occurrence.value === value.occurrence.value && candidate.purchaseId.localeCompare(value.purchaseId) > 0),
-  );
-  if (index < 0) index = next.length;
-  next.splice(index, 0, value);
-  return next;
-}
-
-function addInvoiceTotal(
-  totals: PurchaseReport["totalsByCurrency"],
-  added: Readonly<{ currency: string; coefficient: string; scale: number }> | null,
-): PurchaseReport["totalsByCurrency"] {
-  if (!added) return totals;
-  const existing = totals.find((entry) => entry.currency === added.currency);
-  if (!existing) {
-    return [...totals, { ...added, count: 1 }]
-      .sort((left, right) => left.currency.localeCompare(right.currency));
-  }
-  const scale = Math.max(existing.scale, added.scale);
-  const coefficient = BigInt(existing.coefficient) * 10n ** BigInt(scale - existing.scale) +
-    BigInt(added.coefficient) * 10n ** BigInt(scale - added.scale);
-  return totals
-    .map((entry) => entry.currency === added.currency
-      ? { currency: entry.currency, coefficient: coefficient.toString(), scale, count: entry.count + 1 }
-      : entry)
-    .sort((left, right) => left.currency.localeCompare(right.currency));
-}
-
-function standaloneInvoiceRecord(
-  linked: PurchaseReport["records"][number],
-  candidateIds: readonly string[],
-): PurchaseReport["records"][number] {
-  if (!linked.invoice) throw new Error("Spending revoke cannot restore a missing invoice record.");
-  const total = linked.invoice.revision.total
-    ? {
-        coefficient: linked.invoice.revision.total.coefficient,
-        scale: linked.invoice.revision.total.scale,
-        currency: linked.invoice.revision.total.currency,
-      }
-    : null;
-  return {
-    purchaseId: `invoice:${linked.invoice.invoiceId}`,
-    basis: "invoice",
-    amount: total,
-    occurrence: {
-      value: linked.invoice.revision.occurrence.value,
-      precision: linked.invoice.revision.occurrence.precision,
-      timeZone: linked.invoice.revision.occurrence.timeZone,
-      basis: linked.invoice.revision.occurrence.origin === "source-reported" ? "purchase-date" : "posting-date-fallback",
-    },
-    description: linked.invoice.revision.seller.name,
-    invoice: linked.invoice,
-    transaction: null,
-    items: linked.invoice.revision.items,
-    possibleDuplicate: candidateIds.length > 0,
-    candidateIds: Object.freeze([...candidateIds]),
-    link: null,
-    difference: null,
-    refund: null,
-    category: purchaseRecordCategory({ basis: "invoice", amount: total, invoice: linked.invoice, transaction: null, itemCategorizations: linked.itemCategorizations }),
-    itemCategorizations: linked.itemCategorizations,
-    paymentSource: null,
-  };
-}
-
-function standaloneTransactionRecord(
-  linked: PurchaseReport["records"][number],
-  candidateIds: readonly string[],
-): PurchaseReport["records"][number] {
-  if (!linked.transaction) throw new Error("Spending revoke cannot restore a missing transaction record.");
-  const occurrence = occurrenceForTransaction(linked.transaction);
-  return {
-    purchaseId: `transaction:${linked.transaction.transactionId}`,
-    basis: "bank-transaction",
-    amount: linked.transaction.amount,
-    occurrence,
-    description: linked.transaction.description,
-    invoice: null,
-    transaction: linked.transaction,
-    items: [],
-    possibleDuplicate: candidateIds.length > 0,
-    candidateIds: Object.freeze([...candidateIds]),
-    link: null,
-    difference: null,
-    refund: null,
-    category: purchaseRecordCategory({ basis: "bank-transaction", amount: linked.transaction.amount, invoice: null, transaction: linked.transaction, itemCategorizations: [] }),
-    itemCategorizations: [],
-    paymentSource: linked.paymentSource,
-  };
-}
-
-/**
- * Apply a recognition-only mutation to an already composed report.  Invoice
- * and transaction facts are immutable during these commands, so rebuilding
- * the full report would rescan every row for a change to one pair.  The
- * result has the same ordering and totals as composePurchaseReport for the
- * affected confirmation or denial.
- */
-export function targetedPGlitePurchaseReportAfterRecognitionMutation(
-  before: PurchaseReport,
-  recognition: SpendingRecognitionSnapshot,
-  mutation: PGliteRecognitionMutation,
-): PurchaseReport {
-  const target = pairKey(mutation.invoiceId, mutation.transactionId);
-  const candidates = before.candidates
-    .map((candidate) => {
-      if (pairKey(candidate.invoiceId, candidate.transactionId) !== target) return candidate;
-      return recognition.candidates.find((next) =>
-        pairKey(next.invoiceId, next.transactionId) === target &&
-        (next.candidateId === candidate.candidateId ||
-          // Ephemeral candidates use the deterministic candidate key while
-          // materialization assigns a durable UUID. Preserve the candidate's
-          // existing position when that UUID appears after the mutation.
-          candidate.candidateId.startsWith("sha256:") === true),
-      ) ?? null;
-    })
-    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
-  const knownCandidateIds = new Set(candidates.map((candidate) => candidate.candidateId));
-  for (const candidate of recognition.candidates) {
-    if (pairKey(candidate.invoiceId, candidate.transactionId) === target && !knownCandidateIds.has(candidate.candidateId)) candidates.push(candidate);
-  }
-  const pendingCandidateIds = new Set(candidates.filter((candidate) => candidate.status === "candidate").map((candidate) => candidate.candidateId));
-  const linkedCandidateIds = candidates
-    .filter((candidate) => candidate.status === "candidate" && (candidate.invoiceId === mutation.invoiceId || candidate.transactionId === mutation.transactionId))
-    .map((candidate) => candidate.candidateId);
-  const targetRecord = before.records.find((record) =>
-    record.basis === "linked" &&
-    record.invoice?.invoiceId === mutation.invoiceId &&
-    record.transaction?.transactionId === mutation.transactionId,
-  );
-  let records: readonly PurchaseReport["records"][number][] = before.records
-    .filter((record) => mutation.kind === "confirmed"
-      ? record.invoice?.invoiceId !== mutation.invoiceId && record.transaction?.transactionId !== mutation.transactionId
-      : mutation.kind === "revoked"
-        ? record.purchaseId !== targetRecord?.purchaseId
-        : true)
-    .map((record) => {
-      const candidateIds = record.candidateIds.filter((candidateId) => pendingCandidateIds.has(candidateId));
-      const possibleDuplicate = candidateIds.length > 0;
-      if (candidateIds.length === record.candidateIds.length && record.possibleDuplicate === possibleDuplicate) return record;
-      return { ...record, candidateIds: Object.freeze(candidateIds), possibleDuplicate };
-    });
-  let totals = before.totalsByCurrency;
-  if (mutation.kind === "confirmed") {
-    const invoiceRecord = before.records.find((record) => record.invoice?.invoiceId === mutation.invoiceId);
-    const paymentRecord = before.records.find((record) => record.transaction?.transactionId === mutation.transactionId);
-    if (!invoiceRecord?.invoice || !paymentRecord?.transaction) throw new Error("Spending confirmation cannot build a targeted report patch.");
-    const link = recognition.activeLinks.find((candidate) => pairKey(candidate.invoiceId, candidate.transactionId) === target);
-    if (!link) throw new Error("Spending confirmation did not produce an active link.");
-    records = insertPurchaseRecord(records, linkedPurchaseRecord(invoiceRecord.invoice, paymentRecord.transaction, link, linkedCandidateIds, invoiceRecord.itemCategorizations));
-    const invoiceAmount = invoiceRecord.invoice.revision.total
-      ? { coefficient: invoiceRecord.invoice.revision.total.coefficient, scale: invoiceRecord.invoice.revision.total.scale, currency: invoiceRecord.invoice.revision.total.currency }
-      : null;
-    totals = subtractInvoiceTotal(totals, invoiceAmount);
-  }
-  if (mutation.kind === "revoked") {
-    if (!targetRecord?.invoice || !targetRecord.transaction)
-      throw new Error("Spending revoke cannot build a targeted report patch.");
-    const pendingForInvoice = candidates
-      .filter((candidate) => candidate.status === "candidate" && candidate.invoiceId === mutation.invoiceId)
-      .map((candidate) => candidate.candidateId);
-    const pendingForTransaction = candidates
-      .filter((candidate) => candidate.status === "candidate" && candidate.transactionId === mutation.transactionId)
-      .map((candidate) => candidate.candidateId);
-    records = insertPurchaseRecord(records, standaloneInvoiceRecord(targetRecord, pendingForInvoice));
-    records = insertPurchaseRecord(records, standaloneTransactionRecord(targetRecord, pendingForTransaction));
-    const invoiceAmount = targetRecord.invoice.revision.total
-      ? {
-          coefficient: targetRecord.invoice.revision.total.coefficient,
-          scale: targetRecord.invoice.revision.total.scale,
-          currency: targetRecord.invoice.revision.total.currency,
-        }
-      : null;
-    totals = addInvoiceTotal(totals, invoiceAmount);
-  }
-  return Object.freeze({
-    ...before,
-    knowledgeAt: recognition.knowledgeAt,
-    records: Object.freeze(records),
-    totalsByCurrency: totals,
-    totalStatus: records.some((record) => record.possibleDuplicate) ? "includes-pending-confirmation" : "complete",
     candidates: Object.freeze(candidates),
   });
 }
@@ -3076,102 +2790,6 @@ export async function queryHistoricalSpending(
   };
 }
 
-function invoiceOccurrenceUnixSeconds(invoice: CanonicalEInvoiceView): number {
-  const occurrence = invoice.revision.occurrence;
-  const suffix = occurrence.precision === "date" ? "T00:00:00" : occurrence.precision === "minute" ? ":00" : "";
-  const parsed = Date.parse(`${occurrence.value}${suffix}+08:00`);
-  if (!Number.isFinite(parsed)) throw new Error(`Canonical E-Invoice ${invoice.revision.invoiceNumber} has an invalid occurrence.`);
-  return Math.floor(parsed / 1000);
-}
-
-function spendingInvoiceDto(invoice: CanonicalEInvoiceView): SpendingInvoiceDto {
-  const total = invoice.revision.total;
-  if (invoice.revision.state === "revoked" || total === null) throw new Error("A revoked or incomplete invoice cannot be projected to Spending.");
-  return {
-    invoiceKey: invoice.stableInvoiceKey,
-    invoiceId: invoice.revision.invoiceNumber,
-    issuedAt: invoiceOccurrenceUnixSeconds(invoice),
-    amount: Number(total.coefficient) / 10 ** total.scale,
-    sellerBusinessAccountNumber: invoice.revision.seller.taxId,
-    sellerName: invoice.revision.seller.name,
-    sellerAddr: null,
-    items: invoice.revision.items.map((item) => ({
-      itemKey: item.itemId,
-      sequence: item.sequence,
-      quantity: item.quantity === null ? null : Number(item.quantity.coefficient) / 10 ** item.quantity.scale,
-      unitPrice: item.unitPrice === null ? null : Number(item.unitPrice.coefficient) / 10 ** item.unitPrice.scale,
-      paidAmount: item.amount === null ? null : Number(item.amount.coefficient) / 10 ** item.amount.scale,
-      productName: item.name,
-      completeness: item.completeness,
-    })),
-    revisionKind: invoice.revision.revisionKind === "revised" ? "revised" : "issued",
-  };
-}
-
-function spendingPageFromCurrent(
-  result: CurrentSpendingQueryResult,
-  request: Readonly<{ selectedMonth?: string; selectedCategory?: string }> = {},
-): SpendingPageDto {
-  const spending = result.spending;
-  const records = spending.transactions.map((transaction) => ({
-    transactionId: transaction.transactionId,
-    accountId: transaction.accountId,
-    accountNumber: transaction.accountNumber,
-    sourceConnectionKey: transaction.sourceConnectionKey,
-    integrationNamespace: transaction.integrationNamespace,
-    stream: transaction.stream,
-    date: transaction.effectiveOn,
-    dateBasis: (transaction.effectiveDateBasis ?? "effective-date") as "consume-date" | "posting-date-fallback" | "effective-date",
-    consumeDate: transaction.consumeDate ?? null,
-    postingDate: transaction.postingDate ?? null,
-    description: transaction.description,
-    amount: { currency: transaction.amount.currency, value: Number(transaction.amount.coefficient) / 10 ** transaction.amount.scale, exact: { coefficient: transaction.amount.coefficient, scale: transaction.amount.scale } },
-    kind: transaction.kind,
-    category: { mode: transaction.categorization.mode, code: transaction.categorization.mode === "single" ? transaction.categorization.categoryCode ?? null : null, taxonomyId: transaction.categorization.taxonomyId ?? null, taxonomyVersion: transaction.categorization.taxonomyVersion ?? null, labels: null, components: transaction.categorization.components?.map((component) => ({ code: component.categoryCode, taxonomyId: component.taxonomyId, taxonomyVersion: component.taxonomyVersion, labels: null, amount: { currency: component.currency, value: Number(component.coefficient) / 10 ** component.scale, exact: { coefficient: component.coefficient, scale: component.scale } } })) ?? [] },
-    display: { label: transaction.display.value, status: transaction.display.status, origin: transaction.display.origin, kind: transaction.display.displayKind },
-    tags: transaction.tags.map((tag) => ({ id: tag.tagId, label: tag.label })),
-    inclusion: transaction.inclusion,
-    eligibilityGap: transaction.eligibilityGap ?? null,
-  }));
-  const canonical = {
-    availability: spending.transactions.length > 0 ? "available" as const : spending.reportEligibility.status === "incomplete" ? "unavailable" as const : "empty" as const,
-    policy: { id: spending.inclusionPolicy.id, version: spending.inclusionPolicy.version, name: spending.inclusionPolicy.name },
-    knowledgePoint: spending.knowledgePoint,
-    selectedMonth: request.selectedMonth ?? null,
-    selectedCategory: request.selectedCategory ?? null,
-    transactions: records,
-    includedTransactions: records.filter((record) => record.inclusion === "included"),
-    totalsByCurrency: spending.totalsByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })),
-    categoryTotalsByCurrency: spending.categoryTotalsByCurrency.map((value) => ({ ...value, labels: null, amount: { currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } } })),
-    unclassifiedByCurrency: spending.unclassifiedByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })),
-    classificationCoverage: {
-      includedCount: spending.classificationCoverage.includedCount,
-      classifiedCount: spending.classificationCoverage.classifiedCount,
-      unclassifiedCount: spending.classificationCoverage.unclassifiedCount,
-      includedAmountByCurrency: spending.classificationCoverage.includedAmountByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })),
-      classifiedAmountByCurrency: spending.classificationCoverage.classifiedAmountByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })),
-      unclassifiedAmountByCurrency: spending.classificationCoverage.unclassifiedAmountByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })),
-    },
-    reportEligibility: { status: spending.reportEligibility.status, gapCount: spending.reportEligibility.gapCount, gapAmountByCurrency: spending.reportEligibility.gapAmountByCurrency.map((value) => ({ currency: value.currency, value: Number(value.coefficient) / 10 ** value.scale, exact: { coefficient: value.coefficient, scale: value.scale } })) },
-    totalStatus: spending.totalStatus,
-  };
-  return {
-    canonical,
-    purchaseReport: result.purchaseReport,
-    invoices: result.invoices
-      .filter((invoice) => invoice.revision.state !== "revoked" && invoice.revision.total !== null)
-      .map(spendingInvoiceDto),
-  };
-}
-
-/** Query the page payload without opening SQLite or exposing SQL to callers. */
-export async function querySpendingPage(
-  reader: PGliteSpendingReader,
-  request: Readonly<{ selectedMonth?: string; selectedCategory?: string }> = {},
-): Promise<SpendingPageDto> {
-  return spendingPageFromCurrent(await queryCurrentSpending(reader), request);
-}
-
 function spendingPageFromSummary(
   summary: SpendingSummaryDto,
   request: Readonly<{ selectedMonth?: string; selectedCategory?: string }> = {},
@@ -3277,50 +2895,6 @@ export async function rankPGliteSpendingPaymentCandidates(
     });
   };
   const candidates = pageRank.map(candidateView);
-  return {
-    dataVersion: input.dataVersion,
-    candidates,
-    ...(input.selectedTransactionId !== undefined ? { selectedCandidate: selectedRank ? candidateView(selectedRank) : null } : {}),
-    totalCandidateCount: ranking.total,
-    nextOffset: offset + candidates.length < ranking.total ? offset + candidates.length : null,
-  };
-}
-
-function rankSpendingPaymentCandidatesFromSnapshot(
-  snapshot: PGliteSpendingSnapshot,
-  input: SpendingPairingCandidatesInput,
-): SpendingPairingCandidatesResult {
-  const invoice = snapshot.invoices.find((candidate) => candidate.invoiceId === input.invoiceIdentityId);
-  if (!invoice || invoice.revision.state === "revoked") throw new Error("Spending invoice selection is stale, revoked, or missing.");
-  let pairing = pairingSnapshotCache.get(snapshot);
-  if (!pairing) {
-    const linkedTransactions = new Set(
-      snapshot.purchaseReport.records
-        .filter((record) => record.basis === "linked" && record.transaction)
-        .map((record) => record.transaction!.transactionId),
-    );
-    const transactions = Object.freeze(snapshot.spending.includedTransactions.filter((transaction) => !linkedTransactions.has(transaction.transactionId)));
-    pairing = Object.freeze({
-      transactions,
-      byId: new Map(transactions.map((transaction) => [transaction.transactionId, transaction])),
-      index: createSpendingManualPairingIndex(snapshot.purchaseReport.knowledgeAt, transactions.map(matchingTransaction)),
-    });
-    pairingSnapshotCache.set(snapshot, pairing);
-  }
-  const ranking = spendingManualPaymentRanking(matchingInvoice(invoice), pairing.index);
-  const offset = Number.isSafeInteger(input.offset) && (input.offset ?? 0) >= 0 ? input.offset ?? 0 : 0;
-  const limit = Number.isSafeInteger(input.limit) && (input.limit ?? 0) > 0 ? Math.min(input.limit ?? 50, 100) : 50;
-  const candidateView = (candidate: SpendingManualPaymentCandidate) => {
-    const transaction = pairing!.byId.get(candidate.transactionId);
-    if (!transaction) throw new Error("Spending pairing candidate is missing from the current index.");
-    return createSpendingPairingCandidateViewFromTransaction({
-      ...matchingTransaction(transaction),
-      stream: transaction.stream,
-      effectiveDateBasis: transaction.effectiveDateBasis ?? null,
-    });
-  };
-  const candidates = ranking.page(offset, limit).map(candidateView);
-  const selectedRank = input.selectedTransactionId ? ranking.find(input.selectedTransactionId) : undefined;
   return {
     dataVersion: input.dataVersion,
     candidates,
@@ -3583,11 +3157,8 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
     // query functions above directly with its PGliteTransaction capability.
-    current: async (request?: Parameters<typeof queryCurrentSpending>[1]) => {
-      const result = await store.transaction((transaction) => queryCurrentSpending(transaction, request));
-      cachePGliteSpendingSnapshot(store, result);
-      return result;
-    },
+    current: (request?: Parameters<typeof queryCurrentSpending>[1]) =>
+      store.transaction((transaction) => queryCurrentSpending(transaction, request)),
     summary: (request?: Parameters<typeof queryCurrentSpendingSummary>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummary(transaction, request)),
     summaryPage: (request?: Parameters<typeof queryCurrentSpendingSummaryPage>[1]) =>
@@ -3613,29 +3184,10 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       return queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, knowledgeAt));
     }),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
-    page: async (request?: Parameters<typeof querySpendingPage>[1]) => {
-      let result: CurrentSpendingQueryResult | null = null;
-      const page = await store.transaction(async (transaction) => {
-        const current = await queryCurrentSpending(transaction);
-        result = current;
-        return spendingPageFromCurrent(current, request);
-      });
-      if (result) cachePGliteSpendingSnapshot(store, result);
-      return page;
-    },
     recognition: (request?: Readonly<{ knowledgeAt?: number }>) => store.transaction((transaction) => querySpendingRecognition(transaction, request)),
     lineage: (request: PGliteSpendingLineageRequest) => store.transaction((transaction) => querySpendingLineage(transaction, request)),
-    pairingCandidates: async (request: SpendingPairingCandidatesInput) => {
-      const cached = cachedPGliteSpendingSnapshot(store);
-      if (cached && cached.purchaseReport.knowledgeAt === request.dataVersion) {
-        return store.transaction(async (transaction) => {
-          const currentKnowledge = await latest(transaction);
-          if (currentKnowledge === request.dataVersion) return rankSpendingPaymentCandidatesFromSnapshot(cached, request);
-          return rankPGliteSpendingPaymentCandidates(transaction, request);
-        });
-      }
-      return store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request, pairingIndexAt));
-    },
+    pairingCandidates: (request: SpendingPairingCandidatesInput) =>
+      store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request, pairingIndexAt)),
     /** Build the pairing index for the current version so the next dialog open only ranks. */
     prewarmPairing: (dataVersion: number) => store.transaction(async (transaction) => {
       const knowledgeAt = await latest(transaction);

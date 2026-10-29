@@ -2,25 +2,19 @@ import { randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit, type PGliteCanonicalCommitRef } from "./canonical-commit.ts";
 import {
-  cachedPGliteSpendingSnapshot,
-  queryCurrentSpending,
   queryCurrentSpendingActionRecords,
-  queryPGliteSpendingRecognitionPair,
   queryPGliteSpendingDirectPair,
   querySpendingRecognition,
   resolvePGliteSpendingCandidate,
   itemCategorizationRows,
-  linkedPurchaseRecord,
   pendingPairRef,
   pendingPairInMonth,
   queryPendingSpendingCandidates,
   recordedAtIso,
-  subtractInvoiceTotal,
-  targetedPGlitePurchaseReportAfterRecognitionMutation,
   type PGliteSpendingReader,
 } from "./spending-query.ts";
 import { purchaseRecordCategory } from "../canonical/spending-purchase-report-core.ts";
-import type { PurchaseCategory, PurchaseItemCategorization } from "../canonical/purchase-category.ts";
+import type { PurchaseCategory } from "../canonical/purchase-category.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -30,14 +24,7 @@ import type {
   SpendingRefundView,
   SpendingDedupLinkView,
 } from "../canonical/spending-recognition-contracts.ts";
-import {
-  evaluateSpendingMatchCandidates,
-} from "../canonical/spending-purchase-report-core.ts";
 import type {
-  SpendingCandidateActionInput,
-  SpendingConfirmActionInput,
-  SpendingLinkActionInput,
-  SpendingPurchaseActionResult,
   SpendingPageActionRequest,
   SpendingPageActionResult,
   SpendingSummaryDeltaLine,
@@ -45,12 +32,9 @@ import type {
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
 } from "../../lib/spending/model.ts";
-import { createSpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { transactionPurchaseDate } from "../../lib/spending/purchase-matching.ts";
 import type { SpendingPurchaseCategoryRequest } from "../../lib/spending/model.ts";
-import type { SpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
-import type { SpendingPairingReportContext } from "../../lib/spending/model.ts";
 
 /** A command may only see the async transaction capability. */
 export type PGliteSpendingWriter = Pick<PGliteStore, "query" | "transaction">;
@@ -159,20 +143,6 @@ function parseJson(value: unknown): Readonly<Record<string, unknown>> {
 async function latest(reader: PGliteSpendingReader): Promise<number> {
   const result = await reader.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits");
   return Number(result.rows[0]?.value ?? 0);
-}
-
-async function currentSnapshotForAction(
-  writer: PGliteSpendingWriter,
-  transaction: PGliteTransaction,
-  rejectStaleCache: boolean,
-): Promise<Awaited<ReturnType<typeof queryCurrentSpending>>> {
-  const cached = cachedPGliteSpendingSnapshot(writer);
-  if (cached) {
-    const currentKnowledge = await latest(transaction);
-    if (cached.purchaseReport.knowledgeAt === currentKnowledge) return cached;
-    if (rejectStaleCache) throw new Error("Spending candidate is stale or missing.");
-  }
-  return queryCurrentSpending(transaction);
 }
 
 type CommitRef = PGliteCanonicalCommitRef;
@@ -459,224 +429,6 @@ export async function commitPGliteSpendingRefundRevision(
   return result;
 }
 
-async function actionPatch(
-  transaction: PGliteTransaction,
-  before: Awaited<ReturnType<typeof queryCurrentSpending>>,
-  mutation?: "confirmed" | "denied" | "revoked",
-  invoiceId?: string,
-  transactionId?: string,
-): Promise<SpendingPurchaseActionResult> {
-  if (!mutation || !invoiceId || !transactionId) {
-    const after = await queryCurrentSpending(transaction);
-    return { patch: createSpendingPurchaseReportPatch(before.purchaseReport, after.purchaseReport) };
-  }
-  const recognition = await queryPGliteSpendingRecognitionPair(transaction, {
-    invoiceId,
-    transactionId,
-  });
-  const after = targetedPGlitePurchaseReportAfterRecognitionMutation(before.purchaseReport, recognition, { kind: mutation, invoiceId, transactionId });
-  return { patch: createSpendingPurchaseReportPatch(before.purchaseReport, after) };
-}
-
-function targetedPairingPatch(
-  input: Readonly<{
-    context: SpendingPairingReportContext;
-    beforeKnowledgeAt: number;
-    totalsByCurrency: SpendingPurchaseReportPatch["totalsByCurrency"];
-    invoiceId: string;
-    transactionId: string;
-    invoice: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["invoice"];
-    payment: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["payment"];
-    recognition: Awaited<ReturnType<typeof queryPGliteSpendingRecognitionPair>>;
-    itemCategorizations: readonly PurchaseItemCategorization[];
-    candidateId?: string;
-    mutation: "confirmed" | "denied";
-  }>,
-): SpendingPurchaseActionResult {
-  const { context, invoiceId, transactionId, invoice, payment, recognition, candidateId, mutation } = input;
-  if (!Number.isSafeInteger(context.recordInsertIndex) || context.recordInsertIndex < 0 ||
-      context.sameDatePurchaseIds.some((id) => typeof id !== "string") ||
-      context.candidateIds.some((id) => typeof id !== "string") ||
-      (context.actedCandidateId && (!Number.isSafeInteger(context.candidateIndex) || context.candidateIndex! < 0)))
-    throw new Error("Spending pairing report context is invalid.");
-  const active = recognition.activeLinks.find((entry) => entry.invoiceId === invoiceId && entry.transactionId === transactionId);
-  if (mutation === "confirmed" && !active) throw new Error("Spending confirmation did not produce an active link.");
-  const newCandidate = candidateId ? recognition.candidates.find((entry) => entry.invoiceId === invoiceId && entry.transactionId === transactionId) : undefined;
-  if (candidateId && (!newCandidate || !Number.isSafeInteger(context.candidateIndex) || context.candidateIndex! < 0))
-    throw new Error("Spending candidate patch context is invalid.");
-  const candidateOperations: SpendingPurchaseReportPatch["candidateOperations"] = candidateId && newCandidate
-    ? Object.freeze([
-        ...(candidateId === newCandidate.candidateId ? [] : [{ kind: "remove" as const, id: candidateId }]),
-        { kind: "upsert" as const, index: context.candidateIndex!, value: newCandidate },
-      ])
-    : context.actedCandidateId && !candidateId
-      ? (() => {
-          const durable = recognition.candidates.find((entry) => entry.candidateId === context.actedCandidateId);
-          return Object.freeze(durable && Number.isSafeInteger(context.candidateIndex) && context.candidateIndex! >= 0
-            ? [{ kind: "upsert" as const, index: context.candidateIndex!, value: durable }]
-            : [{ kind: "remove" as const, id: context.actedCandidateId! }]);
-        })()
-      : Object.freeze([]);
-  const recordOperations: SpendingPurchaseReportPatch["recordOperations"] = mutation === "confirmed"
-    ? (() => {
-        const linked = linkedPurchaseRecord(invoice, payment, active!, context.candidateIds.filter((id) => id !== (candidateId ?? context.actedCandidateId)), input.itemCategorizations);
-        const tieOffset = context.sameDatePurchaseIds.findIndex((id) => id.localeCompare(linked.purchaseId) > 0);
-        const index = context.recordInsertIndex + (tieOffset < 0 ? context.sameDatePurchaseIds.length : tieOffset);
-        return Object.freeze([
-          { kind: "remove" as const, id: `invoice:${invoiceId}` },
-          { kind: "remove" as const, id: `transaction:${transactionId}` },
-          { kind: "upsert" as const, index, value: linked },
-        ]);
-      })()
-    : (() => {
-        const invoiceRecord = context.invoiceRecord;
-        const paymentRecord = context.paymentRecord;
-        if (!invoiceRecord || !paymentRecord ||
-            !Number.isSafeInteger(context.invoiceRecordIndex) || context.invoiceRecordIndex! < 0 ||
-            !Number.isSafeInteger(context.paymentRecordIndex) || context.paymentRecordIndex! < 0 ||
-            invoiceRecord.purchaseId !== `invoice:${invoiceId}` ||
-            paymentRecord.purchaseId !== `transaction:${transactionId}` ||
-            JSON.stringify(invoiceRecord.invoice) !== JSON.stringify(invoice) ||
-            JSON.stringify(paymentRecord.transaction) !== JSON.stringify(payment))
-          throw new Error("Spending candidate report context is stale or invalid.");
-        return Object.freeze([
-          { kind: "upsert" as const, index: context.invoiceRecordIndex!, value: { ...invoiceRecord, candidateIds: invoiceRecord.candidateIds.filter((id) => id !== candidateId), possibleDuplicate: invoiceRecord.candidateIds.some((id) => id !== candidateId) } },
-          { kind: "upsert" as const, index: context.paymentRecordIndex!, value: { ...paymentRecord, candidateIds: paymentRecord.candidateIds.filter((id) => id !== candidateId), possibleDuplicate: paymentRecord.candidateIds.some((id) => id !== candidateId) } },
-        ]);
-      })();
-  return { patch: Object.freeze({
-    kind: "spending-purchase-report-patch",
-    baseKnowledgeAt: input.beforeKnowledgeAt,
-    status: "ok",
-    reportKind: "current",
-    knowledgeAt: recognition.knowledgeAt,
-    financialAt: null,
-    totalsByCurrency: mutation === "confirmed" ? subtractInvoiceTotal(input.totalsByCurrency, invoice.revision.total) : input.totalsByCurrency,
-    totalStatus: context.totalStatusAfter,
-    recordOperations,
-    candidateOperations,
-  }) };
-}
-
-function resolveCandidate(
-  report: Awaited<ReturnType<typeof queryCurrentSpending>>,
-  candidateId: string,
-): Readonly<{ invoiceId: string; transactionId: string; candidateKey: string; algorithm: string; algorithmVersion: string; similarityEvidence: Readonly<Record<string, unknown>> }> {
-  const deterministic = evaluateSpendingMatchCandidates(report.invoices, report.spending.includedTransactions);
-  const listed = report.purchaseReport.candidates.filter((candidate) => candidate.candidateId === candidateId);
-  const ephemeral = deterministic.filter((candidate) => candidate.candidateKey === candidateId);
-  // The current report intentionally exposes inferred candidates using their
-  // deterministic candidate key.  That same row appears in both collections;
-  // count it once so opening a candidate and confirming it is not treated as
-  // an ambiguity. Durable candidate IDs remain distinct from the key.
-  const sameInferredCandidate = listed.length === 1 && ephemeral.length === 1 && listed[0]!.candidateId === ephemeral[0]!.candidateKey;
-  if (!sameInferredCandidate && (listed.length + ephemeral.length !== 1)) {
-    throw new Error(listed.length + ephemeral.length === 0 ? "Spending candidate is stale or missing." : "Spending candidate is ambiguous.");
-  }
-  const listedCandidate = listed[0];
-  if (listedCandidate && listedCandidate.status !== "candidate") throw new Error("Spending candidate is no longer pending.");
-  const match = listedCandidate && !sameInferredCandidate
-    ? deterministic.filter((candidate) => candidate.invoiceId === listedCandidate.invoiceId && candidate.transactionId === listedCandidate.transactionId)
-    : ephemeral;
-  if (match.length !== 1) throw new Error(match.length === 0 ? "Spending candidate no longer matches current canonical facts." : "Spending candidate is ambiguous.");
-  return match[0]!;
-}
-
-async function candidateAction(
-  writer: PGliteSpendingWriter,
-  input: SpendingCandidateActionInput,
-  kind: "confirmed" | "denied",
-): Promise<SpendingPurchaseActionResult> {
-  return writer.transaction(async (transaction) => {
-    const candidateId = required(input.candidateId, "Candidate id");
-    const hinted = input.invoiceIdentityId && input.transactionIdentityId && input.dataVersion !== undefined && input.totalsByCurrency && input.pairingReportContext;
-    if (hinted) {
-      const knowledgeAt = await latest(transaction);
-      if (knowledgeAt !== input.dataVersion) throw new Error("Spending candidate data version is stale; reload Spending before pairing.");
-      const resolved = await resolvePGliteSpendingCandidate(transaction, candidateId, {
-        invoiceId: input.invoiceIdentityId!, transactionId: input.transactionIdentityId!,
-      });
-      const context = input.pairingReportContext!;
-      if (context.invoiceRecord?.invoice?.invoiceId !== resolved.invoice.invoiceId ||
-          context.paymentRecord?.transaction?.transactionId !== resolved.transaction.transactionId ||
-          JSON.stringify(context.invoiceRecord.invoice) !== JSON.stringify(resolved.invoice) ||
-          JSON.stringify(context.paymentRecord.transaction) !== JSON.stringify(resolved.transaction))
-        throw new Error("Spending candidate report context is stale or invalid.");
-      const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
-        ...resolved.candidate,
-      });
-      const decision: SpendingDecisionInput = {
-        invoiceId: resolved.candidate.invoiceId,
-        transactionId: resolved.candidate.transactionId,
-        decisionKey: `spending/user/${kind}/${resolved.candidate.candidateKey}`,
-        origin: { kind: "user", userId: LOCAL_USER_ID },
-        evidenceKnowledgeSequence: Math.max(knowledgeAt, materialized.commitSequence),
-        evidence: {
-          candidateKey: resolved.candidate.candidateKey,
-          algorithm: resolved.candidate.algorithm,
-          algorithmVersion: resolved.candidate.algorithmVersion,
-          similarityEvidence: resolved.candidate.similarityEvidence,
-          decisionOrigin: "local-user",
-        },
-      };
-      if (kind === "confirmed") await confirmPGliteSpendingDedupLink(transaction, decision);
-      else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
-      const recognition = await queryPGliteSpendingRecognitionPair(transaction, {
-        invoiceId: resolved.candidate.invoiceId, transactionId: resolved.candidate.transactionId,
-      });
-      return targetedPairingPatch({
-        context, beforeKnowledgeAt: knowledgeAt, totalsByCurrency: input.totalsByCurrency!,
-        invoiceId: resolved.candidate.invoiceId, transactionId: resolved.candidate.transactionId,
-        invoice: resolved.invoice, payment: resolved.transaction, recognition,
-        itemCategorizations: (await itemCategorizationRows(transaction, [resolved.candidate.invoiceId])).get(resolved.candidate.invoiceId) ?? [],
-        candidateId, mutation: kind,
-      });
-    }
-    const cached = cachedPGliteSpendingSnapshot(writer);
-    let before: Awaited<ReturnType<typeof queryCurrentSpending>> | null = null;
-    let candidate: ReturnType<typeof resolveCandidate>;
-    if (cached) {
-      before = await currentSnapshotForAction(writer, transaction, true);
-      candidate = resolveCandidate(before, candidateId);
-    } else {
-      // A cold command cannot afford to compose every current record merely
-      // to resolve a SHA-256 candidate id.  Resolve the pair from the narrow
-      // canonical candidate index first; the complete report fallback remains
-      // below until the targeted patch context is assembled.
-      const resolved = await resolvePGliteSpendingCandidate(transaction, candidateId);
-      before = await queryCurrentSpending(transaction);
-      candidate = resolved.candidate;
-    }
-    const materialized = await recordPGliteSpendingMatchCandidate(transaction, {
-      invoiceId: candidate.invoiceId,
-      transactionId: candidate.transactionId,
-      candidateKey: candidate.candidateKey,
-      algorithm: candidate.algorithm,
-      algorithmVersion: candidate.algorithmVersion,
-      similarityEvidence: candidate.similarityEvidence,
-    });
-    const decision: SpendingDecisionInput = {
-      invoiceId: candidate.invoiceId,
-      transactionId: candidate.transactionId,
-      decisionKey: `spending/user/${kind}/${candidate.candidateKey}`,
-      origin: { kind: "user", userId: LOCAL_USER_ID },
-      evidenceKnowledgeSequence: Math.max(before?.purchaseReport.knowledgeAt ?? 0, materialized.commitSequence),
-      evidence: {
-        candidateKey: candidate.candidateKey,
-        algorithm: candidate.algorithm,
-        algorithmVersion: candidate.algorithmVersion,
-        similarityEvidence: candidate.similarityEvidence,
-        decisionOrigin: "local-user",
-      },
-    };
-    const decisionResult = kind === "confirmed"
-      ? await confirmPGliteSpendingDedupLink(transaction, decision)
-      : await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
-    if (!before) throw new Error("Spending candidate report snapshot is unavailable.");
-    return actionPatch(transaction, before, kind, candidate.invoiceId, candidate.transactionId);
-  });
-}
-
 /**
  * Apply a visible month-page decision without rebuilding the 100k-row report.
  * Pair facts, candidate identity, and the data version are all revalidated in
@@ -835,89 +587,6 @@ async function standaloneSummaryLines(
   ]);
 }
 
-export function confirmPGliteSpendingCandidate(writer: PGliteSpendingWriter, input: SpendingConfirmActionInput): Promise<SpendingPurchaseActionResult> {
-  if (input.kind === "candidate") return candidateAction(writer, input, "confirmed");
-  return writer.transaction(async (transaction) => {
-    if (input.dataVersion !== undefined && input.totalsByCurrency && input.pairingReportContext) {
-      const dataVersion = input.dataVersion;
-      if (await latest(transaction) !== dataVersion) throw new Error("Spending confirmation data version is stale; reload Spending before pairing.");
-      const { invoice, payment } = await queryPGliteSpendingDirectPair(
-        transaction, input.invoiceIdentityId, input.transactionIdentityId, dataVersion,
-      );
-      const link = await confirmPGliteSpendingDedupLink(transaction, {
-        invoiceIdentityId: input.invoiceIdentityId,
-        transactionIdentityId: input.transactionIdentityId,
-        decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${dataVersion}`,
-        userId: LOCAL_USER_ID,
-        evidenceKnowledgeSequence: dataVersion,
-        evidence: {
-          decisionOrigin: "explicit-user-selection",
-          invoice: { identityId: input.invoiceIdentityId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
-          payment: { identityId: input.transactionIdentityId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
-        },
-      });
-      const recognition = await queryPGliteSpendingRecognitionPair(transaction, {
-        invoiceId: input.invoiceIdentityId, transactionId: input.transactionIdentityId,
-      });
-      const actedCandidateId = input.pairingReportContext.actedCandidateId;
-      if (actedCandidateId &&
-          !evaluateSpendingMatchCandidates([invoice], [payment]).some((entry) => entry.candidateKey === actedCandidateId) &&
-          !recognition.candidates.some((entry) => entry.candidateId === actedCandidateId))
-        throw new Error("Spending direct pairing candidate context is invalid.");
-      if (!recognition.activeLinks.some((entry) => entry.eventId === link.eventId))
-        throw new Error("Spending confirmation did not produce an active link.");
-      return targetedPairingPatch({
-        context: input.pairingReportContext, beforeKnowledgeAt: dataVersion,
-        totalsByCurrency: input.totalsByCurrency,
-        invoiceId: input.invoiceIdentityId, transactionId: input.transactionIdentityId,
-        invoice, payment, recognition, mutation: "confirmed",
-        itemCategorizations: (await itemCategorizationRows(transaction, [input.invoiceIdentityId])).get(input.invoiceIdentityId) ?? [],
-      });
-    }
-    const before = await currentSnapshotForAction(writer, transaction, false);
-    const dataVersion = input.dataVersion ?? before.purchaseReport.knowledgeAt;
-    if (before.purchaseReport.knowledgeAt !== dataVersion) throw new Error("Spending confirmation data version is stale; reload Spending before pairing.");
-    const invoice = before.invoices.find((candidate) => candidate.invoiceId === input.invoiceIdentityId && candidate.revision.state === "active");
-    if (!invoice) throw new Error("Spending invoice selection is stale, linked, revoked, or missing.");
-    const payment = before.spending.includedTransactions.find((candidate) => candidate.transactionId === input.transactionIdentityId);
-    if (!payment) throw new Error("Spending payment selection is stale, linked, or ineligible.");
-    await confirmPGliteSpendingDedupLink(transaction, {
-      invoiceIdentityId: input.invoiceIdentityId,
-      transactionIdentityId: input.transactionIdentityId,
-      decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${dataVersion}`,
-      userId: LOCAL_USER_ID,
-      evidenceKnowledgeSequence: dataVersion,
-      evidence: {
-        decisionOrigin: "explicit-user-selection",
-        invoice: { identityId: input.invoiceIdentityId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
-        payment: { identityId: input.transactionIdentityId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
-      },
-    });
-    return actionPatch(transaction, before, "confirmed", input.invoiceIdentityId, input.transactionIdentityId);
-  });
-}
-
-export function denyPGliteSpendingCandidate(writer: PGliteSpendingWriter, input: SpendingCandidateActionInput): Promise<SpendingPurchaseActionResult> {
-  return candidateAction(writer, input, "denied");
-}
-
-export function revokePGliteSpendingLink(writer: PGliteSpendingWriter, input: SpendingLinkActionInput): Promise<SpendingPurchaseActionResult> {
-  return writer.transaction(async (transaction) => {
-    const before = await currentSnapshotForAction(writer, transaction, false);
-    const linked = before.purchaseReport.records.find((record) => record.basis === "linked" && record.link?.invoiceId === input.invoiceId && record.link.transactionId === input.transactionId);
-    if (!linked?.link) throw new Error("Spending link is stale, missing, or inactive.");
-    await revokePGliteSpendingDedupLink(transaction, {
-      invoiceId: input.invoiceId,
-      transactionId: input.transactionId,
-      decisionKey: `spending/user/revoke/${input.invoiceId}/${input.transactionId}/${before.purchaseReport.knowledgeAt}`,
-      origin: { kind: "user", userId: LOCAL_USER_ID },
-      evidenceKnowledgeSequence: before.purchaseReport.knowledgeAt,
-      evidence: { reason: "user-revoked-link", priorEventId: linked.link.eventId },
-    });
-    return actionPatch(transaction, before, "revoked", input.invoiceId, input.transactionId);
-  });
-}
-
 function strongConfirmPairs(input: SpendingStrongConfirmRequest): readonly SpendingCandidatePairRef[] {
   if (!input || typeof input !== "object" || !Array.isArray(input.pairs) || input.pairs.length === 0)
     throw new TypeError("Strong-match confirmation needs at least one shown pair.");
@@ -995,10 +664,6 @@ export function confirmPGliteSpendingStrongCandidates(
   });
 }
 
-export const confirmSpendingCandidatePGlite = confirmPGliteSpendingCandidate;
-export const denySpendingCandidatePGlite = denyPGliteSpendingCandidate;
-export const revokeSpendingLinkPGlite = revokePGliteSpendingLink;
-
 /**
  * Worker-facing command facade. Every method opens one adapter transaction;
  * callers never receive a synchronous database handle or a partially applied
@@ -1011,9 +676,6 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     denyDedupCandidate: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => denyPGliteSpendingDedupCandidate(transaction, input)),
     revokeDedupLink: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => revokePGliteSpendingDedupLink(transaction, input)),
     commitRefundRevision: (input: SpendingRefundRevisionInput) => writer.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, input)),
-    confirmCandidate: (input: SpendingConfirmActionInput) => confirmPGliteSpendingCandidate(writer, input),
-    denyCandidate: (input: SpendingCandidateActionInput) => denyPGliteSpendingCandidate(writer, input),
-    revokeLink: (input: SpendingLinkActionInput) => revokePGliteSpendingLink(writer, input),
     pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
     setPurchaseCategory: (input: SpendingPurchaseCategoryRequest) => setPGliteSpendingPurchaseCategory(writer, input),
     confirmStrongCandidates: (input: SpendingStrongConfirmRequest) => confirmPGliteSpendingStrongCandidates(writer, input),
