@@ -17,8 +17,13 @@ export type TaskRunPlan = Readonly<{
   registration: Readonly<{
     definition: WorkflowDefinition;
     runtime: AppWorkflowRuntime;
-    /** The workflow input built from `launchEnv`. */
-    input: unknown;
+    /**
+     * Builds the workflow input from `launchEnv`. Execution calls it inside
+     * its failure handling, so an input that cannot be built (a Statement
+     * Selection cleared while the run queued) is classified and recorded
+     * like any other execution failure.
+     */
+    inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
   }>;
   /** Null for a task without a Verified source: exchange rates, preview sources, fixtures. */
   verification: SourceVerificationFacts | null;
@@ -62,7 +67,7 @@ export function resolveTaskRunPlan(
     registration: {
       definition: registration.definition,
       runtime: registration.runtime,
-      input: registration.inputFromEnvironment(launchEnv),
+      inputFromEnvironment: registration.inputFromEnvironment,
     },
     verification: sourceVerificationFacts(task.id),
     launchEnv,
