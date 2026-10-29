@@ -278,7 +278,6 @@ export function reduceCredentialSheet(
     case "choose-group":
       return chooseGroup(state, action.groupId, context);
     case "enable-and-select-group": {
-      // Choose first: single-source onboarding may disable the other groups.
       const chosen = chooseGroup(state, action.groupId, context);
       return withChanges(chosen, setGroupEnabled(groups, chosen.changes, action.groupId, true));
     }

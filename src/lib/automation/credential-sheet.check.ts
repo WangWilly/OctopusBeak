@@ -88,6 +88,11 @@ test("opening resets edits, keeps the last group outside onboarding and clears t
   assert.equal(reopened.presentation, "details");
   assert.deepEqual(reopened.changes, NO_CREDENTIAL_CHANGES);
   assert.equal(run([{ type: "open" }]).selectedGroupId, "fubon", "the first group without a remembered one");
+  const staged = run([{ type: "stage-value", key: "CATHAY_ID", value: "stale" }], context(), edited);
+  const failed = run([{ type: "certificate-file-failed", key: "CATHAY_ID", message: "bad", generation: staged.generation }], context(), staged);
+  const reopenedWithoutClose = run([{ type: "open" }], context(), failed);
+  assert.deepEqual(reopenedWithoutClose.changes, NO_CREDENTIAL_CHANGES, "opening an open sheet also drops its edits");
+  assert.deepEqual(reopenedWithoutClose.fileErrors, {});
 });
 
 test("opening during onboarding selects only a remembered collection group and shows the picker", () => {
@@ -134,7 +139,7 @@ test("choosing a source during onboarding source selection shows its details", (
   assert.equal(outside.presentation, "picker");
 });
 
-test("enable-and-select chooses first, then enables the chosen source", () => {
+test("enable-and-select chooses the source and enables it, disabling the other single source", () => {
   const ctx = onboarding({ onboardingNodeId: "source-selection" });
   const state = run([{ type: "open" }, { type: "enable-and-select-group", groupId: "cathay" }], ctx);
   assert.equal(state.selectedGroupId, "cathay");
@@ -228,19 +233,30 @@ test("onboarding readiness needs the source enabled, its sign-in details and con
 });
 
 test("a submit marks the sheet saving and a second submit is blocked", () => {
-  const state = run([{ type: "open" }, { type: "toggle-group", groupId: "maicoin" }]);
+  const state = run([
+    { type: "open" },
+    { type: "toggle-group", groupId: "maicoin" },
+    { type: "stage-value", key: "MAICOIN_ID", value: " user-1 " },
+  ]);
   const save = planCredentialSave(state, context());
   assert.equal(save.kind, "submit");
   if (save.kind !== "submit") return;
   assert.equal(save.state.saving, true);
   assert.equal(save.plan.updates.MAICOIN_ENABLED, "true");
+  assert.equal(save.plan.updates.MAICOIN_ID, "user-1", "staged sign-in details are saved");
   assert.equal(save.savedGroupId, "fubon");
   assert.equal(credentialSheetView(save.state, context()).canSubmit, false, "the submit button is disabled");
   assert.deepEqual(planCredentialSave(save.state, context()), { kind: "blocked" });
 });
 
 test("a submit is blocked while editing or before onboarding is ready", () => {
-  const editing = run([{ type: "open" }, { type: "editor-start", groupId: "fubon", key: "FUBON_ID" }]);
+  assert.equal(credentialSheetView(run([{ type: "open" }]), context()).canSubmit, false, "nothing to save yet");
+  const editing = run([
+    { type: "open" },
+    { type: "toggle-group", groupId: "maicoin" },
+    { type: "editor-start", groupId: "fubon", key: "FUBON_ID" },
+  ]);
+  assert.equal(credentialSheetView(editing, context()).canSubmit, false, "an open editor disables the submit button");
   assert.deepEqual(planCredentialSave(editing, context()), { kind: "blocked" });
   const notReady = run([{ type: "open" }], onboarding());
   assert.deepEqual(planCredentialSave(notReady, onboarding()), { kind: "blocked" });
