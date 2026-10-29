@@ -81,7 +81,7 @@ assert.match(source, /workflowEventFailureLabel\(event, \$t\)/);
 assert.match(source, /<code>\{event\.code\}<\/code>/);
 assert.match(source, /formatTime\(event\.occurredAt\)/);
 assert.match(source, /workflowEventCounts\(event\.completed, event\.total\)/);
-assert.match(source, /task\.appWorkflowOutcome\?\.errorCode/);
+assert.match(source, /\{#if present\(task\)\.failure\}/);
 assert.match(source, /Object\.entries\(task\.appWorkflowOutcome\.summary\.counts\)/);
 assert.doesNotMatch(source, /eventDisplayMode/);
 assert.doesNotMatch(source, /task\.(?:logPath|logTail|errorMessage|statementFailures)/);
