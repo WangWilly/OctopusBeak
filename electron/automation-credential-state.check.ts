@@ -121,7 +121,7 @@ test("main credential snapshot and mapping stay within the 50ms P95 budget", asy
     }));
     const configFiles = await import("../src/lib/automation/server/config-files.ts");
     configFiles.setAutomationCredentialCodec(null);
-    const desktopApi = await import("../src/lib/automation/server/desktop-api.ts");
+    const desktopApi = await import("../src/lib/automation/server/automation-desktop-model.ts");
     const samples: number[] = [];
     for (let index = 0; index < 100; index += 1) {
       const startedAt = performance.now();

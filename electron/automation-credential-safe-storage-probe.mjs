@@ -5,7 +5,7 @@ import {
   AUTOMATION_CREDENTIALS_FORMAT,
   setAutomationCredentialCodec,
 } from "../src/lib/automation/server/config-files.ts";
-import { readAutomationCredentialState } from "../src/lib/automation/server/desktop-api.ts";
+import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
 import { toAutomationCredentialStateDto } from "./automation-credential-state.ts";
 
 function reportAndExit(report, code) {

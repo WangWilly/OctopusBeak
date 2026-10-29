@@ -2,7 +2,7 @@ import path from "node:path";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, Notification } from "electron";
+import { app, BrowserWindow, dialog, Notification, shell } from "electron";
 import {
   createAutomationRuntime,
   type AutomationRuntime,
@@ -16,13 +16,22 @@ import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
-import { requestSignInSettings } from "./sign-in-settings-request.ts";
+import { requestSignInSettings, takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
 import {
   scheduledRunNotification,
   startScheduledCollection,
 } from "../src/lib/automation/server/scheduled-collection.ts";
 import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
+import {
+  createAutomationDesktopService,
+  type AutomationDesktopService,
+} from "../src/lib/automation/server/automation-desktop-service.ts";
+import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
+import * as deviceRegistrationHost from "../src/lib/automation/server/device-registration-host.ts";
+import { eraseSignInDetails } from "../src/lib/automation/server/sign-in-erasure.ts";
+import { previewStructureReports } from "../src/lib/preview-sources/structure-report.ts";
+import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
@@ -75,6 +84,7 @@ let collectionScheduler: ReturnType<typeof createScheduledCollectionScheduler> |
 let stopBrowserStateCleanup: (() => void) | null = null;
 let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
+let automationDesktopService: AutomationDesktopService<BrowserWindow | null> | null = null;
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
 let automationRuntime: AutomationRuntime | null = null;
 let automationRuntimeFatalHandled = false;
@@ -118,6 +128,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     await ipcRegistration?.close();
+    automationDesktopService?.close();
     if (automationRuntime?.hasActive()) await automationRuntime.shutdown();
   },
   cleanupWaitMs: QUIT_CLEANUP_WAIT_MS,
@@ -408,20 +419,53 @@ async function start() {
       reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
     });
   }
-  ipcRegistration = registerOctopusBeakIpc({
-    automationRuntime: runtime,
+  const collection = {
     pauseSchedules: () => {
       const resumes = [scheduler?.pause(), collectionScheduler?.pause()];
       return () => {
         for (const resume of resumes) resume?.();
       };
     },
+    whileStopped: <T>(work: () => Promise<T>) => runtime.whileStopped(work),
+  };
+  const automation = createAutomationDesktopService<BrowserWindow | null>({
+    runtime,
+    provider: operationalRuntime.provider,
+    dataVersions: dataVersionStore,
+    collection,
+    readCredentialState: readAutomationCredentialState,
+    deviceRegistration: {
+      status: deviceRegistrationHost.deviceRegistrationStatus,
+      start: deviceRegistrationHost.startDeviceRegistration,
+      submitCode: deviceRegistrationHost.submitDeviceRegistrationCode,
+      cancel: deviceRegistrationHost.cancelDeviceRegistration,
+      cancelAll: deviceRegistrationHost.cancelAllDeviceRegistrations,
+    },
+    structureReports: previewStructureReports,
+    signInSettingsRequest: { take: takeSignInSettingsRequest },
+    eraseSignInDetails,
+    userDataDirectory: () => app.getPath("userData"),
+    chooseFile: (owner, options) => owner
+      ? dialog.showOpenDialog(owner, options)
+      : dialog.showOpenDialog(options),
+    openExternal: (url) => shell.openExternal(url),
+    appVersion: () => app.getVersion(),
+    publishRuntimeChanged: (snapshot) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
+      }
+    },
+    onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
+    onAutomationRuntimeReady: () => automationRuntimeReady,
+  });
+  automationDesktopService = automation;
+  ipcRegistration = registerOctopusBeakIpc({
+    automation,
+    collection,
     onSystemSettingsChanged: () => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
     },
-    onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
-    onAutomationRuntimeReady: () => automationRuntimeReady,
     pgliteViews: {
       dataDir: operationalRuntime.dataDir,
     },
