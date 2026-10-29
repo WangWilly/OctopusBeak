@@ -47,6 +47,7 @@ import type {
 } from "../../lib/spending/model.ts";
 import { createSpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
+import { transactionPurchaseDate } from "../../lib/spending/purchase-matching.ts";
 import type { SpendingPurchaseCategoryRequest } from "../../lib/spending/model.ts";
 import type { SpendingPurchaseReportPatch } from "../../lib/spending/purchase-report-patch.ts";
 import type { SpendingPairingReportContext } from "../../lib/spending/model.ts";
@@ -812,7 +813,11 @@ function summaryLineFromRecord(
     : null, record.category);
 }
 
-/** The invoice-only and bank-only lines a direct confirmation replaces, with their Purchase categories. */
+/**
+ * The invoice-only and bank-only lines a direct confirmation replaces, with
+ * their Purchase categories. The bank line is dated by the purchase date the
+ * summary buckets it under (consume, then posting, then effective date).
+ */
 async function standaloneSummaryLines(
   transaction: PGliteTransaction,
   invoice: Awaited<ReturnType<typeof queryPGliteSpendingDirectPair>>["invoice"],
@@ -825,7 +830,7 @@ async function standaloneSummaryLines(
   return Object.freeze([
     summaryLine(invoice.revision.occurrence.value, invoiceAmount,
       purchaseRecordCategory({ basis: "invoice", amount: invoiceAmount, invoice, transaction: null, itemCategorizations })),
-    summaryLine(payment.effectiveOn, payment.amount,
+    summaryLine(transactionPurchaseDate(payment).value, payment.amount,
       purchaseRecordCategory({ basis: "bank-transaction", amount: payment.amount, invoice: null, transaction: payment, itemCategorizations: [] })),
   ]);
 }
