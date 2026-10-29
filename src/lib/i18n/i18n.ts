@@ -58,6 +58,7 @@ const en = {
       `${start}-${end} of ${total}`,
     all: "All",
     retry: "Retry",
+    financialLiveUnavailable: "Live financial data is temporarily unavailable; showing the latest available data.",
   },
   nav: {
     overview: "Overview",
@@ -1358,6 +1359,7 @@ const zh: typeof en = {
     pagerCount: (start, end, total) => `${start}-${end}，共 ${total} 筆`,
     all: "全部",
     retry: "重試",
+    financialLiveUnavailable: "即時財務資料暫時無法更新，正在顯示最近可用資料。",
   },
   nav: {
     overview: "總覽",
