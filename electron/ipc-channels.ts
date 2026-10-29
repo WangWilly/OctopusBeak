@@ -122,9 +122,21 @@ type ServiceForward<Channel extends ForwardedAutomationChannel> =
     ? (event: IpcMainInvokeEvent, ...args: Args) => Result
     : never;
 
+/**
+ * Whether two parameter lists take the same number of arguments, so a service
+ * method that drops one (an optional `expectedRunId`, say) does not pass.
+ * The types may still differ: a service method may accept `unknown` and validate.
+ */
+type SameArity<A extends readonly unknown[], B extends readonly unknown[]> =
+  [A["length"]] extends [B["length"]] ? [B["length"]] extends [A["length"]] ? true : false : false;
+
 /** Each forwarded automation channel whose service method's arguments or result differ from its bridge method. */
 type MismatchedServiceForwards = {
-  [Channel in ForwardedAutomationChannel]: ServiceForward<Channel> extends OctopusBeakInvokeHandlers[Channel] ? never : Channel;
+  [Channel in ForwardedAutomationChannel]: ServiceForward<Channel> extends OctopusBeakInvokeHandlers[Channel]
+    ? SameArity<Parameters<ServiceForward<Channel>>, Parameters<OctopusBeakInvokeHandlers[Channel]>> extends true
+      ? never
+      : Channel
+    : Channel;
 }[ForwardedAutomationChannel];
 
 /**

@@ -198,6 +198,19 @@ const explanations = {
   },
 } as const satisfies Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }> | null>;
 
+/** Shorter words for a table cell, where the full explanation would not fit. */
+const shortExplanations: Partial<Record<TypedWorkflowErrorCode, Readonly<{ zh: string; en: string }>>> = {
+  "source-access-challenged": { zh: "網站安全驗證阻擋登入", en: "Site verification blocked sign-in" },
+  "source-unavailable": { zh: "來源網站登入頁不可用", en: "Provider login unavailable" },
+};
+
+/** A Failure code's short words, falling back to its full explanation. */
+export function workflowFailureShortExplanation(code: string, locale: string): string | null {
+  const short = Object.hasOwn(shortExplanations, code) ? shortExplanations[code as TypedWorkflowErrorCode] : undefined;
+  if (short) return locale === "zh-TW" ? short.zh : short.en;
+  return workflowFailureExplanation(code, locale);
+}
+
 export function workflowFailureExplanation(code: string, locale: string): string | null {
   if (!Object.hasOwn(explanations, code)) return null;
   const explanation: Readonly<{ zh: string; en: string }> | null = explanations[code as TypedWorkflowErrorCode];
