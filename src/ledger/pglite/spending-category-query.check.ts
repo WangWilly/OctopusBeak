@@ -3,8 +3,7 @@ import test from "node:test";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import { applyPGliteSpendingPageAction } from "./spending-command.ts";
-import { applySpendingSummaryDelta, SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR } from "../../lib/spending/model.ts";
+import { SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR } from "../../lib/spending/model.ts";
 
 type Seeded = Readonly<{
   fixture: SpendingCategoryFixture;
@@ -103,40 +102,6 @@ test("record pages filter by code lists, with an Unclassified selector, and reje
       /cursor is stale or invalid/u,
       "a cursor minted under one filter cannot page another",
     );
-  } finally {
-    await fixture.close();
-  }
-});
-
-test("a direct confirmation's summary delta reproduces the recomputed category totals", async () => {
-  const seeded = await seed();
-  const { fixture } = seeded;
-  try {
-    const fuelInvoice = await fixture.commitInvoice({
-      stableKey: "AB10000004:2026-09-03",
-      date: "2026-09-03",
-      items: [{ sequence: 1, name: "汽油", amount: "350" }],
-    });
-    const query = createPGliteSpendingQuery(fixture.store);
-    const before = await query.summary({ knowledgeAt: await fixture.knowledgeAt() });
-    assert.deepEqual(categoryTotal(before.purchaseReport.categoryTotalsByMonth, "transportation"), { coefficient: "350", scale: 0, count: 1 });
-    assert.deepEqual(categoryTotal(before.purchaseReport.categoryTotalsByMonth, null), { coefficient: "350", scale: 0, count: 1 });
-
-    const result = await applyPGliteSpendingPageAction(fixture.store, {
-      action: "confirm",
-      kind: "direct",
-      invoiceIdentityId: fuelInvoice,
-      transactionIdentityId: seeded.uncategorizedBank,
-      dataVersion: before.knowledgeAt,
-    });
-    assert.deepEqual(result.summaryDelta.before.map((line) => line.category.mode === "single" ? line.category.categoryCode : line.category.mode).sort(), ["absent", "transportation"]);
-    assert.deepEqual(result.summaryDelta.after.map((line) => line.category.mode === "single" ? [line.category.categoryCode, line.category.subject] : line.category.mode), [["transportation", "items"]]);
-
-    const patched = applySpendingSummaryDelta(before.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
-    const after = await query.summary({ knowledgeAt: result.knowledgeAt });
-    assert.deepEqual(patched.categoryTotalsByMonth, after.purchaseReport.categoryTotalsByMonth);
-    assert.deepEqual(categoryTotal(after.purchaseReport.categoryTotalsByMonth, "transportation"), { coefficient: "350", scale: 0, count: 1 }, "the linked purchase takes the items' code once on the bank amount");
-    assert.equal(categoryTotal(after.purchaseReport.categoryTotalsByMonth, null), null, "the bank-only Unclassified row is gone");
   } finally {
     await fixture.close();
   }

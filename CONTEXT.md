@@ -487,6 +487,14 @@ _Avoid_: Canonical identity merge, source-confirmed Transaction Relation, automa
 An unconfirmed report-level indication that separately included records may represent the same purchase. Both amounts remain included until a spending deduplication link is established, with the records marked as possible duplicates and the total marked as including items awaiting confirmation.
 _Avoid_: Confirmed duplicate, canonical identity conflict, automatic exclusion
 
+**Purchase record**:
+One row of purchase-basis spending, identified by its purchase id: a linked invoice/payment pair (`link:`), an invoice-only purchase (`invoice:`), a bank-only purchase (`transaction:`), or a counted refund (`refund:`). It carries its counted amount, its occurrence date, its Purchase category, and its source views. The Purchase report builds every record under one set of rules (ADR 0076): a linked record never carries pending candidates, a record with a transaction names its payment source, and only an active refund with an amount and an occurrence, of a transaction Direct source precedence does not cover, counts and replaces its transaction's bank-only record.
+_Avoid_: Spending row, transaction record, purchase line
+
+**Pairing decision**:
+One confirm, deny, or revoke of an invoice/payment pair, applied in one write transaction together with the change it makes to purchase-basis spending: the pair's Purchase records before and after the write, and the summary delta between them. A denial changes no record's amount, date, or category, so its delta is empty.
+_Avoid_: Report patch, targeted patch, summary-line rebuild
+
 **Financial report inclusion**:
 A versioned query policy that determines whether and how a Financial Transaction participates in a financial total from account type, direction, Transaction Kind, relations, posting status, Statement facts, and other admitted financial semantics before consulting Personal Category. Category, Tags, Counterparty display, alias, and notes may organize an included amount but never admit, exclude, or change it; if a report requires an absent optional Kind, the query returns an explicit eligibility coverage gap and affected amount rather than silently counting, dropping, or persisting an `unknown` status.
 _Avoid_: Category-controlled cash flow, tag exclusion, silent incomplete total, user financial override

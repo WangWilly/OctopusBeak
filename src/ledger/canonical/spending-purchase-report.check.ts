@@ -57,6 +57,37 @@ test("revocation restores the surviving bank fact; refunds use their own month",
   assert.equal(report.records.find((row) => row.basis === "bank-transaction")?.occurrence.basis, "posting-date-fallback");
 });
 
+test("only an active refund with an amount and an occurrence, of an uncovered transaction, replaces its purchase", () => {
+  const bank = transaction(TXN, "1000", "TWD", "2026-10-02");
+  const active = { refundId: "refund", stableRefundKey: "r", transactionId: TXN, revisionId: "rr", sourceRevisionKey: "v1", revisionNumber: 1, revisionKind: "asserted" as const, state: "active" as const, amount: { coefficient: "-300", scale: 0, currency: "TWD" }, occurrence: { value: "2026-10-10", precision: "date" as const, timeZone: "Asia/Taipei", basis: "source-occurrence" as const }, authorityRoute: "refund/v1", provenanceReference: "p", evidence: {}, commitSequence: 5 };
+  const withdrawn = { ...active, revisionId: "rr2", revisionNumber: 2, revisionKind: "revoked" as const, state: "revoked" as const, amount: null, occurrence: null };
+  const compose = (refunds: readonly (typeof active | typeof withdrawn)[], coveredTransactionIds?: ReadonlySet<string>) => composePurchaseReport({
+    request: { kind: "current" }, knowledgeAt: 5, invoices: [], transactions: [bank], recognition: recognition({ refunds }), coveredTransactionIds,
+  });
+  const counted = compose([active]);
+  assert.deepEqual(counted.records.map((row) => row.basis), ["refund"], "an active refund replaces the bank-only purchase");
+  assert.deepEqual(counted.totalsByCurrency, [{ currency: "TWD", coefficient: "-300", scale: 0, count: 1 }]);
+  const gone = compose([withdrawn]);
+  assert.deepEqual(gone.records.map((row) => row.basis), ["bank-transaction"], "a withdrawn refund leaves the purchase standing");
+  assert.deepEqual(gone.totalsByCurrency, [{ currency: "TWD", coefficient: "1000", scale: 0, count: 1 }]);
+  const covered = composePurchaseReport({
+    request: { kind: "current" }, knowledgeAt: 5, invoices: [], transactions: [], recognition: recognition({ refunds: [active] }), coveredTransactionIds: new Set([TXN]),
+  });
+  assert.deepEqual(covered.records, [], "a covered transaction's refund does not count");
+});
+
+test("purchase totals are upper-cased and reduced to canonical scale", () => {
+  const report = composePurchaseReport({
+    request: { kind: "current" }, knowledgeAt: 5, invoices: [],
+    transactions: [
+      { ...transaction(TXN, "1050", "twd"), amount: { coefficient: "1050", scale: 2, currency: "twd" } },
+      { ...transaction(TXN2, "50", "TWD"), amount: { coefficient: "50", scale: 1, currency: "TWD" } },
+    ],
+    recognition: recognition(),
+  });
+  assert.deepEqual(report.totalsByCurrency, [{ currency: "TWD", coefficient: "155", scale: 1, count: 2 }]);
+});
+
 test("similarity creates deterministic hints without collapsing same-day genuine purchases", () => {
   const candidates = evaluateSpendingMatchCandidates([invoice(INV), invoice(INV2)], [transaction(TXN, "1000", "TWD", "2026-09-01"), transaction(TXN2, "1000", "TWD", "2026-09-01")]);
   assert.equal(candidates.length, 4);
