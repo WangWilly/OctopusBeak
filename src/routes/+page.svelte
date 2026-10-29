@@ -15,7 +15,7 @@
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
   } from "$lib/desktop/api.ts";
-  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
