@@ -9,7 +9,7 @@ import type { AutomationPersistenceProvider } from "./store.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
-} from "./desktop-api.ts";
+} from "./automation-desktop-service.ts";
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,

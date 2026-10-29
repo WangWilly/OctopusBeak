@@ -2,22 +2,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./ipc.ts", import.meta.url), "utf8");
-assert.match(source, /"automation:forceTerminate": [\s\S]*?automationRuntime\.forceTerminate\(taskId, expectedRunId\)/);
-assert.match(source, /"automation:cancel": [\s\S]*?automationRuntime\.cancel\(taskId, expectedRunId\)/);
-assert.doesNotMatch(source, /"automation:forceQuit"/);
-assert.doesNotMatch(source, /forceQuitHumanSessionForTask/);
-assert.doesNotMatch(source, /terminateAutomationTaskProcesses/);
-assert.doesNotMatch(source, /"automation:resume"/);
-for (const channel of [
-  "automation:resumeHumanAssistance",
-  "automation:viewerScreenshot",
-  "automation:viewerInspect",
-  "automation:viewerInput",
-  "automation:viewerCompletionCheck",
+const serviceSource = readFileSync(
+  new URL("../src/lib/automation/server/automation-desktop-service.ts", import.meta.url),
+  "utf8",
+);
+for (const removed of [
+  /"automation:forceQuit"/,
+  /forceQuitHumanSessionForTask/,
+  /terminateAutomationTaskProcesses/,
+  /"automation:resume"/,
+  /"automation:resumeHumanAssistance"/,
+  /"automation:viewerScreenshot"/,
+  /"automation:viewerInspect"/,
+  /"automation:viewerInput"/,
+  /"automation:viewerCompletionCheck"/,
+  /assertManualVerificationAllowedForTask|human-session/,
+  /"automation:load"/,
+  /refreshCathayEmailOtpTarget|refreshSinopacCaptchaTarget|refreshYuantaTradeChallengeSubmitTarget/,
+  /shouldCheckYuantaTradeCompletion|shouldAutoResumeYuantaTradeCaptcha/,
 ]) {
-  assert.doesNotMatch(source, new RegExp(`"${channel}"`));
+  assert.doesNotMatch(source, removed);
+  assert.doesNotMatch(serviceSource, removed);
 }
-assert.doesNotMatch(source, /assertManualVerificationAllowedForTask|human-session/);
 assert.match(source, /data:invalidated/);
 assert.match(
   source,
@@ -28,22 +34,15 @@ assert.match(source, /registerPGliteViewIpc/);
 assert.doesNotMatch(source, /financial-page-worker|createFinancialPageWorkerClient/);
 assert.match(source, /pgliteOperational: \{/);
 assert.match(source, /pgliteFinancial: PGliteFinancialPort/);
-assert.match(source, /withExpectedDataVersion/);
-assert.match(source, /options\?\.expectedVersion/);
-assert.doesNotMatch(source, /"automation:load"/);
-assert.match(source, /void automationCredentials\.prewarm\(\)\.catch/);
-assert.doesNotMatch(
+assert.match(source, /\.\.\.automationForwardHandlers\(automation\)/, "automation channels only forward to the desktop service");
+assert.match(
   source,
-  /ipcMain\.on\([\s\S]{0,240}automationCredentials\.prewarm\(\)/,
-  "credential prewarm must not be launched from a click/input handler",
+  /"automation:selectCertificateFile": \(event, locale\) =>\s*automation\.selectCertificateFile\(BrowserWindow\.fromWebContents\(event\.sender\), locale\)/,
 );
+assert.doesNotMatch(serviceSource, /from "electron"/, "the desktop service reaches Electron only through its ports");
 assert.match(source, /await pgliteViewRegistration\.close\(\)/);
 assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);
-assert.match(source, /ONE_TIME_CODE\.test\(code\)/, "the renderer cannot pass anything but a digit code to a source");
-assert.match(source, /deviceRegistrationSource\(value\)/, "the renderer cannot name a source without device registration");
 assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
-assert.doesNotMatch(source, /refreshCathayEmailOtpTarget|refreshSinopacCaptchaTarget|refreshYuantaTradeChallengeSubmitTarget/);
-assert.doesNotMatch(source, /shouldCheckYuantaTradeCompletion|shouldAutoResumeYuantaTradeCaptcha/);
 
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
@@ -54,6 +53,11 @@ assert.match(
 assert.match(mainSource, /scheduled-collection-scheduler-error/);
 assert.match(mainSource, /scheduler\?\.start\(\)/);
 assert.match(mainSource, /scheduler\?\.stop\(\)/);
-assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc/);
-assert.match(mainSource, /ipcRegistration\?\.close\(\)/);
+assert.match(mainSource, /const automation = createAutomationDesktopService/);
+assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc\(\{\s*automation,/);
+assert.match(
+  mainSource,
+  /await ipcRegistration\?\.close\(\);\s*automationDesktopService\?\.close\(\);\s*if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\);/,
+  "IPC stops answering, then the service stops publishing, then runs shut down",
+);
 assert.match(mainSource, /exchange-rate-scheduler-error/);

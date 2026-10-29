@@ -3,7 +3,7 @@ import {
   assertAutomationTaskCanStartInModel,
   loadAutomationDesktopModel,
   type AutomationLiveRuns,
-} from "./desktop-api.ts";
+} from "./automation-desktop-model.ts";
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,
