@@ -84,6 +84,8 @@
   let [collectionHour, collectionMinute] = $scheduledCollection.time.split(":");
   let previewEnabled = $previewFeaturesEnabled;
   let usageEnabled = $usageStatisticsEnabled;
+  // The one-time question can be answered while Settings is open.
+  $: usageEnabled = $usageStatisticsEnabled;
   let usagePayload: string | null = null;
   let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
   let previewDeleteConfirming = false;

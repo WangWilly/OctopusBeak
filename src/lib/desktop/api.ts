@@ -229,6 +229,9 @@ export type OctopusBeakApi = {
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
     /** The exact body the next usage ping would send (ADR 0077). */
     previewUsagePing(): Promise<UsagePing>;
+    /** True once per install until the person answers the usage statistics question. */
+    shouldAskUsageStatistics(): Promise<boolean>;
+    answerUsageStatistics(enabled: boolean): Promise<SystemSettingsDto>;
     deletePreviewData(): Promise<void>;
     /** Canonical Reset: every source's financial data. */
     deleteFinancialData(): Promise<void>;

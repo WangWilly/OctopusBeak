@@ -13,7 +13,7 @@ import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { createUsagePinger, postUsagePing } from "../src/lib/settings/usage-statistics.ts";
+import { createUsagePinger, postUsagePing, USAGE_PING_URL } from "../src/lib/settings/usage-statistics.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
@@ -468,6 +468,7 @@ async function start() {
   });
   automationDesktopService = automation;
   usagePinger = createUsagePinger({
+    url: USAGE_PING_URL,
     now: () => new Date(),
     readSettings: () => readAutomationSettings(),
     writeSettings: (patch) => writeAutomationSettings({ ...readAutomationSettings(), ...patch }),
