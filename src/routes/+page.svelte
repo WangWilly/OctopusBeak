@@ -208,7 +208,7 @@
   $: liabilitiesValue = viewData(liabilities);
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
-  /** ADR 0077: the one-time usage statistics question waits for the welcome and onboarding to finish. */
+  /** ADR 0078: the one-time usage statistics question waits for the welcome and onboarding to finish. */
   let usageStatisticsAsk = false;
   let firstRunWelcomeResolved = false;
   $: showUsageStatisticsPrompt = usageStatisticsAsk

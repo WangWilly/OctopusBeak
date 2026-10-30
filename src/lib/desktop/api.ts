@@ -227,7 +227,7 @@ export type OctopusBeakApi = {
   settings: {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
-    /** The exact body the next usage ping would send (ADR 0077). */
+    /** The exact body the next usage ping would send (ADR 0078). */
     previewUsagePing(): Promise<UsagePing>;
     /** True once per install until the person answers the usage statistics question. */
     shouldAskUsageStatistics(): Promise<boolean>;

@@ -48,7 +48,7 @@ process groups are required for this development launcher.
 
 ## Usage statistics in development
 
-A development build never sends usage statistics (ADR 0077); only packaged apps do. With
+A development build never sends usage statistics (ADR 0078); only packaged apps do. With
 `OCTOPUSBEAK_USAGE_PING_URL=https://<worker host>/v1/ping` set before `npm run desktop:dev`, the
 build carries the endpoint and asks the one-time question; without it, the app does not ask.
 

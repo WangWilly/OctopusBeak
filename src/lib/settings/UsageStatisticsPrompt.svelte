@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { t } from "$lib/i18n/i18n.ts";
 
-  /** ADR 0077: asked once per install; only an explicit answer closes it. */
+  /** ADR 0078: asked once per install; only an explicit answer closes it. */
   export let onAnswer: (enabled: boolean) => void;
 
   let declineButton: HTMLButtonElement | undefined;

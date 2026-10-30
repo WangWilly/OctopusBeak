@@ -4,7 +4,7 @@ import { automationFlagEnabled } from "../automation/statement-selection.ts";
 declare const __OCTOPUSBEAK_USAGE_PING_URL__: string | undefined;
 
 /**
- * ADR 0077: the only request the app makes to a host we operate. The release build sets it from
+ * ADR 0078: the only request the app makes to a host we operate. The release build sets it from
  * OCTOPUSBEAK_USAGE_PING_URL (electron.vite.config.ts) so the address stays out of the source.
  * Source checkouts, tests and builds without the variable get "", and then nothing is sent or asked.
  */
@@ -24,7 +24,7 @@ const REQUEST_TIMEOUT_MS = 5_000;
 /** Taiwan has no daylight saving time; the receiver cuts days the same way. */
 const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
-/** Exactly the fields ADR 0077 allows, in the order they are sent. */
+/** Exactly the fields ADR 0078 allows, in the order they are sent. */
 export const USAGE_PING_FIELDS = [
   "schema",
   "appVersion",

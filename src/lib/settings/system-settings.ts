@@ -8,7 +8,7 @@ export type SystemSettingsDto = {
   scheduledCollectionEnabled: boolean;
   scheduledCollectionTime: string;
   previewFeaturesEnabled: boolean;
-  /** ADR 0077: the opt-in anonymous daily usage ping. */
+  /** ADR 0078: the opt-in anonymous daily usage ping. */
   usageStatisticsEnabled: boolean;
 };
 
