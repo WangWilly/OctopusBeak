@@ -825,7 +825,7 @@ export async function queryCurrentSpendingSummary(
 
   const result = await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}, scaled_amounts AS MATERIALIZED (
       SELECT SUBSTRING(occurrence_value, 1, 7) AS month,
-             SUBSTRING(occurrence_value, 1, 10) AS date, UPPER(currency) AS currency,
+             SUBSTRING(occurrence_value, 1, 10) AS date, UPPER(TRIM(currency)) AS currency,
              amount_coefficient::numeric * POWER(
                10::numeric, MAX(amount_scale) OVER () - amount_scale
              ) AS coefficient,
