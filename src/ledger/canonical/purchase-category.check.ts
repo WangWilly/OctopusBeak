@@ -177,3 +177,35 @@ test("linked: a single item code covers the counted bank amount, a split only wh
   const userSplitFallsThrough = readPurchaseCategory(linked({ bankAmount: "103", categorization: single("travel", "derived"), items, categorizations: [categorized(1, "dining", "user"), categorized(2, "healthcare", "user")] }));
   assert.equal(userSplitFallsThrough.mode === "single" && userSplitFallsThrough.categoryCode, "travel", "an unreconciled user split yields to the automatic transaction category");
 });
+
+test("a split reconciles items to the total across currency case and names the upper-cased currency", () => {
+  const items: PurchaseCategoryItem[] = [
+    { sequence: 1, completeness: "complete", amount: { coefficient: "6000", scale: 2, currency: "twd" } },
+    { sequence: 2, completeness: "complete", amount: { coefficient: "40", scale: 0, currency: "TWD" } },
+  ];
+  const total = { coefficient: "100", scale: 0, currency: "TWD" };
+  const split = readPurchaseCategory({
+    basis: "invoice",
+    countedAmount: total,
+    transaction: null,
+    invoice: { total, items },
+    itemCategorizations: [categorized(1, "dining"), categorized(2, "healthcare")],
+  });
+  assert.equal(split.mode, "split", "an item in `twd` reconciles to a `TWD` total");
+  assert.deepEqual(split.mode === "split" && split.components.map((component) => component.amount), [
+    { coefficient: "60", scale: 0, currency: "TWD" },
+    { coefficient: "40", scale: 0, currency: "TWD" },
+  ]);
+  const fromLowercaseBank = readPurchaseCategory({
+    basis: "linked",
+    countedAmount: { coefficient: "100", scale: 0, currency: "twd" },
+    transaction: { categorization: absent },
+    invoice: { total, items: [item(1, "60"), item(2, "40")] },
+    itemCategorizations: [categorized(1, "dining"), categorized(2, "healthcare")],
+  });
+  assert.deepEqual(
+    fromLowercaseBank.mode === "split" && fromLowercaseBank.components.map((component) => component.amount.currency),
+    ["TWD", "TWD"],
+    "a component from a `twd` bank amount names the TWD bucket the server reports",
+  );
+});

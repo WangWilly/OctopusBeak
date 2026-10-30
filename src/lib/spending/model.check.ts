@@ -116,17 +116,17 @@ assert.deepEqual(
   },
   {
     recordCount: 2,
-    totalsByCurrency: [{ currency: "TWD", coefficient: "2500", scale: 2, count: 1 }, { currency: "USD", coefficient: "250", scale: 2, count: 1 }],
+    totalsByCurrency: [{ currency: "TWD", coefficient: "25", scale: 0, count: 1 }, { currency: "USD", coefficient: "25", scale: 1, count: 1 }],
     months: [
-      { month: "2026-01", recordCount: 2, activeDayCount: 1, totalsByCurrency: [{ currency: "TWD", coefficient: "2500", scale: 2, count: 1 }, { currency: "USD", coefficient: "250", scale: 2, count: 1 }] },
+      { month: "2026-01", recordCount: 2, activeDayCount: 1, totalsByCurrency: [{ currency: "TWD", coefficient: "25", scale: 0, count: 1 }, { currency: "USD", coefficient: "25", scale: 1, count: 1 }] },
     ],
     days: [
-      { date: "2026-01-01", recordCount: 2, totalsByCurrency: [{ currency: "TWD", coefficient: "2500", scale: 2, count: 1 }, { currency: "USD", coefficient: "250", scale: 2, count: 1 }] },
+      { date: "2026-01-01", recordCount: 2, totalsByCurrency: [{ currency: "TWD", coefficient: "25", scale: 0, count: 1 }, { currency: "USD", coefficient: "25", scale: 1, count: 1 }] },
     ],
     candidateState: "unloaded",
     pendingCandidateCount: null,
   },
-  "a cross-month link moves only the linked transaction amount onto the invoice date and removes an emptied day/month",
+  "a cross-month link moves only the linked transaction amount onto the invoice date, removes an emptied day/month, and reduces like the server",
 );
 const restoredLargeScale = applySpendingSummaryDelta(crossMonthConfirmed, 7, 8, {
   before: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } }],
@@ -143,13 +143,13 @@ assert.deepEqual(
   },
   {
     recordCount: 3,
-    amount: { currency: "TWD", coefficient: "125000", scale: 3, count: 2 },
+    amount: { currency: "TWD", coefficient: "125", scale: 0, count: 2 },
     months: [
       { month: "2026-01", recordCount: 2, activeDayCount: 1 },
       { month: "2026-02", recordCount: 1, activeDayCount: 1 },
     ],
   },
-  "a revoke can raise the exact aggregate scale without changing its numeric value",
+  "a finer-scale delta amount still yields the reduced total the server reports",
 );
 assert.deepEqual(
   preserveSpendingMonthSelection(compactSummary(["2026-01", "2026-12"]), compactSummary(["2026-01", "2026-12"]), "2026-01", "2026-01-01", "2026-12"),
@@ -184,3 +184,73 @@ assert.deepEqual(
 assert.deepEqual(spendingMonths(["2026-09", "2026-08"], "2026-10"), ["2026-08", "2026-09", "2026-10"], "today's month joins the data months");
 assert.deepEqual(spendingMonths(["2026-10", "2026-11"], "2026-10"), ["2026-10", "2026-11"], "today's month is listed once, and later data months stay");
 assert.deepEqual(spendingMonths([], "2026-10"), ["2026-10"], "a ledger with no data still opens today's month");
+
+{
+  // A split component the server names `twd` lands in the summary's TWD bucket, reduced.
+  const component = (categoryCode: string, coefficient: string, currency: string) => ({
+    categoryCode,
+    labels: null,
+    taxonomyId: "personal",
+    taxonomyVersion: "1",
+    amount: { coefficient, scale: 2, currency },
+  });
+  const split = applySpendingSummaryDelta(exactSummary, 6, 7, {
+    before: [],
+    after: [{
+      date: "2026-01-02",
+      amount: { currency: "twd", coefficient: "3000", scale: 2 },
+      category: { mode: "split", origin: "user", subject: "items", components: [component("food", "1000", "twd"), component("transport", "2000", "twd")] },
+    }],
+  });
+  assert.deepEqual(split.totalsByCurrency, [
+    { currency: "TWD", coefficient: "155", scale: 0, count: 3 },
+    { currency: "USD", coefficient: "25", scale: 1, count: 1 },
+  ], "a lowercase delta currency adds to the upper-cased total");
+  assert.deepEqual(split.categoryTotalsByMonth.filter((row) => row.month === "2026-01"), [
+    { month: "2026-01", currency: "TWD", categoryCode: null, coefficient: "100", scale: 0, count: 1 },
+    { month: "2026-01", currency: "TWD", categoryCode: "food", coefficient: "10", scale: 0, count: 1 },
+    { month: "2026-01", currency: "TWD", categoryCode: "transport", coefficient: "20", scale: 0, count: 1 },
+    { month: "2026-01", currency: "USD", categoryCode: null, coefficient: "25", scale: 1, count: 1 },
+  ], "split components join the upper-cased category bucket");
+}
+
+{
+  // Property: applying a delta and then its reverse returns the summary unchanged.
+  let state = 0x5eed10;
+  const random = () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(state ^ (state >>> 15), state | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+  const integer = (max: number) => Math.floor(random() * (max + 1));
+  const pick = <T>(values: readonly T[]): T => values[integer(values.length - 1)]!;
+  const line = () => {
+    const currency = pick(["TWD", "twd", "USD"]);
+    const amount = { currency, coefficient: String(integer(200000) - 20000), scale: integer(3) };
+    const date = `2026-0${1 + integer(2)}-0${1 + integer(3)}`;
+    const roll = integer(2);
+    const category = roll === 0
+      ? { mode: "absent" as const }
+      : roll === 1
+        ? { mode: "single" as const, origin: "user" as const, subject: "transaction" as const, categoryCode: pick(["food", "home"]), labels: null, taxonomyId: "personal", taxonomyVersion: "1" }
+        : { mode: "split" as const, origin: "user" as const, subject: "items" as const, components: ["food", "home"].map((categoryCode) => ({
+            categoryCode, labels: null, taxonomyId: "personal", taxonomyVersion: "1",
+            amount: { currency, coefficient: String(integer(5000)), scale: integer(3) },
+          })) };
+    return { date, amount: integer(9) === 0 ? null : amount, category };
+  };
+  const empty: SpendingPurchaseReportSummaryDto = {
+    recordCount: 0, candidateCount: null, pendingCandidateCount: null, candidateState: "unloaded", currencies: [],
+    totalsByCurrency: [], monthTotals: [], dayTotals: [], categoryTotalsByMonth: [],
+  };
+  for (let run = 0; run < 200; run += 1) {
+    const base = Array.from({ length: 1 + integer(6) }, line);
+    const summary = applySpendingSummaryDelta(empty, 1, 2, { before: [], after: base });
+    const removed = base.filter(() => random() < 0.5);
+    const added = Array.from({ length: integer(4) }, line);
+    const applied = applySpendingSummaryDelta(summary, 2, 3, { before: removed, after: added });
+    const reverted = applySpendingSummaryDelta(applied, 3, 4, { before: added, after: removed });
+    assert.deepEqual(reverted, summary, `run ${run}: apply then revert is the identity`);
+  }
+}

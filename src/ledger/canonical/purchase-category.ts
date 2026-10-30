@@ -6,6 +6,14 @@ import type {
   PurchaseItemCategorization,
 } from "../../lib/spending/purchase-category-view.ts";
 import { personalCategoryLabels } from "./transaction-taxonomy.ts";
+import {
+  addExact,
+  compareExact,
+  equalMoney,
+  normalizeMoney,
+  sameCurrency,
+  type ExactAmount,
+} from "../../lib/shared-money/exact-money.ts";
 
 /**
  * The Purchase category (ADR 0038): a query-time reading of one purchase-basis
@@ -45,35 +53,9 @@ export type PurchaseCategoryInput = Readonly<{
   itemCategorizations: readonly PurchaseItemCategorization[];
 }>;
 
+const ZERO: ExactAmount = { coefficient: "0", scale: 0 };
+
 export const UNCLASSIFIED_PURCHASE_CATEGORY: PurchaseCategory = Object.freeze({ mode: "absent" });
-
-type Decimal = Readonly<{ coefficient: bigint; scale: number }>;
-
-function decimal(value: ExactMoney): Decimal {
-  return { coefficient: BigInt(value.coefficient), scale: value.scale };
-}
-
-function add(left: Decimal, right: Decimal): Decimal {
-  const scale = Math.max(left.scale, right.scale);
-  return {
-    scale,
-    coefficient: left.coefficient * 10n ** BigInt(scale - left.scale) + right.coefficient * 10n ** BigInt(scale - right.scale),
-  };
-}
-
-function equal(left: Decimal, right: Decimal): boolean {
-  const scale = Math.max(left.scale, right.scale);
-  return left.coefficient * 10n ** BigInt(scale - left.scale) === right.coefficient * 10n ** BigInt(scale - right.scale);
-}
-
-function reduced(value: Decimal): Readonly<{ coefficient: string; scale: number }> {
-  let { coefficient, scale } = value;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient: coefficient.toString(), scale };
-}
 
 function transactionCategory(categorization: CanonicalSpendingCategorization): PurchaseCategory {
   if (categorization.mode === "single" && categorization.categoryCode && categorization.origin && categorization.taxonomyId && categorization.taxonomyVersion) {
@@ -138,20 +120,20 @@ function itemsCategory(
 
   if (target === null) return UNCLASSIFIED_PURCHASE_CATEGORY;
   const all = items.map((item) => ({ item, categorization: bySequence.get(item.sequence) }));
-  if (all.some(({ item, categorization }) => item.completeness !== "complete" || item.amount === null || categorization === undefined || item.amount.currency !== target.currency))
+  if (all.some(({ item, categorization }) => item.completeness !== "complete" || item.amount === null || categorization === undefined || !sameCurrency(item.amount, target)))
     return UNCLASSIFIED_PURCHASE_CATEGORY;
-  let sum: Decimal = { coefficient: 0n, scale: 0 };
-  const byCode = new Map<string, { net: Decimal; categorization: PurchaseItemCategorization }>();
+  let sum: ExactAmount = { coefficient: "0", scale: 0 };
+  const byCode = new Map<string, { net: ExactAmount; categorization: PurchaseItemCategorization }>();
   for (const { item, categorization } of all) {
-    const amount = decimal(item.amount!);
-    sum = add(sum, amount);
+    const amount = item.amount!;
+    sum = addExact(sum, amount);
     const entry = byCode.get(categorization!.categoryCode);
-    if (entry) entry.net = add(entry.net, amount);
+    if (entry) entry.net = addExact(entry.net, amount);
     else byCode.set(categorization!.categoryCode, { net: amount, categorization: categorization! });
   }
-  if (!equal(sum, decimal(target))) return UNCLASSIFIED_PURCHASE_CATEGORY;
+  if (!equalMoney({ ...sum, currency: target.currency }, target)) return UNCLASSIFIED_PURCHASE_CATEGORY;
   if (byCode.size < 2) return UNCLASSIFIED_PURCHASE_CATEGORY;
-  if ([...byCode.values()].some((entry) => entry.net.coefficient < 0n)) return UNCLASSIFIED_PURCHASE_CATEGORY;
+  if ([...byCode.values()].some((entry) => compareExact(entry.net, ZERO) < 0)) return UNCLASSIFIED_PURCHASE_CATEGORY;
   return {
     mode: "split",
     origin: anyUser(all.map((entry) => entry.categorization)),
@@ -163,7 +145,7 @@ function itemsCategory(
         labels: personalCategoryLabels(categoryCode),
         taxonomyId: entry.categorization.taxonomyId,
         taxonomyVersion: entry.categorization.taxonomyVersion,
-        amount: { ...reduced(entry.net), currency: target.currency },
+        amount: normalizeMoney({ ...entry.net, currency: target.currency }),
       })),
   };
 }
