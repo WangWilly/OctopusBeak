@@ -27,6 +27,7 @@ import {
   ESUN_CREDIT_CARD_IDENTITY_EPOCH,
   esunCreditCurrentSnapshotCapture,
   rowsFromTimelineResponse,
+  esunTimelineQueryDates,
   issuerSummaryFromBillResponse,
 } from "./esun-credit-card-statements.ts";
 import {
@@ -906,3 +907,15 @@ for (const scenario of ["unavailable portal", "cancellation while waiting for th
     assert.equal(portalRequests, scenario === "unavailable portal" ? 1 : 0);
   });
 }
+
+test("the timeline queries from today in Taipei back to its anniversary, clamped on a leap day", () => {
+  for (const [now, startDate, endDate] of [
+    ["2028-02-29T04:00:00.000Z", "2027/02/28", "2028/02/29"],
+    ["2028-02-28T16:30:00.000Z", "2027/02/28", "2028/02/29"],
+    ["2024-02-29T04:00:00.000Z", "2023/02/28", "2024/02/29"],
+    ["2028-03-01T04:00:00.000Z", "2027/03/01", "2028/03/01"],
+    ["2026-10-25T04:00:00.000Z", "2025/10/25", "2026/10/25"],
+  ] as const) {
+    assert.deepEqual(esunTimelineQueryDates(now), { startDate, endDate }, now);
+  }
+});

@@ -32,6 +32,7 @@ import {
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
@@ -211,15 +212,14 @@ function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function formatDate(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${date.getFullYear()}/${month}/${day}`;
-}
-
-function defaultStartDate(endDate: string): string {
-  const [year, month, day] = endDate.split("/").map(Number);
-  return `${year - 1}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`;
+/**
+ * The past-year timeline's query dates in E.SUN's YYYY/MM/DD: today in
+ * Asia/Taipei and the same date one year earlier, clamped to the end of a
+ * shorter month (Feb 29 − 1 year = Feb 28) as ADR 0077 does.
+ */
+export function esunTimelineQueryDates(nowIso: string): Readonly<{ startDate: string; endDate: string }> {
+  const { start, end } = collectionPeriod({ today: taipeiToday(nowIso), lookBack: { years: 1, days: 1 } });
+  return { startDate: start.replace(/-/gu, "/"), endDate: end.replace(/-/gu, "/") };
 }
 
 export function esunCreditCardStatementKind(
@@ -752,14 +752,13 @@ export async function loadNextEsunTimelineResponse(
 
 async function queryStatements(
   page: Page,
-  input: Readonly<{ startDate?: string; endDate?: string }>,
+  input: Readonly<{ startDate: string; endDate: string }>,
   options: Readonly<{
     readJson?: (response: Response) => Promise<unknown>;
     signal?: AbortSignal;
   }> = {},
 ): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
-  const endDate = input.endDate ?? formatDate(new Date());
-  const startDate = input.startDate ?? defaultStartDate(endDate);
+  const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
   const popup = await openCardPopup(page, "刷卡明細", "/IESC/cardTrans", options.signal);
   try {
@@ -1239,8 +1238,8 @@ async function collectEsunCreditCard(
   ).catch(() => undefined);
   await context.event("collection", "started", "collection-started");
   await context.event("decoding", "started", "source-decoding-started");
-  const endDate = formatDate(new Date(context.now()));
-  let startDate = defaultStartDate(endDate);
+  const { endDate, startDate: anniversaryDate } = esunTimelineQueryDates(context.now());
+  let startDate = anniversaryDate;
   let rows: StatementRow[];
   let timeline: CreditCardMonthTimeline;
   try {

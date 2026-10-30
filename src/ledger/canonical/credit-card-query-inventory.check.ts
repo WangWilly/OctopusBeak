@@ -4,6 +4,8 @@ import {
   decodeCreditCardQueryBucket,
   encodeCreditCardQueryBucket,
   isCompleteMonthTimeline,
+  monthTimelineAnniversary,
+  monthTimelineBucket,
   monthTimelineInventory,
   monthTimelineRowBucket,
   promisesBilledMonotonicity,
@@ -201,4 +203,17 @@ test("the anniversary month is a partial bucket that names its query date; a com
   assert.deepEqual(monthTimelineRowBucket(query, "2026-03-02", "2025-10-25", "2026-10-25"), { kind: "month", month: "2026/03" });
   assert.deepEqual(monthTimelineInventory({ kind: "combined" }, "2026-04-01", "2026-10-25"), [{ kind: "history-range", start: "2026-04-01", end: "2026-10-25" }]);
   assert.deepEqual(monthTimelineRowBucket({ kind: "combined" }, "2026-05-02", "2026-04-01", "2026-10-25"), { kind: "history-range", start: "2026-04-01", end: "2026-10-25" });
+});
+
+test("a leap day's anniversary clamps to Feb 28 and its month stays the partial bucket", () => {
+  for (const [queryDate, anniversary] of [
+    ["2028-02-29", "2027-02-28"],
+    ["2024-02-29", "2023-02-28"],
+    ["2028-03-01", "2027-03-01"],
+    ["2026-10-25", "2025-10-25"],
+  ] as const) {
+    assert.equal(monthTimelineAnniversary(queryDate), anniversary, queryDate);
+  }
+  assert.deepEqual(monthTimelineBucket("2027/02", "2028-02-29"), { kind: "partial-month", month: "2027/02", queriedOn: "2028-02-29" });
+  assert.deepEqual(monthTimelineBucket("2027/03", "2028-02-29"), { kind: "month", month: "2027/03" });
 });
