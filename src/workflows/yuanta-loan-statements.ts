@@ -8,7 +8,7 @@ import {
 import {
   clickAndWaitForNavigation,
   hasAttachedLocator,
-} from "./browser-interaction.js";
+} from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
