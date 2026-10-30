@@ -163,6 +163,10 @@ _Avoid_: Record migration, trust upgrade in place, merge
 A sanitized description of a Preview Source's responses, listing endpoints, statuses, field names, types, and bounded codes but never identifiers, names, amounts, dates, or free text. The person reviews it in full and sends it only by pasting it into a prefilled public issue; the App transmits nothing itself.
 _Avoid_: Crash report, telemetry, raw response upload
 
+**Usage statistics**:
+The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, and whether it is the install's first ping of the week and month, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier and nothing from the ledger, sign-in details, or runs; it is the only data the App itself sends to OctopusBeak.
+_Avoid_: Telemetry, analytics, tracking, crash report
+
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
