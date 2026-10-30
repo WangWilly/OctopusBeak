@@ -45,3 +45,15 @@ The checks use real isolated Node process groups, including workers that ignore
 SIGTERM, and cover main-process exit/crash, interruption, missing/replaced
 backing paths, failed launch, and interruption before launch. macOS and Linux
 process groups are required for this development launcher.
+
+## Usage statistics in development
+
+A development build never sends usage statistics (ADR 0077); only packaged apps do. With
+`OCTOPUSBEAK_USAGE_PING_URL=https://<worker host>/v1/ping` set before `npm run desktop:dev`, the
+build carries the endpoint and asks the one-time question; without it, the app does not ask.
+
+To see the one-time usage statistics dialog again, start with
+`OCTOPUSBEAK_ASK_USAGE_STATISTICS=1 npm run desktop:dev`. The dialog then appears on every launch
+until it is answered, even after an earlier answer and without the endpoint. Answering it still
+writes the switch to `settings.json`. Packaged apps ignore this variable.
+

@@ -469,6 +469,8 @@ async function start() {
   automationDesktopService = automation;
   usagePinger = createUsagePinger({
     url: USAGE_PING_URL,
+    // Lets a developer see the one-time question again; packaged apps ignore it.
+    forceAsk: !app.isPackaged && process.env.OCTOPUSBEAK_ASK_USAGE_STATISTICS === "1",
     now: () => new Date(),
     readSettings: () => readAutomationSettings(),
     writeSettings: (patch) => writeAutomationSettings({ ...readAutomationSettings(), ...patch }),

@@ -109,6 +109,8 @@ export function usagePingOutcome(status: number | null): "sent" | "retry" | "ref
 export type UsagePingerDependencies = {
   /** USAGE_PING_URL in the app; "" means this build cannot send. */
   url: string;
+  /** Development only: show the one-time question on every launch, whatever was answered before. */
+  forceAsk?: boolean;
   now(): Date;
   readSettings(): AutomationSettingsFile;
   writeSettings(patch: Record<string, string>): void;
@@ -129,6 +131,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
   let timer: unknown = null;
   let inFlight: Promise<void> | null = null;
   let refusedDay: string | null = null;
+  let answeredThisLaunch = false;
 
   function cohortWeek(settings: AutomationSettingsFile): string {
     const stored = settings[USAGE_COHORT_WEEK_KEY];
@@ -186,6 +189,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
 
   /** True when the one-time question should be shown: this build can send, and the person has neither opted in nor answered. */
   function shouldAsk(): boolean {
+    if (deps.forceAsk) return !answeredThisLaunch;
     if (!deps.url) return false;
     const settings = deps.readSettings();
     return !automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])
@@ -194,6 +198,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
 
   /** Records the answer to the one-time question; a yes sends today's ping if it is due. */
   function answer(enabled: boolean) {
+    answeredThisLaunch = true;
     deps.writeSettings({
       [USAGE_STATISTICS_ENABLED_KEY]: enabled ? "true" : "false",
       [USAGE_STATISTICS_PROMPTED_KEY]: "true",
