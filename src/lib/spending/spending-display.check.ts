@@ -6,6 +6,7 @@ import { personalCategoryLabels } from "../../ledger/canonical/transaction-taxon
 import {
   decidedAtText,
   mergedReasons,
+  pairingAmountsDiffer,
   paymentMethodText,
   purchaseTimeText,
   reasonTexts,
@@ -13,6 +14,7 @@ import {
   recordGroups,
   recordCategoryDetailText,
   recordMerchant,
+  recordTotals,
 } from "./spending-display.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
 
@@ -131,4 +133,26 @@ test("the detail category names the exact code so a change inside one group is v
   assert.notEqual(recordCategoryDetailText(zh, single("food_and_groceries")), recordCategoryDetailText(zh, single("personal_and_family_care")));
   assert.equal(recordCategoryDetailText(zh, single("transportation")), "交通", "a code named like its group is not repeated");
   assert.equal(recordCategoryDetailText(zh, record()), recordCategoryText(zh, record()));
+});
+
+test("the pairing note calls out a real money difference, not padding or currency case", () => {
+  const money = (coefficient: string, scale: number, currency = "TWD") => ({ coefficient, scale, currency });
+  assert.equal(pairingAmountsDiffer(money("100", 0), money("10000", 2)), false, "100 and 100.00 are the same money");
+  assert.equal(pairingAmountsDiffer(money("100", 0, "twd"), money("100", 0, "TWD")), false);
+  assert.equal(pairingAmountsDiffer(money("100", 0), money("10001", 2)), true);
+  assert.equal(pairingAmountsDiffer(money("100", 0, "USD"), money("100", 0, "TWD")), true);
+  assert.equal(pairingAmountsDiffer(null, money("100", 0)), true);
+  assert.equal(pairingAmountsDiffer(null, null), false);
+});
+
+test("day and month totals group record amounts by upper-cased currency and reduce them", () => {
+  assert.deepEqual(recordTotals([
+    { amount: { coefficient: "10000", scale: 2, currency: "twd" } },
+    { amount: { coefficient: "50", scale: 0, currency: "TWD" } },
+    { amount: null },
+    { amount: { coefficient: "125", scale: 2, currency: "USD" } },
+  ]), [
+    { currency: "TWD", coefficient: "150", scale: 0, count: 2 },
+    { currency: "USD", coefficient: "125", scale: 2, count: 1 },
+  ]);
 });

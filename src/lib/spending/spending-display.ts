@@ -10,6 +10,7 @@ import {
   type SpendingPurchaseRecordView as PurchaseRecord,
 } from "./purchase-matching.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
+import { equalMoney, moneyTotals, type ExactMoney, type MoneyTotal } from "../shared-money/exact-money.ts";
 
 /**
  * Data Series hues for the display groups (DESIGN.md: food, daily, transport,
@@ -219,4 +220,19 @@ export function decidedAtText(decidedAt: string, timeZone = "Asia/Taipei"): stri
   }).formatToParts(parsed);
   const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
   return `${Number(part("month"))}/${Number(part("day"))} ${part("hour")}:${part("minute")}`;
+}
+
+/** Per-currency totals of the records' counted amounts, grouped by upper-cased currency. */
+export function recordTotals(records: readonly Pick<PurchaseRecord, "amount">[]): readonly MoneyTotal[] {
+  return moneyTotals(records.flatMap((record) => record.amount ? [record.amount] : []));
+}
+
+/**
+ * Whether the invoice and the chosen payment carry different money, so the
+ * pairing must say the source difference is not inferred. Currency case and
+ * trailing zeros are not a difference: 100 and 100.00 TWD are the same money.
+ */
+export function pairingAmountsDiffer(invoice: ExactMoney | null | undefined, payment: ExactMoney | null | undefined): boolean {
+  if (!invoice || !payment) return (invoice ?? null) !== (payment ?? null);
+  return !equalMoney(invoice, payment);
 }
