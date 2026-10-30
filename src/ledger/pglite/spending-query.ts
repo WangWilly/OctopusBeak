@@ -57,8 +57,8 @@ import {
   type ClassifiedPendingCandidate,
   type PendingCandidateFacts,
 } from "../canonical/spending-match-strength.ts";
+import { moneyTotals } from "../../lib/shared-money/exact-money.ts";
 import {
-  addTotal,
   invoiceViewFromRow,
   invoices,
   linkFromRow,
@@ -67,7 +67,6 @@ import {
   querySpendingRecognition,
   recordedAtIso,
   refundFromRow,
-  totals,
 } from "./spending-facts.ts";
 import {
   purchaseRecordsByIdentity,
@@ -786,12 +785,12 @@ export async function queryCurrentSpendingPendingOverview(
   const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
   const month = request.month ?? null;
   const pairs = month === null ? pending.pairs : pending.pairs.filter((pair) => pendingPairInMonth(pair, month));
-  const affected = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
+  const affected: (typeof pairs)[number]["amount"][] = [];
   const countedInvoices = new Set<string>();
   for (const pair of pairs) {
     if (countedInvoices.has(pair.invoiceId)) continue;
     countedInvoices.add(pair.invoiceId);
-    addTotal(affected, pair.amount);
+    affected.push(pair.amount);
   }
   const strong = pairs.filter((pair) => pair.strength === "strong");
   return Object.freeze({
@@ -799,7 +798,7 @@ export async function queryCurrentSpendingPendingOverview(
     knowledgeAt: current,
     pendingCount: pairs.length,
     strongCount: strong.length,
-    affectedByCurrency: Object.freeze(totals(affected).map((total) => Object.freeze(total))),
+    affectedByCurrency: Object.freeze(moneyTotals(affected).map((total) => Object.freeze({ ...total }))),
     strongPairs: Object.freeze(strong.map(pendingPairRef)),
   });
 }

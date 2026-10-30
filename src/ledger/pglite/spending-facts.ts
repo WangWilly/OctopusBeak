@@ -33,6 +33,17 @@ import {
 import type { PurchaseItemCategorization } from "../canonical/purchase-category.ts";
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import {
+  addExact,
+  addToTotals,
+  compareExact,
+  moneyTotals,
+  normalizeExact,
+  readTotals,
+  sameCurrency,
+  type ExactAmount,
+  type MoneyTotalsAccumulator,
+} from "../../lib/shared-money/exact-money.ts";
+import {
   bytes,
   exactMoney,
   idString,
@@ -66,42 +77,6 @@ const EXCLUDED_KIND_PREFIXES = [
   "payment.credit_card",
   "payment.loan",
 ] as const;
-
-function addDecimal(left: Readonly<{ coefficient: bigint; scale: number }>, right: Readonly<{ coefficient: bigint; scale: number }>): { coefficient: bigint; scale: number } {
-  const scale = Math.max(left.scale, right.scale);
-  return {
-    coefficient: left.coefficient * 10n ** BigInt(scale - left.scale) + right.coefficient * 10n ** BigInt(scale - right.scale),
-    scale,
-  };
-}
-
-function reducedDecimal(value: Readonly<{ coefficient: bigint; scale: number }>): { coefficient: string; scale: number } {
-  let coefficient = value.coefficient;
-  let scale = value.scale;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient: coefficient.toString(), scale };
-}
-
-export function addTotal(map: Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>, amount: Money): void {
-  const currency = amount.currency.toUpperCase();
-  const next = { coefficient: BigInt(amount.coefficient), scale: amount.scale };
-  const previous = map.get(currency);
-  map.set(currency, {
-    amount: previous ? addDecimal(previous.amount, next) : next,
-    count: (previous?.count ?? 0) + 1,
-  });
-}
-
-export function totals(map: ReadonlyMap<string, { amount: { coefficient: bigint; scale: number }; count: number }>): readonly { currency: string; coefficient: string; scale: number; count: number }[] {
-  return [...map.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currency, value]) => ({
-    currency,
-    ...reducedDecimal(value.amount),
-    count: value.count,
-  }));
-}
 
 function emptySpendingReport(kind: QueryKind, knowledgePoint: number, financialAt: string | null): CanonicalSpendingReport {
   return {
@@ -422,7 +397,7 @@ export function categoryFromRows(transaction: TransactionRow, kind: string | nul
       }
     } else {
       const components: CanonicalSpendingCategoryComponent[] = [];
-      let total = { coefficient: 0n, scale: 0 };
+      let total: ExactAmount = { coefficient: "0", scale: 0 };
       const seen = new Set<string>();
       let valid = true;
       for (const row of user) {
@@ -435,8 +410,8 @@ export function categoryFromRows(transaction: TransactionRow, kind: string | nul
           break;
         }
         seen.add(code);
-        const amount = { coefficient: BigInt(coefficient), scale };
-        total = addDecimal(total, amount);
+        const amount = { coefficient, scale };
+        total = addExact(total, amount);
         components.push({
           categoryCode: code,
           origin: "user",
@@ -447,7 +422,7 @@ export function categoryFromRows(transaction: TransactionRow, kind: string | nul
           },
           taxonomyId: stringValue(row.taxonomy_id, "Categorization taxonomy"),
           taxonomyVersion: stringValue(row.taxonomy_version, "Categorization taxonomy version"),
-          ...reducedDecimal(amount),
+          ...normalizeExact(amount),
           currency,
           ...(row.conversion_evidence_kind && row.conversion_evidence_id && row.conversion_from_currency && row.conversion_to_currency && row.conversion_evidence_json
             ? {
@@ -462,9 +437,7 @@ export function categoryFromRows(transaction: TransactionRow, kind: string | nul
             : {}),
         });
       }
-      const transactionAmount = exactMoney(transaction);
-      const normalizedTransaction = { coefficient: BigInt(transactionAmount.coefficient), scale: transactionAmount.scale };
-      if (valid && components.length >= 2 && total.coefficient * 10n ** BigInt(Math.max(0, normalizedTransaction.scale - total.scale)) === normalizedTransaction.coefficient * 10n ** BigInt(Math.max(0, total.scale - normalizedTransaction.scale))) {
+      if (valid && components.length >= 2 && compareExact(total, exactMoney(transaction)) === 0) {
         return { mode: "allocated", origin: "user", assertionId: idString(first.assertion_id, "Categorization assertion"), components };
       }
     }
@@ -547,73 +520,62 @@ function transactionFromRow(row: TransactionRow, fact: DateFact | undefined, cat
 function spendingReport(kind: QueryKind, knowledgeAt: number, financialAt: string | null, values: readonly CanonicalSpendingTransaction[]): CanonicalSpendingReport {
   const output: CanonicalSpendingTransaction[] = [];
   const included: CanonicalSpendingTransaction[] = [];
-  const totalValues = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
-  const classifiedValues = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
-  const unclassifiedValues = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
-  const gapValues = new Map<string, { amount: { coefficient: bigint; scale: number }; count: number }>();
-  const categoryValues = new Map<string, { categoryCode: string; taxonomyId: string; taxonomyVersion: string; amount: { coefficient: bigint; scale: number }; count: number; currency: string }>();
+  const totalValues: Money[] = [];
+  const classifiedValues: Money[] = [];
+  const unclassifiedValues: Money[] = [];
+  const gapValues: Money[] = [];
+  const categoryValues: MoneyTotalsAccumulator = new Map();
+  const categoryOf = new Map<string, { categoryCode: string; taxonomyId: string; taxonomyVersion: string }>();
   for (const original of values) {
     const amount = original.amount;
     const gap = !["inflow", "outflow"].includes(original.direction) || !["pending", "posted"].includes(original.postingStatus) || !["normal", "canceled", "refund", "reversal"].includes(original.economicStatus) || !["active", "deleted", "purged"].includes(original.administrativeState) || original.kind === null;
     let transaction: CanonicalSpendingTransaction;
     if (gap) {
-      addTotal(gapValues, amount);
+      gapValues.push(amount);
       transaction = { ...original, inclusion: "eligibility-gap", eligibilityGap: "missing-report-inclusion-semantics" };
     } else if (original.administrativeState !== "active" || original.economicStatus !== "normal" || original.postingStatus !== "posted" || original.direction !== "outflow" || excludedKind(original.kind!)) {
       transaction = { ...original, inclusion: "excluded" };
     } else {
       transaction = { ...original, inclusion: "included" };
       included.push(transaction);
-      addTotal(totalValues, amount);
-      if (transaction.categorization.mode === "absent") addTotal(unclassifiedValues, amount);
+      totalValues.push(amount);
+      if (transaction.categorization.mode === "absent") unclassifiedValues.push(amount);
       else if (transaction.categorization.mode === "single") {
-        addTotal(classifiedValues, amount);
+        classifiedValues.push(amount);
         const category = transaction.categorization;
-        const key = `${category.categoryCode}|${category.taxonomyId}|${category.taxonomyVersion}|${amount.currency.toUpperCase()}`;
-        const previous = categoryValues.get(key);
-        const categoryAmount = { coefficient: BigInt(amount.coefficient), scale: amount.scale };
-        categoryValues.set(key, {
-          categoryCode: category.categoryCode!,
-          taxonomyId: category.taxonomyId!,
-          taxonomyVersion: category.taxonomyVersion!,
-          amount: previous ? addDecimal(previous.amount, categoryAmount) : categoryAmount,
-          count: (previous?.count ?? 0) + 1,
-          currency: amount.currency.toUpperCase(),
+        addToTotals(categoryValues, amount, (currency) => {
+          const key = `${category.categoryCode}|${category.taxonomyId}|${category.taxonomyVersion}|${currency}`;
+          categoryOf.set(key, { categoryCode: category.categoryCode!, taxonomyId: category.taxonomyId!, taxonomyVersion: category.taxonomyVersion! });
+          return key;
         });
       } else {
         let fullyClassified = true;
         for (const component of transaction.categorization.components ?? []) {
-          const componentAmount = { coefficient: BigInt(component.coefficient), scale: component.scale };
-          const key = `${component.categoryCode}|${component.taxonomyId}|${component.taxonomyVersion}|${amount.currency.toUpperCase()}`;
-          const previous = categoryValues.get(key);
-          categoryValues.set(key, {
-            categoryCode: component.categoryCode,
-            taxonomyId: component.taxonomyId,
-            taxonomyVersion: component.taxonomyVersion,
-            amount: previous ? addDecimal(previous.amount, componentAmount) : componentAmount,
-            count: (previous?.count ?? 0) + 1,
-            currency: amount.currency.toUpperCase(),
+          // A component books into its transaction's currency bucket.
+          addToTotals(categoryValues, { ...component, currency: amount.currency }, (currency) => {
+            const key = `${component.categoryCode}|${component.taxonomyId}|${component.taxonomyVersion}|${currency}`;
+            categoryOf.set(key, { categoryCode: component.categoryCode, taxonomyId: component.taxonomyId, taxonomyVersion: component.taxonomyVersion });
+            return key;
           });
-          if (component.currency !== amount.currency) fullyClassified = false;
+          if (!sameCurrency(component, amount)) fullyClassified = false;
         }
-        if (fullyClassified) addTotal(classifiedValues, amount);
-        else addTotal(unclassifiedValues, amount);
+        if (fullyClassified) classifiedValues.push(amount);
+        else unclassifiedValues.push(amount);
       }
     }
     output.push(transaction);
   }
-  const categoryTotalsByCurrency = [...categoryValues.values()].sort((left, right) => `${left.categoryCode}:${left.taxonomyId}:${left.currency}`.localeCompare(`${right.categoryCode}:${right.taxonomyId}:${right.currency}`)).map((value) => ({
-    categoryCode: value.categoryCode,
-    taxonomyId: value.taxonomyId,
-    taxonomyVersion: value.taxonomyVersion,
-    currency: value.currency,
-    ...reducedDecimal(value.amount),
-    count: value.count,
-  }));
+  const categoryTotalsByCurrency = readTotals(categoryValues).map(({ key, currency, coefficient, scale, count }) => ({
+    ...categoryOf.get(key)!,
+    currency,
+    coefficient,
+    scale,
+    count,
+  })).sort((left, right) => `${left.categoryCode}:${left.taxonomyId}:${left.currency}`.localeCompare(`${right.categoryCode}:${right.taxonomyId}:${right.currency}`));
   const includedCount = included.length;
-  const classifiedCount = [...classifiedValues.values()].reduce((sum, value) => sum + value.count, 0);
-  const unclassifiedCount = [...unclassifiedValues.values()].reduce((sum, value) => sum + value.count, 0);
-  const gapCount = [...gapValues.values()].reduce((sum, value) => sum + value.count, 0);
+  const classifiedCount = classifiedValues.length;
+  const unclassifiedCount = unclassifiedValues.length;
+  const gapCount = gapValues.length;
   return {
     status: "ok",
     kind,
@@ -622,18 +584,18 @@ function spendingReport(kind: QueryKind, knowledgeAt: number, financialAt: strin
     inclusionPolicy: CANONICAL_SPENDING_INCLUSION_POLICY,
     transactions: output,
     includedTransactions: included,
-    totalsByCurrency: totals(totalValues),
+    totalsByCurrency: moneyTotals(totalValues),
     categoryTotalsByCurrency,
-    unclassifiedByCurrency: totals(unclassifiedValues),
+    unclassifiedByCurrency: moneyTotals(unclassifiedValues),
     classificationCoverage: {
       includedCount,
       classifiedCount,
       unclassifiedCount,
-      includedAmountByCurrency: totals(totalValues),
-      classifiedAmountByCurrency: totals(classifiedValues),
-      unclassifiedAmountByCurrency: totals(unclassifiedValues),
+      includedAmountByCurrency: moneyTotals(totalValues),
+      classifiedAmountByCurrency: moneyTotals(classifiedValues),
+      unclassifiedAmountByCurrency: moneyTotals(unclassifiedValues),
     },
-    reportEligibility: { status: gapCount === 0 ? "complete" : "incomplete", gapCount, gapAmountByCurrency: totals(gapValues) },
+    reportEligibility: { status: gapCount === 0 ? "complete" : "incomplete", gapCount, gapAmountByCurrency: moneyTotals(gapValues) },
     totalStatus: gapCount === 0 ? "complete" : "incomplete",
   };
 }

@@ -48,7 +48,7 @@ async function assertCompactActionSummaryParity(
   );
   assert.equal(result.baseKnowledgeAt, before.knowledgeAt);
   assert.equal(result.knowledgeAt, after.knowledgeAt);
-  assert.deepEqual(normalizedCompactSummary(patched), normalizedCompactSummary(after.purchaseReport));
+  assert.deepEqual(compactSummaryTotals(patched), compactSummaryTotals(after.purchaseReport));
   return { before, result, after };
 }
 
@@ -365,22 +365,17 @@ async function assertSummaryMatches(query: ReturnType<typeof createPGliteSpendin
   return summary;
 }
 
-function normalizedCompactSummary(summary: import("../../lib/spending/model.ts").SpendingPurchaseReportSummaryDto) {
+/** The compact summary fields both sides compute; candidate counts load separately. */
+function compactSummaryTotals(summary: import("../../lib/spending/model.ts").SpendingPurchaseReportSummaryDto) {
   return {
     recordCount: summary.recordCount,
     candidateCount: summary.candidateCount,
     pendingCandidateCount: summary.pendingCandidateCount,
     candidateState: summary.candidateState,
     currencies: summary.currencies,
-    totalsByCurrency: normalizedSummaryMoney(summary.totalsByCurrency),
-    monthTotals: summary.monthTotals.map(({ totalsByCurrency, ...month }) => ({
-      ...month,
-      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
-    })),
-    dayTotals: summary.dayTotals.map(({ totalsByCurrency, ...day }) => ({
-      ...day,
-      totalsByCurrency: normalizedSummaryMoney(totalsByCurrency),
-    })),
+    totalsByCurrency: summary.totalsByCurrency,
+    monthTotals: summary.monthTotals,
+    dayTotals: summary.dayTotals,
   };
 }
 
@@ -875,7 +870,7 @@ test("PGlite compact candidate denial advances version without changing exact su
     });
     assert.ok(result.knowledgeAt > result.baseKnowledgeAt);
     assert.deepEqual(result.summaryDelta, { before: [], after: [] });
-    assert.deepEqual(normalizedCompactSummary(before.purchaseReport), normalizedCompactSummary(after.purchaseReport));
+    assert.deepEqual(compactSummaryTotals(before.purchaseReport), compactSummaryTotals(after.purchaseReport));
     assert.equal(result.affectedRecords.some((record) => record.basis === "linked"), false);
   } finally {
     await fixture.store.close();
