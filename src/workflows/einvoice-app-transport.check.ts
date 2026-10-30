@@ -22,6 +22,7 @@ const session: EInvoiceAppSession = {
   ssme: "s",
   liat: 1,
   carrierCode: "/AB+123",
+  serverClockOffset: 0,
 };
 
 function pageAnswering(body: unknown, status = 200): Page {
