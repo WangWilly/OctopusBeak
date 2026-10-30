@@ -283,7 +283,11 @@ export function sanitizeSafeWorkflowFailureError(
   return { chain };
 }
 
-function buildRecord(input: WorkflowFailureDiagnosticInput, options: { repoRoot: string; now?: () => Date }): WorkflowFailureDiagnostic | null {
+/** The sanitized record, or null when an identifier or code is outside its vocabulary. Never gated. */
+export function buildWorkflowFailureDiagnostic(
+  input: WorkflowFailureDiagnosticInput,
+  options: { repoRoot: string; now?: () => Date },
+): WorkflowFailureDiagnostic | null {
   if (!SAFE_WORKFLOW_ID.test(input.workflowId)
     || !SAFE_TASK_RUN_ID.test(input.taskRunId)
     || !SOURCES.has(input.source)
@@ -321,7 +325,7 @@ export async function appendWorkflowFailureDiagnostic(
 ): Promise<boolean> {
   if (!filePath || filePath.trim() === "") return false;
   try {
-    const record = buildRecord(input, options);
+    const record = buildWorkflowFailureDiagnostic(input, options);
     if (!record) return false;
     const line = `${JSON.stringify(record)}\n`;
     if (Buffer.byteLength(line, "utf8") > MAX_RECORD_BYTES) return false;

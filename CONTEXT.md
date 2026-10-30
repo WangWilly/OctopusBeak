@@ -171,6 +171,10 @@ _Avoid_: Crash report, telemetry, raw response upload
 The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, whether it is the install's first ping of the week and month, and the past week's failure counts by task, Failure code and stage, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier, nothing from the ledger or sign-in details, and no run detail beyond those counts. Besides an Error report the person sends by hand, it is the only data the App itself sends to OctopusBeak.
 _Avoid_: Telemetry, analytics, tracking, crash report
 
+**Error report**:
+One failure the person chooses to send from a failed run's details (ADR 0081): the task, Failure code and stage, the app and macOS versions, the host's sanitized failure record when it matches, and an optional note with long digit runs masked and an optional email. Nothing is sent until the person selects Send; the receiver keeps it one year. It is distinct from a Preview structure report, which the person pastes into a public issue themselves.
+_Avoid_: Crash report, automatic error upload, telemetry
+
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
