@@ -5,7 +5,7 @@ import {
   decryptLoginData,
   encryptLoginData,
   parseLoginSession,
-  serverTimeOffset,
+  queryIssuedAt,
   signInvoiceJwt,
   type EInvoiceAppSession,
   type EInvoiceJwtSession,
@@ -78,7 +78,7 @@ test("parseLoginSession extracts fields and requires the essential ones", () => 
     carrier_code: "/AB+123",
     skey: "k",
     now: 1700000000,
-  });
+  }, 1700000000_000);
   assert.equal(session.sid.startsWith("S"), true);
   assert.equal(session.token, "t");
   assert.equal(session.appid, "a");
@@ -86,21 +86,20 @@ test("parseLoginSession extracts fields and requires the essential ones", () => 
   assert.equal(session.liat, 123);
   assert.equal(session.carrierCode, "/AB+123");
   assert.equal(session.skey, "k");
-  assert.equal(session.now, 1700000000);
+  assert.equal(session.serverClockOffset, 0);
 });
 
 test("parseLoginSession throws when a required field is missing", () => {
   assert.throws(() => parseLoginSession({ sid: "s", token: "t", appid: "a", liat: 1 }), /缺少必要 session 欄位/u);
 });
 
-test("serverTimeOffset is zero without now and truncated otherwise", () => {
-  const base = {
-    sid: "s",
-    token: "t",
-    appid: "a",
-    ssme: "s",
-    liat: 1,
-  } satisfies EInvoiceAppSession;
-  assert.equal(serverTimeOffset(base), 0);
-  assert.equal(serverTimeOffset({ ...base, now: 100 }, 95_000), 5);
+test("query JWTs are issued at server time, which keeps advancing after login", () => {
+  const login = { sid: "s", token: "t", appid: "a", ssme: "s", liat: 1 };
+  const skewed = parseLoginSession({ ...login, now: 100 }, 95_000);
+  assert.equal(queryIssuedAt(skewed, 95_000), 90);
+  // A capture outlives the 40 s JWT window; each query must still sign a fresh one.
+  assert.equal(queryIssuedAt(skewed, 135_000), 130);
+
+  const unskewed = parseLoginSession(login, 95_000);
+  assert.equal(queryIssuedAt(unskewed, 135_000), 125);
 });
