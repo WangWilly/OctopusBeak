@@ -5,7 +5,7 @@ import {
   type CathayStrictSourceOptions,
   type CathaySession,
   fetchCathayApiSourceText,
-} from "./cathay-statements.js";
+} from "./cathay-statements.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,

@@ -22,7 +22,7 @@ Eleven product collectors each decided which dates to query before a Source Capt
 The copies had drifted into bugs:
 
 - **The wrong day.** SinoPac read the run's instant with UTC getters, so a run between 00:00 and 08:00 in Taipei ended its period a day early. LINE Bank, HNCB, Fubon deposit and loan, Cathay domestic and foreign, Yuanta loan and fund, and YuanTa Trade used the machine's local clock, so a machine outside Taipei queried a different day than the person's bank.
-- **Unclamped months.** Cathay moved back with `setMonth` and `setFullYear`, so one month back from Mar 31 was Mar 3, and one year back from Feb 29 was Mar 1.
+- **Unclamped months.** Cathay moved back with `setMonth` and `setFullYear`, so one month back from Mar 31 was Mar 3, and one year back from Feb 29 was Mar 1. Cathay's one-year request keeps the Mar 1 start on a leap day: Cathay has never been sent a Feb 28 start with a Feb 29 end, and the development CLI cannot verify one because Cathay requires a registered device.
 - **One run, several periods.** Cathay computed its range again for the request, the capture scope and admission, and Yuanta recomputed its FX scope per capture and its fund range twice. A run that crossed midnight disagreed with itself.
 - **A day queried twice.** Fubon's "180" range began on the day its "180_365" range ended.
 - **eInvoice** chose its months from the local clock but ended its recorded scope on a date passed separately.

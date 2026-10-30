@@ -831,16 +831,22 @@ function delayedDomesticQueryPage(
 const oneYear: CathayQueryPeriod = { option: "one_year", startDate: "2025-09-25", endDate: "2026-09-25" };
 
 // Cathay's one-year option covers one year and one day ending on the run's
-// Taipei date; a year back from Feb 29 clamps to Feb 28 instead of Mar 1.
+// Taipei date. On Feb 29 it starts on Mar 1, the start the earlier rolled-over
+// date produced, instead of the clamped Feb 28.
 {
   const declaration = CATHAY_SOURCE.statementSelection!.products.find(({ id }) => id === "domestic")!.collectionPeriod!;
   // 16:30Z on Feb 28 is 00:30 on Feb 29 in Taipei.
   const today = taipeiToday("2028-02-28T16:30:00.000Z");
   assert.deepEqual(cathayQueryPeriod(collectionPeriod({ today, ...declaration })), {
     option: "one_year",
-    startDate: "2027-02-28",
+    startDate: "2027-03-01",
     endDate: "2028-02-29",
   });
+  assert.deepEqual(cathayQueryPeriod(collectionPeriod({ today: "2028-03-01", ...declaration })), {
+    option: "one_year",
+    startDate: "2027-03-01",
+    endDate: "2028-03-01",
+  }, "the day after a leap day starts one year back");
   assert.deepEqual(
     cathayQueryPeriod(collectionPeriod({ today: "2026-03-31", lookBack: { months: 1, days: 1 } })),
     { option: "one_month", startDate: "2026-02-28", endDate: "2026-03-31" },
