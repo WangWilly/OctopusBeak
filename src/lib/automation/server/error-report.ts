@@ -37,13 +37,22 @@ const TASK_ID = /^[a-z][a-z0-9-]{0,63}$/u;
 const EMAIL = /^[^\s@<>"]{1,64}@[^\s@<>"]{1,189}\.[^\s@<>"]{2,}$/u;
 const CODES = new Set<string>(TYPED_WORKFLOW_ERROR_CODES);
 const STAGES = new Set<string>(WORKFLOW_STAGES);
-/** Six or more digits, possibly split by spaces or dashes, look like an account or card number. */
-const LONG_NUMBER = /\d(?:[\s-]?\d){5,}/gu;
+/**
+ * Six or more digits, however they are split by spaces, dashes, dots or slashes, look like an
+ * account or card number. Full-width digits, dashes, dots and slashes are folded first.
+ */
+const LONG_NUMBER = /\d(?:[\s.\/\-\u2010-\u2015]*\d){5,}/gu;
+/** The receiver accepts frames only inside the app bundle; source-tree frames would refuse the report. */
+const BUNDLE_FRAME = /^build-electron\/[A-Za-z0-9_.-]{1,96}\.cjs$/u;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 /** The receiver masks again; masking here means the preview shows exactly what leaves the Mac. */
 export function maskNumbers(note: string): string {
-  return note.replace(LONG_NUMBER, "[已遮蔽]");
+  // Only digits and dashes are folded, so the rest of the note keeps its punctuation.
+  const folded = note
+    .replace(/[\uff10-\uff19]/gu, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0))
+    .replace(/[\uff0d\uff0e\uff0f]/gu, (mark) => String.fromCharCode(mark.charCodeAt(0) - 0xfee0));
+  return folded.replace(LONG_NUMBER, "[已遮蔽]");
 }
 
 const latest = new Map<string, WorkflowFailureDiagnostic>();
@@ -58,6 +67,14 @@ export function forgetFailureDiagnostics(): void {
   latest.clear();
 }
 
+/**
+ * Keeps the remembered record only while it belongs to the task's latest finished run, so a later
+ * run that failed some other way never carries an earlier run's diagnostic.
+ */
+export function forgetStaleFailureDiagnostic(taskId: string, finishedTaskRunId: string): void {
+  if (latest.get(taskId)?.taskRunId !== finishedTaskRunId) latest.delete(taskId);
+}
+
 /** The report endpoint sits beside the ping endpoint on the same receiver. */
 export function errorReportUrl(pingUrl: string): string {
   return pingUrl ? pingUrl.replace(/\/v1\/ping$/u, "/v1/report") : "";
@@ -69,9 +86,9 @@ export function buildErrorReport(
   input: ErrorReportInput,
   context: { appVersion: string; osVersion: string; locale: "zh-TW" | "en" },
 ): ErrorReportPayload {
-  if (!TASK_ID.test(input.taskId)) throw new InvalidErrorReport("unknown task");
-  if (!CODES.has(input.code)) throw new InvalidErrorReport("unknown failure code");
-  if (input.stage !== null && !STAGES.has(input.stage)) throw new InvalidErrorReport("unknown stage");
+  if (typeof input?.taskId !== "string" || !TASK_ID.test(input.taskId)) throw new InvalidErrorReport("unknown task");
+  if (typeof input.code !== "string" || !CODES.has(input.code)) throw new InvalidErrorReport("unknown failure code");
+  if (input.stage !== null && (typeof input.stage !== "string" || !STAGES.has(input.stage))) throw new InvalidErrorReport("unknown stage");
   if (typeof input.note !== "string" || [...input.note].length > MAX_NOTE_LENGTH) throw new InvalidErrorReport("note is too long");
   const email = typeof input.email === "string" ? input.email.trim() : "";
   if (email !== "" && (email.length > 254 || !EMAIL.test(email))) throw new InvalidErrorReport("email is malformed");
@@ -95,7 +112,10 @@ export function buildErrorReport(
           ...(matching.statementType ? { statementType: matching.statementType } : {}),
           ...(matching.operation ? { operation: matching.operation } : {}),
           ...(matching.reason ? { reason: matching.reason } : {}),
-          chain: matching.error.chain,
+          chain: matching.error.chain.map((node) => ({
+            ...node,
+            frames: node.frames.filter((frame) => BUNDLE_FRAME.test(frame.file)),
+          })),
         }
       : null,
     note: maskNumbers(input.note.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/gu, "").trim()),

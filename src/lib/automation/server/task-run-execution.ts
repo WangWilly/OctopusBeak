@@ -137,8 +137,13 @@ async function recordWorkflowFailure(
   const { workflowId, launchEnv } = context.plan;
   const record = { workflowId, taskRunId: context.run.taskRunId, ...input };
   const options = { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) };
-  // Kept in memory for an Error report the person may choose to send (ADR 0081).
-  rememberFailureDiagnostic(context.run.taskId, buildWorkflowFailureDiagnostic(record, options));
+  // Kept in memory for an Error report the person may choose to send (ADR 0081). Like the file
+  // writer, building it must never change the failure outcome.
+  try {
+    rememberFailureDiagnostic(context.run.taskId, buildWorkflowFailureDiagnostic(record, options));
+  } catch {
+    rememberFailureDiagnostic(context.run.taskId, null);
+  }
   await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], record, options);
 }
 
