@@ -1,4 +1,4 @@
-import { exactToNumber } from "$lib/shared-money/exact.ts";
+import { exactToNumber } from "$lib/shared-money/exact-money.ts";
 import type { Locale } from "$lib/i18n/i18n.ts";
 import { formatMoney } from "$lib/shared-money/money.ts";
 

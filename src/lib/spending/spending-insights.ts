@@ -5,7 +5,7 @@ import {
   multiplyExact,
   normalizeExact,
   type ExactAmount,
-} from "../shared-money/exact.ts";
+} from "../shared-money/exact-money.ts";
 import { isPersonalCategoryCode } from "../../ledger/canonical/personal-category-codes.ts";
 import { SPENDING_CATEGORY_GROUP_IDS, spendingCategoryGroup, type SpendingCategoryGroup } from "./category-groups.ts";
 import type { SpendingCategoryMonthTotal, SpendingPurchaseReportSummaryDto } from "./model.ts";

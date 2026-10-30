@@ -1,5 +1,5 @@
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
-import { exactToNumber } from "../shared-money/exact.ts";
+import { exactToNumber } from "../shared-money/exact-money.ts";
 import type { PurchaseCategory } from "./purchase-category-view.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";

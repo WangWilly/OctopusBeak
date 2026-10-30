@@ -7,7 +7,7 @@ import type {
   PreviewCreditDto,
   SummaryMetricDto,
 } from "../../lib/shared-ledger/types.ts";
-import { addExact, decimalToExact, type ExactAmount } from "../../lib/shared-money/exact.ts";
+import { addExact, decimalToExact, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
 import { indexExchangeRates, rateOnOrBefore } from "../../lib/shared-money/exchange-rates.ts";
 import type { ExchangeRateRecord } from "../exchange-rates.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
