@@ -65,9 +65,8 @@ export function cathayQueryPeriod(period: CollectionPeriod): CathayQueryPeriod {
   const option = (Object.keys(CATHAY_PERIOD_OPTIONS) as CathayDateRange[])
     .find((candidate) => periodSpans(period, CATHAY_PERIOD_OPTIONS[candidate]));
   if (!option) throw new Error("No Cathay period option covers the collection period.");
-  // A year back from Feb 29 clamps to Feb 28, a 367-day request Cathay has
-  // never been shown to accept. Start on Mar 1 instead, the 366-day request
-  // the earlier rolled-over date produced (ADR 0077).
+  // A year back from Feb 29 clamps to Feb 28, a start Cathay has never been
+  // sent. Keep Mar 1, the start the earlier rolled-over date produced (ADR 0077).
   if (option === "one_year" && period.end.endsWith("-02-29")) {
     return { option, startDate: `${Number(period.end.slice(0, 4)) - 1}-03-01`, endDate: period.end };
   }
