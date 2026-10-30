@@ -122,8 +122,10 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 
 
 /** The foreign API takes the period's dates directly. */
-function cathayForeignQueryRange({ start, end }: CollectionPeriod): CathayForeignQueryRange {
-  return { startDate: start, endDate: end };
+/** The foreign-currency query asks for the same dates as the domestic one, leap-day start included. */
+function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRange {
+  const { startDate, endDate } = cathayQueryPeriod(period);
+  return { startDate, endDate };
 }
 
 function cathayBalanceResponseMatches(
