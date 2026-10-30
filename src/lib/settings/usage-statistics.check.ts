@@ -19,13 +19,14 @@ import {
 
 const TEST_URL = "https://usage.example.test/v1/ping";
 
-function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = [204], url = TEST_URL) {
+function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = [204], url = TEST_URL, forceAsk = false) {
   let settings: AutomationSettingsFile = { ...initial };
   const sent: { url: string; body: string }[] = [];
   const errors: string[] = [];
   let now = new Date("2026-10-29T02:00:00Z");
   const deps: UsagePingerDependencies = {
     url,
+    forceAsk,
     now: () => now,
     readSettings: () => settings,
     writeSettings: (patch) => {
@@ -219,4 +220,11 @@ test("no source file carries the endpoint or reads its build constant", () => {
   };
   for (const directory of ["src", "electron"]) walk(join(root, directory));
   assert.deepEqual(offenders, []);
+});
+
+test("the development switch asks again until answered in this launch", () => {
+  const forced = harness({ USAGE_STATISTICS_PROMPTED: "true", USAGE_STATISTICS_ENABLED: "true" }, [204], "", true);
+  assert.equal(forced.pinger.shouldAsk(), true, "even without an endpoint and after an earlier answer");
+  forced.pinger.answer(false);
+  assert.equal(forced.pinger.shouldAsk(), false);
 });
