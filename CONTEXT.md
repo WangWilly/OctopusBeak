@@ -99,6 +99,10 @@ _Avoid_: Dashboard, portfolio view, financial summary
 A person's assets minus liabilities in the Trusted Financial Overview. It is one TWD total when every account converts at the valuation date, otherwise each currency's own amount. It states whether the figure shown includes preview financial data; the history's preview markers are separate.
 _Avoid_: Net worth (in code and DTOs), asset value, balance total
 
+**Financial page**:
+One of the Overview, Assets, Liabilities and Spending pages of the Trusted financial overview. Each shows one complete page that a PGlite live view delivers and updates when committed data changes; Automation and Settings are not Financial pages.
+_Avoid_: Dashboard route, live page
+
 **Financial account**:
 A persistent account identity established by one integration namespace, source connection, contract-defined stable account key, and identity epoch, used to organize that source scope's transactions, balances, liabilities, holdings, statements, and product terms. It persists across Captures and Import Runs within that scope but is never merged with an account from another integration or connection, even when both may represent the same real-world account.
 _Avoid_: Cross-source account, display group, individual card
