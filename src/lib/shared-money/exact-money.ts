@@ -1,5 +1,5 @@
 /**
- * Exact monetary values (ADR 0078). An amount is an integer coefficient over a
+ * Exact monetary values (ADR 0080). An amount is an integer coefficient over a
  * power of ten; money pairs an amount with a currency. Every operation here
  * works on BigInt, never on binary floating point.
  *
