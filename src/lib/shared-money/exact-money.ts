@@ -245,6 +245,10 @@ export function addToTotals<K extends string = string>(
   const currency = normalizeCurrency(amount.currency);
   const entryKey = key(currency);
   const previous = totals.get(entryKey);
+  // A key that leaves out the currency must not add two currencies together.
+  if (previous && previous.currency !== currency) {
+    throw new ExactMoneyError(`Totals key ${entryKey} holds ${previous.currency} and ${currency}.`);
+  }
   totals.set(entryKey, {
     currency,
     amount: previous ? addExact(previous.amount, amount) : normalizeExact(amount),
