@@ -9,6 +9,7 @@ import {
   createDevelopmentBrowserPort,
   createLocalSolverHumanAssistancePort,
   developmentPageHost,
+  parseWorkflowDevNow,
 } from "./workflow-dev.ts";
 import { createBrowserRuntime } from "../src/lib/automation/server/browser-runtime.ts";
 import { APP_WORKFLOW_DEFINITIONS } from "../src/lib/automation/server/app-workflow-registry.ts";
@@ -293,4 +294,20 @@ test("development headless mode applies the same named runtime profile to launch
     args: ["--disable-blink-features=AutomationControlled"],
   }]);
   assert.equal(contexts[0].userAgent, "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.7922.34 Safari/537.36");
+});
+
+test("workflow development CLI fixes the workflow clock only at a real UTC instant", () => {
+  assert.match(invoke("help").stdout, /--now INSTANT/u);
+  assert.equal(parseWorkflowDevNow(undefined), undefined);
+  assert.equal(parseWorkflowDevNow("2028-02-28T16:30:00Z"), "2028-02-28T16:30:00.000Z");
+  assert.equal(parseWorkflowDevNow("2028-02-29T04:00:00.5Z"), "2028-02-29T04:00:00.500Z");
+  for (const value of ["2027-02-29T00:00:00Z", "2028-02-29", "2028-02-29T04:00:00+08:00", "tomorrow"]) {
+    assert.throws(() => parseWorkflowDevNow(value), /usage/u, value);
+  }
+  const invalid = invoke("run-app", "cathay-all-statements", "--now", "2027-02-29T00:00:00Z");
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /workflow development failed: usage/u);
+  const unconfirmed = invoke("run-app", "cathay-all-statements", "--now", "2028-02-28T16:30:00Z");
+  assert.notEqual(unconfirmed.status, 0);
+  assert.match(unconfirmed.stderr, /live-source-confirmation-required/u);
 });
