@@ -157,11 +157,21 @@ test("a refused ping waits for the next day; 410 turns statistics off", async ()
   await refused.pinger.check();
   await refused.pinger.check();
   assert.equal(refused.sent.length, 1);
+  assert.equal(refused.settings().USAGE_REFUSED_DAY, "2026-10-29", "a relaunch reads the refusal too");
+  refused.setNow("2026-10-30T02:00:00Z");
+  await refused.pinger.check();
+  assert.equal(refused.sent.length, 2, "the next day tries again");
 
   const retired = harness({ USAGE_STATISTICS_ENABLED: "true" }, [410]);
   retired.pinger.start();
   await retired.pinger.check();
   assert.equal(retired.settings().USAGE_STATISTICS_ENABLED, "false");
+  await retired.pinger.check();
+  assert.equal(retired.sent.length, 1);
+  assert.equal(retired.settings().USAGE_STATISTICS_RETIRED, "true");
+  assert.equal(retired.pinger.shouldAsk(), false, "a retired endpoint is never asked about again");
+  // A Settings save from a renderer that still shows "On" must not revive collection.
+  retired.pinger.answer(true);
   await retired.pinger.check();
   assert.equal(retired.sent.length, 1);
 });

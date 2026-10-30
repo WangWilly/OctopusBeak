@@ -44,7 +44,7 @@
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
-  import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
+  import { applySystemSettings, usageStatisticsEnabled } from "$lib/settings/system-timezone-store.ts";
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import type { SpendingPageDto } from "$lib/spending/model.ts";
   import {
@@ -211,6 +211,14 @@
   /** ADR 0078: the one-time usage statistics question waits for the welcome and onboarding to finish. */
   let usageStatisticsAsk = false;
   let firstRunWelcomeResolved = false;
+  let lastUsageStatisticsEnabled: boolean | null = null;
+  // Changing the switch in Settings answers the question, even while the dialog is still waiting.
+  $: {
+    if (lastUsageStatisticsEnabled !== null && $usageStatisticsEnabled !== lastUsageStatisticsEnabled) {
+      usageStatisticsAsk = false;
+    }
+    lastUsageStatisticsEnabled = $usageStatisticsEnabled;
+  }
   $: showUsageStatisticsPrompt = usageStatisticsAsk
     && firstRunWelcomeResolved
     && firstRunWelcomeState?.status !== "active"
