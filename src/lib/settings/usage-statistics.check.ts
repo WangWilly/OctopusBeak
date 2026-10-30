@@ -4,8 +4,12 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
+import { runFailures } from "../automation/server/task-run-finished.ts";
 import {
+  addFailures,
   buildUsagePing,
+  failureEntries,
+  subtractFailures,
   createUsagePinger,
   isoWeek,
   taipeiDay,
@@ -14,6 +18,7 @@ import {
   usagePingOutcome,
   USAGE_PING_FIELDS,
   USAGE_PING_URL,
+  type UsageFailureBook,
   type UsagePingerDependencies,
 } from "./usage-statistics.ts";
 
@@ -21,6 +26,7 @@ const TEST_URL = "https://usage.example.test/v1/ping";
 
 function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = [204], url = TEST_URL, forceAsk = false) {
   let settings: AutomationSettingsFile = { ...initial };
+  let book: UsageFailureBook = {};
   const sent: { url: string; body: string }[] = [];
   const errors: string[] = [];
   let now = new Date("2026-10-29T02:00:00Z");
@@ -29,6 +35,10 @@ function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = 
     forceAsk,
     now: () => now,
     readSettings: () => settings,
+    readFailures: () => book,
+    writeFailures: (next) => {
+      book = next;
+    },
     writeSettings: (patch) => {
       settings = { ...settings, ...patch };
     },
@@ -49,6 +59,7 @@ function harness(initial: AutomationSettingsFile, statuses: (number | null)[] = 
     sent,
     errors,
     settings: () => settings,
+    book: () => book,
     setNow: (value: string) => {
       now = new Date(value);
     },
@@ -66,7 +77,7 @@ test("the payload carries exactly the allowed fields", () => {
   });
   assert.deepEqual(Object.keys(ping), [...USAGE_PING_FIELDS]);
   assert.deepEqual(ping, {
-    schema: 1,
+    schema: 2,
     appVersion: "0.9.5",
     osVersion: "15.4",
     arch: "arm64",
@@ -74,6 +85,7 @@ test("the payload carries exactly the allowed fields", () => {
     cohortWeek: "2026-W43",
     firstThisWeek: false,
     firstThisMonth: false,
+    failures: [],
   });
 });
 
@@ -135,7 +147,7 @@ test("one ping per day, retried after a temporary failure", async () => {
   assert.equal(run.sent[0].url, TEST_URL);
   assert.equal(run.settings().USAGE_LAST_SENT_DAY, "2026-10-29");
   assert.deepEqual(JSON.parse(run.sent[1].body), {
-    schema: 1,
+    schema: 2,
     appVersion: "0.9.5",
     osVersion: "15.4",
     arch: "arm64",
@@ -143,6 +155,7 @@ test("one ping per day, retried after a temporary failure", async () => {
     cohortWeek: "2026-W43",
     firstThisWeek: true,
     firstThisMonth: true,
+    failures: [],
   });
 
   run.setNow("2026-10-30T02:00:00Z");
@@ -237,4 +250,59 @@ test("the development switch asks again until answered in this launch", () => {
   assert.equal(forced.pinger.shouldAsk(), true, "even without an endpoint and after an earlier answer");
   forced.pinger.answer(false);
   assert.equal(forced.pinger.shouldAsk(), false);
+});
+
+test("a finished run counts once if it failed, per failed product if partial, never if cancelled", () => {
+  const events = [
+    { runId: "r", occurredAt: "2026-10-29T02:00:00Z", stage: "authentication", outcome: "failed", code: "x" },
+    { runId: "r", occurredAt: "2026-10-29T02:00:01Z", stage: "finalization", outcome: "completed", code: "y" },
+  ] as never;
+  assert.deepEqual(
+    runFailures({ taskId: "esun-credit-card-statements", status: "failed", events, appWorkflowOutcome: { errorCode: "source-unavailable", summary: null } }),
+    [{ source: "esun-credit-card-statements", code: "source-unavailable", stage: "authentication" }],
+  );
+  assert.deepEqual(runFailures({ taskId: "a", status: "failed", events: [], appWorkflowOutcome: { errorCode: "cancelled", summary: null } }), []);
+  assert.deepEqual(runFailures({ taskId: "a", status: "cancelled", events, appWorkflowOutcome: null }), []);
+  const products = [
+    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" },
+    { typeId: "loan", status: "success", itemCount: 1, committedCount: 1 },
+  ];
+  assert.deepEqual(
+    runFailures({ taskId: "fubon-all-statements", status: "partial", events, appWorkflowOutcome: { errorCode: null, summary: { counts: {}, products } } as never }),
+    [{ source: "fubon-all-statements", code: "source-collection-failed", stage: "unknown" }],
+  );
+});
+
+test("failure counts are kept a week, capped at 50 entries, and only what was sent is removed", () => {
+  const failure = { source: "esun-credit-card-statements", code: "source-unavailable", stage: "authentication" };
+  let book = addFailures({}, "2026-10-20", [failure]);
+  book = addFailures(book, "2026-10-29", [failure, failure]);
+  assert.deepEqual(failureEntries(book, "2026-10-29"), [{ day: "2026-10-29", ...failure, count: 2 }], "the 2026-10-20 day is too old");
+  const sent = failureEntries(book, "2026-10-29");
+  book = addFailures(book, "2026-10-29", [failure]);
+  assert.deepEqual(subtractFailures(book, sent), { "2026-10-29": { [`${failure.source}|${failure.code}|${failure.stage}`]: 1 } });
+  const many = addFailures({}, "2026-10-29", Array.from({ length: 60 }, (_, index) => ({ ...failure, source: `s${index}` })));
+  assert.equal(failureEntries(many, "2026-10-29").length, 50);
+});
+
+test("failures are recorded only while statistics are on, sent in the ping, and cleared when turned off", async () => {
+  const off = harness({});
+  off.pinger.recordFailures([{ source: "a", code: "b", stage: "c" }]);
+  assert.deepEqual(off.book(), {}, "nothing is kept while statistics are off");
+
+  const run = harness({ USAGE_STATISTICS_ENABLED: "true" });
+  // Failures recorded after today's ping wait for tomorrow's; here the ping has not gone out yet.
+  run.pinger.recordFailures([{ source: "esun-credit-card-statements", code: "source-unavailable", stage: "authentication" }]);
+  assert.equal(run.pinger.preview().failures.length, 1, "Settings shows the failures the next ping carries");
+  run.pinger.start();
+  await run.pinger.check();
+  const body = JSON.parse(run.sent[0].body);
+  assert.deepEqual(body.failures, [
+    { day: "2026-10-29", source: "esun-credit-card-statements", code: "source-unavailable", stage: "authentication", count: 1 },
+  ]);
+  assert.deepEqual(run.book(), {}, "a delivered ping removes what it carried");
+
+  run.pinger.recordFailures([{ source: "a", code: "b", stage: "c" }]);
+  run.pinger.answer(false);
+  assert.deepEqual(run.book(), {});
 });
