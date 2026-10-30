@@ -16,6 +16,7 @@ import {
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { readAutomationSettings, watchPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import { automationFlagEnabled } from "../src/lib/automation/statement-selection.ts";
 import {
   deleteAllFinancialData,
   type CollectionControl,
@@ -28,6 +29,7 @@ import {
   validateSystemSettings,
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
+import type { UsagePing } from "../src/lib/settings/usage-statistics.ts";
 import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
@@ -48,6 +50,7 @@ export function registerOctopusBeakIpc({
   automation,
   collection,
   onSystemSettingsChanged,
+  usagePing,
   pgliteViews,
   pgliteOperational,
   pgliteFinancial,
@@ -57,6 +60,7 @@ export function registerOctopusBeakIpc({
   onSystemSettingsChanged?: (
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
+  usagePing: { preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void };
   pgliteViews: {
     dataDir?: string;
     workerPath?: string;
@@ -110,12 +114,24 @@ export function registerOctopusBeakIpc({
       systemSettings(readAutomationSettings()),
     "settings:save": async (_event, input: SystemSettingsDto) => {
       const value = validateSystemSettings(input);
+      const current = readAutomationSettings();
+      // Changing the switch in Settings answers the one-time usage statistics question too.
+      // Read only the flag, so a corrupt stored value elsewhere cannot block the save that repairs it.
+      const usageAnswered = automationFlagEnabled(current.USAGE_STATISTICS_ENABLED) !== value.usageStatisticsEnabled;
       writeAutomationSettings({
-        ...readAutomationSettings(),
+        ...current,
         ...systemSettingsFileEntries(value),
+        ...(usageAnswered ? { USAGE_STATISTICS_PROMPTED: "true" } : {}),
       });
       await onSystemSettingsChanged?.(value);
       return value;
+    },
+    "settings:previewUsagePing": () => usagePing.preview(),
+    "settings:shouldAskUsageStatistics": () => usagePing.shouldAsk(),
+    "settings:answerUsageStatistics": (_event, enabled: boolean) => {
+      if (typeof enabled !== "boolean") throw new TypeError("The usage statistics answer must be a boolean.");
+      usagePing.answer(enabled);
+      return systemSettings(readAutomationSettings());
     },
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),

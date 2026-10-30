@@ -48,7 +48,7 @@ const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
 assert.match(
   mainSource,
-  /onSystemSettingsChanged:\s*\(\)\s*=>\s*\{\s*scheduler\?\.reschedule\(\);\s*collectionScheduler\?\.reschedule\(\);\s*\}/,
+  /onSystemSettingsChanged:\s*\(\)\s*=>\s*\{\s*scheduler\?\.reschedule\(\);\s*collectionScheduler\?\.reschedule\(\);\s*void usagePinger\?\.check\(\);\s*\}/,
 );
 assert.match(mainSource, /scheduled-collection-scheduler-error/);
 assert.match(mainSource, /scheduler\?\.start\(\)/);

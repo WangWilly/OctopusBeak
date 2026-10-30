@@ -131,6 +131,7 @@ export function createSpendingDesktopApi(model) {
     settings: {
       load: async () => settings,
       save: async (value) => value,
+      shouldAskUsageStatistics: async () => false,
     },
     spending: {
       loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
@@ -255,6 +256,7 @@ function installSpendingDesktopApi(model) {
     settings: {
       load: async () => fixtureSettings,
       save: async (value) => value,
+      shouldAskUsageStatistics: async () => false,
     },
     spending: {
       loadRecordPage: async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month ?? null, day: input.day ?? null, categoryCodes: null, query: null, basis: input.basis ?? null, records: [], nextCursor: null }),
