@@ -168,7 +168,7 @@ A sanitized description of a Preview Source's responses, listing endpoints, stat
 _Avoid_: Crash report, telemetry, raw response upload
 
 **Usage statistics**:
-The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, and whether it is the install's first ping of the week and month, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier and nothing from the ledger, sign-in details, or runs; it is the only data the App itself sends to OctopusBeak.
+The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, whether it is the install's first ping of the week and month, and the past week's failure counts by task, Failure code and stage, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier, nothing from the ledger or sign-in details, and no run detail beyond those counts. Besides an Error report the person sends by hand, it is the only data the App itself sends to OctopusBeak.
 _Avoid_: Telemetry, analytics, tracking, crash report
 
 **Financial account type**:
