@@ -1,4 +1,6 @@
-export type ExactMoney = Readonly<{ coefficient: string; scale: number; currency: string }>;
+import type { ExactMoney } from "../../lib/shared-money/exact-money.ts";
+
+export type { ExactMoney };
 
 export type SpendingPair = Readonly<{ invoiceId: string; transactionId: string }>;
 

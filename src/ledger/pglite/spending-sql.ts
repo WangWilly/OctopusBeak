@@ -1,4 +1,5 @@
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import type { ExactMoney } from "../../lib/shared-money/exact-money.ts";
 
 /**
  * Row and identity helpers every PGlite Spending reader and command shares.
@@ -11,7 +12,7 @@ export type PGliteSpendingReader = Pick<PGliteStore, "query"> | Pick<PGliteTrans
 export type PGliteSpendingStore = Pick<PGliteStore, "query" | "transaction">;
 
 export type Row = Readonly<Record<string, unknown>>;
-export type Money = Readonly<{ coefficient: string; scale: number; currency: string }>;
+export type Money = ExactMoney;
 
 export const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 export const HEX_ID = /^[0-9a-f]{32}$/iu;
