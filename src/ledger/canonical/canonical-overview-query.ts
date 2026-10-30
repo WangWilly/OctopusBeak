@@ -1,4 +1,4 @@
-import type { CanonicalOverviewExactAmount } from "../pglite/overview-amount.ts";
+import type { ExactAmount as CanonicalOverviewExactAmount } from "../../lib/shared-money/exact-money.ts";
 import type { CoveredBy } from "./direct-source-precedence.ts";
 import type { InstitutionKey, IntermediarySourceLogoKey } from "../../lib/institutions/institutions.ts";
 

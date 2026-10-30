@@ -250,7 +250,6 @@ const en = {
   },
   purchaseSpending: {
     amountUnavailable: "Amount unavailable",
-    unavailable: "Unavailable",
     merchantUnavailable: "Merchant unavailable",
     creditCardPurchase: "Credit-card purchase",
     bankTransaction: "Bank transaction",
@@ -1547,7 +1546,6 @@ const zh: typeof en = {
   },
   purchaseSpending: {
     amountUnavailable: "金額未提供",
-    unavailable: "無資料",
     merchantUnavailable: "未提供商家名稱",
     creditCardPurchase: "信用卡消費",
     bankTransaction: "銀行交易",

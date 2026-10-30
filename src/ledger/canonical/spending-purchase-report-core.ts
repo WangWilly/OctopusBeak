@@ -19,6 +19,7 @@ import {
   invoiceMatchingMoney,
   transactionPurchaseDate,
 } from "../../lib/spending/purchase-matching.ts";
+import { moneyTotals } from "../../lib/shared-money/exact-money.ts";
 import {
   readPurchaseCategory,
   type PurchaseCategory,
@@ -111,7 +112,6 @@ export type PurchaseReportRequest = Readonly<{
   endDate?: string;
 }>;
 
-type Decimal = { coefficient: bigint; scale: number };
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu;
 const COMPACT_UUID = /^[0-9a-f]{32}$/iu;
 const day = (value: string): string => value.slice(0, 10);
@@ -132,66 +132,6 @@ export function canonicalPurchasePair(pair: SpendingPair): SpendingPair {
     invoiceId: canonicalPurchaseUuid(pair.invoiceId, "Purchase invoice identity"),
     transactionId: canonicalPurchaseUuid(pair.transactionId, "Purchase transaction identity"),
   };
-}
-
-function add(left: Decimal, right: Decimal): Decimal {
-  const scale = Math.max(left.scale, right.scale);
-  return {
-    scale,
-    coefficient:
-      left.coefficient * 10n ** BigInt(scale - left.scale) +
-      right.coefficient * 10n ** BigInt(scale - right.scale),
-  };
-}
-
-/** A money total by key, before it is reduced; see purchaseMoneyTotals. */
-export type PurchaseMoneyAccumulator<K extends string = string> = Map<K, { currency: string; value: Decimal; count: number }>;
-
-/**
- * Add one amount to a Purchase report total. Every purchase-basis total goes
- * through here: the currency is upper-cased and the key defaults to it, so
- * `twd` and `TWD` never become two totals.
- */
-export function addPurchaseMoney<K extends string>(
-  totals: PurchaseMoneyAccumulator<K>,
-  amount: ExactMoney,
-  key: (currency: string) => K = (currency) => currency as K,
-): void {
-  const currency = amount.currency.toUpperCase();
-  const entryKey = key(currency);
-  const previous = totals.get(entryKey);
-  const value = { coefficient: BigInt(amount.coefficient), scale: amount.scale };
-  totals.set(entryKey, {
-    currency,
-    value: previous ? add(previous.value, value) : value,
-    count: (previous?.count ?? 0) + 1,
-  });
-}
-
-/** Reduce an exact amount to its canonical scale: no trailing zero digits after the point. */
-export function reducedPurchaseMoney<T extends Readonly<{ coefficient: string; scale: number }>>(amount: T): T {
-  let coefficient = BigInt(amount.coefficient);
-  let scale = amount.scale;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { ...amount, coefficient: coefficient.toString(), scale };
-}
-
-/** The accumulated totals at canonical scale, sorted by key. */
-export function purchaseMoneyTotals<K extends string>(
-  totals: PurchaseMoneyAccumulator<K>,
-): readonly Readonly<{ key: K; currency: string; coefficient: string; scale: number; count: number }>[] {
-  return [...totals.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => reducedPurchaseMoney({
-      key,
-      currency: entry.currency,
-      coefficient: entry.value.coefficient.toString(),
-      scale: entry.value.scale,
-      count: entry.count,
-    }));
 }
 
 /**
@@ -501,8 +441,7 @@ export function composePurchaseReport(input: Readonly<{
       paymentSource: paymentSourceOf(transactionById.get(refund.transactionId) ?? null),
     });
   }
-  const totals: PurchaseMoneyAccumulator = new Map();
-  for (const record of records) if (record.amount) addPurchaseMoney(totals, record.amount);
+  const totals = moneyTotals(records.flatMap((record) => record.amount ? [record.amount] : []));
   records.sort((a, b) => a.occurrence.value.localeCompare(b.occurrence.value) || a.purchaseId.localeCompare(b.purchaseId));
   return Object.freeze({
     status: "ok",
@@ -510,7 +449,7 @@ export function composePurchaseReport(input: Readonly<{
     knowledgeAt,
     financialAt: request.financialAt ?? null,
     records: Object.freeze(records),
-    totalsByCurrency: Object.freeze(purchaseMoneyTotals(totals).map(({ currency, coefficient, scale, count }) => ({ currency, coefficient, scale, count }))),
+    totalsByCurrency: Object.freeze(totals),
     totalStatus: records.some((item) => item.possibleDuplicate)
       ? "includes-pending-confirmation"
       : "complete",

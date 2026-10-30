@@ -3,6 +3,7 @@ import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.
 import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
 import { accountProduct, intermediarySource, type InstitutionKey, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
 import { readPGliteDirectSourceCoverage } from "./direct-source-precedence.ts";
+import { addExact, normalizeExact } from "../../lib/shared-money/exact-money.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -174,27 +175,6 @@ function mapStatement(row: StatementRow): CanonicalOverviewCreditCardStatement {
       : { coefficient: row.minimum_coefficient, scale: Number(row.minimum_scale) },
     memberships: memberships.map((membership) => ({ ...membership })),
   };
-}
-
-function normalizeExact(value: { coefficient: string; scale: number }): { coefficient: string; scale: number } {
-  let coefficient = BigInt(value.coefficient);
-  let scale = value.scale;
-  if (coefficient === 0n) return { coefficient: "0", scale: 0 };
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient: coefficient.toString(), scale };
-}
-
-function addExact(
-  left: { coefficient: string; scale: number },
-  right: { coefficient: string; scale: number },
-): { coefficient: string; scale: number } {
-  const scale = Math.max(left.scale, right.scale);
-  const coefficient = BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale) +
-    BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale);
-  return normalizeExact({ coefficient: coefficient.toString(), scale });
 }
 
 function sourceGap(account: AccountRow, reason: "current-value-not-observed"): CanonicalOverviewSourceGap {
