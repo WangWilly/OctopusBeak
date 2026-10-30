@@ -183,3 +183,13 @@ test("properties: totals of a concatenation merge the totals of its parts", () =
     );
   }
 });
+
+test("a totals key that leaves out the currency refuses to add two currencies together", () => {
+  const totals: MoneyTotalsAccumulator = new Map();
+  addToTotals(totals, { coefficient: "1", scale: 0, currency: "TWD" }, () => "all");
+  assert.throws(() => addToTotals(totals, { coefficient: "1", scale: 0, currency: "USD" }, () => "all"), ExactMoneyError);
+  addToTotals(totals, { coefficient: "2", scale: 0, currency: " twd " }, () => "all");
+  assert.deepEqual(readTotals(totals).map(({ coefficient, currency, count }) => ({ coefficient, currency, count })), [
+    { coefficient: "3", currency: "TWD", count: 2 },
+  ]);
+});
