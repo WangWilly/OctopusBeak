@@ -80,6 +80,14 @@ For an App-registered workflow, its existing environment mapping can be used:
 npm run workflow:dev -- run-app linebank-statements --allow-live-source
 ```
 
+`--now INSTANT` fixes the workflow clock at one UTC instant, so a source's Collection period ([ADR 0077](../adr/0077-a-verified-product-declares-its-collection-period.md)) can be probed at a date boundary without waiting for it. For example, `2028-02-28T16:30:00Z` is 2028-02-29 in Taipei:
+
+```sh
+npm run workflow:dev -- run-app cathay-all-statements --now 2028-02-28T16:30:00Z --allow-live-source
+```
+
+The provider still sees today's real date. Use the flag only to check that a provider accepts the request dates a boundary produces, not to fetch data as of that day.
+
 Set credential and input environment variables through a local secret manager or an interactive shell prompt. Do not put real credentials in command arguments, checked-in files, tests, or logs. The command does not echo input values.
 
 Every workflow run requires `--allow-live-source` because provider code may contact a real service. It opens a visible, non-persistent browser context, refuses downloads, and closes the browser when the workflow ends or is cancelled. Verification stages run through the App's local solver route against the open development page. The command does not prompt in the terminal. A workflow or stage that the App would not route fails closed. The command does not run the App's CAPTCHA Retry Campaign, so a retryable outcome such as solver exhaustion ends the run. The CLI prints typed stage codes and counts; it suppresses provider error details that might contain source data or sign-in information.

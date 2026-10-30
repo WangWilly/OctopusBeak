@@ -68,9 +68,10 @@ function helpText() {
     "  npm run workflow:dev -- validate <module.ts> <exportName> [--input-env JSON_ENV_NAME]",
     "  npm run workflow:dev -- fixture",
     "  npm run workflow:dev -- inspect <url> [--headless] [--browser-profile PROFILE] [--allow-live-source]",
-    "  npm run workflow:dev -- run <module.ts> <exportName> --input-env JSON_ENV_NAME [--start-url URL] [--headless] [--browser-profile PROFILE] --allow-live-source",
-    "  npm run workflow:dev -- run-app <workflow-id> [--headless] [--browser-profile PROFILE] --allow-live-source",
+    "  npm run workflow:dev -- run <module.ts> <exportName> --input-env JSON_ENV_NAME [--start-url URL] [--headless] [--browser-profile PROFILE] [--now INSTANT] --allow-live-source",
+    "  npm run workflow:dev -- run-app <workflow-id> [--headless] [--browser-profile PROFILE] [--now INSTANT] --allow-live-source",
     "",
+    "--now fixes the workflow clock at one UTC instant (e.g. 2028-02-28T16:30:00Z, which is 2028-02-29 in Taipei) to probe a source's date boundaries.",
     "Production collection starts in the desktop App. CLI runs use an ephemeral browser and a dry-run financial commit port; they never write to the financial database or save workflow files.",
   ].join("\n");
 }
@@ -142,11 +143,22 @@ function validateFlags(args: readonly string[], allowed: readonly string[]) {
     const flag = args[index];
     if (!flag?.startsWith("--") || !allowedSet.has(flag) || seen.has(flag)) fail("usage");
     seen.add(flag);
-    if (flag === "--input-env" || flag === "--start-url" || flag === "--browser-profile") {
+    if (flag === "--input-env" || flag === "--start-url" || flag === "--browser-profile" || flag === "--now") {
       if (!args[index + 1] || args[index + 1]?.startsWith("--")) fail("usage");
       index += 1;
     }
   }
+}
+
+const UTC_INSTANT = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z$/u;
+
+/** A UTC instant for `--now`; a calendar date that does not exist (2027-02-29) is refused. */
+export function parseWorkflowDevNow(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const match = UTC_INSTANT.exec(value);
+  const instant = new Date(value);
+  if (!match || !Number.isFinite(instant.getTime()) || !instant.toISOString().startsWith(match[1]!)) fail("usage");
+  return instant.toISOString();
 }
 
 function printEvent(event: WorkflowRunEvent) {
@@ -336,6 +348,7 @@ function makePorts(
   startUrl?: string,
   commitPort?: WorkflowFinancialCommitPort,
   browserOptions: Readonly<{ headless?: boolean; profile?: BrowserRuntimeProfileId }> = {},
+  fixedNow?: string,
 ): WorkflowExecutorPorts {
   const pageHost = developmentPageHost(randomUUID());
   return {
@@ -351,7 +364,7 @@ function makePorts(
       },
     } : {}),
     events: { append: async (event) => printEvent(event) },
-    now: () => new Date().toISOString(),
+    now: () => fixedNow ?? new Date().toISOString(),
   };
 }
 
@@ -488,7 +501,8 @@ async function main(args = process.argv.slice(2)) {
     const exportName = command === "run" ? rest[1] : undefined;
     const workflowId = command === "run-app" ? rest[0] : undefined;
     const flags = rest.slice(command === "run" ? 2 : 1);
-    validateFlags(flags, ["--input-env", "--start-url", "--allow-live-source", "--headless", "--browser-profile"]);
+    validateFlags(flags, ["--input-env", "--start-url", "--allow-live-source", "--headless", "--browser-profile", "--now"]);
+    const fixedNow = parseWorkflowDevNow(flagValue(flags, "--now"));
     if (!hasFlag(flags, "--allow-live-source")) fail("live-source-confirmation-required");
     let definition: WorkflowDefinition | null;
     let input: unknown;
@@ -521,6 +535,7 @@ async function main(args = process.argv.slice(2)) {
         startUrl,
         commitPort,
         { headless: hasFlag(flags, "--headless"), profile: browserProfile },
+        fixedNow,
       ),
       previewWrite: {
         async write(write) {
