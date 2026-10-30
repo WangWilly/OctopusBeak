@@ -3,7 +3,7 @@ import {
   parseExactDecimalLexeme,
   type ExactDecimal,
 } from "./exact-decimal-lexeme.ts";
-import { multiplyExact } from "../../lib/shared-money/exact.ts";
+import { multiplyExact } from "../../lib/shared-money/exact-money.ts";
 import type {
   HoldingEffectiveTimeEvidence,
   InvestmentCaptureInput,
