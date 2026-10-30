@@ -1092,9 +1092,9 @@ const en = {
   },
   usageStatisticsPrompt: {
     title: "Help improve OctopusBeak?",
-    body: "When turned on, one anonymous report is sent each day so we can see how many people keep using OctopusBeak.",
+    body: "When turned on, one anonymous report is sent each day so we can see how many people keep using OctopusBeak and which data sources run into problems.",
     sentLabel: "What is sent:",
-    sent: "The app version, operating system version, language, and the week you first opened the app.",
+    sent: "The app version, operating system version, language, the week you first opened the app, and how many times each data source failed and with which error code.",
     neverSentLabel: "What is never sent:",
     neverSent: "Financial data, sign-in details, run results, or anything that identifies you or this computer.",
     note: "Change this any time in Settings › Usage statistics.",
@@ -1269,9 +1269,9 @@ const en = {
     previewFeaturesOff: "Off",
     usageStatistics: "Usage statistics",
     usageStatisticsDescription:
-      "Help us learn how many people use OctopusBeak. Nothing is sent unless you turn this on.",
+      "Help us learn how many people use OctopusBeak and which data sources break. Nothing is sent unless you turn this on.",
     usageStatisticsHint:
-      "Once a day, sends the app version, macOS version, language, and the week you first opened the app. No financial data, no sign-in details, and nothing that identifies you or this Mac.",
+      "Once a day, sends the app version, macOS version, language, the week you first opened the app, and how many times each data source failed and with which error code. No financial data, no sign-in details, and nothing that identifies you or this Mac.",
     usageStatisticsOn: "On",
     usageStatisticsOff: "Off",
     usagePayload: "What is sent",
@@ -2376,9 +2376,9 @@ const zh: typeof en = {
   },
   usageStatisticsPrompt: {
     title: "協助改善 OctopusBeak？",
-    body: "開啟後，每天會傳送一次匿名回報，讓我們知道有多少人持續使用 OctopusBeak。",
+    body: "開啟後，每天會傳送一次匿名回報，讓我們知道有多少人持續使用 OctopusBeak，以及哪些資料來源出了問題。",
     sentLabel: "傳送的內容：",
-    sent: "App 版本、作業系統版本、語言，以及你第一次開啟的週次。",
+    sent: "App 版本、作業系統版本、語言、你第一次開啟的週次，以及各資料來源失敗的次數與錯誤代碼。",
     neverSentLabel: "不傳送的內容：",
     neverSent: "任何帳務資料、登入資料、執行結果，或能辨識你或這台電腦的資訊。",
     note: "隨時在「設定 › 使用統計」變更。",
@@ -2544,9 +2544,9 @@ const zh: typeof en = {
     previewFeaturesOn: "開啟",
     previewFeaturesOff: "關閉",
     usageStatistics: "使用統計",
-    usageStatisticsDescription: "幫助我們了解有多少人在使用 OctopusBeak。除非你開啟，否則不會傳送任何內容。",
+    usageStatisticsDescription: "幫助我們了解有多少人在使用 OctopusBeak，以及哪些資料來源出了問題。除非你開啟，否則不會傳送任何內容。",
     usageStatisticsHint:
-      "每天一次，傳送 App 版本、macOS 版本、語言，以及你第一次開啟 App 的週次。不含任何財務資料與登入資料，也沒有能辨識你或這台 Mac 的資訊。",
+      "每天一次，傳送 App 版本、macOS 版本、語言、你第一次開啟 App 的週次，以及各資料來源失敗的次數與錯誤代碼。不含任何財務資料與登入資料，也沒有能辨識你或這台 Mac 的資訊。",
     usageStatisticsOn: "開啟",
     usageStatisticsOff: "關閉",
     usagePayload: "傳送的內容",
