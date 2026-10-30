@@ -8,6 +8,7 @@ import type {
 } from "../../types.ts";
 import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
+import type { CollectionPeriodDeclaration } from "../../collection-period.ts";
 import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
@@ -41,6 +42,8 @@ export type VerifiedProduct = Readonly<{
   id: string;
   stream: string;
   integrationNamespace?: string;
+  /** ADR 0077: the dates this product queries, from the run's Taipei date. */
+  collectionPeriod?: CollectionPeriodDeclaration;
 }>;
 
 export type VerifiedWorkflow = Readonly<

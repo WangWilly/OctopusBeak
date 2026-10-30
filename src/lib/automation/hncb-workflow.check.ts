@@ -51,17 +51,53 @@ function oneAccount(download: () => Promise<HncbStatementDownload>): HncbDeposit
 /** A deposit-only HNCB run, its Product collection run bound to HNCB_SOURCE as the executor binds it. */
 function runContext(
   financialCommit: WorkflowFinancialCommitPort,
-  overrides: Partial<Pick<WorkflowContext, "signal" | "event">> = {},
+  overrides: Partial<Pick<WorkflowContext, "signal" | "event" | "now">> = {},
 ): HncbStatementsContext {
   const context = {
     signal: new AbortController().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
     text: strictSourceText,
     event: async () => undefined,
     financialCommit,
     ...overrides,
-  } as Pick<WorkflowContext, "signal" | "text" | "event"> as WorkflowContextWith<"financialCommit">;
+  } as Pick<WorkflowContext, "signal" | "now" | "text" | "event"> as WorkflowContextWith<"financialCommit">;
   return withBoundProducts(context, HNCB_SOURCE, { statementTypes: ["deposit"] });
 }
+
+test("HNCB queries two years and one day ending on the run's Taipei date", async () => {
+  const queried: unknown[] = [];
+  const source: HncbDepositSource = {
+    accounts: async () => [{ value: account, label: `HNCB ${account}` }],
+    query: async (_account, dateRange) => {
+      queried.push(dateRange);
+      return null;
+    },
+  };
+  const committed: WorkflowFinancialCommitPort = {
+    async execute(items) {
+      const received = [];
+      for await (const item of items) received.push(item);
+      return {
+        status: "completed",
+        items: received.map((item) => ({
+          itemKey: item.itemKey, provider: item.provider, product: item.product, status: "committed" as const,
+          admissionSummaries: [], value: null, relationWarnings: [],
+        })),
+        diagnostics: [], committedCount: received.length, failedCount: 0,
+      };
+    },
+  };
+  // 16:30Z on Feb 28 is 00:30 on Feb 29 in Taipei; two years back clamps to Feb 28.
+  await runHncbStatements({} as Page, { accountFilters: [] }, runContext(committed, { now: () => "2028-02-28T16:30:00.000Z" }), {
+    collectDeposit: async (_page, input, context, product) => await stageHncbDeposit(
+      await readHncbDepositSource(source, input, context, product),
+      context,
+      product,
+      async () => [],
+    ),
+  });
+  assert.deepEqual(queried, [{ startDate: "2026/02/28", endDate: "2028/02/29" }]);
+});
 
 function reply(response: ServerResponse, status: number, body: string | Buffer): void {
   response.writeHead(status, {
@@ -169,11 +205,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     const context = runContext(financialCommit, {
       event: async (stage, _outcome, code) => { events.push({ stage, code }); },
     });
-    const output = await runHncbStatements(page, {
-      startDate: "2026/08/01",
-      endDate: "2026/08/31",
-      accountFilters: [],
-    }, context, {
+    const output = await runHncbStatements(page, { accountFilters: [] }, context, {
       collectDeposit: oneAccount(async () => {
         const statement = await downloadCurrentStatementInMemory(
           page,
@@ -304,11 +336,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
       };
     },
   };
-  const baseInput = {
-    startDate: "2026/08/01",
-    endDate: "2026/08/31",
-    accountFilters: [],
-  };
+  const baseInput = { accountFilters: [] };
   const page = {} as Page;
   try {
     process.chdir(workingDirectory);

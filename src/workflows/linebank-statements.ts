@@ -3,6 +3,7 @@ import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionSummary, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -37,16 +38,12 @@ const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
-const dateSchema = z.string().regex(/^\d{8}$/);
-
 const typedInputSchema = z.object({
   credentials: z.object({
     linebank_user_id: z.string().trim().min(1),
     linebank_account: z.string().trim().min(1),
     linebank_password: z.string().trim().min(1),
   }),
-  startDate: dateSchema.optional(),
-  endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
   statementTypes: z.array(z.literal("deposit")).min(1),
@@ -204,83 +201,12 @@ function cleanText(value: unknown): string {
     .trim();
 }
 
-function dateFromYYYYMMDD(value: string): Date {
-  const match = value.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (!match) throw new Error(`Invalid date: ${value}`);
-  const date = new Date(
-    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
-  );
-  if (
-    date.getUTCFullYear() !== Number(match[1]) ||
-    date.getUTCMonth() !== Number(match[2]) - 1 ||
-    date.getUTCDate() !== Number(match[3])
-  ) {
-    throw new Error(`Invalid calendar date: ${value}`);
-  }
-  return date;
-}
-
-function formatYYYYMMDD(date: Date): string {
-  return [
-    date.getUTCFullYear(),
-    String(date.getUTCMonth() + 1).padStart(2, "0"),
-    String(date.getUTCDate()).padStart(2, "0"),
-  ].join("");
-}
-
-function addDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
-}
-
-function addMonths(date: Date, months: number): Date {
-  const year = date.getUTCFullYear();
-  const month = date.getUTCMonth() + months;
-  const day = date.getUTCDate();
-  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  return new Date(Date.UTC(year, month, Math.min(day, lastDay)));
-}
-
-function defaultEndDate(): string {
-  const today = new Date();
-  return [
-    today.getFullYear(),
-    String(today.getMonth() + 1).padStart(2, "0"),
-    String(today.getDate()).padStart(2, "0"),
-  ].join("");
-}
-
-function resolveDateRange(input: LineBankProviderWorkflowInput): DateRange {
-  const endDate = input.endDate ?? defaultEndDate();
-  const startDate =
-    input.startDate ??
-    formatYYYYMMDD(addDays(addMonths(dateFromYYYYMMDD(endDate), -12), 1));
-  if (dateFromYYYYMMDD(startDate) > dateFromYYYYMMDD(endDate)) {
-    throw new Error("startDate must be on or before endDate.");
-  }
-  return { startDate, endDate };
-}
-
-export function linebankQueryWindows(dateRange: DateRange): DateRange[] {
-  const firstStart = dateFromYYYYMMDD(dateRange.startDate);
-  let end = dateFromYYYYMMDD(dateRange.endDate);
-  if (firstStart > end)
-    throw new Error("startDate must be on or before endDate.");
-  const windows: DateRange[] = [];
-
-  while (end >= firstStart) {
-    const maxStart = addDays(addMonths(end, -12), 1);
-    const start = maxStart > firstStart ? maxStart : firstStart;
-    windows.push({
-      startDate: formatYYYYMMDD(start),
-      endDate: formatYYYYMMDD(end),
-    });
-    if (formatYYYYMMDD(start) === dateRange.startDate) break;
-    end = addDays(start, -1);
-  }
-
-  return windows;
+/** The provider's YYYYMMDD request dates for each window of the product's collection period. */
+function linebankQueryWindows(period: CollectionPeriod): DateRange[] {
+  return period.windows.map(({ start, end }) => ({
+    startDate: start.replaceAll("-", ""),
+    endDate: end.replaceAll("-", ""),
+  }));
 }
 
 function formatSlashDate(value: string): string {
@@ -1214,8 +1140,6 @@ export async function runLineBankProviderWorkflow(
   if (!parsed.success)
     throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
   context.signal.throwIfAborted();
-  const dateRange = resolveDateRange(parsed.data);
-  const windows = linebankQueryWindows(dateRange);
   await context.event("preparation", "completed", "input-validated");
 
   return context.browser.withPage(async (page) => {
@@ -1230,6 +1154,7 @@ export async function runLineBankProviderWorkflow(
     let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
+        const windows = linebankQueryWindows(product.collectionPeriod());
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         await productContext.event("collection", "started", "current-balance-collection-started");

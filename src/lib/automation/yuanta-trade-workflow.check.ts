@@ -35,7 +35,9 @@ const credentials = {
   yuanta_trade_ca_password: "synthetic-certificate-password",
 };
 
-const dateRange = { startDate: "2026/08/01", endDate: "2026/08/31" };
+// The harness clock reads 2026-09-25T12:00Z, 20:00 in Taipei; the run
+// queries that day and the 90 days before it, and the reports echo it.
+const dateRange = { startDate: "2026/06/27", endDate: "2026/09/25" };
 
 function report(
   reportType: string,
@@ -78,6 +80,7 @@ function createHarness(options: {
   pages?: YuantaTradeReportPage[];
   signal?: AbortSignal;
   financialCommit?: WorkflowFinancialCommitPort;
+  now?: string;
 } = {}) {
   const events: WorkflowRunEvent[] = [];
   const committed: unknown[][] = [];
@@ -93,7 +96,7 @@ function createHarness(options: {
   const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-yuanta-trade-check",
     signal: options.signal ?? new AbortController().signal,
-    now: () => "2026-09-25T12:00:00.000Z",
+    now: () => options.now ?? "2026-09-25T12:00:00.000Z",
     browser: { async withPage(run) { return run(page); } },
     text: strictSourceText,
     verification: { complete: async () => undefined },
@@ -141,7 +144,6 @@ function readingReports(
 const selectedInput = {
   credentials,
   statementTypes: ["securities"],
-  ...dateRange,
   includeHoldings: true,
   includeTrades: true,
   holdingTypes: ["Stock"],
@@ -185,6 +187,17 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
     process.chdir(originalCwd);
     await rm(temp, { recursive: true, force: true });
   }
+});
+
+test("Yuanta Trade queries the run's Taipei date and the 90 days before it", async () => {
+  // 16:30Z on Sep 24 is 00:30 on Sep 25 in Taipei; the machine's local date used to decide.
+  const harness = createHarness({ now: "2026-09-24T16:30:00.000Z" });
+  const queried: unknown[] = [];
+  await assert.rejects(runYuantaTradeProviderWorkflow(harness.context, selectedInput, async (_page, input) => {
+    queried.push(input.dateRange);
+    throw new Error("stop after reading the query range");
+  }));
+  assert.deepEqual(queried, [{ startDate: "2026/06/27", endDate: "2026/09/25" }]);
 });
 
 test("Yuanta Trade typed provider rejects incomplete selected pages before first commit", async () => {

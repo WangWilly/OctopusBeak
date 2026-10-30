@@ -9,7 +9,7 @@ import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type { InvestmentCaptureInput } from "../ledger/canonical/investment-financial-admission.ts";
-import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { fixedPeriod, yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import type { YuantaFundSourceSnapshot } from "./yuanta-fund-statements.ts";
 import {
   yuantaFundAccountHistoryKey,
@@ -105,13 +105,12 @@ async function collect(source: YuantaFundSourceSnapshot, endDate: string, now: s
     {
       ...yuantaFundStatementsInputSchema.parse({
         includePortfolioSummary: false, includeInvestmentDetails: true, includeHistoricalTransactions: true,
-        customDateRange: { startDate: "2026/08/01", endDate: endDate.replaceAll("-", "/") },
       }),
       yuantaUserId: "synthetic-login",
       yuantaAccount: "synthetic-account",
     },
     yuantaCollectionContext({ now }),
-    yuantaStagingHandle(items),
+    yuantaStagingHandle(items, [], fixedPeriod("2026-08-01", endDate)),
   );
   assert.equal(items.length, 1);
   const command = items[0]!.command;

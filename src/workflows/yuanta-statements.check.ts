@@ -21,6 +21,8 @@ import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-brows
 import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { collectionPeriod, taipeiToday, type CollectionSpan } from "../lib/automation/collection-period.ts";
+import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 
@@ -50,7 +52,6 @@ const {
   buildYuantaCapture,
   waitForYuantaDepositQueryResult,
   deriveYuantaDomesticDepositAccountNumberEvidence,
-  deriveYuantaDomesticDepositQueryRange,
   downloadYuantaStatementRows,
   readYuantaDepositAccountOptions,
   readYuantaDepositSource,
@@ -58,8 +59,16 @@ const {
   stageYuantaDeposit,
   statementRowsFromDownloadedCsv,
   yuantaLoanAccountEvidenceFromTransactionNote,
+  yuantaDepositQueryRange,
   yuantaObservedAt,
 } = await import("./yuanta-statements.ts");
+
+const ONE_WEEK = { days: 7 };
+const ONE_MONTH = { months: 1, days: 1 };
+const THREE_MONTHS = { months: 3, days: 1 };
+/** The deposit query for a quick span ending on the Taipei date of `observedAt`. */
+const depositRange = (span: CollectionSpan, observedAt: string) =>
+  yuantaDepositQueryRange(collectionPeriod({ today: taipeiToday(observedAt), lookBack: span }));
 
 assert.deepEqual(
   deriveYuantaDomesticDepositAccountNumberEvidence({
@@ -86,10 +95,7 @@ const workflowNumberedCapture = buildYuantaCapture(
     value: "0012345678901234",
     label: "臺幣活期存款 0012345678901234",
   },
-  deriveYuantaDomesticDepositQueryRange(
-    "one_month",
-    "2026-08-21T12:00:00+08:00",
-  ),
+  depositRange(ONE_MONTH, "2026-08-21T12:00:00+08:00"),
   "2026-08-21T12:00:00+08:00",
   {
     filename: "synthetic-yuanta.csv",
@@ -151,7 +157,7 @@ assert.equal(yuantaDuplicateFinancial.capture!.occurrenceGroupCoverage?.length, 
 function admitYuantaRows(observedAt: string, rows: readonly string[][]) {
   const evidence = admitYuantaDomesticDepositCaptureEvidence(buildYuantaCapture(
     { value: "0012345678901234", label: "臺幣活期存款 0012345678901234" },
-    deriveYuantaDomesticDepositQueryRange("three_months", observedAt),
+    depositRange(THREE_MONTHS, observedAt),
     observedAt,
     {
       filename: "synthetic-yuanta.csv",
@@ -259,7 +265,6 @@ await assert.rejects(
     runYuantaStatements(
       {} as never,
       {
-        dateRange: "one_month",
         accountFilters: [],
         sourceConnectionScope: stableConnectionScope,
         sourceConnectionKey: "invalid-source-connection-key",
@@ -343,20 +348,14 @@ assert.equal(absentNotice.clicked, false);
 
 const observedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
 assert.equal(observedAt, "2026-08-21T11:04:05+08:00");
-const boundedRange = deriveYuantaDomesticDepositQueryRange(
-  "one_week",
-  observedAt,
-);
+const boundedRange = depositRange(ONE_WEEK, observedAt);
 assert.deepEqual(boundedRange, {
   dateRange: "one_week",
   startDate: "2026-08-15",
   endDate: "2026-08-21",
 });
 assert.deepEqual(
-  deriveYuantaDomesticDepositQueryRange(
-    "one_month",
-    "2026-09-02T00:00:00+08:00",
-  ),
+  depositRange(ONE_MONTH, "2026-09-02T00:00:00+08:00"),
   {
     dateRange: "one_month",
     startDate: "2026-08-02",
@@ -364,10 +363,7 @@ assert.deepEqual(
   },
 );
 assert.deepEqual(
-  deriveYuantaDomesticDepositQueryRange(
-    "three_months",
-    "2026-09-02T00:00:00+08:00",
-  ),
+  depositRange(THREE_MONTHS, "2026-09-02T00:00:00+08:00"),
   {
     dateRange: "three_months",
     startDate: "2026-06-02",
@@ -375,12 +371,21 @@ assert.deepEqual(
   },
 );
 assert.equal(
-  deriveYuantaDomesticDepositQueryRange(
-    "one_month",
-    "2026-03-31T00:00:00+08:00",
-  ).startDate,
+  depositRange(ONE_MONTH, "2026-03-31T00:00:00+08:00").startDate,
   "2026-02-28",
 );
+{
+  const declaration = YUANTA_SOURCE.statementSelection!.products.find(({ id }) => id === "deposit")!.collectionPeriod!;
+  // 16:30Z on May 30 is 00:30 on May 31 in Taipei; the declared period is the 三個月 link.
+  assert.deepEqual(
+    yuantaDepositQueryRange(collectionPeriod({ today: taipeiToday("2026-05-30T16:30:00.000Z"), ...declaration })),
+    { dateRange: "three_months", startDate: "2026-02-28", endDate: "2026-05-31" },
+  );
+  assert.throws(
+    () => yuantaDepositQueryRange(collectionPeriod({ today: "2026-05-31", lookBack: { months: 2, days: 1 } })),
+    /No Yuanta quick range/,
+  );
+}
 
 const csv = [
   '"帳號","帳務日期","交易日期","交易時間","交易說明","支出金額","存入金額","帳面餘額","票據號碼","備註"',
@@ -588,12 +593,13 @@ const typedOutputDir = await mkdtemp(join(tmpdir(), "yuanta-deposit-typed-"));
 const originalCwd = process.cwd();
 process.chdir(typedOutputDir);
 try {
-  const typedInput = { dateRange: "one_month" as const, accountFilters: [], ...stableConnectionIdentity };
+  const typedInput = { accountFilters: [], ...stableConnectionIdentity };
   const typedObservedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
   const deferredItems: PGliteWorkflowRunItem[] = [];
   const typedResult = await stageYuantaDeposit(
     {
       observedAt: typedObservedAt,
+      queryRange: depositRange(ONE_MONTH, typedObservedAt),
       accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
     },
     typedInput,
@@ -614,12 +620,13 @@ try {
   const noDataResult = await stageYuantaDeposit(
     {
       observedAt: typedObservedAt,
+      queryRange: depositRange(THREE_MONTHS, typedObservedAt),
       accounts: [
         { account: workflowAccount, query: "provider-explicit-no-data" },
         { account: secondWorkflowAccount, query: "download-ready", download: secondWorkflowDownload },
       ],
     },
-    { dateRange: "three_months", accountFilters: [], ...stableConnectionIdentity },
+    { accountFilters: [], ...stableConnectionIdentity },
     checkContext(),
     yuantaStagingHandle(noDataItems),
     async () => [
@@ -650,6 +657,7 @@ try {
     stageYuantaDeposit(
       {
         observedAt: typedObservedAt,
+        queryRange: depositRange(ONE_MONTH, typedObservedAt),
         accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
       },
       typedInput,
@@ -956,9 +964,9 @@ try {
         await shellPage.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
         const snapshot = await readYuantaDepositSource(
           shellPage,
-          { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
+          { accountFilters: [], ...stableConnectionIdentity },
           checkContext(options.signal),
-          yuantaStagingHandle(items, activities),
+          yuantaStagingHandle(items, activities, collectionPeriod({ today: "2026-08-21", lookBack: ONE_MONTH })),
         );
         const picked = await shellPage.evaluate(() => (window as { picked?: string[] }).picked ?? []);
         return { snapshot, served, queried, items, activities, picked };
@@ -1023,9 +1031,10 @@ try {
         return await stageYuantaDeposit(
           {
             observedAt: yuantaObservedAt(new Date(context.now())),
+            queryRange: depositRange(ONE_MONTH, context.now()),
             accounts: [{ account: workflowAccount, query: "download-ready", download }],
           },
-          { dateRange: "one_month", accountFilters: [], ...stableConnectionIdentity },
+          { accountFilters: [], ...stableConnectionIdentity },
           context,
           yuantaStagingHandle(items),
           async () => [],

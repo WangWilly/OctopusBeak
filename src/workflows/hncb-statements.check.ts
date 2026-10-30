@@ -550,6 +550,7 @@ function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
+    collectionPeriod: () => assert.fail("the build half reads no collection period"),
   };
 }
 const live = { signal: new AbortController().signal };

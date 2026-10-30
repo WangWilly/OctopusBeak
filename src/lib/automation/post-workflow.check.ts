@@ -360,6 +360,7 @@ async function stageSnapshot(
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
+    collectionPeriod: () => assert.fail("Post declares no collection period"),
   };
   const outcome = await stagePostDeposit(
     { observedAt, statements },
