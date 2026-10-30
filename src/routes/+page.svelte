@@ -2,7 +2,6 @@
   import { onMount, setContext, tick } from "svelte";
   import { writable } from "svelte/store";
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
-  import type { AssetsPageDto } from "$lib/assets/types.ts";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import {
     createAutomationRuntimeController,
@@ -17,7 +16,6 @@
   } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
-  import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
     createOnboardingApplicationPort,
@@ -45,11 +43,11 @@
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
   import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
-  import type { SpendingPageDto } from "$lib/spending/model.ts";
   import {
-    createFinancialPageLiveStores,
-    type FinancialPageLiveStores,
-  } from "$lib/financial/client/page-live-stores.ts";
+    createFinancialPage,
+    FinancialPageSuperseded,
+    isFinancialRoute,
+  } from "$lib/financial/client/financial-page.ts";
   import FirstRunWelcome from "$lib/welcome/FirstRunWelcome.svelte";
   import { resolveCompletedFirstRunWelcome } from "$lib/welcome/integration.ts";
   import {
@@ -106,15 +104,18 @@
   type RouteData = {
     automation: AutomationDesktopModel;
   };
-  type FinancialRoute = Exclude<DashboardRoute, "automation">;
   type LoadState<T> = ViewLoadState<T>;
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
-  let overview: LoadState<OverviewPageDto> = { status: "loading" };
-  let assets: LoadState<AssetsPageDto> = { status: "loading" };
-  let liabilities: LoadState<LiabilitiesPageDto> = { status: "loading" };
-  let spending: LoadState<SpendingPageDto> = { status: "loading" };
+  const financialPage = createFinancialPage({ dataViews: window.octopusBeak?.dataViews });
+  const financialState = financialPage.state;
+  $: overview = $financialState.routes.overview.load;
+  $: assets = $financialState.routes.assets.load;
+  $: liabilities = $financialState.routes.liabilities.load;
+  $: spending = $financialState.routes.spending.load;
+  // Only the current route's live failure is announced.
+  $: financialLiveError = isFinancialRoute(route) && $financialState.routes[route].liveError;
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
   // Runtime ownership lives at the app shell so route changes never drop
   // events or lose the latest state while Automation is off-screen.
@@ -138,18 +139,6 @@
   let focusFinancialDataDeletion = false;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
-  let overviewReloading = false;
-  let financialLiveStores: FinancialPageLiveStores | null = null;
-  let financialLiveEnabled = false;
-  let routeCapabilityResolved = false;
-  let financialLiveError = false;
-  let financialLiveRoute: DashboardRoute | null = null;
-  let stopFinancialLive: (() => void) | null = null;
-  let financialLiveWaiter: {
-    route: DashboardRoute;
-    resolve: () => void;
-    reject: (error: Error) => void;
-  } | null = null;
   const routeDataCache = createRouteLoadCache<RouteData>();
   const refreshUi = writable<RefreshUiState>(initialRefreshUiState);
   const automationBlockKeys: readonly DashboardBlockKey[] = ["summary", "list", "details"];
@@ -212,14 +201,14 @@
     : null;
   $: if (
     onboardingController
-    && routeCapabilityResolved
+    && $financialState.capabilityResolved
     && onboardingState?.status === "active"
     && (onboardingState.phase === "running"
       || onboardingState.phase === "preparing-overview"
       || onboardingState.phase === "overview")
   ) void onboardingController.reconcile(onboardingFacts);
   function normalizeRoute() {
-    if (!routeCapabilityResolved) return;
+    if (!$financialState.capabilityResolved) return;
     const previousRoute = route;
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
     const requestedRoute = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next)
@@ -245,19 +234,15 @@
       || (encodedId && !id)
       || extraSegments.length > 0
     ) history.replaceState(history.state, "", `#${canonicalHash}`);
-    if (route !== "automation" && route !== "settings" && previousRoute !== route) {
-      startRouteLoad(route);
-    }
     const preserveOnboardingOverviewRead = onboardingState?.status === "active"
       && onboardingState.phase === "preparing-overview"
-      && financialLiveRoute === "overview"
-      && Boolean(stopFinancialLive);
+      && $financialState.shown === "overview";
     if (!preserveOnboardingOverviewRead) {
-      startFinancialLive(route === "settings" ? "automation" : route);
+      financialPage.show(isFinancialRoute(route) ? route : null);
     }
     const hasAutomationData = routeDataCache.read("automation") !== undefined
       || Object.values(automationBlocks).some((state) => "data" in state);
-    if (route !== "automation" && route !== "settings" && financialLiveEnabled) return;
+    if (isFinancialRoute(route) && $financialState.enabled) return;
     // Settings reports source and exchange-rate status from Automation's data.
     void loadRoute(
       route === "settings" ? "automation" : route,
@@ -273,89 +258,6 @@
 
   function viewData<T>(state: ViewLoadState<T>): T | undefined {
     return "data" in state ? state.data : undefined;
-  }
-
-  function stopActiveFinancialLive() {
-    financialLiveWaiter?.reject(new Error("Financial page subscription was replaced."));
-    financialLiveWaiter = null;
-    stopFinancialLive?.();
-    stopFinancialLive = null;
-    financialLiveRoute = null;
-  }
-
-  function applyLivePage<Value>(
-    nextRoute: FinancialRoute,
-    state: { status: "loading" } | { status: "error"; code: "subscription-failed" } | { status: "ready"; data: Value },
-    setValue: (value: Value) => void,
-  ) {
-    if (state.status === "error") {
-      financialLiveError = true;
-      failRouteLoad(nextRoute, new Error("Financial page subscription failed."));
-      if (financialLiveWaiter?.route === nextRoute) {
-        financialLiveWaiter.reject(new Error("Financial page subscription failed."));
-        financialLiveWaiter = null;
-      }
-      return;
-    }
-    if (state.status !== "ready") return;
-    financialLiveError = false;
-    setValue(state.data);
-    if (financialLiveWaiter?.route === nextRoute) {
-      financialLiveWaiter.resolve();
-      financialLiveWaiter = null;
-    }
-  }
-
-  function startFinancialLive(nextRoute: DashboardRoute, alreadyStopped = false) {
-    if (nextRoute === "automation" || !financialLiveEnabled || !financialLiveStores) {
-      stopActiveFinancialLive();
-      return;
-    }
-    if (financialLiveRoute === nextRoute && stopFinancialLive) return;
-    if (!alreadyStopped) stopActiveFinancialLive();
-    financialLiveError = false;
-    financialLiveRoute = nextRoute;
-    if (nextRoute === "overview") {
-      stopFinancialLive = financialLiveStores.overview().subscribe((state) => {
-        applyLivePage("overview", state, (value: OverviewPageDto) => {
-          overview = finishViewLoad(value);
-        });
-      });
-    } else if (nextRoute === "assets") {
-      stopFinancialLive = financialLiveStores.assets().subscribe((state) => {
-        applyLivePage("assets", state, (value: AssetsPageDto) => {
-          assets = finishViewLoad(value);
-        });
-      });
-    } else if (nextRoute === "liabilities") {
-      stopFinancialLive = financialLiveStores.liabilities().subscribe((state) => {
-        applyLivePage("liabilities", state, (value: LiabilitiesPageDto) => {
-          liabilities = finishViewLoad(value);
-        });
-      });
-    } else {
-      stopFinancialLive = financialLiveStores.spending().subscribe((state) => {
-        applyLivePage("spending", state, (value: SpendingPageDto) => {
-          spending = finishViewLoad(value);
-        });
-      });
-    }
-  }
-
-  function reloadFinancialLive(nextRoute: DashboardRoute): Promise<void> {
-    stopActiveFinancialLive();
-    startRouteLoad(nextRoute);
-    financialLiveError = false;
-    if (!financialLiveEnabled || !financialLiveStores || nextRoute === "automation") {
-      const error = new Error("PGlite financial page views are unavailable.");
-      financialLiveError = true;
-      failRouteLoad(nextRoute, error);
-      return Promise.reject(error);
-    }
-    return new Promise<void>((resolve, reject) => {
-      financialLiveWaiter = { route: nextRoute, resolve, reject };
-      startFinancialLive(nextRoute, true);
-    });
   }
 
   function routeLabel(nextRoute: RouteId) {
@@ -526,22 +428,6 @@
   }
 
 
-  function startRouteLoad(nextRoute: RouteId) {
-    if (nextRoute === "overview") overview = beginViewLoad(overview);
-    if (nextRoute === "assets") assets = beginViewLoad(assets);
-    if (nextRoute === "liabilities") liabilities = beginViewLoad(liabilities);
-    if (nextRoute === "spending") spending = beginViewLoad(spending);
-    if (nextRoute === "automation") automation = beginViewLoad(automation);
-  }
-
-  function failRouteLoad(nextRoute: RouteId, error: unknown) {
-    if (nextRoute === "overview") overview = failViewLoad(overview, error);
-    if (nextRoute === "assets") assets = failViewLoad(assets, error);
-    if (nextRoute === "liabilities") liabilities = failViewLoad(liabilities, error);
-    if (nextRoute === "spending") spending = failViewLoad(spending, error);
-    if (nextRoute === "automation") automation = failViewLoad(automation, error);
-  }
-
   const refreshCoordinator = createRefreshCoordinator({
     readSnapshot: () => window.octopusBeak.data.getVersion(),
     acknowledgeSnapshot: async (version) => {
@@ -639,18 +525,13 @@
         return snapshot;
       },
       loadOverview: async () => {
-        overviewReloading = true;
-        try {
-          // Keep the current route on Automation until this subscription has
-          // delivered a fresh Overview read. The route transition itself then
-          // reuses the ready live subscription instead of starting a stale read.
-          await reloadFinancialLive("overview");
-          const value = viewData(overview);
-          if (!value) throw new Error("Overview data unavailable.");
-          return value;
-        } finally {
-          overviewReloading = false;
-        }
+        // Keep the current route on Automation until this subscription has
+        // delivered a fresh Overview read. The route transition itself then
+        // reuses the ready live subscription instead of starting a stale read.
+        await financialPage.reload("overview");
+        const value = viewData($financialState.routes.overview.load);
+        if (!value) throw new Error("Overview data unavailable.");
+        return value;
       },
       cancelTask: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
       forceTerminateTask: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
@@ -756,8 +637,7 @@
       return;
     }
 
-    startRouteLoad("automation");
-    startRouteLoad("overview");
+    automation = beginViewLoad(automation);
     const automationBlocks = startRouteBlockLoads("automation", undefined, undefined, "route-entry");
     const settled = await settleIndependentLoads({
       automation: async () => {
@@ -767,8 +647,8 @@
         return data;
       },
       overview: async () => {
-        await reloadFinancialLive("overview");
-        const value = viewData(overview);
+        await financialPage.reload("overview");
+        const value = viewData($financialState.routes.overview.load);
         if (!value) throw new Error("Welcome overview data unavailable.");
         return value;
       },
@@ -785,13 +665,10 @@
     if (automationData) {
       automation = finishViewLoad(automationData);
     } else if (automationResult?.status === "rejected") {
-      failRouteLoad("automation", automationResult.error);
+      automation = failViewLoad(automation, automationResult.error);
       console.warn("welcome-automation-load-failed", message(automationResult.error));
     }
-    if (overviewData) {
-      overview = finishViewLoad(overviewData);
-    } else if (overviewResult?.status === "rejected") {
-      failRouteLoad("overview", overviewResult.error);
+    if (overviewResult?.status === "rejected") {
       console.warn("welcome-overview-load-failed", message(overviewResult.error));
     }
 
@@ -817,16 +694,13 @@
       automationRefreshReason?: AutomationBlockRefreshReason;
     } = {},
   ) {
-    if (next !== "automation" && next !== "settings") {
-      if (route !== next || (financialLiveEnabled && !options.force)) return;
-      if (next === "overview") overviewReloading = true;
+    if (isFinancialRoute(next)) {
+      if (route !== next || ($financialState.enabled && !options.force)) return;
       try {
-        await reloadFinancialLive(next);
+        await financialPage.reload(next);
       } catch (error) {
-        if (route === next) failRouteLoad(next, error);
-        if (options.rethrow) throw error;
-      } finally {
-        if (next === "overview") overviewReloading = false;
+        // The page records its own failure; a superseded reload is a cancellation.
+        if (options.rethrow && !(error instanceof FinancialPageSuperseded)) throw error;
       }
       return;
     }
@@ -841,7 +715,7 @@
     const automationRefreshReason = next === "automation"
       ? options.automationRefreshReason ?? (options.force ? "manual" : undefined)
       : undefined;
-    startRouteLoad(next);
+    if (next === "automation") automation = beginViewLoad(automation);
     let blockLoads: Promise<Record<string, BlockState<DashboardBlockPayload>>> | null = null;
     if (next === "automation") {
       const hasCachedData = routeDataCache.read("automation") !== undefined;
@@ -887,7 +761,7 @@
       }
     } catch (error) {
       if (options.awaitBlocks && blockLoads) await blockLoads;
-      failRouteLoad(next, error);
+      if (next === "automation") automation = failViewLoad(automation, error);
       if (options.rethrow) throw error;
     }
   }
@@ -901,19 +775,12 @@
       .catch((error) => console.warn("system-settings-load-failed", error));
     // Financial routes are PGlite-live-only, so resolve the capability before
     // the first route load and never start legacy page/block reads.
-    void Promise.resolve(window.octopusBeak?.dataViews?.enabled?.() ?? false)
-      .catch(() => false)
-      .then((enabled) => {
-        if (!mounted) return;
-        if (enabled) {
-          financialLiveEnabled = true;
-          financialLiveStores = createFinancialPageLiveStores(window.octopusBeak.dataViews);
-        }
-        routeCapabilityResolved = true;
-        void resolveFirstRunWelcome().finally(() => {
-          if (mounted) normalizeRoute();
-        });
+    void financialPage.capability.then(() => {
+      if (!mounted) return;
+      void resolveFirstRunWelcome().finally(() => {
+        if (mounted) normalizeRoute();
       });
+    });
     const dataVersionLifecycle = installDataVersionLifecycle({
       data: window.octopusBeak.data,
       resumeTarget: window,
@@ -1005,8 +872,7 @@
     return () => {
       mounted = false;
       dataVersionLifecycle.dispose();
-      stopActiveFinancialLive();
-      financialLiveStores = null;
+      financialPage.dispose();
       unsubscribeAutomationRuntime();
       unsubscribeSignInSettingsRequests();
       unsubscribeAutomationController();
@@ -1018,7 +884,7 @@
   });
 </script>
 
-{#if financialLiveEnabled && financialLiveError}
+{#if financialLiveError}
   <p role="status" data-financial-live-error>
     {$t.common.financialLiveUnavailable}
   </p>
@@ -1074,7 +940,7 @@
     <PurchaseSpendingDashboard
       purchaseReport={spendingRenderValue.purchaseReport}
       fallbackCanonical={spendingRenderValue.canonical}
-      refreshSummary={() => route === "spending" ? reloadFinancialLive("spending") : Promise.resolve()}
+      refreshSummary={() => route === "spending" ? financialPage.reload("spending") : Promise.resolve()}
     />
     <RouteLoadNotice state={spending} retry={() => void loadRoute("spending", { force: true })} />
   {:else}
@@ -1093,7 +959,7 @@
       runtimeController={automationRuntimeController}
       retryBlock={retryAutomationBlock}
       reload={() => loadRoute("automation", { force: true })}
-      overviewLive={financialLiveEnabled && financialLiveStores ? financialLiveStores.overview() : null}
+      overviewLive={$financialState.enabled ? financialPage.overviewStore() : null}
       onboardingSourceSelection={[
         "source-entry",
         "source-selection",

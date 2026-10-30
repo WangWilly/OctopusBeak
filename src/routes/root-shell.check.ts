@@ -15,14 +15,13 @@ test("financial page refreshes use live views and isolate first-run failures", (
   assert.match(source, /overview: \(snapshot\) => loadRoute\("overview",[\s\S]*snapshot/);
   assert.match(source, /expectedVersion: options\.snapshot\.version/);
   assert.match(source, /settleIndependentLoads\(/);
-  assert.match(source, /await reloadFinancialLive\("overview"\)/);
-  assert.match(source, /await reloadFinancialLive\(next\)/);
+  assert.match(source, /options\.rethrow && !\(error instanceof FinancialPageSuperseded\)/);
   assert.doesNotMatch(source, /Promise\.all\(\s*\[\s*routeDataCache\.load/);
 });
 
 test("financial pages are live-only and hand dashboards the whole page", () => {
-  assert.match(source, /createFinancialPageLiveStores\(window\.octopusBeak\.dataViews\)/);
-  assert.match(source, /PGlite financial page views are unavailable/);
+  assert.match(source, /createFinancialPage\(\{ dataViews: window\.octopusBeak\?\.dataViews \}\)/);
+  assert.doesNotMatch(source, /createFinancialPageLiveStores/);
   assert.doesNotMatch(source, /readyDashboardBlock|(overview|assets|liabilities|spending)Blocks\(/);
   assert.doesNotMatch(source, /octopusBeak\.(overview|assets|liabilities|spending)\.(load|loadBlock)\(/);
   assert.match(source, /return window\.octopusBeak\.automation\.loadBlock\(key, options\)/);
@@ -31,7 +30,6 @@ test("financial pages are live-only and hand dashboards the whole page", () => {
 test("a PGlite page DTO makes every dashboard section renderable", () => {
   assert.match(source, /overviewRenderValue = overviewValue/);
   assert.match(source, /<OverviewDashboard\s+overview=\{overviewRenderValue\}/);
-  assert.match(source, /setValue\(state\.data\);/);
   assert.match(source, /<PurchaseSpendingDashboard\s+purchaseReport=\{spendingRenderValue\.purchaseReport\}/);
 });
 
