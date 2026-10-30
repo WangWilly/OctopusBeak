@@ -2,7 +2,7 @@
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
-  import { onDestroy, tick } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
   import {
     ArrowLeftRight,
@@ -29,6 +29,7 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
   import { applyOptimisticAutomationAction, isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
+  import type { ErrorReportPayload } from "$lib/automation/server/error-report.ts";
   import type {
     AutomationActionToken,
     createAutomationRuntimeController,
@@ -205,6 +206,62 @@ import type {
       await window.octopusBeak.automation.openPreviewStructureReportIssue(structureReport.taskId);
     } catch {
       structureReportNotice = "openIssueFailed";
+    }
+  }
+  // ADR 0081: an Error report the person sends by hand. Hidden in builds without a receiver.
+  const ERROR_REPORT_NOTE_LENGTH = 1000;
+  let errorReportsAvailable = false;
+  let errorReportTask: { taskId: string; code: string; stage: string | null } | null = null;
+  let errorReportNote = "";
+  let errorReportEmail = "";
+  let errorReportPreview: ErrorReportPayload | null = null;
+  let errorReportState: "editing" | "sending" | "sent" | "invalid" | "rate-limited" | "unavailable" | "network" = "editing";
+  let errorReportId = "";
+  let errorReportPreviewVersion = 0;
+  onMount(() => {
+    void window.octopusBeak.errorReports?.available()
+      .then((available) => (errorReportsAvailable = available))
+      .catch(() => (errorReportsAvailable = false));
+  });
+  $: if (errorReportTask) void refreshErrorReportPreview(errorReportNote, errorReportEmail);
+
+  function openErrorReport(task: AutomationTaskRow, code: string) {
+    // The last operating stage, as the host's failure classification reads it.
+    const stage = task.events.findLast((event) => event.stage !== "finalization")?.stage ?? null;
+    errorReportTask = { taskId: task.id, code, stage };
+    errorReportNote = "";
+    errorReportEmail = "";
+    errorReportPreview = null;
+    errorReportState = "editing";
+    errorReportId = "";
+  }
+
+  function closeErrorReport() {
+    if (errorReportState === "sending") return;
+    errorReportTask = null;
+  }
+
+  async function refreshErrorReportPreview(note: string, email: string) {
+    if (!errorReportTask) return;
+    const version = ++errorReportPreviewVersion;
+    // An email still being typed is malformed; preview it once it is complete.
+    const preview = await window.octopusBeak.errorReports
+      .preview({ ...errorReportTask, note, email: email.includes("@") ? email : "" })
+      .catch(() => null);
+    if (version === errorReportPreviewVersion) errorReportPreview = preview;
+  }
+
+  async function sendErrorReport() {
+    if (!errorReportTask || errorReportState === "sending") return;
+    errorReportState = "sending";
+    const result = await window.octopusBeak.errorReports
+      .send({ ...errorReportTask, note: errorReportNote, email: errorReportEmail })
+      .catch(() => ({ ok: false as const, reason: "network" as const }));
+    if (result.ok) {
+      errorReportId = result.id;
+      errorReportState = "sent";
+    } else {
+      errorReportState = result.reason;
     }
   }
   onDestroy(() => stopRunDetailsOverview?.());
@@ -1381,6 +1438,11 @@ import type {
                               {$t.automation.structureReport.share}
                             </button>
                           {/if}
+                          {#if errorReportsAvailable}
+                            <button class="button secondary structure-report-action" type="button" onclick={() => openErrorReport(task, errorCode)}>
+                              {$t.automation.errorReport.open}
+                            </button>
+                          {/if}
                           <button class="copy-error-code" type="button" onclick={() => void copyErrorCode(task.id, errorCode)}>
                             {copiedErrorTaskId === task.id ? $t.automation.errorCodeCopied : $t.automation.copyErrorCode}
                           </button>
@@ -2092,6 +2154,58 @@ import type {
           <button class="button secondary" type="button" onclick={() => void copyStructureReport()}>{$t.automation.structureReport.copy}</button>
           <button class="button" type="button" onclick={() => void openStructureReportIssue()}>{$t.automation.structureReport.openIssue}</button>
         </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if errorReportTask}
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="error-report-title">
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={closeErrorReport}></button>
+    <div class="modal-panel structure-report-modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="error-report-title">{$t.automation.errorReport.title}</h2>
+          <p>{$t.automation.errorReport.intro}</p>
+        </div>
+        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeErrorReport}><X size={20} /></button>
+      </div>
+      <div class="modal-body structure-report-body">
+        {#if errorReportState === "sent"}
+          <p role="status">{$t.automation.errorReport.sent(errorReportId)}</p>
+          <div class="structure-report-actions">
+            <button class="button" type="button" onclick={closeErrorReport}>{$t.common.close}</button>
+          </div>
+        {:else}
+          <ul class="structure-report-scope">
+            <li>{$t.automation.errorReport.contains}</li>
+            <li>{$t.automation.errorReport.neverContains}</li>
+            <li>{$t.automation.errorReport.kept}</li>
+          </ul>
+          <label class="error-report-field">
+            <span>{$t.automation.errorReport.noteLabel}</span>
+            <textarea bind:value={errorReportNote} maxlength={ERROR_REPORT_NOTE_LENGTH} rows="4" placeholder={$t.automation.errorReport.notePlaceholder}></textarea>
+            <small>{$t.automation.errorReport.noteHint}</small>
+          </label>
+          <label class="error-report-field">
+            <span>{$t.automation.errorReport.emailLabel}</span>
+            <input type="email" bind:value={errorReportEmail} autocomplete="email" maxlength="254" />
+            <small>{$t.automation.errorReport.emailHint}</small>
+          </label>
+          <details class="error-report-preview">
+            <summary>{$t.automation.errorReport.preview}</summary>
+            <pre class="structure-report-text">{errorReportPreview ? JSON.stringify(errorReportPreview, null, 2) : ""}</pre>
+          </details>
+          <div class="structure-report-actions">
+            {#if errorReportState !== "editing" && errorReportState !== "sending"}
+              <span class="structure-report-notice" role="alert">{$t.automation.errorReport.failed[errorReportState]}</span>
+            {/if}
+            <button class="button secondary" type="button" onclick={closeErrorReport} disabled={errorReportState === "sending"}>{$t.automation.errorReport.cancel}</button>
+            <button class="button" type="button" onclick={() => void sendErrorReport()} disabled={errorReportState === "sending"} aria-busy={errorReportState === "sending"}>
+              {errorReportState === "sending" ? $t.automation.errorReport.sending : $t.automation.errorReport.send}
+            </button>
+          </div>
+        {/if}
       </div>
     </div>
   </div>
@@ -3371,6 +3485,37 @@ import type {
 
   .structure-report-action {
     min-height: 32px;
+  }
+
+  .error-report-field {
+    display: grid;
+    gap: var(--space-1);
+    font-size: 13px;
+  }
+
+  .error-report-field textarea,
+  .error-report-field input {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+  }
+
+  .error-report-field small,
+  .error-report-preview summary {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .error-report-preview summary {
+    cursor: pointer;
+  }
+
+  .error-report-preview pre {
+    margin-top: var(--space-2);
   }
 
   .history-head-actions {

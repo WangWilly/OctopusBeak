@@ -861,6 +861,32 @@ const en = {
     previewSourceTitle: "Preview source: not verified against live data",
     previewSourceBody:
       "OctopusBeak has not run this source against a real account yet. Its balances and transactions may be incomplete or wrong. They are kept apart from verified data and marked as preview wherever they appear.",
+    errorReport: {
+      open: "Report this error",
+      title: "Report this error",
+      intro: "Send this failure to the OctopusBeak developer. Nothing is sent until you select Send.",
+      contains:
+        "It contains the data source, error code, stage, app and macOS versions, and a technical record of where in the app the error happened.",
+      neverContains:
+        "It never contains sign-in details, account numbers, amounts, transactions, or error messages from the bank's site.",
+      kept: "Reports are kept for one year. Your note and email are seen only by the developer.",
+      noteLabel: "What happened (optional)",
+      notePlaceholder: "For example: the sign-in page kept loading.",
+      noteHint: "Don't include account numbers or passwords. Runs of six or more digits are masked before sending.",
+      emailLabel: "Email (optional)",
+      emailHint: "Only if you want a reply.",
+      preview: "Show exactly what will be sent",
+      cancel: "Cancel",
+      send: "Send",
+      sending: "Sending…",
+      sent: (id: string) => `Report sent. Reference: ${id}`,
+      failed: {
+        invalid: "The report could not be sent: the note is too long or the email is malformed.",
+        "rate-limited": "Too many reports from this network. Try again in a minute.",
+        unavailable: "The report service is unavailable right now. Try again later.",
+        network: "Could not reach the report service. Check your connection and try again.",
+      },
+    },
     structureReport: {
       share: "Share structure report",
       title: "Structure report",
@@ -2161,6 +2187,30 @@ const zh: typeof en = {
     previewSourceTitle: "預覽來源：尚未以實際資料驗證",
     previewSourceBody:
       "OctopusBeak 尚未用真實帳戶執行過這個來源，餘額與交易可能不完整或有誤。這些資料與已驗證的資料分開保存，出現的地方都會標示為預覽。",
+    errorReport: {
+      open: "回報這個錯誤",
+      title: "回報這個錯誤",
+      intro: "把這次失敗回報給 OctopusBeak 開發者。按下「送出」之前不會傳送任何內容。",
+      contains: "內容包含資料來源、錯誤代碼、失敗階段、App 與 macOS 版本，以及錯誤發生在 App 程式碼哪個位置的技術紀錄。",
+      neverContains: "不包含登入資料、帳號、金額、交易，也不包含銀行網站回傳的錯誤訊息。",
+      kept: "回報保留一年。你填寫的說明和 email 只有開發者看得到。",
+      noteLabel: "發生了什麼事（選填）",
+      notePlaceholder: "例如：登入頁一直轉圈。",
+      noteHint: "請不要填寫帳號或密碼。連續六位以上的數字會在送出前自動遮蔽。",
+      emailLabel: "Email（選填）",
+      emailHint: "想收到回覆再填。",
+      preview: "查看實際送出的內容",
+      cancel: "取消",
+      send: "送出",
+      sending: "傳送中…",
+      sent: (id: string) => `已送出回報。編號：${id}`,
+      failed: {
+        invalid: "無法送出：說明太長，或 email 格式不正確。",
+        "rate-limited": "這個網路送出的回報太多了，請一分鐘後再試。",
+        unavailable: "回報服務目前無法使用，請稍後再試。",
+        network: "無法連上回報服務，請確認網路連線後再試。",
+      },
+    },
     structureReport: {
       share: "分享結構報告",
       title: "結構報告",

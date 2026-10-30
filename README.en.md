@@ -116,6 +116,10 @@ When a preview source run fails, you can use Share structure report in its run d
 
 The App asks you once, in a dialog, whether to turn on Usage statistics; the answer is never preselected, and you can change it later in Settings. Only after you turn it on does the App send one anonymous report a day: the app version, the macOS version (major and minor only), the macOS language (Chinese or English), the week you first opened the app, and how many times each data source failed in the past week, with the error code and stage. It tells us how many people keep using OctopusBeak and which sources break. The report carries no financial data, sign-in details, or run results, and no device identifier; the server keeps only daily totals, for two years, never individual reports or IP addresses. Cloudflare, which receives it, sees the connecting network address as any website would. Settings shows the exact content of the next report, and you can turn it off at any time.
 
+### Reporting an error (you decide)
+
+When a run fails, its details offer Report this error. It first shows exactly what will be sent and sends nothing until you select Send. The report holds the data source, error code, stage, app and macOS versions, and a technical record of where in the app the error happened; it never holds sign-in details, account numbers, amounts, transactions, or error messages from the bank's site. You may add a note and an email; runs of six or more digits in the note are masked before sending. Reports are kept for one year and seen only by the developer.
+
 ## Developer information
 
 <details>

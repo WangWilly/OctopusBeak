@@ -22,7 +22,9 @@ import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
+  buildWorkflowFailureDiagnostic,
 } from "./workflow-failure-diagnostics.ts";
+import { rememberFailureDiagnostic } from "./error-report.ts";
 import {
   createAppWorkflowBrowserPort,
   type AppWorkflowBrowserConnection,
@@ -133,11 +135,11 @@ async function recordWorkflowFailure(
   }>,
 ): Promise<void> {
   const { workflowId, launchEnv } = context.plan;
-  await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
-    workflowId,
-    taskRunId: context.run.taskRunId,
-    ...input,
-  }, { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) });
+  const record = { workflowId, taskRunId: context.run.taskRunId, ...input };
+  const options = { repoRoot: workflowFailureDiagnosticRepoRoot(launchEnv) };
+  // Kept in memory for an Error report the person may choose to send (ADR 0081).
+  rememberFailureDiagnostic(context.run.taskId, buildWorkflowFailureDiagnostic(record, options));
+  await appendWorkflowFailureDiagnostic(launchEnv[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], record, options);
 }
 
 type BrowserRuntimeIdentityRecorder = Readonly<{
