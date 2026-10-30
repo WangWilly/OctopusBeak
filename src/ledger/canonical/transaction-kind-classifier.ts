@@ -37,6 +37,12 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
     (input.description?.split("·", 1)[0]?.replace(/\s+/gu, "") ?? "") === "放款繳款"
   )
     return { value: "payment.loan", evidenceKind: "bank-rule", sourceField: "source_description" };
+  // Fubon's own currency exchange moves money into the person's other-currency account.
+  if (
+    input.integrationNamespace === "fubon" &&
+    /^(?:行動|網路)?換匯$/u.test(input.description?.split("·", 1)[0]?.replace(/\s+/gu, "") ?? "")
+  )
+    return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_description" };
   if (
     input.integrationNamespace === "yuanta" &&
     input.stream === "domestic-deposit" &&
