@@ -1,4 +1,4 @@
-import { exactAmountToNumber } from "../../../ledger/pglite/overview-amount.ts";
+import { exactToNumber } from "../../shared-money/exact-money.ts";
 import type {
   CanonicalOverviewAccount,
   CanonicalOverviewAmount,
@@ -85,7 +85,7 @@ export function mapCanonicalProduct(
       occurredAtUtc: null,
       label: transaction.description ?? transaction.investment?.securityName ?? "",
       type: transaction.investment?.action ?? transaction.direction,
-      amount: exactAmountToNumber(amountExact),
+      amount: exactToNumber(amountExact),
       amountExact,
       currency: transaction.currency,
       note: transaction.postingStatus,
@@ -183,7 +183,7 @@ function mapCreditCardBalance(
     estimateFormula: balance.estimateFormula,
     amount: {
       currency: balance.currency,
-      value: exactAmountToNumber(balance.amount),
+      value: exactToNumber(balance.amount),
       exact: { ...balance.amount },
     },
     componentLimit: balance.componentLimit,
@@ -196,7 +196,7 @@ function mapPosition(position: CanonicalOverviewPosition): AssetPositionDto {
     symbol: position.symbol,
     name: position.name,
     units: position.units ? exactToDecimal(position.units) : "--",
-    value: position.amount ? exactAmountToNumber(position.amount.exact) : null,
+    value: position.amount ? exactToNumber(position.amount.exact) : null,
     valueExact: position.amount ? { ...position.amount.exact } : null,
     ...(position.amount ? { valueAvailability: "available" as const } : { valueAvailability: "awaiting" as const }),
     currency: position.currency,
@@ -225,7 +225,7 @@ function mapExact(
 ) {
   return {
     currency,
-    value: exactAmountToNumber(exact),
+    value: exactToNumber(exact),
     exact: { coefficient: exact.coefficient, scale: exact.scale },
     ...(traces ? { traces: traces.map((trace) => ({ ...trace })) } : {}),
   };

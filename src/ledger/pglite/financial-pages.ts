@@ -14,7 +14,7 @@ import type { ExchangeRateRecord } from "../exchange-rates.ts";
 import { readPGliteDailyHistoryWithAccounts, type PGliteDailyHistory } from "./daily-history.ts";
 import { readExchangeRateRows } from "./exchange-rate-rows.ts";
 import { readPGliteHoldingPrices, type PGliteHoldingPrice } from "./holding-prices.ts";
-import { exactAmountToNumber } from "./overview-amount.ts";
+import { addKeepingScale, exactToNumber, negateExact } from "../../lib/shared-money/exact-money.ts";
 import {
   createPGliteCanonicalOverviewQuery,
   selectPGliteOverviewAssets,
@@ -62,24 +62,9 @@ type AggregatedAmount = { exact: { coefficient: string; scale: number }; traces:
 function exactAmountToDto(amount: CanonicalOverviewAmount): CurrencyAmountDto {
   return {
     currency: amount.currency,
-    value: exactAmountToNumber(amount.exact),
+    value: exactToNumber(amount.exact),
     exact: { ...amount.exact },
     traces: amount.traces.map((trace) => ({ ...trace })),
-  };
-}
-
-/** Keeps the operands' scale: summary amounts show the decimals their sources reported. */
-function addExactAmounts(
-  left: AggregatedAmount["exact"],
-  right: AggregatedAmount["exact"],
-): AggregatedAmount["exact"] {
-  const scale = Math.max(left.scale, right.scale);
-  return {
-    coefficient: (
-      BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale)
-      + BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
-    ).toString(),
-    scale,
   };
 }
 
@@ -92,7 +77,8 @@ function accumulateAmount(
   const current = target.get(currency);
   if (!current) target.set(currency, { exact: { ...exact }, traces: [...traces] });
   else {
-    current.exact = addExactAmounts(current.exact, exact);
+    // Keeps the operands' scale: summary amounts show the decimals their sources reported (ADR 0069).
+    current.exact = addKeepingScale(current.exact, exact);
     current.traces.push(...traces);
   }
 }
@@ -111,7 +97,7 @@ function aggregateAmounts(accounts: readonly AccountRowDto[]): Map<string, Aggre
 function amountLines(amounts: Map<string, AggregatedAmount>): CurrencyAmountDto[] {
   return [...amounts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([currency, value]) => ({
     currency,
-    value: exactAmountToNumber(value.exact),
+    value: exactToNumber(value.exact),
     exact: value.exact,
     traces: value.traces,
   }));
@@ -123,10 +109,7 @@ function addSigned(
   sign: 1 | -1,
 ): void {
   for (const [currency, value] of source) {
-    const signed = sign === 1
-      ? value.exact
-      : { coefficient: (-BigInt(value.exact.coefficient)).toString(), scale: value.exact.scale };
-    accumulateAmount(target, currency, signed, value.traces);
+    accumulateAmount(target, currency, sign === 1 ? value.exact : negateExact(value.exact), value.traces);
   }
 }
 

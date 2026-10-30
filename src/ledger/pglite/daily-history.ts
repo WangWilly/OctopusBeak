@@ -1,6 +1,13 @@
 import type { CanonicalOverviewAccount } from "../canonical/canonical-overview-query.ts";
 import type { CurrencyAmountDto, DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
-import { exactAmountToNumber } from "./overview-amount.ts";
+import {
+  addExact,
+  exactToNumber,
+  isZeroExact,
+  negateExact,
+  subtractExact,
+  type ExactAmount,
+} from "../../lib/shared-money/exact-money.ts";
 
 export type PGliteDailyHistoryReader = Readonly<{
   query<T>(query: string, params?: readonly unknown[]): Promise<{ rows: readonly T[] }>;
@@ -20,48 +27,22 @@ type DailyHistoryEventRow = Readonly<{
   observed_at: string | null;
 }>;
 
-type ExactAmount = Readonly<{ coefficient: string; scale: number }>;
 type AmountBuckets = Map<string, ExactAmount>;
 
 const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
-
-function normalizeExact(value: ExactAmount): ExactAmount {
-  let coefficient = BigInt(value.coefficient);
-  let scale = value.scale;
-  if (coefficient === 0n) return { coefficient: "0", scale: 0 };
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient: coefficient.toString(), scale };
-}
-
-function addExact(left: ExactAmount, right: ExactAmount): ExactAmount {
-  const scale = Math.max(left.scale, right.scale);
-  return normalizeExact({
-    coefficient: (
-      BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale)
-      + BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
-    ).toString(),
-    scale,
-  });
-}
-
-function signedExact(value: ExactAmount, sign: 1 | -1): ExactAmount {
-  return sign === 1 ? value : { coefficient: (-BigInt(value.coefficient)).toString(), scale: value.scale };
-}
+const ZERO: ExactAmount = { coefficient: "0", scale: 0 };
 
 function adjustBucket(bucket: AmountBuckets, currency: string, value: ExactAmount | null, sign: 1 | -1): void {
   if (!value) return;
-  const current = bucket.get(currency) ?? { coefficient: "0", scale: 0 };
-  const next = addExact(current, signedExact(value, sign));
-  if (BigInt(next.coefficient) === 0n) bucket.delete(currency);
+  const current = bucket.get(currency) ?? ZERO;
+  const next = addExact(current, sign === 1 ? value : negateExact(value));
+  if (isZeroExact(next)) bucket.delete(currency);
   else bucket.set(currency, next);
 }
 
 function amountLines(bucket: AmountBuckets): CurrencyAmountDto[] {
   return [...bucket.entries()]
-    .filter(([, exact]) => Math.abs(exactAmountToNumber(exact)) > 0.000001)
+    .filter(([, exact]) => !isZeroExact(exact))
     .sort(([left], [right]) => {
       const leftIndex = CURRENCY_ORDER.indexOf(left);
       const rightIndex = CURRENCY_ORDER.indexOf(right);
@@ -70,7 +51,7 @@ function amountLines(bucket: AmountBuckets): CurrencyAmountDto[] {
     })
     .map(([currency, exact]) => ({
       currency,
-      value: exactAmountToNumber(exact),
+      value: exactToNumber(exact),
       exact: { ...exact },
     }));
 }
@@ -103,17 +84,8 @@ function netAmounts(assets: AmountBuckets, liabilities: AmountBuckets): AmountBu
 function difference(current: AmountBuckets, previous: AmountBuckets): AmountBuckets {
   const result: AmountBuckets = new Map();
   for (const currency of new Set([...current.keys(), ...previous.keys()])) {
-    const left = current.get(currency) ?? { coefficient: "0", scale: 0 };
-    const right = previous.get(currency) ?? { coefficient: "0", scale: 0 };
-    const scale = Math.max(left.scale, right.scale);
-    const value = normalizeExact({
-      coefficient: (
-        BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale)
-        - BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale)
-      ).toString(),
-      scale,
-    });
-    if (BigInt(value.coefficient) !== 0n) result.set(currency, value);
+    const value = subtractExact(current.get(currency) ?? ZERO, previous.get(currency) ?? ZERO);
+    if (!isZeroExact(value)) result.set(currency, value);
   }
   return result;
 }

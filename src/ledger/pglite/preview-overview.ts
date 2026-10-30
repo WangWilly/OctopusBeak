@@ -7,11 +7,10 @@ import type {
   PreviewCreditDto,
   SummaryMetricDto,
 } from "../../lib/shared-ledger/types.ts";
-import { addExact, decimalToExact, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
+import { addExact, decimalToExact, exactToNumber, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
 import { indexExchangeRates, rateOnOrBefore } from "../../lib/shared-money/exchange-rates.ts";
 import type { ExchangeRateRecord } from "../exchange-rates.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
-import { exactAmountToNumber } from "./overview-amount.ts";
 import type { PreviewCreditBalanceHistory } from "./preview-credit.ts";
 import type {
   PreviewAccountView,
@@ -48,7 +47,7 @@ export function exactFromDecimal(amount: string): ExactAmount {
 }
 
 function amountLine(currency: string, exact: ExactAmount): CurrencyAmountDto {
-  return { currency, value: exactAmountToNumber(exact), exact: { ...exact } };
+  return { currency, value: exactToNumber(exact), exact: { ...exact } };
 }
 
 export function previewAccountRow(
