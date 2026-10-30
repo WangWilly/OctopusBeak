@@ -10,15 +10,12 @@ import type {
   PurchaseCategory,
   PurchaseItemCategorization,
 } from "./purchase-category-view.ts";
+import { equalMoney, moneyKey, type ExactMoney } from "../shared-money/exact-money.ts";
 
 export type SpendingPurchaseCategoryView = PurchaseCategory;
 export type SpendingPurchaseItemCategorizationView = PurchaseItemCategorization;
 
-export type SpendingMatchingMoney = Readonly<{
-  coefficient: string;
-  scale: number;
-  currency: string;
-}>;
+export type SpendingMatchingMoney = ExactMoney;
 
 export type SpendingMatchingTransaction = Readonly<{
   transactionId: string;
@@ -128,32 +125,16 @@ export type SpendingPurchaseReportView = Readonly<{
   candidates: readonly SpendingPurchaseCandidateView[];
 }>;
 
-type Decimal = Readonly<{ coefficient: bigint; scale: number }>;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 
-function decimal(value: SpendingMatchingMoney): Decimal {
-  return { coefficient: BigInt(value.coefficient), scale: value.scale };
-}
-
-function normalizedDecimal(value: SpendingMatchingMoney): Decimal {
-  let coefficient = BigInt(value.coefficient);
-  let scale = value.scale;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient, scale };
-}
-
+/** Same currency, ignoring case, and the same value at any scale. */
 export function exactMoneyEqual(left: SpendingMatchingMoney, right: SpendingMatchingMoney): boolean {
-  if (left.currency.trim().toUpperCase() !== right.currency.trim().toUpperCase()) return false;
-  const a = decimal(left), b = decimal(right), scale = Math.max(a.scale, b.scale);
-  return a.coefficient * 10n ** BigInt(scale - a.scale) === b.coefficient * 10n ** BigInt(scale - b.scale);
+  return equalMoney(left, right);
 }
 
+/** The canonical `CUR:coefficient:scale` key two equal amounts share. */
 export function exactMoneyKey(value: SpendingMatchingMoney): string {
-  const normalized = normalizedDecimal(value);
-  return `${value.currency.trim().toUpperCase()}:${normalized.coefficient}:${normalized.scale}`;
+  return moneyKey(value);
 }
 
 export function calendarDayNumber(value: string): number {

@@ -19,8 +19,9 @@ const defaults: SystemSettingsDto = {
   scheduledCollectionEnabled: false,
   scheduledCollectionTime: "07:00",
   previewFeaturesEnabled: false,
+  usageStatisticsEnabled: false,
 };
-assert.deepEqual(systemSettings({}), defaults, "scheduled collection and preview features are opt-in");
+assert.deepEqual(systemSettings({}), defaults, "scheduled collection, preview features and usage statistics are opt-in");
 assert.equal(systemSettings({ AUTOMATION_BUSINESS_TIMEZONE: "Asia/Tokyo" }).systemTimezone, "Asia/Tokyo");
 assert.throws(() => validateSystemSettings({ ...defaults, systemTimezone: "Mars/Base" }));
 assert.throws(() => validateSystemSettings({ ...defaults, exchangeRateUpdateTime: "6:00" }));
@@ -29,6 +30,10 @@ assert.throws(() => validateSystemSettings({ ...defaults, scheduledCollectionTim
 assert.throws(() => validateSystemSettings({
   ...defaults,
   scheduledCollectionEnabled: "true" as unknown as boolean,
+}));
+assert.throws(() => validateSystemSettings({
+  ...defaults,
+  usageStatisticsEnabled: "true" as unknown as boolean,
 }));
 
 const settingsDirectory = mkdtempSync(join(tmpdir(), "system-settings-"));
@@ -39,6 +44,7 @@ try {
     { ...defaults, scheduledCollectionEnabled: false, scheduledCollectionTime: "05:10" },
     { ...defaults, previewFeaturesEnabled: true },
     { ...defaults, previewFeaturesEnabled: false },
+    { ...defaults, usageStatisticsEnabled: true },
   ]) {
     writeAutomationSettingsFile(settingsPath, systemSettingsFileEntries(validateSystemSettings(saved)));
     assert.deepEqual(systemSettings(readAutomationSettingsFile(settingsPath)), saved, "settings file round-trip");

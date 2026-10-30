@@ -1,4 +1,5 @@
 import type { ExactMoney } from "./spending-recognition-contracts.ts";
+import { compareMoney, moneyTotals, normalizeCurrency } from "../../lib/shared-money/exact-money.ts";
 
 /** One counted, non-refund purchase of a month with the facts that identify its merchant. */
 export type MonthPurchaseFact = Readonly<{
@@ -35,29 +36,6 @@ export type SameMerchantStats = Readonly<{
   totalsByCurrency: readonly Readonly<ExactMoney & { count: number }>[];
 }>;
 
-type Decimal = Readonly<{ coefficient: bigint; scale: number }>;
-
-function scaled(value: Decimal, scale: number): bigint {
-  return value.coefficient * 10n ** BigInt(scale - value.scale);
-}
-
-function compareMoney(left: ExactMoney, right: ExactMoney): number {
-  const a = { coefficient: BigInt(left.coefficient), scale: left.scale };
-  const b = { coefficient: BigInt(right.coefficient), scale: right.scale };
-  const scale = Math.max(a.scale, b.scale);
-  const difference = scaled(a, scale) - scaled(b, scale);
-  return difference < 0n ? -1 : difference > 0n ? 1 : 0;
-}
-
-function reduced(value: Decimal): Decimal {
-  let { coefficient, scale } = value;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient, scale };
-}
-
 /** NFKC, case-folded, whitespace-collapsed text; empty text has no identity. */
 export function normalizedBankDescription(value: string | null | undefined): string | null {
   const normalized = (value ?? "").normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim();
@@ -86,7 +64,7 @@ export function largestPurchasesByCurrency(facts: readonly MonthPurchaseFact[]):
   const best = new Map<string, MonthPurchaseFact & { amount: ExactMoney }>();
   for (const fact of facts) {
     if (!fact.amount) continue;
-    const currency = fact.amount.currency.toUpperCase();
+    const currency = normalizeCurrency(fact.amount.currency);
     const current = best.get(currency);
     const order = current ? compareMoney(fact.amount, current.amount) : 1;
     if (!current || order > 0 || (order === 0 && (fact.occurrence > current.occurrence
@@ -113,31 +91,11 @@ export function sameMerchantStats(facts: readonly MonthPurchaseFact[], purchaseI
     const other = merchantIdentity(fact);
     return other !== null && merchantKey(other) === key;
   });
-  const totals = new Map<string, { amount: Decimal; count: number }>();
-  for (const fact of matching) {
-    if (!fact.amount) continue;
-    const currency = fact.amount.currency.toUpperCase();
-    const amount = { coefficient: BigInt(fact.amount.coefficient), scale: fact.amount.scale };
-    const previous = totals.get(currency);
-    if (!previous) {
-      totals.set(currency, { amount, count: 1 });
-      continue;
-    }
-    const scale = Math.max(previous.amount.scale, amount.scale);
-    totals.set(currency, {
-      amount: { coefficient: scaled(previous.amount, scale) + scaled(amount, scale), scale },
-      count: previous.count + 1,
-    });
-  }
+  const totals = moneyTotals(matching.flatMap((fact) => fact.amount ? [fact.amount] : []));
   return Object.freeze({
     merchant: Object.freeze(identity),
     merchantLabel: merchantLabel(target),
     count: matching.length,
-    totalsByCurrency: Object.freeze([...totals.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([currency, total]) => {
-        const value = reduced(total.amount);
-        return Object.freeze({ currency, coefficient: value.coefficient.toString(), scale: value.scale, count: total.count });
-      })),
+    totalsByCurrency: Object.freeze(totals.map((total) => Object.freeze({ ...total }))),
   });
 }

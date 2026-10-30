@@ -17,38 +17,23 @@ import {
   type SpendingPairingIndexEntry,
 } from "./spending-pairing-index.ts";
 import { merchantSimilarityTo } from "./spending-match-strength.ts";
+import {
+  absoluteExact,
+  compareExact,
+  normalizeCurrency,
+  sameCurrency,
+  subtractExact,
+  type ExactAmount,
+} from "../../lib/shared-money/exact-money.ts";
 
 export type { SpendingPairingIndex } from "./spending-pairing-index.ts";
 
-type Decimal = Readonly<{ coefficient: bigint; scale: number }>;
-
-function normalizedDecimal(value: SpendingMatchingMoney): Decimal {
-  let coefficient = BigInt(value.coefficient);
-  let scale = value.scale;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient, scale };
+/** The absolute difference of two amounts, reduced. */
+function exactMoneyDifference(left: SpendingMatchingMoney, right: SpendingMatchingMoney): ExactAmount {
+  return absoluteExact(subtractExact(left, right));
 }
 
-function compareExactDecimals(left: Decimal, right: Decimal): number {
-  const scale = Math.max(left.scale, right.scale);
-  const a = left.coefficient * 10n ** BigInt(scale - left.scale);
-  const b = right.coefficient * 10n ** BigInt(scale - right.scale);
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function exactMoneyDifference(left: SpendingMatchingMoney, right: SpendingMatchingMoney): Decimal {
-  const scale = Math.max(left.scale, right.scale);
-  const a = BigInt(left.coefficient) * 10n ** BigInt(scale - left.scale);
-  const b = BigInt(right.coefficient) * 10n ** BigInt(scale - right.scale);
-  return normalizedDecimal({
-    coefficient: (a >= b ? a - b : b - a).toString(),
-    scale,
-    currency: left.currency,
-  });
-}
+const ZERO: ExactAmount = { coefficient: "0", scale: 0 };
 
 export type SpendingManualPaymentCandidate = Readonly<{
   transactionId: string;
@@ -71,10 +56,7 @@ function compareManualCandidates(left: SpendingManualPaymentCandidate, right: Sp
   if (left.tier !== right.tier) return left.tier - right.tier;
   if (left.dateDistanceDays !== right.dateDistanceDays) return left.dateDistanceDays - right.dateDistanceDays;
   if (left.tier === 2) {
-    const amountOrder = compareExactDecimals(
-      { coefficient: BigInt(left.amountDifference?.coefficient ?? "0"), scale: left.amountDifference?.scale ?? 0 },
-      { coefficient: BigInt(right.amountDifference?.coefficient ?? "0"), scale: right.amountDifference?.scale ?? 0 },
-    );
+    const amountOrder = compareExact(left.amountDifference ?? ZERO, right.amountDifference ?? ZERO);
     if (amountOrder !== 0) return amountOrder;
   }
   if (left.merchantSimilarity !== right.merchantSimilarity) return right.merchantSimilarity - left.merchantSimilarity;
@@ -129,12 +111,12 @@ export function spendingManualPaymentRanking(
   const cached = cachedSpendingPairingRank(index, cacheKey);
   if (cached) return cached;
 
-  const invoiceCurrency = invoiceAmount.currency.trim().toUpperCase();
+  const invoiceCurrency = normalizeCurrency(invoiceAmount.currency);
   const invoiceAmountKey = exactMoneyKey(invoiceAmount);
   const invoiceDay = calendarDayNumber(invoice.revision.occurrence.value);
   const placement = (entry: SpendingPairingIndexEntry) => {
-    const sameCurrency = invoiceCurrency === entry.currency;
-    const tier = sameCurrency && invoiceAmountKey === entry.amountKey ? 1 as const : sameCurrency ? 2 as const : 3 as const;
+    const currencyMatches = invoiceCurrency === entry.currency;
+    const tier = currencyMatches && invoiceAmountKey === entry.amountKey ? 1 as const : currencyMatches ? 2 as const : 3 as const;
     const distance = Number.isFinite(invoiceDay) && Number.isFinite(entry.purchaseDay)
       ? Math.abs(invoiceDay - entry.purchaseDay)
       : Number.POSITIVE_INFINITY;
@@ -163,7 +145,7 @@ export function spendingManualPaymentRanking(
           tier: group.tier,
           dateDistanceDays: group.distance,
           amountDifference: difference
-            ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
+            ? { coefficient: difference.coefficient, scale: difference.scale, currency: invoiceAmount.currency }
             : null,
           merchantSimilarity: similarityToSeller(entry.transaction.description),
         }) satisfies SpendingManualPaymentCandidate,
@@ -174,7 +156,7 @@ export function spendingManualPaymentRanking(
       // Bring every difference to one scale once instead of in each comparison.
       const scale = Math.max(0, ...rows.map((row) => row.difference?.scale ?? 0));
       for (const row of rows)
-        row.amountOrder = row.difference ? row.difference.coefficient * 10n ** BigInt(scale - row.difference.scale) : 0n;
+        row.amountOrder = row.difference ? BigInt(row.difference.coefficient) * 10n ** BigInt(scale - row.difference.scale) : 0n;
     }
     rows.sort((left, right) => {
       if (left.amountOrder !== right.amountOrder) return left.amountOrder < right.amountOrder ? -1 : 1;
@@ -238,16 +220,16 @@ export function rankSpendingManualPaymentCandidates(
   if (!invoiceAmount) return Object.freeze([]);
   const similarityToSeller = merchantSimilarityTo(invoice.revision.seller.name);
   const ranked = transactions.map((transaction) => {
-    const sameCurrency = invoiceAmount.currency.trim().toUpperCase() === transaction.amount.currency.trim().toUpperCase();
-    const exactAmount = sameCurrency && exactMoneyEqual(invoiceAmount, transaction.amount);
+    const currencyMatches = sameCurrency(invoiceAmount, transaction.amount);
+    const exactAmount = currencyMatches && exactMoneyEqual(invoiceAmount, transaction.amount);
     const date = transactionPurchaseDate(transaction);
-    const difference = sameCurrency ? exactMoneyDifference(invoiceAmount, transaction.amount) : null;
+    const difference = currencyMatches ? exactMoneyDifference(invoiceAmount, transaction.amount) : null;
     return {
       transactionId: transaction.transactionId,
-      tier: exactAmount ? 1 as const : sameCurrency ? 2 as const : 3 as const,
+      tier: exactAmount ? 1 as const : currencyMatches ? 2 as const : 3 as const,
       dateDistanceDays: calendarDayDistance(invoice.revision.occurrence.value, date.value),
       amountDifference: difference
-        ? { coefficient: difference.coefficient.toString(), scale: difference.scale, currency: invoiceAmount.currency }
+        ? { coefficient: difference.coefficient, scale: difference.scale, currency: invoiceAmount.currency }
         : null,
       merchantSimilarity: similarityToSeller(transaction.description),
     } satisfies SpendingManualPaymentCandidate;

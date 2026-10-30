@@ -375,10 +375,15 @@ export function isCompleteMonthTimeline(
 /**
  * The past-year timeline returns purchases only from about the query date's
  * anniversary one year earlier (ADR 0031); anything on or before it may
- * already have left the timeline. `queryDate` is YYYY-MM-DD.
+ * already have left the timeline. `queryDate` is YYYY-MM-DD. A leap day's
+ * anniversary clamps to Feb 28, the rule ADR 0077 uses for look-backs.
  */
 export function monthTimelineAnniversary(queryDate: string): string {
-  return `${String(Number(queryDate.slice(0, 4)) - 1).padStart(4, "0")}${queryDate.slice(4)}`;
+  const year = Number(queryDate.slice(0, 4)) - 1;
+  const month = queryDate.slice(5, 7);
+  const lastDay = new Date(Date.UTC(year, Number(month), 0)).getUTCDate();
+  const day = Math.min(Number(queryDate.slice(8, 10)), lastDay);
+  return `${String(year).padStart(4, "0")}-${month}-${String(day).padStart(2, "0")}`;
 }
 
 /**

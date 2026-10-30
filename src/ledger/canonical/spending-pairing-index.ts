@@ -1,7 +1,5 @@
-import type {
-  SpendingMatchingMoney,
-  SpendingMatchingTransaction,
-} from "../../lib/spending/purchase-matching.ts";
+import type { SpendingMatchingTransaction } from "../../lib/spending/purchase-matching.ts";
+import { moneyKey, normalizeCurrency } from "../../lib/shared-money/exact-money.ts";
 import type { SpendingManualPaymentRanking } from "./spending-manual-pairing.ts";
 
 /**
@@ -27,21 +25,6 @@ type RankCache = Map<string, SpendingManualPaymentRanking>;
 
 const rankCaches = new WeakMap<object, RankCache>();
 
-function normalizedMoney(value: SpendingMatchingMoney): Readonly<{ coefficient: bigint; scale: number }> {
-  let coefficient = BigInt(value.coefficient);
-  let scale = value.scale;
-  while (scale > 0 && coefficient % 10n === 0n) {
-    coefficient /= 10n;
-    scale -= 1;
-  }
-  return { coefficient, scale };
-}
-
-function moneyKey(value: SpendingMatchingMoney): string {
-  const normalized = normalizedMoney(value);
-  return `${value.currency.trim().toUpperCase()}:${normalized.coefficient}:${normalized.scale}`;
-}
-
 function purchaseDay(value: string): number {
   const date = value.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return Number.NaN;
@@ -63,7 +46,7 @@ export function spendingPairingIndexEntryForTransaction(
   const date = transaction.consumeDate || transaction.postingDate || transaction.effectiveOn;
   return Object.freeze({
     transaction,
-    currency: transaction.amount.currency.trim().toUpperCase(),
+    currency: normalizeCurrency(transaction.amount.currency),
     amountKey: moneyKey(transaction.amount),
     purchaseDay: purchaseDay(date),
   });

@@ -163,6 +163,10 @@ _Avoid_: Record migration, trust upgrade in place, merge
 A sanitized description of a Preview Source's responses, listing endpoints, statuses, field names, types, and bounded codes but never identifiers, names, amounts, dates, or free text. The person reviews it in full and sends it only by pasting it into a prefilled public issue; the App transmits nothing itself.
 _Avoid_: Crash report, telemetry, raw response upload
 
+**Usage statistics**:
+The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, and whether it is the install's first ping of the week and month, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier and nothing from the ledger, sign-in details, or runs; it is the only data the App itself sends to OctopusBeak.
+_Avoid_: Telemetry, analytics, tracking, crash report
+
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
 _Avoid_: Product-specific table name, workflow label, unsupported inferred subtype
@@ -588,8 +592,8 @@ The required denomination of the account-booked transaction amount, established 
 _Avoid_: Account default currency, display currency, unsupported currency guess
 
 **Exact monetary value**:
-A lossless, normalized decimal magnitude paired with an explicitly identified denomination; numerically equal values have one canonical equality representation regardless of source padding or display precision. Canonical amounts and rates never use binary floating point, while source formatting remains in the immutable Source Record and display rounding never changes the underlying value. Fiat denominations use ISO 4217, and any non-ISO denomination belongs to a distinct controlled scheme rather than masquerading as an ISO currency.
-_Avoid_: Floating-point money, universal cents integer, formatted source text as calculation input
+A lossless, normalized decimal magnitude paired with an explicitly identified denomination; numerically equal values have one canonical equality representation regardless of source padding or display precision. Canonical amounts and rates never use binary floating point, while source formatting remains in the immutable Source Record and display rounding never changes the underlying value. Fiat denominations use ISO 4217, and any non-ISO denomination belongs to a distinct controlled scheme rather than masquerading as an ISO currency. Money compares and groups by its trimmed, upper-cased currency, so a stored `twd` and `TWD` are one denomination while the stored value stays as reported. Canonical equality and keys use the reduced amount, with no trailing zero digits; a keep-scale display total that shows the decimals its sources reported is a distinct operation and never decides equality.
+_Avoid_: Floating-point money, universal cents integer, formatted source text as calculation input, case-sensitive currency comparison
 
 **Original transaction amount**:
 An optional non-negative amount and currency in which a merchant, counterparty, or source originally denominated a financial transaction before conversion into the account-booked transaction amount. It preserves the source denomination but never replaces the amount used to reconcile the financial account.

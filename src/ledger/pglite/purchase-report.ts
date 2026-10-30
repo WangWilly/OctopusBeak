@@ -3,14 +3,17 @@ import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-sourc
 import type { PGliteTransaction } from "./transaction.ts";
 import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
 import {
-  addPurchaseMoney,
   composePurchaseReport,
-  purchaseMoneyTotals,
-  reducedPurchaseMoney,
   withPossibleDuplicates,
-  type PurchaseMoneyAccumulator,
   type PurchaseReport,
 } from "../canonical/spending-purchase-report-core.ts";
+import {
+  addToTotals,
+  normalizeCurrency,
+  normalizeMoney,
+  readTotals,
+  type MoneyTotalsAccumulator,
+} from "../../lib/shared-money/exact-money.ts";
 import {
   purchaseCategoryCodes,
   readPurchaseCategory,
@@ -220,12 +223,17 @@ function summaryMoneyRows(value: unknown, label: string) {
     const coefficient = stringValue(row.coefficient, `${label} coefficient`);
     if (!/^-?\d+(?:\.0+)?$/u.test(coefficient))
       throw new Error(`${label} coefficient is not an integer.`);
-    return Object.freeze(reducedPurchaseMoney({
-      currency: stringValue(row.currency, `${label} currency`).toUpperCase(),
+    const money = normalizeMoney({
+      currency: stringValue(row.currency, `${label} currency`),
       coefficient: coefficient.replace(/\.0+$/u, ""),
       scale: numeric(row.scale, `${label} scale`),
+    });
+    return Object.freeze({
+      currency: money.currency,
+      coefficient: money.coefficient,
+      scale: money.scale,
       count: numeric(row.count, `${label} count`),
-    }));
+    });
   }));
 }
 
@@ -581,7 +589,7 @@ function normalizedCategoryCodes(value: SpendingRecordPageRequest["categoryCodes
 }
 
 function categoryTotalsByMonth(purchases: readonly PurchaseCategoryRow[]): readonly SpendingCategoryMonthTotal[] {
-  const values: PurchaseMoneyAccumulator = new Map();
+  const values: MoneyTotalsAccumulator = new Map();
   const categoryCodes = new Map<string, string | null>();
   for (const purchase of purchases) {
     if (!purchase.amount) continue;
@@ -590,14 +598,14 @@ function categoryTotalsByMonth(purchases: readonly PurchaseCategoryRow[]): reado
       ? purchase.category.components.map((component) => ({ categoryCode: component.categoryCode as string | null, amount: component.amount }))
       : [{ categoryCode: purchase.category.mode === "single" ? purchase.category.categoryCode : null, amount: purchase.amount }];
     for (const part of parts) {
-      addPurchaseMoney(values, part.amount, (currency) => {
+      addToTotals(values, part.amount, (currency) => {
         const key = `${month}|${currency}|${part.categoryCode ?? ""}`;
         categoryCodes.set(key, part.categoryCode);
         return key;
       });
     }
   }
-  return Object.freeze(purchaseMoneyTotals(values).map(({ key, currency, coefficient, scale, count }) => Object.freeze({
+  return Object.freeze(readTotals(values).map(({ key, currency, coefficient, scale, count }) => Object.freeze({
     month: key.slice(0, 7),
     currency,
     categoryCode: categoryCodes.get(key) ?? null,
@@ -750,7 +758,7 @@ function summaryLine(record: PurchaseRecord): SpendingSummaryDeltaLine {
     date: record.occurrence.value.slice(0, 10),
     amount: record.amount
       // The summary groups by upper-cased currency, so the delta must name the same bucket.
-      ? { currency: record.amount.currency.toUpperCase(), coefficient: record.amount.coefficient, scale: record.amount.scale }
+      ? { currency: normalizeCurrency(record.amount.currency), coefficient: record.amount.coefficient, scale: record.amount.scale }
       : null,
     category: record.category,
   });
@@ -817,7 +825,7 @@ export async function queryCurrentSpendingSummary(
 
   const result = await pgliteQuery<Row>(reader, `${PURCHASE_ROWS_CTE}, scaled_amounts AS MATERIALIZED (
       SELECT SUBSTRING(occurrence_value, 1, 7) AS month,
-             SUBSTRING(occurrence_value, 1, 10) AS date, UPPER(currency) AS currency,
+             SUBSTRING(occurrence_value, 1, 10) AS date, UPPER(TRIM(currency)) AS currency,
              amount_coefficient::numeric * POWER(
                10::numeric, MAX(amount_scale) OVER () - amount_scale
              ) AS coefficient,
