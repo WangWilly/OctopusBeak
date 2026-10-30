@@ -18,6 +18,7 @@ import { onTaskRunFinished, runFailures } from "../src/lib/automation/server/tas
 import {
   buildErrorReport,
   errorReportUrl,
+  forgetStaleFailureDiagnostic,
   InvalidErrorReport,
   sendErrorReport,
   type ErrorReportInput,
@@ -511,7 +512,10 @@ async function start() {
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (message) => console.error(message),
   });
-  onTaskRunFinished((run) => usagePinger?.recordFailures(runFailures(run)));
+  onTaskRunFinished((run) => {
+    forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
+    usagePinger?.recordFailures(runFailures(run));
+  });
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     collection,

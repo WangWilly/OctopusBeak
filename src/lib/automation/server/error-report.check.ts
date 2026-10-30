@@ -4,6 +4,7 @@ import {
   buildErrorReport,
   errorReportUrl,
   forgetFailureDiagnostics,
+  forgetStaleFailureDiagnostic,
   InvalidErrorReport,
   maskNumbers,
   rememberFailureDiagnostic,
@@ -88,6 +89,32 @@ test("responses map to what the person is told", async () => {
   assert.deepEqual(await sendErrorReport("https://t", payload, offline), { ok: false, reason: "network" });
 });
 
-test("masking keeps short numbers", () => {
+test("masking catches full-width digits and any separator, and keeps short numbers", () => {
   assert.equal(maskNumbers("錯誤 503，版本 0.9.5"), "錯誤 503，版本 0.9.5");
+  for (const card of ["４３１１２２２２３３３３４４４４", "4311 - 2222 - 3333 - 4444", "4311.2222.3333.4444", "4311－2222－3333－4444", "4311/2222/3333/4444"]) {
+    assert.equal(maskNumbers(`卡號 ${card} 失敗`), "卡號 [已遮蔽] 失敗", card);
+  }
+});
+
+test("a record from an earlier run is dropped once a later run of the task finishes", () => {
+  forgetFailureDiagnostics();
+  rememberFailureDiagnostic(INPUT.taskId, RECORD);
+  forgetStaleFailureDiagnostic(INPUT.taskId, "run-1");
+  assert.notEqual(buildErrorReport(INPUT, CONTEXT).diagnostic, null, "the run the record came from keeps it");
+  forgetStaleFailureDiagnostic(INPUT.taskId, "run-2");
+  assert.equal(buildErrorReport(INPUT, CONTEXT).diagnostic, null);
+});
+
+test("frames outside the app bundle are left out so the receiver accepts the report", () => {
+  forgetFailureDiagnostics();
+  rememberFailureDiagnostic(INPUT.taskId, {
+    ...RECORD,
+    error: { chain: [{ type: "Error", frames: [{ file: "src/lib/x.ts", line: 1, column: 1 }, ...RECORD.error.chain[0].frames] }] },
+  });
+  assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain[0].frames, RECORD.error.chain[0].frames);
+});
+
+test("non-string inputs are refused as invalid", () => {
+  assert.throws(() => buildErrorReport({ ...INPUT, taskId: null } as never, CONTEXT), InvalidErrorReport);
+  assert.throws(() => buildErrorReport({ ...INPUT, stage: 3 } as never, CONTEXT), InvalidErrorReport);
 });
