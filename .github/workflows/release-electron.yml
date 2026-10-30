@@ -304,7 +304,35 @@ jobs:
           OCTOPUSBEAK_USAGE_PING_URL: ${{ secrets.OCTOPUSBEAK_USAGE_PING_URL }}
         run: |
           set -euo pipefail
-          npm run desktop:make:signed
+
+          detach_stale_volumes() {
+            local volume
+            for volume in /Volumes/OctopusBeak*; do
+              [[ -e "$volume" ]] || continue
+              hdiutil detach "$volume" -force || true
+            done
+          }
+
+          if npm run desktop:make:signed; then
+            exit 0
+          fi
+
+          # The signed, notarized app is already packaged when the DMG maker
+          # trips over hdiutil, so retry only the make step.
+          for attempt in 2 3; do
+            if [[ -z "$(find out -maxdepth 2 -type d -name '*.app' -print -quit)" ]]; then
+              echo "Make failed before an app bundle was packaged; not retrying." >&2
+              exit 1
+            fi
+            echo "Make failed; retrying distributables (attempt $attempt of 3)." >&2
+            detach_stale_volumes
+            rm -rf out/make
+            sleep 15
+            if OCTOPUSBEAK_SIGN=1 npx electron-forge make --skip-package; then
+              exit 0
+            fi
+          done
+          exit 1
 
       - name: Verify signed app
         run: |
@@ -317,7 +345,19 @@ jobs:
 
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           spctl --assess --type execute --verbose=4 "$APP_PATH"
-          xcrun stapler validate "$APP_PATH"
+
+          # stapler validate looks the ticket up on Apple's CloudKit, which
+          # occasionally drops the connection.
+          for attempt in 1 2 3; do
+            if xcrun stapler validate "$APP_PATH"; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "stapler validate failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
 
       - name: Verify packaged assets and automation worker
         timeout-minutes: 10

@@ -17,10 +17,8 @@ import {
 import { hasAttachedLocator } from "./browser-interaction.js";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
-import {
-  deriveYuantaDomesticDepositQueryRange,
-  yuantaObservedAt,
-} from "./yuanta-statements.ts";
+import { yuantaObservedAt, yuantaQuickRange } from "./yuanta-statements.ts";
+import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -92,8 +90,6 @@ export type CurrencyOption = {
   value: string;
 };
 
-const quickDateRangeSchema = z.enum(["one_week", "one_month", "three_months"]);
-
 const channelTypeSchema = z.enum([
   "all",
   "online_bank",
@@ -102,14 +98,7 @@ const channelTypeSchema = z.enum([
   "mobile_bank",
 ]);
 
-const customDateRangeSchema = z.object({
-  startDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-  endDate: z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/),
-});
-
 export const yuantaForeignCurrencyStatementsInputSchema = z.object({
-  dateRange: quickDateRangeSchema.default("three_months"),
-  customDateRange: customDateRangeSchema.optional(),
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
   channelType: channelTypeSchema.default("all"),
@@ -117,10 +106,26 @@ export const yuantaForeignCurrencyStatementsInputSchema = z.object({
 const inputSchema = yuantaForeignCurrencyStatementsInputSchema;
 
 export type YuantaForeignCurrencyWorkflowInput = z.infer<typeof inputSchema>;
-type WorkflowInput = YuantaForeignCurrencyWorkflowInput;
 
-export type YuantaForeignCurrencyCollectionInput = WorkflowInput & Readonly<{
+/** The FX query's dates as YYYY-MM-DD, and the quick link that covers them, if any. */
+export type YuantaForeignQueryRange = Readonly<{ quickLabel?: string; startDate: string; endDate: string }>;
+
+/** The FX query for the product's collection period; dates are entered when no quick link fits. */
+export function yuantaForeignQueryRange(period: CollectionPeriod): YuantaForeignQueryRange {
+  const quick = yuantaQuickRange(period);
+  return { ...(quick ? { quickLabel: quick.label } : {}), startDate: period.start, endDate: period.end };
+}
+
+/** The input and the range the run queries. */
+type WorkflowInput = YuantaForeignCurrencyWorkflowInput & Readonly<{ queryRange: YuantaForeignQueryRange }>;
+
+export type YuantaForeignCurrencyCollectionInput = YuantaForeignCurrencyWorkflowInput & Readonly<{
   yuantaUserId: string;
+}>;
+
+/** A collection input with the range the run queries. */
+export type YuantaForeignCurrencyQueryInput = YuantaForeignCurrencyCollectionInput & Readonly<{
+  queryRange: YuantaForeignQueryRange;
 }>;
 
 export type ForeignCurrencyTransactionRow = {
@@ -297,12 +302,6 @@ export const yuantaForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMa
     message:
       "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
   },
-};
-
-const dateRangeLabels: Record<z.infer<typeof quickDateRangeSchema>, string> = {
-  one_week: "一週",
-  one_month: "一個月",
-  three_months: "三個月",
 };
 
 const channelTypeValues: Record<z.infer<typeof channelTypeSchema>, string> = {
@@ -2050,11 +2049,12 @@ async function chooseDateRange(
   input: WorkflowInput,
 ): Promise<void> {
   const scope = await site.frames.scopeWith("#acctno");
+  const { quickLabel, startDate, endDate } = input.queryRange;
   await site.chooseDuration(
     scope,
-    input.customDateRange
-      ? { customLabel: "自選", ...input.customDateRange }
-      : { label: dateRangeLabels[input.dateRange] },
+    quickLabel
+      ? { label: quickLabel }
+      : { customLabel: "自選", startDate: startDate.replaceAll("-", "/"), endDate: endDate.replaceAll("-", "/") },
   );
 }
 
@@ -2374,7 +2374,7 @@ export type YuantaForeignCurrencySourceSnapshot = Readonly<{
 /** Read every account and currency's CSV rows and the current FX balances (ADR 0065). */
 export async function readYuantaForeignCurrencySource(
   page: Page,
-  input: YuantaForeignCurrencyCollectionInput,
+  input: YuantaForeignCurrencyQueryInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<YuantaForeignCurrencySourceSnapshot> {
@@ -2422,7 +2422,7 @@ export async function readYuantaForeignCurrencySource(
 /** Build and stage every FX account capture and current balance from a read snapshot. */
 export async function stageYuantaForeignCurrency(
   snapshot: YuantaForeignCurrencySourceSnapshot,
-  input: YuantaForeignCurrencyCollectionInput,
+  input: YuantaForeignCurrencyQueryInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
@@ -2519,24 +2519,9 @@ export async function runYuantaForeignCurrencyStatements(
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
-  const snapshot = await readYuantaForeignCurrencySource(page, input, context, product);
-  return await stageYuantaForeignCurrency(snapshot, input, context, product);
-}
-
-function sourceDateRange(input: WorkflowInput, observedAt: string): {
-  startDate: string;
-  endDate: string;
-} {
-  if (input.customDateRange)
-    return {
-      startDate: input.customDateRange.startDate.replaceAll("/", "-"),
-      endDate: input.customDateRange.endDate.replaceAll("/", "-"),
-    };
-  const { startDate, endDate } = deriveYuantaDomesticDepositQueryRange(
-    input.dateRange,
-    yuantaObservedAt(new Date(observedAt)),
-  );
-  return { startDate, endDate };
+  const queried = { ...input, queryRange: yuantaForeignQueryRange(product.collectionPeriod()) };
+  const snapshot = await readYuantaForeignCurrencySource(page, queried, context, product);
+  return await stageYuantaForeignCurrency(snapshot, queried, context, product);
 }
 
 function normalizeExactDecimal(value: string, label: string): string {
@@ -2596,7 +2581,7 @@ export function buildYuantaForeignCurrencyCaptureInput(
     throw new Error(
       "Yuanta foreign empty capture requires provider-explicit-no-data terminal evidence.",
     );
-  const range = sourceDateRange(input, observedAt);
+  const range = input.queryRange;
   // Lexemes are unique per capture. The first row of a minute keeps the bare
   // lexeme so already committed rows keep their content hash.
   const distinctRowsPerLexeme = new Map<string, string[]>();

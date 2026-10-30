@@ -9,6 +9,7 @@ import {
   buildFubonCurrentDepositBalanceCapture,
   deriveFubonDomesticDepositAccountNumberEvidence,
   fubonCurrentBalanceCaptureMatching,
+  fubonDepositQueries,
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
   readFubonDepositSourceSnapshot,
@@ -31,6 +32,8 @@ import {
 } from "./fubon-current-deposit-balances.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError, type ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { collectionPeriod, taipeiToday, type CollectionPeriod } from "../lib/automation/collection-period.ts";
+import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type {
   AccountIdentityContinuity,
@@ -224,7 +227,7 @@ assert.equal(relationEvidence[0]!.sourceField, "附註");
 await assert.rejects(
   () => runFubonStatements(
     {} as never,
-    { dateRanges: ["30"], downloadFormat: "EXCEL" } as Parameters<typeof runFubonStatements>[1],
+    { downloadFormat: "EXCEL" } as Parameters<typeof runFubonStatements>[1],
     {} as never,
     {} as never,
   ),
@@ -288,10 +291,12 @@ const currentBalanceRow: FubonCurrentDepositBalanceRow = {
     contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   },
 };
-const collectionInput = { dateRanges: ["30" as const], downloadFormat: "EXCEL" as const };
+/** The staging half's input, and the ranges whose statements each account was read for. */
+type DepositCollectionInput = FubonStatementsInput & Readonly<{ ranges: readonly string[] }>;
+const collectionInput: DepositCollectionInput = { ranges: ["30"], downloadFormat: "EXCEL" };
 
 type DepositStatementFor = (
-  dateRange: FubonStatementsInput["dateRanges"][number],
+  range: string,
   account: FubonDepositAccountOption,
 ) => FubonParsedDepositStatement;
 
@@ -306,7 +311,7 @@ type DepositSource = Readonly<{
 }>;
 
 async function collectDeposit(
-  input: FubonStatementsInput,
+  { ranges, ...input }: DepositCollectionInput,
   { stagedItems, accountIdentityContinuity, accounts, statementFor, currentRows, signal, readCurrentBalances }: DepositSource,
 ) {
   const events: string[] = [];
@@ -314,7 +319,7 @@ async function collectDeposit(
     {
       accounts: accounts.map((account) => ({
         account,
-        statements: input.dateRanges.map((dateRange) => statementFor(dateRange, account)),
+        statements: ranges.map((range) => statementFor(range, account)),
       })),
     },
     { ...input, sourceConnectionScope, sourceConnectionKey },
@@ -333,10 +338,22 @@ async function collectDeposit(
       stage: (...requests) => { stagedItems.push(...requests); },
       reportActivity: async () => undefined,
       event: async (_stage, _outcome, code) => { events.push(code); },
+      collectionPeriod: () => assert.fail("the staging half reads no collection period"),
     },
     readCurrentBalances ?? (async () => currentRows),
   );
   return { ...summary, events };
+}
+
+{
+  const declaration = FUBON_SOURCE.statementSelection!.products.find(({ id }) => id === "deposit")!.collectionPeriod!;
+  // 16:30Z on Aug 30 is 00:30 on Aug 31 in Taipei.
+  const today = taipeiToday("2026-08-30T16:30:00.000Z");
+  assert.deepEqual(fubonDepositQueries(collectionPeriod({ today, ...declaration })), [
+    { rangeCode: "180", startDate: "2026/02/28", endDate: "2026/08/31" },
+    // "180_365" used to end on 2026/02/28 as well, so that day was queried twice.
+    { rangeCode: "180_365", startDate: "2025/08/31", endDate: "2026/02/27" },
+  ]);
 }
 
 const exclusionEvents = (events: readonly string[], kind: "current-balance" | "statement") =>
@@ -534,7 +551,7 @@ try {
   const olderStatementFor = (account: typeof unlinkableAccount) =>
     withRunningBalance(statementFor(account), "40.00", olderRange, "2025/08/01");
   const usdCodedNewest = (balance: string) => withRunningBalance(statementFor(usdCodedAccount), balance);
-  const twoRangeInput = { dateRanges: ["30" as const, "180_365" as const], downloadFormat: "EXCEL" as const };
+  const twoRangeInput: DepositCollectionInput = { ranges: ["30", "180_365"], downloadFormat: "EXCEL" };
   const runUsdCoded = async (
     newestBalance: string,
     snapshotRows: readonly FubonCurrentDepositBalanceRow[],
@@ -948,7 +965,7 @@ try {
   };
   const incompleteItems: ProductStageRequest[] = [];
   await collectDeposit(
-    { dateRanges: ["1"], downloadFormat: "EXCEL" },
+    { ranges: ["1"], downloadFormat: "EXCEL" },
     {
       ...collectorOverrides(incompleteItems, () => incompleteStatement),
       accounts: [incompleteAccount],
@@ -1015,6 +1032,12 @@ try {
     /unknown option read failure/u,
   );
 
+  // One window ending on the period's end, so each account posts one "180" query.
+  const january: CollectionPeriod = {
+    start: "2026-01-01",
+    end: "2026-01-31",
+    windows: [{ start: "2026-01-01", end: "2026-01-31" }],
+  };
   const QUERY_PATH = "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces";
   const shellAccounts = [
     { value: "SYNTHETIC-TWD-A", label: "SYNTHETIC-TWD-A (012)" },
@@ -1026,7 +1049,7 @@ try {
         <option value="none">請選擇帳戶</option>
         ${shellAccounts.map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`).join("")}
       </select>
-      <input type="radio" id="form1:rdoDay30" name="form1:rdoGroup3" value="30">
+      <input type="radio" id="form1:rdoDay180" name="form1:rdoGroup3" value="180">
       <input id="form1:startDate" name="form1:startDate" value="2026/01/01">
       <input id="form1:endDate" name="form1:endDate" value="2026/01/31">
       <a id="form1:doValidateAndSubmit" href="javascript:void(0)">查詢</a>
@@ -1096,9 +1119,11 @@ try {
       await shellPage.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
       const snapshot = await readFubonDepositSourceSnapshot(
         fubonEbankSite(shellPage, siteContext(options.signal)),
-        { dateRanges: ["30"], downloadFormat: "EXCEL" },
         siteContext(options.signal),
-        { reportActivity: async (activity) => { activities.push(activity); } },
+        {
+          reportActivity: async (activity) => { activities.push(activity); },
+          collectionPeriod: () => january,
+        },
       );
       return { snapshot, posted, clicks, activities };
     } finally {

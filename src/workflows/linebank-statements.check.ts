@@ -15,7 +15,6 @@ import {
   linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
   linebankHumanAttestedCapture,
-  linebankQueryWindows,
   linebankTransactionPageFromResponse,
   linebankValidateSourceOccurrenceFields,
   linebankValidateTransactionTime,
@@ -163,29 +162,6 @@ await assert.rejects(
       { text: strictSourceText },
     ).fetchAccountSnapshot(),
   /Source text integrity failed: invalid-encoding/u,
-);
-
-assert.deepEqual(
-  linebankQueryWindows({ startDate: "20250706", endDate: "20260705" }),
-  [{ startDate: "20250706", endDate: "20260705" }],
-);
-
-assert.deepEqual(
-  linebankQueryWindows({ startDate: "20240101", endDate: "20260705" }),
-  [
-    { startDate: "20250706", endDate: "20260705" },
-    { startDate: "20240706", endDate: "20250705" },
-    { startDate: "20240101", endDate: "20240705" },
-  ],
-);
-
-assert.throws(
-  () => linebankQueryWindows({ startDate: "20260231", endDate: "20260301" }),
-  /Invalid calendar date/,
-);
-assert.throws(
-  () => linebankQueryWindows({ startDate: "20260706", endDate: "20260705" }),
-  /startDate must be on or before endDate/,
 );
 
 assert.equal(linebankAccountCurrency({ acctNbr: "1" }), "TWD");

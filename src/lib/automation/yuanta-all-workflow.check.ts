@@ -206,7 +206,7 @@ try {
       collectFund: capture("investment"),
     });
     const deposit = inputs.deposit!;
-    assert.equal(deposit.dateRange, "three_months", "an omitted component input still gets its schema defaults");
+    assert.deepEqual(deposit.accountFilters, [], "an omitted component input still gets its schema defaults");
     assert.equal(typeof deposit.sourceConnectionKey, "string");
     assert.deepEqual(
       [inputs.loan!.sourceConnectionScope, inputs.loan!.sourceConnectionKey],

@@ -21,6 +21,7 @@ import {
   boundProductCollection,
   COLLECTION_PRODUCT_TYPE_IDS,
   interruptedProductCollectionFromOutput,
+  type CollectionPeriods,
   type CollectionProductTypeId,
   type ProductCollection,
 } from "./product-collection.ts";
@@ -145,7 +146,12 @@ export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = 
   attachedPreviewProducts?: AttachedPreviewSource;
   requiresProductCollection?: boolean;
   /** The Verified source facts the Product collection run is bound to; present when it is required. */
-  productCollection?: Readonly<{ provider: string; productIds: readonly CollectionProductTypeId[] }>;
+  productCollection?: Readonly<{
+    provider: string;
+    productIds: readonly CollectionProductTypeId[];
+    /** ADR 0077: each product's declared collection period. */
+    collectionPeriods?: CollectionPeriods;
+  }>;
   run(context: WorkflowContext, input: Input): Promise<Output>;
 }>;
 
@@ -379,6 +385,7 @@ export function createWorkflowExecutor(
         if (!definition.productCollection || !financialCommit) throw new Error("Product collection is unavailable.");
         products = boundProductCollection({
           ...definition.productCollection,
+          now: ports.now,
           input,
           ...(definition.attachedPreviewProducts ? { attachedSource: definition.attachedPreviewProducts } : {}),
           signal,

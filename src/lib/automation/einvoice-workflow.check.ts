@@ -144,6 +144,23 @@ function makeContext(overrides: Partial<WorkflowContextWith<"financialCommit">> 
   }
 }
 
+// The months and the current month's last queried day follow the run's Taipei
+// date: 16:30Z on Aug 31 is 00:30 on Sep 1 in Taipei.
+{
+  const ranges: Array<[string, string]> = [];
+  const { context, commits } = makeContext({ now: () => "2026-08-31T16:30:00.000Z" });
+  await runEinvoiceProviderWorkflow(context, { credentials }, sourceWith({
+    queryHeaders: async (_session, startDate, endDate) => {
+      ranges.push([startDate, endDate]);
+      return emptyHeaders;
+    },
+  }));
+  assert.deepEqual(ranges[0], ["2026/01/01", "2026/01/31"]);
+  assert.deepEqual(ranges.at(-1), ["2026/09/01", "2026/09/01"]);
+  const scope = (commits[0] as { command: { request: { scope: { startDate: string; endDate: string } } } }).command.request.scope;
+  assert.deepEqual([scope.startDate, scope.endDate], ["2026-01-01", "2026-09-01"], "the recorded scope ends on the queried day");
+}
+
 // Paging ends only at an empty page. A server that never returns one (for
 // example by ignoring `page`) must fail the run, not loop or commit.
 {

@@ -248,8 +248,29 @@ const bothProductsInput = {
     cathay_password: "fixture-password",
   },
   statementTypes: ["domestic", "foreign_currency"],
-  dateRange: "one_year",
 };
+
+test("Cathay queries its one-year option for both products, from one Taipei date per run", async () => {
+  const harness = contextHarness();
+  const dependencies = collectionDependencies();
+  const periods: unknown[] = [];
+  await runCathay(harness.context, bothProductsInput, {
+    ...dependencies,
+    collectDomestic: async (_page, _input, _session, _source, _observedAt, period) => {
+      periods.push(period);
+      return await dependencies.collectDomestic();
+    },
+    collectForeign: async (_page, _input, _session, _source, _observedAt, range) => {
+      periods.push(range);
+      return await dependencies.collectForeign();
+    },
+  });
+  // The harness clock reads 2026-09-25T01:00Z, 09:00 in Taipei.
+  assert.deepEqual(periods, [
+    { option: "one_year", startDate: "2025-09-25", endDate: "2026-09-25" },
+    { startDate: "2025-09-25", endDate: "2026-09-25" },
+  ]);
+});
 
 test("Cathay all workflow collects and commits selected products independently with no artifacts", async () => {
   const previousCwd = process.cwd();
@@ -500,10 +521,10 @@ test("Cathay foreign collector reports a missing selected currency without block
     bothProductsInput,
     {
       ...dependencies,
-      collectForeign: (page, input, session, source, observedAt) =>
+      collectForeign: (page, input, session, source, observedAt, range) =>
         collectCathayForeignFinancialCaptures(
           page,
-          input.dateRange,
+          range,
           input.foreignAccountFilters ?? input.accountFilters,
           input.currencyFilters,
           session,

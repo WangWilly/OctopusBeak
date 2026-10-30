@@ -69,7 +69,8 @@ export const LINEBANK_SOURCE: VerifiedSource = {
   statementSelection: {
     key: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES",
     products: [
-      { id: "deposit", stream: "domestic-deposit" },
+      // Twelve months inclusive, which one LINE Bank request may cover.
+      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: { months: 12 } } },
     ],
   },
   task: {

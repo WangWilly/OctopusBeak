@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { mock } from "node:test";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
@@ -18,14 +17,9 @@ registerHooks({
   },
 });
 
-// Keep the historical fixture inside the one-week provider scope regardless
-// of the day the check runs.  The production builder intentionally derives
-// its range from the current clock, so the check supplies an explicit as-of
-// date instead of allowing the fixture to age out of the scope.
-mock.timers.enable({
-  apis: ["Date"],
-  now: new Date("2026-08-24T12:00:00.000Z"),
-});
+// The run's collection period reaches the builder as explicit dates, so the
+// historical fixture stays inside its range whatever day the check runs.
+const oneWeek = { startDate: "2026-08-17", endDate: "2026-08-24" };
 
 const {
   buildCathayForeignCurrencyCaptureInput,
@@ -39,7 +33,7 @@ const {
 const capture = buildCathayForeignCurrencyCaptureInput(
   { account: "CATHAY-FOREIGN-133" },
   "USD",
-  "one_week",
+  oneWeek,
   {
     currencyCode: "USD",
     transferInfos: [
@@ -102,7 +96,7 @@ assert.equal(
 const numericJsonCapture = buildCathayForeignCurrencyCaptureInput(
   { account: "CATHAY-FOREIGN-133" },
   "USD",
-  "one_week",
+  oneWeek,
   observedNumericCathayResponse.content.transferDetails[0]!,
   "2026-08-24T12:00:00+08:00",
   "cathay-foreign-check-numeric-json",
@@ -114,8 +108,9 @@ assert.deepEqual(
   { coefficient: "315", scale: 1 },
 );
 const collector = createCathayForeignCanonicalCaptureCollector(
-  "one_week",
+  oneWeek,
   "00000000-0000-4000-8000-000000000133",
+  () => "2026-08-24T12:00:00+08:00",
 );
 const syntheticCathayForeignAccountNumber = ["0012", "3456", "7890"].join("");
 collector.onStatement(
@@ -176,7 +171,7 @@ assert.equal(freshForeignRows[0]!.sourceAccountKey, syntheticCathayForeignAccoun
     buildCathayForeignCurrencyCaptureInput(
       { account },
       "USD",
-      "one_week",
+      oneWeek,
       {
         currencyCode: "USD",
         transferInfos: [{
@@ -241,7 +236,7 @@ for (const missingOccurrence of [undefined, "   "] as const) {
       buildCathayForeignCurrencyCaptureInput(
         { account: "CATHAY-FOREIGN-133" },
         "USD",
-        "one_week",
+        oneWeek,
         {
           currencyCode: "USD",
           transferInfos: [{
@@ -263,7 +258,7 @@ assert.throws(
     buildCathayForeignCurrencyCaptureInput(
       { account: "CATHAY-FOREIGN-133" },
       "USD",
-      "one_week",
+      oneWeek,
       {
         currencyCode: "USD",
         transferInfos: [
@@ -286,7 +281,7 @@ assert.throws(
     buildCathayForeignCurrencyCaptureInput(
       { account: "CATHAY-FOREIGN-133" },
       "USD",
-      "one_week",
+      oneWeek,
       {
         currencyCode: "USD",
         transferInfos: [
@@ -309,7 +304,7 @@ assert.throws(
     buildCathayForeignCurrencyCaptureInput(
       { account: "CATHAY-FOREIGN-133" },
       "USD",
-      "one_week",
+      oneWeek,
       {
         currencyCode: "USD",
         transferInfos: [
@@ -331,7 +326,7 @@ assert.throws(
 const emptyCathayCapture = buildCathayForeignCurrencyCaptureInput(
   { account: "CATHAY-FOREIGN-EMPTY-133" },
   "USD",
-  "one_week",
+  oneWeek,
   { currencyCode: "USD", transferInfos: [] },
   "2026-08-24T12:00:00+08:00",
   "cathay-foreign-check-empty-observation",
@@ -344,11 +339,10 @@ assert.throws(
     buildCathayForeignCurrencyCaptureInput(
       { account: "CATHAY-FOREIGN-AMBIGUOUS-133" },
       "USD",
-      "one_week",
+      oneWeek,
       { currencyCode: "USD", transferInfos: [] },
       "2026-08-24T12:00:00+08:00",
       "cathay-foreign-check-ambiguous-empty",
     ),
   /no-data|empty|terminal/i,
 );
-mock.timers.reset();
