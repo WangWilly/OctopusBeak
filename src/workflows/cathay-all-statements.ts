@@ -6,8 +6,8 @@ import {
   type ProductCollectionSummary,
   type ProductCollectionActivityReporter,
   type ProductStageRequest,
-} from "../lib/automation/product-collection.js";
-import { FailureCodeError } from "../lib/automation/workflow-failures.js";
+} from "../lib/automation/product-collection.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
@@ -20,17 +20,17 @@ import {
   cathayQueryPeriod,
   type CathayDomesticFinancialCollection,
   type CathayQueryPeriod,
-} from "./cathay-statements.js";
+} from "./cathay-statements.ts";
 import {
   collectCathayForeignFinancialCaptures,
   collectCathayCurrentForeignDepositBalanceCaptures,
   type CathayForeignFinancialCollection,
   type CathayForeignQueryRange,
-} from "./cathay-foreign-statements.js";
+} from "./cathay-foreign-statements.ts";
 import {
   buildCathayCurrentDepositBalanceCaptures,
   buildCathayDomesticCurrentDepositBalanceCaptures,
-} from "./cathay-current-deposit-canonical.js";
+} from "./cathay-current-deposit-canonical.ts";
 import {
   type CathayCurrentDepositBalanceRow,
   CATHAY_CURRENT_DEPOSIT_HOST,
@@ -38,10 +38,10 @@ import {
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,
   readCathayCurrentDepositBalances,
-} from "./cathay-current-deposit-balances.js";
-import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.js";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.js";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.js";
+} from "./cathay-current-deposit-balances.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
+import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
@@ -122,8 +122,10 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 
 
 /** The foreign API takes the period's dates directly. */
-function cathayForeignQueryRange({ start, end }: CollectionPeriod): CathayForeignQueryRange {
-  return { startDate: start, endDate: end };
+/** The foreign-currency query asks for the same dates as the domestic one, leap-day start included. */
+function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRange {
+  const { startDate, endDate } = cathayQueryPeriod(period);
+  return { startDate, endDate };
 }
 
 function cathayBalanceResponseMatches(
