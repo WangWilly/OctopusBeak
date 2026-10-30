@@ -83,8 +83,10 @@ npm run workflow:dev -- run-app linebank-statements --allow-live-source
 `--now INSTANT` fixes the workflow clock at one UTC instant, so a source's Collection period ([ADR 0077](../adr/0077-a-verified-product-declares-its-collection-period.md)) can be probed at a date boundary without waiting for it. For example, `2028-02-28T16:30:00Z` is 2028-02-29 in Taipei:
 
 ```sh
-npm run workflow:dev -- run-app cathay-all-statements --now 2028-02-28T16:30:00Z --allow-live-source
+npm run workflow:dev -- run-app linebank-statements --now 2028-02-28T16:30:00Z --allow-live-source
 ```
+
+Sources that require a registered device, such as Cathay, stop at sign-in in the development browser, so their boundaries cannot be probed this way.
 
 The provider still sees today's real date. Use the flag only to check that a provider accepts the request dates a boundary produces, not to fetch data as of that day.
 
