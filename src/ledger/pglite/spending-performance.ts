@@ -94,16 +94,10 @@ async function timedPageAction(writer: PGliteStore, request: SpendingPageActionR
   const summaryAfter = await queryCurrentSpendingSummary(writer);
   const patched = applySpendingSummaryDelta(summaryBefore.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
   if (patched.recordCount !== summaryAfter.purchaseReport.recordCount
-      || JSON.stringify(patched.totalsByCurrency.map(reduced)) !== JSON.stringify(summaryAfter.purchaseReport.totalsByCurrency.map(reduced)))
+      || JSON.stringify(patched.totalsByCurrency) !== JSON.stringify(summaryAfter.purchaseReport.totalsByCurrency))
     throw new Error(`${label} summary delta does not reproduce the committed summary`);
   if (!result.affectedRecords.some((record) => record.basis === "linked")) throw new Error(`${label} did not return its linked record`);
   return { result, elapsedMs };
-}
-function reduced(amount: Readonly<{ currency: string; coefficient: string; scale: number; count: number }>) {
-  let coefficient = BigInt(amount.coefficient);
-  let scale = amount.scale;
-  while (scale > 0 && coefficient % 10n === 0n) { coefficient /= 10n; scale -= 1; }
-  return { ...amount, coefficient: coefficient.toString(), scale };
 }
 const coldConfirmed = await timedPageAction(coldWriter, candidateAction(coldFixtureReport.purchaseReport.knowledgeAt, coldCandidate.candidateId), "cold candidate");
 const coldConfirmMs = coldConfirmed.elapsedMs;

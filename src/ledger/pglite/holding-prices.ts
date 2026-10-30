@@ -1,4 +1,4 @@
-import { exactAmountToNumber } from "./overview-amount.ts";
+import { exactToNumber } from "../../lib/shared-money/exact-money.ts";
 
 export type PGliteHoldingPriceReader = Readonly<{
   query<T>(query: string, params?: readonly unknown[]): Promise<{ rows: readonly T[] }>;
@@ -76,9 +76,9 @@ export async function readPGliteHoldingPrices(
     [knowledgePoint],
   );
   return result.rows.flatMap((row) => {
-    const quantity = exactAmountToNumber({ coefficient: row.quantity_coefficient, scale: Number(row.quantity_scale) });
+    const quantity = exactToNumber({ coefficient: row.quantity_coefficient, scale: Number(row.quantity_scale) });
     if (quantity === 0) return [];
-    const valuation = exactAmountToNumber({ coefficient: row.valuation_coefficient, scale: Number(row.valuation_scale) });
+    const valuation = exactToNumber({ coefficient: row.valuation_coefficient, scale: Number(row.valuation_scale) });
     return [{
       accountId: row.account_id,
       securityId: row.security_id,

@@ -39,10 +39,12 @@
     groupLabel,
     monthDayText,
     monthText,
+    pairingAmountsDiffer,
     paymentMethodText,
     recordCategoryText,
     recordGroups,
     recordMerchant,
+    recordTotals,
     shareText,
     shortMonthText,
   } from "../spending-display.ts";
@@ -271,40 +273,9 @@
     return candidate.stream === "credit-card" ? $t.purchaseSpending.creditCardPurchase : $t.purchaseSpending.bankTransaction;
   }
 
-  function exactText(value: { coefficient: string; scale: number } | null) {
-    if (!value) return $t.purchaseSpending.unavailable;
-    if (value.scale === 0) return value.coefficient;
-    const negative = value.coefficient.startsWith("-");
-    const digits = negative ? value.coefficient.slice(1) : value.coefficient;
-    const padded = digits.padStart(value.scale + 1, "0");
-    const split = padded.length - value.scale;
-    return `${negative ? "-" : ""}${padded.slice(0, split)}.${padded.slice(split)}`;
-  }
-
   function totalsForMonth(sourceReport: PurchaseReport, month: string) {
     if (sourceReport.summary) return sourceReport.summary.monthTotals.find((row) => row.month === month)?.totalsByCurrency ?? [];
-    return totalsByCurrency(sourceReport.records.filter((record) => record.occurrence.value.startsWith(`${month}-`)));
-  }
-
-  function totalsByCurrency(records: readonly PurchaseRecord[]) {
-    const totals = new Map<string, { coefficient: string; scale: number; currency: string }>();
-    for (const record of records) {
-      if (!record.amount) continue;
-      const previous = totals.get(record.amount.currency);
-      if (!previous) {
-        totals.set(record.amount.currency, { ...record.amount });
-        continue;
-      }
-      const scale = Math.max(previous.scale, record.amount.scale);
-      const coefficient = BigInt(previous.coefficient) * 10n ** BigInt(scale - previous.scale) +
-        BigInt(record.amount.coefficient) * 10n ** BigInt(scale - record.amount.scale);
-      totals.set(record.amount.currency, {
-        currency: record.amount.currency,
-        coefficient: coefficient.toString(),
-        scale,
-      });
-    }
-    return [...totals.values()].sort((left, right) => left.currency.localeCompare(right.currency));
+    return recordTotals(sourceReport.records.filter((record) => record.occurrence.value.startsWith(`${month}-`)));
   }
 
   function visibleRecordsOf(sourceReport: PurchaseReport, month: string, day: string | null) {
@@ -342,7 +313,7 @@
     return [...groups.entries()].map(([date, entries]) => ({
       date,
       records: entries,
-      totals: totalsByCurrency(entries),
+      totals: recordTotals(entries),
     }));
   }
 
@@ -866,7 +837,7 @@
               <strong>{$t.purchaseSpending.recognitionAfterMatch}</strong>
               <span>{$t.purchaseSpending.amountCurrencyFromBank}: <span class="money" data-sensitive>{amountText(selectedPayment.amount)}</span></span>
               <span>{$t.purchaseSpending.dateFromInvoice}: {dateText(pairingInvoice.occurrence.value)}</span>
-              {#if pairingInvoice.amount?.currency !== selectedPayment.amount?.currency || exactText(pairingInvoice.amount) !== exactText(selectedPayment.amount)}
+              {#if pairingAmountsDiffer(pairingInvoice.amount, selectedPayment.amount)}
                 <span>{$t.purchaseSpending.sourceDifferenceNotInferred}</span>
               {/if}
             </div>

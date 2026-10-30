@@ -1,5 +1,15 @@
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
-import { exactToNumber } from "../shared-money/exact.ts";
+import {
+  addToTotals,
+  exactToNumber,
+  isZeroExact,
+  negateMoney,
+  normalizeCurrency,
+  parseExactMoney,
+  readTotals,
+  type ExactMoney,
+  type MoneyTotalsAccumulator,
+} from "../shared-money/exact-money.ts";
 import type { PurchaseCategory } from "./purchase-category-view.ts";
 import type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 import type { SpendingPurchaseReportView } from "./purchase-matching.ts";
@@ -385,77 +395,79 @@ export type SpendingSummaryDeltaLine = Readonly<{
   category: PurchaseCategory;
 }>;
 
-function categoryTotalsAtScale(
+/**
+ * Summary totals after a delta, through the shared money totals so the
+ * renderer reads what the server would compute: currency upper-cased, amounts
+ * reduced, and a total kept while it still counts a record.
+ */
+function signedSummaryAmount(value: unknown, direction: 1 | -1): ExactMoney {
+  const amount = parseExactMoney(value, "Spending summary amount");
+  return direction === 1 ? amount : negateMoney(amount);
+}
+
+function summaryCount(count: number, direction: 1 | -1): number {
+  if (!Number.isSafeInteger(count) || count < 0) throw new TypeError("Spending summary amount is invalid.");
+  return direction * count;
+}
+
+function categoryTotalsAfter(
   rows: readonly SpendingCategoryMonthTotal[],
-  targetScale: number,
   lines: readonly Readonly<{ line: SpendingSummaryDeltaLine; direction: 1 | -1 }>[],
 ): readonly SpendingCategoryMonthTotal[] {
-  const values = new Map<string, { month: string; currency: string; categoryCode: string | null; coefficient: bigint; count: number }>();
-  const add = (month: string, currency: string, categoryCode: string | null, coefficient: string, scale: number, count: number, direction: 1 | -1) => {
-    const key = `${month}|${currency}|${categoryCode ?? ""}`;
-    const current = values.get(key) ?? { month, currency, categoryCode, coefficient: 0n, count: 0 };
-    current.coefficient += BigInt(direction) * BigInt(coefficient) * summaryPowerOfTen(targetScale - scale);
-    current.count += direction * count;
-    if (current.count < 0) throw new Error("Spending summary delta removed a missing category amount.");
-    values.set(key, current);
+  const values: MoneyTotalsAccumulator = new Map();
+  const groups = new Map<string, { month: string; categoryCode: string | null }>();
+  const add = (month: string, categoryCode: string | null, amount: SpendingMoneyDto, count: number, direction: 1 | -1) => {
+    const key = `${month}|${normalizeCurrency(amount.currency)}|${categoryCode ?? ""}`;
+    groups.set(key, { month, categoryCode });
+    addToTotals(values, signedSummaryAmount(amount, direction), () => key, summaryCount(count, direction));
+    if (values.get(key)!.count < 0) throw new Error("Spending summary delta removed a missing category amount.");
   };
-  for (const row of rows) add(row.month, row.currency, row.categoryCode, row.coefficient, row.scale, row.count, 1);
+  for (const row of rows) add(row.month, row.categoryCode, row, row.count, 1);
   for (const { line, direction } of lines) {
     if (!line.amount) continue;
     const month = line.date.slice(0, 7);
     if (line.category.mode === "split") {
       for (const component of line.category.components)
-        add(month, component.amount.currency, component.categoryCode, component.amount.coefficient, component.amount.scale, 1, direction);
+        add(month, component.categoryCode, component.amount, 1, direction);
       continue;
     }
-    add(month, line.amount.currency, line.category.mode === "single" ? line.category.categoryCode : null, line.amount.coefficient, line.amount.scale, 1, direction);
+    add(month, line.category.mode === "single" ? line.category.categoryCode : null, line.amount, 1, direction);
   }
-  return Object.freeze([...values.values()]
-    .filter((value) => value.count > 0)
-    .sort((left, right) => left.month.localeCompare(right.month) || left.currency.localeCompare(right.currency) || (left.categoryCode ?? "").localeCompare(right.categoryCode ?? ""))
-    .map((value) => Object.freeze({ month: value.month, currency: value.currency, categoryCode: value.categoryCode, coefficient: value.coefficient.toString(), scale: targetScale, count: value.count })));
+  return Object.freeze(readTotals(values).map(({ key, currency, coefficient, scale, count }) => Object.freeze({
+    month: groups.get(key)!.month,
+    currency,
+    categoryCode: groups.get(key)!.categoryCode,
+    coefficient,
+    scale,
+    count,
+  })));
 }
 
 const SPENDING_SUMMARY_DATE = /^\d{4}-\d{2}-\d{2}$/u;
 
-function summaryPowerOfTen(scale: number): bigint {
-  if (!Number.isSafeInteger(scale) || scale < 0 || scale > 1000)
-    throw new TypeError("Spending summary scale is invalid.");
-  return 10n ** BigInt(scale);
-}
-
-function summaryMoneyAtScale(
+function summaryMoneyAfter(
   rows: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[],
-  targetScale: number,
   deltas: readonly Readonly<{ amount: SpendingSummaryDeltaLine["amount"]; direction: 1 | -1 }>[],
 ) {
-  const values = new Map<string, { coefficient: bigint; count: number }>();
-  const add = (currency: string, coefficient: string, scale: number, count: number, direction: 1 | -1) => {
-    if (!currency || !/^-?\d+$/u.test(coefficient) || !Number.isSafeInteger(count) || count < 0)
-      throw new TypeError("Spending summary amount is invalid.");
-    const aligned = BigInt(coefficient) * summaryPowerOfTen(targetScale - scale);
-    const current = values.get(currency) ?? { coefficient: 0n, count: 0 };
-    current.coefficient += BigInt(direction) * aligned;
-    current.count += direction * count;
-    if (current.count < 0) throw new Error("Spending summary delta removed a missing amount.");
-    values.set(currency, current);
+  const values: MoneyTotalsAccumulator = new Map();
+  const add = (amount: SpendingMoneyDto, count: number, direction: 1 | -1) => {
+    const signed = signedSummaryAmount(amount, direction);
+    const currency = normalizeCurrency(signed.currency);
+    addToTotals(values, signed, () => currency, summaryCount(count, direction));
+    if (values.get(currency)!.count < 0) throw new Error("Spending summary delta removed a missing amount.");
   };
 
-  for (const row of rows) add(row.currency, row.coefficient, row.scale, row.count, 1);
+  for (const row of rows) add(row, row.count, 1);
   for (const delta of deltas) {
     if (!delta.amount) continue;
-    add(delta.amount.currency, delta.amount.coefficient, delta.amount.scale, 1, delta.direction);
+    add(delta.amount, 1, delta.direction);
   }
   for (const [currency, value] of values) {
-    if (value.count === 0 && value.coefficient !== 0n)
+    if (value.count === 0 && !isZeroExact(value.amount))
       throw new Error(`Spending summary delta left a non-zero ${currency} amount without records.`);
   }
-  return Object.freeze([...values.entries()]
-    .filter(([, value]) => value.count > 0)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([currency, value]) => {
-      return Object.freeze({ currency, coefficient: value.coefficient.toString(), scale: targetScale, count: value.count });
-    }));
+  return Object.freeze(readTotals(values).map(({ currency, coefficient, scale, count }) =>
+    Object.freeze({ currency, coefficient, scale, count })));
 }
 
 /** Apply a worker-validated pair action to a matching compact summary. */
@@ -471,23 +483,11 @@ export function applySpendingSummaryDelta(
       delta.after.some((line) => !SPENDING_SUMMARY_DATE.test(line.date)))
     throw new TypeError("Spending summary delta date is invalid.");
 
-  const deltaAmounts = [...delta.before, ...delta.after]
-    .flatMap((line) => [
-      ...(line.amount ? [line.amount.scale] : []),
-      ...(line.category.mode === "split" ? line.category.components.map((component) => component.amount.scale) : []),
-    ]);
-  const existingScales = [
-    ...summary.totalsByCurrency,
-    ...summary.monthTotals.flatMap((month) => month.totalsByCurrency),
-    ...summary.dayTotals.flatMap((day) => day.totalsByCurrency),
-    ...summary.categoryTotalsByMonth,
-  ].map((amount) => amount.scale);
-  const scale = Math.max(0, ...existingScales, ...deltaAmounts);
   const allMoneyDeltas = [
     ...delta.before.map((line) => ({ amount: line.amount, direction: -1 as const })),
     ...delta.after.map((line) => ({ amount: line.amount, direction: 1 as const })),
   ];
-  const totalsByCurrency = summaryMoneyAtScale(summary.totalsByCurrency, scale, allMoneyDeltas);
+  const totalsByCurrency = summaryMoneyAfter(summary.totalsByCurrency, allMoneyDeltas);
 
   const rowDeltaByDate = new Map<string, number>();
   const moneyDeltaByDate = new Map<string, typeof allMoneyDeltas>();
@@ -516,11 +516,7 @@ export function applySpendingSummaryDelta(
       month: date.slice(0, 7),
       date,
       recordCount: rowCount,
-      totalsByCurrency: summaryMoneyAtScale(
-        prior?.totalsByCurrency ?? [],
-        scale,
-        moneyDeltaByDate.get(date) ?? [],
-      ),
+      totalsByCurrency: summaryMoneyAfter(prior?.totalsByCurrency ?? [], moneyDeltaByDate.get(date) ?? []),
     }));
   }
   const dayTotals = Object.freeze([...dayByDate.values()].sort((left, right) => left.date.localeCompare(right.date)));
@@ -550,11 +546,7 @@ export function applySpendingSummaryDelta(
       recordCount,
       activeDayCount: dayTotals.filter((day) => day.month === month).length,
       pendingCandidateCount: null,
-      totalsByCurrency: summaryMoneyAtScale(
-        prior?.totalsByCurrency ?? [],
-        scale,
-        moneyDeltaByMonth.get(month) ?? [],
-      ),
+      totalsByCurrency: summaryMoneyAfter(prior?.totalsByCurrency ?? [], moneyDeltaByMonth.get(month) ?? []),
     })];
   }));
   const recordCount = summary.recordCount + delta.after.length - delta.before.length;
@@ -569,7 +561,7 @@ export function applySpendingSummaryDelta(
     totalsByCurrency,
     monthTotals,
     dayTotals,
-    categoryTotalsByMonth: categoryTotalsAtScale(summary.categoryTotalsByMonth, scale, [
+    categoryTotalsByMonth: categoryTotalsAfter(summary.categoryTotalsByMonth, [
       ...delta.before.map((line) => ({ line, direction: -1 as const })),
       ...delta.after.map((line) => ({ line, direction: 1 as const })),
     ]),
