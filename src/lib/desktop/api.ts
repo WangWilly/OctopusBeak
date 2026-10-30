@@ -41,6 +41,7 @@ import type {
   SpendingLoadInput,
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
+import type { UsagePing } from "$lib/settings/usage-statistics.ts";
 import type {
   DataReadOptions,
   DataInvalidationEvent,
@@ -226,6 +227,11 @@ export type OctopusBeakApi = {
   settings: {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
+    /** The exact body the next usage ping would send (ADR 0078). */
+    previewUsagePing(): Promise<UsagePing>;
+    /** True once per install until the person answers the usage statistics question. */
+    shouldAskUsageStatistics(): Promise<boolean>;
+    answerUsageStatistics(enabled: boolean): Promise<SystemSettingsDto>;
     deletePreviewData(): Promise<void>;
     /** Canonical Reset: every source's financial data. */
     deleteFinancialData(): Promise<void>;

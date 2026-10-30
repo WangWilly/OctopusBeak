@@ -112,6 +112,10 @@ CAPTCHAs, OTPs, session cookies, and other authentication material are not sent 
 
 When a preview source run fails, you can use Share structure report in its run details to help improve that source. The report describes only the field structure of the responses, never account numbers, names, amounts, dates, or other content. You review the full report and paste it into a prefilled public GitHub issue yourself; the App sends nothing.
 
+### Anonymous usage statistics (off by default)
+
+The App asks you once, in a dialog, whether to turn on Usage statistics; the answer is never preselected, and you can change it later in Settings. Only after you turn it on does the App send one anonymous report a day: the app version, the macOS version (major and minor only), the macOS language (Chinese or English), and the week you first opened the app. It tells us how many people keep using OctopusBeak. The report carries no financial data, sign-in details, or run results, and no device identifier; the server keeps only daily totals, for two years, never individual reports or IP addresses. Cloudflare, which receives it, sees the connecting network address as any website would. Settings shows the exact content of the next report, and you can turn it off at any time.
+
 ## Developer information
 
 <details>

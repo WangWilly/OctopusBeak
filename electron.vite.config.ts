@@ -21,7 +21,19 @@ const external = [
   /^pngjs/,
 ];
 
+/** ADR 0078: the usage endpoint is set at build time so it never appears in the source. */
+function usagePingUrl() {
+  const value = process.env.OCTOPUSBEAK_USAGE_PING_URL ?? "";
+  if (value && !/^https:\/\/[^\s/]+\/v1\/ping$/u.test(value)) {
+    throw new Error("OCTOPUSBEAK_USAGE_PING_URL must be an https:// URL ending in /v1/ping.");
+  }
+  return value;
+}
+
 export default defineConfig({
+  define: {
+    __OCTOPUSBEAK_USAGE_PING_URL__: JSON.stringify(usagePingUrl()),
+  },
   build: {
     emptyOutDir: true,
     ssr: true,

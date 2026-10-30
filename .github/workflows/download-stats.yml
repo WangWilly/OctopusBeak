@@ -1,0 +1,48 @@
+name: Download Stats
+
+on:
+  schedule:
+    - cron: "17 16 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: download-stats
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Check out the download-stats branch
+        run: |
+          if git fetch --depth=1 origin download-stats; then
+            git worktree add stats FETCH_HEAD
+            git -C stats switch -c download-stats
+          else
+            git worktree add --orphan -b download-stats stats
+          fi
+
+      - name: Record release download counts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/download-stats.mjs stats
+
+      - name: Commit snapshot
+        working-directory: stats
+        run: |
+          git add history.csv README.md
+          if git diff --cached --quiet; then
+            echo "No change since the last snapshot."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898299+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Download stats $(date -u +%F)"
+          git push origin HEAD:download-stats
