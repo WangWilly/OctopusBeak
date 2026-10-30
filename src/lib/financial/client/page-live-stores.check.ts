@@ -39,3 +39,23 @@ const stopMalformed = malformed.spending().subscribe((value) => malformedValues.
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.deepEqual(malformedValues.at(-1), { status: "error", code: "subscription-failed" });
 stopMalformed();
+
+let restartReads = 0;
+const restartable = createFinancialPageLiveStores({
+  async subscribe(_view, _params, onRows) {
+    restartReads += 1;
+    onRows([{ availability: "available", read: restartReads }]);
+    return async () => {};
+  },
+});
+const restartValues: unknown[] = [];
+const stopRestartable = restartable.liabilities().subscribe((value) => restartValues.push(value));
+await new Promise((resolve) => setTimeout(resolve, 0));
+restartable.restart.liabilities();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(restartReads, 2);
+assert.deepEqual(restartValues.slice(-2), [
+  { status: "loading" },
+  { status: "ready", data: { availability: "available", read: 2 } },
+]);
+stopRestartable();
