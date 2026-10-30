@@ -23,7 +23,7 @@ APPLE_TEAM_ID
 OCTOPUSBEAK_USAGE_PING_URL
 ```
 
-`OCTOPUSBEAK_USAGE_PING_URL` is the usage statistics endpoint of [ADR 0077](adr/0077-opt-in-anonymous-daily-usage-ping.md), `https://<worker host>/v1/ping`. The build embeds it in the main process; the source never names it. The release fails when it is missing, because an app built without it never asks for or sends usage statistics. Local builds without the variable behave the same way.
+`OCTOPUSBEAK_USAGE_PING_URL` is the usage statistics endpoint of [ADR 0078](adr/0078-opt-in-anonymous-daily-usage-ping.md), `https://<worker host>/v1/ping`. The build embeds it in the main process; the source never names it. The release fails when it is missing, because an app built without it never asks for or sends usage statistics. Local builds without the variable behave the same way.
 
 The repository's `main` branch policy must allow this workflow's `GITHUB_TOKEN` to push the version commit and tag. If branch protection requires pull requests for every change, this direct-release workflow will stop at the push step without creating a remote version.
 

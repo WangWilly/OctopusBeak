@@ -21,7 +21,7 @@ const external = [
   /^pngjs/,
 ];
 
-/** ADR 0077: the usage endpoint is set at build time so it never appears in the source. */
+/** ADR 0078: the usage endpoint is set at build time so it never appears in the source. */
 function usagePingUrl() {
   const value = process.env.OCTOPUSBEAK_USAGE_PING_URL ?? "";
   if (value && !/^https:\/\/[^\s/]+\/v1\/ping$/u.test(value)) {
