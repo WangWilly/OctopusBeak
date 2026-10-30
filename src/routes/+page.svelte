@@ -3,6 +3,7 @@
   import { writable } from "svelte/store";
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
+  import UsageStatisticsPrompt from "$lib/settings/UsageStatisticsPrompt.svelte";
   import {
     createAutomationRuntimeController,
     createAutomationBlockRefreshCoordinator,
@@ -41,7 +42,7 @@
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
-  import { applySystemSettings } from "$lib/settings/system-timezone-store.ts";
+  import { applySystemSettings, usageStatisticsEnabled } from "$lib/settings/system-timezone-store.ts";
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import {
     createFinancialPage,
@@ -196,6 +197,33 @@
   $: liabilitiesValue = viewData(liabilities);
   $: spendingValue = viewData(spending);
   $: automationValue = viewData(automation);
+  /** ADR 0078: the one-time usage statistics question waits for the welcome and onboarding to finish. */
+  let usageStatisticsAsk = false;
+  let firstRunWelcomeResolved = false;
+  let lastUsageStatisticsEnabled: boolean | null = null;
+  // Changing the switch in Settings answers the question, even while the dialog is still waiting.
+  $: {
+    if (lastUsageStatisticsEnabled !== null && $usageStatisticsEnabled !== lastUsageStatisticsEnabled) {
+      usageStatisticsAsk = false;
+    }
+    lastUsageStatisticsEnabled = $usageStatisticsEnabled;
+  }
+  $: showUsageStatisticsPrompt = usageStatisticsAsk
+    && firstRunWelcomeResolved
+    && firstRunWelcomeState?.status !== "active"
+    && !completingFirstRunWelcome
+    && onboardingState?.status !== "active";
+
+  async function answerUsageStatistics(enabled: boolean) {
+    usageStatisticsAsk = false;
+    try {
+      applySystemSettings(await window.octopusBeak.settings.answerUsageStatistics(enabled));
+    } catch (error) {
+      // Unrecorded, so the question comes back on the next launch.
+      console.error("usage-statistics-answer-failed", error);
+    }
+  }
+
   $: onboardingStory = onboardingState
     ? onboardingController?.getStoryView(onboardingRestartPending) ?? null
     : null;
@@ -773,12 +801,19 @@
     void window.octopusBeak.settings.load()
       .then((value) => applySystemSettings(value))
       .catch((error) => console.warn("system-settings-load-failed", error));
+    void window.octopusBeak.settings.shouldAskUsageStatistics()
+      .then((ask) => {
+        if (mounted) usageStatisticsAsk = ask;
+      })
+      .catch((error) => console.warn("usage-statistics-ask-failed", error));
     // Financial routes are PGlite-live-only, so resolve the capability before
     // the first route load and never start legacy page/block reads.
     void financialPage.capability.then(() => {
       if (!mounted) return;
       void resolveFirstRunWelcome().finally(() => {
-        if (mounted) normalizeRoute();
+        if (!mounted) return;
+        firstRunWelcomeResolved = true;
+        normalizeRoute();
       });
     });
     const dataVersionLifecycle = installDataVersionLifecycle({
@@ -1020,6 +1055,10 @@
     onRetryOverview={() => onboardingController?.retryOverview() ?? Promise.resolve()}
     onCancelWorkflow={cancelOnboardingWorkflow}
   />
+{/if}
+
+{#if showUsageStatisticsPrompt}
+  <UsageStatisticsPrompt onAnswer={answerUsageStatistics} />
 {/if}
 
 <style>

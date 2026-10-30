@@ -16,7 +16,7 @@ assert.match(
 );
 assert.match(
   source,
-  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);\s*\}\)/,
+  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*\}\)/,
 );
 assert.match(
   source,
