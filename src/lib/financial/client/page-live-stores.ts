@@ -20,11 +20,20 @@ type FinancialViewTransport = {
   ): Promise<() => void | Promise<void>>;
 };
 
+type PageParams = { expectedSources?: readonly CanonicalOverviewExpectedSource[] };
+
 export type FinancialPageLiveStores = Readonly<{
-  overview(params?: { expectedSources?: readonly CanonicalOverviewExpectedSource[] }): Readable<ViewState<OverviewPageDto>>;
-  assets(params?: { expectedSources?: readonly CanonicalOverviewExpectedSource[] }): Readable<ViewState<AssetsPageDto>>;
-  liabilities(params?: { expectedSources?: readonly CanonicalOverviewExpectedSource[] }): Readable<ViewState<LiabilitiesPageDto>>;
+  overview(params?: PageParams): Readable<ViewState<OverviewPageDto>>;
+  assets(params?: PageParams): Readable<ViewState<AssetsPageDto>>;
+  liabilities(params?: PageParams): Readable<ViewState<LiabilitiesPageDto>>;
   spending(params?: SpendingLoadInput): Readable<ViewState<SpendingPageDto>>;
+  /** Re-read a subscribed page store with a new transport subscription. */
+  restart: Readonly<{
+    overview(params?: PageParams): void;
+    assets(params?: PageParams): void;
+    liabilities(params?: PageParams): void;
+    spending(params?: SpendingLoadInput): void;
+  }>;
 }>;
 
 /**
@@ -61,5 +70,11 @@ export function createFinancialPageLiveStores(
     assets: (params = {}) => view("financial.assets.current", params),
     liabilities: (params = {}) => view("financial.liabilities.current", params),
     spending: (params = {}) => view("financial.spending.current", params),
+    restart: Object.freeze({
+      overview: (params = {}) => views.restart("financial.overview.current", params),
+      assets: (params = {}) => views.restart("financial.assets.current", params),
+      liabilities: (params = {}) => views.restart("financial.liabilities.current", params),
+      spending: (params = {}) => views.restart("financial.spending.current", params),
+    }),
   });
 }

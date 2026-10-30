@@ -20,6 +20,8 @@ type ViewStoreEntry<Value> = {
   store: Readable<ViewState<Value>>;
   generation: number;
   teardown: Promise<void>;
+  /** Present while the store has subscribers. */
+  restart: (() => void) | null;
 };
 
 async function stopSafely(stop: Stop): Promise<void> {
@@ -41,7 +43,7 @@ export function createViewStores(transport: ViewTransport) {
       if (existing) return existing.store as Readable<ViewState<Value>>;
 
       let entry!: ViewStoreEntry<Value>;
-      const store = readable<ViewState<Value>>({ status: "loading" }, (set) => {
+      const startGeneration = (set: (state: ViewState<Value>) => void) => {
         const generation = ++entry.generation;
         let active = true;
         let stopRemote: Stop | undefined;
@@ -83,14 +85,34 @@ export function createViewStores(transport: ViewTransport) {
             if (stopRemote) await stopSafely(stopRemote);
           })();
         };
+      };
+      const store = readable<ViewState<Value>>({ status: "loading" }, (set) => {
+        let stopGeneration = startGeneration(set);
+        entry.restart = () => {
+          stopGeneration();
+          stopGeneration = startGeneration(set);
+        };
+        return () => {
+          entry.restart = null;
+          stopGeneration();
+        };
       });
-      entry = { store, generation: 0, teardown: Promise.resolve() };
+      entry = { store, generation: 0, teardown: Promise.resolve(), restart: null };
       // Retain the canonical store identity for the lifetime of this registry.
       // A caller can keep an old Readable reference and resubscribe after its
       // transport has stopped; evicting here would allow two transports for
       // the same key.
       cache.set(key, entry as ViewStoreEntry<unknown>);
       return store;
+    },
+
+    /**
+     * Re-read a subscribed key: its subscribers see loading, then the value of
+     * a new transport subscription. A key without subscribers already starts
+     * a new subscription on its next subscriber, so this does nothing.
+     */
+    restart(view: string, params: object): void {
+      cache.get(viewSubscriptionKey(view, params))?.restart?.();
     },
   };
 }
