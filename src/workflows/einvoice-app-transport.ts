@@ -13,8 +13,8 @@ import {
   EINVOICE_APP_VERSION,
   encryptLoginData,
   parseLoginSession,
+  queryIssuedAt,
   randomClientCode,
-  serverTimeOffset,
   signInvoiceJwt,
   type EInvoiceAppSession,
 } from "./einvoice-app-protocol.ts";
@@ -256,7 +256,7 @@ export async function queryEinvoiceHeaders(
   const jwt = signInvoiceJwt(
     request,
     session,
-    Math.floor(Date.now() / 1000) + serverTimeOffset(session) - 10,
+    queryIssuedAt(session),
   );
   const body = await postAppJson(
     page,
@@ -294,7 +294,7 @@ export async function queryEinvoiceDetail(
   const jwt = signInvoiceJwt(
     request,
     session,
-    Math.floor(Date.now() / 1000) + serverTimeOffset(session) - 10,
+    queryIssuedAt(session),
   );
   const body = await postAppJson(
     page,
