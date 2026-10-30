@@ -16,6 +16,7 @@ import {
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { readAutomationSettings, watchPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import { automationFlagEnabled } from "../src/lib/automation/statement-selection.ts";
 import {
   deleteAllFinancialData,
   type CollectionControl,
@@ -115,7 +116,8 @@ export function registerOctopusBeakIpc({
       const value = validateSystemSettings(input);
       const current = readAutomationSettings();
       // Changing the switch in Settings answers the one-time usage statistics question too.
-      const usageAnswered = systemSettings(current).usageStatisticsEnabled !== value.usageStatisticsEnabled;
+      // Read only the flag, so a corrupt stored value elsewhere cannot block the save that repairs it.
+      const usageAnswered = automationFlagEnabled(current.USAGE_STATISTICS_ENABLED) !== value.usageStatisticsEnabled;
       writeAutomationSettings({
         ...current,
         ...systemSettingsFileEntries(value),

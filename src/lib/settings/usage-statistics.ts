@@ -14,6 +14,10 @@ export const USAGE_PING_URL: string =
 export const USAGE_STATISTICS_ENABLED_KEY = "USAGE_STATISTICS_ENABLED";
 /** Set once the person has answered the one-time question, or changed the switch in Settings. */
 export const USAGE_STATISTICS_PROMPTED_KEY = "USAGE_STATISTICS_PROMPTED";
+/** Set when the receiver answers 410: collection is over, whatever the switch says later. */
+export const USAGE_STATISTICS_RETIRED_KEY = "USAGE_STATISTICS_RETIRED";
+/** The day a ping was refused with a 4xx that is not retried, so a relaunch does not send again. */
+export const USAGE_REFUSED_DAY_KEY = "USAGE_REFUSED_DAY";
 export const USAGE_COHORT_WEEK_KEY = "USAGE_COHORT_WEEK";
 export const USAGE_LAST_SENT_DAY_KEY = "USAGE_LAST_SENT_DAY";
 
@@ -130,7 +134,6 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
   let active = false;
   let timer: unknown = null;
   let inFlight: Promise<void> | null = null;
-  let refusedDay: string | null = null;
   let answeredThisLaunch = false;
 
   function cohortWeek(settings: AutomationSettingsFile): string {
@@ -160,7 +163,8 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
     const settings = deps.readSettings();
     if (!automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])) return;
     const today = taipeiDay(deps.now());
-    if (settings[USAGE_LAST_SENT_DAY_KEY] === today || refusedDay === today) return;
+    if (automationFlagEnabled(settings[USAGE_STATISTICS_RETIRED_KEY])) return;
+    if (settings[USAGE_LAST_SENT_DAY_KEY] === today || settings[USAGE_REFUSED_DAY_KEY] === today) return;
     const ping = preview();
     let status: number | null;
     try {
@@ -170,8 +174,14 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
     }
     const outcome = usagePingOutcome(status);
     if (outcome === "sent") deps.writeSettings({ [USAGE_LAST_SENT_DAY_KEY]: today });
-    if (outcome === "refused") refusedDay = today;
-    if (outcome === "retired") deps.writeSettings({ [USAGE_STATISTICS_ENABLED_KEY]: "false" });
+    if (outcome === "refused") deps.writeSettings({ [USAGE_REFUSED_DAY_KEY]: today });
+    if (outcome === "retired") {
+      deps.writeSettings({
+        [USAGE_STATISTICS_RETIRED_KEY]: "true",
+        [USAGE_STATISTICS_ENABLED_KEY]: "false",
+        [USAGE_STATISTICS_PROMPTED_KEY]: "true",
+      });
+    }
     // Never log the payload.
     if (outcome !== "sent") deps.reportError(`usage-ping-${outcome}${status === null ? "" : `-${status}`}`);
   }
@@ -192,6 +202,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
     if (deps.forceAsk) return !answeredThisLaunch;
     if (!deps.url) return false;
     const settings = deps.readSettings();
+    if (automationFlagEnabled(settings[USAGE_STATISTICS_RETIRED_KEY])) return false;
     return !automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])
       && !automationFlagEnabled(settings[USAGE_STATISTICS_PROMPTED_KEY]);
   }
@@ -233,6 +244,8 @@ export async function postUsagePing(url: string, body: string): Promise<number |
       headers: { "content-type": "application/json" },
       body,
       credentials: "omit",
+      // A redirect must not carry the body to another host.
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     await response.body?.cancel();
