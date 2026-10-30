@@ -64,6 +64,11 @@ const dataViews = {
 
 /** The channel behind each bridge method that only forwards to an ipcMain handler. */
 const INVOKE_CHANNELS = {
+  errorReports: {
+    available: "errorReports:available",
+    preview: "errorReports:preview",
+    send: "errorReports:send",
+  },
   settings: {
     load: "settings:load",
     save: "settings:save",
@@ -134,6 +139,7 @@ const api: OctopusBeakApi = {
     },
   },
   settings: invokers("settings"),
+  errorReports: invokers("errorReports"),
   spending: invokers("spending"),
   automation: {
     ...invokers("automation"),

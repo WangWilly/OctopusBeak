@@ -1,5 +1,5 @@
 import path from "node:path";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, Notification, shell } from "electron";
@@ -13,7 +13,16 @@ import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { createUsagePinger, postUsagePing, USAGE_PING_URL } from "../src/lib/settings/usage-statistics.ts";
+import { createUsagePinger, postUsagePing, USAGE_PING_URL, usageOsVersion, type UsageFailureBook } from "../src/lib/settings/usage-statistics.ts";
+import { onTaskRunFinished, runFailures } from "../src/lib/automation/server/task-run-finished.ts";
+import {
+  buildErrorReport,
+  errorReportUrl,
+  forgetStaleFailureDiagnostic,
+  InvalidErrorReport,
+  sendErrorReport,
+  type ErrorReportInput,
+} from "../src/lib/automation/server/error-report.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
@@ -123,6 +132,17 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
 );
 // Automation shutdown records each run's outcome through the ledger, so the
 // ledger close waits for it this long before going ahead.
+/** What an Error report says about this install (ADR 0081): the same fields as the usage ping. */
+function errorReportContext() {
+  return {
+    appVersion: app.getVersion(),
+    osVersion: usageOsVersion(process.getSystemVersion()),
+    locale: app.getLocale().startsWith("zh") ? ("zh-TW" as const) : ("en" as const),
+  };
+}
+
+/** ADR 0078: unsent failure counts, kept only while usage statistics are on. */
+const USAGE_FAILURES_FILE = "usage-failures.json";
 const QUIT_CLEANUP_WAIT_MS = 2_000;
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
@@ -478,10 +498,23 @@ async function start() {
     systemVersion: () => process.getSystemVersion(),
     locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
     firstLaunch: () => statSync(userData).birthtime,
+    readFailures: () => {
+      try {
+        const value: unknown = JSON.parse(readFileSync(path.join(userData, USAGE_FAILURES_FILE), "utf8"));
+        return value && typeof value === "object" && !Array.isArray(value) ? (value as UsageFailureBook) : {};
+      } catch {
+        return {};
+      }
+    },
+    writeFailures: (book) => writeFileSync(path.join(userData, USAGE_FAILURES_FILE), JSON.stringify(book), { mode: 0o600 }),
     send: postUsagePing,
     setInterval: (callback, ms) => setInterval(callback, ms).unref(),
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (message) => console.error(message),
+  });
+  onTaskRunFinished((run) => {
+    forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
+    usagePinger?.recordFailures(runFailures(run));
   });
   ipcRegistration = registerOctopusBeakIpc({
     automation,
@@ -492,6 +525,18 @@ async function start() {
       void usagePinger?.check();
     },
     usagePing: usagePinger,
+    errorReports: {
+      available: () => Boolean(errorReportUrl(USAGE_PING_URL)),
+      preview: (input) => buildErrorReport(input, errorReportContext()),
+      send: async (input: ErrorReportInput) => {
+        try {
+          return await sendErrorReport(errorReportUrl(USAGE_PING_URL), buildErrorReport(input, errorReportContext()));
+        } catch (error) {
+          if (error instanceof InvalidErrorReport) return { ok: false, reason: "invalid" } as const;
+          throw error;
+        }
+      },
+    },
     pgliteViews: {
       dataDir: operationalRuntime.dataDir,
     },

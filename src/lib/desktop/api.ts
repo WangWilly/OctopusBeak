@@ -42,6 +42,7 @@ import type {
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/server/error-report.ts";
 import type {
   DataReadOptions,
   DataInvalidationEvent,
@@ -223,6 +224,14 @@ export type DataViewsApi = {
 export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
+  };
+  /** ADR 0081: an Error report the person sends by hand from a failed run. */
+  errorReports: {
+    /** False when this build has no receiver, so the button is hidden. */
+    available(): Promise<boolean>;
+    /** Exactly what send() would post, with the note already masked. */
+    preview(input: ErrorReportInput): Promise<ErrorReportPayload>;
+    send(input: ErrorReportInput): Promise<ErrorReportResult>;
   };
   settings: {
     load(): Promise<SystemSettingsDto>;

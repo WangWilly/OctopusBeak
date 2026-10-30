@@ -619,7 +619,7 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label" id="usage-statistics-label">{$t.settings.usageStatistics}</span>
+              <span class="setting-label" id="usage-statistics-label">{$t.settings.usageStatisticsToggle}</span>
               <small class="setting-hint">{$t.settings.usageStatisticsHint}</small>
             </div>
             <div class="setting-control">

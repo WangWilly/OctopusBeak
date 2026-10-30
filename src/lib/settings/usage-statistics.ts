@@ -38,10 +38,25 @@ export const USAGE_PING_FIELDS = [
   "cohortWeek",
   "firstThisWeek",
   "firstThisMonth",
+  "failures",
 ] as const;
 
+/** The fields of each failure entry. JSON.stringify's key list filters nested objects too. */
+const USAGE_FAILURE_FIELDS = ["day", "source", "code", "stage", "count"] as const;
+
+/** Failures counted on one Asia/Taipei day by source (task id), failure code and stage. */
+export type UsageFailure = { day: string; source: string; code: string; stage: string; count: number };
+
+/** Local, unsent failure counts: day → "source|code|stage" → count. */
+export type UsageFailureBook = Record<string, Record<string, number>>;
+
+/** Failures older than this are dropped; the receiver refuses them too. */
+export const USAGE_FAILURE_DAYS = 7;
+const MAX_FAILURE_ENTRIES = 50;
+const MAX_FAILURE_COUNT = 1000;
+
 export type UsagePing = {
-  schema: 1;
+  schema: 2;
   appVersion: string;
   osVersion: string;
   arch: "arm64";
@@ -49,6 +64,7 @@ export type UsagePing = {
   cohortWeek: string;
   firstThisWeek: boolean;
   firstThisMonth: boolean;
+  failures: UsageFailure[];
 };
 
 export function taipeiDay(instant: Date): string {
@@ -87,11 +103,12 @@ export function buildUsagePing(input: {
   locale: "zh-TW" | "en";
   cohortWeek: string;
   lastSentDay: string | null;
+  failures?: UsageFailure[];
 }): UsagePing {
   const today = taipeiDay(input.now);
   const last = input.lastSentDay;
   return {
-    schema: 1,
+    schema: 2,
     appVersion: input.appVersion,
     osVersion: usageOsVersion(input.systemVersion),
     arch: "arm64",
@@ -99,7 +116,62 @@ export function buildUsagePing(input: {
     cohortWeek: input.cohortWeek,
     firstThisWeek: last === null || isoWeek(last) !== isoWeek(today),
     firstThisMonth: last === null || last.slice(0, 7) !== today.slice(0, 7),
+    failures: input.failures ?? [],
   };
+}
+
+function addDays(day: string, days: number): string {
+  const date = new Date(`${day}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Drops days the receiver would refuse. */
+export function pruneFailureBook(book: UsageFailureBook, today: string): UsageFailureBook {
+  const oldest = addDays(today, -USAGE_FAILURE_DAYS);
+  return Object.fromEntries(Object.entries(book).filter(([day]) => day >= oldest && day <= today));
+}
+
+export function addFailures(
+  book: UsageFailureBook,
+  today: string,
+  failures: readonly { source: string; code: string; stage: string }[],
+): UsageFailureBook {
+  const next = pruneFailureBook(book, today);
+  const day = { ...next[today] };
+  for (const failure of failures) {
+    const key = `${failure.source}|${failure.code}|${failure.stage}`;
+    day[key] = Math.min(MAX_FAILURE_COUNT, (day[key] ?? 0) + 1);
+  }
+  return failures.length ? { ...next, [today]: day } : next;
+}
+
+/** The entries one ping carries: newest days first, at most 50. */
+export function failureEntries(book: UsageFailureBook, today: string): UsageFailure[] {
+  return Object.entries(pruneFailureBook(book, today))
+    .sort(([left], [right]) => right.localeCompare(left))
+    .flatMap(([day, counts]) =>
+      Object.entries(counts).map(([key, count]) => {
+        const [source, code, stage] = key.split("|");
+        return { day, source, code, stage, count: Math.min(MAX_FAILURE_COUNT, count) };
+      }),
+    )
+    .filter((entry) => entry.count > 0)
+    .slice(0, MAX_FAILURE_ENTRIES);
+}
+
+/** Removes what a delivered ping carried, keeping failures recorded while it was in flight. */
+export function subtractFailures(book: UsageFailureBook, sent: readonly UsageFailure[]): UsageFailureBook {
+  const next: UsageFailureBook = Object.fromEntries(Object.entries(book).map(([day, counts]) => [day, { ...counts }]));
+  for (const entry of sent) {
+    const counts = next[entry.day];
+    const key = `${entry.source}|${entry.code}|${entry.stage}`;
+    if (!counts?.[key]) continue;
+    counts[key] -= entry.count;
+    if (counts[key] <= 0) delete counts[key];
+    if (Object.keys(counts).length === 0) delete next[entry.day];
+  }
+  return next;
 }
 
 /** What the app does with each response; the receiver's README holds the same table. */
@@ -123,6 +195,9 @@ export type UsagePingerDependencies = {
   locale(): "zh-TW" | "en";
   /** When the app's data directory was created, used once to fix the cohort week. */
   firstLaunch(): Date;
+  /** Unsent failure counts, kept beside settings.json. */
+  readFailures(): UsageFailureBook;
+  writeFailures(book: UsageFailureBook): void;
   /** Posts the JSON body and returns the HTTP status, or null when no response arrived. */
   send(url: string, body: string): Promise<number | null>;
   setInterval(callback: () => void, ms: number): unknown;
@@ -155,25 +230,44 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
       locale: deps.locale(),
       cohortWeek: cohortWeek(settings),
       lastSentDay: typeof lastSentDay === "string" && lastSentDay ? lastSentDay : null,
+      failures: failureEntries(deps.readFailures(), taipeiDay(deps.now())),
     });
+  }
+
+  function collecting(settings: AutomationSettingsFile): boolean {
+    return Boolean(deps.url)
+      && automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])
+      && !automationFlagEnabled(settings[USAGE_STATISTICS_RETIRED_KEY]);
+  }
+
+  /** Counts a finished run's failures for the next ping. Nothing is kept unless statistics are on. */
+  function recordFailures(failures: readonly { source: string; code: string; stage: string }[]) {
+    if (!failures.length || !collecting(deps.readSettings())) return;
+    deps.writeFailures(addFailures(deps.readFailures(), taipeiDay(deps.now()), failures));
   }
 
   async function attempt() {
     if (!deps.url) return;
     const settings = deps.readSettings();
-    if (!automationFlagEnabled(settings[USAGE_STATISTICS_ENABLED_KEY])) return;
+    if (!collecting(settings)) {
+      // Counts kept while statistics were on are not sent once they are off.
+      if (Object.keys(deps.readFailures()).length) deps.writeFailures({});
+      return;
+    }
     const today = taipeiDay(deps.now());
-    if (automationFlagEnabled(settings[USAGE_STATISTICS_RETIRED_KEY])) return;
     if (settings[USAGE_LAST_SENT_DAY_KEY] === today || settings[USAGE_REFUSED_DAY_KEY] === today) return;
     const ping = preview();
     let status: number | null;
     try {
-      status = await deps.send(deps.url, JSON.stringify(ping, [...USAGE_PING_FIELDS]));
+      status = await deps.send(deps.url, JSON.stringify(ping, [...USAGE_PING_FIELDS, ...USAGE_FAILURE_FIELDS]));
     } catch {
       status = null;
     }
     const outcome = usagePingOutcome(status);
-    if (outcome === "sent") deps.writeSettings({ [USAGE_LAST_SENT_DAY_KEY]: today });
+    if (outcome === "sent") {
+      deps.writeSettings({ [USAGE_LAST_SENT_DAY_KEY]: today });
+      deps.writeFailures(subtractFailures(deps.readFailures(), ping.failures));
+    }
     if (outcome === "refused") deps.writeSettings({ [USAGE_REFUSED_DAY_KEY]: today });
     if (outcome === "retired") {
       deps.writeSettings({
@@ -181,6 +275,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
         [USAGE_STATISTICS_ENABLED_KEY]: "false",
         [USAGE_STATISTICS_PROMPTED_KEY]: "true",
       });
+      deps.writeFailures({});
     }
     // Never log the payload.
     if (outcome !== "sent") deps.reportError(`usage-ping-${outcome}${status === null ? "" : `-${status}`}`);
@@ -214,12 +309,14 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
       [USAGE_STATISTICS_ENABLED_KEY]: enabled ? "true" : "false",
       [USAGE_STATISTICS_PROMPTED_KEY]: "true",
     });
+    if (!enabled) deps.writeFailures({});
     void check();
   }
 
   return {
     preview,
     check,
+    recordFailures,
     shouldAsk,
     answer,
     start() {
