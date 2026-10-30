@@ -14,7 +14,7 @@ import {
   parseFragment,
   type DefaultTreeAdapterTypes,
 } from "parse5";
-import { hasAttachedLocator } from "./browser-interaction.js";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import { yuantaObservedAt, yuantaQuickRange } from "./yuanta-statements.ts";
