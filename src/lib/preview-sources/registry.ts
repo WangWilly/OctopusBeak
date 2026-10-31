@@ -13,6 +13,7 @@ import { OBANK_PREVIEW_SOURCE } from "./obank-source.ts";
 import { FIRSTBANK_PREVIEW_SOURCE } from "./firstbank-source.ts";
 import { KGIBANK_PREVIEW_SOURCE } from "./kgibank-source.ts";
 import { CTBC_CARD_PREVIEW_SOURCE } from "./ctbc-card-source.ts";
+import { FEIB_PREVIEW_SOURCE } from "./feib-source.ts";
 
 export type PreviewSource = SupportedSource & Readonly<{
   institution: InstitutionKey;
@@ -22,7 +23,7 @@ export type PreviewSource = SupportedSource & Readonly<{
   run: PreviewWorkflowRun;
 }>;
 
-const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE, SKBANK_PREVIEW_SOURCE, RAKUTEN_PREVIEW_SOURCE, MEGA_PREVIEW_SOURCE, TAISHIN_PREVIEW_SOURCE, OBANK_PREVIEW_SOURCE, FIRSTBANK_PREVIEW_SOURCE, KGIBANK_PREVIEW_SOURCE, CTBC_CARD_PREVIEW_SOURCE];
+const PRODUCTION_PREVIEW_SOURCES: readonly PreviewSource[] = [NEXTBANK_PREVIEW_SOURCE, SKBANK_PREVIEW_SOURCE, RAKUTEN_PREVIEW_SOURCE, MEGA_PREVIEW_SOURCE, TAISHIN_PREVIEW_SOURCE, OBANK_PREVIEW_SOURCE, FIRSTBANK_PREVIEW_SOURCE, KGIBANK_PREVIEW_SOURCE, CTBC_CARD_PREVIEW_SOURCE, FEIB_PREVIEW_SOURCE];
 
 function previewSourcesForEnvironment(environment: NodeJS.ProcessEnv = process.env): readonly PreviewSource[] {
   return previewSourceFixtureEnabled(environment)
