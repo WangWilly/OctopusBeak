@@ -57,3 +57,42 @@ To see the one-time usage statistics dialog again, start with
 until it is answered, even after an earlier answer and without the endpoint. Answering it still
 writes the switch to `settings.json`. Packaged apps ignore this variable.
 
+
+## App updates in development
+
+A development build never checks GitHub for updates (ADR 0083). To drive the update flow, serve a
+stand-in feed on `127.0.0.1` and point the build at it:
+
+```bash
+npm run desktop:dev:update-feed-fixture
+```
+
+```bash
+OCTOPUSBEAK_UPDATE_FEED_FIXTURE=http://127.0.0.1:4555/latest/feed.json OCTOPUSBEAK_USER_DATA=/tmp/octopusbeak-update-dev npm run desktop:dev
+```
+
+The fixture offers the next minor version with a 60 MB ZIP of random bytes, served at 2 MB/s
+through the same redirect GitHub uses. A new user data folder opens with the First-run Welcome
+once; select **Skip intro**, then **Maybe later**, and the same folder opens straight to the App
+from then on. The App checks once the automation runtime is ready, so
+**Download update** appears at the bottom of the sidebar; Settings › Automatic updates has
+**Check now** and the two switches. Turn on **Download updates automatically** and select
+**Check now** to see the download start by itself.
+
+Change the fixture with options after `--`, for example
+`npm run desktop:dev:update-feed-fixture -- --mode bad-sha --rate-mb 10`:
+
+| Option | Effect |
+| --- | --- |
+| `--mode update` | A newer version (default). |
+| `--mode current` | The running version; Settings shows the App is up to date. |
+| `--mode bad-sha` | The checksum does not match; the sidebar offers **Retry download**. |
+| `--mode broken-download` | The connection drops halfway; the sidebar offers **Retry download**. |
+| `--mode feed-error` | The feed answers 503; Settings says the check failed. |
+| `--size-mb`, `--rate-mb` | ZIP size and download speed. |
+
+The development build stops before Squirrel.Mac: once the ZIP is verified, it reads it back from
+the hand-off server itself and reaches **Restart to update**, and restarting only logs
+`app-update-fixture-restart-skipped`. The real install needs a signed release. Downloads land in
+`<user data>/updates`; `OCTOPUSBEAK_USER_DATA` keeps them and the switches out of your own data.
+Packaged apps ignore `OCTOPUSBEAK_UPDATE_FEED_FIXTURE`.
