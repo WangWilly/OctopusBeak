@@ -126,6 +126,8 @@
     --line: var(--accent);
     position: relative;
     min-height: 170px;
+    /* The svg is drawn at the measured width; without this it holds the card at its widest size. */
+    contain: inline-size;
   }
 
   .history-chart[data-tone="liability"] { --line: var(--danger); }
