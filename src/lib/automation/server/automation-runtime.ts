@@ -51,11 +51,11 @@ export function createAutomationRuntime(
     activeRun: (taskRunId: string) => runner.activeRun(taskRunId),
     hasActive: () => runner.hasActive(),
 
-    async run(taskId: string) {
+    async run(taskId: string, runOptions: StartAutomationTaskOptions = {}) {
       const current = await runner.current(taskId);
       if (current) return { started: taskId, runId: current.runId, runtime: current.runtime };
       const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel());
-      const started = await runner.start(task.id, provider);
+      const started = await runner.start(task.id, provider, runOptions);
       return { started: task.id, runId: started.runId, runtime: started.runtime };
     },
 
@@ -80,6 +80,10 @@ export function createAutomationRuntime(
           }
           const task = assertAutomationTaskCanStartInModel(taskId, model);
           const run = await runner.start(task.id, provider, runOptions);
+          if (run.adopted) {
+            results[task.id] = { status: "already_running", runId: run.runId };
+            continue;
+          }
           started.push(task.id);
           results[task.id] = { status: "started", runId: run.runId };
         } catch (error) {

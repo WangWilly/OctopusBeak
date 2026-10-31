@@ -158,6 +158,12 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+/** Where the App opens when the person clicks one of its notifications. */
+export type NotificationTarget =
+  | { route: "overview" }
+  | { route: "settings" }
+  | { route: "automation"; credentialGroupId: string | null };
+
 export type AutomationRunManyTaskResult = {
   status: "started" | "already_running" | "error";
   runId?: string;
@@ -285,8 +291,8 @@ export type OctopusBeakApi = {
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
-    takeSignInSettingsRequest(): Promise<string | null>;
-    onSignInSettingsRequested(listener: () => void): () => void;
+    takeNotificationTarget(): Promise<NotificationTarget | null>;
+    onNotificationTargetRequested(listener: () => void): () => void;
     previewStructureReport(taskId: string): Promise<string | null>;
     openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
   };
