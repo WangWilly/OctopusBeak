@@ -92,6 +92,13 @@ type TransactionRow = Readonly<{
   description: string | null;
 }>;
 
+type HoldingSnapshotRow = Readonly<{
+  account_id: string;
+  capture_id: string;
+  effective_on: string;
+  observed_at: string;
+}>;
+
 type HoldingRow = Readonly<{
   account_id: string;
   security_id: string;
@@ -497,6 +504,7 @@ function mapProjection(
   balances: readonly BalanceRow[],
   transactions: readonly TransactionRow[],
   holdings: readonly HoldingRow[],
+  holdingSnapshots: readonly HoldingSnapshotRow[],
   margins: readonly MarginRow[],
   investmentTransactions: readonly InvestmentTransactionRow[],
   statements: readonly StatementRow[],
@@ -529,6 +537,7 @@ function mapProjection(
     bucket.push(row);
     holdingsByAccount.set(row.account_id, bucket);
   }
+  const latestSnapshotByAccount = new Map(holdingSnapshots.map((row) => [row.account_id, row]));
   const marginsByAccount = new Map<string, MarginRow[]>();
   for (const row of margins) {
     const bucket = marginsByAccount.get(row.account_id) ?? [];
@@ -560,7 +569,23 @@ function mapProjection(
     const rows = byAccount.get(account.account_id) ?? [];
     const accountHoldings = holdingsByAccount.get(account.account_id) ?? [];
     const accountMargins = marginsByAccount.get(account.account_id) ?? [];
-    const amounts = amountsFor(account, rows, accountHoldings, knowledgePoint);
+    const snapshot = latestSnapshotByAccount.get(account.account_id);
+    // A complete holding snapshot that lists nothing observes a value of zero;
+    // without one, an account with no holdings has not been valued yet.
+    const amounts = accountHoldings.length === 0 && snapshot && account.currency !== null
+      ? [{
+        currency: account.currency,
+        exact: { coefficient: "0", scale: 0 },
+        traces: [{
+          kind: "investment-holding-snapshot" as const,
+          accountId: account.account_id,
+          observationId: snapshot.capture_id,
+          effectiveAt: snapshot.effective_on,
+          observedAt: snapshot.observed_at,
+          knowledgePoint,
+        }],
+      }]
+      : amountsFor(account, rows, accountHoldings, knowledgePoint);
     const marginAmounts = marginAmountsFor(account, accountMargins, knowledgePoint);
     const accountPositions = accountHoldings.flatMap((holding) => {
       const position = holdingPosition(account, holding, knowledgePoint);
@@ -583,6 +608,7 @@ function mapProjection(
     const observedAt = [
       account.observed_at,
       ...accountHoldings.map((holding) => holding.observed_at),
+      ...(snapshot ? [snapshot.observed_at] : []),
       ...accountMargins.map((margin) => margin.observed_at),
       ...(creditCardBalance ? [creditCardBalance.observedAt] : []),
     ].filter((value): value is string => value !== null).sort().at(-1) ?? null;
@@ -835,6 +861,25 @@ async function readProjection(
         )`,
     [knowledgeAt, financialAt ?? null, cutoff === null],
   );
+  const holdingSnapshotsQuery = store.query<HoldingSnapshotRow>(
+    `SELECT account_id, capture_id, effective_on, observed_at
+       FROM (
+         SELECT encode(snapshot.account_id, 'hex') AS account_id,
+                encode(snapshot.capture_id, 'hex') AS capture_id,
+                snapshot.effective_on,
+                snapshot.observed_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY snapshot.account_id
+                  ORDER BY snapshot.observed_at DESC, commit_row.commit_sequence DESC
+                ) AS selection_rank
+           FROM investment_holding_snapshots snapshot
+           JOIN canonical_commits commit_row ON commit_row.commit_id = snapshot.commit_id
+          WHERE commit_row.commit_sequence <= $1
+            AND ($2::text IS NULL OR snapshot.effective_on <= $2)
+       ) ranked
+      WHERE selection_rank = 1`,
+    [knowledgeAt, financialAt ?? null],
+  );
   const marginsQuery = store.query<MarginRow>(
     `WITH candidates AS (
        SELECT encode(margin.account_id, 'hex') AS account_id,
@@ -939,11 +984,12 @@ async function readProjection(
       ORDER BY candidate.account_id, candidate.due_date DESC, candidate.statement_key`,
     [knowledgeAt, financialAt ?? null],
   );
-  const [accounts, balances, transactions, holdings, margins, investmentTransactions, statements, coverage] = await Promise.all([
+  const [accounts, balances, transactions, holdings, holdingSnapshots, margins, investmentTransactions, statements, coverage] = await Promise.all([
     accountsQuery,
     balancesQuery,
     transactionsQuery,
     holdingsQuery,
+    holdingSnapshotsQuery,
     marginsQuery,
     investmentTransactionsQuery,
     statementsQuery,
@@ -954,6 +1000,7 @@ async function readProjection(
     balances.rows,
     transactions.rows,
     holdings.rows,
+    holdingSnapshots.rows,
     margins.rows,
     investmentTransactions.rows,
     statements.rows,
