@@ -20,8 +20,16 @@ const defaults: SystemSettingsDto = {
   scheduledCollectionTime: "07:00",
   previewFeaturesEnabled: false,
   usageStatisticsEnabled: false,
+  appUpdatesEnabled: true,
+  appUpdatesAutoDownload: false,
 };
-assert.deepEqual(systemSettings({}), defaults, "scheduled collection, preview features and usage statistics are opt-in");
+assert.deepEqual(systemSettings({}), defaults, "scheduled collection, preview features, usage statistics and update downloads are opt-in; update checks are on");
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "false" }).appUpdatesEnabled, false);
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "true" }).appUpdatesEnabled, true);
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "" }).appUpdatesEnabled, true, "only \"false\" turns update checks off");
+assert.equal(systemSettings({ APP_UPDATES_AUTO_DOWNLOAD: "true" }).appUpdatesAutoDownload, true);
+assert.equal(systemSettings({ APP_UPDATES_AUTO_DOWNLOAD: "1" }).appUpdatesAutoDownload, false, "only \"true\" turns update downloads on");
+assert.equal(systemSettings({ APP_UPDATES_AUTO_DOWNLOAD: "false" }).appUpdatesAutoDownload, false);
 assert.equal(systemSettings({ AUTOMATION_BUSINESS_TIMEZONE: "Asia/Tokyo" }).systemTimezone, "Asia/Tokyo");
 assert.throws(() => validateSystemSettings({ ...defaults, systemTimezone: "Mars/Base" }));
 assert.throws(() => validateSystemSettings({ ...defaults, exchangeRateUpdateTime: "6:00" }));
@@ -35,6 +43,14 @@ assert.throws(() => validateSystemSettings({
   ...defaults,
   usageStatisticsEnabled: "true" as unknown as boolean,
 }));
+assert.throws(() => validateSystemSettings({
+  ...defaults,
+  appUpdatesEnabled: "false" as unknown as boolean,
+}));
+assert.throws(() => validateSystemSettings({
+  ...defaults,
+  appUpdatesAutoDownload: "true" as unknown as boolean,
+}));
 
 const settingsDirectory = mkdtempSync(join(tmpdir(), "system-settings-"));
 try {
@@ -45,6 +61,8 @@ try {
     { ...defaults, previewFeaturesEnabled: true },
     { ...defaults, previewFeaturesEnabled: false },
     { ...defaults, usageStatisticsEnabled: true },
+    { ...defaults, appUpdatesEnabled: false },
+    { ...defaults, appUpdatesAutoDownload: true },
   ]) {
     writeAutomationSettingsFile(settingsPath, systemSettingsFileEntries(validateSystemSettings(saved)));
     assert.deepEqual(systemSettings(readAutomationSettingsFile(settingsPath)), saved, "settings file round-trip");
@@ -75,4 +93,11 @@ assert.match(
   settingsPageSource,
   /oninput=\{\(event\) => \(draftScale = Number\(event\.currentTarget\.value\)\)\}\s*onchange=\{\(event\) => \{[^}]*changeDisplayScale\(/,
   "dragging the size slider previews the value and zooms the app only on release",
+);
+assert.match(settingsPageSource, /appUpdatesEnabled: updatesEnabled/, "the update check switch is saved with system settings");
+assert.match(settingsPageSource, /appUpdatesAutoDownload: updatesAutoDownload/, "the update download switch is saved with system settings");
+assert.match(
+  settingsPageSource,
+  /id="app-updates-auto-download-toggle"[\s\S]*?disabled=\{!updatesEnabled\}/,
+  "automatic downloads cannot be turned on while checks are off",
 );

@@ -42,6 +42,7 @@ import type {
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
+import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
 import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/server/error-report.ts";
 import type {
   DataReadOptions,
@@ -158,10 +159,13 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+/** The part of Settings a notification or another page opens. */
+export type SettingsFocus = "financial-data-deletion" | "app-updates";
+
 /** Where the App opens when the person clicks one of its notifications. */
 export type NotificationTarget =
   | { route: "overview" }
-  | { route: "settings" }
+  | { route: "settings"; focus: SettingsFocus }
   | { route: "automation"; credentialGroupId: string | null };
 
 export type AutomationRunManyTaskResult = {
@@ -230,6 +234,17 @@ export type DataViewsApi = {
 export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
+  };
+  /** ADR 0083: automatic updates from GitHub Releases. */
+  appUpdates: {
+    view(): Promise<AppUpdateView>;
+    /** Checks now unless a check or download is in flight or an update is waiting. */
+    check(): Promise<AppUpdateView>;
+    /** Starts downloading the update the last check found, or tries a failed download again. */
+    download(): Promise<AppUpdateView>;
+    /** Quits and installs a downloaded update; refused while a run is active. */
+    restart(): Promise<AppUpdateRestartResult>;
+    onChanged(listener: (view: AppUpdateView) => void): () => void;
   };
   /** ADR 0081: an Error report the person sends by hand from a failed run. */
   errorReports: {

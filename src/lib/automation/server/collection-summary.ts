@@ -118,7 +118,7 @@ export function collectionNotification(
     const target: NotificationTarget = !only
       ? { route: "automation", credentialGroupId: null }
       : only.action === "delete-financial-data"
-        ? { route: "settings" }
+        ? { route: "settings", focus: "financial-data-deletion" }
         : { route: "automation", credentialGroupId: taskById(only.taskId)?.credentialGroupId ?? null };
     return { title: zh ? `${label}需要你處理` : `${label} needs you`, body: lead + rest, target };
   }
