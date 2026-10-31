@@ -8,12 +8,8 @@ import {
 } from "../workflow-failures.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import type { AutomationRuntime } from "./automation-runtime.ts";
-import {
-  scheduledCollectionNotification,
-  scheduledCollectionTaskIds,
-  startScheduledCollection,
-  type ScheduledCollectionResult,
-} from "./scheduled-collection.ts";
+import { collectionNotification, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
+import { scheduledCollectionTaskIds, startScheduledCollection } from "./scheduled-collection.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, AUTOMATION_TASKS, enabledAutomationTasks } from "./tasks.ts";
 
@@ -67,24 +63,24 @@ function run(overrides: Partial<AutomationTaskRun>): AutomationTaskRun {
   };
 }
 
-const completed = (taskId: string): ScheduledCollectionResult => ({
+const completed = (taskId: string): CollectionResult => ({
   taskId,
   run: run({ taskId, status: "completed", appWorkflowOutcome: null }),
 });
-const failed = (taskId: string, errorCode: TypedWorkflowErrorCode): ScheduledCollectionResult => ({
+const failed = (taskId: string, errorCode: TypedWorkflowErrorCode): CollectionResult => ({
   taskId,
   run: run({ taskId, appWorkflowOutcome: { errorCode, summary: null } }),
 });
 
 test("an occurrence where every source synced says so and opens the overview", () => {
   const results = [completed("sync-tdcc"), completed("fubon-all-statements")];
-  assert.deepEqual(scheduledCollectionNotification(results, "en"), {
+  assert.deepEqual(collectionNotification(results, "scheduled", "en"), {
     title: "Automatic sync finished",
     body: "Synced 2 sources.",
     target: { route: "overview" },
   });
-  assert.equal(scheduledCollectionNotification([completed("sync-tdcc")], "en")?.body, "Synced 1 source.");
-  assert.deepEqual(scheduledCollectionNotification(results, "zh-TW"), {
+  assert.equal(collectionNotification([completed("sync-tdcc")], "scheduled", "en")?.body, "Synced 1 source.");
+  assert.deepEqual(collectionNotification(results, "scheduled", "zh-TW"), {
     title: "自動同步完成",
     body: "已同步 2 個來源。",
     target: { route: "overview" },
@@ -97,21 +93,21 @@ test("transient failures are named in the summary and open the run history", () 
     failed("fubon-all-statements", "source-unavailable"),
     { taskId: "sinopac-statements", run: null },
   ];
-  assert.deepEqual(scheduledCollectionNotification(results, "en"), {
+  assert.deepEqual(collectionNotification(results, "scheduled", "en"), {
     title: "Automatic sync finished; 2 sources did not sync",
     body: "Taipei Fubon Bank, Bank SinoPac did not sync. The next automatic sync tries again. 1 other source synced.",
     target: { route: "automation", credentialGroupId: null },
   });
-  assert.deepEqual(scheduledCollectionNotification(results, "zh-TW"), {
+  assert.deepEqual(collectionNotification(results, "scheduled", "zh-TW"), {
     title: "自動同步完成，2 個來源沒有同步成功",
     body: "台北富邦銀行（Taipei Fubon Bank）、永豐銀行（Bank SinoPac）沒有同步成功，下次自動同步會再試。其他 1 個來源已同步。",
     target: { route: "automation", credentialGroupId: null },
   });
   assert.equal(
-    scheduledCollectionNotification([run({ status: "partial", appWorkflowOutcome: null })].map((partial) => ({
+    collectionNotification([run({ status: "partial", appWorkflowOutcome: null })].map((partial) => ({
       taskId: "sync-tdcc",
       run: partial,
-    })), "en")?.title,
+    })), "scheduled", "en")?.title,
     "Automatic sync finished; 1 source did not sync",
     "a partial run did not finish syncing",
   );
@@ -119,17 +115,17 @@ test("transient failures are named in the summary and open the run history", () 
 
 test("a lone source that needs the person names its action and opens its sign-in settings", () => {
   const results = [completed("fubon-all-statements"), failed("sync-tdcc", "device-registration-required")];
-  assert.deepEqual(scheduledCollectionNotification(results, "en"), {
+  assert.deepEqual(collectionNotification(results, "scheduled", "en"), {
     title: "Automatic sync needs you",
     body: "TDCC e-Passbook: This source no longer trusts this device. Register the device again in sign-in settings.",
     target: { route: "automation", credentialGroupId: "tdcc" },
   });
   assert.equal(
-    scheduledCollectionNotification(results, "zh-TW")?.body,
+    collectionNotification(results, "scheduled", "zh-TW")?.body,
     "集保e手掌握（TDCC e-Passbook）：這個來源不再信任這台裝置。請到登入設定重新註冊裝置。",
   );
   assert.deepEqual(
-    scheduledCollectionNotification([failed("fubon-all-statements", "canonical-reset-required")], "en")?.target,
+    collectionNotification([failed("fubon-all-statements", "canonical-reset-required")], "scheduled", "en")?.target,
     { route: "settings" },
     "deleting financial data happens in Settings",
   );
@@ -141,13 +137,13 @@ test("several sources that need the person outrank transient failures, which are
     failed("fubon-all-statements", "provider-protocol-outdated"),
     failed("sinopac-statements", "source-unavailable"),
   ];
-  assert.deepEqual(scheduledCollectionNotification(results, "en"), {
+  assert.deepEqual(collectionNotification(results, "scheduled", "en"), {
     title: "Automatic sync needs you",
     body: "TDCC e-Passbook, Taipei Fubon Bank need your attention. 1 more source did not sync.",
     target: { route: "automation", credentialGroupId: null },
   });
   assert.equal(
-    scheduledCollectionNotification(results, "zh-TW")?.body,
+    collectionNotification(results, "scheduled", "zh-TW")?.body,
     "集保e手掌握（TDCC e-Passbook）、台北富邦銀行（Taipei Fubon Bank）需要你處理。另有 1 個來源沒有同步成功。",
   );
 });
@@ -156,16 +152,16 @@ test("a long list names three sources and counts the rest", () => {
   const taskIds = ["sync-tdcc", "fubon-all-statements", "sinopac-statements", "sync-maicoin", "linebank-statements"];
   const results = taskIds.map((taskId) => failed(taskId, "source-unavailable"));
   assert.match(
-    scheduledCollectionNotification(results, "en")!.body,
+    collectionNotification(results, "scheduled", "en")!.body,
     /^TDCC e-Passbook, Taipei Fubon Bank, Bank SinoPac and 2 more did not sync\./,
   );
-  assert.match(scheduledCollectionNotification(results, "zh-TW")!.body, /永豐銀行（Bank SinoPac） 等 5 個來源沒有同步成功/);
-  assert.equal(scheduledCollectionNotification([], "en"), null, "an occurrence with nothing due sends nothing");
+  assert.match(collectionNotification(results, "scheduled", "zh-TW")!.body, /永豐銀行（Bank SinoPac） 等 5 個來源沒有同步成功/);
+  assert.equal(collectionNotification([], "scheduled", "en"), null, "an occurrence with nothing due sends nothing");
 });
 
 test("scheduled collection reports once, after every started source ends", async () => {
   const settledLater: (() => void)[] = [];
-  const reports: ScheduledCollectionResult[][] = [];
+  const reports: CollectionResult[][] = [];
   const runtime = {
     provider: {
       automation: {
@@ -211,6 +207,55 @@ test("scheduled collection reports once, after every started source ends", async
   ]], "a manual run already in progress is not part of the occurrence");
 });
 
+test("a manual sync uses the same summary without promising an automatic retry", () => {
+  assert.deepEqual(collectionNotification([completed("sync-tdcc")], "manual", "en"), {
+    title: "Sync finished",
+    body: "Synced 1 source.",
+    target: { route: "overview" },
+  });
+  const transient = [completed("sync-tdcc"), failed("fubon-all-statements", "source-unavailable")];
+  assert.deepEqual(collectionNotification(transient, "manual", "zh-TW"), {
+    title: "同步完成，1 個來源沒有同步成功",
+    body: "台北富邦銀行（Taipei Fubon Bank）沒有同步成功，原因可到執行紀錄查看。其他 1 個來源已同步。",
+    target: { route: "automation", credentialGroupId: null },
+  });
+  assert.equal(
+    collectionNotification(transient, "manual", "en")?.body,
+    "Taipei Fubon Bank did not sync. Run history shows why. 1 other source synced.",
+  );
+  assert.equal(
+    collectionNotification([failed("sync-tdcc", "authentication-failed")], "manual", "zh-TW")?.title,
+    "同步需要你處理",
+  );
+});
+
+test("a batch leaves out exchange rates and tasks it did not start", async () => {
+  const reports: CollectionResult[][] = [];
+  const runtime = {
+    runMany: async (
+      taskIds: string[],
+      options: { onSettled?: (taskId: string, run: AutomationTaskRun | null) => void },
+    ) => {
+      assert.deepEqual(taskIds, ["exchange-rates", "sync-tdcc"]);
+      options.onSettled!("exchange-rates", run({ taskId: "exchange-rates", status: "completed" }));
+      options.onSettled!("sync-tdcc", run({ status: "completed", appWorkflowOutcome: null }));
+      return {
+        started: ["exchange-rates", "sync-tdcc"],
+        results: {
+          "exchange-rates": { status: "started" as const, runId: "x" },
+          "sync-tdcc": { status: "started" as const, runId: "a" },
+        },
+      };
+    },
+  };
+  await runAndSummarize(runtime, ["exchange-rates", "sync-tdcc"], {}, (results) => reports.push(results));
+  assert.deepEqual(reports.map((results) => results.map(({ taskId }) => taskId)), [["sync-tdcc"]]);
+
+  const none = { runMany: async () => ({ started: [], results: {} }) };
+  await runAndSummarize(none, ["exchange-rates"], {}, (results) => reports.push(results));
+  assert.equal(reports.length, 1, "a batch without a source reports nothing");
+});
+
 test("scheduled collection takes enabled, ready, idle sources from the Sync all selection", () => {
   const enabledGroupIds = new Set(["fubon", "sinopac", "tdcc"]);
   const enabledGroups = Object.fromEntries(
@@ -239,7 +284,7 @@ test("a source the store refuses until a Canonical Reset notifies once, then sch
     status: "partial",
     appWorkflowOutcome: { errorCode: "canonical-reset-required", summary: null },
   });
-  const notice = scheduledCollectionNotification([{ taskId: refused.taskId, run: refused }], "en");
+  const notice = collectionNotification([{ taskId: refused.taskId, run: refused }], "scheduled", "en");
   assert.deepEqual(notice?.target, { route: "settings" });
   assert.match(notice!.body, /^Taipei Fubon Bank: The data format was updated/);
 

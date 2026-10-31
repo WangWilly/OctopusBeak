@@ -1,6 +1,6 @@
 # Scheduled collection runs every enabled source once a day and never waits for a person
 
-Status: accepted; notification rules superseded by [ADR 0082](0082-scheduled-collection-summary-notification.md)
+Status: accepted; notification rules superseded by [ADR 0082](0082-one-summary-notification-per-sync.md)
 
 ## Decision
 
