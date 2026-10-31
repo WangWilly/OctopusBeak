@@ -10,6 +10,7 @@
     Clock,
     Compass,
     DatabaseZap,
+    Download,
     FlaskConical,
     Globe,
     Languages,
@@ -42,6 +43,7 @@
   } from "$lib/settings/system-timezone-store.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
+  import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
   /** When onboarding completed or exited; null for records from before it was kept. */
@@ -55,12 +57,15 @@
   /** Opened from a source waiting for a Canonical Reset: show the delete action. */
   export let focusFinancialDataDeletion = false;
   export let onFinancialDataDeletionFocused: () => void = () => {};
+  /** Restart to update waits until no run is active; the main process refuses it too. */
+  export let automationRunActive = false;
 
   const SECTIONS = [
     { id: "settings-schedule", icon: Clock },
     { id: "settings-display", icon: Languages },
     { id: "settings-preview", icon: FlaskConical },
     { id: "settings-usage", icon: ChartColumn },
+    { id: "settings-updates", icon: Download },
     { id: "settings-data", icon: DatabaseZap },
     { id: "settings-onboarding", icon: Compass },
   ] as const;
@@ -88,6 +93,10 @@
   // The one-time question can be answered while Settings is open.
   $: usageEnabled = $usageStatisticsEnabled;
   let updatesEnabled = $appUpdatesEnabled;
+  let updateView: AppUpdateView | null = null;
+  let updateRestart: "idle" | "pending" | AppUpdateRestartResult = "idle";
+  $: updateState = updateView?.state ?? null;
+  $: updateLine = updateState ? updateStatusLine(updateState, $t, $systemTimezone) : "";
   let usagePayload: string | null = null;
   let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
   let previewDeleteConfirming = false;
@@ -107,6 +116,7 @@
     "settings-display": $t.settings.languageDisplaySettings,
     "settings-preview": $t.settings.previewFeatures,
     "settings-usage": $t.settings.usageStatistics,
+    "settings-updates": $t.settings.appUpdates,
     "settings-data": $t.settings.dataSection,
     "settings-onboarding": $t.settings.onboardingSection,
   };
@@ -132,6 +142,9 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
+    const updates = window.octopusBeak.appUpdates;
+    const unsubscribeUpdates = updates.onChanged((view) => (updateView = view));
+    void updates.view().then((view) => (updateView = view)).catch(() => undefined);
     const observer = new IntersectionObserver((entries) => {
       const visible = entries.filter((entry) => entry.isIntersecting)
         .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
@@ -144,6 +157,7 @@
     return () => {
       clearInterval(clock);
       observer.disconnect();
+      unsubscribeUpdates();
     };
   });
 
@@ -164,6 +178,51 @@
       hourCycle: "h23",
     }).formatToParts(new Date(value)).map((part) => [part.type, part.value]));
     return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
+  }
+
+  function updateStatusLine(state: AppUpdateView["state"], dictionary: typeof $t, timeZone: string) {
+    switch (state.status) {
+      case "off":
+        return dictionary.settings.appUpdatesOff;
+      case "unsupported":
+        return state.reason === "read-only-volume"
+          ? dictionary.settings.appUpdatesReadOnlyVolume
+          : dictionary.settings.appUpdatesDevelopmentBuild;
+      case "idle":
+        return state.checkedAt
+          ? dictionary.settings.appUpdatesUpToDate(scheduleTime(state.checkedAt, timeZone))
+          : dictionary.settings.appUpdatesNotChecked;
+      case "checking":
+        return dictionary.settings.appUpdatesChecking;
+      case "downloading":
+        return dictionary.settings.appUpdatesDownloading;
+      case "ready":
+        return dictionary.settings.appUpdatesReady(state.version);
+      case "failed":
+        return dictionary.settings.appUpdatesFailed;
+    }
+  }
+
+  async function checkForUpdates() {
+    try {
+      updateView = await window.octopusBeak.appUpdates.check();
+    } catch {
+      // The status line keeps showing the last known state.
+    }
+  }
+
+  async function restartToUpdate() {
+    updateRestart = "pending";
+    try {
+      updateRestart = await window.octopusBeak.appUpdates.restart();
+    } catch {
+      updateRestart = { ok: false, reason: "not-ready" };
+    }
+  }
+
+  function toggleAppUpdates() {
+    updatesEnabled = !updatesEnabled;
+    saveSystemSettings();
   }
 
   function onboardingSummary(
@@ -669,6 +728,71 @@
               <span>{$t.settings.usagePayloadFailed}</span>
             </div>
           {/if}
+        </div>
+      </section>
+
+      <section id="settings-updates" class="settings-section" aria-labelledby="settings-updates-title">
+        <header>
+          <h2 id="settings-updates-title">{$t.settings.appUpdates}</h2>
+          <p>{$t.settings.appUpdatesDescription}</p>
+        </header>
+        <div class="card settings-card">
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{updateView ? $t.settings.appUpdatesVersion(updateView.currentVersion) : $t.settings.appUpdates}</span>
+              <small id="app-update-status" class="setting-hint" aria-live="polite">{updateLine}</small>
+              {#if updateState?.status === "ready"}
+                <small class="setting-hint">
+                  {automationRunActive || (typeof updateRestart === "object" && !updateRestart.ok && updateRestart.reason === "run-active")
+                    ? $t.settings.appUpdatesRunActive
+                    : $t.settings.appUpdatesRestartHint}
+                </small>
+              {/if}
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if updateState?.status === "ready"}
+                <button
+                  id="app-update-restart"
+                  class="button primary"
+                  type="button"
+                  disabled={automationRunActive || updateRestart === "pending"}
+                  aria-busy={updateRestart === "pending"}
+                  onclick={restartToUpdate}
+                >
+                  {$t.settings.appUpdatesRestart}
+                </button>
+              {:else}
+                <button
+                  id="app-update-check"
+                  class="button"
+                  type="button"
+                  disabled={updateState?.status !== "idle" && updateState?.status !== "failed"}
+                  onclick={checkForUpdates}
+                >
+                  {$t.settings.appUpdatesCheckNow}
+                </button>
+              {/if}
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="app-updates-label">{$t.settings.appUpdatesToggle}</span>
+              <small class="setting-hint">{$t.settings.appUpdatesToggleHint}</small>
+            </div>
+            <div class="setting-control">
+              <button
+                id="app-updates-toggle"
+                class="switch collection-switch"
+                type="button"
+                aria-pressed={updatesEnabled}
+                aria-labelledby="app-updates-label"
+                onclick={toggleAppUpdates}
+              >
+                <span>{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 

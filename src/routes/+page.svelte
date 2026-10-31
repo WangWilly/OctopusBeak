@@ -11,6 +11,7 @@
     type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
   import { isAutomationBlockStale, mergeAutomationRuntime } from "$lib/automation/runtime-sync.ts";
+  import { isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
@@ -1034,6 +1035,7 @@
   <SettingsPage
     {focusFinancialDataDeletion}
     onFinancialDataDeletionFocused={() => (focusFinancialDataDeletion = false)}
+    automationRunActive={automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false}
     onboardingStatus={onboardingState?.status ?? null}
     onboardingEndedAt={onboardingState?.endedAt ?? null}
     onboardingLinkedSources={settingsAutomation?.linkedSources ?? 0}
