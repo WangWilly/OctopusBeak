@@ -37,7 +37,7 @@ Record pass, fail, or the observed value for each item. Do not paste keys, UIDs,
 - [ ] **Withdrawal amount.** Compare one completed withdrawal's `amount` and `transactionFee` with the balance change. The source records `amount` only, as MaiCoin does.
 - [x] **Windows.** Deposit and withdrawal requests accept 90-day windows, and `/sapi/v1/asset/transfer` accepts 30-day windows, with no -1127 or -1131 error.
 - [ ] **Transfers.** A spot-to-funding transfer appears once as an outflow on spot and an inflow on funding, with the same date.
-- [ ] **Trade paging.** `myTrades` with only `symbol` returns the newest fills. When a pair has 1000 fills in the newest page, the source reads the older days of the period in `startTime`/`endTime` ranges of at most 24 hours. A pair with more than 1000 fills in three months confirms the paging.
+- [ ] **Trade paging.** `myTrades` with only `symbol` returns the newest fills. When a pair has 1000 fills in the newest page, the source reads the older days of the period in `startTime`/`endTime` ranges of at most 24 hours. A pair with more than 1000 fills in the period confirms the paging.
 - [ ] **Bounded pairs.** Note how many pairs the run requested and whether any trade the owner remembers is missing. A missing trade in a pair outside "observed asset × USDT, FDUSD, USDC, BTC, BNB, ETH" is expected (ADR 0084).
 - [ ] **Commission.** For one trade whose commission is in BNB, confirm the trade's quantity and quote amount. The commission is not recorded, as MaiCoin's fee is not.
 - [ ] **Request weight.** Note the largest `X-MBX-USED-WEIGHT-1M` seen during the run. It should stay well under 6000.
@@ -54,9 +54,9 @@ Recorded on 2026-10-31 from the owner's account, through **Binance sync** in the
 - **UID** and **HTTP Date:** pass. Both were present; the run would have failed without them.
 - **Spot and funding:** two Crypto financial accounts were created. Spot was valued in TWD. An empty funding wallet, after the overview fix in this PR, shows zero instead of "no balance collected yet". The owner did not compare holdings line by line with the Binance wallets, and no `LD` or `LDO` balance was present.
 - **Windows:** pass. The 90-day deposit and withdrawal windows and the 30-day transfer windows were accepted without -1127 or -1131.
-- **History (3 months):** no fills, deposits, withdrawals or transfers in the period.
+- **History (3 months, the original period):** no fills, deposits, withdrawals or transfers.
 - **History (2 years, one-off run):** with the look-back widened locally for one run (not committed), deposit and withdrawal history over two years returned both deposits and withdrawals, all on the spot account, so `walletType` 0 maps to spot. There were no fills, so trade paging, bounded pairs and commission remain unverified.
-- **Transfer history limit:** `/sapi/v1/asset/transfer` refused a range older than about six months with HTTP 400 code -5026, reported as `source-collection-failed`. The shipped three-month period stays inside that limit.
+- **Transfer history limit:** `/sapi/v1/asset/transfer` refused a range older than about six months with HTTP 400 code -5026, reported as `source-collection-failed`. After this run the owner set the period to two years for trades, deposits and withdrawals and six months for transfers (ADR 0084).
 - **Valuation:** pass for the normal path (Binance USDT price × MAX `usdttwd`). The MAX-blocked path was not tried live.
 - **Request weight** and **Recapture:** not recorded.
 

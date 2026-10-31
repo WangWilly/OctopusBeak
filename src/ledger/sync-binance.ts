@@ -579,7 +579,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * `myTrades` answers a startTime/endTime range of at most 24 hours, and its
- * IDs are the market's trade IDs, so neither a 3-month range nor stepping
+ * IDs are the market's trade IDs, so neither a period-long range nor stepping
  * back by ID works. The newest page covers the period unless the pair has
  * more fills than one page holds; only then are the older days read one
  * 24-hour range at a time.

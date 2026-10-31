@@ -53,22 +53,25 @@ test("each response is read as its JSON body or as the failure it proves", () =>
   assert.equal(kind(400, JSON.stringify({ code: -1121, msg: "Invalid symbol." })), "rejected");
 });
 
-test("the three-month period splits into 90-day fund windows and 30-day transfer windows", () => {
+test("two years split into 90-day fund windows, and transfers into 30-day windows over six months", () => {
   const now = taipei("2026-10-31", "15:00:00.000");
-  assert.deepEqual(binanceHistoryWindows(BINANCE_COLLECTION_PERIODS.fundHistory, "2026-10-31", now), [
-    { startTime: taipei("2026-08-03"), endTime: now },
-    { startTime: taipei("2026-08-01"), endTime: taipei("2026-08-02", "23:59:59.999") },
-  ]);
+  const DAY = 86_400_000;
+  const contiguous = (windows: readonly { startTime: number; endTime: number }[], from: number, maxDays: number) => {
+    assert.equal(windows[0]!.endTime, now, "the newest window ends now");
+    assert.equal(windows.at(-1)!.startTime, from, "the oldest window starts the period");
+    for (const [index, { startTime, endTime }] of windows.entries()) {
+      assert.ok(endTime - startTime < maxDays * DAY, `window ${index} stays within ${maxDays} days`);
+      if (index > 0) assert.equal(endTime, windows[index - 1]!.startTime - 1, `window ${index} meets the next one`);
+    }
+  };
+  const fund = binanceHistoryWindows(BINANCE_COLLECTION_PERIODS.fundHistory, "2026-10-31", now);
+  contiguous(fund, taipei("2024-11-01"), 90);
+  assert.equal(fund.length, 9);
   const transfers = binanceHistoryWindows(BINANCE_COLLECTION_PERIODS.transfers, "2026-10-31", now);
-  assert.deepEqual(transfers.map(({ startTime }) => new Date(startTime).toISOString()), [
-    "2026-10-01T16:00:00.000Z",
-    "2026-09-01T16:00:00.000Z",
-    "2026-08-02T16:00:00.000Z",
-    "2026-07-31T16:00:00.000Z",
-  ]);
-  for (const { startTime, endTime } of transfers) assert.ok(endTime - startTime < 30 * 86_400_000);
+  contiguous(transfers, taipei("2026-05-01"), 30);
+  assert.equal(transfers.length, 7);
   assert.deepEqual(binanceHistoryWindows(BINANCE_COLLECTION_PERIODS.trades, "2026-10-31", now), [
-    { startTime: taipei("2026-08-01"), endTime: now },
+    { startTime: taipei("2024-11-01"), endTime: now },
   ]);
 });
 
@@ -173,7 +176,7 @@ function binanceFake(overrides: Readonly<Record<string, (params: URLSearchParams
     "/sapi/v1/asset/transfer": () => json({ total: 0 }),
     "/api/v3/myTrades": (params) => json(params.get("symbol") === "BTCUSDT"
       ? [
-        { symbol: "BTCUSDT", id: 1, qty: "0.1", quoteQty: "6000", isBuyer: true, time: taipei("2026-07-01") },
+        { symbol: "BTCUSDT", id: 1, qty: "0.1", quoteQty: "6000", isBuyer: true, time: taipei("2024-10-01") },
         { symbol: "BTCUSDT", id: 2, qty: "0.1", quoteQty: "6000", isBuyer: true, time: taipei("2026-09-01") },
       ]
       : []),
@@ -208,9 +211,9 @@ test("a collection signs private requests, bounds trades to observed pairs, and 
     assert.equal(call.params.get("recvWindow"), "10000");
   }
   assert.equal(fake.calls.find(({ path }) => path === "/api/v3/exchangeInfo")?.apiKey, null, "public endpoints carry no key");
-  assert.deepEqual(fake.calls.filter(({ path }) => path === "/sapi/v1/capital/deposit/hisrec").length, 2, "one request per 90-day window");
+  assert.deepEqual(fake.calls.filter(({ path }) => path === "/sapi/v1/capital/deposit/hisrec").length, 9, "one request per 90-day window");
   assert.deepEqual(fake.calls.filter(({ path }) => path === "/sapi/v1/asset/transfer").map(({ params }) => params.get("type")),
-    ["MAIN_FUNDING", "MAIN_FUNDING", "MAIN_FUNDING", "MAIN_FUNDING", "FUNDING_MAIN", "FUNDING_MAIN", "FUNDING_MAIN", "FUNDING_MAIN"]);
+    [...Array(7).fill("MAIN_FUNDING"), ...Array(7).fill("FUNDING_MAIN")]);
   assert.deepEqual(fake.calls.filter(({ path }) => path === "/api/v3/myTrades").map(({ params }) => params.get("symbol")),
     ["BTCUSDT", "ETHBTC", "ETHUSDT"], "BTC is held, ETH was deposited, USDT is only a quote");
   assert.equal(source.uid, "123456789");
@@ -259,7 +262,7 @@ test("a pair with more fills than one page reads the older days in 24-hour range
     qty: "0.001",
     quoteQty: "60",
     isBuyer: index % 2 === 0,
-    time: taipei("2026-07-31") + index * HOUR,
+    time: taipei("2024-10-30") + index * HOUR,
   }));
   const ranges: number[] = [];
   const myTrades = (params: URLSearchParams) => {
@@ -278,7 +281,7 @@ test("a pair with more fills than one page reads the older days in 24-hour range
     return page(fills.filter(({ time }) => time >= from && time <= to).slice(0, limit));
   };
   const source = await collect(binanceFake({ "/api/v3/myTrades": myTrades }));
-  const inPeriod = fills.filter(({ time }) => time >= taipei("2026-08-01"));
+  const inPeriod = fills.filter(({ time }) => time >= taipei("2024-11-01"));
   assert.equal(source.trades.length, inPeriod.length, "every fill in the period is collected, none twice");
   assert.deepEqual(new Set(source.trades.map(({ id }) => id)), new Set(inPeriod.map(({ id }) => String(id))));
   assert.ok(ranges.every((range) => range < 24 * 60 * 60 * 1000), "no range request exceeds 24 hours");
