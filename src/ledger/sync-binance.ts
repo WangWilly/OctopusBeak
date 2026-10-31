@@ -575,22 +575,41 @@ async function transferHistory(
   return rows;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * `myTrades` answers a startTime/endTime range of at most 24 hours, and its
+ * IDs are the market's trade IDs, so neither a 3-month range nor stepping
+ * back by ID works. The newest page covers the period unless the pair has
+ * more fills than one page holds; only then are the older days read one
+ * 24-hour range at a time.
+ */
 async function pairTrades(client: BinanceClient, pair: BinanceSymbol, startTime: number): Promise<BinanceTrade[]> {
-  const rows: BinanceTrade[] = [];
-  let cursor: Readonly<Record<string, string>> = { startTime: String(startTime) };
-  for (;;) {
-    const page = parseTrades((await client.signed("GET", "/api/v3/myTrades", {
-      symbol: pair.symbol,
-      limit: String(HISTORY_PAGE_LIMIT),
-      ...cursor,
-    })).body, pair);
-    rows.push(...page);
-    if (page.length < HISTORY_PAGE_LIMIT) break;
-    const lastId = page.reduce((highest, trade) => Math.max(highest, Number(trade.id)), 0);
-    cursor = { fromId: String(lastId + 1) };
+  const page = (params: Readonly<Record<string, string>>) => client.signed("GET", "/api/v3/myTrades", {
+    symbol: pair.symbol,
+    limit: String(HISTORY_PAGE_LIMIT),
+    ...params,
+  }).then(({ body }) => parseTrades(body, pair));
+  const byId = new Map<string, BinanceTrade>();
+  const keep = (rows: readonly BinanceTrade[]) => { for (const trade of rows) byId.set(trade.id, trade); };
+  const newest = await page({});
+  keep(newest);
+  const oldest = newest.reduce((earliest, trade) => Math.min(earliest, trade.time), Number.POSITIVE_INFINITY);
+  if (newest.length === HISTORY_PAGE_LIMIT && oldest >= startTime) {
+    for (let dayStart = startTime; dayStart <= oldest; dayStart += DAY_MS) {
+      const dayEnd = Math.min(dayStart + DAY_MS - 1, oldest);
+      for (let from = dayStart; from <= dayEnd;) {
+        const rows = await page({ startTime: String(from), endTime: String(dayEnd) });
+        keep(rows);
+        if (rows.length < HISTORY_PAGE_LIMIT) break;
+        const last = rows.reduce((latest, trade) => Math.max(latest, trade.time), from);
+        // A full page whose fills share one millisecond cannot be split further.
+        if (last === from) throw invalid(`Binance ${pair.symbol} has more fills in one millisecond than one page holds.`);
+        from = last;
+      }
+    }
   }
-  // A startTime request may still answer older fills; the period decides.
-  return rows.filter((trade) => trade.time >= startTime);
+  return [...byId.values()].filter((trade) => trade.time >= startTime);
 }
 
 async function maxUsdtTwd(client: BinanceClient, signal?: AbortSignal): Promise<string | null> {
