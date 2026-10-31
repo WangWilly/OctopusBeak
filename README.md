@@ -97,6 +97,7 @@
 | 第一銀行（First Bank） | 存款、信用卡 |
 | 凱基銀行（KGI Bank） | 存款 |
 | 遠東商銀（Far Eastern International Bank） | 存款（圖形驗證尚待校準，目前會在登入前停止） |
+| 聯邦銀行 New New Bank（Union Bank） | 存款 |
 | 中國信託銀行（CTBC） | 信用卡 |
 | 國泰世華銀行（Cathay） | 信用卡、定存，隨既有來源登入一併收集 |
 | 華南銀行（HNCB） | 信用卡，隨既有來源登入一併收集 |

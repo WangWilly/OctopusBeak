@@ -47,6 +47,7 @@ import {
   renderPreviewStructureReport,
   type PreviewStructureReport,
 } from "../../preview-sources/structure-report.ts";
+import { withPreviewDeviceIdentities } from "../../preview-sources/registry.ts";
 import { clearAllSignInData, type CollectionControl } from "../../settings/data-erasure.ts";
 import type { DashboardBlockKey } from "../../shared-shell/block-load-state.ts";
 import {
@@ -208,10 +209,10 @@ export function automationSaveCredentials(updates: Record<string, string>) {
   }
   const nextCredentials =
     Object.keys(split.credentials).length > 0
-      ? {
-          ...readAutomationCredentialsFile(),
-          ...split.credentials,
-        }
+      ? withPreviewDeviceIdentities(
+          { ...readAutomationCredentialsFile(), ...split.credentials },
+          split.credentials,
+        )
       : undefined;
   writeAutomationConfigFiles(nextSettings, nextCredentials);
   return { saved: true as const };
