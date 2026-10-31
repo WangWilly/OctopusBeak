@@ -78,7 +78,7 @@ async function main(args: readonly string[]): Promise<number> {
   }
 
   if (command.kind === "label") {
-    const server = await startLabelServer({ corpusDirectory, bank });
+    const server = await startLabelServer({ corpusDirectory, bank, ...(command.listen === undefined ? {} : { listen: command.listen }) });
     await print(`Label ${bank.displayName} CAPTCHA images at ${server.url}\nPress Ctrl-C to stop.\n`);
     const signal = interruptSignal();
     await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));

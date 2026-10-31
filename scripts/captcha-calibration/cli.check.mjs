@@ -62,3 +62,12 @@ test("other subcommands parse their own options only", () => {
   assert.equal(parseArguments(["solve", "mega"]).kind, "usage-error");
   assert.equal(parseArguments([]).kind, "help");
 });
+
+test("label listens only on loopback or a Tailscale address", () => {
+  assert.deepEqual(parseArguments(["label", "feib", "--listen", "100.64.0.1"]), { kind: "label", bank: "feib", listen: "100.64.0.1" });
+  assert.deepEqual(parseArguments(["label", "feib", "--listen", "127.0.0.1"]), { kind: "label", bank: "feib", listen: "127.0.0.1" });
+  for (const address of ["0.0.0.0", "192.168.1.10", "100.63.255.1", "100.128.0.1", "100.300.0.1", "::"]) {
+    assert.equal(parseArguments(["label", "feib", "--listen", address]).kind, "usage-error", address);
+  }
+  assert.equal(parseArguments(["prelabel", "feib", "--listen", "100.64.0.1"]).kind, "usage-error");
+});

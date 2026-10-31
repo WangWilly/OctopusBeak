@@ -8,7 +8,7 @@ A separate tool validates the Next Bank audio CAPTCHA: `npm run validate:nextban
 
 ## Run the four steps for a bank
 
-Replace `mega` with `taishin`, `rakuten`, `kgibank`, `firstbank`, or `obank` for the other banks.
+Replace `mega` with `taishin`, `rakuten`, `kgibank`, `firstbank`, `obank`, or `feib` for the other banks.
 
 1. Collect the images. The browser window opens on your screen. Add `--headless` to hide it.
 
@@ -26,6 +26,12 @@ Replace `mega` with `taishin`, `rakuten`, `kgibank`, `firstbank`, or `obank` for
 
    ```sh
    npm run calibrate:captcha -- label mega
+   ```
+
+   To label from a phone on your tailnet, add `--listen` with this Mac's Tailscale IPv4 address (`tailscale ip -4`) and open the printed URL on the phone. The CLI accepts only `127.0.0.1` or an address in Tailscale's `100.64.0.0/10` range, so the page is never offered on a LAN or public interface.
+
+   ```sh
+   npm run calibrate:captcha -- label mega --listen "$(tailscale ip -4)"
    ```
 
 4. Evaluate the labels.
@@ -50,6 +56,7 @@ To collect more images, run `collect` again. It appends to the corpus. Run `prel
 | `kgibank` | Preview source | The Ionic login page (`/ibank/`). `form.captcha()` reads the CAPTCHA data URL from `img[src^="data:image"]` (or `ion-img.recaptcha-image`) and decodes it to PNG. Use `--headless`: KGI's landing page rejects a visible Playwright browser with 「瀏覽器不支援」. |
 | `firstbank` | Preview source page driver | The iBank login page. `page.captchaImage()` takes the `code_verify1.jpg` response bytes and decodes them to PNG. |
 | `obank` | Preview source through guarded browser HTTP | OAuth client credentials, public MobileFirst adapter bootstrap, `emptyLogin`, login-page metadata and audit, then `common/CMN01001/010`. The browser serves an inert same-origin page so the web app cannot redirect during those requests. No credentials are sent. Production retains its Node transport. |
+| `feib` | Preview source page driver | The personal web bank login page (`mainIndex6.jsp`). `page.captchaImage()` waits for the login form and takes the `VerifyCodeServlet` response bytes, decoded to PNG. The deny rule blocks the `TrxDispatcher` POST whose body says `state=login`. |
 
 Two guards keep `collect` from signing in:
 
@@ -89,6 +96,7 @@ The page shows each image at six times its size with `image-rendering: pixelated
 | Enter | Save the text in the box as the confirmed answer, then go to the next unconfirmed image. |
 | Esc | Mark the image unreadable, then go to the next unconfirmed image. |
 | PageUp, PageDown | Go to the previous or next image to fix a label. |
+| Save, Unreadable buttons | Do the same as Enter and Esc, for a phone keyboard without Esc. |
 | Left arrow, right arrow | Do the same when the box is empty. |
 
 The **Previous** and **Next** buttons also move between images. The server stores the answer after the production normalization: digits only for a digit bank, and uppercase letters and digits for an alphanumeric bank. The page shows how many OCR strategies agree with the suggestion and how many images you have confirmed.

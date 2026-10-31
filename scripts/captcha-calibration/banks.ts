@@ -3,6 +3,7 @@ import type { BrowserContextOptions } from "playwright";
 import type { CaptchaImagePreprocessingMode, ChallengeCharacterSet } from "../../src/lib/automation/human-assistance.ts";
 import { strictSourceText } from "../../src/lib/automation/source-text.ts";
 import type { WorkflowBrowserPort } from "../../src/lib/automation/workflow-executor.ts";
+import { createFeibSource } from "../../src/lib/preview-sources/feib-source.ts";
 import { createFirstbankSource } from "../../src/lib/preview-sources/firstbank-source.ts";
 import { createKgibankSource } from "../../src/lib/preview-sources/kgibank-source.ts";
 import { createMegaSource } from "../../src/lib/preview-sources/mega-source.ts";
@@ -15,7 +16,7 @@ import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-log
 import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
 
-export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten", "kgibank", "firstbank", "obank"] as const;
+export const CALIBRATION_BANKS = ["mega", "taishin", "rakuten", "kgibank", "firstbank", "obank", "feib"] as const;
 export type CalibrationBank = typeof CALIBRATION_BANKS[number];
 
 export function isCalibrationBank(value: string): value is CalibrationBank {
@@ -195,5 +196,15 @@ export const CALIBRATION_BANK_SPECS: Readonly<Record<CalibrationBank, Calibratio
     ],
     // Use the guarded browser transport for calibration, including API calls.
     capture: captureObank,
+  },
+  feib: {
+    id: "feib",
+    displayName: "Far Eastern International Bank",
+    charset: "digits",
+    // feib-source CAPTCHA_LENGTH.
+    declaredLength: { value: 6, authority: "source" },
+    method: "preview-source",
+    denyRules: [{ name: "feib-login", method: "POST", path: /^\/netbank\/servlet\/TrxDispatcher$/u, body: /(?:^|&)state=login(?:&|$)/u }],
+    capture: (browser, signal) => captureThroughSource(createFeibSource, browser, signal),
   },
 };
