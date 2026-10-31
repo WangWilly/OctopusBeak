@@ -48,6 +48,9 @@ for (const [namespace, methods] of Object.entries(api)) {
   }
 }
 assert.deepEqual([...invokedBy.values()].sort(), [
+  "appUpdates:check",
+  "appUpdates:restart",
+  "appUpdates:view",
   "automation:block",
   "automation:cancel",
   "automation:cancelDeviceRegistration",
@@ -117,13 +120,16 @@ for (const [bridge, channel] of invokedBy) {
 
 const automation = api.automation as Record<string, (listener: () => void) => () => void>;
 const data = api.data as Record<string, (listener: () => void) => () => void>;
+const appUpdates = api.appUpdates as Record<string, (listener: () => void) => () => void>;
 automation.onRuntimeChanged!(() => {});
 automation.onNotificationTargetRequested!(() => {});
 data.onInvalidated!(() => {});
+appUpdates.onChanged!(() => {});
 assert.deepEqual(recorded.listened, [
   "automation:runtime-changed",
   "automation:notification-target-requested",
   "data:invalidated",
+  "appUpdates:changed",
 ]);
 
 const dataViews = api.dataViews as { enabled(): Promise<unknown>; subscribe(...args: unknown[]): Promise<unknown> };
