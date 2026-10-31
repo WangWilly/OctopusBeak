@@ -154,7 +154,7 @@ test("history rows become typed movements only when the wallet already holds the
 
 type Call = Readonly<{ method: string; path: string; params: URLSearchParams; apiKey: string | null }>;
 
-function binanceFake(overrides: Readonly<Record<string, () => Response>> = {}) {
+function binanceFake(overrides: Readonly<Record<string, (params: URLSearchParams) => Response>> = {}) {
   const calls: Call[] = [];
   const json = (body: unknown, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT", ...headers } });
@@ -184,7 +184,7 @@ function binanceFake(overrides: Readonly<Record<string, () => Response>> = {}) {
     const url = new URL(input.toString());
     calls.push({ method: init?.method ?? "GET", path: url.pathname, params: url.searchParams, apiKey: new Headers(init?.headers).get("X-MBX-APIKEY") });
     const override = overrides[url.pathname];
-    if (override) return override();
+    if (override) return override(url.searchParams);
     const route = routes[url.pathname];
     if (!route) throw new Error(`Unexpected endpoint ${url.pathname}`);
     return route(url.searchParams);
@@ -248,4 +248,38 @@ test("non-Latin tickers Binance lists are read, and a malformed code still fails
   assert.equal(parseTickerPrices([{ symbol: "牛来USDT", price: "0.01" }]).get("牛来USDT"), "0.01");
   for (const code of ["btc", "BTC USDT", "BTC/USDT", ""])
     assert.throws(() => parseExchangeInfo({ symbols: [{ symbol: code, baseAsset: "BTC", quoteAsset: "USDT" }] }), /invalid asset code/u, code);
+});
+
+test("a pair with more fills than one page reads the older days in 24-hour ranges", async () => {
+  const HOUR = 60 * 60 * 1000;
+  // Market-wide trade IDs: the person's fills are far apart in ID.
+  const fills = Array.from({ length: 1502 }, (_, index) => ({
+    symbol: "BTCUSDT",
+    id: 4_000_000_000 + index * 9_973,
+    qty: "0.001",
+    quoteQty: "60",
+    isBuyer: index % 2 === 0,
+    time: taipei("2026-07-31") + index * HOUR,
+  }));
+  const ranges: number[] = [];
+  const myTrades = (params: URLSearchParams) => {
+    const limit = Number(params.get("limit"));
+    const page = (rows: typeof fills) => new Response(JSON.stringify(rows), { status: 200, headers: { Date: "Sat, 31 Oct 2026 07:00:00 GMT" } });
+    if (params.get("symbol") !== "BTCUSDT") return page([]);
+    const start = params.get("startTime");
+    const end = params.get("endTime");
+    if (start === null && end === null) return page(fills.slice(-limit));
+    // Binance: a range is at most 24 hours, and startTime alone means the next 24 hours.
+    const from = Number(start);
+    const to = end === null ? from + 24 * HOUR : Number(end);
+    ranges.push(to - from);
+    if (to - from > 24 * HOUR)
+      return new Response(JSON.stringify({ code: -1127, msg: "More than 24 hours between startTime and endTime." }), { status: 400 });
+    return page(fills.filter(({ time }) => time >= from && time <= to).slice(0, limit));
+  };
+  const source = await collect(binanceFake({ "/api/v3/myTrades": myTrades }));
+  const inPeriod = fills.filter(({ time }) => time >= taipei("2026-08-01"));
+  assert.equal(source.trades.length, inPeriod.length, "every fill in the period is collected, none twice");
+  assert.deepEqual(new Set(source.trades.map(({ id }) => id)), new Set(inPeriod.map(({ id }) => String(id))));
+  assert.ok(ranges.every((range) => range < 24 * 60 * 60 * 1000), "no range request exceeds 24 hours");
 });
