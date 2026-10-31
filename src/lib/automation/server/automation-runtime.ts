@@ -80,6 +80,10 @@ export function createAutomationRuntime(
           }
           const task = assertAutomationTaskCanStartInModel(taskId, model);
           const run = await runner.start(task.id, provider, runOptions);
+          if (run.adopted) {
+            results[task.id] = { status: "already_running", runId: run.runId };
+            continue;
+          }
           started.push(task.id);
           results[task.id] = { status: "started", runId: run.runId };
         } catch (error) {

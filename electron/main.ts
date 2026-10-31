@@ -170,7 +170,11 @@ const handleBeforeQuit = createBeforeQuitHandler({
 app.on("before-quit", handleBeforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
 
+let appQuitting = false;
+app.on("before-quit", () => { appQuitting = true; });
+
 function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
+  if (appQuitting) return;
   // A person watching the App already sees how their own sync ended.
   if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
   const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");

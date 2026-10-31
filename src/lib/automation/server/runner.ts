@@ -49,6 +49,8 @@ export type StartAutomationTaskOptions = {
 export type StartedAutomationTask = {
   taskId: string;
   runId: string;
+  /** Set when another start had already claimed the task; this start's run options are not used. */
+  adopted?: true;
   runtime: ReturnType<AutomationRuntimeState["snapshot"]>;
 };
 
@@ -237,7 +239,7 @@ export function createAutomationRunner(options: Readonly<{
       const existing = claimed.get(taskId);
       if (existing) {
         const run = await existing.opening;
-        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
+        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot(), adopted: true };
       }
       const device = sourceDeviceForTask(taskId);
       const holder = device?.lock.claim("sync");
