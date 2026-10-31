@@ -7,7 +7,9 @@ import {
   classifyBinanceResponse,
   collectBinanceSource,
   parseDeposits,
+  parseExchangeInfo,
   parseFundingAssets,
+  parseTickerPrices,
   parseTransferPage,
   parseWithdrawals,
   signBinanceQuery,
@@ -233,4 +235,17 @@ test("a refused key fails the collection as a credential failure", async () => {
     collect(binanceFake({ "/api/v3/exchangeInfo": () => new Response("{}", { status: 451 }) })),
     (error: unknown) => error instanceof Error && "kind" in error && error.kind === "region-blocked",
   );
+});
+
+test("non-Latin tickers Binance lists are read, and a malformed code still fails", () => {
+  assert.deepEqual(parseExchangeInfo({ symbols: [
+    { symbol: "BTCUSDT", baseAsset: "BTC", quoteAsset: "USDT" },
+    { symbol: "币安人生USDT", baseAsset: "币安人生", quoteAsset: "USDT" },
+  ] }), [
+    { symbol: "BTCUSDT", baseAsset: "BTC", quoteAsset: "USDT" },
+    { symbol: "币安人生USDT", baseAsset: "币安人生", quoteAsset: "USDT" },
+  ]);
+  assert.equal(parseTickerPrices([{ symbol: "牛来USDT", price: "0.01" }]).get("牛来USDT"), "0.01");
+  for (const code of ["btc", "BTC USDT", "BTC/USDT", ""])
+    assert.throws(() => parseExchangeInfo({ symbols: [{ symbol: code, baseAsset: "BTC", quoteAsset: "USDT" }] }), /invalid asset code/u, code);
 });

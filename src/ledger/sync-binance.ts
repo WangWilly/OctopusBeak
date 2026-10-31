@@ -206,8 +206,9 @@ function array(value: unknown, label: string): readonly unknown[] {
   return value;
 }
 
+/** Binance lists non-Latin tickers such as `币安人生`, so a code is any run of uppercase or uncased letters and digits. */
 function asset(value: unknown, label: string): string {
-  if (typeof value !== "string" || !/^[A-Z0-9]{1,20}$/u.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
+  if (typeof value !== "string" || !/^[\p{Lu}\p{Lo}\p{Nd}]{1,20}$/u.test(value)) throw invalid(`Binance ${label} has an invalid asset code.`);
   return value;
 }
 
