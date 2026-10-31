@@ -1282,7 +1282,7 @@ const en = {
     exchangeRateUpdateTime: "Exchange-rate update time",
     scheduledCollection: "Daily scheduled collection",
     scheduledCollectionHint:
-      "While OctopusBeak is open, sync every enabled source once a day at this time. A source that needs you sends a notification.",
+      "While OctopusBeak is open, sync every enabled source once a day at this time. A notification then sums up what synced and what needs you.",
     scheduledCollectionToggle: "Daily",
     scheduledCollectionNextRun: (when: string) => `Next ${when}`,
     scheduledCollectionOff: "Off. Sources sync only when you start them.",
@@ -2584,7 +2584,7 @@ const zh: typeof en = {
     systemTimezone: "系統時區",
     exchangeRateUpdateTime: "匯率更新時間",
     scheduledCollection: "每日排程收集",
-    scheduledCollectionHint: "OctopusBeak 開啟時，每天在這個時間同步所有已啟用的來源。需要你處理的來源會發送通知。",
+    scheduledCollectionHint: "OctopusBeak 開啟時，每天在這個時間同步所有已啟用的來源。同步完會發送通知，說明結果與需要你處理的來源。",
     scheduledCollectionToggle: "每日",
     scheduledCollectionNextRun: (when) => `下次 ${when}`,
     scheduledCollectionOff: "已關閉。只有在你手動開始時才會同步。",

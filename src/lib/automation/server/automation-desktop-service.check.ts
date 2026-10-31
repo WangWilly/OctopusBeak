@@ -11,7 +11,8 @@ import {
   type AutomationDesktopServiceDeps,
 } from "./automation-desktop-service.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
+import type { StartAutomationTaskOptions } from "./runner.ts";
+import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 
 const REGISTRATION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 // Built from parts so the secret scanner does not read a credential assignment.
@@ -106,7 +107,7 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       },
     },
     structureReports: { get: () => null },
-    signInSettingsRequest: { take: () => null },
+    notificationTarget: { take: () => null },
     eraseSignInDetails: () => {
       calls.push(["erase"]);
     },
@@ -282,4 +283,58 @@ test("clearing sign-in data cancels registrations, erases under the user data di
   assert.deepEqual(calls, [["registration.cancelAll"]]);
   assert.deepEqual(erased, [directory]);
   assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");
+});
+
+test("a sync the person starts reports its sources once they end, and exchange rates alone report nothing", async () => {
+  const state = createAutomationRuntimeState("session-check");
+  const settled: Array<(taskId: string, run: AutomationTaskRun | null) => void> = [];
+  const runtime = {
+    snapshot: () => state.snapshot(),
+    subscribe: state.subscribe,
+    run: async (taskId: string, options: StartAutomationTaskOptions = {}) => {
+      if (options.onSettled) settled.push(options.onSettled);
+      return { started: taskId, runId: "run", runtime: state.snapshot() };
+    },
+    runMany: async (taskIds: string[], options: StartAutomationTaskOptions = {}) => {
+      if (options.onSettled) settled.push(options.onSettled);
+      return {
+        started: taskIds,
+        results: Object.fromEntries(taskIds.map((taskId) => [taskId, { status: "started" as const, runId: taskId }])),
+      };
+    },
+  } as unknown as AutomationRuntime;
+  const reports: string[][] = [];
+  const { service } = harness({
+    runtime,
+    onManualCollectionFinished: (results) => reports.push(results.map(({ taskId, run }) => `${taskId}:${run?.status ?? null}`)),
+  });
+  const finished = (taskId: string) => ({ taskId, status: "completed" }) as AutomationTaskRun;
+
+  await service.run("sync-tdcc");
+  settled.shift()!("sync-tdcc", finished("sync-tdcc"));
+  await service.run("exchange-rates");
+  assert.equal(settled.length, 0, "exchange rates are not a source");
+
+  await service.runMany(["sync-tdcc", "fubon-all-statements"]);
+  const onSettled = settled.shift()!;
+  onSettled("sync-tdcc", finished("sync-tdcc"));
+  assert.equal(reports.length, 1, "waits for every source of the batch");
+  onSettled("fubon-all-statements", null);
+  assert.deepEqual(reports, [
+    ["sync-tdcc:completed"],
+    ["sync-tdcc:completed", "fubon-all-statements:null"],
+  ]);
+});
+
+test("a single source the person could not start is reported as not synced", async () => {
+  const state = createAutomationRuntimeState("session-check");
+  const runtime = {
+    snapshot: () => state.snapshot(),
+    subscribe: state.subscribe,
+    run: async () => { throw new Error("device busy"); },
+  } as unknown as AutomationRuntime;
+  const reports: unknown[] = [];
+  const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });
+  await assert.rejects(service.run("sync-tdcc"), /device busy/);
+  assert.deepEqual(reports, [[{ taskId: "sync-tdcc", run: null }]]);
 });
