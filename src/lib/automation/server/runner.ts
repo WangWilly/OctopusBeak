@@ -40,6 +40,8 @@ export type StartAutomationTaskOptions = {
   /** Adopt an existing persisted run instead of creating one. */
   taskRunId?: string;
   onFinished?: (run: AutomationTaskRun) => void;
+  /** Called once the run ends, with `null` when its record could not be finalized. */
+  onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
@@ -253,11 +255,15 @@ export function createAutomationRunner(options: Readonly<{
       // Release before notifying so an observer may start the task again.
       entry.lifecycle = drive(task, run, provider, runOptions).then((finished) => {
         release(taskId, entry);
-        if (!finished) return;
         try {
-          runOptions.onFinished?.(finished);
+          if (finished) runOptions.onFinished?.(finished);
         } catch {
           console.error("automation-task-run-finished-observer-failed");
+        }
+        try {
+          runOptions.onSettled?.(taskId, finished);
+        } catch {
+          console.error("automation-task-run-settled-observer-failed");
         }
       });
       return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };

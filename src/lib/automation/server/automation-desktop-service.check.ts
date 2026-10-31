@@ -106,7 +106,7 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       },
     },
     structureReports: { get: () => null },
-    signInSettingsRequest: { take: () => null },
+    notificationTarget: { take: () => null },
     eraseSignInDetails: () => {
       calls.push(["erase"]);
     },

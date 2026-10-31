@@ -113,7 +113,7 @@ const INVOKE_CHANNELS = {
     openExternalPrerequisite: "automation:openExternalPrerequisite",
     runtimeSnapshot: "automation:runtimeSnapshot",
     fatalRuntimeSnapshot: "automation:fatalRuntimeSnapshot",
-    takeSignInSettingsRequest: "automation:takeSignInSettingsRequest",
+    takeNotificationTarget: "automation:takeNotificationTarget",
     previewStructureReport: "automation:previewStructureReport",
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
   },
@@ -150,10 +150,10 @@ const api: OctopusBeakApi = {
       ipcRenderer.on("automation:runtime-changed", handler);
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
     },
-    onSignInSettingsRequested(listener) {
+    onNotificationTargetRequested(listener) {
       const handler = () => listener();
-      ipcRenderer.on("automation:sign-in-settings-requested", handler);
-      return () => ipcRenderer.removeListener("automation:sign-in-settings-requested", handler);
+      ipcRenderer.on("automation:notification-target-requested", handler);
+      return () => ipcRenderer.removeListener("automation:notification-target-requested", handler);
     },
   },
   data: {

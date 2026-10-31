@@ -27,12 +27,12 @@ import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
-import { requestSignInSettings, takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
+import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
 import {
-  scheduledRunNotification,
+  scheduledCollectionNotification,
   startScheduledCollection,
+  type ScheduledCollectionResult,
 } from "../src/lib/automation/server/scheduled-collection.ts";
-import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import {
   createAutomationDesktopService,
@@ -169,13 +169,12 @@ const handleBeforeQuit = createBeforeQuitHandler({
 app.on("before-quit", handleBeforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
 
-function notifyScheduledRun(run: AutomationTaskRun) {
-  const notice = scheduledRunNotification(run, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+function notifyScheduledCollection(results: ScheduledCollectionResult[]) {
+  const notice = scheduledCollectionNotification(results, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
   if (!notice || !Notification.isSupported()) return;
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
-    // Deleting financial data happens in Settings, which the source's row opens.
-    if (notice.action !== "delete-financial-data") requestSignInSettings(notice.credentialGroupId);
+    requestNotificationTarget(notice.target);
     if (!currentRendererUrl || !currentPreloadPath) return;
     void createWindow(currentRendererUrl, currentPreloadPath)
       .then((window) => {
@@ -442,7 +441,7 @@ async function start() {
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
       startCollection: (occurrenceUtc) =>
-        startScheduledCollection(runtime, occurrenceUtc, notifyScheduledRun)
+        startScheduledCollection(runtime, occurrenceUtc, notifyScheduledCollection)
           .then(() => undefined),
       reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
     });
@@ -470,7 +469,7 @@ async function start() {
       cancelAll: deviceRegistrationHost.cancelAllDeviceRegistrations,
     },
     structureReports: previewStructureReports,
-    signInSettingsRequest: { take: takeSignInSettingsRequest },
+    notificationTarget: { take: takeNotificationTarget },
     eraseSignInDetails,
     userDataDirectory: () => app.getPath("userData"),
     chooseFile: (owner, options) => owner
