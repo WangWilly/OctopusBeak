@@ -534,6 +534,14 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     nonIsoFinancialDenominations: ["USDT"],
   },
   {
+    routeKey: "binance/investment/canonical-v1",
+    integrationNamespace: "binance",
+    stream: "investment",
+    contractVersions: ["binance/investment/canonical-v1"],
+    ruleCombinations: [sameRuleTuple("binance/investment/canonical-v1", "binance/investment/canonical-v1")],
+    nonIsoFinancialDenominations: ["USDT", "FDUSD", "USDC"],
+  },
+  {
     routeKey: TDCC_INVESTMENT_ROUTE,
     integrationNamespace: TDCC_NAMESPACE,
     stream: "investment",
