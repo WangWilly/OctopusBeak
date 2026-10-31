@@ -1137,6 +1137,10 @@ _Avoid_: Unrestricted KGI CAPTCHA submission, lowered KGI confidence threshold, 
 The calibrated CAPTCHA family on the First Bank preview source: a 67-by-29-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires confidence at or above 0.97 from the best of three declared whole-image strategies, including dark-foreground extraction. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
 _Avoid_: Unrestricted First Bank CAPTCHA submission, lowered First Bank confidence threshold, mixed-layout First Bank CAPTCHA corpus
 
+**Far Eastern International Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Far Eastern International Bank preview source: a 100-by-30-pixel image whose answer is exactly six decimal digits. Automatic submission requires confidence at or above 0.97 from one declared whole-image strategy. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted FEIB CAPTCHA submission, lowered FEIB confidence threshold, mixed-layout FEIB CAPTCHA corpus
+
 **O-Bank login CAPTCHA**:
 The calibrated CAPTCHA family on the O-Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between its declared whole-image and per-character teal-foreground readings. Confidence alone never permits submission, and a capture outside the family's dimensions, answer length, or character set fails closed.
 _Avoid_: Confidence-only O-Bank submission, unrestricted O-Bank CAPTCHA submission, mixed-layout O-Bank CAPTCHA corpus

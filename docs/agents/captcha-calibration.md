@@ -1,6 +1,6 @@
 # How to calibrate a preview source CAPTCHA
 
-ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin, Mega, Rakuten, First Bank, KGI, and O-Bank preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. See [the initial calibration record](../research/2026-10-15-preview-captcha-calibration.md), [Rakuten's calibration and held-out validation](../research/2026-10-20-rakuten-captcha-calibration.md), and [the First Bank, KGI, and O-Bank calibration record](../research/2026-10-20-three-bank-captcha-calibration.md). `npm run calibrate:captcha` is the development-only calibration tool. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
+ADR 0039 lets a source submit a CAPTCHA answer only through a calibrated solver family. The Taishin, Mega, Rakuten, First Bank, KGI, O-Bank, and FEIB preview sources have calibrated image families, and Next Bank solves its CAPTCHA from its audio challenge with the local speech recogniser instead of an image family. See [the initial calibration record](../research/2026-10-15-preview-captcha-calibration.md), [Rakuten's calibration and held-out validation](../research/2026-10-20-rakuten-captcha-calibration.md), [the First Bank, KGI, and O-Bank calibration record](../research/2026-10-20-three-bank-captcha-calibration.md), and [the FEIB calibration record](../research/2026-10-31-feib-captcha-calibration.md). `npm run calibrate:captcha` is the development-only calibration tool. It collects real CAPTCHA images, lets you label them by hand, and measures which OCR configuration the production solver could use for each bank. The installer does not include it.
 
 You label every image yourself. No agent labels or solves a CAPTCHA image. Prelabel only suggests an answer from local OCR. A suggestion counts only after you confirm it.
 
@@ -138,7 +138,7 @@ The recommendation is the configuration with the highest coverage among those wi
 
 ## Use the result in phase 2
 
-Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY`, `MEGA_CAPTCHA_FAMILY`, `RAKUTEN_CAPTCHA_FAMILY`, `FIRSTBANK_CAPTCHA_FAMILY`, `KGIBANK_CAPTCHA_FAMILY`, and `OBANK_CAPTCHA_FAMILY` show the result. O-Bank reuses the Rakuten-named teal and four-slot preprocessing, with its own measured acceptance pair.
+Phase 2 turns a recommendation into a production solver for one preview source. `TAISHIN_CAPTCHA_FAMILY`, `MEGA_CAPTCHA_FAMILY`, `RAKUTEN_CAPTCHA_FAMILY`, `FIRSTBANK_CAPTCHA_FAMILY`, `KGIBANK_CAPTCHA_FAMILY`, `OBANK_CAPTCHA_FAMILY`, and `FEIB_CAPTCHA_FAMILY` show the result. O-Bank reuses the Rakuten-named teal and four-slot preprocessing, with its own measured acceptance pair.
 
 1. Copy the recommended declaration, or a configuration you choose from the evaluate output, into a `PreviewCaptchaFamily` in `src/lib/preview-sources/preview-captcha.ts`.
 2. Add the family entry to `CONTEXT.md`, and record the measured numbers under `docs/research/`.
