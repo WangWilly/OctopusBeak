@@ -211,12 +211,12 @@ export async function installTrustedSourceContractCatalog(
   return catalog;
 }
 
-export async function assertTrustedSourceContractCatalog(
+const contractKey = (row: Readonly<{ authorityRoute: string; contractVersion: string }>): string =>
+  JSON.stringify([row.authorityRoute, row.contractVersion]);
+
+async function readInstalledSourceContractCatalog(
   query: PGliteSourceContractCatalogQuery,
-  registrations: readonly CanonicalSourceRouteRegistration[] =
-    CANONICAL_SOURCE_ROUTE_REGISTRY,
-): Promise<void> {
-  const expected = buildTrustedSourceContractCatalog(registrations);
+): Promise<TrustedSourceContractCatalog> {
   const [contracts, ruleTuples] = await Promise.all([
     query.query<SourceContractCatalogRow>(
       `SELECT authority_route AS "authorityRoute",
@@ -235,22 +235,77 @@ export async function assertTrustedSourceContractCatalog(
          FROM source_contract_rule_tuples`,
     ),
   ]);
-  const actual = {
+  return {
     contracts: [...contracts.rows].sort((left, right) =>
       compareText(left.authorityRoute, right.authorityRoute) ||
       compareText(left.contractVersion, right.contractVersion),
     ),
     ruleTuples: ruleTuples.rows
-      .map((row) => ({
-        ...row,
-        ruleOrdinal: Number(row.ruleOrdinal),
-      }))
+      .map((row) => ({ ...row, ruleOrdinal: Number(row.ruleOrdinal) }))
       .sort((left, right) =>
         compareText(left.authorityRoute, right.authorityRoute) ||
         compareText(left.contractVersion, right.contractVersion) ||
         left.ruleOrdinal - right.ruleOrdinal,
       ),
   };
+}
+
+/**
+ * ADR 0085: install the registry's contracts an existing store lacks. Only a
+ * contract version absent from the store is added, with all of its rule
+ * tuples; an installed contract that differs from the registry, or one the
+ * registry no longer has, is left for the catalog assertion to refuse.
+ */
+export async function extendTrustedSourceContractCatalog(
+  transaction: PGliteSourceContractCatalogQuery,
+  registrations: readonly CanonicalSourceRouteRegistration[] =
+    CANONICAL_SOURCE_ROUTE_REGISTRY,
+): Promise<readonly SourceContractCatalogRow[]> {
+  const expected = buildTrustedSourceContractCatalog(registrations);
+  const installed = await readInstalledSourceContractCatalog(transaction);
+  const installedKeys = new Set(installed.contracts.map(contractKey));
+  const missing = expected.contracts.filter((contract) => !installedKeys.has(contractKey(contract)));
+  if (missing.length === 0) return missing;
+  const missingKeys = new Set(missing.map(contractKey));
+  await transaction.query("ALTER TABLE source_contract_catalog DISABLE TRIGGER source_contract_catalog_no_write");
+  await transaction.query("ALTER TABLE source_contract_rule_tuples DISABLE TRIGGER source_contract_rule_tuples_no_write");
+  for (const contract of missing) {
+    await transaction.query(
+      `INSERT INTO source_contract_catalog
+         (authority_route, integration_namespace, stream, contract_version)
+       VALUES ($1, $2, $3, $4)`,
+      [contract.authorityRoute, contract.integrationNamespace, contract.stream, contract.contractVersion],
+    );
+  }
+  for (const tuple of expected.ruleTuples.filter((row) => missingKeys.has(contractKey(row)))) {
+    await transaction.query(
+      `INSERT INTO source_contract_rule_tuples
+         (authority_route, contract_version, rule_ordinal,
+          posting_rule_version, semantic_rule_version, effective_time_rule_version)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        tuple.authorityRoute,
+        tuple.contractVersion,
+        tuple.ruleOrdinal,
+        tuple.postingRuleVersion,
+        tuple.semanticRuleVersion,
+        tuple.effectiveTimeRuleVersion,
+      ],
+    );
+  }
+  await transaction.query("ALTER TABLE source_contract_catalog ENABLE TRIGGER source_contract_catalog_no_write");
+  await transaction.query("ALTER TABLE source_contract_rule_tuples ENABLE TRIGGER source_contract_rule_tuples_no_write");
+  return missing;
+}
+
+
+export async function assertTrustedSourceContractCatalog(
+  query: PGliteSourceContractCatalogQuery,
+  registrations: readonly CanonicalSourceRouteRegistration[] =
+    CANONICAL_SOURCE_ROUTE_REGISTRY,
+): Promise<void> {
+  const expected = buildTrustedSourceContractCatalog(registrations);
+  const actual = await readInstalledSourceContractCatalog(query);
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error("Installed PGlite source contract catalog does not match the trusted registry.");
   }
