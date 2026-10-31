@@ -23,7 +23,9 @@
 
   $: state = $view?.state ?? null;
   $: percent = state?.status === "downloading" ? downloadPercent(state.received, state.release.size) : 0;
-  $: restartBlocked = $runActive || (restartResult?.ok === false && restartResult.reason === "run-active");
+  // Main re-checks on every click, so a refusal only shows the note and never keeps the button disabled.
+  $: restartBlocked = $runActive;
+  $: showRunActive = $runActive || (restartResult?.ok === false && restartResult.reason === "run-active");
   $: if (state?.status !== "ready") restartResult = null;
 
   async function run(action: () => Promise<unknown>) {
@@ -124,7 +126,7 @@
       type="button"
       title={label}
       aria-label={collapsed ? label : undefined}
-      aria-describedby={restartBlocked && !collapsed ? "app-update-run-active" : undefined}
+      aria-describedby={showRunActive && !collapsed ? "app-update-run-active" : undefined}
       disabled={restartBlocked || pending}
       onclick={restart}
     >
@@ -133,7 +135,7 @@
       </svg>
       {#if !collapsed}<span>{$t.settings.appUpdatesRestart}</span>{/if}
     </button>
-    {#if restartBlocked && !collapsed}
+    {#if showRunActive && !collapsed}
       <p id="app-update-run-active" class="side-update-note">{$t.settings.appUpdateRunActive}</p>
     {/if}
   </div>

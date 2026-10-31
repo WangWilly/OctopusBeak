@@ -4,7 +4,7 @@ import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { finished } from "node:stream/promises";
+import { pipeline } from "node:stream/promises";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import {
   isNewerVersion,
@@ -79,34 +79,35 @@ export async function downloadAppRelease(input: {
       signal: controller.signal,
     });
     if (!response.ok || !response.body) throw new Error(`download answered ${response.status}`);
-    const file = createWriteStream(partial);
-    try {
-      for await (const chunk of Readable.fromWeb(response.body as WebReadableStream<Uint8Array>)) {
-        clearTimeout(stall);
-        stall = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS);
-        received += (chunk as Buffer).byteLength;
-        if (received > release.size) break;
-        hash.update(chunk);
-        if (!file.write(chunk)) await new Promise((resolve) => file.once("drain", resolve));
-        const percent = Math.floor((received / release.size) * 100);
-        if (percent !== reportedPercent) {
-          reportedPercent = percent;
-          input.onProgress(received);
+    // pipeline() rejects on a write error (a full disk, say) instead of leaving it uncaught and the download pending.
+    await pipeline(
+      Readable.fromWeb(response.body as WebReadableStream<Uint8Array>),
+      async function* (source: AsyncIterable<Buffer>) {
+        for await (const chunk of source) {
+          clearTimeout(stall);
+          stall = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS);
+          received += chunk.byteLength;
+          if (received > release.size) return;
+          hash.update(chunk);
+          yield chunk;
+          const percent = Math.floor((received / release.size) * 100);
+          if (percent !== reportedPercent) {
+            reportedPercent = percent;
+            input.onProgress(received);
+          }
         }
-      }
-    } finally {
-      file.end();
-      await finished(file);
-    }
+      },
+      createWriteStream(partial),
+    );
   } catch {
-    await rm(partial, { force: true });
+    await rm(partial, { recursive: true, force: true });
     return "download-failed";
   } finally {
     clearTimeout(stall);
     controller.abort();
   }
   if (received !== release.size || hash.digest("hex") !== release.sha256) {
-    await rm(partial, { force: true });
+    await rm(partial, { recursive: true, force: true });
     return "verify-failed";
   }
   await rename(partial, target);

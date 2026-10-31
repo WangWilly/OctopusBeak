@@ -76,8 +76,8 @@ through the same redirect GitHub uses. A new user data folder opens with the Fir
 once; select **Skip intro**, then **Maybe later**, and the same folder opens straight to the App
 from then on. The App checks once the automation runtime is ready, so
 **Download update** appears at the bottom of the sidebar; Settings › Automatic updates has
-**Check now** and the two switches. Turn on **Download updates automatically** and select
-**Check now** to see the download start by itself.
+**Check now** and the two switches. Turning on **Download updates automatically** while an update is
+offered starts the download at once.
 
 Change the fixture with options after `--`, for example
 `npm run desktop:dev:update-feed-fixture -- --mode bad-sha --rate-mb 10`:

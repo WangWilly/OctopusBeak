@@ -153,6 +153,18 @@ test("a refused or broken download is a download failure", async () => {
   }
 });
 
+test("a file that cannot be written is a download failure, not a crash or a hang", async () => {
+  const { origin, server } = await serve((_request, response) => response.end(ZIP));
+  const directory = temporaryDirectory();
+  try {
+    mkdirSync(`${verifiedZipPath(directory, "0.11.0")}.partial`);
+    assert.equal(await downloadAppRelease({ directory, release: release(origin), onProgress: () => {} }), "download-failed");
+  } finally {
+    await close(server);
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("startup keeps only verified ZIPs newer than the running version", async () => {
   const directory = temporaryDirectory();
   try {
