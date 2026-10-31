@@ -2,6 +2,7 @@ import type {
   AutomationCredentialStateDto,
   AutomationCredentialStatus,
   AutomationRuntimeSnapshot,
+  NotificationTarget,
 } from "../../desktop/api.ts";
 import {
   deviceRegistrationSource,
@@ -103,7 +104,7 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
     cancelAll(): Promise<unknown>;
   }>;
   structureReports: Readonly<{ get(taskId: string): PreviewStructureReport | null }>;
-  signInSettingsRequest: Readonly<{ take(): string | null }>;
+  notificationTarget: Readonly<{ take(): NotificationTarget | null }>;
   eraseSignInDetails: typeof eraseSignInDetails;
   userDataDirectory(): string;
   chooseFile(owner: Owner, options: CertificateFileChooserOptions): Promise<FileChooserResult>;
@@ -359,7 +360,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     cancel: (taskId: string, expectedRunId?: string) => runtime.cancel(taskId, expectedRunId),
     forceTerminate: (taskId: string, expectedRunId?: string) => runtime.forceTerminate(taskId, expectedRunId),
     runHistory: () => automationRunHistory(provider),
-    takeSignInSettingsRequest: () => deps.signInSettingsRequest.take(),
+    takeNotificationTarget: () => deps.notificationTarget.take(),
     previewStructureReport(taskId: string) {
       const report = deps.structureReports.get(taskId);
       return report ? renderPreviewStructureReport(report, deps.appVersion()) : null;
