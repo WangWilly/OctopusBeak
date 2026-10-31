@@ -493,3 +493,29 @@ test("runner source has no Libretto command, patch, or session-resume path", asy
   assert.doesNotMatch(source, /node:child_process|spawnSync|resolvePatchCommand|prepareLibrettoRunCdpPatch|automationTaskChild|terminateAutomationTaskProcessTree|relinquishAutomationSessionForTask|finalizeAllOwnedAutomationSessions|resumeSession|resumeFailureMessage|task\.script|task\.command|logPath|logTail|errorMessage/u);
   assert.doesNotMatch(source, /runExchangeRateSyncCommand|exchange-rate-cli-worker|LEDGER_DIR|data\/ledger/u);
 });
+
+test("a run whose record cannot be finalized still settles, and a second start adopts the first", async () => {
+  const runner = freshRunner();
+  const provider = providerStub(memoryAutomation({
+    async transitionTaskRunToTerminal() { throw new Error("disk full"); },
+  }).automation);
+  const release = deferred();
+  const runExecution: typeof runAutomationTaskExecution = async () => {
+    await release.promise;
+    return { summary: null, failure: null };
+  };
+  const settled = deferred<[string, AutomationTaskRun | null]>();
+  const finished: AutomationTaskRun[] = [];
+  const first = await runner.start("exchange-rates", provider, {
+    runExecution,
+    onFinished: (run) => finished.push(run),
+    onSettled: (taskId, run) => settled.resolve([taskId, run]),
+  });
+  assert.equal(first.adopted, undefined);
+  const second = await runner.start("exchange-rates", provider, { runExecution });
+  assert.equal(second.adopted, true);
+  assert.equal(second.runId, first.runId);
+  release.resolve();
+  assert.deepEqual(await settled.promise, ["exchange-rates", null]);
+  assert.deepEqual(finished, [], "onFinished still sees only finished runs");
+});

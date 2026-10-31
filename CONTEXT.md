@@ -914,7 +914,7 @@ The once-daily start, at one time shared by every enabled source, of an Automati
 _Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
 
 **User-action failure**:
-An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. A sync's summary notification leads with it and links to the source's sign-in settings; transient failures are only counted there.
+An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. A sync's summary notification leads with it and opens where the person resolves it; transient failures are only counted there.
 _Avoid_: Transient failure, retryable failure, human assistance
 
 **Session takeover**:

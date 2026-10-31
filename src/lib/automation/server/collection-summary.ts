@@ -87,6 +87,8 @@ export function collectionNotification(
   trigger: CollectionTrigger,
   locale: string,
 ): CollectionNotification | null {
+  // A run the person cancelled or the App stopped (quit, data erasure) is not news.
+  results = results.filter(({ run }) => run?.status !== "cancelled" && run?.status !== "interrupted");
   if (!results.length) return null;
   const zh = locale === "zh-TW";
   const scheduled = trigger === "scheduled";

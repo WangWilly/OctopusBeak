@@ -325,3 +325,16 @@ test("a sync the person starts reports its sources once they end, and exchange r
     ["sync-tdcc:completed", "fubon-all-statements:null"],
   ]);
 });
+
+test("a single source the person could not start is reported as not synced", async () => {
+  const state = createAutomationRuntimeState("session-check");
+  const runtime = {
+    snapshot: () => state.snapshot(),
+    subscribe: state.subscribe,
+    run: async () => { throw new Error("device busy"); },
+  } as unknown as AutomationRuntime;
+  const reports: unknown[] = [];
+  const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });
+  await assert.rejects(service.run("sync-tdcc"), /device busy/);
+  assert.deepEqual(reports, [[{ taskId: "sync-tdcc", run: null }]]);
+});

@@ -360,7 +360,12 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       await ensureAutomationRuntimeReady("automation-run");
       const onFinished = deps.onManualCollectionFinished;
       if (!onFinished || !isSourceTask(taskId)) return runtime.run(taskId);
-      return runtime.run(taskId, { onSettled: (_taskId, run) => onFinished([{ taskId, run }]) });
+      try {
+        return await runtime.run(taskId, { onSettled: (_taskId, run) => onFinished([{ taskId, run }]) });
+      } catch (error) {
+        onFinished([{ taskId, run: null }]);
+        throw error;
+      }
     },
     async runMany(taskIds: string[]) {
       await ensureAutomationRuntimeReady("automation-run-many");

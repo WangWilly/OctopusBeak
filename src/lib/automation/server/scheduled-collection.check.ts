@@ -229,6 +229,22 @@ test("a manual sync uses the same summary without promising an automatic retry",
   );
 });
 
+test("runs the person cancelled or the App stopped are left out of the summary", () => {
+  const stopped = (taskId: string, status: "cancelled" | "interrupted") => ({
+    taskId,
+    run: run({ taskId, status, appWorkflowOutcome: { errorCode: "cancelled", summary: null } }),
+  });
+  assert.equal(
+    collectionNotification([stopped("sync-tdcc", "interrupted"), stopped("sinopac-statements", "cancelled")], "scheduled", "en"),
+    null,
+    "quitting or erasing data mid-sync sends nothing",
+  );
+  assert.equal(
+    collectionNotification([completed("fubon-all-statements"), stopped("sync-tdcc", "interrupted")], "manual", "en")?.body,
+    "Synced 1 source.",
+  );
+});
+
 test("a batch leaves out exchange rates and tasks it did not start", async () => {
   const reports: CollectionResult[][] = [];
   const runtime = {

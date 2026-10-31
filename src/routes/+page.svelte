@@ -871,6 +871,8 @@
         if (target.route === "automation" && target.credentialGroupId) {
           signInSettingsGroupId = target.credentialGroupId;
         }
+        // Settings is only a target for Delete all financial data.
+        if (target.route === "settings") focusFinancialDataDeletion = true;
         navigateToRoute(target.route);
       });
     };

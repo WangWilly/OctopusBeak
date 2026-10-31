@@ -12,7 +12,8 @@ ADR 0045 kept transient failures in run history so notifications would stay rare
 
 - **Which sources.** Every source the batch started, plus any source it could not start. A source already running from another batch belongs to that batch. A batch with no source sends nothing; exchange rates are not a source and never notify.
 - **When.** A Scheduled Collection occurrence always notifies. A sync the person started notifies only when no App window is focused when it ends, because a person watching the App already sees the result.
-- **What it says.** A run counts as synced only when it completed; a partial, failed, cancelled, or unfinalized run did not sync. Titles say "Automatic sync" for Scheduled Collection and "Sync" for a sync the person started.
+- **Stopped runs.** A run the person cancelled or the App stopped (quitting, data erasure) is left out; a batch with only such runs sends nothing, and nothing is sent while the App quits.
+- **What it says.** A run counts as synced only when it completed; a partial, failed, or unfinalized run did not sync. Titles say "Automatic sync" for Scheduled Collection and "Sync" for a sync the person started.
   - Every source synced: "… finished" with the count. A click opens the Overview.
   - Some sources did not sync and none needs the person: the title counts them and the body names up to three. A scheduled body says the next automatic sync tries again; a manual body points to run history. A click opens the Automation page.
   - Any source ended with a User-action Failure: "… needs you". One such source is named with its action; a click opens its sign-in settings, or Settings for Delete all financial data. Several are named together and a click opens the Automation page. Sources that only failed transiently are counted after them.
