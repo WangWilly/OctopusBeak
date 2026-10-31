@@ -8,11 +8,15 @@ import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkfl
  */
 export const BINANCE_QUOTE_ASSETS = ["USDT", "FDUSD", "USDC", "BTC", "BNB", "ETH"] as const;
 
-/** ADR 0077 and 0083: three months back, in the widest window each history endpoint accepts. */
+/**
+ * ADR 0077 and 0084: two years back, in the widest window each history
+ * endpoint accepts. Binance keeps internal transfers for about six months
+ * and refuses an older range (-5026), so transfers look back six months.
+ */
 export const BINANCE_COLLECTION_PERIODS = {
-  trades: { lookBack: { months: 3 } },
-  fundHistory: { lookBack: { months: 3 }, maxWindow: { days: 90 } },
-  transfers: { lookBack: { months: 3 }, maxWindow: { days: 30 } },
+  trades: { lookBack: { years: 2 } },
+  fundHistory: { lookBack: { years: 2 }, maxWindow: { days: 90 } },
+  transfers: { lookBack: { months: 6 }, maxWindow: { days: 30 } },
 } as const satisfies Readonly<Record<string, CollectionPeriodDeclaration>>;
 
 export const BINANCE_SOURCE: VerifiedSource = {
