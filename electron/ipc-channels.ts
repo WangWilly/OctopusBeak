@@ -101,7 +101,7 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "automation:openExternalPrerequisite": "openExternalPrerequisite",
   "automation:runtimeSnapshot": "runtimeSnapshot",
   "automation:fatalRuntimeSnapshot": "fatalRuntimeSnapshot",
-  "automation:takeSignInSettingsRequest": "takeSignInSettingsRequest",
+  "automation:takeNotificationTarget": "takeNotificationTarget",
   "automation:previewStructureReport": "previewStructureReport",
   "automation:openPreviewStructureReportIssue": "openPreviewStructureReportIssue",
   "settings:clearSignInData": "clearSignInData",

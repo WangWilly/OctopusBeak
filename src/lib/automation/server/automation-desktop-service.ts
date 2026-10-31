@@ -2,6 +2,7 @@ import type {
   AutomationCredentialStateDto,
   AutomationCredentialStatus,
   AutomationRuntimeSnapshot,
+  NotificationTarget,
 } from "../../desktop/api.ts";
 import {
   deviceRegistrationSource,
@@ -32,6 +33,7 @@ import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
 } from "./credential-file.ts";
+import { isSourceTask, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { eraseSignInDetails } from "./sign-in-erasure.ts";
@@ -103,7 +105,9 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
     cancelAll(): Promise<unknown>;
   }>;
   structureReports: Readonly<{ get(taskId: string): PreviewStructureReport | null }>;
-  signInSettingsRequest: Readonly<{ take(): string | null }>;
+  notificationTarget: Readonly<{ take(): NotificationTarget | null }>;
+  /** Receives the sources of a sync the person started, once they have all ended. */
+  onManualCollectionFinished?: (results: CollectionResult[]) => void;
   eraseSignInDetails: typeof eraseSignInDetails;
   userDataDirectory(): string;
   chooseFile(owner: Owner, options: CertificateFileChooserOptions): Promise<FileChooserResult>;
@@ -263,6 +267,10 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     // The details block reports a retryable, user-facing error if this fails.
   });
   const unsubscribeFromRuntime = runtime.subscribe((snapshot) => deps.publishRuntimeChanged(snapshot));
+  const runManual = (taskIds: string[]) => {
+    const onFinished = deps.onManualCollectionFinished;
+    return onFinished ? runAndSummarize(runtime, taskIds, {}, onFinished) : runtime.runMany(taskIds);
+  };
   const knownTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
 
   return Object.freeze({
@@ -350,16 +358,23 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     },
     async run(taskId: string) {
       await ensureAutomationRuntimeReady("automation-run");
-      return runtime.run(taskId);
+      const onFinished = deps.onManualCollectionFinished;
+      if (!onFinished || !isSourceTask(taskId)) return runtime.run(taskId);
+      try {
+        return await runtime.run(taskId, { onSettled: (_taskId, run) => onFinished([{ taskId, run }]) });
+      } catch (error) {
+        onFinished([{ taskId, run: null }]);
+        throw error;
+      }
     },
     async runMany(taskIds: string[]) {
       await ensureAutomationRuntimeReady("automation-run-many");
-      return runtime.runMany(taskIds);
+      return runManual(taskIds);
     },
     cancel: (taskId: string, expectedRunId?: string) => runtime.cancel(taskId, expectedRunId),
     forceTerminate: (taskId: string, expectedRunId?: string) => runtime.forceTerminate(taskId, expectedRunId),
     runHistory: () => automationRunHistory(provider),
-    takeSignInSettingsRequest: () => deps.signInSettingsRequest.take(),
+    takeNotificationTarget: () => deps.notificationTarget.take(),
     previewStructureReport(taskId: string) {
       const report = deps.structureReports.get(taskId);
       return report ? renderPreviewStructureReport(report, deps.appVersion()) : null;
@@ -404,7 +419,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     async collectAllSources() {
       await ensureAutomationRuntimeReady("collect-all-sources");
       const model = await runtime.desktopModel();
-      return runtime.runMany(scheduledCollectionTaskIds(model.automation));
+      return runManual(scheduledCollectionTaskIds(model.automation));
     },
     /** Stops publishing runtime changes. */
     close() {
