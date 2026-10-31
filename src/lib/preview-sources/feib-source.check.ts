@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createFeibSource,
-  FEIB_PREVIEW_SOURCE,
   feibQueryRanges,
   type FeibCapture,
   type FeibPage,
@@ -204,12 +203,9 @@ test("an FEIB overview with an empty demand table is not held", async () => {
   assert.equal(result.output?.products[0]?.status, "not_held");
 });
 
-test("production FEIB refuses its uncalibrated CAPTCHA before opening a page", async () => {
+test("production FEIB solves with its calibrated family and refuses a capture outside it", async () => {
   const fake = fakePage();
   const result = await runPreviewSource(createFeibSource({ page: fake.opener }), credentials);
-  assert.equal(result.errorCode, "verification-configuration-failed");
-  assert.ok(result.events.some((event) => event.code === "solver-challenge-unsupported"));
-  assert.equal(fake.opens(), 0);
-  const registered = await runPreviewSource(FEIB_PREVIEW_SOURCE, credentials);
-  assert.equal(registered.errorCode, "verification-configuration-failed", "the registered source opens no page either");
+  assert.equal(result.errorCode, "verification-configuration-failed", "the fake page's image is not 100x30");
+  assert.deepEqual(fake.calls, ["captcha"], "nothing is submitted for an unsupported capture");
 });

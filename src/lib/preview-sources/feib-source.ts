@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
 import { FEIB_LOGIN_URL, playwrightFeibPage } from "./feib-page.ts";
+import { calibratedCaptchaSolver, FEIB_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 import {
@@ -11,7 +12,6 @@ import {
   isZeroDecimal,
   localDate,
   observedAt,
-  refuseUnsupportedVerification,
   solveChallengeRound,
   taipeiMonthWindow,
   type PreviewCaptchaSolver,
@@ -317,8 +317,8 @@ export function createFeibSource(options: Readonly<{ page?: FeibPageOpener; solv
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live FEIB account. Its data may be incomplete or wrong. It collects NT-dollar demand deposit balances and three months of transactions. Its image verification must run on your device, and no on-device solver has been calibrated for FEIB yet, so runs stop before sign-in for now.",
-        "zh-TW": "預覽來源，從未以真實的遠東商銀帳戶執行過，資料可能不完整或有誤。它收集臺幣活期存款餘額與近三個月交易明細。圖形驗證必須在你的裝置上執行，而遠東商銀的裝置端辨識尚未完成校準，因此目前執行會在登入前停止。",
+        en: "Preview source, never run against a live FEIB account. Its data may be incomplete or wrong. It collects NT-dollar demand deposit balances and three months of transactions. Its image verification is solved on your device; a challenge the on-device solver is not confident about ends the run without signing in.",
+        "zh-TW": "預覽來源，從未以真實的遠東商銀帳戶執行過，資料可能不完整或有誤。它收集臺幣活期存款餘額與近三個月交易明細。圖形驗證在你的裝置上辨識；辨識信心不足時，該次執行會在登入前停止。",
       },
       requirements: [{ en: "An FEIB personal online-banking (個人網路銀行) login.", "zh-TW": "可登入遠東商銀個人網路銀行的帳號。" }],
       steps: [{
@@ -341,8 +341,7 @@ export function createFeibSource(options: Readonly<{ page?: FeibPageOpener; solv
     startUrl: FEIB_LOGIN_URL,
     async run(context, input) {
       await context.event("authentication", "started", "authentication-started");
-      const solve = options.solveCaptcha;
-      if (!solve) return refuseUnsupportedVerification(context, "feib-image-captcha");
+      const solve = options.solveCaptcha ?? calibratedCaptchaSolver(FEIB_CAPTCHA_FAMILY);
       return open(context, input.startUrl, async (page) => {
         let submitted = false;
         try {
