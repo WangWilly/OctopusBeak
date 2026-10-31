@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   APP_UPDATE_CHECK_INTERVAL_MS,
+  appUpdateNotification,
   createAppUpdater,
   reduceAppUpdate,
   type AppUpdateEvent,
@@ -137,6 +138,9 @@ test("the switch stops checking, and turning it on checks at once", () => {
   updater.setEnabled(true);
   assert.equal(recorded.checks, 1);
   assert.deepEqual(updater.state(), { status: "checking" });
+  updater.receive({ type: "update-not-available" });
+  updater.setEnabled(true);
+  assert.equal(recorded.checks, 1, "saving other settings with the switch on does not check");
   updater.setEnabled(false);
   assert.deepEqual(updater.state(), { status: "off" });
   updater.receive({ type: "update-not-available" });
@@ -234,4 +238,9 @@ test("the reducer covers every state and event", () => {
     ready: ["ready", "ready", "ready", "ready", "ready", "ready", "ready", "ready"],
     failed: ["failed", "off", "checking", "failed", "failed", "ready", "failed", "unsupported"],
   });
+});
+
+test("the ready notification names the version in the person's language", () => {
+  assert.deepEqual(appUpdateNotification("0.11.0", "zh-TW"), { title: "新版 0.11.0 已下載", body: "重新啟動即可更新。" });
+  assert.deepEqual(appUpdateNotification("0.11.0", "en"), { title: "OctopusBeak 0.11.0 downloaded", body: "Restart to update." });
 });

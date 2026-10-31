@@ -42,6 +42,7 @@ import type {
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
+import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
 import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/server/error-report.ts";
 import type {
   DataReadOptions,
@@ -230,6 +231,15 @@ export type DataViewsApi = {
 export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
+  };
+  /** ADR 0083: automatic updates from GitHub Releases. */
+  appUpdates: {
+    view(): Promise<AppUpdateView>;
+    /** Checks now unless a check or download is in flight or an update is ready. */
+    check(): Promise<AppUpdateView>;
+    /** Quits and installs a downloaded update; refused while a run is active. */
+    restart(): Promise<AppUpdateRestartResult>;
+    onChanged(listener: (view: AppUpdateView) => void): () => void;
   };
   /** ADR 0081: an Error report the person sends by hand from a failed run. */
   errorReports: {

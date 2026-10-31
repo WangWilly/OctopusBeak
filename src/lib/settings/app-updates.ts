@@ -1,3 +1,5 @@
+import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
+
 /**
  * ADR 0083: the updater asks GitHub, never us, for the latest release. The release workflow writes this
  * file (scripts/update-feed.mjs); releases/latest skips drafts and prereleases.
@@ -6,6 +8,11 @@ export const APP_UPDATE_FEED_URL =
   "https://github.com/WangWilly/OctopusBeak/releases/latest/download/update-feed-darwin-arm64.json";
 
 export const APP_UPDATES_ENABLED_KEY = "APP_UPDATES_ENABLED";
+
+/** On by default (ADR 0083): only an explicit "false" turns updates off. */
+export function appUpdatesEnabled(settings: AutomationSettingsFile): boolean {
+  return settings[APP_UPDATES_ENABLED_KEY] !== "false";
+}
 export const APP_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 /** What the updater is doing, as Settings shows it. */
@@ -38,9 +45,18 @@ export type AppUpdaterSignal =
   | { type: "update-downloaded"; releaseName: string }
   | { type: "error"; message: string };
 
+/** What Settings shows: the running version and what the updater is doing. */
+export type AppUpdateView = { currentVersion: string; state: AppUpdateState };
+
 export type AppUpdateRestartResult =
   | { ok: true }
   | { ok: false; reason: "not-ready" | "run-active" };
+
+export function appUpdateNotification(version: string, locale: "zh-TW" | "en"): { title: string; body: string } {
+  return locale === "zh-TW"
+    ? { title: `新版 ${version} 已下載`, body: "重新啟動即可更新。" }
+    : { title: `OctopusBeak ${version} downloaded`, body: "Restart to update." };
+}
 
 export function initialAppUpdateState(input: { supported: boolean; enabled: boolean }): AppUpdateState {
   if (!input.supported) return { status: "unsupported", reason: "development-build" };
@@ -147,9 +163,11 @@ export function createAppUpdater(deps: AppUpdaterDependencies) {
     receive(signal: AppUpdaterSignal) {
       dispatch(updateEvent(signal, deps.now()));
     },
+    /** Called on every settings save; only turning the switch on checks. */
     setEnabled(enabled: boolean) {
+      const wasOff = state.status === "off";
       dispatch({ type: enabled ? "enable" : "disable" });
-      if (enabled) check();
+      if (enabled && wasOff) check();
     },
     /** Quitting installs the update; it waits until no run is active so none is cut short. */
     restart(): AppUpdateRestartResult {

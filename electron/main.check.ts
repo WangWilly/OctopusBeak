@@ -16,7 +16,7 @@ assert.match(
 );
 assert.match(
   source,
-  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*\}\)/,
+  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*appUpdater\?\.start\(\);\s*\}\)/,
 );
 assert.match(
   source,
@@ -46,3 +46,20 @@ assert.doesNotMatch(
   source,
   /openLedgerDatabase|migrateLedgerBeforeWindow|initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/,
 );
+assert.match(
+  source,
+  /const appUpdatesSupported = app\.isPackaged && !cdpFixture && !packagedBrowserFixture;/,
+  "development builds and fixtures never check for updates",
+);
+assert.equal(
+  source.match(/autoUpdater\.quitAndInstall\(\)/g)?.length,
+  1,
+  "only the updater's restart, which refuses while a run is active, installs an update",
+);
+assert.match(
+  source,
+  /cleanup: async \(\) => \{[\s\S]*?appUpdater\?\.stop\(\);[\s\S]*?\},\s*cleanupWaitMs/,
+  "quitting stops the update timer",
+);
+const appUpdatesSource = readFileSync(new URL("../src/lib/settings/app-updates.ts", import.meta.url), "utf8");
+assert.doesNotMatch(appUpdatesSource, /USAGE_PING|usage-statistics/, "update checks never reach the usage statistics receiver");

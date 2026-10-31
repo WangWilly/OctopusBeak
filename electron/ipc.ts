@@ -30,6 +30,7 @@ import {
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
 import type { UsagePing } from "../src/lib/settings/usage-statistics.ts";
+import type { AppUpdateRestartResult, AppUpdateView } from "../src/lib/settings/app-updates.ts";
 import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "../src/lib/automation/server/error-report.ts";
 import {
   isFiniteDisplayScale,
@@ -52,6 +53,7 @@ export function registerOctopusBeakIpc({
   collection,
   onSystemSettingsChanged,
   usagePing,
+  appUpdates,
   errorReports,
   pgliteViews,
   pgliteOperational,
@@ -63,6 +65,7 @@ export function registerOctopusBeakIpc({
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
   usagePing: { preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void };
+  appUpdates: { view(): AppUpdateView; check(): void; restart(): AppUpdateRestartResult };
   errorReports: {
     available(): boolean;
     preview(input: ErrorReportInput): ErrorReportPayload;
@@ -140,6 +143,12 @@ export function registerOctopusBeakIpc({
       usagePing.answer(enabled);
       return systemSettings(readAutomationSettings());
     },
+    "appUpdates:view": () => appUpdates.view(),
+    "appUpdates:check": () => {
+      appUpdates.check();
+      return appUpdates.view();
+    },
+    "appUpdates:restart": () => appUpdates.restart(),
     "errorReports:available": () => errorReports.available(),
     "errorReports:preview": (_event, input: ErrorReportInput) => errorReports.preview(input),
     "errorReports:send": (_event, input: ErrorReportInput) => errorReports.send(input),

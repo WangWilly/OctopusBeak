@@ -1,7 +1,7 @@
 import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
 import { automationFlagEnabled } from "../automation/statement-selection.ts";
 import { DEFAULT_SYSTEM_TIMEZONE, isIanaTimezone } from "../time/timezone.ts";
-import { APP_UPDATES_ENABLED_KEY } from "./app-updates.ts";
+import { APP_UPDATES_ENABLED_KEY, appUpdatesEnabled } from "./app-updates.ts";
 
 export type SystemSettingsDto = {
   systemTimezone: string;
@@ -52,7 +52,7 @@ export function systemSettings(settings: AutomationSettingsFile = {}): SystemSet
     scheduledCollectionTime: String(settings.SCHEDULED_COLLECTION_TIME ?? "07:00"),
     previewFeaturesEnabled: automationFlagEnabled(settings.PREVIEW_FEATURES_ENABLED),
     usageStatisticsEnabled: automationFlagEnabled(settings.USAGE_STATISTICS_ENABLED),
-    appUpdatesEnabled: settings[APP_UPDATES_ENABLED_KEY] !== "false",
+    appUpdatesEnabled: appUpdatesEnabled(settings),
   });
 }
 
