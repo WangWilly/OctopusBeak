@@ -1,15 +1,16 @@
 # Download statistics
 
-Snapshot: 2026-10-30. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
+Snapshot: 2026-10-31. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
 
-- Total installer downloads: **288**
-- Through the website button (`OctopusBeak-arm64.dmg`): **123**
+- Total installer downloads: **297**
+- Through the website button (`OctopusBeak-arm64.dmg`): **125**
 
 ## By release
 
 | Release | Published | Website DMG | Versioned DMG | ZIP | Total |
 | --- | --- | ---: | ---: | ---: | ---: |
-| v0.9.5 | 2026-10-29 | 8 | 1 | 1 | 10 |
+| v0.10.0 | 2026-10-31 | 1 | 1 | 2 | 4 |
+| v0.9.5 | 2026-10-29 | 9 | 1 | 1 | 11 |
 | v0.9.4 | 2026-10-26 | 20 | 1 | 1 | 22 |
 | v0.9.3 | 2026-10-22 | 1 | 1 | 2 | 4 |
 | v0.9.2 | 2026-10-22 | 4 | 1 | 1 | 6 |
@@ -37,7 +38,7 @@ Snapshot: 2026-10-30. Counts are cumulative GitHub Release installer downloads (
 | v0.5.0 | 2026-07-21 | 0 | 1 | 1 | 2 |
 | v0.4.0 | 2026-07-18 | 0 | 3 | 1 | 4 |
 | v0.3.3 | 2026-07-15 | 0 | 10 | 4 | 14 |
-| v0.3.2 | 2026-07-13 | 0 | 4 | 3 | 7 |
+| v0.3.2 | 2026-07-13 | 0 | 5 | 3 | 8 |
 | v0.3.1 | 2026-07-13 | 0 | 2 | 2 | 4 |
 | v0.3.0 | 2026-07-11 | 0 | 3 | 2 | 5 |
 | v0.2.17 | 2026-07-09 | 0 | 3 | 1 | 4 |
@@ -47,9 +48,9 @@ Snapshot: 2026-10-30. Counts are cumulative GitHub Release installer downloads (
 | v0.2.13 | 2026-07-08 | 0 | 2 | 1 | 3 |
 | v0.2.11 | 2026-07-07 | 0 | 2 | 2 | 4 |
 | v0.2.10 | 2026-07-05 | 0 | 4 | 2 | 6 |
-| v0.2.7 | 2026-07-04 | 0 | 2 | 1 | 3 |
+| v0.2.7 | 2026-07-04 | 0 | 3 | 1 | 4 |
 | v0.2.6 | 2026-07-03 | 0 | 2 | 1 | 3 |
-| v0.2.5 | 2026-07-02 | 0 | 2 | 0 | 2 |
+| v0.2.5 | 2026-07-02 | 0 | 2 | 2 | 4 |
 | v0.2.4 | 2026-07-02 | 0 | 2 | 2 | 4 |
 | v0.2.2 | 2026-07-02 | 0 | 2 | 2 | 4 |
 | v0.2.1 | 2026-07-02 | 0 | 1 | 1 | 2 |
@@ -59,6 +60,6 @@ Snapshot: 2026-10-30. Counts are cumulative GitHub Release installer downloads (
 
 | Since | Until | New downloads |
 | --- | --- | ---: |
-| | | Needs a second snapshot |
+| 2026-10-30 | 2026-10-31 | 9 |
 
 A negative number means a release or asset was deleted between snapshots.
