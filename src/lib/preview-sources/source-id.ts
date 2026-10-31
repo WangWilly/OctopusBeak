@@ -43,4 +43,5 @@ export const PREVIEW_SOURCE_INSTITUTIONS = {
   "firstbank-deposit": "bank-007",
   "kgibank-deposit": "bank-809",
   "ctbc-credit-card": "ctbc",
+  "feib-deposit": "bank-805",
 } as const satisfies Readonly<Record<string, InstitutionKey>>;
