@@ -159,10 +159,13 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+/** The part of Settings a notification or another page opens. */
+export type SettingsFocus = "financial-data-deletion" | "app-updates";
+
 /** Where the App opens when the person clicks one of its notifications. */
 export type NotificationTarget =
   | { route: "overview" }
-  | { route: "settings" }
+  | { route: "settings"; focus: SettingsFocus }
   | { route: "automation"; credentialGroupId: string | null };
 
 export type AutomationRunManyTaskResult = {

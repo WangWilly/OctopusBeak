@@ -35,6 +35,7 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
+import type { NotificationTarget } from "../src/lib/desktop/api.ts";
 import { startScheduledCollection } from "../src/lib/automation/server/scheduled-collection.ts";
 import {
   collectionNotification,
@@ -182,15 +183,11 @@ quitOnTerminationSignals(process, () => app.quit());
 let appQuitting = false;
 app.on("before-quit", () => { appQuitting = true; });
 
-function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
-  if (appQuitting) return;
-  // A person watching the App already sees how their own sync ended.
-  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
-  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
-  if (!notice || !Notification.isSupported()) return;
+/** Shows a notification whose click opens the App at its target. */
+function showNotification(notice: { title: string; body: string }, target: NotificationTarget) {
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
-    requestNotificationTarget(notice.target);
+    requestNotificationTarget(target);
     if (!currentRendererUrl || !currentPreloadPath) return;
     void createWindow(currentRendererUrl, currentPreloadPath)
       .then((window) => {
@@ -203,22 +200,22 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
   notification.show();
 }
 
+function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
+  if (appQuitting) return;
+  // A person watching the App already sees how their own sync ended.
+  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
+  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+  if (!notice || !Notification.isSupported()) return;
+  showNotification(notice, notice.target);
+}
+
 /** ADR 0083: one notification once an update has downloaded; the App never restarts by itself. */
 function notifyUpdateReady(version: string) {
   if (appQuitting || !Notification.isSupported()) return;
-  const notice = appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
-  const notification = new Notification(notice);
-  notification.on("click", () => {
-    if (!currentRendererUrl || !currentPreloadPath) return;
-    void createWindow(currentRendererUrl, currentPreloadPath)
-      .then((window) => {
-        if (window.isMinimized()) window.restore();
-        window.show();
-        window.focus();
-      })
-      .catch(showStartupError);
-  });
-  notification.show();
+  showNotification(
+    appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
+    { route: "settings", focus: "app-updates" },
+  );
 }
 
 function projectRoot() {
