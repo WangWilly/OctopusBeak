@@ -36,6 +36,7 @@
     exchangeRateUpdateTime,
     previewFeaturesEnabled,
     usageStatisticsEnabled,
+    appUpdatesEnabled,
     scheduledCollection,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
@@ -86,6 +87,7 @@
   let usageEnabled = $usageStatisticsEnabled;
   // The one-time question can be answered while Settings is open.
   $: usageEnabled = $usageStatisticsEnabled;
+  let updatesEnabled = $appUpdatesEnabled;
   let usagePayload: string | null = null;
   let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
   let previewDeleteConfirming = false;
@@ -216,6 +218,7 @@
       scheduledCollectionTime: `${collectionHour}:${collectionMinute}`,
       previewFeaturesEnabled: previewEnabled,
       usageStatisticsEnabled: usageEnabled,
+      appUpdatesEnabled: updatesEnabled,
     };
     saveStatus = "pending";
     saveError = "";
@@ -230,6 +233,7 @@
         [collectionHour, collectionMinute] = value.scheduledCollectionTime.split(":");
         previewEnabled = value.previewFeaturesEnabled;
         usageEnabled = value.usageStatisticsEnabled;
+        updatesEnabled = value.appUpdatesEnabled;
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
