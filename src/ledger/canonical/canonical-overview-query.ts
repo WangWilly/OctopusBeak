@@ -16,6 +16,7 @@ export type CanonicalOverviewAmountTrace = Readonly<{
     | "depository-balance-observation"
     | "credit-card-used-credit-estimate"
     | "investment-holding-observation"
+    | "investment-holding-snapshot"
     | "investment-margin-observation";
   accountId: string;
   observationId?: string;

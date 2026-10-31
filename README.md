@@ -78,6 +78,7 @@
 | LINE Bank | 台幣存款、外幣 |
 | 電子發票（E-Invoice） | 發票與消費品項 |
 | MAX / MaiCoin | 加密資產餘額與交易紀錄 |
+| 幣安（Binance） | 現貨與資金錢包餘額、充提與劃轉紀錄、持有資產的成交紀錄 |
 | 集保e手掌握（TDCC e-Passbook） | 證券、基金、交割帳戶 |
 
 外幣交易明細目前支援永豐、元大、國泰世華與 LINE Bank。
@@ -96,6 +97,8 @@
 | 王道銀行（O-Bank） | 存款、定存 |
 | 第一銀行（First Bank） | 存款、信用卡 |
 | 凱基銀行（KGI Bank） | 存款 |
+| 遠東商銀（Far Eastern International Bank） | 存款 |
+| 聯邦銀行 New New Bank（Union Bank） | 存款 |
 | 中國信託銀行（CTBC） | 信用卡 |
 | 國泰世華銀行（Cathay） | 信用卡、定存，隨既有來源登入一併收集 |
 | 華南銀行（HNCB） | 信用卡，隨既有來源登入一併收集 |

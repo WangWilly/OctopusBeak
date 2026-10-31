@@ -27,6 +27,10 @@ export const PREVIEW_SOURCE_ID = /^[a-z][a-z0-9-]{0,47}$/u;
 
 export const previewTaskId = (source: Readonly<{ id: string }>) => `preview-${source.id}`;
 
+/** Every key a Preview source reads from its sign-in details: its credential fields, then its device identity. */
+export const previewSourceKeys = (source: Readonly<{ credentialFields: readonly Readonly<{ key: string }>[]; deviceIdentityKey?: string }>) =>
+  [...source.credentialFields.map((field) => field.key), ...source.deviceIdentityKey === undefined ? [] : [source.deviceIdentityKey]];
+
 /**
  * The Institution each production Preview source collects from, readable by
  * the interface without loading the sources themselves. A Preview source is
@@ -43,4 +47,6 @@ export const PREVIEW_SOURCE_INSTITUTIONS = {
   "firstbank-deposit": "bank-007",
   "kgibank-deposit": "bank-809",
   "ctbc-credit-card": "ctbc",
+  "feib-deposit": "bank-805",
+  "newnewbank-deposit": "bank-803",
 } as const satisfies Readonly<Record<string, InstitutionKey>>;

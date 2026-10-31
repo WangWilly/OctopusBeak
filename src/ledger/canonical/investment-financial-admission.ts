@@ -29,11 +29,12 @@ export const INVESTMENT_CANONICAL_CONTRACT_VERSION =
  * obtains the full account and effective date from the independently captured
  * foreign-currency statement.
  */
-export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade" | "maicoin" | "tdcc";
+export type InvestmentSourceId = "yuanta-fund" | "yuanta-trade" | "maicoin" | "binance" | "tdcc";
 export const ADVERTISED_INVESTMENT_SOURCE_IDS = [
   "yuanta-fund",
   "yuanta-trade",
   "maicoin",
+  "binance",
   "tdcc",
 ] as const;
 export type InvestmentExactAmount = { coefficient: string; scale: number };
@@ -447,7 +448,7 @@ export function admitCanonicalInvestmentCapture(
   }
   if (
     capture.identity.accountNumber &&
-    (capture.sourceId === "maicoin" ||
+    (capture.sourceId === "maicoin" || capture.sourceId === "binance" ||
       !["brokerage-account", "platform-account"].includes(
         capture.identity.accountNumber.kind,
       ))

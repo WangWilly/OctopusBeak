@@ -10,7 +10,7 @@ import {
   type PreviewProductCollectors,
 } from "./product-collection.ts";
 import type { PreviewSource } from "./registry.ts";
-import { previewTaskId } from "./source-id.ts";
+import { previewSourceKeys, previewTaskId } from "./source-id.ts";
 import { previewVisibilityFromEnvironment, visibleProducts } from "./visibility.ts";
 
 export type { WorkflowPreviewWritePort } from "./product-collection.ts";
@@ -97,9 +97,7 @@ export function previewWorkflowInput(
 ): PreviewWorkflowInput {
   return {
     startUrl: source.startUrl,
-    credentials: Object.fromEntries(
-      source.credentialFields.map((field) => [field.key, environment[field.key] ?? ""]),
-    ),
+    credentials: Object.fromEntries(previewSourceKeys(source).map((key) => [key, environment[key] ?? ""])),
     products: selectedPreviewProducts(source, environment),
   };
 }

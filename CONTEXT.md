@@ -231,6 +231,10 @@ _Avoid_: Keyword-only fund inference, hardcoded destination account, inferred in
 A holding observation that references a Security classified as `cryptocurrency` within a crypto financial account. BTC, ETH, and similar assets are Securities held by the account rather than separate financial accounts; borrowing is not represented as a negative or liability holding.
 _Avoid_: Crypto financial account, wallet, crypto loan
 
+**Bounded trade history**:
+The trade history of a source that reports trades only for a named trading pair, declared by its integration contract as covering exactly the pairs the source chose to request and never as complete. It does not bound the source's Holding observations, which stay complete snapshots, so a holding change the bounded trades cannot explain is expected rather than an admission failure.
+_Avoid_: Complete trade history, inferred missing trade, pair-scan completeness
+
 **Security**:
 The Plaid-aligned canonical reference for an asset held in an investment financial account, classified by a security type such as equity, ETF, mutual fund, fixed income, derivative, cash, cryptocurrency, loan, or other. Classifying a cryptocurrency as a Security is a technical data-taxonomy choice and does not by itself assert that the asset is legally a security in Taiwan.
 _Avoid_: Financial account, holding, legal securities determination
@@ -1132,6 +1136,10 @@ _Avoid_: Unrestricted KGI CAPTCHA submission, lowered KGI confidence threshold, 
 **First Bank login CAPTCHA**:
 The calibrated CAPTCHA family on the First Bank preview source: a 67-by-29-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires confidence at or above 0.97 from the best of three declared whole-image strategies, including dark-foreground extraction. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
 _Avoid_: Unrestricted First Bank CAPTCHA submission, lowered First Bank confidence threshold, mixed-layout First Bank CAPTCHA corpus
+
+**Far Eastern International Bank login CAPTCHA**:
+The calibrated CAPTCHA family on the Far Eastern International Bank preview source: a 100-by-30-pixel image whose answer is exactly six decimal digits. Automatic submission requires confidence at or above 0.97 from one declared whole-image strategy. An unaccepted challenge or a capture outside the family's dimensions, answer length, or character set fails closed.
+_Avoid_: Unrestricted FEIB CAPTCHA submission, lowered FEIB confidence threshold, mixed-layout FEIB CAPTCHA corpus
 
 **O-Bank login CAPTCHA**:
 The calibrated CAPTCHA family on the O-Bank preview source: a 152-by-60-pixel image whose answer is exactly four uppercase letters or decimal digits. Automatic submission requires OCR Agreement between its declared whole-image and per-character teal-foreground readings. Confidence alone never permits submission, and a capture outside the family's dimensions, answer length, or character set fails closed.
