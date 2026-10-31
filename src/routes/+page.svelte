@@ -15,6 +15,7 @@
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
+    SettingsFocus,
   } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
@@ -138,7 +139,7 @@
     ): Promise<void>;
   } | undefined;
   let signInSettingsGroupId: string | null = null;
-  let focusFinancialDataDeletion = false;
+  let settingsFocus: SettingsFocus | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
   const routeDataCache = createRouteLoadCache<RouteData>();
@@ -872,8 +873,7 @@
         if (target.route === "automation" && target.credentialGroupId) {
           signInSettingsGroupId = target.credentialGroupId;
         }
-        // Settings is only a target for Delete all financial data.
-        if (target.route === "settings") focusFinancialDataDeletion = true;
+        if (target.route === "settings") settingsFocus = target.focus;
         navigateToRoute(target.route);
       });
     };
@@ -1021,7 +1021,7 @@
       {signInSettingsGroupId}
       onSignInSettingsOpened={() => (signInSettingsGroupId = null)}
       onOpenFinancialDataSettings={() => {
-        focusFinancialDataDeletion = true;
+        settingsFocus = "financial-data-deletion";
         navigateToRoute("settings");
       }}
     />
@@ -1033,8 +1033,8 @@
   {/if}
 {:else}
   <SettingsPage
-    {focusFinancialDataDeletion}
-    onFinancialDataDeletionFocused={() => (focusFinancialDataDeletion = false)}
+    focus={settingsFocus}
+    onFocused={() => (settingsFocus = null)}
     automationRunActive={automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false}
     onboardingStatus={onboardingState?.status ?? null}
     onboardingEndedAt={onboardingState?.endedAt ?? null}

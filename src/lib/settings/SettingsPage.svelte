@@ -44,6 +44,7 @@
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
+  import type { SettingsFocus } from "$lib/desktop/api.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
   /** When onboarding completed or exited; null for records from before it was kept. */
@@ -54,9 +55,9 @@
   export let onRestartOnboarding: () => void = () => {};
   export let onboardingRestartPending = false;
   export let onboardingRestartError: string | null = null;
-  /** Opened from a source waiting for a Canonical Reset: show the delete action. */
-  export let focusFinancialDataDeletion = false;
-  export let onFinancialDataDeletionFocused: () => void = () => {};
+  /** Opened from a notification or a source waiting for a Canonical Reset: show that section. */
+  export let focus: SettingsFocus | null = null;
+  export let onFocused: () => void = () => {};
   /** Restart to update waits until no run is active; the main process refuses it too. */
   export let automationRunActive = false;
 
@@ -250,14 +251,18 @@
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  async function focusDeleteFinancialData() {
+  async function focusSection(target: SettingsFocus) {
     await tick();
-    showSection("settings-data");
-    document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
-    onFinancialDataDeletionFocused();
+    if (target === "financial-data-deletion") {
+      showSection("settings-data");
+      document.getElementById("delete-financial-data")?.focus({ preventScroll: true });
+    } else {
+      showSection("settings-updates");
+    }
+    onFocused();
   }
 
-  $: if (focusFinancialDataDeletion) void focusDeleteFinancialData();
+  $: if (focus) void focusSection(focus);
 
   function chooseLocale(value: Locale) {
     setLocale(value);

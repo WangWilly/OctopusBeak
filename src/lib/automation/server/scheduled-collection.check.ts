@@ -126,7 +126,7 @@ test("a lone source that needs the person names its action and opens its sign-in
   );
   assert.deepEqual(
     collectionNotification([failed("fubon-all-statements", "canonical-reset-required")], "scheduled", "en")?.target,
-    { route: "settings" },
+    { route: "settings", focus: "financial-data-deletion" },
     "deleting financial data happens in Settings",
   );
 });
@@ -301,7 +301,7 @@ test("a source the store refuses until a Canonical Reset notifies once, then sch
     appWorkflowOutcome: { errorCode: "canonical-reset-required", summary: null },
   });
   const notice = collectionNotification([{ taskId: refused.taskId, run: refused }], "scheduled", "en");
-  assert.deepEqual(notice?.target, { route: "settings" });
+  assert.deepEqual(notice?.target, { route: "settings", focus: "financial-data-deletion" });
   assert.match(notice!.body, /^Taipei Fubon Bank: The data format was updated/);
 
   const model = (resetRequired: readonly string[]) => buildAutomationPageModel({
