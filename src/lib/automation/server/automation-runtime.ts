@@ -51,11 +51,11 @@ export function createAutomationRuntime(
     activeRun: (taskRunId: string) => runner.activeRun(taskRunId),
     hasActive: () => runner.hasActive(),
 
-    async run(taskId: string) {
+    async run(taskId: string, runOptions: StartAutomationTaskOptions = {}) {
       const current = await runner.current(taskId);
       if (current) return { started: taskId, runId: current.runId, runtime: current.runtime };
       const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel());
-      const started = await runner.start(task.id, provider);
+      const started = await runner.start(task.id, provider, runOptions);
       return { started: task.id, runId: started.runId, runtime: started.runtime };
     },
 

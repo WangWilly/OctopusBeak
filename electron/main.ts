@@ -28,11 +28,12 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
+import { startScheduledCollection } from "../src/lib/automation/server/scheduled-collection.ts";
 import {
-  scheduledCollectionNotification,
-  startScheduledCollection,
-  type ScheduledCollectionResult,
-} from "../src/lib/automation/server/scheduled-collection.ts";
+  collectionNotification,
+  type CollectionResult,
+  type CollectionTrigger,
+} from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import {
   createAutomationDesktopService,
@@ -169,8 +170,10 @@ const handleBeforeQuit = createBeforeQuitHandler({
 app.on("before-quit", handleBeforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
 
-function notifyScheduledCollection(results: ScheduledCollectionResult[]) {
-  const notice = scheduledCollectionNotification(results, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
+  // A person watching the App already sees how their own sync ended.
+  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
+  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
   if (!notice || !Notification.isSupported()) return;
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
@@ -441,7 +444,7 @@ async function start() {
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
       startCollection: (occurrenceUtc) =>
-        startScheduledCollection(runtime, occurrenceUtc, notifyScheduledCollection)
+        startScheduledCollection(runtime, occurrenceUtc, (results) => notifyCollection("scheduled", results))
           .then(() => undefined),
       reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
     });
@@ -470,6 +473,7 @@ async function start() {
     },
     structureReports: previewStructureReports,
     notificationTarget: { take: takeNotificationTarget },
+    onManualCollectionFinished: (results) => notifyCollection("manual", results),
     eraseSignInDetails,
     userDataDirectory: () => app.getPath("userData"),
     chooseFile: (owner, options) => owner

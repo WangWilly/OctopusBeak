@@ -46,7 +46,7 @@ The Spending page combines E-Invoices and account expenses, grouped by month and
 
 ### Collect data from the desktop app
 
-The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect. With Daily scheduled collection on, the App syncs every enabled source at a set time while it is open and sends one notification afterward with the result and any source that needs attention. Foreign-currency and crypto exchange rates update once a day.
+The Automation page keeps sources, sign-in details, and run history in one place. Enable each source separately and choose which statement types to collect. With Daily scheduled collection on, the App syncs every enabled source at a set time while it is open and sends one notification afterward with the result and any source that needs attention. A sync you start notifies you too when you are away from the App. Foreign-currency and crypto exchange rates update once a day.
 
 ![OctopusBeak sign-in settings (Traditional Chinese UI)](site/assets/screens/credentials.webp)
 
