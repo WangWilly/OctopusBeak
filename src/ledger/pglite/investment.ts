@@ -44,6 +44,7 @@ const SOURCES: Readonly<Record<InvestmentCaptureInput["sourceId"], readonly { ro
   "yuanta-fund": [{ route: "yuanta-fund/investment/canonical-v1", contract: "yuanta-fund/investment/canonical-v1" }],
   "yuanta-trade": [{ route: "yuanta-trade/investment/canonical-v1", contract: "yuanta-trade/investment/canonical-v1" }],
   maicoin: [{ route: "maicoin/investment/canonical-v1", contract: "maicoin/investment/canonical-v1" }],
+  binance: [{ route: "binance/investment/canonical-v1", contract: "binance/investment/canonical-v1" }],
   tdcc: [
     { route: TDCC_INVESTMENT_ROUTE, contract: TDCC_INVESTMENT_CONTRACT },
     { route: TDCC_FUND_ROUTE, contract: TDCC_FUND_CONTRACT },

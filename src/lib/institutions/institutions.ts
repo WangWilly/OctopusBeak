@@ -13,6 +13,7 @@ import { PREVIEW_SOURCE_INSTITUTIONS } from "../preview-sources/source-id.ts";
  */
 const PLATFORM_ROWS = [
   { key: "maicoin", zhTW: "MaiCoin", en: "MaiCoin" },
+  { key: "binance", zhTW: "幣安 Binance", en: "Binance" },
   { key: "einvoice", zhTW: "電子發票", en: "E-Invoice" },
 ] as const;
 
@@ -101,6 +102,7 @@ const SOURCE_INSTITUTIONS: Readonly<Record<string, SourceInstitution>> = {
   linebank: direct("linebank"),
   einvoice: direct("einvoice"),
   maicoin: direct("maicoin"),
+  binance: direct("binance"),
   tdcc: { kind: "intermediary", logo: "tdcc", investmentStreams: { investment: "securities", [TDCC_FUND_STREAM]: "fund" } },
 };
 
@@ -132,6 +134,7 @@ export const INSTITUTION_KEYS = [
   "linebank",
   "einvoice",
   "maicoin",
+  "binance",
 ] as const satisfies readonly InstitutionKey[];
 
 export type LogoInstitutionKey = (typeof INSTITUTION_KEYS)[number];

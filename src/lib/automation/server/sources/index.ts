@@ -10,6 +10,7 @@ import { SINOPAC_SOURCE } from "./sinopac.ts";
 import { LINEBANK_SOURCE } from "./linebank.ts";
 import { EINVOICE_SOURCE } from "./einvoice.ts";
 import { MAICOIN_SOURCE } from "./maicoin.ts";
+import { BINANCE_SOURCE } from "./binance.ts";
 import { TDCC_SOURCE } from "./tdcc.ts";
 import type { StatementSelectionGroup } from "../../statement-selection.ts";
 import type { VerifiedSource } from "./verified-source.ts";
@@ -28,6 +29,7 @@ export const VERIFIED_SOURCES: readonly VerifiedSource[] = [
   LINEBANK_SOURCE,
   EINVOICE_SOURCE,
   MAICOIN_SOURCE,
+  BINANCE_SOURCE,
   TDCC_SOURCE,
 ];
 
