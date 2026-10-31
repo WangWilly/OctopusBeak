@@ -15,7 +15,7 @@ import {
   type Confirmation,
 } from "./corpus.ts";
 
-const HOST = "127.0.0.1";
+const LOOPBACK = "127.0.0.1";
 const MAX_BODY_BYTES = 4096;
 
 export type LabelServer = Readonly<{ url: string; close(): Promise<void> }>;
@@ -65,8 +65,9 @@ function send(response: ServerResponse, status: number, type: string, body: stri
 const sendJson = (response: ServerResponse, status: number, body: unknown) =>
   send(response, status, "application/json; charset=utf-8", JSON.stringify(body));
 
-export async function startLabelServer(options: Readonly<{ corpusDirectory: string; bank: CalibrationBankSpec }>): Promise<LabelServer> {
+export async function startLabelServer(options: Readonly<{ corpusDirectory: string; bank: CalibrationBankSpec; listen?: string }>): Promise<LabelServer> {
   const { corpusDirectory, bank } = options;
+  const host = options.listen ?? LOOPBACK;
   let origin = "";
 
   async function captureById(id: string): Promise<CaptureRecord | undefined> {
@@ -157,9 +158,9 @@ export async function startLabelServer(options: Readonly<{ corpusDirectory: stri
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, HOST, () => resolve());
+    server.listen(0, host, () => resolve());
   });
-  origin = `http://${HOST}:${(server.address() as AddressInfo).port}`;
+  origin = `http://${host}:${(server.address() as AddressInfo).port}`;
   return {
     url: `${origin}/`,
     close: () => new Promise<void>((resolve, reject) => {
@@ -182,8 +183,8 @@ function labelPage(nonce: string): string {
   header { display: flex; gap: 24px; align-items: baseline; flex-wrap: wrap; }
   h1 { font-size: 18px; margin: 0; }
   #frame { padding: 16px; background: #fff; border: 1px solid #8884; }
-  #challenge { display: block; image-rendering: pixelated; }
-  #processed-challenge { display: block; image-rendering: pixelated; background: #fff; }
+  #challenge { display: block; image-rendering: pixelated; max-width: calc(100vw - 82px); height: auto; }
+  #processed-challenge { display: block; image-rendering: pixelated; background: #fff; max-width: calc(100vw - 82px); height: auto; }
   #frame, #pframe { padding: 16px; background: #fff; border: 1px solid #8884; display: inline-block; }
   #answer { font: 32px ui-monospace, monospace; letter-spacing: 0.2em; width: 12ch; padding: 4px 8px; }
   .meta { color: #888; }
@@ -207,6 +208,8 @@ function labelPage(nonce: string): string {
 <nav>
   <button id="previous" type="button">Previous</button>
   <button id="next" type="button">Next</button>
+  <button id="save" type="button">Save</button>
+  <button id="unreadable" type="button">Unreadable</button>
 </nav>
 <p class="meta">
   <kbd>Enter</kbd> saves the input as confirmed. Type to correct it first.
@@ -322,6 +325,8 @@ $("answer").addEventListener("keydown", (event) => {
 });
 $("previous").addEventListener("click", () => move(-1));
 $("next").addEventListener("click", () => move(1));
+$("save").addEventListener("click", () => void save({ answer: $("answer").value }));
+$("unreadable").addEventListener("click", () => void save({ unreadable: true }));
 
 fetch("/api/state").then((response) => response.json()).then((loaded) => {
   state = loaded;

@@ -1,6 +1,6 @@
 # Installed source contract catalog and rule admission
 
-Status: accepted
+Status: accepted, amended by [ADR 0085](0085-opening-a-store-installs-newly-registered-contracts.md) (opening a store installs newly registered contracts)
 
 The closed source-route registry already rejects unregistered routes, but
 contract eligibility and financial rule versions are also repeated across

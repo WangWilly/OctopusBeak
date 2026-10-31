@@ -101,6 +101,22 @@ function firstbankSite(image) {
   };
 }
 
+function feibSite(image) {
+  return (method, url) => {
+    if (url.host !== "ebank.feib.com.tw" || method !== "GET") return null;
+    if (url.pathname === "/netbank/html/pages/jsp/Logon/mainIndex6.jsp") {
+      return html(`<html><body>
+        <input id="cid0" name="CUSTID"><input id="uid0" name="USERID"><input id="pad0" name="LGNPWD" type="password"><input id="VERCODE0">
+        <div id="vercode0area"><img data-role="vercode" src="/netbank/servlet/VerifyCodeServlet?t=1"></div>
+        <button id="submitbtn">登入</button></body></html>`);
+    }
+    if (url.pathname === "/netbank/servlet/VerifyCodeServlet") {
+      return { status: 200, contentType: "image/png", body: image };
+    }
+    return null;
+  };
+}
+
 function obankSite(image) {
   return (method, url, body) => {
     if (url.host !== "www.o-bank.com") return null;
@@ -160,6 +176,7 @@ const BANK_CASES = [
   { bank: "taishin", site: taishinSite, image: () => solidPng(90, 35), size: [90, 35], mediaType: "image/png", declaredLength: 6 },
   { bank: "kgibank", site: kgibankSite, image: () => solidPng(120, 40), size: [120, 40], mediaType: "image/png" },
   { bank: "firstbank", site: firstbankSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
+  { bank: "feib", site: feibSite, image: () => solidPng(90, 30), size: [90, 30], mediaType: "image/png" },
   { bank: "obank", site: obankSite, image: () => solidPng(100, 30), size: [100, 30], mediaType: "image/png" },
 ];
 

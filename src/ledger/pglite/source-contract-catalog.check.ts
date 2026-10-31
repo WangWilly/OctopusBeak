@@ -692,3 +692,73 @@ try {
 } finally {
   await oldDatabase.close();
 }
+
+const withoutBinance = CANONICAL_SOURCE_ROUTE_REGISTRY.filter(
+  (registration) => registration.integrationNamespace !== "binance",
+);
+assert.notEqual(withoutBinance.length, CANONICAL_SOURCE_ROUTE_REGISTRY.length, "the fixture drops the Binance route");
+
+const olderStore = await PGlite.create();
+try {
+  await applyPgliteBaseline(olderStore, withoutBinance);
+  await applyPgliteBaseline(olderStore);
+  await assertTrustedSourceContractCatalog(olderStore);
+  const added = await olderStore.query<{ authority_route: string }>(
+    "SELECT authority_route FROM source_contract_catalog WHERE integration_namespace = 'binance'",
+  );
+  assert.deepEqual(added.rows.map((row) => row.authority_route), ["binance/investment/canonical-v1"],
+    "opening a store installed before a route existed adds that route");
+  await applyPgliteBaseline(olderStore);
+  await assert.rejects(
+    olderStore.query(
+      "INSERT INTO source_contract_catalog(authority_route, integration_namespace, stream, contract_version) VALUES ('forged/investment/v1', 'forged', 'investment', 'forged/investment/v1')",
+    ),
+    /installed source contract catalog is immutable/u,
+    "the write guards are back in force after the extension",
+  );
+} finally {
+  await olderStore.close();
+}
+
+const newerStore = await PGlite.create();
+try {
+  await applyPgliteBaseline(newerStore);
+  await assert.rejects(
+    applyPgliteBaseline(newerStore, withoutBinance),
+    /does not match the trusted registry/u,
+    "a store that trusts a route the registry no longer has still fails closed",
+  );
+} finally {
+  await newerStore.close();
+}
+
+const changedStore = await PGlite.create();
+try {
+  await applyPgliteBaseline(changedStore);
+  const changed = CANONICAL_SOURCE_ROUTE_REGISTRY.map((registration) =>
+    registration.integrationNamespace === "binance"
+      ? { ...registration, stream: "investment-changed" }
+      : registration);
+  const withNewRoute = [
+    ...changed,
+    { ...withoutBinance.find((registration) => registration.integrationNamespace === "maicoin")!,
+      routeKey: "extra/investment/canonical-v1", integrationNamespace: "extra",
+      contractVersions: ["extra/investment/canonical-v1"],
+      ruleCombinations: [{ contractVersion: "extra/investment/canonical-v1", postingRuleVersion: "extra/investment/canonical-v1", semanticRuleVersion: "extra/investment/canonical-v1", effectiveTimeRuleVersion: "extra/investment/canonical-v1" }] },
+  ];
+  await assert.rejects(
+    applyPgliteBaseline(changedStore, withNewRoute),
+    /does not match the trusted registry/u,
+    "an installed contract whose registration changed is never rewritten",
+  );
+  const extra = await changedStore.query<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM source_contract_catalog WHERE integration_namespace = 'extra'",
+  );
+  assert.equal(extra.rows[0]?.count, 0, "a refused store keeps its catalog unchanged");
+  const stream = await changedStore.query<{ stream: string }>(
+    "SELECT stream FROM source_contract_catalog WHERE integration_namespace = 'binance'",
+  );
+  assert.deepEqual(stream.rows, [{ stream: "investment" }]);
+} finally {
+  await changedStore.close();
+}

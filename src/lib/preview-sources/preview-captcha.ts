@@ -87,6 +87,21 @@ export const KGIBANK_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
   solverConfidenceThreshold: 0.99,
 };
 
+/** Fixed on 60 labelled images: 60 accepted, all correct (Wilson 95% upper
+ * bound 6.0%). New captures must validate this declaration. */
+export const FEIB_CAPTCHA_FAMILY: PreviewCaptchaFamily = {
+  name: "feib-login-captcha",
+  geometry: { width: 100, height: 30 },
+  charset: "digits",
+  expectedAnswerLength: 6,
+  answerPattern: /^\d{6}$/u,
+  ocrAttemptPlan: [
+    { imagePreprocessing: [], ocrPageSegmentationMode: "single-line" },
+  ],
+  solveAcceptancePolicy: { mode: "confidence-only" },
+  solverConfidenceThreshold: 0.97,
+};
+
 /** O-Bank shares the 152×60 teal layout, but has its own measured acceptance
  * pair: 24/60 accepted, all correct. Confidence alone never permits sign-in. */
 export const OBANK_CAPTCHA_FAMILY: PreviewCaptchaFamily = {

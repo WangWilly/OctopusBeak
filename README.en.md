@@ -78,6 +78,7 @@ The app remembers onboarding progress, so you can quit and continue later. You c
 | LINE Bank | TWD deposits and foreign currency |
 | E-Invoice | Personal invoices and purchased items |
 | MAX / MaiCoin | Crypto balances and statement rows |
+| Binance | Spot and funding balances, deposits, withdrawals and transfers, trades in the pairs of observed assets |
 | TDCC e-Passbook | Securities, funds, settlement accounts |
 
 Foreign-currency transaction details are currently supported for SinoPac, Yuanta, Cathay, and LINE Bank.

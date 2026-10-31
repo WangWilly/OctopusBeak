@@ -1,4 +1,8 @@
 import { PGlite } from "@electric-sql/pglite";
+import {
+  CANONICAL_SOURCE_ROUTE_REGISTRY,
+  type CanonicalSourceRouteRegistration,
+} from "../canonical/canonical-source-route-registry.ts";
 import { PGLITE_BASELINE_SQL } from "./baseline-sql.ts";
 import {
   PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS,
@@ -11,6 +15,7 @@ import {
 } from "./attestation-sql.ts";
 import {
   assertTrustedSourceContractCatalog,
+  extendTrustedSourceContractCatalog,
   installTrustedSourceContractCatalog,
   PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL,
 } from "./source-contract-catalog.ts";
@@ -61,18 +66,26 @@ export const PGLITE_BASELINE_MANIFEST: PGliteBaselineManifest = Object.freeze({
 
 export { PGLITE_BASELINE_SQL } from "./baseline-sql.ts";
 
-export async function applyPgliteBaseline(database: PGlite): Promise<void> {
+export async function applyPgliteBaseline(
+  database: PGlite,
+  registrations: readonly CanonicalSourceRouteRegistration[] = CANONICAL_SOURCE_ROUTE_REGISTRY,
+): Promise<void> {
   const installed = await database.query<{ exists: boolean }>(
     "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'pglite_baseline_metadata') AS exists",
   );
   if (installed.rows[0]?.exists) {
-    await assertPgliteBaseline(database);
+    await assertPgliteBaselineMetadata(database);
+    // A store the assertion refuses keeps its catalog unchanged.
+    await database.transaction(async (transaction) => {
+      await extendTrustedSourceContractCatalog(transaction, registrations);
+      await assertPgliteBaseline(transaction, registrations);
+    });
     return;
   }
   await database.transaction(async (transaction) => {
     await transaction.exec(PGLITE_BASELINE_SQL);
     await transaction.exec(PGLITE_OCCURRENCE_GROUP_SQL);
-    await installTrustedSourceContractCatalog(transaction);
+    await installTrustedSourceContractCatalog(transaction, registrations);
     await transaction.exec(PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL);
     await transaction.query(
       `UPDATE pglite_baseline_metadata
@@ -93,10 +106,10 @@ export async function applyPgliteBaseline(database: PGlite): Promise<void> {
       ],
     );
   });
-  await assertPgliteBaseline(database);
+  await assertPgliteBaseline(database, registrations);
 }
 
-export async function assertPgliteBaseline(
+async function assertPgliteBaselineMetadata(
   database: Pick<PGliteStore, "query"> | PGlite,
 ): Promise<void> {
   const metadata = await database.query<{
@@ -126,7 +139,15 @@ export async function assertPgliteBaseline(
   ) {
     throw new Error("PGlite baseline metadata does not match its known manifest.");
   }
-  await assertTrustedSourceContractCatalog(database);
+}
+
+export async function assertPgliteBaseline(
+  database: Pick<PGliteStore, "query"> | PGlite,
+  registrations: readonly CanonicalSourceRouteRegistration[] = CANONICAL_SOURCE_ROUTE_REGISTRY,
+): Promise<void> {
+  await assertPgliteBaselineMetadata(database);
+  await assertTrustedSourceContractCatalog(database, registrations);
+  const numeric = (value: number | string): number => Number(value);
   const [tables, indexes, triggers, views, foreignKeys] = await Promise.all([
     database.query<{ count: number | string }>(
       "SELECT COUNT(*) AS count FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'",

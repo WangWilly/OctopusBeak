@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
 import test from "node:test";
+import { createBinanceWorkflow } from "../../binance-workflow.ts";
 import { createMaicoinWorkflow } from "../../maicoin-workflow.ts";
 import { createTdccWorkflow } from "../../tdcc-workflow.ts";
 import { requiredWorkflowCapabilities } from "../../workflow-executor.ts";
@@ -78,9 +79,10 @@ test("a source whose workflow collects products binds its run to the source's pr
   }
 });
 
-test("MaiCoin and TDCC keep the capabilities their modules declare", () => {
+test("MaiCoin, Binance and TDCC keep the capabilities their modules declare", () => {
   const definition = (taskId: string) => appWorkflowRegistration(taskId)?.definition!;
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-maicoin")), requiredWorkflowCapabilities(createMaicoinWorkflow()));
+  assert.deepEqual(requiredWorkflowCapabilities(definition("sync-binance")), requiredWorkflowCapabilities(createBinanceWorkflow()));
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-tdcc")), requiredWorkflowCapabilities(createTdccWorkflow()));
 });
 
@@ -114,5 +116,8 @@ test("workflow input is derived from the sign-in fields and selections", () => {
   assert.deepEqual(appWorkflowRegistration("sync-tdcc")?.inputFromEnvironment({ LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
   assert.deepEqual(appWorkflowRegistration("sync-maicoin")?.inputFromEnvironment({ MAX_SUB_ACCOUNT: " " }), {
     credentials: { accessKey: "", secretKey: "", subAccount: "main" },
+  });
+  assert.deepEqual(appWorkflowRegistration("sync-binance")?.inputFromEnvironment({ LIBRETTO_CLOUD_BINANCE_API_KEY: "example-key" }), {
+    credentials: { binance_api_key: "example-key", binance_api_secret: "" },
   });
 });

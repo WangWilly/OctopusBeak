@@ -18,7 +18,7 @@ paths = [
 [[rules]]
 id = "libretto-cloud-credential"
 description = "Libretto workflow credential pasted into source or docs"
-regex = '''(?i)\b(LIBRETTO_CLOUD_[A-Z0-9_]*(?:PASSWORD|ACCOUNT|USER_ID|SECRET|TOKEN|CA_PASSWORD|CA_PATH)[ \t]*[:=][ \t]*["']?)([^"'\s,#]+)'''
+regex = '''(?i)\b(LIBRETTO_CLOUD_[A-Z0-9_]*(?:PASSWORD|ACCOUNT|USER_ID|SECRET|TOKEN|API_KEY|CA_PASSWORD|CA_PATH)[ \t]*[:=][ \t]*["']?)([^"'\s,#]+)'''
 secretGroup = 2
 keywords = ["LIBRETTO_CLOUD_"]
 
