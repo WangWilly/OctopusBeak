@@ -14,15 +14,20 @@ import { strictSourceText } from "../../lib/automation/source-text.ts";
 import { createWorkflowExecutor } from "../../lib/automation/workflow-executor.ts";
 import { FailureCodeError } from "../../lib/automation/workflow-failures.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
+import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
 
 const taipei = (date: string) => Date.parse(`${date}T10:00:00+08:00`);
 const HTTP_DATE = "Sat, 31 Oct 2026 07:00:00 GMT";
 
-function binanceFetch(accountStatus = 200): typeof fetch {
+function binanceFetch(
+  accountStatus = 200,
+  funding: readonly unknown[] = [{ asset: "USDT", free: "95", locked: "0", freeze: "0", withdrawing: "0" }],
+  date = HTTP_DATE,
+): typeof fetch {
   const json = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), { status, headers: { Date: HTTP_DATE } });
+    new Response(JSON.stringify(body), { status, headers: { Date: date } });
   const routes: Readonly<Record<string, (params: URLSearchParams) => Response>> = {
     "/api/v3/time": () => json({ serverTime: Date.parse("2026-10-31T07:00:00.000Z") }),
     "/api/v3/exchangeInfo": () => json({ symbols: [
@@ -32,7 +37,7 @@ function binanceFetch(accountStatus = 200): typeof fetch {
     "/api/v3/account": () => accountStatus === 200
       ? json({ uid: 123456789, balances: [{ asset: "BTC", free: "0.2", locked: "0" }, { asset: "ETH", free: "1", locked: "0" }] })
       : json({ code: -2015, msg: "Invalid API-key, IP, or permissions for action." }, accountStatus),
-    "/sapi/v1/asset/get-funding-asset": () => json([{ asset: "USDT", free: "95", locked: "0", freeze: "0", withdrawing: "0" }]),
+    "/sapi/v1/asset/get-funding-asset": () => json(funding),
     "/sapi/v1/capital/deposit/hisrec": (params) => json(params.get("startTime") === String(Date.parse("2026-08-03T00:00:00+08:00"))
       ? [{ id: "d1", coin: "USDT", amount: "100", status: 1, walletType: 1, insertTime: taipei("2026-09-01") }]
       : []),
@@ -109,6 +114,20 @@ test("Binance workflow commits both wallets and their bounded history through th
 
     await executor.run("sync-binance", "synthetic-binance-rerun", input, new AbortController().signal);
     assert.equal(await count("SELECT COUNT(*)::int AS count FROM investment_transactions"), 5, "a recapture adds no transaction");
+
+    globalThis.fetch = binanceFetch(200, [], "Sat, 31 Oct 2026 08:00:00 GMT");
+    await executor.run("sync-binance", "synthetic-binance-emptied", input, new AbortController().signal);
+    const overview = await createPGliteCanonicalOverviewQuery(store).current();
+    assert.equal(overview.status, "ok");
+    const binance = overview.status === "ok"
+      ? overview.projection.accounts.filter((account) => account.integrationNamespace === "binance")
+      : [];
+    const emptied = binance.filter((account) => account.positions.length === 0);
+    assert.equal(emptied.length, 1, "the funding wallet holds nothing after the emptied snapshot");
+    assert.equal(emptied[0]!.availability, "available", "an empty complete snapshot is an observed zero, not awaiting");
+    assert.deepEqual(emptied[0]!.amounts.map(({ currency, exact }) => ({ currency, exact })), [
+      { currency: "TWD", exact: { coefficient: "0", scale: 0 } },
+    ]);
 
     globalThis.fetch = binanceFetch(401);
     await assert.rejects(
