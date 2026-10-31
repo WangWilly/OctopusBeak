@@ -39,6 +39,7 @@ import {
   dataVersionStore as defaultDataVersionStore,
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
+import { announceTaskRunFinished } from "./task-run-finished.ts";
 
 export type ActiveTaskRunFields = Pick<
   AutomationTaskRunUpdate,
@@ -291,6 +292,7 @@ async function persistTerminal(
   }
   const finalized = await persistence.taskRunById(taskRunId);
   if (!finalized) throw new Error(`Missing automation task run: ${taskRunId}`);
+  if (transition.applied) announceTaskRunFinished(finalized);
   return finalized;
 }
 

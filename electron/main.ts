@@ -1,5 +1,5 @@
 import path from "node:path";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, Notification, shell } from "electron";
@@ -13,17 +13,27 @@ import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
-import { createUsagePinger, postUsagePing, USAGE_PING_URL } from "../src/lib/settings/usage-statistics.ts";
+import { createUsagePinger, postUsagePing, USAGE_PING_URL, usageOsVersion, type UsageFailureBook } from "../src/lib/settings/usage-statistics.ts";
+import { onTaskRunFinished, runFailures } from "../src/lib/automation/server/task-run-finished.ts";
+import {
+  buildErrorReport,
+  errorReportUrl,
+  forgetStaleFailureDiagnostic,
+  InvalidErrorReport,
+  sendErrorReport,
+  type ErrorReportInput,
+} from "../src/lib/automation/server/error-report.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
-import { requestSignInSettings, takeSignInSettingsRequest } from "./sign-in-settings-request.ts";
+import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
+import { startScheduledCollection } from "../src/lib/automation/server/scheduled-collection.ts";
 import {
-  scheduledRunNotification,
-  startScheduledCollection,
-} from "../src/lib/automation/server/scheduled-collection.ts";
-import type { AutomationTaskRun } from "../src/lib/automation/server/store.ts";
+  collectionNotification,
+  type CollectionResult,
+  type CollectionTrigger,
+} from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import {
   createAutomationDesktopService,
@@ -123,6 +133,17 @@ process.env.OCTOPUSBEAK_SPEECH_MODEL_DIR = path.join(
 );
 // Automation shutdown records each run's outcome through the ledger, so the
 // ledger close waits for it this long before going ahead.
+/** What an Error report says about this install (ADR 0081): the same fields as the usage ping. */
+function errorReportContext() {
+  return {
+    appVersion: app.getVersion(),
+    osVersion: usageOsVersion(process.getSystemVersion()),
+    locale: app.getLocale().startsWith("zh") ? ("zh-TW" as const) : ("en" as const),
+  };
+}
+
+/** ADR 0078: unsent failure counts, kept only while usage statistics are on. */
+const USAGE_FAILURES_FILE = "usage-failures.json";
 const QUIT_CLEANUP_WAIT_MS = 2_000;
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
@@ -149,13 +170,18 @@ const handleBeforeQuit = createBeforeQuitHandler({
 app.on("before-quit", handleBeforeQuit);
 quitOnTerminationSignals(process, () => app.quit());
 
-function notifyScheduledRun(run: AutomationTaskRun) {
-  const notice = scheduledRunNotification(run, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+let appQuitting = false;
+app.on("before-quit", () => { appQuitting = true; });
+
+function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
+  if (appQuitting) return;
+  // A person watching the App already sees how their own sync ended.
+  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
+  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
   if (!notice || !Notification.isSupported()) return;
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
-    // Deleting financial data happens in Settings, which the source's row opens.
-    if (notice.action !== "delete-financial-data") requestSignInSettings(notice.credentialGroupId);
+    requestNotificationTarget(notice.target);
     if (!currentRendererUrl || !currentPreloadPath) return;
     void createWindow(currentRendererUrl, currentPreloadPath)
       .then((window) => {
@@ -422,7 +448,7 @@ async function start() {
       clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
       readSettings: () => systemSettings(readAutomationSettings()),
       startCollection: (occurrenceUtc) =>
-        startScheduledCollection(runtime, occurrenceUtc, notifyScheduledRun)
+        startScheduledCollection(runtime, occurrenceUtc, (results) => notifyCollection("scheduled", results))
           .then(() => undefined),
       reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
     });
@@ -450,7 +476,8 @@ async function start() {
       cancelAll: deviceRegistrationHost.cancelAllDeviceRegistrations,
     },
     structureReports: previewStructureReports,
-    signInSettingsRequest: { take: takeSignInSettingsRequest },
+    notificationTarget: { take: takeNotificationTarget },
+    onManualCollectionFinished: (results) => notifyCollection("manual", results),
     eraseSignInDetails,
     userDataDirectory: () => app.getPath("userData"),
     chooseFile: (owner, options) => owner
@@ -478,10 +505,23 @@ async function start() {
     systemVersion: () => process.getSystemVersion(),
     locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
     firstLaunch: () => statSync(userData).birthtime,
+    readFailures: () => {
+      try {
+        const value: unknown = JSON.parse(readFileSync(path.join(userData, USAGE_FAILURES_FILE), "utf8"));
+        return value && typeof value === "object" && !Array.isArray(value) ? (value as UsageFailureBook) : {};
+      } catch {
+        return {};
+      }
+    },
+    writeFailures: (book) => writeFileSync(path.join(userData, USAGE_FAILURES_FILE), JSON.stringify(book), { mode: 0o600 }),
     send: postUsagePing,
     setInterval: (callback, ms) => setInterval(callback, ms).unref(),
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (message) => console.error(message),
+  });
+  onTaskRunFinished((run) => {
+    forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
+    usagePinger?.recordFailures(runFailures(run));
   });
   ipcRegistration = registerOctopusBeakIpc({
     automation,
@@ -492,6 +532,18 @@ async function start() {
       void usagePinger?.check();
     },
     usagePing: usagePinger,
+    errorReports: {
+      available: () => Boolean(errorReportUrl(USAGE_PING_URL)),
+      preview: (input) => buildErrorReport(input, errorReportContext()),
+      send: async (input: ErrorReportInput) => {
+        try {
+          return await sendErrorReport(errorReportUrl(USAGE_PING_URL), buildErrorReport(input, errorReportContext()));
+        } catch (error) {
+          if (error instanceof InvalidErrorReport) return { ok: false, reason: "invalid" } as const;
+          throw error;
+        }
+      },
+    },
     pgliteViews: {
       dataDir: operationalRuntime.dataDir,
     },

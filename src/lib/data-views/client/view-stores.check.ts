@@ -94,3 +94,42 @@ assert.deepEqual(delayedThirdValues.at(-1), { status: "ready", data: { amount: 3
 delayedThirdUnsubscribe();
 await resolveDelayedStop();
 await new Promise((resolve) => setTimeout(resolve, 0));
+
+// restart re-reads a key that other consumers keep subscribed: without it the
+// store would only replay its cached value.
+let restartStarts = 0;
+let restartStops = 0;
+const restartPushes: Array<(value: Summary) => void> = [];
+const restartable = createViewStores({
+  async subscribe(_view, _params, onValue) {
+    restartStarts += 1;
+    const push = onValue as (value: Summary) => void;
+    restartPushes.push(push);
+    push({ amount: restartStarts * 100 });
+    return async () => { restartStops += 1; };
+  },
+});
+const holder = restartable.get<Summary>("financial.overview.current", {});
+const holderValues: ViewState<Summary>[] = [];
+const stopHolder = holder.subscribe((value) => holderValues.push(value));
+await new Promise((resolve) => setTimeout(resolve, 0));
+const readerValues: ViewState<Summary>[] = [];
+const stopReader = holder.subscribe((value) => readerValues.push(value));
+assert.deepEqual(readerValues, [{ status: "ready", data: { amount: 100 } }], "a second consumer replays the cached value");
+restartable.restart("financial.overview.current", {});
+assert.deepEqual(readerValues.at(-1), { status: "loading" }, "restart exposes loading synchronously");
+assert.deepEqual(holderValues.at(-1), { status: "loading" });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(restartStarts, 2, "restart subscribes the transport again while consumers remain");
+assert.equal(restartStops, 1, "restart stops the previous transport subscription");
+assert.deepEqual(readerValues.at(-1), { status: "ready", data: { amount: 200 } });
+assert.deepEqual(holderValues.at(-1), { status: "ready", data: { amount: 200 } });
+restartPushes[0]?.({ amount: -1 });
+assert.deepEqual(readerValues.at(-1), { status: "ready", data: { amount: 200 } }, "the replaced generation's late value is dropped");
+stopReader();
+stopHolder();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(restartStops, 2);
+restartable.restart("financial.overview.current", {});
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(restartStarts, 2, "restart without subscribers starts nothing");

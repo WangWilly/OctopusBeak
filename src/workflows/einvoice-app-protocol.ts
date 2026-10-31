@@ -32,7 +32,8 @@ export type EInvoiceAppSession = {
   ssme: string;
   ltoken?: string;
   carrierCode?: string;
-  now?: number;
+  /** Server clock minus local clock, in seconds, measured when the login answered. */
+  serverClockOffset: number;
 };
 
 export type LDataCryptoContext = { key: Uint8Array; iv: Uint8Array };
@@ -147,8 +148,9 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-export function parseLoginSession(data: unknown): EInvoiceAppSession {
+export function parseLoginSession(data: unknown, receivedAtMs: number = Date.now()): EInvoiceAppSession {
   const value = recordValue(data) ?? {};
+  const serverNow = Number(value.now);
   const session: EInvoiceAppSession = {
     sid: stringValue(value.sid),
     token: stringValue(value.token),
@@ -161,7 +163,7 @@ export function parseLoginSession(data: unknown): EInvoiceAppSession {
     ssme: stringValue(value.ssme ?? value.loginSsMe),
     ltoken: stringValue(value.ltoken) || undefined,
     carrierCode: stringValue(value.carrier_code ?? value.carrierCode) || undefined,
-    ...(Number.isFinite(Number(value.now)) ? { now: Number(value.now) } : {}),
+    serverClockOffset: Number.isFinite(serverNow) ? Math.trunc(serverNow - receivedAtMs / 1000) : 0,
   };
   if (!session.sid || !session.token || !session.appid || !session.ssme || !Number.isFinite(session.liat)) {
     throw new Error(
@@ -205,8 +207,7 @@ export function signInvoiceJwt(
   return `${signingInput}.${signature}`;
 }
 
-/** Server-time offset, in seconds, from a login `now` value. */
-export function serverTimeOffset(session: EInvoiceAppSession, nowMs: number = Date.now()): number {
-  if (session.now === undefined || !Number.isFinite(session.now)) return 0;
-  return Math.trunc(session.now - nowMs / 1000);
+/** The `iat` of a query JWT signed now: server time, backdated 10 s for clock jitter. */
+export function queryIssuedAt(session: EInvoiceAppSession, nowMs: number = Date.now()): number {
+  return Math.floor(nowMs / 1000) + session.serverClockOffset - 10;
 }

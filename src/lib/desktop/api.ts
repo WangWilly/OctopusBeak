@@ -42,6 +42,7 @@ import type {
 } from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/server/error-report.ts";
 import type {
   DataReadOptions,
   DataInvalidationEvent,
@@ -157,6 +158,12 @@ export type AutomationActionResult =
   | { ok: true }
   | { ok: true; closed: boolean };
 
+/** Where the App opens when the person clicks one of its notifications. */
+export type NotificationTarget =
+  | { route: "overview" }
+  | { route: "settings" }
+  | { route: "automation"; credentialGroupId: string | null };
+
 export type AutomationRunManyTaskResult = {
   status: "started" | "already_running" | "error";
   runId?: string;
@@ -224,6 +231,14 @@ export type OctopusBeakApi = {
   display: {
     setScale(percent: number): void;
   };
+  /** ADR 0081: an Error report the person sends by hand from a failed run. */
+  errorReports: {
+    /** False when this build has no receiver, so the button is hidden. */
+    available(): Promise<boolean>;
+    /** Exactly what send() would post, with the note already masked. */
+    preview(input: ErrorReportInput): Promise<ErrorReportPayload>;
+    send(input: ErrorReportInput): Promise<ErrorReportResult>;
+  };
   settings: {
     load(): Promise<SystemSettingsDto>;
     save(input: SystemSettingsDto): Promise<SystemSettingsDto>;
@@ -276,8 +291,8 @@ export type OctopusBeakApi = {
     runtimeSnapshot(): Promise<AutomationRuntimeSnapshot>;
     fatalRuntimeSnapshot(): Promise<void>;
     onRuntimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
-    takeSignInSettingsRequest(): Promise<string | null>;
-    onSignInSettingsRequested(listener: () => void): () => void;
+    takeNotificationTarget(): Promise<NotificationTarget | null>;
+    onNotificationTargetRequested(listener: () => void): () => void;
     previewStructureReport(taskId: string): Promise<string | null>;
     openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
   };

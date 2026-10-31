@@ -34,7 +34,7 @@ import {
   type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import { hasAttachedLocator } from "./browser-interaction.js";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,

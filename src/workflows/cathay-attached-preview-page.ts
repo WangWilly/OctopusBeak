@@ -6,12 +6,12 @@ import {
   functionSeqNo,
   type CathaySession,
   type CathayStrictSourceOptions,
-} from "./cathay-statements.js";
+} from "./cathay-statements.ts";
 import {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_DOMESTIC_UI_PATH,
-} from "./cathay-current-deposit-balances.js";
+} from "./cathay-current-deposit-balances.ts";
 import type { CathayAttachedPreviewPort, CathayPreviewResponse } from "./cathay-attached-preview.ts";
 
 const ORIGIN = `https://${CATHAY_CURRENT_DEPOSIT_HOST}`;

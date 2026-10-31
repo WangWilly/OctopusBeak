@@ -99,6 +99,10 @@ _Avoid_: Dashboard, portfolio view, financial summary
 A person's assets minus liabilities in the Trusted Financial Overview. It is one TWD total when every account converts at the valuation date, otherwise each currency's own amount. It states whether the figure shown includes preview financial data; the history's preview markers are separate.
 _Avoid_: Net worth (in code and DTOs), asset value, balance total
 
+**Financial page**:
+One of the Overview, Assets, Liabilities and Spending pages of the Trusted financial overview. Each shows one complete page that a PGlite live view delivers and updates when committed data changes; Automation and Settings are not Financial pages.
+_Avoid_: Dashboard route, live page
+
 **Financial account**:
 A persistent account identity established by one integration namespace, source connection, contract-defined stable account key, and identity epoch, used to organize that source scope's transactions, balances, liabilities, holdings, statements, and product terms. It persists across Captures and Import Runs within that scope but is never merged with an account from another integration or connection, even when both may represent the same real-world account.
 _Avoid_: Cross-source account, display group, individual card
@@ -164,8 +168,12 @@ A sanitized description of a Preview Source's responses, listing endpoints, stat
 _Avoid_: Crash report, telemetry, raw response upload
 
 **Usage statistics**:
-The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, and whether it is the install's first ping of the week and month, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier and nothing from the ledger, sign-in details, or runs; it is the only data the App itself sends to OctopusBeak.
+The opt-in, off-by-default daily anonymous ping of ADR 0078: the app version, macOS major and minor version, macOS language (Chinese or English), first-launch week, whether it is the install's first ping of the week and month, and the past week's failure counts by task, Failure code and stage, sent at most once per Asia/Taipei day and kept by the receiver only as daily totals. It carries no identifier, nothing from the ledger or sign-in details, and no run detail beyond those counts. Besides an Error report the person sends by hand, it is the only data the App itself sends to OctopusBeak.
 _Avoid_: Telemetry, analytics, tracking, crash report
+
+**Error report**:
+One failure the person chooses to send from a failed run's details (ADR 0081): the task, Failure code and stage, the app and macOS versions, the host's sanitized failure record when it matches, and an optional note with long digit runs masked and an optional email. Nothing is sent until the person selects Send; the receiver keeps it one year. It is distinct from a Preview structure report, which the person pastes into a public issue themselves.
+_Avoid_: Crash report, automatic error upload, telemetry
 
 **Financial account type**:
 The required top-level classification `depository`, `credit`, `loan`, `investment`, or `other`; `depository`, `credit`, `loan`, and `investment` are all supported by current product paths. Every integration contract must resolve one value or cancel the attempted Source Capture, while an optional subtype is simply absent unless evidence supports it, such as `credit` with subtype `credit_card`.
@@ -902,11 +910,11 @@ A reusable unit of automation that can be started manually, in a batch, or by it
 One execution attempt of an automation task, including its status, bounded operational events, and any verification stage it waits on. A solver completing that stage continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
 **Scheduled collection**:
-The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings.
+The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings. Each occurrence ends with one summary notification of what synced, what did not, and what needs the person (ADR 0082).
 _Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
 
 **User-action failure**:
-An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. It is the only failure class that raises an operating-system notification; transient failures remain in run history.
+An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. A sync's summary notification leads with it and opens where the person resolves it; transient failures are only counted there.
 _Avoid_: Transient failure, retryable failure, human assistance
 
 **Session takeover**:

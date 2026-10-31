@@ -11,7 +11,7 @@ import {
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
-import { hasAttachedLocator } from "./browser-interaction.js";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {

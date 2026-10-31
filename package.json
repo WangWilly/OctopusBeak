@@ -1,6 +1,6 @@
 {
   "name": "octopus-beak",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "private": true,
   "license": "FSL-1.1-MIT",
   "type": "module",

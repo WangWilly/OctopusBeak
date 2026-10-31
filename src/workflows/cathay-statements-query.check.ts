@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { collectionPeriod } from "../lib/automation/collection-period.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import {
   CathayApiClient,
   type CathayDateTimeSuffixShape,
@@ -435,7 +435,6 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
         return emptyTransferResponse(accountNo);
       },
     },
-    now: new Date(2026, 9, 29, 23, 59, 59),
   },
 );
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);
@@ -482,7 +481,7 @@ const failedAccounts: string[] = [];
 await assert.rejects(
   collectCathayDomesticFinancialRequests(
     injectedClientPage as never,
-    "one_year",
+    domesticPeriod,
     [],
     { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
     {
@@ -496,7 +495,6 @@ await assert.rejects(
           return emptyTransferResponse(accountNo);
         },
       },
-      now: new Date(2026, 9, 29, 23, 59, 59),
     },
   ),
   /synthetic transfer failure/,
@@ -509,7 +507,7 @@ const cancelledAccounts: string[] = [];
 await assert.rejects(
   collectCathayDomesticFinancialRequests(
     injectedClientPage as never,
-    "one_year",
+    domesticPeriod,
     [],
     { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
     {
@@ -522,9 +520,57 @@ await assert.rejects(
           return emptyTransferResponse(accountNo);
         },
       },
-      now: new Date(2026, 9, 29, 23, 59, 59),
     },
   ),
   (error) => error === cancellationReason,
 );
 assert.deepEqual(cancelledAccounts, ["0001"]);
+
+const oneYearAndOneDay = { years: 1, days: 1 } as const;
+assert.deepEqual(
+  cathayQueryPeriod(
+    collectionPeriod({
+      today: taipeiToday("2028-02-28T16:30:00.000Z"),
+      lookBack: oneYearAndOneDay,
+    }),
+  ),
+  {
+    option: "one_year",
+    startDate: "2027-03-01",
+    endDate: "2028-02-29",
+  },
+);
+assert.deepEqual(
+  cathayQueryPeriod(
+    collectionPeriod({ today: "2028-03-01", lookBack: oneYearAndOneDay }),
+  ),
+  {
+    option: "one_year",
+    startDate: "2027-03-01",
+    endDate: "2028-03-01",
+  },
+);
+assert.deepEqual(
+  cathayQueryPeriod(
+    collectionPeriod({
+      today: "2026-03-31",
+      lookBack: { months: 1, days: 1 },
+    }),
+  ),
+  {
+    option: "one_month",
+    startDate: "2026-02-28",
+    endDate: "2026-03-31",
+  },
+  "a month back from Mar 31 clamps to Feb 28",
+);
+assert.throws(
+  () =>
+    cathayQueryPeriod(
+      collectionPeriod({
+        today: "2026-03-31",
+        lookBack: { months: 2, days: 1 },
+      }),
+    ),
+  /No Cathay period option/,
+);

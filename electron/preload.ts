@@ -64,6 +64,11 @@ const dataViews = {
 
 /** The channel behind each bridge method that only forwards to an ipcMain handler. */
 const INVOKE_CHANNELS = {
+  errorReports: {
+    available: "errorReports:available",
+    preview: "errorReports:preview",
+    send: "errorReports:send",
+  },
   settings: {
     load: "settings:load",
     save: "settings:save",
@@ -108,7 +113,7 @@ const INVOKE_CHANNELS = {
     openExternalPrerequisite: "automation:openExternalPrerequisite",
     runtimeSnapshot: "automation:runtimeSnapshot",
     fatalRuntimeSnapshot: "automation:fatalRuntimeSnapshot",
-    takeSignInSettingsRequest: "automation:takeSignInSettingsRequest",
+    takeNotificationTarget: "automation:takeNotificationTarget",
     previewStructureReport: "automation:previewStructureReport",
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
   },
@@ -134,6 +139,7 @@ const api: OctopusBeakApi = {
     },
   },
   settings: invokers("settings"),
+  errorReports: invokers("errorReports"),
   spending: invokers("spending"),
   automation: {
     ...invokers("automation"),
@@ -144,10 +150,10 @@ const api: OctopusBeakApi = {
       ipcRenderer.on("automation:runtime-changed", handler);
       return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
     },
-    onSignInSettingsRequested(listener) {
+    onNotificationTargetRequested(listener) {
       const handler = () => listener();
-      ipcRenderer.on("automation:sign-in-settings-requested", handler);
-      return () => ipcRenderer.removeListener("automation:sign-in-settings-requested", handler);
+      ipcRenderer.on("automation:notification-target-requested", handler);
+      return () => ipcRenderer.removeListener("automation:notification-target-requested", handler);
     },
   },
   data: {

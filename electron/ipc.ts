@@ -30,6 +30,7 @@ import {
   type SystemSettingsDto,
 } from "../src/lib/settings/system-settings.ts";
 import type { UsagePing } from "../src/lib/settings/usage-statistics.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "../src/lib/automation/server/error-report.ts";
 import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,
@@ -51,6 +52,7 @@ export function registerOctopusBeakIpc({
   collection,
   onSystemSettingsChanged,
   usagePing,
+  errorReports,
   pgliteViews,
   pgliteOperational,
   pgliteFinancial,
@@ -61,6 +63,11 @@ export function registerOctopusBeakIpc({
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
   usagePing: { preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void };
+  errorReports: {
+    available(): boolean;
+    preview(input: ErrorReportInput): ErrorReportPayload;
+    send(input: ErrorReportInput): Promise<ErrorReportResult>;
+  };
   pgliteViews: {
     dataDir?: string;
     workerPath?: string;
@@ -133,6 +140,9 @@ export function registerOctopusBeakIpc({
       usagePing.answer(enabled);
       return systemSettings(readAutomationSettings());
     },
+    "errorReports:available": () => errorReports.available(),
+    "errorReports:preview": (_event, input: ErrorReportInput) => errorReports.preview(input),
+    "errorReports:send": (_event, input: ErrorReportInput) => errorReports.send(input),
     "settings:deletePreviewData": () =>
       deleteAllPreviewData(operationalProvider.preview, dataVersionStore),
     "settings:deleteFinancialData": () => deleteAllFinancialData(

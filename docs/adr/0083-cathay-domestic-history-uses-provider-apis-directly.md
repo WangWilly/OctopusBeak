@@ -13,7 +13,7 @@ Comparing the API account roster with a UI projection of that same roster theref
 
 **Domestic transaction history is collected from the authenticated provider APIs without a query-page gate.** The workflow treats the domestic accounts returned by `G_CUST_Q_TransAccountList` as the authoritative collection roster and calls `B_ACCT_Q_TransferDetail` once for every returned account. It does not navigate to `B0103_TxnDtlInq`, operate its controls, or compare its account options with the API roster.
 
-The API requests still execute in the authenticated Cathay page's same-origin context and retain the existing endpoint, transport, source-text, response-account, requested-date-range, row-count, and canonical-admission validation. One date-range snapshot is shared by every account request and admission page in a collection. A failure or cancellation before all returned accounts are staged rejects the domestic collection; no partial domestic request set is committed. The current-balance collector remains separate and may continue to read the provider's domestic overview page.
+The API requests still execute in the authenticated Cathay page's same-origin context and retain the existing endpoint, transport, source-text, response-account, requested-date-range, row-count, and canonical-admission validation. Request and admission dates come from the product's Collection period ([ADR 0077](0077-a-verified-product-declares-its-collection-period.md)). A failure or cancellation before all returned accounts are staged rejects the domestic collection; no partial domestic request set is committed. The current-balance collector remains separate and may continue to read the provider's domestic overview page.
 
 ## Considered options
 
