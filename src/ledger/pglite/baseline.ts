@@ -75,8 +75,11 @@ export async function applyPgliteBaseline(
   );
   if (installed.rows[0]?.exists) {
     await assertPgliteBaselineMetadata(database);
-    await database.transaction((transaction) => extendTrustedSourceContractCatalog(transaction, registrations));
-    await assertPgliteBaseline(database, registrations);
+    // A store the assertion refuses keeps its catalog unchanged.
+    await database.transaction(async (transaction) => {
+      await extendTrustedSourceContractCatalog(transaction, registrations);
+      await assertPgliteBaseline(transaction, registrations);
+    });
     return;
   }
   await database.transaction(async (transaction) => {

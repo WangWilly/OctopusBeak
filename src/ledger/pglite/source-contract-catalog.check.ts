@@ -739,11 +739,22 @@ try {
     registration.integrationNamespace === "binance"
       ? { ...registration, stream: "investment-changed" }
       : registration);
+  const withNewRoute = [
+    ...changed,
+    { ...withoutBinance.find((registration) => registration.integrationNamespace === "maicoin")!,
+      routeKey: "extra/investment/canonical-v1", integrationNamespace: "extra",
+      contractVersions: ["extra/investment/canonical-v1"],
+      ruleCombinations: [{ contractVersion: "extra/investment/canonical-v1", postingRuleVersion: "extra/investment/canonical-v1", semanticRuleVersion: "extra/investment/canonical-v1", effectiveTimeRuleVersion: "extra/investment/canonical-v1" }] },
+  ];
   await assert.rejects(
-    applyPgliteBaseline(changedStore, changed),
+    applyPgliteBaseline(changedStore, withNewRoute),
     /does not match the trusted registry/u,
     "an installed contract whose registration changed is never rewritten",
   );
+  const extra = await changedStore.query<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM source_contract_catalog WHERE integration_namespace = 'extra'",
+  );
+  assert.equal(extra.rows[0]?.count, 0, "a refused store keeps its catalog unchanged");
   const stream = await changedStore.query<{ stream: string }>(
     "SELECT stream FROM source_contract_catalog WHERE integration_namespace = 'binance'",
   );
