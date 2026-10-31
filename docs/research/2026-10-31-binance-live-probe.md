@@ -2,7 +2,7 @@
 
 Status: Proposed. Nothing below has been run against a live account yet.
 
-[ADR 0083](../adr/0083-binance-declares-bounded-trade-history.md) requires the project owner to verify the Binance source with their own account before it merges. The source was built from Binance's public Spot API documentation and synthetic fixtures. This checklist names the facts the code assumes and how to confirm each one. Record each result in this file and change the status to Accepted when every item passes.
+[ADR 0084](../adr/0084-binance-declares-bounded-trade-history.md) requires the project owner to verify the Binance source with their own account before it merges. The source was built from Binance's public Spot API documentation and synthetic fixtures. This checklist names the facts the code assumes and how to confirm each one. Record each result in this file and change the status to Accepted when every item passes.
 
 ## Setup
 
@@ -38,7 +38,7 @@ Record pass, fail, or the observed value for each item. Do not paste keys, UIDs,
 - [ ] **Windows.** Deposit and withdrawal requests accept 90-day windows, and `/sapi/v1/asset/transfer` accepts 30-day windows, with no -1127 or -1131 error.
 - [ ] **Transfers.** A spot-to-funding transfer appears once as an outflow on spot and an inflow on funding, with the same date.
 - [ ] **Trade paging.** `myTrades` with `symbol` and `startTime` returns fills in ascending `id` order from `startTime`, and `fromId` continues after the first page. A pair with more than 1000 fills in three months confirms the paging.
-- [ ] **Bounded pairs.** Note how many pairs the run requested and whether any trade the owner remembers is missing. A missing trade in a pair outside "observed asset × USDT, FDUSD, USDC, BTC, BNB, ETH" is expected (ADR 0083).
+- [ ] **Bounded pairs.** Note how many pairs the run requested and whether any trade the owner remembers is missing. A missing trade in a pair outside "observed asset × USDT, FDUSD, USDC, BTC, BNB, ETH" is expected (ADR 0084).
 - [ ] **Commission.** For one trade whose commission is in BNB, confirm the trade's quantity and quote amount. The commission is not recorded, as MaiCoin's fee is not.
 - [ ] **Request weight.** Note the largest `X-MBX-USED-WEIGHT-1M` seen during the run. It should stay well under 6000.
 - [ ] **Valuation.** Holdings are valued in TWD through the Binance USDT price and MAX `usdttwd`. With MAX blocked, for example by a firewall rule, the run still completes and Overview shows each crypto holding in its own units.

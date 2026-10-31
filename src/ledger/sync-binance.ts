@@ -285,7 +285,7 @@ export function parseFundingAssets(body: unknown): readonly BinanceBalance[] {
 
 /**
  * Simple Earn shows its positions in the spot account as `LD` plus the asset.
- * Earn is out of scope (ADR 0083), so such a balance is not reported. A
+ * Earn is out of scope (ADR 0084), so such a balance is not reported. A
  * listed asset that merely starts with LD, such as LDO, is kept.
  */
 export function withoutEarnBalances(rows: readonly BinanceBalance[], listedAssets: ReadonlySet<string>): BinanceBalance[] {
@@ -419,7 +419,7 @@ export function binanceHistoryWindows(
 }
 
 /**
- * ADR 0083: the pairs whose trades are requested, each an observed base
+ * ADR 0084: the pairs whose trades are requested, each an observed base
  * asset against a declared quote asset, as listed in exchangeInfo.
  */
 export function boundedTradePairs(
