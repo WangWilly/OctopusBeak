@@ -398,9 +398,12 @@ jobs:
           fi
           cp "${dmgs[0]}" out/make/OctopusBeak-arm64.dmg
 
+          # Installed Apps read this from releases/latest (ADR 0083); it fails when the ZIP it names is missing.
+          node scripts/update-feed.mjs out/make
+
           (
             cd out/make
-            find . -type f \( -name '*.dmg' -o -name '*.zip' \) -print | sort | while IFS= read -r asset; do
+            find . -type f \( -name '*.dmg' -o -name '*.zip' -o -name 'update-feed-darwin-arm64.json' \) -print | sort | while IFS= read -r asset; do
               shasum -a 256 "$asset"
             done
           ) > SHA256SUMS.txt
@@ -424,7 +427,7 @@ jobs:
               --verify-tag
           fi
 
-      - name: Upload installers and checksum
+      - name: Upload installers, update feed and checksum
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -433,7 +436,7 @@ jobs:
           while IFS= read -r asset; do
             assets+=("$asset")
           done < <(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \) | sort)
-          gh release upload "$RELEASE_TAG" "${assets[@]}" SHA256SUMS.txt --clobber
+          gh release upload "$RELEASE_TAG" "${assets[@]}" out/make/update-feed-darwin-arm64.json SHA256SUMS.txt --clobber
 
       - name: Publish Draft Release
         env:

@@ -6,9 +6,11 @@ Current automated release target: macOS arm64. The workflow produces a DMG and Z
 
 Each release also carries `OctopusBeak-arm64.dmg`, an unversioned copy of its DMG listed in `SHA256SUMS.txt`. The website's download buttons link to `releases/latest/download/OctopusBeak-arm64.dmg`, which GitHub redirects to that file in the newest published release, so a release without it breaks every download button on the site.
 
+Each release also carries `update-feed-darwin-arm64.json`, listed in `SHA256SUMS.txt`. Installed Apps read it from `releases/latest/download/update-feed-darwin-arm64.json` to find a newer version and download the release's `OctopusBeak-darwin-arm64-<version>.zip` (ADR 0083). `scripts/update-feed.mjs` writes it from the package version and fails when that ZIP is missing from `out/make`. A release without the feed leaves every installed App on its current version. Because `releases/latest` skips drafts and prereleases, an App is offered a version only once its release is published.
+
 ## Automated GitHub Release
 
-Use the `Release Electron` workflow from the `main` branch. The `new-release` operation runs the release preflight, then accepts a `patch`, `minor`, or `major` version increment. The workflow uses npm's default version commit and `vX.Y.Z` tag, pushes both to `main`, builds the signed macOS arm64 artifacts, creates a Draft GitHub Release with generated notes, uploads the installers and `SHA256SUMS.txt`, and publishes the Draft only after all checks pass.
+Use the `Release Electron` workflow from the `main` branch. The `new-release` operation runs the release preflight, then accepts a `patch`, `minor`, or `major` version increment. The workflow uses npm's default version commit and `vX.Y.Z` tag, pushes both to `main`, builds the signed macOS arm64 artifacts, creates a Draft GitHub Release with generated notes, uploads the installers, the update feed, and `SHA256SUMS.txt`, and publishes the Draft only after all checks pass.
 
 The `retry` operation accepts an existing `vX.Y.Z` tag. It validates that the tag is unchanged, matches the package version, and is reachable from `main`, then rebuilds that exact version without creating another commit or tag. A published Release cannot be retried; a Draft Release is reused and same-named assets are replaced.
 
