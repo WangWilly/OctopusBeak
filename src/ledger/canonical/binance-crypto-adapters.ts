@@ -194,7 +194,7 @@ function captureForWallet(
       accountSubtype: "crypto_exchange",
       reportingCurrency: "TWD",
     },
-    // ADR 0083: no transactionHistory, because a Bounded trade history never
+    // ADR 0084: no transactionHistory, because a Bounded trade history never
     // claims a complete range. The holdings are still a complete snapshot.
     scope: {
       effectiveOn,

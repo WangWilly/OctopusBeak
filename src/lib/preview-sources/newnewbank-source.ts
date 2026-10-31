@@ -22,12 +22,12 @@ import {
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
 
-// ADR 0082: the Android App's JSON API. Only sign-in is encrypted.
+// ADR 0083: the Android App's JSON API. Only sign-in is encrypted.
 const ORIGIN = "https://newnewbank.ubot.com.tw";
 const SERVICE = `${ORIGIN}/NNBank/svc/`;
 const REFERER = `${ORIGIN}/nnbank/`;
 
-/** ADR 0082: the App this source presents, updated deliberately when the bank refuses it, never guessed. */
+/** ADR 0083: the App this source presents, updated deliberately when the bank refuses it, never guessed. */
 export const NEWNEWBANK_APP = {
   appVer: "4.6.0",
   deviceModel: "google-husky",

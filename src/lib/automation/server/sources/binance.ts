@@ -2,7 +2,7 @@ import type { CollectionPeriodDeclaration } from "../../collection-period.ts";
 import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
 /**
- * ADR 0083: the quote assets of the Bounded trade history. A trade is
+ * ADR 0084: the quote assets of the Bounded trade history. A trade is
  * requested only for a pair whose base is an observed asset and whose quote
  * is one of these; adding a quote asset is a change here.
  */

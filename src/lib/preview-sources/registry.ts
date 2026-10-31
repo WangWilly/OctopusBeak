@@ -23,7 +23,7 @@ export type PreviewSource = SupportedSource & Readonly<{
   products: readonly PreviewProduct[];
   startUrl: string;
   /**
-   * ADR 0082: the key, under the source's prefix, of a random device identity
+   * ADR 0083: the key, under the source's prefix, of a random device identity
    * the App creates when the person first saves the sign-in details and keeps
    * with them. It is never a credential field; the run reads it from
    * `input.credentials`.
@@ -87,7 +87,7 @@ export function assertPreviewRegistry(
 /**
  * The credentials file after a save: each source with a device identity whose
  * sign-in details this save touches gets a random 64-hex identity, once. A
- * stored identity is never replaced (ADR 0082).
+ * stored identity is never replaced (ADR 0083).
  */
 export function withPreviewDeviceIdentities(
   credentials: Readonly<Record<string, string>>,
