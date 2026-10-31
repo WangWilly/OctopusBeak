@@ -66,7 +66,7 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "automation:selectCertificateFile",
   "automation:startDeviceRegistration",
   "automation:submitDeviceRegistrationCode",
-  "automation:takeSignInSettingsRequest",
+  "automation:takeNotificationTarget",
   "data:acknowledgeVersion",
   "data:getVersion",
   "display:setScale",
@@ -118,11 +118,11 @@ for (const [bridge, channel] of invokedBy) {
 const automation = api.automation as Record<string, (listener: () => void) => () => void>;
 const data = api.data as Record<string, (listener: () => void) => () => void>;
 automation.onRuntimeChanged!(() => {});
-automation.onSignInSettingsRequested!(() => {});
+automation.onNotificationTargetRequested!(() => {});
 data.onInvalidated!(() => {});
 assert.deepEqual(recorded.listened, [
   "automation:runtime-changed",
-  "automation:sign-in-settings-requested",
+  "automation:notification-target-requested",
   "data:invalidated",
 ]);
 

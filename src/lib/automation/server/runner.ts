@@ -40,6 +40,8 @@ export type StartAutomationTaskOptions = {
   /** Adopt an existing persisted run instead of creating one. */
   taskRunId?: string;
   onFinished?: (run: AutomationTaskRun) => void;
+  /** Called once the run ends, with `null` when its record could not be finalized. */
+  onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
   /** Test/worker seam for the async execution runner. */
   runExecution?: typeof runAutomationTaskExecution;
 };
@@ -47,6 +49,8 @@ export type StartAutomationTaskOptions = {
 export type StartedAutomationTask = {
   taskId: string;
   runId: string;
+  /** Set when another start had already claimed the task; this start's run options are not used. */
+  adopted?: true;
   runtime: ReturnType<AutomationRuntimeState["snapshot"]>;
 };
 
@@ -235,7 +239,7 @@ export function createAutomationRunner(options: Readonly<{
       const existing = claimed.get(taskId);
       if (existing) {
         const run = await existing.opening;
-        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
+        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot(), adopted: true };
       }
       const device = sourceDeviceForTask(taskId);
       const holder = device?.lock.claim("sync");
@@ -253,11 +257,15 @@ export function createAutomationRunner(options: Readonly<{
       // Release before notifying so an observer may start the task again.
       entry.lifecycle = drive(task, run, provider, runOptions).then((finished) => {
         release(taskId, entry);
-        if (!finished) return;
         try {
-          runOptions.onFinished?.(finished);
+          if (finished) runOptions.onFinished?.(finished);
         } catch {
           console.error("automation-task-run-finished-observer-failed");
+        }
+        try {
+          runOptions.onSettled?.(taskId, finished);
+        } catch {
+          console.error("automation-task-run-settled-observer-failed");
         }
       });
       return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };

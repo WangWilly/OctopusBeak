@@ -914,11 +914,11 @@ A reusable unit of automation that can be started manually, in a batch, or by it
 One execution attempt of an automation task, including its status, bounded operational events, and any verification stage it waits on. A solver completing that stage continues the same run; retrying an interrupted or failed run starts a new attempt from source collection.
 
 **Scheduled collection**:
-The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings.
+The once-daily start, at one time shared by every enabled source, of an Automation Task Run per source through the same queue as Sync all. A scheduled run never waits for a person: a source needing a one-time code or device trust ends with a User-action Failure that directs the person to sign-in settings. Each occurrence ends with one summary notification of what synced, what did not, and what needs the person (ADR 0082).
 _Avoid_: Per-source schedule, background OTP prompt, exchange-rate schedule
 
 **User-action failure**:
-An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. It is the only failure class that raises an operating-system notification; transient failures remain in run history.
+An Automation Task Run outcome that only the person can resolve, such as an untrusted device, rejected Sign-in Details, an account restriction, or an outdated provider protocol. A sync's summary notification leads with it and opens where the person resolves it; transient failures are only counted there.
 _Avoid_: Transient failure, retryable failure, human assistance
 
 **Session takeover**:

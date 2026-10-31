@@ -1,17 +1,6 @@
 import type { AutomationPageModel } from "../types.ts";
-import { userActionForFailure, userActionMessage, type UserAction } from "../workflow-failures.ts";
 import type { AutomationRuntime } from "./automation-runtime.ts";
-import type { AutomationTaskRun } from "./store.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
-
-export type ScheduledRunNotification = {
-  credentialGroupId: string;
-  action: UserAction;
-  title: string;
-  body: string;
-};
-
-const isSourceTask = (taskId: string) => Boolean(taskById(taskId)?.credentialGroupId);
+import { isSourceTask, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
 
 /**
  * Sync all's selection, which leaves out a source that waits for a Canonical
@@ -22,10 +11,11 @@ export function scheduledCollectionTaskIds(model: Pick<AutomationPageModel, "par
   return model.parallelRunnableTaskIds.filter(isSourceTask);
 }
 
+/** Starts the occurrence's due sources and reports them together once they have all ended. */
 export async function startScheduledCollection(
   runtime: AutomationRuntime,
   occurrenceUtc: string,
-  onFinished: (run: AutomationTaskRun) => void,
+  onCollectionFinished: (results: CollectionResult[]) => void,
 ) {
   const { provider } = runtime;
   const model = await runtime.desktopModel();
@@ -37,23 +27,5 @@ export async function startScheduledCollection(
     ]);
     if (!attempted && !succeeded) due.push(taskId);
   }
-  return runtime.runMany(due, { scheduledAtUtc: occurrenceUtc, onFinished });
-}
-
-export function scheduledRunNotification(
-  run: AutomationTaskRun,
-  locale: string,
-): ScheduledRunNotification | null {
-  if (!run.scheduledAtUtc) return null;
-  const action = userActionForFailure(run.appWorkflowOutcome?.errorCode);
-  const group = AUTOMATION_CREDENTIAL_GROUPS.find(
-    (candidate) => candidate.id === taskById(run.taskId)?.credentialGroupId,
-  );
-  if (!action || !group) return null;
-  return {
-    credentialGroupId: group.id,
-    action,
-    title: locale === "zh-TW" ? group.displayName["zh-TW"] : group.displayName.en,
-    body: userActionMessage(action, locale),
-  };
+  return runAndSummarize(runtime, due, { scheduledAtUtc: occurrenceUtc }, onCollectionFinished);
 }

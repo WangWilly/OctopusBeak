@@ -865,17 +865,21 @@
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
       ? automationApi.onRuntimeChanged(acceptAutomationRuntimeSnapshot)
       : () => {};
-    const takeSignInSettingsRequest = () => {
-      void automationApi.takeSignInSettingsRequest?.().then((credentialGroupId) => {
-        if (!credentialGroupId) return;
-        signInSettingsGroupId = credentialGroupId;
-        navigateToRoute("automation");
+    const takeNotificationTarget = () => {
+      void automationApi.takeNotificationTarget?.().then((target) => {
+        if (!target) return;
+        if (target.route === "automation" && target.credentialGroupId) {
+          signInSettingsGroupId = target.credentialGroupId;
+        }
+        // Settings is only a target for Delete all financial data.
+        if (target.route === "settings") focusFinancialDataDeletion = true;
+        navigateToRoute(target.route);
       });
     };
-    const unsubscribeSignInSettingsRequests = typeof automationApi.onSignInSettingsRequested === "function"
-      ? automationApi.onSignInSettingsRequested(takeSignInSettingsRequest)
+    const unsubscribeNotificationTargets = typeof automationApi.onNotificationTargetRequested === "function"
+      ? automationApi.onNotificationTargetRequested(takeNotificationTarget)
       : () => {};
-    takeSignInSettingsRequest();
+    takeNotificationTarget();
     if (typeof automationApi.runtimeSnapshot === "function") {
       void automationApi.runtimeSnapshot()
         .then(acceptAutomationRuntimeSnapshot)
@@ -909,7 +913,7 @@
       dataVersionLifecycle.dispose();
       financialPage.dispose();
       unsubscribeAutomationRuntime();
-      unsubscribeSignInSettingsRequests();
+      unsubscribeNotificationTargets();
       unsubscribeAutomationController();
       removeEventListener("focus", onAutomationRuntimeResync);
       document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
