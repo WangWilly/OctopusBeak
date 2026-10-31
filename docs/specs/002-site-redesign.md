@@ -3,8 +3,6 @@
 Status: approved for visual revision
 Date: 2026-07-27
 
-Approved visual target: [octopusbeak-site-redesign-target.png](../assets/octopusbeak-site-redesign-target.png)
-
 ## Audience and positioning
 
 - Primary audience: people in Taiwan who manage three or more bank, credit-card, or investment accounts and are tired of maintaining spreadsheets manually.

@@ -68,9 +68,9 @@
     }
     [id="05-rollup-nw-glow"] {
       position: absolute;
-      left: 508px;
-      top: 594px;
-      width: 446px;
+      left: 468px;
+      top: 544px;
+      width: 308px;
       height: 58px;
       border-radius: 12px;
       border: 3px solid #18a9a4;
@@ -346,8 +346,8 @@
         </div>
 
         <svg data-hf-id="hf-boex" id="05-rollup-threads" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path data-hf-id="hf-al28" id="05-rollup-thread1" d="M1503 871.5 H1503 Q1497 871.5 1497 864 V447 Q1497 439 1505 439" />
-          <path data-hf-id="hf-6g0u" id="05-rollup-thread2" d="M1505 439 C1330 439 1150 623 956 623" />
+          <path data-hf-id="hf-al28" id="05-rollup-thread1" d="M1494 756 H1494 Q1488 756 1488 748 V447 Q1488 439 1496 439 H1505" />
+          <path data-hf-id="hf-6g0u" id="05-rollup-thread2" d="M1505 439 C1320 439 1000 573 778 573" />
         </svg>
         <div data-hf-id="hf-kf1d" id="05-rollup-pill"><span data-hf-id="hf-48e4" id="05-rollup-tally">TWD 50,269</span></div>
       </div>
@@ -371,8 +371,8 @@
       // ── card-world geometry (all derived, never hand-tuned) ──
       // Spending plate is a 1425×2159 page; it sits in the world at (1420,380), 400 wide.
       var SP = { x: 1420, y: 380, k: 400 / 1425 };
-      // 全聯福利中心 list row in page px (measured from the 2× plate): x 297–1384, y 1708–1794.
-      var ROW = { x: 297, y: 1708, w: 1087, h: 86 };
+      // 全聯福利中心 list row in page px (measured from the 2× plate): x 264–1351, y 1314–1366 (list filtered to 全聯).
+      var ROW = { x: 264, y: 1314, w: 1087, h: 52 };
       var rowW = ROW.w * SP.k;
       var rowH = ROW.h * SP.k;
       var rowCx = SP.x + (ROW.x + ROW.w / 2) * SP.k;

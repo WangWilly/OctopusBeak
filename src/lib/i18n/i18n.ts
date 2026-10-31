@@ -1142,7 +1142,7 @@ const en = {
           { title: "Automatic currency conversion", body: "Every holding shown in TWD, no mental math" },
           { title: "Snapshot history", body: "A daily record, so trends are easy to look back on" },
         ],
-        callout: { label: "Net worth", value: "TWD 2,352,813", detail: "Imported 2026/10/05 16:02" },
+        callout: { label: "Net worth", value: "TWD 2,352,813", detail: "Imported 2026/11/01 00:15" },
       },
       {
         title: "Account sync",
@@ -1152,7 +1152,7 @@ const en = {
           { title: "Switch by type", body: "Jump from all assets to the account you need" },
           { title: "Trace every balance change", body: "See what makes up your balance at a glance" },
         ],
-        callout: { label: "Total assets", value: "TWD 2,371,759", detail: "Last 30 days +21,070 · +5.8%" },
+        callout: { label: "Total assets", value: "TWD 2,371,759", detail: "Last 30 days +21,070 · +0.9%" },
       },
       {
         title: "Spending, tracked",
@@ -2449,7 +2449,7 @@ const zh: typeof en = {
           { title: "多幣別自動換算", body: "不用擔心購買力換算，資產以 TWD 呈現" },
           { title: "快照歷史", body: "每天留下一筆紀錄，走勢清楚可回顧" },
         ],
-        callout: { label: "淨部位", value: "TWD 2,352,813", detail: "已匯入 2026/10/05 16:02" },
+        callout: { label: "淨部位", value: "TWD 2,352,813", detail: "已匯入 2026/11/01 00:15" },
       },
       {
         title: "帳戶同步",
@@ -2459,7 +2459,7 @@ const zh: typeof en = {
           { title: "依類型快速切換", body: "從全部資產快速找到你的目標帳戶" },
           { title: "餘額變化有跡可循", body: "清楚的餘額組成，一目瞭然" },
         ],
-        callout: { label: "資產總額", value: "TWD 2,371,759", detail: "近 30 天 +21,070 · +5.8%" },
+        callout: { label: "資產總額", value: "TWD 2,371,759", detail: "近 30 天 +21,070 · +0.9%" },
       },
       {
         title: "財務追蹤",

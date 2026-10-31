@@ -158,7 +158,7 @@ Scene 8 (5.4–6.0s): page turn (handoff_out).
 
 Adapt dataviz-countup: the number is the payoff of every page before it.
 Scene 1 (0.0–0.6s): badge ③ pops, title 「一頁看清」 prints.
-Scene 2 (0.6–1.0s): a clipping of `assets/overview.webp` cropped to the net-worth card (source x 415–1945, y 225–910) lands at x 110–970, y 520 (scaled to 860 wide), tilt −1°.
+Scene 2 (0.6–1.0s): a clipping of `assets/overview.webp` cropped to the net-worth card (source x 528–2702, y 256–1229 of the 2850-px plate) lands at x 110–970, y 520 (scaled to 860 wide), tilt −1°.
 Scene 3 (1.0–2.6s): over the clipping's big number area, a rebuilt overlay (white patch exactly covering the original 「TWD 2,352,813」 text) counts up from TWD 0 to TWD 2,352,813 in mono 78px (`counting-dynamic-scale`, `power3.out`), while a teal line draws across the chart area left→right (`svg-path-draw`) mirroring the screenshot's curve on an overlay that fades in at 0.5 opacity. At 2.6s the number lands with a single teal flash.
 Scene 4 (2.7–3.9s): three tab clippings fan out below the card, each 280×200 with a 10px white border and a label strip: 資產 (`assets/assets.webp` crop of its top total card), 負債 (`assets/liabilities.webp` crop of its top card), 消費 (`assets/spending.webp` crop of 本月消費 TWD 51,713) — they slide up from y=1600 to centers (250, 1160), (540, 1180), (830, 1160) with rotations −5°, 0°, 5°, staggered 0.12s, `power3.out`; labels 44px 700 ink.
 Scene 5 (4.0–4.3s): ③ stamp slams at (800, 1400), slightly overlapping the 消費 clipping.

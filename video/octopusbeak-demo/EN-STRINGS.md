@@ -15,7 +15,7 @@ text changes. English UI terms come from the app's own English locale
 | 02–04 rows | 電子發票 AB-38201745 | E-invoice AB-38201745 |
 | 02–04 rows | 10/3 18:21 · 全聯實業 | 10/3 18:21 · PX Mart Co. |
 | 02–04 rows | 玉山信用卡 末碼 5512 | E.SUN card ending 5512 |
-| 02–04 rows | 10/3 消費 · 10/4 入帳 | Spent 10/3 · Posted 10/4 |
+| 02–04 rows | 10/3 消費 · 10/3 入帳 | Spent 10/3 · Posted 10/3 |
 | 03–05 | 帳目合併 (title) | Merge review |
 | 03–05 | 同一筆消費的發票與刷卡，只算一次。 | An invoice and its payment, counted once. |
 | 03–05 | 全聯福利中心 | PX Mart |

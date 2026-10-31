@@ -39,9 +39,9 @@
     "height": 2199,
     "bitDepth": 8,
     "colorType": 6,
-    "originalBytes": 314695,
-    "finalBytes": 165992,
-    "decodedPixelSha256": "87f7b6a0a7e81bc36f9a3b464bf7af0e4f187f025a555d83fea61f6f39ca56e5"
+    "originalBytes": 400068,
+    "finalBytes": 392754,
+    "decodedPixelSha256": "cc16f9430797f1a310366c8ea6ebff8bc53e67401b12f9e9cdb70c6297263364"
   },
   {
     "source": "~/.pencil/documents/f9aed551-7c26-4bcf-a3a6-95444a3ebc6f/images/welcome/fSqDk.png",
@@ -51,9 +51,9 @@
     "height": 1350,
     "bitDepth": 8,
     "colorType": 6,
-    "originalBytes": 210101,
-    "finalBytes": 126318,
-    "decodedPixelSha256": "9998b9540e35e85ee6684401568bd7dd31c723ce69807c704446cd4b021c1df1"
+    "originalBytes": 258956,
+    "finalBytes": 253590,
+    "decodedPixelSha256": "5b82e720c0b1983d13106438b79eab3b9b24867995a6276872d4606981e1906e"
   },
   {
     "source": "~/.pencil/documents/f9aed551-7c26-4bcf-a3a6-95444a3ebc6f/images/welcome/c7mU4.png",
@@ -63,8 +63,8 @@
     "height": 3239,
     "bitDepth": 8,
     "colorType": 6,
-    "originalBytes": 428515,
-    "finalBytes": 250942,
-    "decodedPixelSha256": "ea2e65b0f1b7a6ddcb8a743670525759d0a707f454bff67d5bba15a203acd4fa"
+    "originalBytes": 726068,
+    "finalBytes": 719842,
+    "decodedPixelSha256": "484a8e5fe7916d791df753370966b57edb88cc7f595eeb1da1a63f0fa3230051"
   }
 ]

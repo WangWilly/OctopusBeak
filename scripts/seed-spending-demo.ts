@@ -375,7 +375,7 @@ export async function seedSpendingDemo(userData: string) {
     const einvoiceCapture = buildCanonicalEInvoiceCaptureFromApp(
       { records, pages, months: [...MONTHS] },
       DEMO_EINVOICE_CREDENTIALS,
-      { captureId: "einvoice-capture:spending-demo", observedAt: `${TODAY}T02:00:00.000Z`, today: new Date(`${TODAY}T12:00:00+08:00`) },
+      { captureId: "einvoice-capture:spending-demo", observedAt: `${TODAY}T02:00:00.000Z`, today: TODAY },
     );
     await commitPGliteCanonicalEInvoiceCapture(store, einvoiceCapture);
 

@@ -151,7 +151,7 @@ Scene 4 (3.6–5.0s): hold.
 - handoff_in: identical to Frame 4 handoff_out (paper ground; column with rule and total TWD 2,352,813; title 「打開 1 個 App 就好」; icon at (900,360)).
 - handoff_out: night ground only (gradient, waves, rosette), nothing else — the paper has washed back to night.
 
-Scene 1 (0.0–0.8s): camera (`.world`) pulls the whole column up and fades it while a clipping of `assets/overview.webp` — crop to the net-worth card (source x 590–2780, y 320–1300) — rises into the middle (x 70–1010, top y≈560), tilt −1°, white 10px border, soft shadow.
+Scene 1 (0.0–0.8s): camera (`.world`) pulls the whole column up and fades it while a clipping of `assets/overview.webp` — crop to the left of the net-worth card, label, figure, change chips and the start of the chart (source x 516–1898, y 248–875) — rises into the middle (x 70–1010, top y≈560), tilt −1°, white 10px border, soft shadow.
 Scene 2 (0.8–2.2s): two supporting clippings slide in under it, slightly overlapping: `assets/assets.webp` top total card (source x 80–2260, y 60–320) and `assets/liabilities.webp` top total card (source x 80–2260, y 60–320), each scaled to 900 wide, tilted +1.5° / −1.5°, at y≈1060 and y≈1250; a teal marker circle draws around the TWD 2,352,813 on the overview clip (`svg-path-draw`).
 Scene 3 (1.0–2.6s): caption at the top, left x=90, two lines: 「OctopusBeak 自動收齊各家帳戶」 (64px 700 ink) and 「在你的 Mac 上算好」 (52px, accent `#2c6485`), baselines y=330 and y=420.
 Scene 4 (2.6–3.9s): hold.
