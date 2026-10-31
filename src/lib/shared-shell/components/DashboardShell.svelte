@@ -20,6 +20,7 @@
     readStoredDisplayScale,
     supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
+  import AppUpdateSidebar from "./AppUpdateSidebar.svelte";
   import PreviewMarker from "./PreviewMarker.svelte";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
@@ -289,13 +290,16 @@
         {/each}
       </nav>
     </div>
-    <div class="side-status">
-      <p class="label">{sideLabel}</p>
-      <p class="side-value" class:money={sideValueSensitive}>{sideValue}</p>
-      <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
-      {#if sideIncludesPreview}
-        <p class="side-preview"><PreviewMarker placement="above" /></p>
-      {/if}
+    <div>
+      <AppUpdateSidebar collapsed={sidebarCollapsed} />
+      <div class="side-status">
+        <p class="label">{sideLabel}</p>
+        <p class="side-value" class:money={sideValueSensitive}>{sideValue}</p>
+        <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
+        {#if sideIncludesPreview}
+          <p class="side-preview"><PreviewMarker placement="above" /></p>
+        {/if}
+      </div>
     </div>
   </aside>
 

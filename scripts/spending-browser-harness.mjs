@@ -128,6 +128,10 @@ export function createSpendingDesktopApi(model) {
       },
     },
     display: { setScale: () => {} },
+    appUpdates: {
+      view: async () => ({ currentVersion: "0.10.0", state: { status: "unsupported", reason: "development-build" } }),
+      onChanged: () => () => {},
+    },
     settings: {
       load: async () => settings,
       save: async (value) => value,
@@ -253,6 +257,10 @@ function installSpendingDesktopApi(model) {
       },
     },
     display: { setScale: () => {} },
+    appUpdates: {
+      view: async () => ({ currentVersion: "0.10.0", state: { status: "unsupported", reason: "development-build" } }),
+      onChanged: () => () => {},
+    },
     settings: {
       load: async () => fixtureSettings,
       save: async (value) => value,

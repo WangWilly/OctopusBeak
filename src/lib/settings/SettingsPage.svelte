@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { getContext, onMount, tick } from "svelte";
+  import { readable } from "svelte/store";
   import {
     ChartColumn,
     Check,
@@ -37,13 +38,19 @@
     exchangeRateUpdateTime,
     previewFeaturesEnabled,
     usageStatisticsEnabled,
+    appUpdatesAutoDownload,
     appUpdatesEnabled,
     scheduledCollection,
     systemTimezone,
   } from "$lib/settings/system-timezone-store.ts";
   import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
-  import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
+  import type { AppUpdateState } from "$lib/settings/app-updates.ts";
+  import {
+    APP_UPDATE_CONTEXT_KEY,
+    downloadPercent,
+    type AppUpdateUiContext,
+  } from "$lib/shared-shell/app-update-context.ts";
   import type { SettingsFocus } from "$lib/desktop/api.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
@@ -58,8 +65,6 @@
   /** Opened from a notification or a source waiting for a Canonical Reset: show that section. */
   export let focus: SettingsFocus | null = null;
   export let onFocused: () => void = () => {};
-  /** Restart to update waits until no run is active; the main process refuses it too. */
-  export let automationRunActive = false;
 
   const SECTIONS = [
     { id: "settings-schedule", icon: Clock },
@@ -94,9 +99,10 @@
   // The one-time question can be answered while Settings is open.
   $: usageEnabled = $usageStatisticsEnabled;
   let updatesEnabled = $appUpdatesEnabled;
-  let updateView: AppUpdateView | null = null;
-  let updateRestart: "idle" | "pending" | AppUpdateRestartResult = "idle";
-  $: updateState = updateView?.state ?? null;
+  let updatesAutoDownload = $appUpdatesAutoDownload;
+  const appUpdates = getContext<AppUpdateUiContext | undefined>(APP_UPDATE_CONTEXT_KEY);
+  const updateView = appUpdates?.view ?? readable(null);
+  $: updateState = $updateView?.state ?? null;
   $: updateLine = updateState ? updateStatusLine(updateState, $t, $systemTimezone) : "";
   let usagePayload: string | null = null;
   let usagePayloadStatus: "idle" | "pending" | "error" = "idle";
@@ -143,9 +149,6 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
-    const updates = window.octopusBeak.appUpdates;
-    const unsubscribeUpdates = updates.onChanged((view) => (updateView = view));
-    void updates.view().then((view) => (updateView = view)).catch(() => undefined);
     const observer = new IntersectionObserver((entries) => {
       const visible = entries.filter((entry) => entry.isIntersecting)
         .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
@@ -158,7 +161,6 @@
     return () => {
       clearInterval(clock);
       observer.disconnect();
-      unsubscribeUpdates();
     };
   });
 
@@ -181,13 +183,13 @@
     return `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
   }
 
-  function updateStatusLine(state: AppUpdateView["state"], dictionary: typeof $t, timeZone: string) {
+  function updateStatusLine(state: AppUpdateState, dictionary: typeof $t, timeZone: string) {
     switch (state.status) {
       case "off":
         return dictionary.settings.appUpdatesOff;
       case "unsupported":
-        return state.reason === "read-only-volume"
-          ? dictionary.settings.appUpdatesReadOnlyVolume
+        return state.reason === "not-in-applications"
+          ? dictionary.settings.appUpdatesNotInApplications
           : dictionary.settings.appUpdatesDevelopmentBuild;
       case "idle":
         return state.checkedAt
@@ -195,34 +197,31 @@
           : dictionary.settings.appUpdatesNotChecked;
       case "checking":
         return dictionary.settings.appUpdatesChecking;
+      case "available":
+        return dictionary.settings.appUpdatesAvailable(state.release.version);
       case "downloading":
-        return dictionary.settings.appUpdatesDownloading;
+        return dictionary.settings.appUpdatesDownloading(
+          state.release.version,
+          downloadPercent(state.received, state.release.size),
+        );
+      case "installing":
+        return dictionary.settings.appUpdatesInstalling(state.release.version);
       case "ready":
         return dictionary.settings.appUpdatesReady(state.version);
       case "failed":
-        return dictionary.settings.appUpdatesFailed;
-    }
-  }
-
-  async function checkForUpdates() {
-    try {
-      updateView = await window.octopusBeak.appUpdates.check();
-    } catch {
-      // The status line keeps showing the last known state.
-    }
-  }
-
-  async function restartToUpdate() {
-    updateRestart = "pending";
-    try {
-      updateRestart = await window.octopusBeak.appUpdates.restart();
-    } catch {
-      updateRestart = { ok: false, reason: "not-ready" };
+        return state.code === "check-failed"
+          ? dictionary.settings.appUpdatesFailed
+          : dictionary.settings.appUpdatesDownloadFailed[state.code](state.release.version);
     }
   }
 
   function toggleAppUpdates() {
     updatesEnabled = !updatesEnabled;
+    saveSystemSettings();
+  }
+
+  function toggleAppUpdatesAutoDownload() {
+    updatesAutoDownload = !updatesAutoDownload;
     saveSystemSettings();
   }
 
@@ -283,6 +282,7 @@
       previewFeaturesEnabled: previewEnabled,
       usageStatisticsEnabled: usageEnabled,
       appUpdatesEnabled: updatesEnabled,
+      appUpdatesAutoDownload: updatesAutoDownload,
     };
     saveStatus = "pending";
     saveError = "";
@@ -298,6 +298,7 @@
         previewEnabled = value.previewFeaturesEnabled;
         usageEnabled = value.usageStatisticsEnabled;
         updatesEnabled = value.appUpdatesEnabled;
+        updatesAutoDownload = value.appUpdatesAutoDownload;
         saveStatus = "success";
       } catch (error) {
         if (version !== saveVersion) return;
@@ -744,39 +745,19 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label">{updateView ? $t.settings.appUpdatesVersion(updateView.currentVersion) : $t.settings.appUpdates}</span>
+              <span class="setting-label">{$updateView ? $t.settings.appUpdatesVersion($updateView.currentVersion) : $t.settings.appUpdates}</span>
               <small id="app-update-status" class="setting-hint" aria-live="polite">{updateLine}</small>
-              {#if updateState?.status === "ready"}
-                <small class="setting-hint">
-                  {automationRunActive || (typeof updateRestart === "object" && !updateRestart.ok && updateRestart.reason === "run-active")
-                    ? $t.settings.appUpdatesRunActive
-                    : $t.settings.appUpdatesRestartHint}
-                </small>
-              {/if}
             </div>
             <div class="onboarding-setting-actions">
-              {#if updateState?.status === "ready"}
-                <button
-                  id="app-update-restart"
-                  class="button primary"
-                  type="button"
-                  disabled={automationRunActive || updateRestart === "pending"}
-                  aria-busy={updateRestart === "pending"}
-                  onclick={restartToUpdate}
-                >
-                  {$t.settings.appUpdatesRestart}
-                </button>
-              {:else}
-                <button
-                  id="app-update-check"
-                  class="button"
-                  type="button"
-                  disabled={updateState?.status !== "idle" && updateState?.status !== "failed"}
-                  onclick={checkForUpdates}
-                >
-                  {$t.settings.appUpdatesCheckNow}
-                </button>
-              {/if}
+              <button
+                id="app-update-check"
+                class="button"
+                type="button"
+                disabled={updateState?.status !== "idle" && updateState?.status !== "failed"}
+                onclick={() => appUpdates?.check()}
+              >
+                {$t.settings.appUpdatesCheckNow}
+              </button>
             </div>
           </div>
           <div class="setting-row">
@@ -794,6 +775,26 @@
                 onclick={toggleAppUpdates}
               >
                 <span>{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="switch-track" aria-hidden="true"></span>
+              </button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label" id="app-updates-auto-download-label">{$t.settings.appUpdatesAutoDownloadToggle}</span>
+              <small class="setting-hint">{$t.settings.appUpdatesAutoDownloadToggleHint}</small>
+            </div>
+            <div class="setting-control">
+              <button
+                id="app-updates-auto-download-toggle"
+                class="switch collection-switch"
+                type="button"
+                aria-pressed={updatesAutoDownload}
+                aria-labelledby="app-updates-auto-download-label"
+                disabled={!updatesEnabled}
+                onclick={toggleAppUpdatesAutoDownload}
+              >
+                <span>{updatesAutoDownload ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>

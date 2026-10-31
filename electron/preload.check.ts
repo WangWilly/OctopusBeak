@@ -49,6 +49,7 @@ for (const [namespace, methods] of Object.entries(api)) {
 }
 assert.deepEqual([...invokedBy.values()].sort(), [
   "appUpdates:check",
+  "appUpdates:download",
   "appUpdates:restart",
   "appUpdates:view",
   "automation:block",

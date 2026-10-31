@@ -18,6 +18,8 @@
     SettingsFocus,
   } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
+  import type { AppUpdateView } from "$lib/settings/app-updates.ts";
+  import { APP_UPDATE_CONTEXT_KEY, type AppUpdateUiContext } from "$lib/shared-shell/app-update-context.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
@@ -156,6 +158,19 @@
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
     refresh: refreshApp,
+  });
+
+  const appUpdateView = writable<AppUpdateView | null>(null);
+  const automationRunActive = writable(false);
+  $: automationRunActive.set(
+    automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false,
+  );
+  setContext<AppUpdateUiContext>(APP_UPDATE_CONTEXT_KEY, {
+    view: appUpdateView,
+    runActive: automationRunActive,
+    check: async () => appUpdateView.set(await window.octopusBeak.appUpdates.check()),
+    download: async () => appUpdateView.set(await window.octopusBeak.appUpdates.download()),
+    restart: () => window.octopusBeak.appUpdates.restart(),
   });
 
   function factsForOnboarding(
@@ -909,7 +924,10 @@
     document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
     addEventListener("popstate", normalizeRoute);
+    const unsubscribeAppUpdates = window.octopusBeak.appUpdates.onChanged((view) => appUpdateView.set(view));
+    void window.octopusBeak.appUpdates.view().then((view) => appUpdateView.set(view)).catch(() => undefined);
     return () => {
+      unsubscribeAppUpdates();
       mounted = false;
       dataVersionLifecycle.dispose();
       financialPage.dispose();
@@ -1035,7 +1053,6 @@
   <SettingsPage
     focus={settingsFocus}
     onFocused={() => (settingsFocus = null)}
-    automationRunActive={automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false}
     onboardingStatus={onboardingState?.status ?? null}
     onboardingEndedAt={onboardingState?.endedAt ?? null}
     onboardingLinkedSources={settingsAutomation?.linkedSources ?? 0}

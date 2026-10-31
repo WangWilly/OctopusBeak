@@ -15,12 +15,21 @@ import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createUsagePinger, postUsagePing, USAGE_PING_URL, usageOsVersion, type UsageFailureBook } from "../src/lib/settings/usage-statistics.ts";
 import {
-  APP_UPDATE_FEED_URL,
   appUpdateNotification,
+  appUpdatesAutoDownload,
   appUpdatesEnabled,
+  appUpdateSupport,
   createAppUpdater,
   type AppUpdateView,
 } from "../src/lib/settings/app-updates.ts";
+import {
+  downloadAppRelease,
+  fetchAppRelease,
+  pruneAppUpdates,
+  rehearseSquirrelHandoff,
+  startSquirrelHandoff,
+  verifiedZipPath,
+} from "./app-update-io.ts";
 import { onTaskRunFinished, runFailures } from "../src/lib/automation/server/task-run-finished.ts";
 import {
   buildErrorReport,
@@ -544,18 +553,61 @@ async function start() {
     reportError: (message) => console.error(message),
   });
   // Development builds and fixtures never check, so a test run cannot replace the app it tests.
-  const appUpdatesSupported = app.isPackaged && !cdpFixture && !packagedBrowserFixture;
+  const appUpdatesSupport = appUpdateSupport({
+    packaged: app.isPackaged,
+    testFixture: cdpFixture || packagedBrowserFixture,
+    inApplicationsFolder: app.isPackaged && app.isInApplicationsFolder(),
+    feedFixtureUrl: process.env.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,
+  });
+  const updatesDirectory = path.join(userData, "updates");
+  const updatesPruned = appUpdatesSupport.supported
+    ? pruneAppUpdates(updatesDirectory, app.getVersion()).catch(() => console.error("app-update-prune-failed"))
+    : Promise.resolve();
+  let closeSquirrelHandoff: (() => void) | null = null;
+  const endSquirrelHandoff = () => {
+    closeSquirrelHandoff?.();
+    closeSquirrelHandoff = null;
+  };
   const appUpdateView = (): AppUpdateView => ({
     currentVersion: app.getVersion(),
     state: appUpdater?.state() ?? { status: "unsupported", reason: "development-build" },
   });
   appUpdater = createAppUpdater({
-    supported: appUpdatesSupported,
+    support: appUpdatesSupport,
+    currentVersion: app.getVersion(),
     enabled: () => appUpdatesEnabled(readAutomationSettings()),
+    autoDownload: () => appUpdatesAutoDownload(readAutomationSettings()),
     now: () => new Date(),
-    checkForUpdates: () => autoUpdater.checkForUpdates(),
+    fetchRelease: () => appUpdatesSupport.supported
+      ? fetchAppRelease(appUpdatesSupport)
+      : Promise.reject(new Error("unsupported")),
+    download: async (release, onProgress) => {
+      await updatesPruned;
+      return downloadAppRelease({ directory: updatesDirectory, release, onProgress });
+    },
+    install: (release) => {
+      void startSquirrelHandoff(verifiedZipPath(updatesDirectory, release.version))
+        .then(async (handoff) => {
+          closeSquirrelHandoff = handoff.close;
+          if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
+            autoUpdater.setFeedURL({ url: handoff.feedUrl, serverType: "default" });
+            autoUpdater.checkForUpdates();
+            return;
+          }
+          const served = await rehearseSquirrelHandoff(handoff.feedUrl, release).catch(() => false);
+          endSquirrelHandoff();
+          appUpdater?.receive(served ? { type: "update-downloaded" } : { type: "error", message: "fixture hand-off" });
+        })
+        .catch(() => {
+          // setFeedURL throws in an unsigned packaged build.
+          endSquirrelHandoff();
+          appUpdater?.receive({ type: "error", message: "hand-off" });
+        });
+    },
     // Squirrel.Mac closes the windows, then quits through before-quit, so the ledger closes before ShipIt installs.
-    quitAndInstall: () => autoUpdater.quitAndInstall(),
+    quitAndInstall: () => appUpdatesSupport.supported && appUpdatesSupport.squirrel
+      ? autoUpdater.quitAndInstall()
+      : console.error("app-update-fixture-restart-skipped"),
     hasActiveRun: () => runtime.hasActive(),
     onChange: () => {
       const view = appUpdateView();
@@ -568,19 +620,19 @@ async function start() {
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (code) => console.error(code),
   });
-  if (appUpdatesSupported) {
-    try {
-      autoUpdater.setFeedURL({ url: APP_UPDATE_FEED_URL, serverType: "json" });
-    } catch {
-      // Unsigned packaged builds land here; their checks then fail silently too.
-      console.error("app-update-feed-unavailable");
-    }
-    autoUpdater.on("checking-for-update", () => appUpdater?.receive({ type: "checking-for-update" }));
-    autoUpdater.on("update-available", () => appUpdater?.receive({ type: "update-available" }));
-    autoUpdater.on("update-not-available", () => appUpdater?.receive({ type: "update-not-available" }));
-    autoUpdater.on("update-downloaded", (_event, _notes, releaseName) =>
-      appUpdater?.receive({ type: "update-downloaded", releaseName }));
-    autoUpdater.on("error", (error) => appUpdater?.receive({ type: "error", message: error.message }));
+  if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
+    autoUpdater.on("update-downloaded", () => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "update-downloaded" });
+    });
+    autoUpdater.on("update-not-available", () => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "error", message: "hand-off answered no update" });
+    });
+    autoUpdater.on("error", (error) => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "error", message: error.message });
+    });
   }
   onTaskRunFinished((run) => {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
@@ -593,12 +645,13 @@ async function start() {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
       void usagePinger?.check();
-      appUpdater?.setEnabled(settings.appUpdatesEnabled);
+      appUpdater?.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
     },
     usagePing: usagePinger,
     appUpdates: {
       view: appUpdateView,
-      check: () => appUpdater?.check(),
+      check: () => void appUpdater?.check(),
+      download: () => void appUpdater?.download(),
       restart: () => appUpdater?.restart() ?? { ok: false, reason: "not-ready" },
     },
     errorReports: {

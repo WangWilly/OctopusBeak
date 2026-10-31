@@ -48,9 +48,21 @@ assert.doesNotMatch(
 );
 assert.match(
   source,
-  /const appUpdatesSupported = app\.isPackaged && !cdpFixture && !packagedBrowserFixture;/,
-  "development builds and fixtures never check for updates",
+  /appUpdateSupport\(\{\s*packaged: app\.isPackaged,\s*testFixture: cdpFixture \|\| packagedBrowserFixture,\s*inApplicationsFolder: app\.isPackaged && app\.isInApplicationsFolder\(\),\s*feedFixtureUrl: process\.env\.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,\s*\}\)/,
+  "fixtures never check, and a packaged build outside Applications never downloads (app-updates.check.ts covers the decision)",
 );
+assert.deepEqual(
+  source.match(/autoUpdater\.setFeedURL\([^)]*\)/g),
+  ["autoUpdater.setFeedURL({ url: handoff.feedUrl, serverType: \"default\" })"],
+  "Squirrel.Mac reads only the localhost hand-off, never the public feed",
+);
+for (const event of ["update-downloaded", "update-not-available", "error"]) {
+  assert.match(
+    source,
+    new RegExp(`autoUpdater\\.on\\("${event}", \\([^)]*\\) => \\{\\s*endSquirrelHandoff\\(\\);`),
+    `the hand-off server closes on ${event}`,
+  );
+}
 assert.equal(
   source.match(/autoUpdater\.quitAndInstall\(\)/g)?.length,
   1,

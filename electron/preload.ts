@@ -68,6 +68,7 @@ const INVOKE_CHANNELS = {
   appUpdates: {
     view: "appUpdates:view",
     check: "appUpdates:check",
+    download: "appUpdates:download",
     restart: "appUpdates:restart",
   },
   errorReports: {
