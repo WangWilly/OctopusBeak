@@ -120,6 +120,10 @@ The App asks you once, in a dialog, whether to turn on Usage statistics; the ans
 
 When a run fails, its details offer Report this error. It first shows exactly what will be sent and sends nothing until you select Send. The report holds the data source, error code, stage, app and macOS versions, and a technical record of where in the app the error happened; it never holds sign-in details, account numbers, amounts, transactions, or error messages from the bank's site. You may add a note and an email; runs of six or more digits in the note are masked before sending. Reports are kept for one year and seen only by the developer.
 
+### Automatic updates (on by default)
+
+A released App asks GitHub for a newer version after it starts and every 6 hours, downloads one in the background, and notifies you when it is ready. It installs when you restart or quit the App, never by restarting on its own. The check and the download go straight to GitHub, never through our servers, and carry no data or identifier; GitHub sees the connecting network address and that this Mac runs OctopusBeak, as for any download. You can turn automatic updates off or check by hand in Settings. The App must be in the Applications folder to update itself.
+
 ## Developer information
 
 <details>
