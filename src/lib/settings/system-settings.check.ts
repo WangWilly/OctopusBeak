@@ -85,3 +85,9 @@ assert.match(
   /oninput=\{\(event\) => \(draftScale = Number\(event\.currentTarget\.value\)\)\}\s*onchange=\{\(event\) => \{[^}]*changeDisplayScale\(/,
   "dragging the size slider previews the value and zooms the app only on release",
 );
+assert.match(
+  settingsPageSource,
+  /id="app-update-restart"[\s\S]*?disabled=\{automationRunActive \|\|/,
+  "Restart to update is disabled while a run is active",
+);
+assert.match(settingsPageSource, /appUpdatesEnabled: updatesEnabled/, "the automatic updates switch is saved with system settings");
