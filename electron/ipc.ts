@@ -65,7 +65,7 @@ export function registerOctopusBeakIpc({
     settings: SystemSettingsDto,
   ) => void | Promise<void>;
   usagePing: { preview(): UsagePing; shouldAsk(): boolean; answer(enabled: boolean): void };
-  appUpdates: { view(): AppUpdateView; check(): void; restart(): AppUpdateRestartResult };
+  appUpdates: { view(): AppUpdateView; check(): void; download(): void; restart(): AppUpdateRestartResult };
   errorReports: {
     available(): boolean;
     preview(input: ErrorReportInput): ErrorReportPayload;
@@ -146,6 +146,10 @@ export function registerOctopusBeakIpc({
     "appUpdates:view": () => appUpdates.view(),
     "appUpdates:check": () => {
       appUpdates.check();
+      return appUpdates.view();
+    },
+    "appUpdates:download": () => {
+      appUpdates.download();
       return appUpdates.view();
     },
     "appUpdates:restart": () => appUpdates.restart(),

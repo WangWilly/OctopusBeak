@@ -238,8 +238,10 @@ export type OctopusBeakApi = {
   /** ADR 0083: automatic updates from GitHub Releases. */
   appUpdates: {
     view(): Promise<AppUpdateView>;
-    /** Checks now unless a check or download is in flight or an update is ready. */
+    /** Checks now unless a check or download is in flight or an update is waiting. */
     check(): Promise<AppUpdateView>;
+    /** Starts downloading the update the last check found, or tries a failed download again. */
+    download(): Promise<AppUpdateView>;
     /** Quits and installs a downloaded update; refused while a run is active. */
     restart(): Promise<AppUpdateRestartResult>;
     onChanged(listener: (view: AppUpdateView) => void): () => void;

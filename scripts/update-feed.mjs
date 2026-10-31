@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,25 +12,34 @@ export function updateZipName(version) {
 }
 
 /**
- * Squirrel.Mac's JSON feed (ADR 0083). It treats any version other than the running one as an
- * update, so the feed names only this release; an older App always moves forward to it.
+ * The App's own feed (ADR 0083), parsed by parseAppUpdateFeed. Squirrel.Mac never reads it: the App
+ * downloads and checks the ZIP itself, then hands it to Squirrel.Mac only to install.
  */
-export function updateFeed(version, publishedAt) {
+export function updateFeed({ version, publishedAt, size, sha256 }) {
   if (!/^\d+\.\d+\.\d+$/u.test(version)) throw new Error(`Not a release version: ${version}`);
   return {
-    currentRelease: version,
-    releases: [
-      {
-        version,
-        updateTo: {
-          version,
-          name: `OctopusBeak ${version}`,
-          pub_date: publishedAt.toISOString(),
-          url: `${RELEASES}/v${version}/${updateZipName(version)}`,
-        },
-      },
-    ],
+    schema: 1,
+    version,
+    name: `OctopusBeak ${version}`,
+    pubDate: publishedAt.toISOString(),
+    url: `${RELEASES}/v${version}/${updateZipName(version)}`,
+    size,
+    sha256,
   };
+}
+
+/** Hashes in chunks: the ZIP is about 430 MB. */
+function zipDigest(file) {
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(8 * 1024 * 1024);
+  const fd = openSync(file, "r");
+  let size = 0;
+  try {
+    for (let read; (read = readSync(fd, buffer)) > 0; size += read) hash.update(buffer.subarray(0, read));
+  } finally {
+    closeSync(fd);
+  }
+  return { size, sha256: hash.digest("hex") };
 }
 
 function filesUnder(directory) {
@@ -45,8 +55,9 @@ export function writeUpdateFeed({ makeDirectory, version, publishedAt }) {
   if (zips.length !== 1) {
     throw new Error(`Expected exactly one ${updateZipName(version)} in ${makeDirectory}, found ${zips.length}.`);
   }
+  const feed = updateFeed({ version, publishedAt, ...zipDigest(zips[0]) });
   const path = join(makeDirectory, UPDATE_FEED_FILE);
-  writeFileSync(path, `${JSON.stringify(updateFeed(version, publishedAt), null, 2)}\n`);
+  writeFileSync(path, `${JSON.stringify(feed, null, 2)}\n`);
   return path;
 }
 
