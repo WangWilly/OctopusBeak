@@ -104,6 +104,8 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   .net-worth-chart {
     width: 100%;
     min-height: 250px;
+    /* The svg is drawn at the measured width; without this it holds the card at its widest size. */
+    contain: inline-size;
   }
 
   svg {
