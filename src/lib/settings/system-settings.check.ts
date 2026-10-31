@@ -20,8 +20,12 @@ const defaults: SystemSettingsDto = {
   scheduledCollectionTime: "07:00",
   previewFeaturesEnabled: false,
   usageStatisticsEnabled: false,
+  appUpdatesEnabled: true,
 };
-assert.deepEqual(systemSettings({}), defaults, "scheduled collection, preview features and usage statistics are opt-in");
+assert.deepEqual(systemSettings({}), defaults, "scheduled collection, preview features and usage statistics are opt-in; updates are on");
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "false" }).appUpdatesEnabled, false);
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "true" }).appUpdatesEnabled, true);
+assert.equal(systemSettings({ APP_UPDATES_ENABLED: "" }).appUpdatesEnabled, true, "only \"false\" turns updates off");
 assert.equal(systemSettings({ AUTOMATION_BUSINESS_TIMEZONE: "Asia/Tokyo" }).systemTimezone, "Asia/Tokyo");
 assert.throws(() => validateSystemSettings({ ...defaults, systemTimezone: "Mars/Base" }));
 assert.throws(() => validateSystemSettings({ ...defaults, exchangeRateUpdateTime: "6:00" }));
@@ -35,6 +39,10 @@ assert.throws(() => validateSystemSettings({
   ...defaults,
   usageStatisticsEnabled: "true" as unknown as boolean,
 }));
+assert.throws(() => validateSystemSettings({
+  ...defaults,
+  appUpdatesEnabled: "false" as unknown as boolean,
+}));
 
 const settingsDirectory = mkdtempSync(join(tmpdir(), "system-settings-"));
 try {
@@ -45,6 +53,7 @@ try {
     { ...defaults, previewFeaturesEnabled: true },
     { ...defaults, previewFeaturesEnabled: false },
     { ...defaults, usageStatisticsEnabled: true },
+    { ...defaults, appUpdatesEnabled: false },
   ]) {
     writeAutomationSettingsFile(settingsPath, systemSettingsFileEntries(validateSystemSettings(saved)));
     assert.deepEqual(systemSettings(readAutomationSettingsFile(settingsPath)), saved, "settings file round-trip");

@@ -1,6 +1,7 @@
 import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
 import { automationFlagEnabled } from "../automation/statement-selection.ts";
 import { DEFAULT_SYSTEM_TIMEZONE, isIanaTimezone } from "../time/timezone.ts";
+import { APP_UPDATES_ENABLED_KEY } from "./app-updates.ts";
 
 export type SystemSettingsDto = {
   systemTimezone: string;
@@ -10,6 +11,8 @@ export type SystemSettingsDto = {
   previewFeaturesEnabled: boolean;
   /** ADR 0078: the opt-in anonymous daily usage ping. */
   usageStatisticsEnabled: boolean;
+  /** ADR 0083: on unless the person turned it off. */
+  appUpdatesEnabled: boolean;
 };
 
 const DAILY_TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -33,6 +36,9 @@ export function validateSystemSettings(input: SystemSettingsDto): SystemSettings
   if (typeof input.usageStatisticsEnabled !== "boolean") {
     throw new TypeError("Usage statistics enabled must be a boolean.");
   }
+  if (typeof input.appUpdatesEnabled !== "boolean") {
+    throw new TypeError("App updates enabled must be a boolean.");
+  }
   return input;
 }
 
@@ -46,6 +52,7 @@ export function systemSettings(settings: AutomationSettingsFile = {}): SystemSet
     scheduledCollectionTime: String(settings.SCHEDULED_COLLECTION_TIME ?? "07:00"),
     previewFeaturesEnabled: automationFlagEnabled(settings.PREVIEW_FEATURES_ENABLED),
     usageStatisticsEnabled: automationFlagEnabled(settings.USAGE_STATISTICS_ENABLED),
+    appUpdatesEnabled: settings[APP_UPDATES_ENABLED_KEY] !== "false",
   });
 }
 
@@ -57,5 +64,6 @@ export function systemSettingsFileEntries(value: SystemSettingsDto) {
     SCHEDULED_COLLECTION_TIME: value.scheduledCollectionTime,
     PREVIEW_FEATURES_ENABLED: value.previewFeaturesEnabled ? "true" : "false",
     USAGE_STATISTICS_ENABLED: value.usageStatisticsEnabled ? "true" : "false",
+    [APP_UPDATES_ENABLED_KEY]: value.appUpdatesEnabled ? "true" : "false",
   };
 }
