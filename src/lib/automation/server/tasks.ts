@@ -189,11 +189,16 @@ export const AUTOMATION_NON_SECRET_KEYS = [
 
 const nonSecretCredentialKeys = new Set<string>(["MAX_SUB_ACCOUNT"]);
 
+/** Device identities the App creates beside a Preview source's sign-in details (ADR 0082). */
+const PREVIEW_DEVICE_IDENTITY_KEYS = PREVIEW_SOURCE_REGISTRY.flatMap((source) =>
+  source.deviceIdentityKey ? [source.deviceIdentityKey] : []);
+
 export const AUTOMATION_SECRET_KEYS = [
   ...AUTOMATION_CREDENTIAL_KEYS.filter(
     (key) => !nonSecretCredentialKeys.has(key),
   ),
   ...AUTOMATION_MANAGED_SECRET_KEYS,
+  ...PREVIEW_DEVICE_IDENTITY_KEYS,
 ];
 
 export function automationCredentialKeyIsSecret(key: string) {
