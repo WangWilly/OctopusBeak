@@ -517,6 +517,51 @@ test("live liabilities republish on a preview credit collection and on a visibil
   }, database as unknown as PGlite);
 });
 
+test("live liabilities republish on a preview loan collection, including one that only closes a loan", async () => {
+  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
+  await withLedger(async ({ registry, preview }) => {
+    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
+    const views = createPGliteFinancialLiveViews(database, shown);
+    const published: LiabilitiesPageDto[] = [];
+    const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
+    const until = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 5_000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error("live liabilities did not republish");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const loans = (collectedAt: string, held: boolean) => preview.write({
+      sourceId: "synthetic",
+      institution: "bank-017",
+      product: "loan",
+      collection: {
+        collectedAt,
+        completeness: "complete",
+        loans: held ? [{
+          sourceAccountKey: "home", displayLabel: "Home loan 4567", currency: "TWD", category: "housing",
+          outstandingBalance: { amount: "6000000", observedAt: { at: collectedAt, source: "reported" } },
+          originalAmount: "8000000", interestRate: null, paymentAmount: null, nextPaymentDate: null,
+          installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
+        }] : [],
+      },
+    });
+    const showsLoan = () => published.at(-1)!.accounts.some((account) => account.preview && account.amountLines.length > 0);
+    try {
+      await until(() => published.length >= 1);
+      assert.equal(showsLoan(), false);
+      await loans("2026-10-05T03:00:00.000Z", true);
+      await until(showsLoan);
+      await loans("2026-10-06T03:00:00.000Z", false);
+      await until(() => !showsLoan());
+    } finally {
+      await stop();
+    }
+  }, database as unknown as PGlite);
+});
+
 test("each live view republishes on exactly the dependencies it reads", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
   await applyPgliteBaseline(database as unknown as PGlite);

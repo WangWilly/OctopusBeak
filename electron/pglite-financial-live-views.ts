@@ -21,7 +21,11 @@ const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
   (SELECT COUNT(*) FROM preview_credit_purchases) AS purchases,
   (SELECT MAX(last_collected_at) FROM preview_credit_purchases) AS purchase_collected_at,
   (SELECT COUNT(*) FROM preview_credit_statements) AS statements,
-  (SELECT COUNT(*) FROM preview_credit_relations) AS relations`;
+  (SELECT COUNT(*) FROM preview_credit_relations) AS relations,
+  (SELECT COUNT(*) FROM preview_loan_accounts) AS loan_accounts,
+  (SELECT MAX(last_collected_at) FROM preview_loan_accounts) AS loan_collected_at,
+  (SELECT COUNT(*) FROM preview_loan_accounts WHERE closed_at IS NOT NULL) AS closed_loans,
+  (SELECT COUNT(*) FROM preview_loan_balance_observations) AS loan_balances`;
 
 type LiveViewRegistry = PGliteFinancialRegistry & PGliteFinancialPageActionEvents;
 
