@@ -338,8 +338,13 @@ async function readProductPage(
     : selectPGliteOverviewLiabilities(result.projection);
   const productDto = mapCanonicalProduct(projection, product, canonical);
   const outsideAccounts = outside.accounts.filter((account) => isProductAccount(product, account));
+  // Without canonical accounts or expected sources the page is "empty", but preview or manual rows still fill it.
+  const filled = productDto.availability === "empty" && outsideAccounts.length > 0
+    ? { availability: "available" as const, coverage: "complete" as const }
+    : {};
   return {
     ...productDto,
+    ...filled,
     accounts: [...productDto.accounts, ...outsideAccounts],
     dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
     dailyHistoryByAccount: {

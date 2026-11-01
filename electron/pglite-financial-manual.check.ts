@@ -294,3 +294,24 @@ test("a manual write during a Spending page action is published once the action 
     }
   }, database as unknown as PGlite);
 });
+
+test("a store holding only manual assets fills the Assets page and its history, with no empty-state banner", async () => {
+  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  try {
+    await applyPgliteManualAssetsSchema(store);
+    const result = await applyManualAssetCommand(store, create("house", "Home", "TWD", "2025-03-01", "12000000", "actual_price_registration"), CLOCK);
+    assert.equal(result.ok, true);
+    const registry = createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: CLOCK.today });
+    const assets = await registry["financial.assets.current"]([]);
+    assert.equal(assets.availability, "available");
+    assert.notEqual(assets.coverage, "awaiting", "the 尚無可用的財務帳戶 banner shows only for awaiting or unavailable coverage");
+    const row = assets.accounts.find((account) => account.manual)!;
+    assert.deepEqual(assets.dailyHistoryByAccount[row.id]?.map((entry) => entry.date), ["2025-03-01"]);
+    assert.deepEqual(assets.dailyHistory.map((entry) => [entry.date, entry.assets[0]?.value]), [["2025-03-01", 12000000]]);
+    const overview = await registry["financial.overview.current"]([]);
+    assert.deepEqual(overview.dailyHistory.map((entry) => entry.date), ["2025-03-01"]);
+    assert.equal(overview.historyAvailability, "available");
+  } finally {
+    await store.close();
+  }
+});
