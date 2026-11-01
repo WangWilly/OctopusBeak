@@ -3,12 +3,16 @@ import test from "node:test";
 import { parsePreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import type { PreviewCreditCollection, PreviewTimeDepositCollection } from "../ledger/pglite/preview-financial-data.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
+import type { PreviewLoanCollection } from "../ledger/pglite/preview-loan.ts";
 import {
   collectCathayCreditCards,
+  collectCathayLoans,
   collectCathayTimeDeposits,
+  type CathayLoanOverview,
 } from "./cathay-attached-preview.ts";
 import {
   CATHAY_CARD_OVERVIEW_TEXT as OVERVIEW_TEXT,
+  CATHAY_LOAN_OVERVIEW as LOAN_OVERVIEW,
   CATHAY_PREVIEW_NOW as NOW,
   CATHAY_PREVIEW_RESPONSES as RESPONSES,
   cathayCardTotals,
@@ -183,4 +187,66 @@ test("a malformed or unknown-currency time deposit fails before its write", asyn
   const overview = RESPONSES.domesticOverview;
   await rejectsWith(collectCathayTimeDeposits(fakePort({ domesticOverview: overview.replace(`"accountBalance":50000`, `"accountBalance":"5O000"`) }).port, NOW), "malformed-amount");
   await rejectsWith(collectCathayTimeDeposits(fakePort({ domesticOverview: overview.replace(`"accountBalance":50000`, `"accountBalance":50000,"currency":"??"`) }).port, NOW), "missing-currency");
+});
+
+const loanWritten = (collection: PreviewLoanCollection) =>
+  parsePreviewWrite({ sourceId: "cathay", institution: "cathay", product: "loan", collection });
+const loanOverview = (changes: Partial<CathayLoanOverview>): CathayLoanOverview => ({ ...LOAN_OVERVIEW, ...changes });
+
+test("Cathay loans map the L0101 overview and reconcile with 貸款總餘額", async () => {
+  const { port, seen } = fakePort();
+  const collection = await collectCathayLoans(port, NOW);
+  loanWritten(collection);
+  assert.deepEqual(seen, ["loanOverview"]);
+  assert.equal(collection.completeness, "complete");
+  assert.deepEqual(collection.loans[0], {
+    sourceAccountKey: "100200301",
+    displayLabel: "國泰世華貸款 0301",
+    currency: "TWD",
+    category: "housing",
+    outstandingBalance: { amount: "1000000", observedAt: { at: "2026-10-18T01:59:58.000Z", source: "reported" } },
+    originalAmount: null,
+    interestRate: "1.37",
+    paymentAmount: "12345",
+    nextPaymentDate: "2026-11-05",
+    installmentsPaid: 17,
+    installmentsTotal: 180,
+    openedOn: null,
+    maturityDate: null,
+  });
+  const other = collection.loans[1]!;
+  assert.deepEqual([other.displayLabel, other.category, other.interestRate, other.nextPaymentDate, other.installmentsPaid],
+    ["國泰世華貸款 0302", null, null, null, null], "其他貸款 names no category, and a payment status is no date");
+});
+
+test("a 貸款類別 value names the category, and an ROC 扣款日 is read as a Gregorian date", async () => {
+  const [row] = LOAN_OVERVIEW.rows;
+  const collection = await collectCathayLoans(fakePort({}, loanOverview({
+    totalBalance: "1,000,000",
+    rows: [{ ...row!, section: null, category: "房屋貸款", paymentDue: "115/11/05" }],
+  })).port, NOW);
+  assert.equal(collection.loans[0]!.category, "housing");
+  assert.equal(collection.loans[0]!.nextPaymentDate, "2026-11-05");
+});
+
+test("an L0101 page that says it holds no loan is a complete empty loan list", async () => {
+  const collection = await collectCathayLoans(fakePort({}, loanOverview({ rows: [], noLoanMessage: true, currency: null, totalBalance: null })).port, NOW);
+  loanWritten(collection);
+  assert.deepEqual(collection, { collectedAt: NOW, completeness: "complete", loans: [] });
+});
+
+test("a Cathay loan list that does not reconcile with 貸款總餘額 fails before its write", async () => {
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ totalBalance: "NT$ 2,234,567" })).port, NOW), "incomplete-data");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ totalBalance: null })).port, NOW), "incomplete-data");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ rows: LOAN_OVERVIEW.rows.slice(0, 1) })).port, NOW), "incomplete-data");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ rows: [] })).port, NOW), "incomplete-data");
+});
+
+test("a Cathay loan without its full account number or a readable page fails the product", async () => {
+  const [first, second] = LOAN_OVERVIEW.rows;
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ rows: [{ ...first!, accountNumber: "****0301" }, second!] })).port, NOW), "unexpected-response");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ rows: [{ ...first!, accountNumber: null }, second!] })).port, NOW), "unexpected-response");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ recognized: false })).port, NOW), "unexpected-response");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ currency: null })).port, NOW), "missing-currency");
+  await rejectsWith(collectCathayLoans(fakePort({}, loanOverview({ rows: [{ ...first!, balance: "一百萬" }, second!] })).port, NOW), "malformed-amount");
 });
