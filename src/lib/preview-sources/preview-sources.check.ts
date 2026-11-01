@@ -225,11 +225,13 @@ test("an attached preview product is offered only while Preview features are on,
   const on = groups({ PREVIEW_FEATURES_ENABLED: "true" });
   assert.deepEqual(on.cathay, [
     { id: "domestic" }, { id: "foreign_currency" }, { id: "credit_card", preview: true }, { id: "time_deposit", preview: true },
+    { id: "loan", preview: true },
   ]);
   assert.deepEqual(on.hncb, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
-  assert.deepEqual(on.sinopac, [{ id: "deposit" }, { id: "credit_card", preview: true }]);
+  assert.deepEqual(on.sinopac, [{ id: "deposit" }, { id: "credit_card", preview: true }, { id: "loan", preview: true }]);
   assert.deepEqual(on.esun, [{ id: "credit_card" }, { id: "deposit", preview: true }]);
-  assert.deepEqual(on.fubon!.map((type) => type.preview), [undefined, undefined, undefined], "a group without attached products is unchanged");
+  assert.deepEqual(on.fubon!.at(-1), { id: "foreign_currency", preview: true });
+  assert.ok(on.yuanta!.length > 0 && on.yuanta!.every((type) => type.preview === undefined), "a group without attached products is unchanged");
 
   const hncb = { id: "hncb", label: "HNCB", enabledKey: "E", statementSelectionKey: "S", statementTypes: on.hncb! };
   assert.deepEqual(selectStatementTypes(hncb, { E: true }, "display"), { selectedIds: ["deposit"], needsSetup: false, persisted: false },

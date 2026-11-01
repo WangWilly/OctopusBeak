@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewAccount, PreviewLoan, PreviewLoanCollection, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
 import type { PreviewSource } from "./registry.ts";
 import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
@@ -27,6 +27,7 @@ import { decodeImageToPng } from "./browser-http.ts";
 const LOGIN_URL = "https://www.rakuten-bank.com.tw/ebank/cgn/cgnot0001/010";
 const CURRENT_MONTH_PATH = "/CTWQU0001/010";
 const PAST_MONTH_PATH = "/CTWQU0001/011";
+const LOAN_PATH = "/CLNQU0001/010";
 const MONTHS = 3;
 const CAPTCHA_LENGTH = 4;
 // CTWQU0001 is the 臺幣存款 (NT-dollar deposit) page's detail query and carries no
@@ -57,6 +58,12 @@ export type RakutenPage = Readonly<{
   signIn(credentials: Readonly<{ idNumber: string; userId: string; password: string; captcha: string }>): Promise<RakutenSignInOutcome>;
   /** 0 is the current month (CTWQU0001/010); n picks the month n back in the page's dropdown (CTWQU0001/011). */
   depositMonth(monthsBack: number): Promise<RakutenCapture>;
+  /**
+   * Opens 我的貸款 and returns every CLNQU0001/010 response decrypted after the
+   * click. The home page sends a summary on the same path, so the list may
+   * hold that summary as well as the loan page's full answer.
+   */
+  loanOverview(): Promise<readonly RakutenCapture[]>;
   signOut(): Promise<void>;
 }>;
 
@@ -147,6 +154,90 @@ function depositAccount(months: readonly Month[], collectedAt: string): PreviewA
   };
 }
 
+// CLNQU0001 is the 我的貸款 query. Unlike CTWQU0001 it is not a TWD-only page, so no currency is assumed.
+const LOAN_LIST_FIELDS = ["loanProjects", "loanList"] as const;
+const FULL_LOAN_ACCOUNT_NO = /^[0-9A-Z]{8,}$/u;
+const WHOLE_NUMBER = /^\d+$/u;
+
+function loanEnvelope(context: PreviewWorkflowContext, capture: RakutenCapture): readonly SourceRecord[] {
+  const envelope = parseSourceJson(capture.text, LOAN_PATH);
+  context.preview.observe({ endpoint: capture.endpoint, status: capture.status, body: envelope });
+  if (!capture.endpoint.endsWith(LOAN_PATH)) return fail("unexpected-response", `expected ${LOAN_PATH}, captured ${capture.endpoint}`);
+  const { statusCode, rsData } = record(envelope, LOAN_PATH);
+  if (statusCode !== "0000") return fail("unexpected-response", `${LOAN_PATH} statusCode ${String(statusCode)}`);
+  const data = record(rsData, `${LOAN_PATH}.rsData`);
+  const name = LOAN_LIST_FIELDS.find((field) => data[field] !== undefined && data[field] !== null);
+  return name === undefined ? fail("unexpected-response", `${LOAN_PATH} has no loan list`) : records(data[name], `${LOAN_PATH}.${name}`);
+}
+
+/**
+ * The loan page's full answer: the last capture whose entries carry terms
+ * (`initPeriod`), which the home page's summary lacks. Only when every capture
+ * lists nothing is there nothing to tell apart.
+ */
+function fullLoanList(
+  context: PreviewWorkflowContext,
+  captures: readonly RakutenCapture[],
+): Readonly<{ entries: readonly SourceRecord[]; date: string | null }> {
+  if (captures.length === 0) return fail("unexpected-response", `no decrypted ${LOAN_PATH} response`);
+  const lists = captures.map((capture) => ({ entries: loanEnvelope(context, capture), date: capture.date }));
+  const full = lists.filter((list) => list.entries.some((entry) => entry.initPeriod !== undefined)).at(-1);
+  if (full) return full;
+  if (lists.every((list) => list.entries.length === 0)) return { entries: [], date: captures.at(-1)!.date };
+  return fail("incomplete-data", `${LOAN_PATH} answered only with the home page summary, without loan terms`);
+}
+
+const optionalDecimal = (value: unknown, field: string) =>
+  value === undefined || value === null || value === "" ? null : exactDecimal(value, field);
+
+/** A period count, or `null` when it is absent or not a whole number. */
+const wholeCount = (value: unknown) =>
+  typeof value === "string" && WHOLE_NUMBER.test(value.trim()) ? Number(value.trim()) : null;
+
+const optionalDay = (value: unknown, field: string) =>
+  optionalText(value) === null ? null : localDate(value, field).value.slice(0, 10);
+
+function loanFrom(entry: SourceRecord, field: string, observed: PreviewLoan["outstandingBalance"]["observedAt"]): PreviewLoan {
+  const accountNo = comparableAccountNo(text(entry.loanAcctNo, `${field}.loanAcctNo`)).toUpperCase();
+  if (!FULL_LOAN_ACCOUNT_NO.test(accountNo)) return fail("unexpected-response", `${field}.loanAcctNo is not a full account number`);
+  const name = CURRENCY_FIELDS.find((candidate) => entry[candidate] !== undefined);
+  if (name === undefined) return fail("missing-currency", `${field} reports no currency`);
+  const total = wholeCount(entry.initPeriod);
+  const remaining = wholeCount(entry.remainPeriod);
+  if (total !== null && remaining !== null && remaining > total) return fail("unexpected-response", `${field}.remainPeriod exceeds initPeriod`);
+  return {
+    sourceAccountKey: accountNo,
+    displayLabel: `樂天國際銀行 ${optionalText(entry.marketingName) ?? "貸款"} ${accountNo.slice(-4)}`,
+    currency: currencyCode(entry[name], `${field}.${name}`, { NTD: "TWD" }),
+    // all-set-tw labels every Rakuten loan personal; the source reports no category.
+    category: null,
+    outstandingBalance: { amount: exactDecimal(entry.remainLoanAmount, `${field}.remainLoanAmount`), observedAt: observed },
+    originalAmount: optionalDecimal(entry.initLoanAmount, `${field}.initLoanAmount`),
+    interestRate: optionalDecimal(entry.currentRate, `${field}.currentRate`),
+    paymentAmount: optionalDecimal(entry.nextRepaymentAmount, `${field}.nextRepaymentAmount`),
+    nextPaymentDate: optionalDay(entry.nextRepaymentDate, `${field}.nextRepaymentDate`),
+    installmentsPaid: total !== null && remaining !== null ? total - remaining : null,
+    installmentsTotal: total,
+    // lastDrawdownDate is the latest drawdown, which is the opening date only for a loan drawn once.
+    openedOn: null,
+    maturityDate: null,
+  };
+}
+
+/**
+ * Unproven: the summary and the full answer share one path and CLNQU0001
+ * carries no end-of-list marker, so nothing shows the list holds every loan.
+ */
+export function rakutenLoans(context: PreviewWorkflowContext, captures: readonly RakutenCapture[], collectedAt: string): PreviewLoanCollection {
+  const { entries, date } = fullLoanList(context, captures);
+  const observed = observedAt(date, collectedAt);
+  return {
+    collectedAt,
+    completeness: "unproven",
+    loans: entries.map((entry, index) => loanFrom(entry, `${LOAN_PATH}.loans[${index}]`, observed)),
+  };
+}
+
 type TapEntry = { path: string; status: number; date: string | null; text: string };
 type TapWindow = { __octopusRakutenTap?: { last: Omit<TapEntry, "text">; entries: TapEntry[] } };
 
@@ -190,6 +281,20 @@ async function waitForCapture(page: Page, suffix: string, after: number): Promis
     await page.waitForTimeout(TAP_POLL_MS);
   }
   return fail("unexpected-response", `no decrypted ${suffix} response`);
+}
+
+/** Every response on the path after `after`, returned early once one carries loan terms. */
+async function loanCaptures(page: Page, after: number): Promise<RakutenCapture[]> {
+  const deadline = Date.now() + WAIT_MS;
+  let found: TapEntry[] = [];
+  while (Date.now() < deadline) {
+    found = await page.evaluate(({ suffix, after }) =>
+      (window as unknown as TapWindow).__octopusRakutenTap?.entries.slice(after).filter((item) => item.path.endsWith(suffix)) ?? [],
+    { suffix: LOAN_PATH, after });
+    if (found.some((entry) => entry.text.includes('"initPeriod"'))) break;
+    await page.waitForTimeout(TAP_POLL_MS);
+  }
+  return found.map((entry) => ({ endpoint: entry.path, status: entry.status, date: entry.date, text: entry.text }));
 }
 
 async function clickOutsideModal(page: Page, label: string | RegExp): Promise<boolean> {
@@ -274,6 +379,12 @@ export const playwrightRakutenPage: RakutenPageOpener = (context, startUrl, use)
         if (!await clickOutsideModal(page, new RegExp(`${target}\\s*活存明細`, "u"))) return fail("unexpected-response", `no ${target} option`);
         return waitForCapture(page, PAST_MONTH_PATH, before);
       },
+      async loanOverview() {
+        const before = await tapCount(page);
+        // The home page's 貸款總覽 icon sits in the shortcut editor and loads no terms; the header menu's 我的貸款 does.
+        if (!await clickOutsideModal(page, /^\s*我的貸款\s*$/u)) return fail("unexpected-response", "no 我的貸款 link");
+        return loanCaptures(page, before);
+      },
       async signOut() {
         if (!await clickOutsideModal(page, /^\s*登出\s*$/u)) return;
         await page.locator(".modal.show .modal-footer").getByText("確認", { exact: true }).click({ timeout: 3_000 });
@@ -286,8 +397,8 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
   return {
     id: "rakuten-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["rakuten-deposit"],
-    products: ["deposit"],
-    displayName: { en: "Rakuten International Commercial Bank deposits (preview)", "zh-TW": "樂天國際銀行存款（預覽）" },
+    products: ["deposit", "loan"],
+    displayName: { en: "Rakuten International Commercial Bank deposits and loans (preview)", "zh-TW": "樂天國際銀行存款與貸款（預覽）" },
     searchAliases: ["Rakuten", "Rakuten Bank", "樂天", "樂天銀行", "樂天國際銀行"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -332,12 +443,17 @@ export function createRakutenSource(options: Readonly<{ page?: RakutenPageOpener
         try {
           await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
-          const months: Month[] = [];
-          for (let back = 0; back < MONTHS; back += 1)
-            months.push(monthFrom(context, await page.depositMonth(back), back === 0 ? CURRENT_MONTH_PATH : PAST_MONTH_PATH));
-          const account = depositAccount(months, collectedAt);
+          const output = await context.preview.collect({
+            deposit: async () => {
+              const months: Month[] = [];
+              for (let back = 0; back < MONTHS; back += 1)
+                months.push(monthFrom(context, await page.depositMonth(back), back === 0 ? CURRENT_MONTH_PATH : PAST_MONTH_PATH));
+              return { collectedAt, accounts: [depositAccount(months, collectedAt)] };
+            },
+            loan: async () => rakutenLoans(context, await page.loanOverview(), collectedAt),
+          });
           await context.event("collection", "completed", "collection-completed");
-          return await context.preview.collect({ deposit: async () => ({ collectedAt, accounts: [account] }) });
+          return output;
         } finally {
           await page.signOut().catch(() => undefined);
         }

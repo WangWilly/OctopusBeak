@@ -4,6 +4,7 @@
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import {
     readLiabilitiesSummary,
+    readMortgageRepaid,
     type UpcomingPayment,
   } from "$lib/liabilities/liabilities-summary.ts";
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
@@ -22,7 +23,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import { totalIncomplete } from "$lib/shared-ledger/preview-account.ts";
   import { accountShares, dateInTimeZone, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
-  import { currencyCount, formatMoney } from "$lib/shared-money/money.ts";
+  import { currencyCount, formatAmount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccount, localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
   import {
@@ -40,6 +41,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 
   const DUE_SOON_DAYS = 3;
   const CARD_COLOR = liabilityColor("credit-card");
+  const LOAN_COLOR = liabilityColor("loan");
   const EMPTY_TILE_COLOR = "color-mix(in oklch, var(--muted) 45%, transparent)";
 
   let search = "";
@@ -60,6 +62,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   });
   $: summary = readLiabilitiesSummary(liabilities, { today });
   $: liabilityAccounts = liabilities.accounts;
+  $: mortgage = readMortgageRepaid(liabilities.accounts);
   $: isEmpty = awaitingFirstData(liabilities);
   $: usesEstimatedCredit = liabilities.accounts.some((account) =>
     account.amountLines.some((amount) =>
@@ -146,6 +149,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
             ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
             : "",
           usesEstimatedCredit ? $t.overview.creditCardEstimateBasis : "",
+          mortgage.omitted ? $t.liabilities.mortgageOriginalMissing : "",
         ].filter(Boolean)}
       >
         {#if isEmpty}
@@ -154,6 +158,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
             <span>{$t.liabilities.empty.paymentsBody}</span>
           </div>
           <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.utilization} value="—" sub="–" share={0} />
+          <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.mortgageRepaid} value="—" sub="–" share={0} />
         {:else if summary.state === "ready"}
           {#each summary.payments as payment (payment.account.id)}
             <SummaryTile
@@ -177,6 +182,19 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
               share={summary.utilization.ratio}
             />
           {/if}
+          {#each mortgage.shares as share (share.currency)}
+            <SummaryTile
+              color={LOAN_COLOR}
+              head={$t.liabilities.mortgageRepaid}
+              value={formatShare(share.repaid, $locale)}
+              sub={`${formatMoney({ currency: share.currency, value: share.outstanding }, { locale: $locale })} / ${formatAmount(share.original, share.currency, { locale: $locale })}`}
+              subSensitive
+              share={share.repaid}
+              preview
+            />
+          {:else}
+            <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.mortgageRepaid} value="—" sub="–" share={0} />
+          {/each}
         {/if}
       </PageTotalCard>
     </div>

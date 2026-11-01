@@ -1884,7 +1884,7 @@ export async function readFubonDepositAccountOptions(
   return validAccounts;
 }
 
-async function selectDepositAccount(
+export async function selectDepositAccount(
   site: FubonEbankSite,
   account: FubonDepositAccountOption,
 ): Promise<void> {
@@ -1916,7 +1916,7 @@ function depositResultTable(scope: BrowserScope): Locator {
     .first();
 }
 
-async function openTransactionDetailForAccountIndex(
+export async function openTransactionDetailForAccountIndex(
   site: FubonEbankSite,
   accountIndex: number,
 ): Promise<string> {
@@ -2137,7 +2137,7 @@ export async function parseFubonDepositStatementHtml(
   };
 }
 
-async function fetchDepositStatement(
+export async function fetchDepositStatement(
   site: FubonEbankSite,
   query: FubonDepositQuery,
   accountOption: FubonDepositAccountOption,

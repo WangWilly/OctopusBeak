@@ -362,6 +362,36 @@ test("preview credit accounts list on Liabilities only, and an unknown used cred
   });
 });
 
+test("preview loans list on Liabilities only, count against the Net position with a marker, and close out of every total", async () => {
+  await withLedger(async ({ registry, preview }) => {
+    const loan = (key: string, amount: string) => ({
+      sourceAccountKey: key, displayLabel: `Loan ****${key}`, currency: "TWD", category: "housing" as const,
+      outstandingBalance: { amount, observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" as const } },
+      originalAmount: "1000", interestRate: null, paymentAmount: null, nextPaymentDate: null,
+      installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
+    });
+    const write = (collectedAt: string, loans: ReturnType<typeof loan>[]) => preview.write({
+      sourceId: "synthetic", institution: "bank-017", product: "loan",
+      collection: { collectedAt, completeness: "complete", loans },
+    });
+    await write("2026-10-05T03:00:00.000Z", [loan("1111", "40.10"), loan("2222", "20")]);
+    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
+    const liabilities = await shown["financial.liabilities.current"]([]);
+    assert.deepEqual(liabilities.accounts.filter((account) => account.preview).map((account) => [account.label, account.kind]), [
+      ["Loan ****1111", "loan"],
+      ["Loan ****2222", "loan"],
+    ]);
+    assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
+    assert.deepEqual(convertedNet(await shown["financial.overview.current"]([])), {
+      display: "converted", twd: 100.1 - 60.1, unconvertedPreviewCurrencies: [], includesPreview: true, incomplete: false,
+    });
+    assert.equal(convertedNet(await registry(() => HIDDEN)["financial.overview.current"]([])).twd, 100.1, "hidden loans count toward nothing");
+
+    await write("2026-10-06T03:00:00.000Z", [loan("1111", "40.10")]);
+    assert.equal(convertedNet(await shown["financial.overview.current"]([])).twd, 100.1 - 40.1, "the closed loan leaves the total");
+  });
+});
+
 test("preview transactions stay out of Spending reads", async () => {
   await withLedger(async ({ registry, writePreview }) => {
     const shown = registry(() => VISIBLE);
@@ -481,6 +511,51 @@ test("live liabilities republish on a preview credit collection and on a visibil
       visibility = HIDDEN;
       await shown["financial.preview.visibilityChanged"]([]);
       await until(() => !published.at(-1)!.accounts.some((account) => account.preview));
+    } finally {
+      await stop();
+    }
+  }, database as unknown as PGlite);
+});
+
+test("live liabilities republish on a preview loan collection, including one that only closes a loan", async () => {
+  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
+  await withLedger(async ({ registry, preview }) => {
+    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
+    const views = createPGliteFinancialLiveViews(database, shown);
+    const published: LiabilitiesPageDto[] = [];
+    const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
+    const until = async (predicate: () => boolean) => {
+      const deadline = Date.now() + 5_000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error("live liabilities did not republish");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const loans = (collectedAt: string, held: boolean) => preview.write({
+      sourceId: "synthetic",
+      institution: "bank-017",
+      product: "loan",
+      collection: {
+        collectedAt,
+        completeness: "complete",
+        loans: held ? [{
+          sourceAccountKey: "home", displayLabel: "Home loan 4567", currency: "TWD", category: "housing",
+          outstandingBalance: { amount: "6000000", observedAt: { at: collectedAt, source: "reported" } },
+          originalAmount: "8000000", interestRate: null, paymentAmount: null, nextPaymentDate: null,
+          installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
+        }] : [],
+      },
+    });
+    const showsLoan = () => published.at(-1)!.accounts.some((account) => account.preview && account.amountLines.length > 0);
+    try {
+      await until(() => published.length >= 1);
+      assert.equal(showsLoan(), false);
+      await loans("2026-10-05T03:00:00.000Z", true);
+      await until(showsLoan);
+      await loans("2026-10-06T03:00:00.000Z", false);
+      await until(() => !showsLoan());
     } finally {
       await stop();
     }

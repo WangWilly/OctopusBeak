@@ -12,7 +12,8 @@ import {
   newnewbankSid,
   type NewnewbankEnvelope,
 } from "./newnewbank-source.ts";
-import { depositCollection, fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
+import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
+import { depositCollection, fakeHttpOpener, jsonResponse, productCollections, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
 import { withPreviewDeviceIdentities } from "./registry.ts";
 
 // Synthetic App responses shaped like all-set-tw's ubot fixtures; no live sample exists.
@@ -53,6 +54,14 @@ const DETAILS = `{"WarnCode":"0000","Details":[
   ${row({ TraDate: "1151001", TraType: "2", Expenditure: 0, Income: 1, Balance: 1, TraSum: "利息" })},
   ${row({ TraDate: "1151001", TraType: "2", Expenditure: 0, Income: 1, Balance: 1, TraSum: "利息" })}]}`;
 
+// Derived, unverified: LoanList fields follow all-set-tw's parseUbotLoanData. No live NNBL010401 sample exists, and
+// IntPay is assumed to be the period's principal and interest due (應繳本息), though its name suggests interest only.
+const loan = (fields: Readonly<Record<string, string | number>> = {}) => ({
+  CreditNo: "77-1234567", AmtPay: 352000, Rate9: "2.345", IntPay: 6123, ODpay: 40, DamPay: 7, PayDay2: "15",
+  LoanDate: "1120315", LoanExpDate: "99999999", BranchCH: "營業部", Currency: "TWD", ...fields,
+});
+const loanList = (...entries: readonly object[]) => JSON.stringify({ LoanList: entries });
+
 type Routes = Partial<Record<string, FakeRoute>>;
 
 const ROUTES: Readonly<Record<string, FakeRoute>> = {
@@ -61,6 +70,8 @@ const ROUTES: Readonly<Record<string, FakeRoute>> = {
   NNBI010101: () => reply("NS161", { FlagList: { MissingUserFlag: "0", KycFlag: "N" } }, { ssid: "synthetic-ssid" }, "未綁定裝置"),
   NNBN020101: () => reply("0000", '{"Account":"0000-5678","AccountBal":50000.50,"AvailableBal":49500}', { date: "Thu, 15 Oct 2026 01:59:00 GMT" }),
   NNBN010201: () => reply("0000", DETAILS),
+  NNBL010401: () => reply("0000", loanList(loan(), loan({ CreditNo: "88-7654321", AmtPay: "1,200.5", IntPay: "", Rate9: "", LoanDate: "00000000", LoanExpDate: "2030/01/01", Currency: "NTD" })),
+    { date: "Thu, 15 Oct 2026 01:58:00 GMT" }),
   NNBI010103: () => reply("0000"),
 };
 
@@ -71,9 +82,9 @@ function opener(routes: Routes = {}) {
 
 const api = (request: PreviewHttpRequest) => new URL(request.url).pathname.replace("/NNBank/svc/", "");
 
-async function run(routes: Routes = {}, input: Readonly<Record<string, string>> = credentials) {
+async function run(routes: Routes = {}, input: Readonly<Record<string, string>> = credentials, products: readonly PreviewProduct[] = ["deposit"]) {
   const http = opener(routes);
-  const result = await runPreviewSource(createNewnewbankSource({ http }), input);
+  const result = await runPreviewSource(createNewnewbankSource({ http }), input, undefined, products);
   return { ...result, requests: http.requests, apis: http.requests.map(api) };
 }
 
@@ -214,4 +225,56 @@ test("New New Bank dates accept Gregorian and ROC forms", () => {
   const envelope = (code: string, message = ""): NewnewbankEnvelope => ({ status: 200, code, message, body: {}, date: null });
   assert.equal(newnewbankLoginVerdict(envelope("NS164")), "signed-in");
   assert.equal(newnewbankLoginVerdict(envelope("NS300", "使用者代號不存在")), "credentials-rejected");
+});
+
+const outcomes = (output: { products: readonly { typeId: string; status: string; errorCode?: string }[] } | null) =>
+  output?.products.map(({ typeId, status, errorCode }) => errorCode ? `${typeId}:${status}:${errorCode}` : `${typeId}:${status}`);
+
+test("New New Bank loans come from NNBL010401 as a complete list, with IntPay as the payment amount", async () => {
+  const result = await run({}, credentials, ["deposit", "loan"]);
+  assert.deepEqual(outcomes(result.output), ["deposit:success", "loan:success"]);
+  assert.deepEqual(result.apis, ["NNBCM000007", "NNBCM000011", "NNBI010101", "NNBN020101", "NNBN010201", "NNBL010401", "NNBI010103"]);
+  assert.deepEqual(JSON.parse(result.requests[5]!.body!), {});
+  const asOf = { at: "2026-10-15T01:58:00.000Z", source: "reported" };
+  const terms = { originalAmount: null, nextPaymentDate: null, installmentsPaid: null, installmentsTotal: null, category: null };
+  assert.deepEqual(productCollections(result.writes, "loan"), [{
+    collectedAt: "2026-10-15T02:00:00.000Z",
+    completeness: "complete",
+    loans: [
+      { ...terms, sourceAccountKey: "771234567", displayLabel: "New New Bank 貸款 4567", currency: "TWD",
+        outstandingBalance: { amount: "352000", observedAt: asOf }, interestRate: "2.345", paymentAmount: "6123",
+        openedOn: "2023-03-15", maturityDate: null },
+      { ...terms, sourceAccountKey: "887654321", displayLabel: "New New Bank 貸款 4321", currency: "TWD",
+        outstandingBalance: { amount: "1200.5", observedAt: asOf }, interestRate: null, paymentAmount: null,
+        openedOn: null, maturityDate: "2030-01-01" },
+    ],
+  }], "99999999 and 00000000 are no date, PayDay2 derives no next payment date, and ODpay and DamPay are not added");
+});
+
+test("NSLOND is a complete empty loan list, and a loan-only run reads no deposit", async () => {
+  const result = await run({ NNBL010401: () => reply("NSLOND", {}, {}, "查無貸款資料") }, credentials, ["loan"]);
+  assert.deepEqual(outcomes(result.output), ["deposit:skipped", "loan:not_held"]);
+  assert.deepEqual(productCollections(result.writes, "loan"), [{ collectedAt: "2026-10-15T02:00:00.000Z", completeness: "complete", loans: [] }]);
+  assert.ok(!result.apis.includes("NNBN020101"));
+  assert.equal(result.apis.at(-1), "NNBI010103");
+});
+
+test("a New New Bank loan failure fails only the loan product and keeps the deposit", async () => {
+  const cases: Readonly<Record<string, readonly [FakeRoute, string]>> = {
+    "another code": [() => reply("NS999", {}, {}, "系統忙線"), "source-validation-failed"],
+    "a 查無 message without NSLOND": [() => reply("NS101", {}, {}, "查無資料"), "source-validation-failed"],
+    "no LoanList": [() => reply("0000", {}), "source-validation-failed"],
+    MFOB: [() => reply("0000", { WarnCode: "MFOB", LoanList: [loan()] }), "source-collection-failed"],
+    "no currency": [() => reply("0000", loanList(loan({ Currency: "" }))), "source-validation-failed"],
+    "a masked CreditNo": [() => reply("0000", loanList(loan({ CreditNo: "77****567" }))), "source-validation-failed"],
+    "a malformed AmtPay": [() => reply("0000", loanList(loan({ AmtPay: "1.0.0" }))), "source-validation-failed"],
+    "a malformed LoanDate": [() => reply("0000", loanList(loan({ LoanDate: "1121345" }))), "source-validation-failed"],
+  };
+  for (const [name, [route, code]] of Object.entries(cases)) {
+    const result = await run({ NNBL010401: route }, credentials, ["deposit", "loan"]);
+    assert.deepEqual(outcomes(result.output), ["deposit:success", `loan:failed:${code}`], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no loan list`);
+  }
+  const lost = await run({ NNBL010401: () => reply("NS888", {}, {}, "連線逾時") }, credentials, ["deposit", "loan"]);
+  assert.equal(lost.errorCode, "authentication-failed", "a lost session still ends the run");
 });

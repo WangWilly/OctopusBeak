@@ -131,7 +131,7 @@ export type AccountRowDto = {
   preview?: PreviewAccountDto;
 };
 
-export type PreviewProductDto = "deposit" | "credit_card" | "time_deposit";
+export type PreviewProductDto = "deposit" | "credit_card" | "time_deposit" | "foreign_currency" | "loan";
 
 export type PreviewAccountDto = Readonly<{
   sourceId: string;
@@ -143,6 +143,23 @@ export type PreviewAccountDto = Readonly<{
   timeDeposit?: PreviewTimeDepositDto;
   /** Present for a `credit_card` row. */
   credit?: PreviewCreditDto;
+  /** Present for a `loan` row; `closedAt` set means the loan shows as closed and counts toward nothing. */
+  loan?: PreviewLoanDto;
+}>;
+
+/** A loan's last reported terms; `null` is a term the source did not provide. */
+export type PreviewLoanDto = Readonly<{
+  currency: string;
+  category: "housing" | "personal" | "other" | null;
+  originalAmount: string | null;
+  interestRate: string | null;
+  paymentAmount: string | null;
+  nextPaymentDate: string | null;
+  installmentsPaid: number | null;
+  installmentsTotal: number | null;
+  openedOn: string | null;
+  maturityDate: string | null;
+  closedAt: string | null;
 }>;
 
 export type PreviewTimeDepositDto = Readonly<{

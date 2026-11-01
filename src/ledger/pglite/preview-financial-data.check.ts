@@ -257,3 +257,40 @@ test("a time-deposit list that is not declared complete cannot be written and cl
       { accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 1 }, "a complete empty list closes every deposit");
   });
 });
+
+const FOREIGN: PreviewVisibility = { visible: [{ sourceId: "synthetic-preview", product: "foreign_currency" }] };
+
+const foreignWrite = (currency: string): PreviewWrite => ({
+  ...write,
+  product: "foreign_currency",
+  collection: {
+    collectedAt: "2026-10-15T01:00:00.000Z",
+    accounts: [{
+      sourceAccountKey: `fx-${currency}`,
+      displayLabel: `${currency} savings`,
+      currency,
+      type: "depository",
+      balances: [{ kind: "current", amount: "3250.75", currency, observedAt: { at: "2026-10-15T01:00:00.000Z", source: "reported" } }],
+      transactions: [{ sourceRowKey: "fx-row", amount: "1.25", currency, direction: "inflow",
+        postedAt: { precision: "day", value: "2026-10-14" }, description: null }],
+    }],
+  },
+});
+
+test("a foreign currency account keeps its source currency, reads only as its own product, and refuses TWD", async () => {
+  await withPreviewStore(async ({ store, preview }) => {
+    assert.deepEqual(await preview.write(foreignWrite("USD")), { accounts: 1, balances: 1, transactions: 1, statements: 0, closedAccounts: 0 });
+    const [account] = await preview.accounts(FOREIGN);
+    assert.deepEqual([account!.product, account!.currency, account!.latestBalance!.amount], ["foreign_currency", "USD", "3250.75"]);
+    assert.deepEqual((await preview.transactions(FOREIGN, account!.previewAccountId)).map((row) => [row.amount, row.currency]), [["1.25", "USD"]]);
+    assert.deepEqual(await preview.accounts(visible), [], "the deposit product does not read it");
+
+    await assert.rejects(preview.write(foreignWrite("TWD")), "a TWD account is never a foreign currency account");
+    assert.equal((await preview.accounts(FOREIGN)).length, 1, "the refused write left nothing behind");
+    await assert.rejects(store.query(
+      `INSERT INTO preview_accounts(preview_account_id, source_id, institution_key, product, source_account_key,
+         display_label, currency, account_type, first_collected_at, last_collected_at)
+       VALUES ('b', 's', 'bank-017', 'foreign_currency', 'k', 'l', 'TWD', 'depository', 't', 't')`,
+    ), "the table itself refuses a TWD foreign currency account");
+  });
+});

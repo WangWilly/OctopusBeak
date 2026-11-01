@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { constants, createHash, createHmac, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import test from "node:test";
-import type { PreviewCreditCollection, PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewCreditCollection, PreviewProduct, PreviewTimeDepositCollection, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, type FakeRoute } from "./preview-source-harness.ts";
+import { withPreviewStore } from "./preview-store-harness.ts";
 import { createSkbankSource, skbankDate, skbankDeviceId } from "./skbank-source.ts";
+import { PREVIEW_SOURCE_INSTITUTIONS } from "./source-id.ts";
 
 const credentials = {
   PREVIEW_SKBANK_DEPOSIT_ID_NUMBER: "A000000001",
@@ -86,11 +88,18 @@ function creditCollection(write: PreviewWrite): PreviewCreditCollection {
   return write.collection;
 }
 
+const timeDeposits = (writes: readonly PreviewWrite[]): PreviewTimeDepositCollection[] =>
+  writes.flatMap((write) => write.product === "time_deposit" ? [write.collection] : []);
+
 test("an SKBank run writes TWD, time-deposit, and foreign accounts with exact amounts and source currencies", async () => {
-  const { receipt, writes, observations, http, error } = await depositOnly();
+  const { receipt, writes, observations, http, error } = await run({}, ["deposit", "time_deposit"]);
   assert.equal(error, null);
   assert.deepEqual(receipt, { accounts: 3, balances: 4, transactions: 3, statements: 0, closedAccounts: 0 });
-  const [demand, term, foreign] = depositCollection(writes[0]!).accounts;
+  assert.deepEqual(writes.map((write) => write.product), ["deposit", "time_deposit"]);
+  const accounts = depositCollection(writes[0]!).accounts;
+  assert.deepEqual(accounts.map((account) => account.sourceAccountKey), ["SK-7788:TWD", "SK-5566:USD"], "the time deposit is not a deposit account");
+  const [demand, foreign] = accounts;
+  const [term] = timeDeposits(writes)[0]!.deposits;
   const reported = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
   assert.deepEqual(demand!.balances, [
     { kind: "current", amount: "1234.50", currency: "TWD", observedAt: reported },
@@ -104,7 +113,9 @@ test("an SKBank run writes TWD, time-deposit, and foreign accounts with exact am
   ], "SKBank rows carry no direction field, so the signed amount is kept and the direction stays unknown");
   assert.equal(new Set(demand!.transactions.map((entry) => entry.sourceRowKey)).size, 3, "identical rows keep distinct keys by occurrence");
   assert.deepEqual(term!.balances.map(({ amount }) => amount), ["50000"], "a time deposit reports TimeDepositBalance");
-  assert.equal(term!.transactions.length, 0);
+  assert.deepEqual([term!.sourceAccountKey, term!.currency, term!.principal, term!.interestRate, term!.maturityDate], ["SK-9900:TWD", "TWD", null, null, null]);
+  assert.equal(timeDeposits(writes)[0]!.completeness, "complete");
+  assert.equal(http.requests.filter((request) => request.url.includes("GetAccountSummary")).length, 1, "both products share one summary read");
   assert.deepEqual(foreign!.balances.map(({ amount, currency, observedAt }) => ({ amount, currency, source: observedAt.source })), [
     { amount: "10.25", currency: "USD", source: "collection-time" },
   ]);
@@ -200,7 +211,7 @@ test("SKBank dates accept the ROC year and unpadded parts", () => {
 test("SKBank credit cards are collected in the same sign-in, with limit-minus-available used credit and the current statement", async () => {
   const { writes, output, observations, http, error } = await run();
   assert.equal(error, null);
-  assert.deepEqual(output!.products.map(({ typeId, status }) => [typeId, status]), [["deposit", "success"], ["credit_card", "success"]]);
+  assert.deepEqual(output!.products.map(({ typeId, status }) => [typeId, status]), [["deposit", "success"], ["time_deposit", "skipped"], ["credit_card", "success"]]);
   assert.equal(http.requests.filter((request) => request.url.endsWith("/Login")).length, 1, "both products share one sign-in");
   assert.deepEqual(writes.map((write) => write.product), ["deposit", "credit_card"]);
   assert.deepEqual(creditCollection(writes[1]!), {
@@ -253,7 +264,7 @@ test("an overpaid card keeps its negative used credit, and a zero RemainingDue m
 
 test("「本期帳單無欠款」 means no statement debt, not no card", async () => {
   const { writes, output } = await cardsOnly({ "GET /api/v1/CreditCard/GetRemainingDue": ok(`{"RemainingDue":"本期帳單無欠款"}`) });
-  assert.deepEqual(output!.products.map(({ status }) => status), ["skipped", "success"]);
+  assert.deepEqual(output!.products.map(({ status }) => status), ["skipped", "skipped", "success"]);
   const [account] = creditCollection(writes[0]!).accounts;
   assert.equal(account!.balances[0]!.amount, "12345.50", "used credit still comes from the limit and available credit");
   assert.deepEqual([account!.statements[0]!.noPaymentNeeded, account!.statements[0]!.paid], [true, null]);
@@ -261,12 +272,12 @@ test("「本期帳單無欠款」 means no statement debt, not no card", async (
 
 test("not_held comes only from HasValidCreditCard false", async () => {
   const none = await run({ "GET /api/v1/Account/GetAssetsOverview": ok('{"HasValidCreditCard":false}') });
-  assert.deepEqual(none.output!.products.map(({ typeId, status }) => [typeId, status]), [["deposit", "success"], ["credit_card", "not_held"]]);
+  assert.deepEqual(none.output!.products.map(({ typeId, status }) => [typeId, status]), [["deposit", "success"], ["time_deposit", "skipped"], ["credit_card", "not_held"]]);
   assert.deepEqual(none.writes.map((write) => write.product), ["deposit"], "no credit account and no zero balance are written");
   assert.ok(!none.http.requests.some((request) => request.url.includes("/CreditCard/")), "no card endpoint is queried");
   for (const flag of ["{}", '{"HasValidCreditCard":"false"}', "null"]) {
     const unknown = await run({ "GET /api/v1/Account/GetAssetsOverview": ok(flag) });
-    assert.deepEqual(unknown.output!.products.map(({ status }) => status), ["success", "failed"], `${flag} is not a no-card signal`);
+    assert.deepEqual(unknown.output!.products.map(({ status }) => status), ["success", "skipped", "failed"], `${flag} is not a no-card signal`);
   }
 });
 
@@ -288,6 +299,7 @@ test("a card failure fails only the card product, before its write", async () =>
     assert.equal(result.error, null, name);
     assert.deepEqual(result.output!.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
       ["deposit", "success", undefined],
+      ["time_deposit", "skipped", undefined],
       ["credit_card", "failed", "source-validation-failed"],
     ], name);
     assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no credit rows and keeps the deposit write`);
@@ -304,6 +316,7 @@ test("a deposit failure leaves the card product's write in place", async () => {
   const result = await run({ "GET /api/v1/Account/FetchTransactionDetails": () => jsonResponse(page([row("2026/10/04", "1")], 1, 5)) });
   assert.deepEqual(result.output!.products.map(({ typeId, status, errorCode }) => [typeId, status, errorCode]), [
     ["deposit", "failed", "source-collection-failed"],
+    ["time_deposit", "skipped", undefined],
     ["credit_card", "success", undefined],
   ]);
   assert.deepEqual(result.writes.map((write) => write.product), ["credit_card"]);
@@ -317,7 +330,7 @@ test("a statement is written only with a dated due date and a matching history m
   };
   for (const [name, overrides] of Object.entries(cases)) {
     const { writes, output } = await cardsOnly(overrides);
-    assert.equal(output!.products[1]!.status, "success", name);
+    assert.equal(output!.products[2]!.status, "success", name);
     const [account] = creditCollection(writes[0]!).accounts;
     assert.deepEqual(account!.statements, [], `${name} writes no statement`);
     assert.equal(account!.balances.length, 1, `${name} still writes the used credit`);
@@ -328,3 +341,78 @@ test("a statement is written only with a dated due date and a matching history m
   assert.deepEqual([statement!.cycleStart, statement!.closingDate], ["2026-10-01", "2026-10-31"], "a day-31 closing clamps to month end");
 });
 
+
+const fxTimeDeposit = '{"AccountNumber":"SK-3344","ProductCode":"F500001","Details":[{"CurrencyCode":"USD","DisplayGroup":["TimeDeposit"],"TimeDepositBalance":"2500.00"}]}';
+const fxWith = (...items: string[]) => ok(`{"AccountList":[{"AccountNumber":"SK-5566","Details":[{"CurrencyCode":"usd","AccountBalance":"10.25"}]},${items.join(",")}]}`);
+const outcomes = (result: Awaited<ReturnType<typeof run>>) => result.output?.products.map(({ typeId, status }) => [typeId, status]);
+
+test("a foreign time deposit keeps its currency and is not queried for transactions", async () => {
+  const { writes, http } = await run({ "GET /api/v1/Account/GetForeignCurrencyAccountSummary": fxWith(fxTimeDeposit) }, ["deposit", "time_deposit"]);
+  assert.deepEqual(timeDeposits(writes)[0]!.deposits.map(({ sourceAccountKey, displayLabel, currency, balances }) =>
+    ({ sourceAccountKey, displayLabel, currency, amounts: balances.map((balance) => [balance.amount, balance.currency]) })), [
+    { sourceAccountKey: "SK-9900:TWD", displayLabel: "新光銀行 存款 9900", currency: "TWD", amounts: [["50000", "TWD"]] },
+    { sourceAccountKey: "SK-3344:USD", displayLabel: "新光銀行 存款 3344 (USD)", currency: "USD", amounts: [["2500.00", "USD"]] },
+  ]);
+  assert.deepEqual(depositCollection(writes[0]!).accounts.map((account) => account.sourceAccountKey), ["SK-7788:TWD", "SK-5566:USD"]);
+  assert.ok(!http.requests.some((request) => new URL(request.url).searchParams.get("AccountNumber") === "SK-3344"));
+});
+
+test("summaries that cannot show the time-deposit list complete fail only time_deposit, before its write", async () => {
+  const twdWithForeignTerm = ok(`{"AccountList":[
+    {"AccountNumber":"SK-7788","Details":[{"CurrencyCode":"TWD","AccountBalance":1}]},
+    ${fxTimeDeposit}]}`);
+  const cases: Record<string, readonly [Record<string, FakeRoute>, RegExp, boolean]> = {
+    "a foreign time deposit the TWD summary lists but the foreign summary lacks": [{ "GET /api/v1/Account/GetAccountSummary": twdWithForeignTerm }, /incomplete-data.*missing from the other summary/u, true],
+    "the same, with a foreign summary without AccountList": [{
+      "GET /api/v1/Account/GetAccountSummary": twdWithForeignTerm,
+      "GET /api/v1/Account/GetForeignCurrencyAccountSummary": ok("{}"),
+    }, /incomplete-data/u, true],
+    "a failed TWD summary": [{ "GET /api/v1/Account/GetAccountSummary": () => jsonResponse(envelope("null", "E999", "系統忙碌")) }, /GetAccountSummary ReturnCode E999/u, false],
+    "a failed foreign summary": [{ "GET /api/v1/Account/GetForeignCurrencyAccountSummary": () => jsonResponse(envelope("null", "E500", "系統忙碌")) }, /GetForeignCurrencyAccountSummary ReturnCode E500/u, false],
+  };
+  for (const [name, [overrides, reason, depositsWritten]] of Object.entries(cases)) {
+    const result = await run(overrides, ["deposit", "time_deposit"]);
+    if (depositsWritten) assert.deepEqual(outcomes(result), [["deposit", "success"], ["time_deposit", "failed"], ["credit_card", "skipped"]], name);
+    else assert.equal(result.output, null, `${name} fails both products, so the run fails`);
+    assert.ok(!result.writes.some((write) => write.product === "time_deposit"), `${name} writes no time-deposit list`);
+    const only = await run(overrides, ["time_deposit"]);
+    assert.match(String((only.error as Error).message), reason, name);
+  }
+  const matched = await run({
+    "GET /api/v1/Account/GetAccountSummary": twdWithForeignTerm,
+    "GET /api/v1/Account/GetForeignCurrencyAccountSummary": fxWith(fxTimeDeposit),
+  }, ["time_deposit"]);
+  assert.deepEqual(timeDeposits(matched.writes)[0]!.deposits.map((deposit) => deposit.sourceAccountKey), ["SK-3344:USD"],
+    "a foreign time deposit both summaries list is written once, from the foreign summary");
+  const none = await run({ "GET /api/v1/Account/GetAccountSummary": ok('{"AccountList":[]}') }, ["time_deposit"]);
+  assert.deepEqual(outcomes(none), [["deposit", "skipped"], ["time_deposit", "not_held"], ["credit_card", "skipped"]]);
+  assert.deepEqual(timeDeposits(none.writes), [{ collectedAt: "2026-10-15T02:00:00.000Z", completeness: "complete", deposits: [] }]);
+});
+
+test("a time deposit the deposit product wrote moves to time_deposit in place, and leaves a complete list closed", async () => {
+  await withPreviewStore(async (port) => {
+    await port.write({
+      sourceId: "skbank-deposit",
+      institution: PREVIEW_SOURCE_INSTITUTIONS["skbank-deposit"],
+      product: "deposit",
+      collection: {
+        collectedAt: "2026-10-01T02:00:00.000Z",
+        accounts: [{
+          sourceAccountKey: "SK-9900:TWD", displayLabel: "新光銀行 存款 9900", currency: "TWD", type: "depository", transactions: [],
+          balances: [{ kind: "current", amount: "50000", currency: "TWD", observedAt: { at: "2026-10-01T02:00:00.000Z", source: "collection-time" } }],
+        }],
+      },
+    });
+    const DEPOSITS = { visible: [{ sourceId: "skbank-deposit", product: "deposit" as const }] };
+    const TIME_DEPOSITS = { visible: [{ sourceId: "skbank-deposit", product: "time_deposit" as const }] };
+    const [old] = await port.accounts(DEPOSITS);
+    for (const write of (await run({}, ["time_deposit"])).writes) await port.write(write);
+    assert.deepEqual(await port.accounts(DEPOSITS), [], "no deposit row is left for the time deposit");
+    const [moved] = await port.accounts(TIME_DEPOSITS);
+    assert.equal(moved!.previewAccountId, old!.previewAccountId);
+    assert.equal(moved!.timeDeposit?.closedAt, null);
+    const matured = ok('{"AccountList":[{"AccountNumber":"SK-7788","Details":[{"CurrencyCode":"TWD","AccountBalance":1}]}]}');
+    for (const write of (await run({ "GET /api/v1/Account/GetAccountSummary": matured }, ["time_deposit"])).writes) await port.write(write);
+    assert.equal((await port.accounts(TIME_DEPOSITS))[0]!.timeDeposit?.closedAt, "2026-10-15T02:00:00.000Z", "a time deposit absent from a complete list is closed");
+  });
+});

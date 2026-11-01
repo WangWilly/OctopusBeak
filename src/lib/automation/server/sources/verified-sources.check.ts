@@ -112,6 +112,7 @@ test("workflow input is derived from the sign-in fields and selections", () => {
     managedIdentitySecret: "secret",
     credentials: { fubon_user_id: "", fubon_account: "", fubon_password: "" },
     statementTypes: ["loan"],
+    attachedPreviewProducts: [],
   });
   assert.deepEqual(appWorkflowRegistration("sync-tdcc")?.inputFromEnvironment({ LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES: "fund" }), { statementTypes: ["fund"] });
   assert.deepEqual(appWorkflowRegistration("sync-maicoin")?.inputFromEnvironment({ MAX_SUB_ACCOUNT: " " }), {

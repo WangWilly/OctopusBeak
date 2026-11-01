@@ -2,6 +2,8 @@ import type { ProductRunResult } from "../automation/workflow-run-result.ts";
 import { PNG } from "pngjs";
 import type {
   PreviewDepositCollection,
+  PreviewProduct,
+  PreviewProductCollection,
   PreviewWrite,
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
@@ -84,10 +86,16 @@ export function depositCollection(write: PreviewWrite): PreviewDepositCollection
   return write.collection;
 }
 
+/** The collections of one product, in write order, such as every `loan` collection a run wrote. */
+export function productCollections<P extends PreviewProduct>(writes: readonly PreviewWrite[], product: P): PreviewProductCollection[P][] {
+  return writes.flatMap((write) => write.product === product ? [write.collection as PreviewProductCollection[P]] : []);
+}
+
 export function previewReceipt(write: PreviewWrite): PreviewWriteReceipt {
   const sum = <T>(items: readonly T[], count: (item: T) => number) => items.reduce((total, item) => total + count(item), 0);
   switch (write.product) {
-    case "deposit": return {
+    case "deposit":
+    case "foreign_currency": return {
       accounts: write.collection.accounts.length,
       balances: sum(write.collection.accounts, (account) => account.balances.length),
       transactions: sum(write.collection.accounts, (account) => account.transactions.length),
@@ -104,6 +112,13 @@ export function previewReceipt(write: PreviewWrite): PreviewWriteReceipt {
     case "time_deposit": return {
       accounts: write.collection.deposits.length,
       balances: sum(write.collection.deposits, (deposit) => deposit.balances.length),
+      transactions: 0,
+      statements: 0,
+      closedAccounts: 0,
+    };
+    case "loan": return {
+      accounts: write.collection.loans.length,
+      balances: write.collection.loans.length,
       transactions: 0,
       statements: 0,
       closedAccounts: 0,

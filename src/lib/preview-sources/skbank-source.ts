@@ -6,6 +6,8 @@ import type {
   PreviewDepositCollection,
   PreviewLocalDate,
   PreviewStatement,
+  PreviewTimeDeposit,
+  PreviewTimeDepositCollection,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import type { PreviewProductAbsence } from "./product-collection.ts";
@@ -174,21 +176,31 @@ type DepositAccount = Readonly<{
   account: PreviewAccount;
 }>;
 
-function depositAccounts(envelope: Envelope, field: string, mode: "TWD" | "FX", collectedAt: string): DepositAccount[] {
+type Summary = Readonly<{
+  accounts: readonly DepositAccount[];
+  /** Keys of time deposits this summary lists in the other summary's currencies. */
+  otherModeTimeDeposits: readonly string[];
+}>;
+
+function depositAccounts(envelope: Envelope, field: string, mode: "TWD" | "FX", collectedAt: string): Summary {
   const data = record(envelope.data, `${field}.Data`);
   // all-set-tw treats a foreign summary without AccountList as "no foreign accounts".
-  if (mode === "FX" && data.AccountList === undefined) return [];
+  if (mode === "FX" && data.AccountList === undefined) return { accounts: [], otherModeTimeDeposits: [] };
   const asOf = observedAt(envelope.date, collectedAt);
   const accounts: DepositAccount[] = [];
+  const otherModeTimeDeposits: string[] = [];
   for (const [index, item] of records(data.AccountList, `${field}.AccountList`).entries()) {
     const itemField = `${field}.AccountList[${index}]`;
     const accountNumber = text(item.AccountNumber, `${itemField}.AccountNumber`);
     for (const [detailIndex, detail] of records(item.Details, `${itemField}.Details`).entries()) {
       const detailField = `${itemField}.Details[${detailIndex}]`;
       const currency = currencyCode(detail.CurrencyCode, `${detailField}.CurrencyCode`);
-      if ((mode === "TWD") !== (currency === "TWD")) continue;
       const groups = Array.isArray(detail.DisplayGroup) ? detail.DisplayGroup : [];
       const timeDeposit = groups.includes("TimeDeposit") || item.ProductCode === "F500001";
+      if ((mode === "TWD") !== (currency === "TWD")) {
+        if (timeDeposit) otherModeTimeDeposits.push(`${accountNumber}:${currency}`);
+        continue;
+      }
       const balance = timeDeposit ? detail.TimeDepositBalance : detail.AccountBalance;
       const last4 = (optionalText(detail.AccountNumberDisplay) ?? accountNumber).replace(/\D/gu, "").slice(-4);
       const name = optionalText(item.Nickname) ?? optionalText(item.ProductFullName) ?? "存款";
@@ -215,7 +227,7 @@ function depositAccounts(envelope: Envelope, field: string, mode: "TWD" | "FX", 
       });
     }
   }
-  return accounts;
+  return { accounts, otherModeTimeDeposits };
 }
 
 /** SKBank dates may use the ROC year (115/10/03) and unpadded parts, which `localDate` does not read. */
@@ -295,24 +307,56 @@ async function transactionPages(api: Api, deposit: DepositAccount, range: Readon
   return transactionsFrom(details, `${path}.Details`, deposit.currency);
 }
 
-async function collectDeposits(api: Api, collectedAt: string): Promise<PreviewDepositCollection> {
-  const deposits = [
-    ...depositAccounts(await api.get(PATH.accountSummary), "GetAccountSummary", "TWD", collectedAt),
-    ...depositAccounts(await api.get(PATH.foreignAccountSummary), "GetForeignCurrencyAccountSummary", "FX", collectedAt),
-  ];
+type Summaries = Readonly<{
+  deposits: readonly DepositAccount[];
+  /** Why the summaries cannot show the time-deposit list complete, or null. */
+  timeDepositGap: string | null;
+}>;
+
+async function readSummaries(api: Api, collectedAt: string): Promise<Summaries> {
+  const twd = depositAccounts(await api.get(PATH.accountSummary), "GetAccountSummary", "TWD", collectedAt);
+  const fx = depositAccounts(await api.get(PATH.foreignAccountSummary), "GetForeignCurrencyAccountSummary", "FX", collectedAt);
+  const deposits = [...twd.accounts, ...fx.accounts];
   const keys = new Set<string>();
   for (const deposit of deposits) {
     if (keys.has(deposit.account.sourceAccountKey)) return fail("unexpected-response", "an account and currency repeat in the summary");
     keys.add(deposit.account.sourceAccountKey);
   }
+  const unmatched = [...twd.otherModeTimeDeposits, ...fx.otherModeTimeDeposits].some((key) => !keys.has(key));
+  return {
+    deposits,
+    timeDepositGap: unmatched ? "a time deposit one summary lists in the other's currencies is missing from the other summary" : null,
+  };
+}
+
+async function collectDeposits(api: Api, summaries: Summaries, collectedAt: string): Promise<PreviewDepositCollection> {
   const range = taipeiMonthWindow(collectedAt, MONTHS);
   const accounts: PreviewAccount[] = [];
-  for (const deposit of deposits) {
-    accounts.push(deposit.timeDeposit
-      ? deposit.account
-      : { ...deposit.account, transactions: await transactionPages(api, deposit, range) });
+  for (const deposit of summaries.deposits) {
+    if (!deposit.timeDeposit) accounts.push({ ...deposit.account, transactions: await transactionPages(api, deposit, range) });
   }
   return { collectedAt, accounts };
+}
+
+/**
+ * GetAccountSummary (TWD) and GetForeignCurrencyAccountSummary (non-TWD) are
+ * unpaged and together list every account, so their time-deposit details are
+ * the complete time-deposit list. A failed summary fails this product, and a
+ * time deposit one summary lists in the other's currencies must appear there.
+ */
+function collectTimeDeposits(summaries: Summaries, collectedAt: string): PreviewTimeDepositCollection {
+  if (summaries.timeDepositGap !== null) return fail("incomplete-data", summaries.timeDepositGap);
+  const deposits = summaries.deposits.filter((deposit) => deposit.timeDeposit).map(({ account }): PreviewTimeDeposit => ({
+    // The deposit product wrote time deposits under this key, so the same row moves to time_deposit.
+    sourceAccountKey: account.sourceAccountKey,
+    displayLabel: account.displayLabel,
+    currency: account.currency,
+    balances: account.balances,
+    principal: null,
+    interestRate: null,
+    maturityDate: null,
+  }));
+  return { collectedAt, completeness: "complete", deposits };
 }
 
 const isBlank = (value: unknown) => value === undefined || value === null || (typeof value === "string" && value.trim() === "");
@@ -448,7 +492,7 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
   return {
     id: "skbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["skbank-deposit"],
-    products: ["deposit", "credit_card"],
+    products: ["deposit", "time_deposit", "credit_card"],
     displayName: { en: "Shin Kong Bank deposits and credit cards (preview)", "zh-TW": "新光銀行存款與信用卡（預覽）" },
     searchAliases: ["Shin Kong Bank", "SKBank", "新光", "新光銀行"],
     credentialFields: [
@@ -493,8 +537,11 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
           await api.get(PATH.userInformation);
           await api.get(PATH.megaMenu);
           const collectedAt = context.now();
+          let read: Promise<Summaries> | null = null;
+          const summaries = () => read ??= readSummaries(api, collectedAt);
           return await context.preview.collect({
-            deposit: () => collectDeposits(api, collectedAt),
+            deposit: async () => collectDeposits(api, await summaries(), collectedAt),
+            time_deposit: async () => collectTimeDeposits(await summaries(), collectedAt),
             credit_card: () => collectCreditCards(api, collectedAt),
           });
         } finally {

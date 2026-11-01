@@ -12,6 +12,7 @@ import { indexExchangeRates, rateOnOrBefore } from "../../lib/shared-money/excha
 import type { ExchangeRateRecord } from "../exchange-rates.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
 import type { PreviewCreditBalanceHistory } from "./preview-credit.ts";
+import type { PreviewLoanAccountView, PreviewLoanBalanceHistory } from "./preview-loan.ts";
 import type {
   PreviewAccountView,
   PreviewBalanceHistory,
@@ -27,7 +28,7 @@ export type PreviewBalanceSeries = Readonly<{
   accountId: string;
   label: string;
   side: "asset" | "liability";
-  /** From this date on the account counts toward nothing (Preview Time Deposit Closure). */
+  /** From this date on the account counts toward nothing (Preview Time Deposit Closure, or a closed loan). */
   closedOn: string | null;
   points: readonly PreviewBalancePoint[];
 }>;
@@ -154,6 +155,34 @@ export function previewCreditAccountRow(
   };
 }
 
+/** A preview loan is a liability that always carries its amount owed, until a complete list closes it. */
+export function previewLoanAccountRow(view: PreviewLoanAccountView): AccountRowDto {
+  const closed = view.loan.closedAt !== null;
+  const balance = closed ? null : view.latestBalance;
+  return {
+    id: previewRowId(view.previewAccountId),
+    label: view.displayLabel,
+    institution: INSTITUTION_NAMES[view.institution],
+    institutionKey: view.institution,
+    product: "Loan",
+    group: "liability",
+    kind: "loan",
+    amountLines: balance ? [amountLine(balance.currency, exactFromDecimal(balance.amount))] : [],
+    transactionCount: 0,
+    assetPositionCount: 0,
+    lastUpdated: balance ? balance.observedAt.at.slice(0, 10) : null,
+    valueAvailability: balance ? "available" : "unavailable",
+    preview: {
+      sourceId: view.sourceId,
+      product: "loan",
+      lastCollectedAt: view.lastCollectedAt,
+      balanceTime: balance ? { ...balance.observedAt } : null,
+      transactions: [],
+      loan: { currency: view.currency, ...view.loan },
+    },
+  };
+}
+
 export type PreviewSummaryMarkers = Readonly<{
   assets: Pick<SummaryMetricDto, "includesPreview">;
   liabilities: Pick<SummaryMetricDto, "includesPreview" | "incomplete">;
@@ -202,6 +231,16 @@ export function previewCreditSeries(histories: readonly PreviewCreditBalanceHist
     label: history.displayLabel,
     side: "liability",
     closedOn: null,
+    points: pointsByDate(history.observations),
+  }));
+}
+
+export function previewLoanSeries(histories: readonly PreviewLoanBalanceHistory[]): PreviewBalanceSeries[] {
+  return histories.map((history) => ({
+    accountId: previewRowId(history.previewAccountId),
+    label: history.displayLabel,
+    side: "liability",
+    closedOn: history.closedAt === null ? null : history.closedAt.slice(0, 10),
     points: pointsByDate(history.observations),
   }));
 }

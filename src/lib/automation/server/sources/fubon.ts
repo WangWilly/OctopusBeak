@@ -1,5 +1,6 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { isFubonDuplicateLoginConfirm } from "../../fubon-dialog.ts";
+import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
 export const FUBON_SOURCE: VerifiedSource = {
   id: "fubon",
@@ -109,6 +110,7 @@ export const FUBON_SOURCE: VerifiedSource = {
     requiresFinancialCommit: true,
     requiresProductCollection: true,
     requiresAccountIdentity: true,
+    attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.fubon,
     runtime: browser("https://ebank.taipeifubon.com.tw/B2C/common/Index.faces"),
     verification: {
       rejection: { frame: "txnFrame", text: { pattern: /^0290\s*驗證碼輸入錯誤$/u } },

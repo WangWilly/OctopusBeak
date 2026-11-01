@@ -26,6 +26,9 @@ import {
 } from "./fubon-statements.ts";
 import { fubonLogin, hasFubonDuplicateLoginTerminal } from "./fubon-auth.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
+import { ATTACHED_PREVIEW_PRODUCTS } from "../lib/preview-sources/attached-products.ts";
+import { fubonAttachedPreviewCollectors, type FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
+import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { signIn, type ShellPlan, type SignedIn } from "./sign-in.ts";
 import {
@@ -37,7 +40,8 @@ export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
 const appInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
-  statementTypes: z.array(z.enum(["deposit", "credit_card", "loan"])).min(1),
+  statementTypes: z.array(z.enum(["deposit", "credit_card", "loan"])).default([]),
+  attachedPreviewProducts: z.array(z.enum(ATTACHED_PREVIEW_PRODUCTS.fubon.products)).default([]),
   credentials: z.object({
     fubon_user_id: z.string().trim().min(1),
     fubon_account: z.string().trim().min(1),
@@ -46,7 +50,7 @@ const appInputSchema = z.object({
   statements: fubonStatementsInputSchema.default(() => fubonStatementsInputSchema.parse({})),
   creditCards: fubonCreditCardStatementsInputSchema.default(() => fubonCreditCardStatementsInputSchema.parse({})),
   loans: fubonLoanStatementsInputSchema.default(() => fubonLoanStatementsInputSchema.parse({})),
-});
+}).refine((input) => input.statementTypes.length + input.attachedPreviewProducts.length > 0);
 
 const FUBON_CREDIT_CARD_IDENTITY_EPOCH = FUBON_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
@@ -145,7 +149,7 @@ async function signOutFubon(page: Page): Promise<void> {
 
 export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
 
-type FubonAllWorkflowContext = WorkflowContextWith<"financialCommit" | "products" | "accountIdentity">;
+type FubonAllWorkflowContext = WorkflowContextWith<"financialCommit" | "products" | "accountIdentity", "previewWrite">;
 
 type FubonProductRunner<Input> = (
   page: Page,
@@ -161,6 +165,7 @@ export type FubonAllWorkflowDependencies = Readonly<{
   collectLoan?: FubonProductRunner<FubonLoanProductInput>;
   signOut?: (page: Page) => Promise<void>;
   startSessionKeepAlive?: (page: Page) => () => void;
+  attachedPreviewPort?: (page: Page, context: FubonAllWorkflowContext) => FubonAttachedPreviewPort;
 }>;
 
 async function fubonSessionProbe(page: Page): Promise<boolean> {
@@ -256,7 +261,19 @@ export async function runFubonAllStatementsWorkflow(
         deposit: (product) => collectDeposit(page, depositInput, context, product),
         credit_card: (product) => collectCreditCard(page, creditCardInput, context, product),
         loan: (product) => collectLoan(page, loanInput, context, product),
-      }, { assertSession });
+      }, {
+        assertSession,
+        // A person may select only attached preview products: the run then
+        // signs in, reports every verified product as not selected, and
+        // collects the attached ones after the verified products.
+        attached: {
+          collectors: () => fubonAttachedPreviewCollectors(
+            (overrides.attachedPreviewPort ?? playwrightFubonAttachedPreviewPort)(page, context),
+            context.now,
+          ),
+          assertSession,
+        },
+      });
       return productRunResult(summary, {
         counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
       });

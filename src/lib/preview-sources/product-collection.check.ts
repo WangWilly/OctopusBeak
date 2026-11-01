@@ -15,7 +15,8 @@ import {
   type PreviewProductCollectors,
   type PreviewProductRun,
 } from "./product-collection.ts";
-import { previewReceipt } from "./preview-source-harness.ts";
+import { PREVIEW_PRODUCTS_FIXTURE_SOURCE } from "./fixture-source.ts";
+import { previewReceipt, productCollections, runPreviewSource } from "./preview-source-harness.ts";
 import { fail } from "./source-kit.ts";
 
 const AT = "2026-10-15T02:00:00.000Z";
@@ -172,7 +173,7 @@ test("attached products write only through a writer bound to the verified source
       time_deposit: async () => emptyTimeDeposits,
     },
   });
-  assert.deepEqual(statuses(result), ["credit_card:success", "time_deposit:skipped:not_selected"],
+  assert.deepEqual(statuses(result), ["credit_card:success", "time_deposit:skipped:not_selected", "loan:skipped:not_selected"],
     "a product the source does not declare is never collected, even when selected");
   assert.deepEqual(writes.map((write) => [write.sourceId, write.institution, write.product]), [["cathay", "cathay", "credit_card"]]);
 
@@ -205,4 +206,17 @@ test("the executor hands a verified definition with attached products the previe
     .run(definition.id, "run-a", null, signal);
   await createWorkflowExecutor([definition], ports).run(definition.id, "run-b", null, signal);
   assert.deepEqual(seen, [true, false], "the port is injected when available and its absence does not stop the verified run");
+});
+
+test("a source collects loans and foreign currency accounts as their own products", async () => {
+  const run = await runPreviewSource(PREVIEW_PRODUCTS_FIXTURE_SOURCE, {}, AT, ["foreign_currency", "loan"]);
+  assert.equal(run.error, null);
+  assert.deepEqual(run.output?.products.map((product) => `${product.typeId}:${product.status}`), [
+    "deposit:skipped", "credit_card:skipped", "time_deposit:skipped", "foreign_currency:success", "loan:success",
+  ]);
+  assert.deepEqual(productCollections(run.writes, "foreign_currency").flatMap((collection) =>
+    collection.accounts.map((account) => account.currency)), ["USD"]);
+  const [loans] = productCollections(run.writes, "loan");
+  assert.equal(loans?.completeness, "complete");
+  assert.deepEqual(loans?.loans.map((loan) => loan.category), ["housing", "housing", "personal"]);
 });
