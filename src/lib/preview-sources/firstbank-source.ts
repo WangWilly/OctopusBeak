@@ -7,6 +7,8 @@ import type {
   PreviewLocalDate,
   PreviewPurchase,
   PreviewStatement,
+  PreviewTimeDeposit,
+  PreviewTimeDepositCollection,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { SourceUnavailableError } from "../automation/source-access.ts";
@@ -195,28 +197,45 @@ function nicknameFrom(cell: string): string | null {
   return isBlank(rest) ? null : rest;
 }
 
-function depositEntries(rows: readonly HtmlRow[], text: string): DepositEntry[] {
+const TERM = /定存|定期|存單|time\s*deposit/iu;
+
+/**
+ * Every deposit row of the overview. `termGap` names why the overview cannot
+ * show its time-deposit list complete, or is null when every row was classified.
+ */
+type DepositOverview = Readonly<{ entries: readonly DepositEntry[]; termGap: string | null }>;
+
+function depositEntries(rows: readonly HtmlRow[], text: string): DepositOverview {
   const found = sections(rows, overviewHeader);
-  if (found.length === 0) return NO_DATA.test(text) ? [] : fail("unexpected-response", `${OVERVIEW} has no deposit table header`);
+  if (found.length === 0) return NO_DATA.test(text) ? { entries: [], termGap: null } : fail("unexpected-response", `${OVERVIEW} has no deposit table header`);
   const entries = new Map<string, DepositEntry>();
+  let termGap: string | null = null;
   for (const [sectionIndex, section] of found.entries()) {
     const { header } = section;
     for (const [rowIndex, row] of section.rows.entries()) {
       const field = `${OVERVIEW}.table[${sectionIndex}].row[${rowIndex}]`;
       const accountCell = row.cells[header.account] ?? "";
       const identity = accountIdentity(accountCell);
-      if (identity === null) continue;
       const typeCell = header.type === undefined ? "" : row.cells[header.type] ?? "";
+      if (identity === null) {
+        if (TERM.test(typeCell)) termGap ??= `${field} names a time deposit without a readable account number`;
+        continue;
+      }
       if (/信用卡|金融卡|visa|master|credit/iu.test(typeCell)) continue;
       const currencyCell = row.cells[header.currency];
       const balanceCell = row.cells[header.balance];
       // all-set-tw: card rows carry the account but a dash for currency and balance.
-      if (isBlank(currencyCell) && isBlank(balanceCell)) continue;
+      if (isBlank(currencyCell) && isBlank(balanceCell)) {
+        if (TERM.test(typeCell)) termGap ??= `${field} names a time deposit without a currency or balance`;
+        continue;
+      }
+      // Without a 帳戶類別 column no row can be told apart as a time deposit.
+      if (header.type === undefined) termGap ??= `${OVERVIEW}.table[${sectionIndex}] has no account type column`;
       const availableCell = header.available === undefined ? undefined : row.cells[header.available];
       const entry: DepositEntry = {
         identity,
         nickname: nicknameFrom(accountCell),
-        term: /定存|定期|存單|time\s*deposit/iu.test(typeCell),
+        term: TERM.test(typeCell),
         currency: currencyCode(currencyCell, `${field}.currency`, CURRENCY_ALIASES),
         balance: exactDecimal(balanceCell, `${field}.balance`),
         available: isBlank(availableCell) ? null : exactDecimal(availableCell, `${field}.available`),
@@ -227,7 +246,7 @@ function depositEntries(rows: readonly HtmlRow[], text: string): DepositEntry[] 
       entries.set(key, entry);
     }
   }
-  return [...entries.values()];
+  return { entries: [...entries.values()], termGap };
 }
 
 type HistoryHeader = Readonly<{
@@ -338,20 +357,38 @@ function pageAccountIdentity(text: string): string | null {
 
 const slashDate = (date: string) => date.replaceAll("-", "/");
 
-async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankPage, collectedAt: string): Promise<PreviewAccount[]> {
-  const overviewCapture = await page.depositOverview();
-  const overview = observeTable(context, overviewCapture, OVERVIEW);
-  const entries = depositEntries(overview.rows, overview.text);
+type Overview = DepositOverview & Readonly<{ asOf: ReturnType<typeof observedAt> }>;
+
+async function readOverview(context: PreviewWorkflowContext, page: FirstbankPage, collectedAt: string): Promise<Overview> {
+  const capture = await page.depositOverview();
+  const table = observeTable(context, capture, OVERVIEW);
+  return { ...depositEntries(table.rows, table.text), asOf: observedAt(capture.date, collectedAt) };
+}
+
+function entryBalances(entry: DepositEntry, asOf: Overview["asOf"]): PreviewBalanceObservation[] {
+  const balances: PreviewBalanceObservation[] = [{ kind: "current", amount: entry.balance, currency: entry.currency, observedAt: asOf }];
+  if (entry.available !== null) balances.push({ kind: "available", amount: entry.available, currency: entry.currency, observedAt: asOf });
+  return balances;
+}
+
+const entryLabel = (entry: DepositEntry) =>
+  `第一銀行 ${entry.nickname ?? (entry.term ? "定存" : "存款")} ${entry.identity.slice(-4)}${entry.currency === "TWD" ? "" : ` ${entry.currency}`}`;
+
+async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankPage, overview: Overview, collectedAt: string): Promise<PreviewAccount[]> {
+  const { entries, asOf } = overview;
+  const demand = entries.filter((entry) => !entry.term);
   const options = await page.queryAccounts();
   if (options.length > MAX_QUERY_ACCOUNTS) return fail("incomplete-data", `the transaction query lists ${options.length} accounts, more than ${MAX_QUERY_ACCOUNTS}`);
-  const queried = options.map((option, index) => {
+  const listed = options.map((option, index) => {
     const identity = accountIdentity(option.label);
     if (identity === null || !entries.some((entry) => entry.identity === identity))
       return fail("unexpected-response", `transaction query account ${index} is not in the deposit overview`);
     return { option, identity };
   });
-  const missing = entries.find((entry) => !entry.term && !queried.some((query) => query.identity === entry.identity));
-  if (missing) return fail("incomplete-data", "a demand deposit account is missing from the transaction query list");
+  if (demand.some((entry) => !listed.some((query) => query.identity === entry.identity)))
+    return fail("incomplete-data", "a demand deposit account is missing from the transaction query list");
+  // Time deposits are balance-only, so an account the overview holds only as a time deposit is not queried.
+  const queried = listed.filter((query) => demand.some((entry) => entry.identity === query.identity));
 
   const window = taipeiMonthWindow(collectedAt, MONTHS);
   const range = { start: slashDate(window.start), end: slashDate(window.end) };
@@ -361,7 +398,7 @@ async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankP
     const history = observeTable(context, await page.transactions(option, range), HISTORY);
     const shown = pageAccountIdentity(history.text);
     if (shown !== null && shown !== identity) return fail("unexpected-response", `${field} shows another account than the one queried`);
-    const candidates = entries.filter((entry) => entry.identity === identity);
+    const candidates = demand.filter((entry) => entry.identity === identity);
     for (const [rowIndex, row] of historyRows(history.rows, history.text, field).entries()) {
       const currency = row.currency ?? (candidates.length === 1 ? candidates[0]!.currency : fail("missing-currency", `${field} row ${rowIndex} has no currency and its account holds several`));
       const entry = candidates.find((candidate) => candidate.currency === currency)
@@ -370,20 +407,34 @@ async function collectDeposits(context: PreviewWorkflowContext, page: FirstbankP
     }
   }
 
-  const asOf = observedAt(overviewCapture.date, collectedAt);
-  return entries.map((entry) => {
-    const balances: PreviewBalanceObservation[] = [{ kind: "current", amount: entry.balance, currency: entry.currency, observedAt: asOf }];
-    if (entry.available !== null) balances.push({ kind: "available", amount: entry.available, currency: entry.currency, observedAt: asOf });
-    const kind = entry.term ? "term" : "demand";
-    return {
-      sourceAccountKey: `${kind}:${entry.identity}:${entry.currency}`,
-      displayLabel: `第一銀行 ${entry.nickname ?? (entry.term ? "定存" : "存款")} ${entry.identity.slice(-4)}${entry.currency === "TWD" ? "" : ` ${entry.currency}`}`,
-      currency: entry.currency,
-      type: "depository",
-      balances,
-      transactions: transactions.get(entry) ?? [],
-    };
-  });
+  return demand.map((entry) => ({
+    sourceAccountKey: `demand:${entry.identity}:${entry.currency}`,
+    displayLabel: entryLabel(entry),
+    currency: entry.currency,
+    type: "depository",
+    balances: entryBalances(entry, asOf),
+    transactions: transactions.get(entry) ?? [],
+  }));
+}
+
+/**
+ * The overview is one unpaged table, read whole: a truncation notice fails it,
+ * and every row is classified by its 帳戶類別 cell. Its time-deposit rows are
+ * the complete time-deposit list unless a row could not be classified.
+ */
+function collectTimeDeposits(overview: Overview, collectedAt: string): PreviewTimeDepositCollection {
+  if (overview.termGap !== null) return fail("incomplete-data", overview.termGap);
+  const deposits = overview.entries.filter((entry) => entry.term).map((entry): PreviewTimeDeposit => ({
+    // The deposit product wrote time deposits under this key, so the same row moves to time_deposit.
+    sourceAccountKey: `term:${entry.identity}:${entry.currency}`,
+    displayLabel: entryLabel(entry),
+    currency: entry.currency,
+    balances: entryBalances(entry, overview.asOf),
+    principal: null,
+    interestRate: null,
+    maturityDate: null,
+  }));
+  return { collectedAt, completeness: "complete", deposits };
 }
 
 const decimalSign = (value: string) => (isZeroDecimal(value) ? 0 : value.startsWith("-") ? -1 : 1);
@@ -699,7 +750,7 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
   return {
     id: "firstbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["firstbank-deposit"],
-    products: ["deposit", "credit_card"],
+    products: ["deposit", "time_deposit", "credit_card"],
     displayName: { en: "First Bank (preview)", "zh-TW": "第一銀行（預覽）" },
     searchAliases: ["First Bank", "First Commercial Bank", "FCB", "第一銀行", "一銀", "第一商業銀行"],
     credentialFields: [
@@ -750,9 +801,12 @@ export function createFirstbankSource(options: Readonly<{ page?: FirstbankPageOp
           await context.event("authentication", "completed", "authentication-completed");
           await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
-          // Deposits are declared first, so they are read before the card member system, which can end the iBank session.
+          // Deposits and time deposits are declared first, so they are read before the card member system, which can end the iBank session.
+          let read: Promise<Overview> | null = null;
+          const overview = () => read ??= readOverview(context, page, collectedAt);
           const output = await context.preview.collect({
-            deposit: async () => ({ collectedAt, accounts: await collectDeposits(context, page, collectedAt) }),
+            deposit: async () => ({ collectedAt, accounts: await collectDeposits(context, page, await overview(), collectedAt) }),
+            time_deposit: async () => collectTimeDeposits(await overview(), collectedAt),
             credit_card: async () => collectCards(context, await page.cardPages(), collectedAt),
           });
           await context.event("collection", "completed", "collection-completed");
