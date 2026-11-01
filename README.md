@@ -1,15 +1,15 @@
 # Download statistics
 
-Snapshot: 2026-10-31. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
+Snapshot: 2026-11-01. Counts are cumulative GitHub Release installer downloads (DMG and ZIP), not unique people or installs.
 
-- Total installer downloads: **297**
-- Through the website button (`OctopusBeak-arm64.dmg`): **125**
+- Total installer downloads: **300**
+- Through the website button (`OctopusBeak-arm64.dmg`): **128**
 
 ## By release
 
 | Release | Published | Website DMG | Versioned DMG | ZIP | Total |
 | --- | --- | ---: | ---: | ---: | ---: |
-| v0.10.0 | 2026-10-31 | 1 | 1 | 2 | 4 |
+| v0.10.0 | 2026-10-31 | 4 | 1 | 2 | 7 |
 | v0.9.5 | 2026-10-29 | 9 | 1 | 1 | 11 |
 | v0.9.4 | 2026-10-26 | 20 | 1 | 1 | 22 |
 | v0.9.3 | 2026-10-22 | 1 | 1 | 2 | 4 |
@@ -60,6 +60,7 @@ Snapshot: 2026-10-31. Counts are cumulative GitHub Release installer downloads (
 
 | Since | Until | New downloads |
 | --- | --- | ---: |
+| 2026-10-31 | 2026-11-01 | 3 |
 | 2026-10-30 | 2026-10-31 | 9 |
 
 A negative number means a release or asset was deleted between snapshots.
