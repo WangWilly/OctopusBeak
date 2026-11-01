@@ -155,6 +155,14 @@ _Avoid_: Unbilled duplicate merge, statement deduplication, pending-to-posted pa
 The judgment that a preview time deposit has matured or been terminated because a complete time-deposit list from its source no longer contains it. A closed deposit stops counting toward assets; a list that cannot be shown complete fails the run rather than closing or keeping any deposit.
 _Avoid_: Stale balance, inferred maturity date, missing-account carry-forward
 
+**Preview loan**:
+A loan collected as Preview Financial Data, counted on the liabilities side with a preview marker. Each collection records one snapshot of the source's current terms, such as the outstanding balance, rate, next payment, installments and maturity, leaving absent what the source does not report; it carries no repayment history. Like a time deposit, it is judged closed only when a complete loan list from its source no longer contains it, and a source whose list cannot be shown complete keeps its last snapshot.
+_Avoid_: Canonical loan, loan transaction, repayment schedule
+
+**Preview foreign currency**:
+The preview product for non-TWD deposit accounts at an Institution whose verified source collects only TWD deposits, chosen separately from deposits in a Statement Selection. Its balances and transactions keep their source currency exactly.
+_Avoid_: Foreign deposit as deposit, converted transaction
+
 **Attached preview product**:
 A product without a live-verified source contract that a verified source collects during its own sign-in while Preview Features are on, writing only Preview Financial Data for that product. A product whose collection cannot share the verified source's sign-in is offered as its own Preview Source instead.
 _Avoid_: Partially verified source, preview mode of a verified source
