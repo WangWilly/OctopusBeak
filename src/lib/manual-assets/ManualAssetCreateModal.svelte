@@ -2,7 +2,12 @@
   import { X } from "@lucide/svelte";
   import { t } from "$lib/i18n/i18n.ts";
   import { checkedCommand, sendCommand } from "./manual-asset-form.ts";
-  import { MANUAL_ASSET_CATEGORIES, MANUAL_ASSET_CATEGORY_IDS, type ManualAssetCategory } from "./manual-assets.ts";
+  import {
+    MANUAL_ASSET_CATEGORIES,
+    MANUAL_ASSET_CATEGORY_IDS,
+    MANUAL_ASSET_CURRENCIES,
+    type ManualAssetCategory,
+  } from "./manual-assets.ts";
 
   export let open = false;
   export let today: string;
@@ -41,7 +46,7 @@
       kind: "createAsset",
       category,
       name,
-      currency: currency.trim().toUpperCase(),
+      currency,
       firstValuation: { valuedOn, amount: amount.trim().replaceAll(",", ""), source, note },
     }, today, $t);
     if (!checked.ok) {
@@ -91,7 +96,9 @@
           </label>
           <label class="narrow">
             <span>{$t.manualAssets.currency}</span>
-            <input bind:value={currency} maxlength="3" class="num" data-field="currency" />
+            <select bind:value={currency} class="num" data-field="currency">
+              {#each MANUAL_ASSET_CURRENCIES as code}<option value={code}>{code}</option>{/each}
+            </select>
           </label>
         </div>
         <div class="row">
