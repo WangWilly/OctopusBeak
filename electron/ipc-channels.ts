@@ -44,6 +44,7 @@ export const RENDERER_FINANCIAL_OPERATIONS = [
   "financial.spending.merchantStats",
   "financial.spending.confirmStrongCandidates",
   "financial.spending.pairing",
+  "financial.manualAssets.apply",
 ] as const satisfies readonly Extract<InvokeChannel, PGliteFinancialOperation>[];
 
 export type ForwardedFinancialChannel = typeof RENDERER_FINANCIAL_OPERATIONS[number];

@@ -90,6 +90,7 @@ export async function startPGliteViewWorker(
     financialRegistry,
     () => configuredOverviewSources(),
     scheduler,
+    { manualAssets: true },
   );
   const source = {
     subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {

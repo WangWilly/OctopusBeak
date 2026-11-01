@@ -8,7 +8,7 @@ import type { FinancialLiveViewDefinition } from "./pglite-financial-live-views.
 
 export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
   load: (registry, params) => registry["financial.spending.current"]([params as SpendingLoadInput]),
-  dependsOn: [],
+  dependsOn: ["manual"],
   async shouldRecompute(registry, lastValue) {
     if (registry.isSpendingPageActionInFlight?.()) return false;
     // A page action already publishes its exact summary delta. The
@@ -16,8 +16,11 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
     // avoid rebuilding the same full summary ahead of a Pairing click.
     // A separate commit still has a newer version and is recomputed.
     const version = await registry["financial.spending.version"]([]);
-    const published = (lastValue() as SpendingPageDto | undefined)?.purchaseReport.knowledgeAt ?? -1;
-    return version > published;
+    const last = lastValue() as SpendingPageDto | undefined;
+    const published = last?.purchaseReport.knowledgeAt ?? -1;
+    if (version > published) return true;
+    // Manual purchases sit outside the canonical version, so their own revision decides.
+    return await registry["financial.manualAssets.revision"]([]) !== (last?.manual?.revision ?? 0);
   },
   watch({ registry, lastValue, publish, recompute, fail }) {
     if (!registry.onSpendingPageActionSettled) return () => {};

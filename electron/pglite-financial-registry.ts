@@ -85,6 +85,13 @@ import {
   type PGliteCanonicalInvestmentRelationResolutionRequest,
 } from "../src/ledger/pglite/relations.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import {
+  applyManualAssetCommand,
+  readManualAssetRevision,
+  readManualSpendingPurchases,
+} from "../src/ledger/pglite/manual-assets.ts";
+import { ManualAssetRejected, parseManualAssetCommand } from "../src/lib/manual-assets/manual-assets.ts";
+import { spendingPageWithManual } from "../src/lib/spending/manual-spending.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import {
@@ -217,6 +224,8 @@ function failureCategory(error: unknown): PGliteFinancialFailureCategory {
   if (error instanceof PGliteCanonicalEInvoiceAdmissionError) {
     return error.code === "revision-conflict" ? "conflict" : "admission";
   }
+  // A Manual Asset command broke a registry or stored-row rule; the renderer form checks the same rules first.
+  if (error instanceof ManualAssetRejected) return "ineligible";
   // Unknown exceptions may be database, transport, or programming failures.
   // They must remain fatal; matching arbitrary messages would turn a broken
   // schema such as "missing account table" into a recoverable item error.
@@ -258,7 +267,14 @@ export function createPGliteFinancialRegistry(
       store.transaction((transaction) => readAssetsPage(transaction, pageScope(expectedSources))),
     "financial.liabilities.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readLiabilitiesPage(transaction, pageScope(expectedSources))),
-    "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
+    async "financial.spending.current"([input = {}]) {
+      const page = await spending.summaryPage(input);
+      if (!manualAssets) return page;
+      return store.transaction(async (transaction) => spendingPageWithManual(page, {
+        revision: await readManualAssetRevision(transaction),
+        purchases: await readManualSpendingPurchases(transaction),
+      }));
+    },
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
     "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),
@@ -335,6 +351,11 @@ export function createPGliteFinancialRegistry(
     "financial.investmentRelations.current": ([sourceConnectionKey]) => queryPGliteCurrentInvestmentFundingRelations(store, sourceConnectionKey),
     "financial.tdccFundAccounts.list": ([connection]) => listPGliteTdccFundAccounts(store, connection),
     "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
+    "financial.manualAssets.apply"([command]) {
+      if (!manualAssets) throw new Error("This store holds no Manual Asset tables.");
+      return applyManualAssetCommand(store, parseManualAssetCommand(command));
+    },
+    "financial.manualAssets.revision": () => manualAssets ? readManualAssetRevision(store) : Promise.resolve(0),
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
     "financial.canonical.resetRequired": () => canonicalResetRequiredNamespaces(store),
   });

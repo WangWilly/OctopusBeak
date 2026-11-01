@@ -18,6 +18,7 @@ import type {
   SpendingCandidateStrength,
 } from "../../ledger/canonical/spending-match-strength.ts";
 import type { MerchantIdentity } from "../../ledger/canonical/spending-month-insights.ts";
+import type { ManualSpendingDto } from "./manual-spending.ts";
 export type { SpendingPairingCandidateView } from "./pairing-presentation.ts";
 export type {
   SpendingCandidateReasons,
@@ -682,6 +683,8 @@ export type SpendingPageDto = {
   purchaseReport: SpendingPurchaseReportDto;
   /** Compatibility projection kept for existing non-product fixtures. */
   invoices: readonly SpendingInvoiceDto[];
+  /** Manual Account purchases, already counted in `purchaseReport.summary`; absent where the store has none. */
+  manual?: ManualSpendingDto;
 };
 
 export type CanonicalSpendingAmountDto = {

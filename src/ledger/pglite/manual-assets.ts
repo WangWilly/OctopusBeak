@@ -13,6 +13,7 @@ import {
   type ManualValuation,
   type ManualValuationSource,
 } from "../../lib/manual-assets/manual-assets.ts";
+import type { ManualSpendingPurchase } from "../../lib/spending/manual-spending.ts";
 import { applyOperationalMigrations } from "./operational-migrations.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
@@ -153,18 +154,6 @@ export async function readManualAssetRevision(reader: Reader): Promise<number> {
   const result = await reader.query<{ revision: number | string }>("SELECT revision FROM manual_asset_revision");
   return Number(result.rows[0]?.revision ?? 0);
 }
-
-/** A Manual Account purchase as Spending counts it: an outflow with its Personal Category. */
-export type ManualSpendingPurchase = Readonly<{
-  transactionId: string;
-  accountId: string;
-  accountName: string;
-  occurredOn: string;
-  amount: string;
-  currency: string;
-  personalCategory: PersonalCategoryCode | null;
-  note: string | null;
-}>;
 
 /** Only `purchase` rows are spending; receipts and transfers never are. An ended account's purchases stay history. */
 export async function readManualSpendingPurchases(reader: Reader): Promise<readonly ManualSpendingPurchase[]> {

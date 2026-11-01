@@ -1,5 +1,6 @@
 import type { AssetsPageDto } from "../src/lib/assets/types.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
+import type { ManualAssetCommand, ManualAssetCommandResult } from "../src/lib/manual-assets/manual-assets.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type {
   SpendingPairingCandidatesInput,
@@ -341,6 +342,16 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.accountIdentity.continuity": operation<[request: AccountIdentityContinuityRequest], AccountIdentityContinuity>(
     (args) => args.length === 1 && accountIdentityContinuityRequestShape(args[0]),
     { lane: "background" },
+  ),
+  /** One Manual Asset command (ADR 0087); the worker parses it against the category registry. */
+  "financial.manualAssets.apply": operation<[command: ManualAssetCommand], ManualAssetCommandResult>(
+    (args) => args.length === 1 && plainRecord(args[0]),
+    { lane: "interactive" },
+  ),
+  /** Advances on every Manual Asset write, so a live view can tell a manual change from none. */
+  "financial.manualAssets.revision": operation<[], number>(
+    (args) => args.length === 0,
+    { lane: "interactive" },
   ),
   /** Canonical Reset (ADR 0062): replaces all financial state with an empty store. */
   "financial.canonical.reset": operation<[], void>(
