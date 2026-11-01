@@ -3,11 +3,12 @@ import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from
 import test from "node:test";
 import { createMegaSource, encryptMegaLogin, megaVirtualDevice } from "./mega-source.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
-import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
+import { blankPng, fakeHttpOpener, jsonResponse, runPreviewSource, depositCollection, productCollections, scriptedOcrEngine, type FakeRoute } from "./preview-source-harness.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
 import type { PreviewHttpRequest, PreviewHttpResponse } from "./browser-http.ts";
 import type { PreviewProduct, PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
+import { parsePreviewLoanCollection } from "../../ledger/pglite/preview-loan.ts";
 import type { ProductRunResult } from "../automation/workflow-run-result.ts";
 
 const credentials = {
@@ -44,16 +45,34 @@ const billLists = (general: readonly string[], fancy: readonly string[] = [], ri
 const purchase = (fields: Record<string, string>) =>
   JSON.stringify({ cardNo: CARD_A, sourceCurr: "TWD", destinationCurr: "TWD", ...fields });
 
+// Derived, unverified loan fixtures: field names and value formats follow all-set-tw's megabank test (mobile-api.test.ts), not a capture.
+const MORTGAGE = "000011111";
+const PERSONAL = "000022222";
+const loanInfo = (...rows: readonly Record<string, string>[]) => rows.map((fields) => JSON.stringify(fields));
+const LOAN_INFO = loanInfo({ loanNo: MORTGAGE, loanCurr: "TWD", loanBal: "8,000,000" }, { loanNo: PERSONAL, loanCurr: "TWD", loanBal: "300,000" });
+const loanRow = (fields: Record<string, string> = {}) => JSON.stringify({
+  loanNo: MORTGAGE, loanType: "長擔購置住宅放款", loanStartDate: "2025/07/04", loanEndDate: "2065/07/04", loanAmt: "10,000,000",
+  loanCurr: "TWD", intRate: "1.7750", payPeriod: "015", payAmt: "14,589", payDate: "2026/10/04", deductionDate: "04", ...fields,
+});
+const overviewWith = (loans: readonly string[] | null): ResourceRoute => () => jsonResponse(
+  `{"code":"0000","rsData":{"depositInfoList":[{"DRACT":"MG-7788","DRCUR":"TWD","AVLBA":1234.50,"NAME":"活期儲蓄存款"},{"DRACT":"MG-7788","DRCUR":"usd","AVLBA":"10.25","NAME":"外幣活存"}]${loans === null ? "" : `,"loanInfoList":[${loans.join(",")}]`}}}`,
+  { date: "Thu, 15 Oct 2026 01:59:00 GMT" },
+);
+const loanList = (...rows: string[]): ResourceRoute => () => jsonResponse(`{"code":"0000","rsData":{"loanList":[${rows.join(",")}]}}`, { date: "Thu, 15 Oct 2026 01:57:00 GMT" });
+
 const defaults: Record<string, ResourceRoute> = {
   "/fco/fco00001/initialize": () => ok("{}"),
   "/fco/fco00001/captcha": () => ok(JSON.stringify({ image: `data:image/jpeg;base64,${Buffer.from("jpg").toString("base64")}` })),
   "/fco/fco00001/e2ee": () => ok(JSON.stringify({ isE2EE: true, cipherToken: JSON.stringify(cipherToken) })),
   "/fco/fco02003/login": () => ok('{"resultType":"0","secondFactorFlag":"N","isHighIpFar":false}'),
-  "/fco/fco10001/home": () => jsonResponse(
-    '{"code":"0000","rsData":{"depositInfoList":[{"DRACT":"MG-7788","DRCUR":"TWD","AVLBA":1234.50,"NAME":"活期儲蓄存款"},{"DRACT":"MG-7788","DRCUR":"usd","AVLBA":"10.25","NAME":"外幣活存"}]}}',
-    { date: "Thu, 15 Oct 2026 01:59:00 GMT" },
+  "/fco/fco10001/home": overviewWith(LOAN_INFO),
+  "/fln/fln01001/home": loanList(
+    loanRow(),
+    loanRow({ loanNo: PERSONAL, loanType: "個人信用貸款", loanStartDate: "114/01/15", loanEndDate: "121/01/15", loanAmt: "500,000", intRate: "2.5%", payPeriod: "第009期", payAmt: "", payDate: "" }),
   ),
-  "/fao/fao01001/query": (rqData) => ok(rqData.tsqName === ""
+  "/fao/fao01001/query": (rqData) => rqData.currency === "USD"
+    ? ok(`{"list":[${row("2026/10/05", "C", "10.25", "外幣轉入")}],"tsqName":""}`)
+    : ok(rqData.tsqName === ""
     ? `{"list":[${row("2026/10/03", "D", "250.00")},${row("2026/10/03", "D", "250.00")}],"tsqName":"Q2"}`
     : `{"list":[${row("20261004", "C", "1000", "薪資")}],"tsqName":""}`),
   "/fco/fco02011/logout": () => ok("{}"),
@@ -112,7 +131,7 @@ async function run(overrides: Record<string, ResourceRoute> = {}, extra: Record<
 
 test("a Mega run writes each account and currency with exact amounts, DRCR directions, and paged NT-dollar history", async () => {
   const { receipt, writes, observations, http, resources } = await run();
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 4, statements: 0, closedAccounts: 0 });
   const [twd, usd] = depositCollection(writes[0]!).accounts;
   assert.equal(twd!.sourceAccountKey, "MG-7788:TWD");
   assert.deepEqual(twd!.balances, [
@@ -125,13 +144,13 @@ test("a Mega run writes each account and currency with exact amounts, DRCR direc
   ], "D is an outflow, C an inflow, and identical same-day rows stay distinct");
   assert.deepEqual(usd!.balances.map(({ amount, currency }) => ({ amount, currency })), [{ amount: "10.25", currency: "USD" }]);
   assert.equal(usd!.currency, "USD");
-  assert.deepEqual(usd!.transactions, []);
 
   const pages = http.requests.filter((request) => request.body?.includes("/fao/fao01001/query")).map((request) => JSON.parse(request.body!).rqData);
   assert.deepEqual(pages.map(({ tsqName, currency, startDate, endDate }) => ({ tsqName, currency, startDate, endDate })), [
     { tsqName: "", currency: "TWD", startDate: "2026/08/01", endDate: "2026/10/15" },
     { tsqName: "Q2", currency: "TWD", startDate: "2026/08/01", endDate: "2026/10/15" },
-  ], "only the NT-dollar account is queried, following its tsqName cursor");
+    { tsqName: "", currency: "USD", startDate: "2026/08/01", endDate: "2026/10/15" },
+  ], "the NT-dollar account follows its tsqName cursor, and the foreign-currency account is queried in its own currency");
   assert.ok(observations.some((entry) => entry.endpoint === "/fco/fco10001/home" && entry.status === 200));
   assert.ok(observations.some((entry) => entry.endpoint === "/fao/fao01001/query"));
   assert.equal(resources.at(-1), "/fco/fco02011/logout", "the session is signed out after collection");
@@ -188,7 +207,7 @@ test("an unaccepted CAPTCHA is refreshed through the captcha API without a login
     unsure, unsure, unsure,
     { text: "24680", confidence: 0.995 }, unsure, unsure,
   ]);
-  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 3, statements: 0, closedAccounts: 0 });
+  assert.deepEqual(receipt, { accounts: 2, balances: 2, transactions: 4, statements: 0, closedAccounts: 0 });
   assert.equal(engine.calls.length, 9, "three strategies on each of three challenges");
   assert.deepEqual(signInResources(resources), [
     "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/captcha", "/fco/fco00001/e2ee", "/fco/fco02003/login",
@@ -274,7 +293,8 @@ test("a missing currency, a malformed amount, a signed amount, and an unknown DR
 
 const BOTH: readonly PreviewProduct[] = ["deposit", "credit_card"];
 const creditWrites = (writes: readonly PreviewWrite[]) => writes.flatMap((write) => write.product === "credit_card" ? [write.collection] : []);
-const outcomes = (output: ProductRunResult | null) => Object.fromEntries((output?.products ?? []).map((product) => [product.typeId, product.status]));
+const outcomes = (output: ProductRunResult | null) =>
+  Object.fromEntries((output?.products ?? []).filter((product) => product.status !== "skipped").map((product) => [product.typeId, product.status]));
 
 test("one Mega sign-in writes deposits and a credit account per currency with an unclamped statement-minus-paid-plus-unbilled balance", async () => {
   const { writes, output, observations, http, resources } = await run({}, {}, BOTH);
@@ -426,4 +446,129 @@ test("a deposit failure leaves the credit write in place", async () => {
   assert.equal(result.output!.status, "partial");
   assert.equal(creditWrites(result.writes).length, 1);
   assert.equal(result.deposits.length, 0);
+});
+
+test("a foreign-currency account's history is written in its source currency with the exact amount", async () => {
+  const { deposits, http } = await run();
+  const usd = deposits[0]!.accounts.find((account) => account.currency === "USD")!;
+  assert.deepEqual(usd.transactions, [{
+    sourceRowKey: "2026-10-05:C:10.25:外幣轉入#0", amount: "10.25", currency: "USD", direction: "inflow",
+    postedAt: { precision: "day", value: "2026-10-05" }, description: "外幣轉入",
+  }]);
+  const usdQuery = http.requests.map((request) => request.body?.startsWith("{") ? JSON.parse(request.body) : null)
+    .find((body) => body?.resource === "/fao/fao01001/query" && body.rqData.currency === "USD");
+  assert.equal(usdQuery.rqData.accountNo, "MG-7788");
+});
+
+test("a refused or unreadable foreign-currency history fails the deposit product, not just that account", async () => {
+  const twdPages = defaults["/fao/fao01001/query"]!;
+  const cases: Record<string, ResourceRoute> = {
+    "error code": (rqData, call) => rqData.currency === "USD" ? jsonResponse({ code: "E999" }) : twdPages(rqData, call),
+    "missing list": (rqData, call) => rqData.currency === "USD" ? ok('{"tsqName":""}') : twdPages(rqData, call),
+  };
+  for (const [name, route] of Object.entries(cases)) {
+    const result = await run({ "/fao/fao01001/query": route }, {}, BOTH);
+    assert.deepEqual(outcomes(result.output), { deposit: "failed", credit_card: "success" }, name);
+    assert.equal(result.deposits.length, 0, `${name} writes no deposit account, the TWD one included`);
+    const alone = await run({ "/fao/fao01001/query": route });
+    assert.equal((alone.error as PreviewSourceFailure).reason, "unexpected-response", name);
+  }
+});
+
+const LOAN: readonly PreviewProduct[] = ["loan"];
+const loanCollection = (writes: readonly PreviewWrite[]) => productCollections(writes, "loan")[0];
+
+test("Mega loans map each fln01001 row to a snapshot keyed by the full loan number", async () => {
+  const { writes, output, resources } = await run({}, {}, LOAN);
+  assert.deepEqual(outcomes(output), { loan: "success" });
+  const collection = loanCollection(writes)!;
+  assert.deepEqual(parsePreviewLoanCollection(collection), collection, "the collection satisfies the preview loan contract");
+  assert.equal(collection.completeness, "complete", "loanInfoList names exactly the loans fln01001 lists");
+  const [mortgage, personal] = collection.loans;
+  assert.deepEqual(mortgage, {
+    sourceAccountKey: MORTGAGE,
+    displayLabel: "兆豐銀行 長擔購置住宅放款 1111",
+    currency: "TWD",
+    category: "housing",
+    outstandingBalance: { amount: "8000000", observedAt: { at: "2026-10-15T01:59:00.000Z", source: "reported" } },
+    originalAmount: "10000000",
+    interestRate: "1.7750",
+    paymentAmount: "14589",
+    nextPaymentDate: "2026-10-04",
+    installmentsPaid: null,
+    installmentsTotal: null,
+    openedOn: "2025-07-04",
+    maturityDate: "2065-07-04",
+  }, "the balance falls back to loanInfoList; payPeriod is not read as periods paid and no total is derived from the dates");
+  assert.deepEqual({ ...personal, outstandingBalance: personal!.outstandingBalance.amount }, {
+    sourceAccountKey: PERSONAL,
+    displayLabel: "兆豐銀行 個人信用貸款 2222",
+    currency: "TWD",
+    category: null,
+    outstandingBalance: "300000",
+    originalAmount: "500000",
+    interestRate: "2.5",
+    paymentAmount: null,
+    nextPaymentDate: null,
+    installmentsPaid: null,
+    installmentsTotal: null,
+    openedOn: "2025-01-15",
+    maturityDate: "2032-01-15",
+  }, "a non-housing type leaves the category empty, ROC dates convert, a percent sign drops, and empty terms stay null");
+  assert.ok(!JSON.stringify(collection.loans.map((loan) => loan.displayLabel)).includes(MORTGAGE), "labels show only the last four digits");
+  assert.equal(resources.filter((resource) => resource === "/fco/fco10001/home").length, 1);
+  assert.ok(resources.includes("/fln/fln01001/home"));
+});
+
+test("a loan row's own balance and its response date win over loanInfoList", async () => {
+  const { writes } = await run({ "/fln/fln01001/home": loanList(loanRow({ loanBal: "7,999,000.50" }), loanRow({ loanNo: PERSONAL, loanType: "個人信用貸款" })) }, {}, LOAN);
+  assert.deepEqual(loanCollection(writes)!.loans[0]!.outstandingBalance, { amount: "7999000.50", observedAt: { at: "2026-10-15T01:57:00.000Z", source: "reported" } });
+});
+
+test("one sign-in serves deposits and loans from one overview", async () => {
+  const { output, resources } = await run({}, {}, ["deposit", "loan"]);
+  assert.deepEqual(outcomes(output), { deposit: "success", loan: "success" });
+  assert.equal(resources.filter((resource) => resource === "/fco/fco10001/home").length, 1, "the overview is fetched once");
+});
+
+test("an empty loanInfoList is a complete empty list without a loan query", async () => {
+  const { writes, output, resources } = await run({ "/fco/fco10001/home": overviewWith([]) }, {}, LOAN);
+  assert.deepEqual(loanCollection(writes), { collectedAt: "2026-10-15T02:00:00.000Z", completeness: "complete", loans: [] });
+  assert.equal(outcomes(output).loan, "not_held");
+  assert.ok(!resources.includes("/fln/fln01001/home"));
+});
+
+test("a loan list that loanInfoList does not match exactly is unproven", async () => {
+  const cases: Record<string, ResourceRoute> = {
+    "no loanInfoList": overviewWith(null),
+    "an extra overview loan": overviewWith([...LOAN_INFO, ...loanInfo({ loanNo: "000033333", loanCurr: "TWD", loanBal: "1" })]),
+    "one overview loan": overviewWith(loanInfo({ loanNo: MORTGAGE, loanCurr: "TWD", loanBal: "1" })),
+  };
+  for (const [name, route] of Object.entries(cases)) {
+    const { writes, output } = await run({ "/fco/fco10001/home": route, "/fln/fln01001/home": loanList(loanRow({ loanBal: "1" }), loanRow({ loanNo: PERSONAL, loanBal: "2" })) }, {}, LOAN);
+    assert.equal(outcomes(output).loan, "success", name);
+    assert.equal(loanCollection(writes)!.completeness, "unproven", name);
+    assert.equal(loanCollection(writes)!.loans.length, 2, name);
+  }
+});
+
+test("loan failures fail only the loan product", async () => {
+  const cases: Record<string, readonly [PreviewFailureReason, Record<string, ResourceRoute>]> = {
+    "error code": ["unexpected-response", { "/fln/fln01001/home": () => jsonResponse({ code: "E999" }) }],
+    "no loan list": ["unexpected-response", { "/fln/fln01001/home": () => ok('{"loanList":[{"foo":"bar"}]}') }],
+    "missing currency": ["missing-currency", { "/fco/fco10001/home": overviewWith(loanInfo({ loanNo: MORTGAGE, loanBal: "1" })), "/fln/fln01001/home": loanList(loanRow({ loanCurr: "" })) }],
+    "missing balance": ["incomplete-data", { "/fco/fco10001/home": overviewWith(loanInfo({ loanNo: MORTGAGE, loanCurr: "TWD" })), "/fln/fln01001/home": loanList(loanRow()) }],
+    "conflicting currency": ["unexpected-response", { "/fco/fco10001/home": overviewWith(loanInfo({ loanNo: MORTGAGE, loanCurr: "USD", loanBal: "1" })), "/fln/fln01001/home": loanList(loanRow()) }],
+    "malformed rate": ["malformed-amount", { "/fln/fln01001/home": loanList(loanRow({ intRate: "1.7.7" }), loanRow({ loanNo: PERSONAL })) }],
+    "malformed date": ["unexpected-response", { "/fln/fln01001/home": loanList(loanRow({ loanEndDate: "2065/02/30" }), loanRow({ loanNo: PERSONAL })) }],
+    "repeated loan": ["unexpected-response", { "/fln/fln01001/home": loanList(loanRow(), loanRow()) }],
+  };
+  for (const [name, [reason, overrides]] of Object.entries(cases)) {
+    const result = await run(overrides, {}, ["deposit", "loan"]);
+    assert.deepEqual(outcomes(result.output), { deposit: "success", loan: "failed" }, name);
+    assert.equal(productCollections(result.writes, "loan").length, 0, `${name} writes no loan collection`);
+    assert.equal(result.deposits.length, 1, `${name} keeps the deposit write`);
+    const alone = await run(overrides, {}, LOAN);
+    assert.equal((alone.error as PreviewSourceFailure).reason, reason, name);
+  }
 });

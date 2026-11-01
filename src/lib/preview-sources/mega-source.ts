@@ -9,6 +9,7 @@ import type {
   PreviewStatement,
   PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewLoan, PreviewLoanCollection } from "../../ledger/pglite/preview-loan.ts";
 import { browserHttp, type PreviewHttp, type PreviewHttpOpener, type PreviewImageDecoder } from "./browser-http.ts";
 import { calibratedCaptchaSolver, MEGA_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import type { PreviewProductAbsence } from "./product-collection.ts";
@@ -351,8 +352,7 @@ async function depositTransactions(api: Client, deposit: Deposit, window: Readon
   }
 }
 
-async function collectDeposits(api: Client, now: string): Promise<PreviewAccount[]> {
-  const overview = await api.resource("megapmb", "/fco/fco10001/home", { type: "1", refresh: true }, { pageId: "fco10001", pageNo: "home" });
+async function collectDeposits(api: Client, overview: Response, now: string): Promise<PreviewAccount[]> {
   const asOf = observedAt(overview.date, now);
   const window = taipeiMonthWindow(now, MONTHS);
   const accounts: PreviewAccount[] = [];
@@ -363,11 +363,116 @@ async function collectDeposits(api: Client, now: string): Promise<PreviewAccount
       currency: deposit.currency,
       type: "depository",
       balances: [{ kind: "available", amount: deposit.balance, currency: deposit.currency, observedAt: asOf }],
-      // all-set-tw queries fao01001 for NT-dollar accounts only; foreign-currency history is not documented.
-      transactions: deposit.currency === "TWD" ? await depositTransactions(api, deposit, window) : [],
+      // Unverified for foreign currency: all-set-tw queries fao01001 for TWD accounts only. A foreign-currency
+      // account sends the same query with its own currency, and a refusal or an unreadable reply fails the product,
+      // because no field marks "no history" and an empty list would read as an account with no activity.
+      transactions: await depositTransactions(api, deposit, window),
     });
   }
   return accounts;
+}
+
+// all-set-tw's candidate field names (megabank/protocol.ts). Which of them Mega sends is unverified.
+const LOAN_NUMBER_FIELDS = ["loanNo", "loanAccNo", "loanAcctNo", "acctNo"] as const;
+const LOAN_BALANCE_FIELDS = ["loanBal", "loanBalance"] as const;
+const LOAN_NAME_FIELDS = ["loanName", "loanTypeName", "loanType"] as const;
+const HOUSING_LOAN = /住宅|購屋|房屋|房貸/u;
+const ROC_DATE = /^(\d{3})[-/]?(\d{2})[-/]?(\d{2})$/u;
+
+function firstText(row: SourceRecord, fields: readonly string[]): string | null {
+  for (const name of fields) {
+    const value = optionalText(row[name]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function loanNumber(row: SourceRecord, field: string): string {
+  return firstText(row, LOAN_NUMBER_FIELDS) ?? fail("unexpected-response", `${field} has none of ${LOAN_NUMBER_FIELDS.join(", ")}`);
+}
+
+function optionalDecimal(value: unknown, field: string): string | null {
+  return value === undefined || value === null || value === "" ? null : exactDecimal(value, field);
+}
+
+/** A Western or ROC (民國) date, as all-set-tw reads loan dates. */
+function loanDate(value: unknown, field: string): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const roc = typeof value === "string" ? ROC_DATE.exec(value.trim()) : null;
+  const date = localDate(roc ? `${Number(roc[1]) + 1911}-${roc[2]}-${roc[3]}` : value, field);
+  return date.precision === "day" ? date.value : fail("unexpected-response", `${field} is not a date`);
+}
+
+/**
+ * The loan rows of fln01001: all-set-tw's fixture names the list `loanList`,
+ * while its parser takes any list, at the top or one level down, whose rows
+ * all carry a loan number. This source does the same but needs exactly one.
+ */
+function loanRows(data: SourceRecord): readonly SourceRecord[] {
+  const values = Object.values(data);
+  const nested = values.flatMap((value) => value !== null && typeof value === "object" && !Array.isArray(value) ? Object.values(value) : []);
+  const lists = [...values, ...nested].filter((value): value is SourceRecord[] =>
+    Array.isArray(value) && value.length > 0
+    && value.every((row) => row !== null && typeof row === "object" && !Array.isArray(row) && firstText(row as SourceRecord, LOAN_NUMBER_FIELDS) !== null));
+  if (lists.length !== 1) return fail("unexpected-response", `fln01001 has ${lists.length} loan lists, not one`);
+  return lists[0]!;
+}
+
+function byLoanNumber(rows: readonly SourceRecord[], field: string): ReadonlyMap<string, SourceRecord> {
+  const map = new Map<string, SourceRecord>();
+  for (const [index, row] of rows.entries()) {
+    const number = loanNumber(row, `${field}[${index}]`);
+    if (map.has(number)) return fail("unexpected-response", `${field} repeats a loan number`);
+    map.set(number, row);
+  }
+  return map;
+}
+
+/**
+ * One snapshot per loan of fln01001, with the balance from the row or else
+ * from the overview's loanInfoList row of the same number. The list is
+ * complete only when loanInfoList, a separate list in the same session,
+ * names exactly the same loans; otherwise it closes nothing.
+ */
+async function collectLoans(api: Client, overview: Response, now: string): Promise<PreviewLoanCollection> {
+  const info = rsData(overview.body, "fco10001").loanInfoList;
+  const listed = info === undefined ? null : byLoanNumber(records(info, "fco10001.loanInfoList"), "fco10001.loanInfoList");
+  if (listed?.size === 0) return { collectedAt: now, completeness: "complete", loans: [] };
+  const response = await api.resource("megapmb", "/fln/fln01001/home", {}, { pageId: "fln01001", pageNo: "home" });
+  const rows = byLoanNumber(loanRows(rsData(response.body, "fln01001")), "fln01001");
+  const loans = [...rows].map(([number, row]): PreviewLoan => {
+    const field = `fln01001 loan ${number.slice(-4)}`;
+    const summary = listed?.get(number);
+    const reported = firstText(row, LOAN_BALANCE_FIELDS);
+    const fallback = summary ? firstText(summary, LOAN_BALANCE_FIELDS) : null;
+    const balance = reported !== null ? exactDecimal(reported, `${field} balance`)
+      : fallback !== null ? exactDecimal(fallback, `${field} loanInfoList balance`)
+      : fail("incomplete-data", `${field} has no balance in fln01001 or loanInfoList`);
+    if (balance.startsWith("-")) return fail("unexpected-response", `${field} balance is signed`);
+    const currency = currencyCode(row.loanCurr ?? summary?.loanCurr, `${field}.loanCurr`);
+    if (row.loanCurr !== undefined && summary?.loanCurr !== undefined && currencyCode(summary.loanCurr, `${field} loanInfoList.loanCurr`) !== currency)
+      return fail("unexpected-response", `${field} has two currencies`);
+    const name = firstText(row, LOAN_NAME_FIELDS)?.replace(/\d{5,}/gu, "••••") ?? null;
+    const rate = optionalText(row.intRate)?.replace(/%$/u, "") ?? row.intRate;
+    return {
+      sourceAccountKey: number,
+      displayLabel: `兆豐銀行 ${name ?? "貸款"} ${number.slice(-4)}`,
+      currency,
+      category: HOUSING_LOAN.test(LOAN_NAME_FIELDS.map((key) => optionalText(row[key]) ?? "").join(" ")) ? "housing" : null,
+      outstandingBalance: { amount: balance, observedAt: observedAt(reported !== null ? response.date : overview.date, now) },
+      originalAmount: optionalDecimal(row.loanAmt, `${field}.loanAmt`),
+      interestRate: optionalDecimal(rate, `${field}.intRate`),
+      paymentAmount: optionalDecimal(row.payAmt, `${field}.payAmt`),
+      nextPaymentDate: loanDate(row.payDate, `${field}.payDate`),
+      // all-set-tw reads payPeriod as the current period, not the periods paid, and derives the total from the dates; neither is reported.
+      installmentsPaid: null,
+      installmentsTotal: null,
+      openedOn: loanDate(row.loanStartDate, `${field}.loanStartDate`),
+      maturityDate: loanDate(row.loanEndDate, `${field}.loanEndDate`),
+    };
+  });
+  const complete = listed !== null && listed.size === rows.size && [...listed.keys()].every((number) => rows.has(number));
+  return { collectedAt: now, completeness: complete ? "complete" : "unproven", loans };
 }
 
 const UNBILLED_MONTH = "999912";
@@ -606,8 +711,8 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
   return {
     id: "mega-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["mega-deposit"],
-    products: ["deposit", "credit_card"],
-    displayName: { en: "Mega Bank deposits and credit cards (preview)", "zh-TW": "兆豐銀行存款與信用卡（預覽）" },
+    products: ["deposit", "credit_card", "loan"],
+    displayName: { en: "Mega Bank deposits, credit cards, and loans (preview)", "zh-TW": "兆豐銀行存款、信用卡與貸款（預覽）" },
     searchAliases: ["Mega Bank", "Mega International Commercial Bank", "MegaBank", "兆豐", "兆豐銀行", "兆豐國際商業銀行"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -651,9 +756,13 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
           await context.event("authentication", "completed", "authentication-completed");
           await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
+          let overview: Promise<Response> | null = null;
+          // Deposits and loans read the same overview, fetched once per run.
+          const home = () => overview ??= api.resource("megapmb", "/fco/fco10001/home", { type: "1", refresh: true }, { pageId: "fco10001", pageNo: "home" });
           const output = await context.preview.collect({
-            deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, collectedAt) }),
+            deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, await home(), collectedAt) }),
             credit_card: () => collectCards(api, collectedAt),
+            loan: async () => collectLoans(api, await home(), collectedAt),
           });
           await context.event("collection", "completed", "collection-completed");
           return output;
