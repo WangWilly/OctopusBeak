@@ -354,7 +354,13 @@ export function withBalanceSeriesHistory(
   const dailyHistoryByAccount = { ...history.dailyHistoryByAccount };
   for (const account of series) {
     const sign = account.side === "asset" ? 1 : -1;
-    dailyHistoryByAccount[account.accountId] = account.points.map((point) => ({
+    const open = account.points.filter((point) => account.closedOn === null || point.date < account.closedOn);
+    const last = open.at(-1);
+    // A closed account drops to zero on its close date, so a carried-forward value or a change across the close sees it leave.
+    const points = last && account.closedOn !== null
+      ? [...open, { date: account.closedOn, currency: last.currency, exact: { coefficient: "0", scale: 0 } }]
+      : open;
+    dailyHistoryByAccount[account.accountId] = points.map((point) => ({
       date: point.date,
       netAssets: [amountLine(point.currency, sign === 1 ? point.exact : negate(point.exact))],
       dailyChange: [],

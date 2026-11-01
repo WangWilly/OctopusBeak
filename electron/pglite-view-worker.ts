@@ -28,7 +28,8 @@ import {
   createPGliteWorkScheduler,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
-import { currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 
 type HealthRow = { ready: boolean };
 
@@ -74,7 +75,10 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), { manualAssets: true });
+  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
+    manualAssets: true,
+    today: () => dateInTimeZone(new Date(), automationBusinessTimezone()),
+  });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();

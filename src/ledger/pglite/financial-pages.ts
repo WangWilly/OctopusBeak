@@ -61,6 +61,8 @@ export type FinancialPageScope = Readonly<{
   previewVisibility: PreviewVisibility;
   /** Whether the store holds the Manual Asset tables; a ledger-only store has none to read. */
   manualAssets: boolean;
+  /** The person's local date; an ended Manual Asset still counts on its end date. */
+  today: string;
 }>;
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
@@ -265,10 +267,10 @@ type OutsideOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: re
 
 const NOTHING_OUTSIDE: OutsideOverview = { accounts: [], series: [] };
 
-async function readManualOverview(reader: PGliteReader, enabled: boolean): Promise<OutsideOverview> {
-  if (!enabled) return NOTHING_OUTSIDE;
+async function readManualOverview(reader: PGliteReader, scope: FinancialPageScope): Promise<OutsideOverview> {
+  if (!scope.manualAssets) return NOTHING_OUTSIDE;
   const views = await readManualAssets(reader);
-  return { accounts: views.map(manualAssetRow), series: views.map(manualAssetSeries) };
+  return { accounts: views.map((view) => manualAssetRow(view, scope.today)), series: views.map(manualAssetSeries) };
 }
 
 async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<OutsideOverview> {
@@ -307,7 +309,7 @@ async function readHistoryWithOutside(
     result.projection.accounts,
   );
   const preview = await readPreviewOverview(reader, scope.previewVisibility);
-  const manual = await readManualOverview(reader, scope.manualAssets);
+  const manual = await readManualOverview(reader, scope);
   const outside: OutsideOverview = {
     accounts: [...preview.accounts, ...manual.accounts],
     series: [...preview.series, ...manual.series],

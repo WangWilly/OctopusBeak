@@ -62,7 +62,10 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
         const published = lastValue() as SpendingPageDto | undefined;
         const publishedVersion = published?.purchaseReport.knowledgeAt ?? -1;
         const actionVersion = result?.knowledgeAt ?? -1;
-        if (currentVersion > publishedVersion || (result && !actionResultPublished && currentVersion >= actionVersion)) {
+        // A manual write that arrived while the action ran was skipped by shouldRecompute.
+        const manualMoved = await registry["financial.manualAssets.revision"]([]) !== (published?.manual?.revision ?? 0);
+        if (currentVersion > publishedVersion || manualMoved
+          || (result && !actionResultPublished && currentVersion >= actionVersion)) {
           recompute();
         }
       })().catch(fail);

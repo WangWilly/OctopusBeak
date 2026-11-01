@@ -15,11 +15,15 @@ import { applyManualAssetCommand, applyPgliteManualAssetsSchema } from "../src/l
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { applyPglitePreviewFinancialDataSchema } from "../src/ledger/pglite/preview-financial-data.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { accountLedger } from "../src/lib/shared-ledger/twd-valuation.ts";
+import { indexExchangeRates } from "../src/lib/shared-money/exchange-rates.ts";
+
+const CLOCK = { now: () => "2026-11-01T02:00:00.000Z", today: () => "2026-11-01" };
 
 async function withManualLedger(run: (input: {
   store: PGliteStore;
   registry: ReturnType<typeof createPGliteFinancialRegistry>;
-  apply: (command: unknown) => ReturnType<typeof applyManualAssetCommand>;
+  apply: (command: unknown) => Promise<Readonly<{ revision: number; assetId?: string; transactionId?: string }>>;
   addUsdRate: () => Promise<void>;
 }) => Promise<void>, database?: PGlite) {
   const store = new PGliteStore(database ?? await createTestPGlite("ledger+operational"));
@@ -30,8 +34,12 @@ async function withManualLedger(run: (input: {
     const operational = createPgliteOperationalProvider(store);
     await run({
       store,
-      registry: createPGliteFinancialRegistry(store, undefined, { manualAssets: true }),
-      apply: (command) => applyManualAssetCommand(store, parseManualAssetCommand(command)),
+      registry: createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: CLOCK.today }),
+      apply: async (command) => {
+        const result = await applyManualAssetCommand(store, command, CLOCK);
+        if (!result.ok) assert.fail(`refused: ${result.code}`);
+        return result;
+      },
       addUsdRate: () => operational.exchangeRates.upsertExchangeRates([{
         rateDate: "2026-01-01", currency: "USD", twdPerUnit: 32, source: "check", fetchedAt: "2026-01-01T00:00:00.000Z",
       }]),
@@ -90,24 +98,40 @@ test("a manual currency without a rate leaves the asset out of the TWD figure an
   });
 });
 
-test("valuation dates become history dates, carried forward until the asset ends, with its history kept", async () => {
+test("an asset counts through its end date, sale price included, and drops to zero the day after", async () => {
   await withManualLedger(async ({ registry, apply }) => {
     const { assetId } = await apply(create("vehicle", "Car", "TWD", "2026-09-01", "600000", "purchase_price"));
     await apply({ kind: "upsertValuation", assetId, valuation: { valuedOn: "2026-10-20", amount: "550000", source: "used_vehicle_quote", note: null } });
     await apply({ kind: "endAsset", assetId, endedOn: "2026-10-25" });
+    await apply({ kind: "upsertValuation", assetId, valuation: { valuedOn: "2026-10-25", amount: "520000", source: "used_vehicle_quote", note: "sold" } });
     const overview = await registry["financial.overview.current"]([]);
     const assetsOn = (date: string) => overview.dailyHistory.find((row) => row.date === date);
     assert.deepEqual(assetsOn("2026-09-01")?.assets, [{ currency: "TWD", value: 600000, exact: { coefficient: "600000", scale: 0 } }]);
     assert.equal(assetsOn("2026-09-01")?.includesManual, true);
-    const october20 = assetsOn("2026-10-20")!.assets[0]!;
-    assert.equal(october20.value, 550000 + 1000, "the car beside the 1000 TWD Cathay account");
-    assert.equal(assetsOn("2026-10-25")?.assets[0]?.value, 1000, "from its end date the car counts toward nothing");
-    assert.equal(assetsOn("2026-10-25")?.includesManual, undefined);
+    assert.equal(assetsOn("2026-10-20")!.assets[0]!.value, 550000 + 1000, "the car beside the 1000 TWD Cathay account");
+    assert.equal(assetsOn("2026-10-25")?.assets[0]?.value, 520000 + 1000, "on its end date the sale price counts");
+    assert.equal(assetsOn("2026-10-26")?.assets[0]?.value, 1000, "from the next day the car counts toward nothing");
+    assert.equal(assetsOn("2026-10-26")?.includesManual, undefined);
     const row = overview.accounts.find((account) => account.manual)!;
-    assert.deepEqual(row.amountLines, [], "an ended asset shows no amount");
+    assert.deepEqual(row.amountLines, [], "after its end date an ended asset shows no amount");
     assert.equal(row.manual?.endedOn, "2026-10-25");
-    assert.equal(row.manual?.valuations.length, 2);
-    assert.equal(overview.dailyHistoryByAccount[row.id]?.length, 2, "its own history stays");
+    assert.equal(row.manual?.valuations.length, 3);
+    assert.deepEqual(overview.dailyHistoryByAccount[row.id]?.map((entry) => [entry.date, entry.netAssets[0]?.value]), [
+      ["2026-09-01", 600000], ["2026-10-20", 550000], ["2026-10-25", 520000], ["2026-10-26", 0],
+    ], "its own history stays and records the drop to zero");
+    const ledger = accountLedger(overview.dailyHistoryByAccount, indexExchangeRates(overview.exchangeRates));
+    assert.equal(ledger.change("2026-10-25", "2026-10-31").change, -520000, "a change across the sale sees the car leave");
+  });
+});
+
+test("an asset ended today still counts today", async () => {
+  await withManualLedger(async ({ registry, apply }) => {
+    const before = converted(await registry["financial.overview.current"]([]));
+    const { assetId } = await apply(create("other", "Watch", "TWD", "2026-10-01", "50000", "market_quote"));
+    await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
+    const overview = await registry["financial.overview.current"]([]);
+    assert.equal(converted(overview).twd, before.twd + 50000);
+    assert.equal(overview.accounts.find((account) => account.manual)?.amountLines.length, 1);
   });
 });
 
@@ -149,7 +173,7 @@ test("Spending counts manual purchases in their month, day, and Personal Categor
     const page = await registry["financial.spending.current"]([{}]);
     const summary = page.purchaseReport.summary!;
     assert.equal(summary.recordCount, before.purchaseReport.summary!.recordCount + 2);
-    assert.deepEqual(page.manual?.purchases.map((row) => [row.amount, row.personalCategory]), [["30", null], ["120.5", "dining"]]);
+    assert.deepEqual(page.manual?.purchases.map((row) => [row.amount, row.personalCategory]).sort(), [["120.5", "dining"], ["30", null]]);
     assert.deepEqual(summary.dayTotals.find((day) => day.date === "2026-10-03"), {
       month: "2026-10", date: "2026-10-03", recordCount: 2,
       totalsByCurrency: [{ currency: "TWD", coefficient: "1505", scale: 1, count: 2 }],
@@ -224,6 +248,49 @@ test("every live page republishes on each kind of manual write", async () => {
       assert.equal((latest.get("financial.overview.current") as OverviewPageDto).accounts.some((account) => account.manual), false);
     } finally {
       await Promise.all(stops.map((stop) => stop()));
+    }
+  }, database as unknown as PGlite);
+});
+
+test("a manual write during a Spending page action is published once the action settles", async () => {
+  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  await applyPgliteBaseline(database as unknown as PGlite);
+  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
+  await withManualLedger(async ({ registry, apply }) => {
+    let inFlight = false;
+    let settle: ((result: null) => void) | null = null;
+    const racing = {
+      ...registry,
+      isSpendingPageActionInFlight: () => inFlight,
+      onSpendingPageActionSettled: (listener: (result: null) => void) => {
+        settle = listener;
+        return () => {};
+      },
+    } as typeof registry;
+    const views = createPGliteFinancialLiveViews(database, racing, () => [], undefined, { manualAssets: true });
+    const pages: SpendingPageDto[] = [];
+    const stop = await views.subscribe("financial.spending.current", {}, (rows) => pages.push(rows[0] as SpendingPageDto));
+    const purchases = () => pages.at(-1)?.manual?.purchases.length ?? 0;
+    try {
+      const { assetId } = await apply(create("cash", "Wallet", "TWD", "2026-10-01", "500", "counted"));
+      const deadline = Date.now() + 5_000;
+      while ((pages.at(-1)?.manual?.revision ?? 0) < 1) {
+        if (Date.now() > deadline) throw new Error("Spending did not publish the first manual write");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      inFlight = true;
+      await apply({ kind: "addTransaction", accountId: assetId, transaction: { kind: "purchase", personalCategory: null, occurredOn: "2026-10-02", amount: "40", note: null } });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(purchases(), 0, "the trigger is held while the action runs");
+      inFlight = false;
+      settle!(null);
+      const settled = Date.now() + 5_000;
+      while (purchases() === 0) {
+        if (Date.now() > settled) throw new Error("the manual purchase was never published after the action settled");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    } finally {
+      await stop();
     }
   }, database as unknown as PGlite);
 });

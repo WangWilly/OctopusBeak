@@ -90,8 +90,9 @@ import {
   readManualAssetRevision,
   readManualSpendingPurchases,
 } from "../src/ledger/pglite/manual-assets.ts";
-import { ManualAssetRejected, parseManualAssetCommand } from "../src/lib/manual-assets/manual-assets.ts";
 import { spendingPageWithManual } from "../src/lib/spending/manual-spending.ts";
+import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
+import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import {
@@ -224,8 +225,6 @@ function failureCategory(error: unknown): PGliteFinancialFailureCategory {
   if (error instanceof PGliteCanonicalEInvoiceAdmissionError) {
     return error.code === "revision-conflict" ? "conflict" : "admission";
   }
-  // A Manual Asset command broke a registry or stored-row rule; the renderer form checks the same rules first.
-  if (error instanceof ManualAssetRejected) return "ineligible";
   // Unknown exceptions may be database, transport, or programming failures.
   // They must remain fatal; matching arbitrary messages would turn a broken
   // schema such as "missing account table" into a recoverable item error.
@@ -243,6 +242,8 @@ function post(port: RpcPort, response: PGliteFinancialResponse): void {
 export type PGliteFinancialRegistryOptions = Readonly<{
   /** The store holds the Manual Asset tables; the desktop worker installs them, a ledger-only check does not. */
   manualAssets?: boolean;
+  /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
+  today?: () => string;
 }>;
 
 export function createPGliteFinancialRegistry(
@@ -251,8 +252,10 @@ export function createPGliteFinancialRegistry(
   options: PGliteFinancialRegistryOptions = {},
 ): PGliteFinancialRegistryWithPageActionEvents {
   const manualAssets = options.manualAssets === true;
+  const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
+  const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
-    ({ expectedSources, previewVisibility: previewVisibility(), manualAssets });
+    ({ expectedSources, previewVisibility: previewVisibility(), manualAssets, today: today() });
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
@@ -353,7 +356,7 @@ export function createPGliteFinancialRegistry(
     "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
     "financial.manualAssets.apply"([command]) {
       if (!manualAssets) throw new Error("This store holds no Manual Asset tables.");
-      return applyManualAssetCommand(store, parseManualAssetCommand(command));
+      return applyManualAssetCommand(store, command, manualClock);
     },
     "financial.manualAssets.revision": () => manualAssets ? readManualAssetRevision(store) : Promise.resolve(0),
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),

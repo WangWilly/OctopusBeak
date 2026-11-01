@@ -19,11 +19,24 @@ import {
 } from "./manual-assets.ts";
 import { PGliteStore } from "./transaction.ts";
 
-async function withManualStore(run: (store: PGliteStore, apply: (command: unknown) => ReturnType<typeof applyManualAssetCommand>) => Promise<void>, database?: PGlite) {
+const CLOCK = { now: () => "2026-11-01T02:00:00.000Z", today: () => "2026-11-01" };
+
+type Applied = Readonly<{ revision: number; assetId?: string; transactionId?: string }>;
+
+async function withManualStore(run: (
+  store: PGliteStore,
+  apply: (command: unknown) => Promise<Applied>,
+  attempt: (command: unknown) => ReturnType<typeof applyManualAssetCommand>,
+) => Promise<void>, database?: PGlite) {
   const store = new PGliteStore(database ?? await PGlite.create());
+  const attempt = (command: unknown) => applyManualAssetCommand(store, command, CLOCK);
   try {
     await applyPgliteManualAssetsSchema(store);
-    await run(store, (command) => applyManualAssetCommand(store, parseManualAssetCommand(command)));
+    await run(store, async (command) => {
+      const result = await attempt(command);
+      if (!result.ok) assert.fail(`refused: ${result.code}`);
+      return result;
+    }, attempt);
   } finally {
     await store.close();
   }
@@ -55,37 +68,46 @@ test("a valuation on a date already valued replaces it, every other date stays, 
 });
 
 test("a valuation source the category does not offer, or a malformed field, is refused at the boundary", () => {
-  const refuse = (command: unknown, pattern: RegExp) =>
-    assert.throws(() => parseManualAssetCommand(command), (error) => error instanceof ManualAssetRejected && pattern.test(error.message));
-  refuse({ ...house, firstValuation: { ...house.firstValuation, source: "counted" } }, /not offered for house/u);
-  refuse({ ...house, category: "deposit" }, /category/u);
-  refuse({ ...house, currency: "twd" }, /ISO 4217/u);
-  refuse({ ...house, firstValuation: { ...house.firstValuation, valuedOn: "2026-02-30" } }, /YYYY-MM-DD/u);
-  refuse({ ...house, firstValuation: { ...house.firstValuation, amount: 12000000 } }, /exact/u);
-  refuse({ ...house, firstValuation: { ...house.firstValuation, amount: "-5" } }, /exact/u);
-  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "purchase", occurredOn: "2026-10-02", amount: "0", note: null, personalCategory: null } }, /positive/u);
-  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "purchase", occurredOn: "2026-10-02", amount: "5", note: null, personalCategory: "groceries" } }, /Personal Category/u);
-  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "receipt", occurredOn: "2026-10-02", amount: "5", note: null, personalCategory: "dining" } }, /only a purchase/u);
-  refuse({ kind: "dropTables" }, /unknown/u);
+  const refuse = (command: unknown, code: string) =>
+    assert.throws(() => parseManualAssetCommand(command), (error) => error instanceof ManualAssetRejected && error.code === code);
+  refuse({ ...house, firstValuation: { ...house.firstValuation, source: "counted" } }, "source_not_offered");
+  refuse({ ...house, category: "deposit" }, "invalid_choice");
+  refuse({ ...house, currency: "twd" }, "invalid_currency");
+  refuse({ ...house, firstValuation: { ...house.firstValuation, valuedOn: "2026-02-30" } }, "invalid_date");
+  refuse({ ...house, firstValuation: { ...house.firstValuation, amount: 12000000 } }, "invalid_amount");
+  refuse({ ...house, firstValuation: { ...house.firstValuation, amount: "-5" } }, "invalid_amount");
+  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "purchase", occurredOn: "2026-10-02", amount: "0", note: null, personalCategory: null } }, "amount_not_positive");
+  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "purchase", occurredOn: "2026-10-02", amount: "5", note: null, personalCategory: "groceries" } }, "invalid_choice");
+  refuse({ kind: "addTransaction", accountId: "a", transaction: { kind: "receipt", occurredOn: "2026-10-02", amount: "5", note: null, personalCategory: "dining" } }, "category_only_for_purchase");
+  refuse({ kind: "dropTables" }, "invalid_command");
 });
 
-test("rules that depend on stored rows are refused when the command runs", async () => {
-  await withManualStore(async (_store, apply) => {
+test("rules that depend on stored rows or today's date are refused with their code when the command runs", async () => {
+  await withManualStore(async (store, apply, attempt) => {
     const { assetId: houseId } = await apply(house);
     const { assetId: twd } = await apply(wallet("TWD wallet"));
     const { assetId: usd } = await apply(wallet("USD wallet", "USD", "20"));
-    const rejects = (command: unknown, pattern: RegExp) =>
-      assert.rejects(apply(command), (error) => error instanceof ManualAssetRejected && pattern.test(error.message));
-    await rejects({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-02-01", amount: "1", source: "counted", note: null } }, /not offered/u);
-    await rejects({ kind: "addTransaction", accountId: houseId, transaction: { kind: "receipt", occurredOn: "2026-10-02", amount: "5", note: null } }, /only a Manual Account/u);
-    await rejects({ kind: "addTransaction", accountId: twd, transaction: { kind: "transfer", direction: "out", counterpartAccountId: usd, occurredOn: "2026-10-02", amount: "5", note: null } }, /one currency/u);
-    await rejects({ kind: "addTransaction", accountId: twd, transaction: { kind: "transfer", direction: "out", counterpartAccountId: twd, occurredOn: "2026-10-02", amount: "5", note: null } }, /two different/u);
-    await rejects({ kind: "deleteValuation", assetId: houseId, valuedOn: "2026-01-10" }, /at least one valuation/u);
+    const refused = async (command: unknown, code: string) => assert.deepEqual(await attempt(command), { ok: false, code });
+    await refused({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-02-01", amount: "1", source: "counted", note: null } }, "source_not_offered");
+    await refused({ kind: "addTransaction", accountId: houseId, transaction: { kind: "receipt", occurredOn: "2026-10-02", amount: "5", note: null } }, "not_manual_account");
+    await refused({ kind: "addTransaction", accountId: twd, transaction: { kind: "transfer", direction: "out", counterpartAccountId: usd, occurredOn: "2026-10-02", amount: "5", note: null } }, "transfer_currency_mismatch");
+    await refused({ kind: "addTransaction", accountId: twd, transaction: { kind: "transfer", direction: "out", counterpartAccountId: twd, occurredOn: "2026-10-02", amount: "5", note: null } }, "transfer_same_account");
+    await refused({ kind: "deleteValuation", assetId: houseId, valuedOn: "2026-01-10" }, "last_valuation");
+    await refused({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-11-02", amount: "1", source: "own_estimate", note: null } }, "future_date");
+    await refused({ kind: "addTransaction", accountId: twd, transaction: { kind: "receipt", occurredOn: "2026-11-02", amount: "5", note: null } }, "future_date");
+    await refused({ kind: "endAsset", assetId: houseId, endedOn: "2026-11-02" }, "future_date");
+    await refused({ ...house, firstValuation: { ...house.firstValuation, valuedOn: "2027-01-01" } }, "future_date");
+    await apply({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-11-01", amount: "1", source: "own_estimate", note: null } });
+    await apply({ kind: "deleteValuation", assetId: houseId, valuedOn: "2026-11-01" });
     await apply({ kind: "endAsset", assetId: houseId, endedOn: "2026-08-01" });
-    await rejects({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-09-01", amount: "1", source: "own_estimate", note: null } }, /after the asset ended/u);
+    await refused({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-09-01", amount: "1", source: "own_estimate", note: null } }, "dated_after_end");
+    await apply({ kind: "upsertValuation", assetId: houseId, valuation: { valuedOn: "2026-08-01", amount: "13000000", source: "own_estimate", note: "sale price" } });
     await apply({ kind: "upsertValuation", assetId: twd, valuation: { valuedOn: "2026-10-20", amount: "900", source: "counted", note: null } });
-    await rejects({ kind: "endAsset", assetId: twd, endedOn: "2026-10-10" }, /after that end date/u);
-    await rejects({ kind: "renameAsset", assetId: "missing", name: "x" }, /does not exist/u);
+    await refused({ kind: "endAsset", assetId: twd, endedOn: "2026-10-10" }, "ends_before_existing_row");
+    await refused({ kind: "renameAsset", assetId: "missing", name: "x" }, "asset_not_found");
+    const revision = await readManualAssetRevision(store);
+    await refused({ kind: "deleteTransaction", transactionId: "missing" }, "transaction_not_found");
+    assert.equal(await readManualAssetRevision(store), revision, "a refused command writes nothing");
   });
 });
 

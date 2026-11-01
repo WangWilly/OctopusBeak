@@ -3,7 +3,10 @@ import type { PersonalCategoryCode } from "../canonical/personal-category-codes.
 import {
   assertSourceAllowed,
   MANUAL_ASSET_CATEGORIES,
+  assertNotFuture,
   ManualAssetRejected,
+  parseManualAssetCommand,
+  rejectManual as reject,
   type ManualAsset,
   type ManualAssetCategory,
   type ManualAssetCommand,
@@ -79,10 +82,6 @@ export function applyPgliteManualAssetsSchema(store: PGliteStore): Promise<void>
 }
 
 type Reader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
-
-const reject = (message: string): never => {
-  throw new ManualAssetRejected(message);
-};
 
 type AssetRow = {
   asset_id: string; category: ManualAssetCategory; name: string; currency: string; ended_on: string | null; created_at: string;
@@ -185,16 +184,16 @@ async function requireAsset(tx: PGliteTransaction, assetId: string): Promise<Man
     "SELECT asset_id, category, name, currency, ended_on, created_at FROM manual_assets WHERE asset_id = $1 FOR UPDATE",
     [assetId],
   );
-  return result.rows[0] ? asset(result.rows[0]) : reject("the manual asset does not exist");
+  return result.rows[0] ? asset(result.rows[0]) : reject("asset_not_found", "the manual asset does not exist");
 }
 
 function assertBeforeEnd(target: ManualAsset, day: string, what: string): void {
-  if (target.endedOn !== null && day > target.endedOn) reject(`${what} is dated after the asset ended`);
+  if (target.endedOn !== null && day > target.endedOn) reject("dated_after_end", `${what} is dated after the asset ended`);
 }
 
 async function requireManualAccount(tx: PGliteTransaction, accountId: string): Promise<ManualAsset> {
   const account = await requireAsset(tx, accountId);
-  if (!MANUAL_ASSET_CATEGORIES[account.category].recordsTransactions) reject("only a Manual Account takes transactions");
+  if (!MANUAL_ASSET_CATEGORIES[account.category].recordsTransactions) reject("not_manual_account", "only a Manual Account takes transactions");
   return account;
 }
 
@@ -224,9 +223,9 @@ async function insertTransaction(
     await insert(transactionId, accountId, {});
     return;
   }
-  if (input.counterpartAccountId === accountId) reject("a transfer needs two different Manual Accounts");
+  if (input.counterpartAccountId === accountId) reject("transfer_same_account", "a transfer needs two different Manual Accounts");
   const counterpart = await requireManualAccount(tx, input.counterpartAccountId);
-  if (counterpart.currency !== account.currency) reject("a transfer moves between Manual Accounts of one currency");
+  if (counterpart.currency !== account.currency) reject("transfer_currency_mismatch", "a transfer moves between Manual Accounts of one currency");
   assertBeforeEnd(counterpart, input.occurredOn, "the transfer");
   const transferId = randomUUID();
   await insert(transactionId, accountId, { transferId, direction: input.direction, counterpart: counterpart.id });
@@ -244,7 +243,7 @@ async function requireTransaction(tx: PGliteTransaction, transactionId: string):
        FROM manual_transactions WHERE transaction_id = $1`,
     [transactionId],
   );
-  return result.rows[0] ?? reject("the manual transaction does not exist");
+  return result.rows[0] ?? reject("transaction_not_found", "the manual transaction does not exist");
 }
 
 async function deleteTransactionRows(tx: PGliteTransaction, row: TransactionRow): Promise<void> {
@@ -274,7 +273,7 @@ async function run(
   tx: PGliteTransaction,
   command: ManualAssetCommand,
   now: string,
-): Promise<Omit<ManualAssetCommandResult, "revision">> {
+): Promise<Readonly<{ assetId?: string; transactionId?: string }>> {
   switch (command.kind) {
     case "createAsset": {
       const assetId = randomUUID();
@@ -297,7 +296,7 @@ async function run(
       await requireAsset(tx, command.assetId);
       if (command.endedOn !== null) {
         const latest = await latestDatedRow(tx, command.assetId);
-        if (latest !== null && latest > command.endedOn) reject("the asset has a valuation or transaction after that end date");
+        if (latest !== null && latest > command.endedOn) reject("ends_before_existing_row", "the asset has a valuation or transaction after that end date");
       }
       await tx.query("UPDATE manual_assets SET ended_on = $2 WHERE asset_id = $1", [command.assetId, command.endedOn]);
       return { assetId: command.assetId };
@@ -325,12 +324,12 @@ async function run(
         "SELECT COUNT(*)::int AS count FROM manual_valuations WHERE asset_id = $1 AND valued_on <> $2",
         [command.assetId, command.valuedOn],
       );
-      if (remaining.rows[0]!.count === 0) reject("an asset keeps at least one valuation; delete the asset instead");
+      if (remaining.rows[0]!.count === 0) reject("last_valuation", "an asset keeps at least one valuation; delete the asset instead");
       const deleted = await tx.query(
         "DELETE FROM manual_valuations WHERE asset_id = $1 AND valued_on = $2",
         [command.assetId, command.valuedOn],
       );
-      if ((deleted.affectedRows ?? 0) === 0) reject("the valuation does not exist");
+      if ((deleted.affectedRows ?? 0) === 0) reject("valuation_not_found", "the valuation does not exist");
       return { assetId: command.assetId };
     }
     case "addTransaction": {
@@ -356,14 +355,37 @@ async function run(
   }
 }
 
-/** Runs one command in one transaction and advances the revision every live view watches. */
-export function applyManualAssetCommand(
+export type ManualAssetClock = Readonly<{
+  /** The instant a row is recorded at. */
+  now(): string;
+  /** The person's local calendar date; nothing may be dated after it. */
+  today(): string;
+}>;
+
+const SYSTEM_CLOCK: ManualAssetClock = {
+  now: () => new Date().toISOString(),
+  today: () => new Date().toISOString().slice(0, 10),
+};
+
+/**
+ * Parses one command at the boundary, runs it in one transaction, and
+ * advances the revision every live view watches. A broken rule rolls the
+ * transaction back and comes back as its code, not as a thrown error.
+ */
+export async function applyManualAssetCommand(
   store: PGliteStore,
-  command: ManualAssetCommand,
-  now: () => string = () => new Date().toISOString(),
+  input: unknown,
+  clock: ManualAssetClock = SYSTEM_CLOCK,
 ): Promise<ManualAssetCommandResult> {
-  return store.transaction(async (tx) => {
-    const result = await run(tx, command, now());
-    return { ...result, revision: await bumpRevision(tx) };
-  });
+  try {
+    const command = parseManualAssetCommand(input);
+    assertNotFuture(command, clock.today());
+    return await store.transaction(async (tx) => {
+      const result = await run(tx, command, clock.now());
+      return { ok: true as const, ...result, revision: await bumpRevision(tx) };
+    });
+  } catch (error) {
+    if (error instanceof ManualAssetRejected) return { ok: false, code: error.code };
+    throw error;
+  }
 }

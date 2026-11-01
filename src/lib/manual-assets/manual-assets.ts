@@ -110,18 +110,49 @@ export type ManualAssetCommand =
   | Readonly<{ kind: "deleteTransaction"; transactionId: string }>
   | Readonly<{ kind: "deleteAllManualAssets" }>;
 
-export type ManualAssetCommandResult = Readonly<{ revision: number; assetId?: string; transactionId?: string }>;
+/** Which rule refused a command; the renderer turns each into a message. */
+export const MANUAL_ASSET_REJECTION_CODES = [
+  "invalid_command",
+  "invalid_name",
+  "invalid_currency",
+  "invalid_amount",
+  "amount_not_positive",
+  "invalid_date",
+  "invalid_note",
+  "invalid_choice",
+  "source_not_offered",
+  "category_only_for_purchase",
+  "future_date",
+  "asset_not_found",
+  "valuation_not_found",
+  "transaction_not_found",
+  "not_manual_account",
+  "transfer_same_account",
+  "transfer_currency_mismatch",
+  "dated_after_end",
+  "ends_before_existing_row",
+  "last_valuation",
+] as const;
+export type ManualAssetRejectionCode = (typeof MANUAL_ASSET_REJECTION_CODES)[number];
+
+/** A refused command is an expected outcome, returned rather than thrown so its code crosses every IPC hop. */
+export type ManualAssetCommandResult =
+  | Readonly<{ ok: true; revision: number; assetId?: string; transactionId?: string }>
+  | Readonly<{ ok: false; code: ManualAssetRejectionCode }>;
 
 export class ManualAssetRejected extends Error {
-  constructor(message: string) {
+  readonly code: ManualAssetRejectionCode;
+  constructor(code: ManualAssetRejectionCode, message: string) {
     super(message);
     this.name = "ManualAssetRejected";
+    this.code = code;
   }
 }
 
-const reject = (message: string): never => {
-  throw new ManualAssetRejected(message);
+export const rejectManual = (code: ManualAssetRejectionCode, message: string): never => {
+  throw new ManualAssetRejected(code, message);
 };
+const reject = rejectManual;
 
 const AMOUNT = /^\d+(?:\.\d+)?$/u;
 const CURRENCY = /^[A-Z]{3}$/u;
@@ -135,40 +166,40 @@ export function isManualDate(value: unknown): value is ManualDate {
 }
 
 function record(value: unknown, field: string): Readonly<Record<string, unknown>> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return reject(`${field} is not an object`);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return reject("invalid_command", `${field} is not an object`);
   return value as Readonly<Record<string, unknown>>;
 }
 
 function text(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim() === "") return reject(`${field} is missing`);
-  if (value.length > MAX_TEXT) return reject(`${field} is longer than ${MAX_TEXT} characters`);
+  if (typeof value !== "string" || value.trim() === "") return reject("invalid_name", `${field} is missing`);
+  if (value.length > MAX_TEXT) return reject("invalid_name", `${field} is longer than ${MAX_TEXT} characters`);
   return value.trim();
 }
 
 function optionalNote(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  if (typeof value !== "string") return reject("note is not text");
-  if (value.length > MAX_TEXT) return reject(`note is longer than ${MAX_TEXT} characters`);
+  if (typeof value !== "string") return reject("invalid_note", "note is not text");
+  if (value.length > MAX_TEXT) return reject("invalid_note", `note is longer than ${MAX_TEXT} characters`);
   return value.trim() === "" ? null : value.trim();
 }
 
 function id(value: unknown, field: string): string {
-  if (typeof value !== "string" || value === "" || value.length > 64) return reject(`${field} is not an id`);
+  if (typeof value !== "string" || value === "" || value.length > 64) return reject("invalid_command", `${field} is not an id`);
   return value;
 }
 
 function date(value: unknown, field: string): ManualDate {
-  return isManualDate(value) ? value : reject(`${field} is not a YYYY-MM-DD date`);
+  return isManualDate(value) ? value : reject("invalid_date", `${field} is not a YYYY-MM-DD date`);
 }
 
 function amount(value: unknown, field: string, positive: boolean): ManualAmount {
-  if (typeof value !== "string" || !AMOUNT.test(value)) return reject(`${field} is not an exact non-negative decimal`);
-  if (positive && /^0+(?:\.0+)?$/u.test(value)) return reject(`${field} is not positive`);
+  if (typeof value !== "string" || !AMOUNT.test(value)) return reject("invalid_amount", `${field} is not an exact non-negative decimal`);
+  if (positive && /^0+(?:\.0+)?$/u.test(value)) return reject("amount_not_positive", `${field} is not positive`);
   return value;
 }
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
-  return allowed.includes(value as T) ? value as T : reject(`${field} is not one of ${allowed.join(", ")}`);
+  return allowed.includes(value as T) ? value as T : reject("invalid_choice", `${field} is not one of ${allowed.join(", ")}`);
 }
 
 function valuation(value: unknown): ManualValuation {
@@ -191,11 +222,11 @@ function transactionInput(value: unknown): ManualTransactionInput {
   const kind = oneOf(input.kind, ["purchase", "receipt", "transfer"] as const, "transaction kind");
   if (kind === "purchase") {
     const category = input.personalCategory ?? null;
-    if (category !== null && !isPersonalCategoryCode(category)) reject("personalCategory is not a Personal Category code");
+    if (category !== null && !isPersonalCategoryCode(category)) reject("invalid_choice", "personalCategory is not a Personal Category code");
     return { ...core, kind, personalCategory: category as PersonalCategoryCode | null };
   }
   if (input.personalCategory !== undefined && input.personalCategory !== null)
-    reject("only a purchase takes a Personal Category");
+    reject("category_only_for_purchase", "only a purchase takes a Personal Category");
   if (kind === "receipt") return { ...core, kind };
   return {
     ...core,
@@ -208,7 +239,7 @@ function transactionInput(value: unknown): ManualTransactionInput {
 /** Rejects a valuation source the category does not offer. */
 export function assertSourceAllowed(category: ManualAssetCategory, source: ManualValuationSource): void {
   if (!MANUAL_ASSET_CATEGORIES[category].sources.includes(source))
-    reject(`valuation source ${source} is not offered for ${category}`);
+    reject("source_not_offered", `valuation source ${source} is not offered for ${category}`);
 }
 
 /**
@@ -225,7 +256,7 @@ export function parseManualAssetCommand(value: unknown): ManualAssetCommand {
       assertSourceAllowed(category, firstValuation.source);
       const currency = typeof input.currency === "string" && CURRENCY.test(input.currency)
         ? input.currency
-        : reject("currency is not an ISO 4217 code");
+        : reject("invalid_currency", "currency is not an ISO 4217 code");
       return { kind: "createAsset", category, name: text(input.name, "name"), currency, firstValuation };
     }
     case "renameAsset":
@@ -255,8 +286,18 @@ export function parseManualAssetCommand(value: unknown): ManualAssetCommand {
     case "deleteAllManualAssets":
       return { kind: "deleteAllManualAssets" };
     default:
-      return reject("command kind is unknown");
+      return reject("invalid_command", "command kind is unknown");
   }
+}
+
+/** Rejects a command dated after `today`: a valuation, a transaction, or an end date. */
+export function assertNotFuture(command: ManualAssetCommand, today: ManualDate): void {
+  const dates = command.kind === "createAsset" ? [command.firstValuation.valuedOn]
+    : command.kind === "upsertValuation" ? [command.valuation.valuedOn]
+    : command.kind === "endAsset" ? (command.endedOn === null ? [] : [command.endedOn])
+    : command.kind === "addTransaction" || command.kind === "updateTransaction" ? [command.transaction.occurredOn]
+    : [];
+  if (dates.some((day) => day > today)) reject("future_date", "the date is after today");
 }
 
 export function exactFromManualAmount(value: ManualAmount): ExactAmount {

@@ -1,6 +1,7 @@
 import { manualBalancePoints } from "../../lib/manual-assets/manual-assets.ts";
 import type { AccountRowDto, SummaryMetricDto } from "../../lib/shared-ledger/types.ts";
 import { exactToNumber } from "../../lib/shared-money/exact-money.ts";
+import { addDays } from "../../lib/shared-ledger/twd-valuation.ts";
 import type { ManualAssetView } from "./manual-assets.ts";
 import type { BalanceSeries } from "./preview-overview.ts";
 
@@ -14,16 +15,17 @@ function points(view: ManualAssetView) {
 
 /**
  * A Manual Asset is an asset row with a manual marker. Its value is the
- * latest dated change; an ended asset keeps its history but shows no amount,
- * so no total counts it.
+ * latest dated change. It still counts on its end date, a sale price
+ * included; after that day it keeps its history but shows no amount, so no
+ * total counts it.
  */
-export function manualAssetRow(view: ManualAssetView): AccountRowDto {
+export function manualAssetRow(view: ManualAssetView, today: string): AccountRowDto {
   const { asset } = view;
   const latest = points(view).at(-1) ?? null;
   const balance = latest
     ? { asOf: latest.date, amount: { currency: asset.currency, value: exactToNumber(latest.exact), exact: { ...latest.exact } } }
     : null;
-  const ended = asset.endedOn !== null;
+  const ended = asset.endedOn !== null && today > asset.endedOn;
   return {
     id: manualRowId(asset.id),
     label: asset.name,
@@ -54,7 +56,8 @@ export function manualAssetSeries(view: ManualAssetView): BalanceSeries {
     label: view.asset.name,
     side: "asset",
     marker: "manual",
-    closedOn: view.asset.endedOn,
+    // It counts through its end date and toward nothing from the next day.
+    closedOn: view.asset.endedOn === null ? null : addDays(view.asset.endedOn, 1),
     points: points(view).map((point) => ({ date: point.date, currency: view.asset.currency, exact: point.exact })),
   };
 }
