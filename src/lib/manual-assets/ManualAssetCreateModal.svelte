@@ -70,106 +70,143 @@
 {#if open}
   <div class="modal open">
     <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
-    <div class="modal-panel manual-form-panel" role="dialog" aria-modal="true" aria-labelledby="manual-create-title" tabindex="-1" data-manual-create>
-      <div class="modal-head">
+    <div class="modal-panel create-panel" role="dialog" aria-modal="true" aria-labelledby="manual-create-title" tabindex="-1" data-manual-create>
+      <header class="create-head">
         <h2 id="manual-create-title">{$t.manualAssets.createTitle}</h2>
         <button class="modal-close" type="button" aria-label={$t.common.close} onclick={close}><X size={16} strokeWidth={2} aria-hidden="true" /></button>
-      </div>
-      <form class="modal-body manual-form" onsubmit={(event) => { event.preventDefault(); void save(); }}>
-        <label>
-          <span>{$t.manualAssets.category}</span>
-          <select bind:value={category} data-field="category">
-            {#each MANUAL_ASSET_CATEGORY_IDS as id}
-              <option value={id}>{$t.manualAssets.categories[id]}</option>
-            {/each}
-          </select>
-        </label>
-        <p class="hint" class:caution={category === "other"} data-category-hint={category}>{$t.manualAssets.categoryHints[category]}</p>
-        <label>
-          <span>{$t.manualAssets.name}</span>
-          <input bind:value={name} maxlength="200" data-field="name" />
-        </label>
-        <div class="row">
-          <label>
-            <span>{counting ? $t.manualAssets.countedAmount : $t.manualAssets.amount}</span>
-            <input bind:value={amount} inputmode="decimal" class="num" data-field="amount" />
+      </header>
+      <form class="create-form" onsubmit={(event) => { event.preventDefault(); void save(); }}>
+        <div class="modal-body fields">
+          <label class="wide">
+            <span>{$t.manualAssets.category}</span>
+            <select bind:value={category} data-field="category">
+              {#each MANUAL_ASSET_CATEGORY_IDS as id}
+                <option value={id}>{$t.manualAssets.categories[id]}</option>
+              {/each}
+            </select>
           </label>
-          <label class="narrow">
+          <label class="wide">
+            <span>{$t.manualAssets.name}</span>
+            <input bind:value={name} maxlength="200" data-field="name" />
+          </label>
+          <label>
             <span>{$t.manualAssets.currency}</span>
-            <select bind:value={currency} class="num" data-field="currency">
+            <select bind:value={currency} data-field="currency">
               {#each MANUAL_ASSET_CURRENCIES as code}<option value={code}>{code}</option>{/each}
             </select>
           </label>
-        </div>
-        <div class="row">
+          <label>
+            <span>{counting ? $t.manualAssets.countedAmount : $t.manualAssets.amount}</span>
+            <input bind:value={amount} inputmode="decimal" class="num" placeholder="0" data-field="amount" />
+          </label>
           <label>
             <span>{counting ? $t.manualAssets.countedOn : $t.manualAssets.valuedOn}</span>
             <input type="date" max={today} bind:value={valuedOn} data-field="valuedOn" />
           </label>
           <label>
             <span>{$t.manualAssets.source}</span>
-            <select bind:value={source} disabled={sources.length === 1} data-field="source">
+            <select bind:value={source} disabled={sources.length === 1} data-field="source" aria-describedby="manual-category-hint">
               {#each sources as id}
                 <option value={id}>{$t.manualAssets.sources[id]}</option>
               {/each}
             </select>
+            <small class="hint" class:caution={category === "other"} id="manual-category-hint" data-category-hint={category}>{$t.manualAssets.categoryHints[category]}</small>
           </label>
+          <label class="wide">
+            <span>{$t.manualAssets.note} <small>{$t.manualAssets.optional}</small></span>
+            <input bind:value={note} maxlength="200" data-field="note" />
+          </label>
+          {#if error}<p class="wide error" role="alert">{error}</p>{/if}
         </div>
-        <label>
-          <span>{$t.manualAssets.note} <small>{$t.manualAssets.optional}</small></span>
-          <input bind:value={note} maxlength="200" data-field="note" />
-        </label>
-        {#if error}<p class="error" role="alert">{error}</p>{/if}
-        <div class="actions">
-          <button class="button secondary" type="button" onclick={close}>{$t.manualAssets.cancel}</button>
+        <footer class="create-foot">
+          <button class="button" type="button" onclick={close}>{$t.manualAssets.cancel}</button>
           <button class="button primary" type="submit" disabled={saving} data-manual-save>{$t.manualAssets.save}</button>
-        </div>
+        </footer>
       </form>
     </div>
   </div>
 {/if}
 
 <style>
-  .manual-form-panel {
+  .create-panel {
     width: min(520px, 100%);
   }
 
-  .manual-form {
+  .create-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-5) var(--space-6);
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 750;
+  }
+
+  .modal-close {
     display: grid;
-    gap: var(--space-3);
-    padding: var(--space-5);
+    flex: none;
+    place-items: center;
+  }
+
+  .create-form {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-4) var(--space-3);
+    padding: var(--space-5) var(--space-6);
+  }
+
+  .wide {
+    grid-column: 1 / -1;
   }
 
   label {
     display: grid;
-    gap: 4px;
+    gap: 6px;
     min-width: 0;
   }
 
   label > span {
     color: var(--muted);
     font-size: 12px;
-    font-weight: 650;
+    font-weight: 700;
+  }
+
+  label small {
+    font-weight: 500;
   }
 
   input,
   select {
-    min-height: 36px;
+    width: 100%;
+    min-width: 0;
+    min-height: 40px;
     padding: 0 var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--fg);
+    font-size: 14px;
   }
 
-  .row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-3);
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
   }
 
-  .row .narrow {
-    max-width: 120px;
+  .fields {
+    align-items: start;
   }
 
   .hint {
@@ -178,20 +215,23 @@
     font-size: 12px;
   }
 
-  .hint.caution,
-  .error {
+  .hint.caution {
     color: var(--warn);
     font-weight: 600;
   }
 
   .error {
     margin: 0;
+    color: var(--danger);
     font-size: 13px;
+    font-weight: 600;
   }
 
-  .actions {
+  .create-foot {
     display: flex;
     justify-content: flex-end;
     gap: var(--space-2);
+    padding: var(--space-4) var(--space-6);
+    border-top: 1px solid var(--border);
   }
 </style>
