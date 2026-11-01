@@ -87,19 +87,21 @@
     { id: "other" as const, label: $t.accounts.other },
   ] satisfies Filter[];
 
-  $: availableKinds = new Set([...accounts, ...coveredAccounts].map((account) => account.kind));
+  $: availableKinds = new Set([...listedAccounts, ...coveredAccounts].map((account) => account.kind));
   $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter((item) =>
-    accounts.length === 0
+    listedAccounts.length === 0
       ? EMPTY_PAGE_FILTERS[mode].includes(item.id)
       : item.id === "all" || availableKinds.has(item.id),
   );
   $: emptyCopy = mode === "asset" ? $t.assets.empty : $t.liabilities.empty;
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
-  $: filtered = matchingAccounts(accounts.filter((account) => !account.preview), filter, query, $t);
-  $: filteredPreview = matchingAccounts(accounts.filter((account) => account.preview), filter, query, $t);
+  // Manual Assets are listed in their own section on the Assets page.
+  $: listedAccounts = accounts.filter((account) => !account.manual);
+  $: filtered = matchingAccounts(listedAccounts.filter((account) => !account.preview), filter, query, $t);
+  $: filteredPreview = matchingAccounts(listedAccounts.filter((account) => account.preview), filter, query, $t);
   $: filteredCovered = matchingAccounts(coveredAccounts, filter, query, $t);
-  $: latestUpdated = [...accounts, ...coveredAccounts].reduce<string | null>(
+  $: latestUpdated = [...listedAccounts, ...coveredAccounts].reduce<string | null>(
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
@@ -382,7 +384,7 @@
 <section class="layout-accounts">
   <div>
     <div class="account-list card">
-      {#if accounts.length === 0}
+      {#if listedAccounts.length === 0}
         <div class="account-empty">
           <EmptyPanel icon={List} title={emptyCopy.listTitle} body={emptyCopy.listBody} />
         </div>

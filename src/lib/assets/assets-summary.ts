@@ -29,6 +29,7 @@ export type AssetsSummary =
     /** Each account's converted value, for its positions. */
     twdValues: ReadonlyMap<string, number>;
     includesPreview: boolean;
+    includesManual: boolean;
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
@@ -46,5 +47,6 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
     includesPreview: allocation.includesPreview || (trailing?.includesPreview ?? false),
+    includesManual: allocation.includesManual,
   };
 }

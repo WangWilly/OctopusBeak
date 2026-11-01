@@ -118,8 +118,8 @@ const userActionMessages: Record<UserAction, Readonly<{ zh: string; en: string }
     en: "The source service changed its interface. Update OctopusBeak, then sync again.",
   },
   "delete-financial-data": {
-    zh: "資料格式已更新，這個來源要等刪除所有財務資料後才能再同步。請到設定執行「刪除所有財務資料」。",
-    en: "The data format was updated, so this source cannot sync until all financial data is deleted. Go to Settings and choose Delete all financial data.",
+    zh: "資料格式已更新，這個來源要等刪除所有收集的財務資料後才能再同步。請到設定執行「刪除所有收集的財務資料」。",
+    en: "The data format was updated, so this source cannot sync until all collected financial data is deleted. Go to Settings and choose Delete all collected financial data.",
   },
 };
 
@@ -185,8 +185,8 @@ const explanations = {
     en: "The source returned data in a shape OctopusBeak does not expect, so this part was not imported. OctopusBeak needs an update to read it.",
   },
   "canonical-reset-required": {
-    zh: "信用卡資料的格式已更新，舊格式的資料還在，所以這個來源的新資料沒有寫入。刪除所有財務資料後才能再同步。",
-    en: "The credit-card data format was updated and data in the old format remains, so this source's new data was not saved. It can sync again after all financial data is deleted.",
+    zh: "信用卡資料的格式已更新，舊格式的資料還在，所以這個來源的新資料沒有寫入。刪除所有收集的財務資料後才能再同步。",
+    en: "The credit-card data format was updated and data in the old format remains, so this source's new data was not saved. It can sync again after all collected financial data is deleted.",
   },
   "collection-scope-changed": {
     zh: "同步進行中，這個來源的勾選項目、啟用狀態或登入身分已變更，之後的資料沒有寫入。變更前已完成的部分仍保留。請重新執行同步。",

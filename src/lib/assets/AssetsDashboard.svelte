@@ -25,6 +25,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import ManualAssetsSection from "$lib/manual-assets/ManualAssetsSection.svelte";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
@@ -100,8 +101,11 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         includesPreview={summary.state === "ready" && summary.includesPreview}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
-          : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
-            ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
+          : summary.state === "ready"
+            ? [
+              ...(summary.unconvertedCurrencies.length > 0 ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))] : []),
+              ...(summary.includesManual ? [$t.manualAssets.includesManual] : []),
+            ]
             : []}
       >
         {#if isEmpty}
@@ -175,6 +179,10 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         twdValues={summary.state === "ready" ? summary.twdValues : new Map()}
         focusAccountId={focusAccountId}
       />
+    </div>
+
+    <div class="block-frame">
+      <ManualAssetsSection accounts={assets.accounts} {today} />
     </div>
   </div>
 </DashboardShell>

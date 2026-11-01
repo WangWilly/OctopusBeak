@@ -4,6 +4,7 @@
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import NetWorthChart from "$lib/overview/components/NetWorthChart.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import ManualMarker from "$lib/manual-assets/ManualMarker.svelte";
   import {
     seriesInRange,
     type NetWorth,
@@ -40,6 +41,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
     {#if (net.display === "converted" && net.includesPreview) || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
+    {#if net.includesManual}<ManualMarker />{/if}
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
