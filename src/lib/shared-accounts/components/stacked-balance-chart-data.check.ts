@@ -195,3 +195,13 @@ function row(date: string, assets: number, liabilities: number, pointAt?: string
   assert.deepEqual(chartCurrenciesFor(history, "assets"), ["TWD", "JPY", "AUD"], "TWD, USD, and JPY lead; older points drop out");
   assert.deepEqual(chartCurrenciesFor(history, "liabilities"), ["USD"]);
 }
+
+const withManual = buildStackedBalanceChartData({
+  accounts: [...accounts, account("manual:house", "House", "manual", 900)],
+  dailyHistoryByAccount: { ...dailyHistoryByAccount, "manual:house": [row("2026-06-23", 900, 0)] },
+  filter: "all",
+  currency: "TWD",
+  mode: "asset",
+});
+assert.deepEqual(withManual.series.map((series) => series.key), ["bank", "fund", "manual"], "manual assets stack in the all-assets chart");
+assert.deepEqual(withManual.series.at(-1)!.data.map((point) => point.value), [900, 900, 900], "a valuation carries forward across later dates");
