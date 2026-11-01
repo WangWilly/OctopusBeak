@@ -17,5 +17,6 @@ test("the sidebar shows update downloads under the nav, and Restart to update wa
   const sidebar = readFileSync(new URL("./AppUpdateSidebar.svelte", import.meta.url), "utf8");
   assert.match(sidebar, /role="progressbar"[\s\S]*?aria-valuenow=\{percent\}/);
   assert.match(sidebar, /id="app-update-restart"[\s\S]*?disabled=\{restartBlocked \|\| pending\}/);
-  assert.match(sidebar, /\$: restartBlocked = \$runActive \|\|/);
+  assert.match(sidebar, /\$: restartBlocked = \$runActive;/, "a refused restart does not keep the button disabled");
+  assert.match(sidebar, /\$: showRunActive = \$runActive \|\| \(restartResult\?\.ok === false && restartResult\.reason === "run-active"\)/);
 });
