@@ -14,8 +14,8 @@ import {
   previewLoanAccountRow,
   previewLoanSeries,
   previewSummaryMarkers,
-  withPreviewHistory,
-  type PreviewBalanceSeries,
+  withBalanceSeriesHistory,
+  type BalanceSeries,
 } from "./preview-overview.ts";
 
 const twd = (coefficient: string, scale = 0) => ({
@@ -44,10 +44,11 @@ const canonical: PGliteDailyHistory = {
   dailyHistoryByAccount: { cathay: [canonicalRow("2026-10-01", "1000", "0", "Cathay")] },
 };
 
-const savings: PreviewBalanceSeries = {
+const savings: BalanceSeries = {
   accountId: "preview:a",
   label: "Preview savings",
   side: "asset",
+  marker: "preview",
   closedOn: null,
   points: [
     { date: "2026-10-03", currency: "TWD", exact: { coefficient: "12345", scale: 1 } },
@@ -58,11 +59,11 @@ const savings: PreviewBalanceSeries = {
 const always = () => true;
 
 test("without preview accounts the canonical history is returned unchanged", () => {
-  assert.equal(withPreviewHistory(canonical, [], always), canonical);
+  assert.equal(withBalanceSeriesHistory(canonical, [], always), canonical);
 });
 
 test("preview dates join the canonical dates and carry the newest canonical total forward", () => {
-  const merged = withPreviewHistory(canonical, [savings], always);
+  const merged = withBalanceSeriesHistory(canonical, [savings], always);
   assert.deepEqual(merged.dailyHistory.map((row) => row.date), ["2026-10-01", "2026-10-03", "2026-10-05"]);
   const [first, carried, both] = merged.dailyHistory;
   assert.deepEqual(first!.assets, [twd("1000")]);
@@ -78,7 +79,7 @@ test("preview dates join the canonical dates and carry the newest canonical tota
 });
 
 test("daily change is the difference from the previous merged row, exactly", () => {
-  const merged = withPreviewHistory(canonical, [savings], always);
+  const merged = withBalanceSeriesHistory(canonical, [savings], always);
   assert.deepEqual(merged.dailyHistory.map((row) => row.dailyChange), [
     [],
     [twd("12345", 1)],
@@ -87,21 +88,22 @@ test("daily change is the difference from the previous merged row, exactly", () 
 });
 
 test("a preview balance before any canonical row stands alone", () => {
-  const merged = withPreviewHistory({ dailyHistory: [], dailyHistoryByAccount: {} }, [savings], always);
+  const merged = withBalanceSeriesHistory({ dailyHistory: [], dailyHistoryByAccount: {} }, [savings], always);
   assert.deepEqual(merged.dailyHistory[0]!.assets, [twd("12345", 1)]);
   assert.deepEqual(merged.dailyHistory[0]!.liabilities, []);
   assert.equal(merged.dailyHistory[0]!.positionCount, 0);
 });
 
 test("a preview balance without a rate is left out instead of dropping the date", () => {
-  const usd: PreviewBalanceSeries = {
+  const usd: BalanceSeries = {
     accountId: "preview:u",
     label: "Preview USD",
     side: "asset",
+    marker: "preview",
     closedOn: null,
     points: [{ date: "2026-10-03", currency: "USD", exact: { coefficient: "100", scale: 0 } }],
   };
-  const merged = withPreviewHistory(canonical, [usd], countableWithRates([
+  const merged = withBalanceSeriesHistory(canonical, [usd], countableWithRates([
     { rateDate: "2026-10-04", currency: "USD", twdPerUnit: 32, source: "test", fetchedAt: "2026-10-04T00:00:00Z" },
   ]));
   const byDate = new Map(merged.dailyHistory.map((row) => [row.date, row]));
@@ -112,7 +114,7 @@ test("a preview balance without a rate is left out instead of dropping the date"
 });
 
 test("each preview account gets its own rows on its observation dates", () => {
-  const merged = withPreviewHistory(canonical, [savings], always);
+  const merged = withBalanceSeriesHistory(canonical, [savings], always);
   assert.deepEqual(merged.dailyHistoryByAccount.cathay, canonical.dailyHistoryByAccount.cathay);
   assert.deepEqual(merged.dailyHistoryByAccount["preview:a"]!.map((row) => [row.date, row.netAssets, row.includesPreview]), [
     ["2026-10-03", [twd("12345", 1)], true],
@@ -219,7 +221,7 @@ test("a closed time deposit shows as closed with no amount and leaves the histor
     observations: [{ kind: "current", amount: "500", currency: "TWD", observedAt: { at: "2026-10-03T01:00:00Z", source: "reported" } }],
   }]);
   assert.equal(series!.closedOn, "2026-10-05");
-  const merged = withPreviewHistory(canonical, [series!], always);
+  const merged = withBalanceSeriesHistory(canonical, [series!], always);
   const byDate = new Map(merged.dailyHistory.map((row) => [row.date, row]));
   assert.deepEqual(byDate.get("2026-10-03")!.assets, [twd("1500")], "counted while open");
   assert.deepEqual(byDate.get("2026-10-05")!.assets, [twd("1500")], "gone from the closure date on, canonical 1500 remains");
@@ -235,7 +237,7 @@ test("a preview credit series adds to liabilities and subtracts from net assets"
     }],
   }]);
   assert.equal(series!.side, "liability");
-  const merged = withPreviewHistory(canonical, [series!], always);
+  const merged = withBalanceSeriesHistory(canonical, [series!], always);
   const byDate = new Map(merged.dailyHistory.map((row) => [row.date, row]));
   assert.deepEqual(byDate.get("2026-10-03")!.liabilities, [twd("500")], "canonical 200 plus preview 300");
   assert.deepEqual(byDate.get("2026-10-03")!.netAssets, [twd("500")], "canonical 800 minus 300");
@@ -276,7 +278,7 @@ test("a closed preview loan owes nothing, shows as closed, and leaves no total i
     observations: [{ amount: "300", currency: "TWD", observedAt: { at: "2026-10-03T01:00:00Z", source: "reported" } }],
   }]);
   assert.equal(series!.side, "liability");
-  const byDate = new Map(withPreviewHistory(canonical, [series!], always).dailyHistory.map((entry) => [entry.date, entry]));
+  const byDate = new Map(withBalanceSeriesHistory(canonical, [series!], always).dailyHistory.map((entry) => [entry.date, entry]));
   assert.deepEqual(byDate.get("2026-10-03")!.liabilities, [twd("500")], "canonical 200 plus the loan's 300 while open");
   assert.deepEqual(byDate.get("2026-10-05")!.liabilities, [twd("200")], "gone from the closure date on");
 });

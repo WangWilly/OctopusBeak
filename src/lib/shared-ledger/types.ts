@@ -1,4 +1,9 @@
 import type { InstitutionKey, InstitutionProduct, IntermediarySourceLogoKey } from "../institutions/institutions.ts";
+import type {
+  ManualAssetCategory,
+  ManualTransaction,
+  ManualValuation,
+} from "../manual-assets/manual-assets.ts";
 
 export type CurrencyAmountDto = {
   currency: string;
@@ -43,28 +48,32 @@ export type ExchangeRateDto = {
 export type SummaryMetricDto = {
   amounts: CurrencyAmountDto[];
   includesPreview?: boolean;
+  /** The figure counts a Manual Asset's value. */
+  includesManual?: boolean;
   /** A visible preview credit account's used credit is unknown, so this total is not a figure. */
   incomplete?: boolean;
 };
 
 /**
  * Net position (CONTEXT.md): one TWD total when every account converts at the
- * valuation date, otherwise each currency's own amount. `includesPreview`
- * describes only the figure shown.
+ * valuation date, otherwise each currency's own amount. `includesPreview` and
+ * `includesManual` describe only the figure shown.
  */
 export type NetPositionDto =
   | Readonly<{
     display: "converted";
     twd: number;
-    /** Preview currencies left out of `twd` because they have no rate. */
-    unconvertedPreviewCurrencies: string[];
+    /** Preview or manual currencies left out of `twd` because they have no rate. */
+    unconvertedCurrencies: string[];
     includesPreview: boolean;
+    includesManual: boolean;
     incomplete: boolean;
   }>
   | Readonly<{
     display: "native";
     amounts: CurrencyAmountDto[];
     includesPreview: boolean;
+    includesManual: boolean;
     incomplete: boolean;
   }>;
 
@@ -87,6 +96,7 @@ export type DailyHistoryRowDto = {
   accountChanges: string[];
   positionCount: number;
   includesPreview?: boolean;
+  includesManual?: boolean;
 };
 
 export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">) {
@@ -103,6 +113,7 @@ export type AccountKind =
   | "crypto"
   | "credit-card"
   | "loan"
+  | "manual"
   | "other";
 
 export type AccountRowDto = {
@@ -129,7 +140,23 @@ export type AccountRowDto = {
   /** The direct source that counts this Intermediary-source account, which no total includes. */
   coveredBy?: Readonly<{ namespace: string; institutionKey: string; product: InstitutionProduct }>;
   preview?: PreviewAccountDto;
+  /** A Manual Asset (ADR 0087): typed in by the person, never a Financial Account. */
+  manual?: ManualAssetDto;
 };
+
+export type ManualAssetDto = Readonly<{
+  assetId: string;
+  category: ManualAssetCategory;
+  currency: string;
+  /** Set once the asset was sold or surrendered; from this date it counts toward nothing. */
+  endedOn: string | null;
+  /** Oldest first; the last is the current value. */
+  valuations: readonly ManualValuation[];
+  /** A Manual Account's transactions, oldest first; empty for every other category. */
+  transactions: readonly ManualTransaction[];
+  /** The value on its latest dated change: the latest valuation, or a count plus the transactions after it. */
+  balance: Readonly<{ asOf: string; amount: CurrencyAmountDto }> | null;
+}>;
 
 export type PreviewProductDto = "deposit" | "credit_card" | "time_deposit" | "foreign_currency" | "loan";
 

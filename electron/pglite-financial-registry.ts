@@ -87,7 +87,12 @@ import {
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
-import { readAssetsPage, readLiabilitiesPage, readOverviewPage } from "../src/ledger/pglite/financial-pages.ts";
+import {
+  readAssetsPage,
+  readLiabilitiesPage,
+  readOverviewPage,
+  type FinancialPageScope,
+} from "../src/ledger/pglite/financial-pages.ts";
 import {
   appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
@@ -226,10 +231,19 @@ function post(port: RpcPort, response: PGliteFinancialResponse): void {
   }
 }
 
+export type PGliteFinancialRegistryOptions = Readonly<{
+  /** The store holds the Manual Asset tables; the desktop worker installs them, a ledger-only check does not. */
+  manualAssets?: boolean;
+}>;
+
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
+  options: PGliteFinancialRegistryOptions = {},
 ): PGliteFinancialRegistryWithPageActionEvents {
+  const manualAssets = options.manualAssets === true;
+  const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
+    ({ expectedSources, previewVisibility: previewVisibility(), manualAssets });
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
@@ -239,11 +253,11 @@ export function createPGliteFinancialRegistry(
   const previewVisibilityListeners = new Set<() => void>();
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
-      store.transaction((transaction) => readOverviewPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
+      store.transaction((transaction) => readOverviewPage(transaction, pageScope(expectedSources))),
     "financial.assets.current": ([expectedSources = []]) =>
-      store.transaction((transaction) => readAssetsPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
+      store.transaction((transaction) => readAssetsPage(transaction, pageScope(expectedSources))),
     "financial.liabilities.current": ([expectedSources = []]) =>
-      store.transaction((transaction) => readLiabilitiesPage(transaction, { expectedSources, previewVisibility: previewVisibility() })),
+      store.transaction((transaction) => readLiabilitiesPage(transaction, pageScope(expectedSources))),
     "financial.spending.current": ([input = {}]) => spending.summaryPage(input),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),

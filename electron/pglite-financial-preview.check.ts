@@ -281,7 +281,7 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     const rateless = readOverview(ratelessPage, { today: TODAY });
     const ratelessNet = convertedNet(ratelessPage);
     assert.equal(ratelessNet.twd, 100.1, "verified net worth stays when preview data has no rate");
-    assert.deepEqual(ratelessNet.unconvertedPreviewCurrencies, ["USD"]);
+    assert.deepEqual(ratelessNet.unconvertedCurrencies, ["USD"]);
     assert.equal(ratelessNet.includesPreview, false);
     assert.equal(rateless.assetAllocation.total, 100.1);
     assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);
@@ -309,8 +309,9 @@ test("the published Net position converts verified TWD beside a USD preview, nam
     assert.deepEqual((await shown["financial.overview.current"]([])).summary.net, {
       display: "converted",
       twd: 100.1,
-      unconvertedPreviewCurrencies: ["USD"],
+      unconvertedCurrencies: ["USD"],
       includesPreview: false,
+      includesManual: false,
       incomplete: false,
     }, "the rateless USD preview is named, not shown as a native line, and does not mark the figure");
 
@@ -318,8 +319,9 @@ test("the published Net position converts verified TWD beside a USD preview, nam
     assert.deepEqual((await shown["financial.overview.current"]([])).summary.net, {
       display: "converted",
       twd: 100.1 + 320,
-      unconvertedPreviewCurrencies: [],
+      unconvertedCurrencies: [],
       includesPreview: true,
+      includesManual: false,
       incomplete: false,
     }, "with a rate the USD preview counts in the TWD figure and marks it");
   });
@@ -383,7 +385,7 @@ test("preview loans list on Liabilities only, count against the Net position wit
     ]);
     assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
     assert.deepEqual(convertedNet(await shown["financial.overview.current"]([])), {
-      display: "converted", twd: 100.1 - 60.1, unconvertedPreviewCurrencies: [], includesPreview: true, incomplete: false,
+      display: "converted", twd: 100.1 - 60.1, unconvertedCurrencies: [], includesPreview: true, includesManual: false, incomplete: false,
     });
     assert.equal(convertedNet(await registry(() => HIDDEN)["financial.overview.current"]([])).twd, 100.1, "hidden loans count toward nothing");
 

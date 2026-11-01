@@ -19,7 +19,7 @@ export type AccountLedger = Readonly<{
 
 export const TRAILING_DAYS = 30;
 
-export type AssetCategory = "brokerage" | "crypto" | "bank" | "fund" | "foreign" | "other";
+export type AssetCategory = "brokerage" | "crypto" | "bank" | "fund" | "foreign" | "manual" | "other";
 
 export type AssetAllocation = {
   total: number;
@@ -27,6 +27,7 @@ export type AssetAllocation = {
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
   includesPreview: boolean;
+  includesManual: boolean;
 };
 
 export type LiabilityAllocation = {
@@ -45,6 +46,7 @@ const ASSET_CATEGORY: Record<AccountKind, AssetCategory> = {
   crypto: "crypto",
   "credit-card": "other",
   loan: "other",
+  manual: "manual",
   other: "other",
 };
 
@@ -146,11 +148,13 @@ export function readAssetAllocation(
   const byCategory = new Map<AssetCategory, number>();
   const unconverted = new Set<string>();
   let includesPreview = false;
+  let includesManual = false;
   for (const account of accounts) {
     if (account.group === "liability" || !valuationDate) continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
     if (account.preview && account.amountLines.length > 0) includesPreview = true;
+    if (account.manual && account.amountLines.length > 0) includesManual = true;
     const category = ASSET_CATEGORY[account.kind];
     byCategory.set(category, (byCategory.get(category) ?? 0) + value);
   }
@@ -164,6 +168,7 @@ export function readAssetAllocation(
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
     includesPreview,
+    includesManual,
   };
 }
 
@@ -218,19 +223,24 @@ export function accountTwdValues(
   }));
 }
 
-/** Current accounts in TWD at the valuation date; null when a verified account has no rate. */
+/**
+ * Current accounts in TWD at the valuation date; null when a verified account
+ * has no rate. A preview or manual row without a rate is left out and its
+ * currency listed instead, so it never withholds the whole figure.
+ */
 export function currentNetPosition(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string | null,
-): { value: number | null; unconvertedPreviewCurrencies: string[]; includesPreview: boolean } {
+): { value: number | null; unconvertedCurrencies: string[]; includesPreview: boolean; includesManual: boolean } {
   const unconverted = new Set<string>();
-  const blank = { value: null, unconvertedPreviewCurrencies: [], includesPreview: false };
+  const blank = { value: null, unconvertedCurrencies: [], includesPreview: false, includesManual: false };
   if (!valuationDate || accounts.length === 0) return blank;
   let total = 0;
   let includesPreview = false;
+  let includesManual = false;
   for (const account of accounts) {
-    if (!account.preview) {
+    if (!account.preview && !account.manual) {
       const converted = convertToTwd(account.amountLines, valuationDate, rates);
       if (!converted) return blank;
       total += account.group === "liability" ? -converted.value : converted.value;
@@ -239,9 +249,11 @@ export function currentNetPosition(
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
     total += account.group === "liability" ? -value : value;
-    if (account.amountLines.length > 0) includesPreview = true;
+    if (account.amountLines.length === 0) continue;
+    if (account.preview) includesPreview = true;
+    else includesManual = true;
   }
-  return { value: total, unconvertedPreviewCurrencies: [...unconverted].sort(), includesPreview };
+  return { value: total, unconvertedCurrencies: [...unconverted].sort(), includesPreview, includesManual };
 }
 
 export function convertAccount(

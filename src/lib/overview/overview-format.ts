@@ -21,6 +21,7 @@ export const ASSET_CATEGORY_COLOR: Record<AssetCategory, string> = {
   brokerage: SERIES.ochre,
   crypto: SERIES.plum,
   foreign: SERIES.clay,
+  manual: SERIES.slate,
   other: SERIES.teal,
 };
 

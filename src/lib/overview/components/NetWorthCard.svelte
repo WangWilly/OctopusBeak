@@ -49,8 +49,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {:else}
     <p class="net-worth-figure money" data-sensitive>{formatTwd(net.twd, $locale)}</p>
   {/if}
-  {#if net.display === "converted" && net.unconvertedPreviewCurrencies.length > 0}
-    <p class="net-worth-note">{$t.overview.unconverted(net.unconvertedPreviewCurrencies.join(", "))}</p>
+  {#if net.display === "converted" && net.unconvertedCurrencies.length > 0}
+    <p class="net-worth-note">{$t.overview.unconverted(net.unconvertedCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
     {#if !incomplete}

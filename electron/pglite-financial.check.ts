@@ -577,7 +577,7 @@ test("financial live views recover after a transient read failure and stop durin
     historyAvailability: "unavailable" as const,
     sourceGaps: [],
     importedAt: null,
-    summary: { net: { display: "native", amounts: [], includesPreview: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+    summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
     dailyHistory: [],
     dailyHistoryByAccount: {},
     accounts: [],

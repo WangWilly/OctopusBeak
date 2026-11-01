@@ -280,7 +280,7 @@ test("a preview balance without a rate never blanks verified net worth", () => {
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 1000);
   assert.equal(current.includesPreview, false);
-  assert.deepEqual(current.unconvertedPreviewCurrencies, ["USD"]);
+  assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
 });
 
 test("a preview balance with a rate is converted into net worth and marked", () => {
@@ -292,7 +292,7 @@ test("a preview balance with a rate is converted into net worth and marked", () 
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 1320);
   assert.equal(current.includesPreview, true);
-  assert.deepEqual(current.unconvertedPreviewCurrencies, []);
+  assert.deepEqual(current.unconvertedCurrencies, []);
 });
 
 test("a counted TWD preview balance marks net worth beside a rateless preview one", () => {
@@ -303,7 +303,7 @@ test("a counted TWD preview balance marks net worth beside a rateless preview on
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 500);
   assert.equal(current.includesPreview, true);
-  assert.deepEqual(current.unconvertedPreviewCurrencies, ["USD"]);
+  assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
 });
 
 test("a rateless or balance-less preview account leaves the allocation unmarked", () => {
