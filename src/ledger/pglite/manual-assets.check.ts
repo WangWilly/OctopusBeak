@@ -4,6 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import {
   manualBalancePoints,
   manualValuationStale,
+  manualValuationState,
   ManualAssetRejected,
   parseManualAssetCommand,
 } from "../../lib/manual-assets/manual-assets.ts";
@@ -231,4 +232,17 @@ test("the manual schema refuses a changed migration and tables without a record"
   } finally {
     await store.close();
   }
+});
+
+test("a row states the end date, or the latest valuation with its source and whether it is stale", () => {
+  const valuations = [
+    { valuedOn: "2025-01-05", amount: "1", source: "purchase_price" as const, note: null },
+    { valuedOn: "2025-09-01", amount: "2", source: "appraisal_report" as const, note: null },
+  ];
+  assert.deepEqual(manualValuationState({ category: "house", endedOn: null, valuations }, "2026-11-01"),
+    { kind: "stale", date: "2025-09-01", source: "appraisal_report" });
+  assert.deepEqual(manualValuationState({ category: "house", endedOn: null, valuations }, "2026-08-31"),
+    { kind: "fresh", date: "2025-09-01", source: "appraisal_report" });
+  assert.deepEqual(manualValuationState({ category: "house", endedOn: "2026-10-01", valuations }, "2026-11-01"),
+    { kind: "ended", date: "2026-10-01" });
 });

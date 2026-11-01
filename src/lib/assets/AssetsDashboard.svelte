@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChartLine } from "@lucide/svelte";
+  import { ChartLine, Plus } from "@lucide/svelte";
 
   import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
@@ -25,7 +25,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
-  import ManualAssetsSection from "$lib/manual-assets/ManualAssetsSection.svelte";
+  import ManualAssetCreateModal from "$lib/manual-assets/ManualAssetCreateModal.svelte";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
@@ -36,6 +36,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let creatingAsset = false;
 
 
 
@@ -84,6 +85,18 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
+  <svelte:fragment slot="topbar-leading">
+    <button
+      class="topbar-tool"
+      type="button"
+      aria-label={$t.manualAssets.createTitle}
+      title={$t.manualAssets.createTitle}
+      data-add-asset
+      onclick={() => (creatingAsset = true)}
+    >
+      <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
+    </button>
+  </svelte:fragment>
   <div class="content">
     {#if isEmpty}
       <div class="empty-banner">
@@ -180,12 +193,10 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         focusAccountId={focusAccountId}
       />
     </div>
-
-    <div class="block-frame">
-      <ManualAssetsSection accounts={assets.accounts} {today} />
-    </div>
   </div>
 </DashboardShell>
+
+<ManualAssetCreateModal bind:open={creatingAsset} {today} />
 
 <style>
   .block-frame { position: relative; min-width: 0; }

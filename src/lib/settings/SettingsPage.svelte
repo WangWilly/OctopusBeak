@@ -112,7 +112,8 @@
   let financialDeleteStatus: DataActionStatus = "idle";
   let signInClearStatus: DataActionStatus = "idle";
   let collectStatus: "idle" | "pending" | "started" | "error" = "idle";
-  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending";
+  let manualDeleteStatus: DataActionStatus = "idle";
+  $: dataActionPending = financialDeleteStatus === "pending" || signInClearStatus === "pending" || manualDeleteStatus === "pending";
   let saveStatus: "idle" | "pending" | "success" | "error" = "idle";
   let saveError = "";
   let saveVersion = 0;
@@ -361,6 +362,16 @@
       financialDeleteStatus = "done";
     } catch {
       financialDeleteStatus = "error";
+    }
+  }
+
+  async function deleteManualAssets() {
+    manualDeleteStatus = "pending";
+    try {
+      const result = await window.octopusBeak.manualAssets.apply({ kind: "deleteAllManualAssets" });
+      manualDeleteStatus = result.ok ? "done" : "error";
+    } catch {
+      manualDeleteStatus = "error";
     }
   }
 
@@ -865,6 +876,44 @@
             <div class="settings-error" role="alert">
               <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
               <span>{$t.settings.collectAllSourcesFailed}</span>
+            </div>
+          {/if}
+          <div class="setting-row">
+            <div class="setting-label-group">
+              <span class="setting-label">{$t.manualAssets.deleteAll}</span>
+              <small class="setting-hint">{$t.manualAssets.deleteAllHint}</small>
+            </div>
+            <div class="onboarding-setting-actions">
+              {#if manualDeleteStatus === "done"}
+                <span class="chip status-chip good" role="status">
+                  <Check size={13} strokeWidth={2.5} aria-hidden="true" />
+                  {$t.manualAssets.deleteAllDone}
+                </span>
+              {:else if manualDeleteStatus !== "confirming"}
+                <button
+                  id="delete-manual-assets"
+                  class="button danger"
+                  type="button"
+                  disabled={dataActionPending}
+                  aria-busy={manualDeleteStatus === "pending"}
+                  onclick={() => (manualDeleteStatus = "confirming")}
+                >{$t.manualAssets.deleteAll}</button>
+              {/if}
+            </div>
+          </div>
+          {#if manualDeleteStatus === "confirming"}
+            <div class="restart-confirm" role="group" aria-labelledby="manual-delete-confirm">
+              <p id="manual-delete-confirm">{$t.manualAssets.deleteAllConfirm}</p>
+              <div class="onboarding-setting-actions">
+                <button class="button" type="button" onclick={() => (manualDeleteStatus = "idle")}>{$t.common.cancel}</button>
+                <button id="confirm-delete-manual-assets" class="button danger" type="button" disabled={dataActionPending} onclick={deleteManualAssets}>{$t.manualAssets.remove}</button>
+              </div>
+            </div>
+          {/if}
+          {#if manualDeleteStatus === "error"}
+            <div class="settings-error" role="alert">
+              <CircleAlert size={16} strokeWidth={2.25} aria-hidden="true" />
+              <span>{$t.manualAssets.failed}</span>
             </div>
           {/if}
           <div class="setting-row">

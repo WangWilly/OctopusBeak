@@ -357,3 +357,25 @@ export function manualValuationStale(category: ManualAssetCategory, valuedOn: Ma
   const freshness = MANUAL_ASSET_CATEGORIES[category].freshnessMonths;
   return freshness !== null && monthsBetween(valuedOn, today) >= freshness;
 }
+
+export type ManualValuationState =
+  | Readonly<{ kind: "ended"; date: ManualDate }>
+  | Readonly<{ kind: "stale" | "fresh"; date: ManualDate; source: ManualValuationSource }>;
+
+/** What a row says about an asset's value: its end date, or its latest valuation and whether that is stale. */
+export function manualValuationState(
+  asset: Readonly<{ category: ManualAssetCategory; endedOn: ManualDate | null; valuations: readonly ManualValuation[] }>,
+  today: ManualDate,
+): ManualValuationState | null {
+  if (asset.endedOn !== null) return { kind: "ended", date: asset.endedOn };
+  const latest = asset.valuations.at(-1);
+  if (!latest) return null;
+  return {
+    kind: manualValuationStale(asset.category, latest.valuedOn, today) ? "stale" : "fresh",
+    date: latest.valuedOn,
+    source: latest.source,
+  };
+}
+
+/** The create form's currency menu, TWD first; the boundary parser still accepts any ISO 4217 code. */
+export const MANUAL_ASSET_CURRENCIES = ["TWD", "USD", "JPY", "EUR", "CNY", "HKD", "GBP", "AUD", "SGD", "CAD"] as const;
