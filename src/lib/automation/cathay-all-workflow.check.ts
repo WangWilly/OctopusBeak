@@ -735,6 +735,7 @@ test("a Cathay run with only an attached product signs in and collects only that
     ["foreign_currency", "skipped", "not_selected"],
     ["credit_card", "success", undefined],
     ["time_deposit", "skipped", "not_selected"],
+    ["loan", "skipped", "not_selected"],
   ]);
   assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 3, itemCount: 1, committedCount: 1, count: 0 });
   assert.equal(output.status, "completed", "a preview-only run admits no financial data");
@@ -757,6 +758,7 @@ test("a failing attached product leaves the verified and other attached outcomes
     ["foreign_currency", "skipped", "not_selected"],
     ["credit_card", "failed", "source-validation-failed"],
     ["time_deposit", "success", undefined],
+    ["loan", "skipped", "not_selected"],
   ]);
   assert.equal(output.status, "partial");
 });
@@ -814,6 +816,7 @@ test("a session lost during an attached product ends the run with the verified o
         ["foreign_currency", "skipped", "not_selected"],
         ["credit_card", "failed", "source-collection-failed"],
         ["time_deposit", "skipped", "not_attempted"],
+        ["loan", "skipped", "not_selected"],
       ]);
       return true;
     },

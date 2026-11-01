@@ -61,6 +61,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
       fubon_password: "synthetic-password",
     },
     statementTypes: ["deposit"],
+    attachedPreviewProducts: [],
   });
   assert.throws(
     () => appWorkflowRegistration(task.workflowId)?.inputFromEnvironment({
