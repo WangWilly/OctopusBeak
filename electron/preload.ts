@@ -7,6 +7,7 @@ import type {
   OctopusBeakApi,
   AutomationRuntimeSnapshot,
 } from "../src/lib/desktop/api.ts";
+import type { AppUpdateView } from "../src/lib/settings/app-updates.ts";
 import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
 
 let nextDataViewRequestId = 1;
@@ -64,6 +65,12 @@ const dataViews = {
 
 /** The channel behind each bridge method that only forwards to an ipcMain handler. */
 const INVOKE_CHANNELS = {
+  appUpdates: {
+    view: "appUpdates:view",
+    check: "appUpdates:check",
+    download: "appUpdates:download",
+    restart: "appUpdates:restart",
+  },
   errorReports: {
     available: "errorReports:available",
     preview: "errorReports:preview",
@@ -139,6 +146,16 @@ const api: OctopusBeakApi = {
     },
   },
   settings: invokers("settings"),
+  appUpdates: {
+    ...invokers("appUpdates"),
+    onChanged(listener) {
+      const handler = (_event: Electron.IpcRendererEvent, view: AppUpdateView) => {
+        listener(view);
+      };
+      ipcRenderer.on("appUpdates:changed", handler);
+      return () => ipcRenderer.removeListener("appUpdates:changed", handler);
+    },
+  },
   errorReports: invokers("errorReports"),
   spending: invokers("spending"),
   automation: {

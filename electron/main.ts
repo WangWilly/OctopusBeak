@@ -2,7 +2,7 @@ import path from "node:path";
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, dialog, Notification, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Notification, shell } from "electron";
 import {
   createAutomationRuntime,
   type AutomationRuntime,
@@ -14,6 +14,22 @@ import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-re
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
 import { systemSettings } from "../src/lib/settings/system-settings.ts";
 import { createUsagePinger, postUsagePing, USAGE_PING_URL, usageOsVersion, type UsageFailureBook } from "../src/lib/settings/usage-statistics.ts";
+import {
+  appUpdateNotification,
+  appUpdatesAutoDownload,
+  appUpdatesEnabled,
+  appUpdateSupport,
+  createAppUpdater,
+  type AppUpdateView,
+} from "../src/lib/settings/app-updates.ts";
+import {
+  downloadAppRelease,
+  fetchAppRelease,
+  pruneAppUpdates,
+  rehearseSquirrelHandoff,
+  startSquirrelHandoff,
+  verifiedZipPath,
+} from "./app-update-io.ts";
 import { onTaskRunFinished, runFailures } from "../src/lib/automation/server/task-run-finished.ts";
 import {
   buildErrorReport,
@@ -28,6 +44,7 @@ import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
+import type { NotificationTarget } from "../src/lib/desktop/api.ts";
 import { startScheduledCollection } from "../src/lib/automation/server/scheduled-collection.ts";
 import {
   collectionNotification,
@@ -94,6 +111,7 @@ let currentPreloadPath: string | null = null;
 let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
 let collectionScheduler: ReturnType<typeof createScheduledCollectionScheduler> | null = null;
 let usagePinger: ReturnType<typeof createUsagePinger> | null = null;
+let appUpdater: ReturnType<typeof createAppUpdater> | null = null;
 let stopBrowserStateCleanup: (() => void) | null = null;
 let stopWorkflowRunEventCleanup: (() => void) | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
@@ -150,6 +168,7 @@ const handleBeforeQuit = createBeforeQuitHandler({
     scheduler?.stop();
     collectionScheduler?.stop();
     usagePinger?.stop();
+    appUpdater?.stop();
     stopBrowserStateCleanup?.();
     stopWorkflowRunEventCleanup?.();
     try {
@@ -173,15 +192,11 @@ quitOnTerminationSignals(process, () => app.quit());
 let appQuitting = false;
 app.on("before-quit", () => { appQuitting = true; });
 
-function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
-  if (appQuitting) return;
-  // A person watching the App already sees how their own sync ended.
-  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
-  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
-  if (!notice || !Notification.isSupported()) return;
+/** Shows a notification whose click opens the App at its target. */
+function showNotification(notice: { title: string; body: string }, target: NotificationTarget) {
   const notification = new Notification({ title: notice.title, body: notice.body });
   notification.on("click", () => {
-    requestNotificationTarget(notice.target);
+    requestNotificationTarget(target);
     if (!currentRendererUrl || !currentPreloadPath) return;
     void createWindow(currentRendererUrl, currentPreloadPath)
       .then((window) => {
@@ -192,6 +207,24 @@ function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[
       .catch(showStartupError);
   });
   notification.show();
+}
+
+function notifyCollection(trigger: CollectionTrigger, results: CollectionResult[]) {
+  if (appQuitting) return;
+  // A person watching the App already sees how their own sync ended.
+  if (trigger === "manual" && BrowserWindow.getFocusedWindow()) return;
+  const notice = collectionNotification(results, trigger, app.getLocale().startsWith("zh") ? "zh-TW" : "en");
+  if (!notice || !Notification.isSupported()) return;
+  showNotification(notice, notice.target);
+}
+
+/** ADR 0083: one notification once an update has downloaded; the App never restarts by itself. */
+function notifyUpdateReady(version: string) {
+  if (appQuitting || !Notification.isSupported()) return;
+  showNotification(
+    appUpdateNotification(version, app.getLocale().startsWith("zh") ? "zh-TW" : "en"),
+    { route: "settings", focus: "app-updates" },
+  );
 }
 
 function projectRoot() {
@@ -519,6 +552,88 @@ async function start() {
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (message) => console.error(message),
   });
+  // Development builds and fixtures never check, so a test run cannot replace the app it tests.
+  const appUpdatesSupport = appUpdateSupport({
+    packaged: app.isPackaged,
+    testFixture: cdpFixture || packagedBrowserFixture,
+    inApplicationsFolder: app.isPackaged && app.isInApplicationsFolder(),
+    feedFixtureUrl: process.env.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,
+  });
+  const updatesDirectory = path.join(userData, "updates");
+  const updatesPruned = appUpdatesSupport.supported
+    ? pruneAppUpdates(updatesDirectory, app.getVersion()).catch(() => console.error("app-update-prune-failed"))
+    : Promise.resolve();
+  let closeSquirrelHandoff: (() => void) | null = null;
+  const endSquirrelHandoff = () => {
+    closeSquirrelHandoff?.();
+    closeSquirrelHandoff = null;
+  };
+  const appUpdateView = (): AppUpdateView => ({
+    currentVersion: app.getVersion(),
+    state: appUpdater?.state() ?? { status: "unsupported", reason: "development-build" },
+  });
+  appUpdater = createAppUpdater({
+    support: appUpdatesSupport,
+    currentVersion: app.getVersion(),
+    enabled: () => appUpdatesEnabled(readAutomationSettings()),
+    autoDownload: () => appUpdatesAutoDownload(readAutomationSettings()),
+    now: () => new Date(),
+    fetchRelease: () => appUpdatesSupport.supported
+      ? fetchAppRelease(appUpdatesSupport)
+      : Promise.reject(new Error("unsupported")),
+    download: async (release, onProgress) => {
+      await updatesPruned;
+      return downloadAppRelease({ directory: updatesDirectory, release, onProgress });
+    },
+    install: (release) => {
+      void startSquirrelHandoff(verifiedZipPath(updatesDirectory, release.version))
+        .then(async (handoff) => {
+          closeSquirrelHandoff = handoff.close;
+          if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
+            autoUpdater.setFeedURL({ url: handoff.feedUrl, serverType: "default" });
+            autoUpdater.checkForUpdates();
+            return;
+          }
+          const served = await rehearseSquirrelHandoff(handoff.feedUrl, release).catch(() => false);
+          endSquirrelHandoff();
+          appUpdater?.receive(served ? { type: "update-downloaded" } : { type: "error", message: "fixture hand-off" });
+        })
+        .catch(() => {
+          // setFeedURL throws in an unsigned packaged build.
+          endSquirrelHandoff();
+          appUpdater?.receive({ type: "error", message: "hand-off" });
+        });
+    },
+    // Squirrel.Mac closes the windows, then quits through before-quit, so the ledger closes before ShipIt installs.
+    quitAndInstall: () => appUpdatesSupport.supported && appUpdatesSupport.squirrel
+      ? autoUpdater.quitAndInstall()
+      : console.error("app-update-fixture-restart-skipped"),
+    hasActiveRun: () => runtime.hasActive(),
+    onChange: () => {
+      const view = appUpdateView();
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send("appUpdates:changed", view);
+      }
+    },
+    onReady: notifyUpdateReady,
+    setInterval: (callback, ms) => setInterval(callback, ms).unref(),
+    clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
+    reportError: (code) => console.error(code),
+  });
+  if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
+    autoUpdater.on("update-downloaded", () => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "update-downloaded" });
+    });
+    autoUpdater.on("update-not-available", () => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "error", message: "hand-off answered no update" });
+    });
+    autoUpdater.on("error", (error) => {
+      endSquirrelHandoff();
+      appUpdater?.receive({ type: "error", message: error.message });
+    });
+  }
   onTaskRunFinished((run) => {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
     usagePinger?.recordFailures(runFailures(run));
@@ -526,12 +641,19 @@ async function start() {
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     collection,
-    onSystemSettingsChanged: () => {
+    onSystemSettingsChanged: (settings) => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
       void usagePinger?.check();
+      appUpdater?.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
     },
     usagePing: usagePinger,
+    appUpdates: {
+      view: appUpdateView,
+      check: () => void appUpdater?.check(),
+      download: () => void appUpdater?.download(),
+      restart: () => appUpdater?.restart() ?? { ok: false, reason: "not-ready" },
+    },
     errorReports: {
       available: () => Boolean(errorReportUrl(USAGE_PING_URL)),
       preview: (input) => buildErrorReport(input, errorReportContext()),
@@ -566,6 +688,7 @@ async function start() {
     collectionScheduler?.start();
     // Development builds and fixtures never ping, so they cannot count as users.
     if (app.isPackaged && !cdpFixture && !packagedBrowserFixture) usagePinger?.start();
+    appUpdater?.start();
   }).catch(() => {
     // The shared readiness rejection already reports the fatal runtime error.
   });

@@ -16,7 +16,7 @@ assert.match(
 );
 assert.match(
   source,
-  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*\}\)/,
+  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*appUpdater\?\.start\(\);\s*\}\)/,
 );
 assert.match(
   source,
@@ -46,3 +46,32 @@ assert.doesNotMatch(
   source,
   /openLedgerDatabase|migrateLedgerBeforeWindow|initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/,
 );
+assert.match(
+  source,
+  /appUpdateSupport\(\{\s*packaged: app\.isPackaged,\s*testFixture: cdpFixture \|\| packagedBrowserFixture,\s*inApplicationsFolder: app\.isPackaged && app\.isInApplicationsFolder\(\),\s*feedFixtureUrl: process\.env\.OCTOPUSBEAK_UPDATE_FEED_FIXTURE,\s*\}\)/,
+  "fixtures never check, and a packaged build outside Applications never downloads (app-updates.check.ts covers the decision)",
+);
+assert.deepEqual(
+  source.match(/autoUpdater\.setFeedURL\([^)]*\)/g),
+  ["autoUpdater.setFeedURL({ url: handoff.feedUrl, serverType: \"default\" })"],
+  "Squirrel.Mac reads only the localhost hand-off, never the public feed",
+);
+for (const event of ["update-downloaded", "update-not-available", "error"]) {
+  assert.match(
+    source,
+    new RegExp(`autoUpdater\\.on\\("${event}", \\([^)]*\\) => \\{\\s*endSquirrelHandoff\\(\\);`),
+    `the hand-off server closes on ${event}`,
+  );
+}
+assert.equal(
+  source.match(/autoUpdater\.quitAndInstall\(\)/g)?.length,
+  1,
+  "only the updater's restart, which refuses while a run is active, installs an update",
+);
+assert.match(
+  source,
+  /cleanup: async \(\) => \{[\s\S]*?appUpdater\?\.stop\(\);[\s\S]*?\},\s*cleanupWaitMs/,
+  "quitting stops the update timer",
+);
+const appUpdatesSource = readFileSync(new URL("../src/lib/settings/app-updates.ts", import.meta.url), "utf8");
+assert.doesNotMatch(appUpdatesSource, /USAGE_PING|usage-statistics/, "update checks never reach the usage statistics receiver");

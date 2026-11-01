@@ -7,6 +7,8 @@ export const exchangeRateUpdateTime = writable("06:00");
 export const scheduledCollection = writable({ enabled: false, time: "07:00" });
 export const previewFeaturesEnabled = writable(false);
 export const usageStatisticsEnabled = writable(false);
+export const appUpdatesEnabled = writable(true);
+export const appUpdatesAutoDownload = writable(false);
 
 export function applySystemSettings(settings: SystemSettingsDto) {
   systemTimezone.set(settings.systemTimezone);
@@ -17,4 +19,6 @@ export function applySystemSettings(settings: SystemSettingsDto) {
   });
   previewFeaturesEnabled.set(settings.previewFeaturesEnabled);
   usageStatisticsEnabled.set(settings.usageStatisticsEnabled);
+  appUpdatesEnabled.set(settings.appUpdatesEnabled);
+  appUpdatesAutoDownload.set(settings.appUpdatesAutoDownload);
 }

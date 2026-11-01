@@ -11,11 +11,15 @@
     type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
   import { isAutomationBlockStale, mergeAutomationRuntime } from "$lib/automation/runtime-sync.ts";
+  import { isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
   import type {
     AutomationDesktopModel,
     AutomationRuntimeSnapshot,
+    SettingsFocus,
   } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
+  import type { AppUpdateView } from "$lib/settings/app-updates.ts";
+  import { APP_UPDATE_CONTEXT_KEY, type AppUpdateUiContext } from "$lib/shared-shell/app-update-context.ts";
   import LiabilitiesDashboard from "$lib/liabilities/LiabilitiesDashboard.svelte";
   import OnboardingCoach from "$lib/onboarding/OnboardingCoach.svelte";
   import {
@@ -137,7 +141,7 @@
     ): Promise<void>;
   } | undefined;
   let signInSettingsGroupId: string | null = null;
-  let focusFinancialDataDeletion = false;
+  let settingsFocus: SettingsFocus | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
   const routeDataCache = createRouteLoadCache<RouteData>();
@@ -154,6 +158,19 @@
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
     refresh: refreshApp,
+  });
+
+  const appUpdateView = writable<AppUpdateView | null>(null);
+  const automationRunActive = writable(false);
+  $: automationRunActive.set(
+    automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false,
+  );
+  setContext<AppUpdateUiContext>(APP_UPDATE_CONTEXT_KEY, {
+    view: appUpdateView,
+    runActive: automationRunActive,
+    check: async () => appUpdateView.set(await window.octopusBeak.appUpdates.check()),
+    download: async () => appUpdateView.set(await window.octopusBeak.appUpdates.download()),
+    restart: () => window.octopusBeak.appUpdates.restart(),
   });
 
   function factsForOnboarding(
@@ -871,8 +888,7 @@
         if (target.route === "automation" && target.credentialGroupId) {
           signInSettingsGroupId = target.credentialGroupId;
         }
-        // Settings is only a target for Delete all financial data.
-        if (target.route === "settings") focusFinancialDataDeletion = true;
+        if (target.route === "settings") settingsFocus = target.focus;
         navigateToRoute(target.route);
       });
     };
@@ -908,7 +924,10 @@
     document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
     addEventListener("popstate", normalizeRoute);
+    const unsubscribeAppUpdates = window.octopusBeak.appUpdates.onChanged((view) => appUpdateView.set(view));
+    void window.octopusBeak.appUpdates.view().then((view) => appUpdateView.set(view)).catch(() => undefined);
     return () => {
+      unsubscribeAppUpdates();
       mounted = false;
       dataVersionLifecycle.dispose();
       financialPage.dispose();
@@ -1020,7 +1039,7 @@
       {signInSettingsGroupId}
       onSignInSettingsOpened={() => (signInSettingsGroupId = null)}
       onOpenFinancialDataSettings={() => {
-        focusFinancialDataDeletion = true;
+        settingsFocus = "financial-data-deletion";
         navigateToRoute("settings");
       }}
     />
@@ -1032,8 +1051,8 @@
   {/if}
 {:else}
   <SettingsPage
-    {focusFinancialDataDeletion}
-    onFinancialDataDeletionFocused={() => (focusFinancialDataDeletion = false)}
+    focus={settingsFocus}
+    onFocused={() => (settingsFocus = null)}
     onboardingStatus={onboardingState?.status ?? null}
     onboardingEndedAt={onboardingState?.endedAt ?? null}
     onboardingLinkedSources={settingsAutomation?.linkedSources ?? 0}
