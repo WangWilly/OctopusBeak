@@ -8,7 +8,7 @@
     statementPayment,
     timeDepositTerms,
   } from "$lib/shared-ledger/preview-account.ts";
-  import type { AccountRowDto, PreviewCreditBasisDto, PreviewCreditDto } from "$lib/shared-ledger/types.ts";
+  import type { AccountRowDto, PreviewCreditBasisDto, PreviewCreditDto, PreviewLoanDto } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
 
@@ -19,9 +19,11 @@
   $: value = account ? previewRowValue(account) : null;
   $: credit = preview?.credit ?? null;
   $: deposit = preview?.timeDeposit ?? null;
+  $: loan = preview?.loan ?? null;
   $: eyebrow = preview?.product === "credit_card"
     ? $t.preview.creditEyebrow
-    : preview?.product === "time_deposit" ? $t.preview.timeDepositEyebrow : $t.preview.transactionsEyebrow;
+    : preview?.product === "time_deposit" ? $t.preview.timeDepositEyebrow
+    : preview?.product === "loan" ? $t.preview.loanEyebrow : $t.preview.transactionsEyebrow;
   $: cardMasks = new Map((credit?.cards ?? []).map((card) => [card.sourceCardKey, card.cardMask]));
 
   function close() {
@@ -51,6 +53,11 @@
     }
   }
 
+  function installmentsText(loan: PreviewLoanDto, dictionary: Translation) {
+    if (loan.installmentsPaid === null && loan.installmentsTotal === null) return null;
+    return dictionary.preview.installmentsOf(String(loan.installmentsPaid ?? "—"), String(loan.installmentsTotal ?? "—"));
+  }
+
   function limitText(credit: PreviewCreditDto) {
     const currency = credit.usedCredit?.currency ?? account?.amountLines[0]?.currency;
     return credit.creditLimit === null ? null : currency ? money(currency, credit.creditLimit) : groupDigits(credit.creditLimit);
@@ -76,15 +83,15 @@
             <span>{$t.preview.usedCredit}</span>
             <strong class="unknown" data-preview-value="credit-unknown">{$t.preview.creditUnknown}</strong>
           {:else if value?.kind === "closed"}
-            <span>{$t.transactions.currentBalance}</span>
+            <span>{loan ? $t.preview.outstandingBalance : $t.transactions.currentBalance}</span>
             <strong class="chip closed" data-preview-value="closed">{$t.preview.closed}</strong>
           {:else}
-            <span>{credit ? $t.preview.usedCredit : $t.transactions.currentBalance}</span>
+            <span>{credit ? $t.preview.usedCredit : loan ? $t.preview.outstandingBalance : $t.transactions.currentBalance}</span>
             <strong class="money" data-sensitive>{formatAmountLines(account.amountLines, $locale)}</strong>
           {/if}
         </div>
       </AccountModalHeader>
-      <p class="source-note">{credit ? $t.preview.creditNote : $t.preview.transactionsNote}</p>
+      <p class="source-note">{credit ? $t.preview.creditNote : loan ? $t.preview.loanNote : $t.preview.transactionsNote}</p>
       <div class="modal-body">
         {#if credit}
           <dl class="facts">
@@ -171,6 +178,31 @@
               {/each}
             </tbody>
           </table>
+        {:else if loan}
+          {#if value?.kind === "closed"}
+            <p class="closed-note" role="note" data-closed-on={value.closedOn}>{$t.preview.closedOn(value.closedOn)}</p>
+          {/if}
+          <dl class="facts" data-preview-loan-terms>
+            {#each [
+              { term: "category", label: $t.preview.loanCategory, text: loan.category && $t.preview.loanCategories[loan.category], sensitive: false },
+              { term: "rate", label: $t.preview.interestRate, text: loan.interestRate && $t.preview.ratePercent(loan.interestRate), sensitive: false },
+              { term: "payment", label: $t.preview.paymentAmount, text: loan.paymentAmount && money(loan.currency, loan.paymentAmount), sensitive: true },
+              { term: "next-payment", label: $t.preview.nextPaymentDate, text: loan.nextPaymentDate, sensitive: false },
+              { term: "installments", label: $t.preview.installments, text: installmentsText(loan, $t), sensitive: false },
+              { term: "maturity", label: $t.preview.maturityDate, text: loan.maturityDate, sensitive: false },
+              { term: "opened", label: $t.preview.openedOn, text: loan.openedOn, sensitive: false },
+              { term: "original", label: $t.preview.originalAmount, text: loan.originalAmount && money(loan.currency, loan.originalAmount), sensitive: true },
+            ] as fact (fact.term)}
+              <div data-loan-term={fact.term}>
+                <dt>{fact.label}</dt>
+                {#if fact.text}
+                  <dd class:money={fact.sensitive} class:num={!fact.sensitive} data-sensitive={fact.sensitive || undefined}>{fact.text}</dd>
+                {:else}
+                  <dd class="not-provided" data-not-provided>{$t.preview.notProvided}</dd>
+                {/if}
+              </div>
+            {/each}
+          </dl>
         {:else if deposit}
           {#if value?.kind === "closed"}
             <p class="closed-note" role="note" data-closed-on={value.closedOn}>{$t.preview.closedOn(value.closedOn)}</p>
@@ -249,8 +281,13 @@
     font-weight: 650;
   }
 
-  .closed {
+  .closed,
+  .not-provided {
     color: var(--muted);
+  }
+
+  .facts dd.not-provided {
+    font-weight: 500;
   }
 
   .source-note {

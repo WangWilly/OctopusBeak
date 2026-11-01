@@ -21,10 +21,11 @@ export type AttachedPreviewSource = Readonly<{
 }>;
 
 export const ATTACHED_PREVIEW_PRODUCTS = {
-  cathay: { sourceId: "cathay", institution: "cathay", products: ["credit_card", "time_deposit"] },
+  cathay: { sourceId: "cathay", institution: "cathay", products: ["credit_card", "time_deposit", "loan"] },
   hncb: { sourceId: "hncb", institution: "hncb", products: ["credit_card"] },
-  sinopac: { sourceId: "sinopac", institution: "sinopac", products: ["credit_card"] },
+  sinopac: { sourceId: "sinopac", institution: "sinopac", products: ["credit_card", "loan"] },
   esun: { sourceId: "esun", institution: "esun", products: ["deposit"] },
+  fubon: { sourceId: "fubon", institution: "fubon", products: ["foreign_currency"] },
 } as const satisfies Readonly<Record<string, AttachedPreviewSource>>;
 
 export type AttachedPreviewGroupId = keyof typeof ATTACHED_PREVIEW_PRODUCTS;

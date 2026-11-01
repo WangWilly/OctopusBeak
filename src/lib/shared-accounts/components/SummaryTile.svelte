@@ -1,4 +1,6 @@
 <script lang="ts">
+  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+
   export let color: string;
   export let head: string;
   export let value: string;
@@ -9,10 +11,12 @@
   export let share: number | null = null;
   export let approx = false;
   export let urgent = false;
+  /** The value counts Preview source data. */
+  export let preview = false;
 </script>
 
 <div class="tile" style:--tile-color={color} data-summary-tile>
-  <span class="head" class:urgent><i class="swatch" aria-hidden="true"></i>{head}</span>
+  <span class="head" class:urgent><i class="swatch" aria-hidden="true"></i>{head}{#if preview}<PreviewMarker />{/if}</span>
   <strong class="value">
     {#if approx}<span class="approx" aria-hidden="true">≈</span>{/if}<span class="money" data-sensitive>{value}</span>
   </strong>

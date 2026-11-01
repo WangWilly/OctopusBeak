@@ -1,6 +1,6 @@
 import type { InstitutionKey } from "../institutions/institutions.ts";
 
-export const PREVIEW_PRODUCTS = ["deposit", "credit_card", "time_deposit"] as const;
+export const PREVIEW_PRODUCTS = ["deposit", "credit_card", "time_deposit", "foreign_currency", "loan"] as const;
 
 export type PreviewProduct = (typeof PREVIEW_PRODUCTS)[number];
 

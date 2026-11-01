@@ -14,6 +14,7 @@ import {
   optionalAmount,
   optionalDateOnly,
   optionalText,
+  PREVIEW_PRODUCTS,
   PreviewDataRejected,
   unique,
   visibilityParams,
@@ -40,6 +41,15 @@ import {
   type PreviewPurchaseView,
   type PreviewStatementView,
 } from "./preview-credit.ts";
+import {
+  parsePreviewLoanCollection,
+  PGLITE_PREVIEW_LOAN_SQL,
+  PREVIEW_LOAN_TABLES,
+  readPreviewLoanAccounts,
+  writePreviewLoanCollection,
+  type PreviewLoanAccountView,
+  type PreviewLoanCollection,
+} from "./preview-loan.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 export type {
@@ -66,6 +76,16 @@ export type {
   PreviewStatement,
   PreviewStatementView,
 } from "./preview-credit.ts";
+export type {
+  PreviewLoan,
+  PreviewLoanAccountView,
+  PreviewLoanBalance,
+  PreviewLoanBalanceHistory,
+  PreviewLoanCategory,
+  PreviewLoanCollection,
+  PreviewLoanTermsView,
+} from "./preview-loan.ts";
+export { PREVIEW_LOAN_CATEGORIES } from "./preview-loan.ts";
 
 export type PreviewBalanceObservation = Readonly<{
   kind: "current" | "available";
@@ -83,7 +103,7 @@ export type PreviewTransaction = Readonly<{
   description: string | null;
 }>;
 
-/** A demand deposit account of the `deposit` product. */
+/** A demand deposit account of the `deposit` or `foreign_currency` product. */
 export type PreviewAccount = Readonly<{
   sourceAccountKey: string;
   displayLabel: string;
@@ -93,6 +113,7 @@ export type PreviewAccount = Readonly<{
   transactions: readonly PreviewTransaction[];
 }>;
 
+/** Also the `foreign_currency` collection, whose every account is in a currency other than TWD. */
 export type PreviewDepositCollection = Readonly<{
   collectedAt: string;
   accounts: readonly PreviewAccount[];
@@ -124,6 +145,8 @@ export type PreviewProductCollection = Readonly<{
   deposit: PreviewDepositCollection;
   credit_card: PreviewCreditCollection;
   time_deposit: PreviewTimeDepositCollection;
+  foreign_currency: PreviewDepositCollection;
+  loan: PreviewLoanCollection;
 }>;
 
 export type PreviewProductWrite<P extends PreviewProduct = PreviewProduct> =
@@ -136,7 +159,7 @@ export type PreviewWriteReceipt = Readonly<{
   balances: number;
   transactions: number;
   statements: number;
-  /** Time deposits closed by this write because the complete list lacked them. */
+  /** Time deposits or loans closed by this write because the complete list lacked them. */
   closedAccounts: number;
 }>;
 
@@ -152,7 +175,7 @@ export type PreviewAccountView = Readonly<{
   previewAccountId: string;
   sourceId: string;
   institution: InstitutionKey;
-  product: "deposit" | "time_deposit";
+  product: "deposit" | "time_deposit" | "foreign_currency";
   displayLabel: string;
   currency: PreviewCurrency;
   type: "depository";
@@ -171,6 +194,7 @@ export type PGlitePreviewFinancialDataPort = Readonly<{
   creditAccounts(visibility: PreviewVisibility): Promise<readonly PreviewCreditAccountView[]>;
   purchases(visibility: PreviewVisibility, previewAccountId: string): Promise<readonly PreviewPurchaseView[]>;
   statements(visibility: PreviewVisibility, previewAccountId: string): Promise<readonly PreviewStatementView[]>;
+  loanAccounts(visibility: PreviewVisibility): Promise<readonly PreviewLoanAccountView[]>;
 }>;
 
 export const PGLITE_PREVIEW_FINANCIAL_DATA_SQL = String.raw`
@@ -224,16 +248,26 @@ ALTER TABLE preview_accounts
     OR (maturity_date IS NULL AND principal IS NULL AND interest_rate IS NULL AND closed_at IS NULL));
 ${PGLITE_PREVIEW_CREDIT_SQL}`;
 
+/** Foreign currency accounts join `preview_accounts`; loans get their own table set. */
+export const PGLITE_PREVIEW_FINANCIAL_DATA_V3_SQL = String.raw`
+ALTER TABLE preview_accounts DROP CONSTRAINT preview_accounts_product_check;
+ALTER TABLE preview_accounts
+  ADD CONSTRAINT preview_accounts_product_check CHECK (product IN ('deposit', 'time_deposit', 'foreign_currency')),
+  ADD CONSTRAINT preview_accounts_foreign_currency CHECK (product <> 'foreign_currency' OR currency <> 'TWD');
+${PGLITE_PREVIEW_LOAN_SQL}`;
+
 export const PREVIEW_FINANCIAL_DATA_TABLES = [
   "preview_accounts",
   "preview_balance_observations",
   "preview_transactions",
   ...PREVIEW_CREDIT_TABLES,
+  ...PREVIEW_LOAN_TABLES,
 ] as const;
 
 const PREVIEW_MIGRATIONS = [
   { id: "preview-financial-data-v1", sql: PGLITE_PREVIEW_FINANCIAL_DATA_SQL },
   { id: "preview-financial-data-v2", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V2_SQL },
+  { id: "preview-financial-data-v3", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V3_SQL },
 ] as const;
 
 const signature = (sql: string) => createHash("sha256").update(sql).digest("hex");
@@ -317,6 +351,14 @@ function parseDepositCollection(input: PreviewDepositCollection): PreviewDeposit
   return { collectedAt: input.collectedAt, accounts };
 }
 
+/** ADR 0086: the TWD accounts of such an Institution belong to its verified source, never to this product. */
+function parseForeignCurrencyCollection(input: PreviewDepositCollection): PreviewDepositCollection {
+  const collection = parseDepositCollection(input);
+  if (collection.accounts.some((account) => account.currency === "TWD"))
+    throw new PreviewDataRejected("a foreign_currency account is in TWD");
+  return collection;
+}
+
 function parseTimeDepositCollection(input: PreviewTimeDepositCollection): PreviewTimeDepositCollection {
   instant(input.collectedAt, "collectedAt");
   oneOf(input.completeness, ["complete"], "completeness");
@@ -339,13 +381,17 @@ export function parsePreviewWrite(input: PreviewWrite): PreviewWrite {
   if (!PREVIEW_SOURCE_ID.test(input.sourceId)) throw new PreviewDataRejected("sourceId is invalid");
   if (!isInstitutionKey(input.institution)) throw new PreviewDataRejected("institution is unknown");
   const head = { sourceId: input.sourceId, institution: input.institution };
-  switch (oneOf(input.product, ["deposit", "credit_card", "time_deposit"], "product")) {
+  switch (oneOf(input.product, PREVIEW_PRODUCTS, "product")) {
     case "deposit":
       return { ...head, product: "deposit", collection: parseDepositCollection(input.collection as PreviewDepositCollection) };
     case "credit_card":
       return { ...head, product: "credit_card", collection: parsePreviewCreditCollection(input.collection as PreviewCreditCollection) };
     case "time_deposit":
       return { ...head, product: "time_deposit", collection: parseTimeDepositCollection(input.collection as PreviewTimeDepositCollection) };
+    case "foreign_currency":
+      return { ...head, product: "foreign_currency", collection: parseForeignCurrencyCollection(input.collection as PreviewDepositCollection) };
+    case "loan":
+      return { ...head, product: "loan", collection: parsePreviewLoanCollection(input.collection as PreviewLoanCollection) };
   }
 }
 
@@ -354,7 +400,7 @@ export function previewAccountId(sourceId: string, sourceAccountKey: string): st
 }
 
 type DepositoryRow = Readonly<{
-  product: "deposit" | "time_deposit";
+  product: "deposit" | "time_deposit" | "foreign_currency";
   sourceAccountKey: string;
   displayLabel: string;
   currency: PreviewCurrency;
@@ -421,10 +467,11 @@ const sum = <T>(items: readonly T[], count: (item: T) => number) => items.reduce
 async function writeInTransaction(transaction: PGliteTransaction, write: PreviewWrite): Promise<PreviewWriteReceipt> {
   const source = { sourceId: write.sourceId, institution: write.institution };
   switch (write.product) {
-    case "deposit": {
+    case "deposit":
+    case "foreign_currency": {
       const { collectedAt, accounts } = write.collection;
       for (const account of accounts) {
-        const id = await writeDepository(transaction, source, collectedAt, { ...account, product: "deposit", timeDeposit: null });
+        const id = await writeDepository(transaction, source, collectedAt, { ...account, product: write.product, timeDeposit: null });
         await writeTransactions(transaction, id, collectedAt, account.transactions);
       }
       return {
@@ -468,12 +515,22 @@ async function writeInTransaction(transaction: PGliteTransaction, write: Preview
         closedAccounts: closed.affectedRows ?? 0,
       };
     }
+    case "loan": {
+      const { loans } = write.collection;
+      return {
+        accounts: loans.length,
+        balances: loans.length,
+        transactions: 0,
+        statements: 0,
+        closedAccounts: await writePreviewLoanCollection(transaction, source, write.collection),
+      };
+    }
   }
 }
 
 type AccountRow = {
   preview_account_id: string; source_id: string; institution_key: InstitutionKey;
-  product: "deposit" | "time_deposit"; display_label: string; currency: string; last_collected_at: string;
+  product: "deposit" | "time_deposit" | "foreign_currency"; display_label: string; currency: string; last_collected_at: string;
   maturity_date: string | null; principal: string | null; interest_rate: string | null; closed_at: string | null;
   balance_kind: PreviewBalanceObservation["kind"] | null; amount: string | null;
   balance_currency: string | null; observed_at: string | null; observed_at_reported: boolean | null;
@@ -609,6 +666,7 @@ export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePrev
       await store.transaction(async (transaction) => {
         await transaction.query("DELETE FROM preview_accounts");
         await transaction.query("DELETE FROM preview_credit_accounts");
+        await transaction.query("DELETE FROM preview_loan_accounts");
       });
     },
     accounts: (visibility) => readPreviewAccounts(store, visibility),
@@ -616,5 +674,6 @@ export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePrev
     creditAccounts: (visibility) => readPreviewCreditAccounts(store, visibility),
     purchases: (visibility, previewAccountId) => readPreviewPurchases(store, visibility, previewAccountId),
     statements: (visibility, previewAccountId) => readPreviewStatements(store, visibility, previewAccountId),
+    loanAccounts: (visibility) => readPreviewLoanAccounts(store, visibility),
   });
 }

@@ -7,7 +7,7 @@ import type {
   CurrencyAmountDto,
   DailyHistoryRowDto,
 } from "../shared-ledger/types.ts";
-import { readLiabilitiesSummary, type LiabilitiesSummaryInput } from "./liabilities-summary.ts";
+import { readLiabilitiesSummary, readMortgageRepaid, type LiabilitiesSummaryInput } from "./liabilities-summary.ts";
 
 const twd = (value: number): CurrencyAmountDto[] => [{ currency: "TWD", value }];
 
@@ -139,4 +139,59 @@ test("the 30-day change is the change in what is owed, over this page's accounts
   if (summary.state !== "ready") return;
   assert.equal(summary.trailing?.change, -100, "paying down 100 is a drop in debt");
   assert.equal(summary.trailing?.pct, -0.1);
+});
+
+function previewLoan(
+  id: string,
+  currency: string,
+  owed: number | null,
+  terms: Readonly<{ category: "housing" | "personal" | "other" | null; originalAmount: string | null; closedAt?: string }>,
+): AccountRowDto {
+  return {
+    ...account(id, "loan", 0),
+    amountLines: owed === null ? [] : [{ currency, value: owed }],
+    valueAvailability: owed === null ? "unavailable" : "available",
+    preview: {
+      sourceId: "synthetic", product: "loan", lastCollectedAt: "2026-10-05T01:00:00Z", balanceTime: null, transactions: [],
+      loan: {
+        currency, category: terms.category, originalAmount: terms.originalAmount, interestRate: null, paymentAmount: null,
+        nextPaymentDate: null, installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
+        closedAt: terms.closedAt ?? null,
+      },
+    },
+  };
+}
+
+test("mortgage repaid is one minus the summed balance over the summed original amount, per currency, not a mean of loans", () => {
+  const repaid = readMortgageRepaid([
+    previewLoan("a", "TWD", 6_000_000, { category: "housing", originalAmount: "8000000" }),
+    previewLoan("b", "TWD", 0, { category: "housing", originalAmount: "2000000" }),
+    previewLoan("c", "USD", 150_000, { category: "housing", originalAmount: "200000.00" }),
+  ]);
+  assert.deepEqual(repaid, {
+    shares: [
+      { currency: "TWD", outstanding: 6_000_000, original: 10_000_000, repaid: 0.4 },
+      { currency: "USD", outstanding: 150_000, original: 200_000, repaid: 0.25 },
+    ],
+    omitted: false,
+  });
+});
+
+test("mortgage repaid counts only open preview housing loans and notes a mortgage without an original amount", () => {
+  const repaid = readMortgageRepaid([
+    previewLoan("home", "TWD", 500, { category: "housing", originalAmount: "1000" }),
+    previewLoan("no-original", "TWD", 900, { category: "housing", originalAmount: null }),
+    previewLoan("personal", "TWD", 10, { category: "personal", originalAmount: "1000" }),
+    previewLoan("unlabelled", "TWD", 10, { category: null, originalAmount: "1000" }),
+    previewLoan("closed", "TWD", null, { category: "housing", originalAmount: "1000", closedAt: "2026-10-04T01:00:00Z" }),
+    account("verified-loan", "loan", 300),
+  ]);
+  assert.deepEqual(repaid.shares.map((share) => [share.currency, share.outstanding, share.original, share.repaid]), [["TWD", 500, 1000, 0.5]]);
+  assert.equal(repaid.omitted, true);
+});
+
+test("with no countable mortgage the tile is empty, and an omitted one is still noted", () => {
+  assert.deepEqual(readMortgageRepaid([account("verified-loan", "loan", 300)]), { shares: [], omitted: false });
+  assert.deepEqual(readMortgageRepaid([previewLoan("x", "TWD", 900, { category: "housing", originalAmount: null })]),
+    { shares: [], omitted: true });
 });

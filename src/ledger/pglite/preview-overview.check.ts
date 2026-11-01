@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
-import type { PreviewCreditAccountView } from "./preview-financial-data.ts";
+import type { PreviewCreditAccountView, PreviewLoanAccountView } from "./preview-financial-data.ts";
+import { previewRowValue, totalIncomplete } from "../../lib/shared-ledger/preview-account.ts";
 import {
   countableWithRates,
   exactFromDecimal,
@@ -10,6 +11,8 @@ import {
   previewBalanceSeries,
   previewCreditAccountRow,
   previewCreditSeries,
+  previewLoanAccountRow,
+  previewLoanSeries,
   previewSummaryMarkers,
   withPreviewHistory,
   type PreviewBalanceSeries,
@@ -239,4 +242,41 @@ test("a preview credit series adds to liabilities and subtracts from net assets"
   assert.deepEqual(byDate.get("2026-10-03")!.assets, [twd("1000")]);
   assert.deepEqual(byDate.get("2026-10-05")!.netAssets, [twd("1000")], "carried forward: 1300 minus 300");
   assert.deepEqual(merged.dailyHistoryByAccount["preview:c"]![0]!.netAssets, [twd("-300")]);
+});
+
+const loanView = (closedAt: string | null): PreviewLoanAccountView => ({
+  previewAccountId: "l", sourceId: "synthetic", institution: "bank-017", product: "loan", displayLabel: "Home loan ****5678",
+  currency: "TWD", lastCollectedAt: "2026-10-05T01:00:00Z",
+  latestBalance: { amount: "6000000.50", currency: "TWD", observedAt: { at: "2026-10-03T01:00:00Z", source: "reported" } },
+  loan: {
+    category: "housing", originalAmount: "8000000", interestRate: "2.185", paymentAmount: null, nextPaymentDate: null,
+    installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null, closedAt,
+  },
+});
+
+test("a preview loan is a liability that counts its amount owed toward the liability and net totals", () => {
+  const row = previewLoanAccountRow(loanView(null));
+  assert.deepEqual([row.group, row.kind, row.product, row.valueAvailability], ["liability", "loan", "Loan", "available"]);
+  assert.deepEqual(row.amountLines, [twd("600000050", 2)]);
+  assert.equal(row.preview?.loan?.originalAmount, "8000000");
+  assert.deepEqual(previewSummaryMarkers([row]), {
+    assets: {}, liabilities: { includesPreview: true }, net: { includesPreview: true },
+  });
+});
+
+test("a closed preview loan owes nothing, shows as closed, and leaves no total incomplete", () => {
+  const row = previewLoanAccountRow(loanView("2026-10-05T01:00:00Z"));
+  assert.deepEqual(row.amountLines, []);
+  assert.deepEqual(previewRowValue(row), { kind: "closed", closedOn: "2026-10-05" });
+  assert.equal(totalIncomplete([row]), false);
+  assert.deepEqual(previewSummaryMarkers([row]), { assets: {}, liabilities: {}, net: {} });
+
+  const [series] = previewLoanSeries([{
+    previewAccountId: "l", displayLabel: "Home loan", closedAt: "2026-10-05T01:00:00Z",
+    observations: [{ amount: "300", currency: "TWD", observedAt: { at: "2026-10-03T01:00:00Z", source: "reported" } }],
+  }]);
+  assert.equal(series!.side, "liability");
+  const byDate = new Map(withPreviewHistory(canonical, [series!], always).dailyHistory.map((entry) => [entry.date, entry]));
+  assert.deepEqual(byDate.get("2026-10-03")!.liabilities, [twd("500")], "canonical 200 plus the loan's 300 while open");
+  assert.deepEqual(byDate.get("2026-10-05")!.liabilities, [twd("200")], "gone from the closure date on");
 });

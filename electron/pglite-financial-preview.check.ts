@@ -362,6 +362,36 @@ test("preview credit accounts list on Liabilities only, and an unknown used cred
   });
 });
 
+test("preview loans list on Liabilities only, count against the Net position with a marker, and close out of every total", async () => {
+  await withLedger(async ({ registry, preview }) => {
+    const loan = (key: string, amount: string) => ({
+      sourceAccountKey: key, displayLabel: `Loan ****${key}`, currency: "TWD", category: "housing" as const,
+      outstandingBalance: { amount, observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" as const } },
+      originalAmount: "1000", interestRate: null, paymentAmount: null, nextPaymentDate: null,
+      installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
+    });
+    const write = (collectedAt: string, loans: ReturnType<typeof loan>[]) => preview.write({
+      sourceId: "synthetic", institution: "bank-017", product: "loan",
+      collection: { collectedAt, completeness: "complete", loans },
+    });
+    await write("2026-10-05T03:00:00.000Z", [loan("1111", "40.10"), loan("2222", "20")]);
+    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
+    const liabilities = await shown["financial.liabilities.current"]([]);
+    assert.deepEqual(liabilities.accounts.filter((account) => account.preview).map((account) => [account.label, account.kind]), [
+      ["Loan ****1111", "loan"],
+      ["Loan ****2222", "loan"],
+    ]);
+    assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
+    assert.deepEqual(convertedNet(await shown["financial.overview.current"]([])), {
+      display: "converted", twd: 100.1 - 60.1, unconvertedPreviewCurrencies: [], includesPreview: true, incomplete: false,
+    });
+    assert.equal(convertedNet(await registry(() => HIDDEN)["financial.overview.current"]([])).twd, 100.1, "hidden loans count toward nothing");
+
+    await write("2026-10-06T03:00:00.000Z", [loan("1111", "40.10")]);
+    assert.equal(convertedNet(await shown["financial.overview.current"]([])).twd, 100.1 - 40.1, "the closed loan leaves the total");
+  });
+});
+
 test("preview transactions stay out of Spending reads", async () => {
   await withLedger(async ({ registry, writePreview }) => {
     const shown = registry(() => VISIBLE);
