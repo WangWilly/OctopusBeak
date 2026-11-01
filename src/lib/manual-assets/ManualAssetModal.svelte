@@ -78,7 +78,7 @@
   }
 
   async function run(input: unknown, after: () => void = () => {}) {
-    const checked = checkedCommand(input, $t);
+    const checked = checkedCommand(input, today, $t);
     if (!checked.ok) {
       error = checked.message;
       return;
@@ -197,7 +197,7 @@
           </div>
           {#if draft}
             <form class="grid-form" onsubmit={(event) => { event.preventDefault(); if (draft) saveTransaction(draft); }} data-manual-transaction-form>
-              <label><span>{$t.manualAssets.occurredOn}</span><input type="date" bind:value={draft.occurredOn} /></label>
+              <label><span>{$t.manualAssets.occurredOn}</span><input type="date" max={today} bind:value={draft.occurredOn} /></label>
               <label>
                 <span>{$t.manualAssets.kinds.purchase} / {$t.manualAssets.kinds.receipt} / {$t.manualAssets.kinds.transfer}</span>
                 <select bind:value={draft.kind} data-field="kind">
@@ -206,7 +206,7 @@
                   {/each}
                 </select>
               </label>
-              <label><span>{$t.manualAssets.amount} ({manual.currency})</span><input bind:value={draft.amount} inputmode="decimal" class="num" data-field="amount" /></label>
+              <label><span>{$t.manualAssets.transactionAmount} ({manual.currency})</span><input bind:value={draft.amount} inputmode="decimal" class="num" data-field="amount" /></label>
               {#if draft.kind === "purchase"}
                 <label>
                   <span>{$t.manualAssets.personalCategory}</span>
@@ -243,7 +243,7 @@
             </form>
           {/if}
           <table class="table" data-manual-transactions>
-            <thead><tr><th>{$t.manualAssets.occurredOn}</th><th>{$t.manualAssets.category}</th><th>{$t.manualAssets.note}</th><th class="right">{$t.manualAssets.amount}</th><th></th></tr></thead>
+            <thead><tr><th>{$t.manualAssets.occurredOn}</th><th>{$t.manualAssets.category}</th><th>{$t.manualAssets.note}</th><th class="right">{$t.manualAssets.transactionAmount}</th><th></th></tr></thead>
             <tbody>
               {#each transactionsNewestFirst as row (row.id)}
                 <tr data-manual-transaction={row.kind}>
@@ -268,7 +268,7 @@
         </div>
         {#if !manual.endedOn}
           <form class="grid-form" onsubmit={(event) => { event.preventDefault(); void run({ kind: "upsertValuation", assetId: manual.assetId, valuation: { ...valuation, amount: decimal(valuation.amount) } }, () => (valuation = { ...valuation, amount: "", note: "" })); }} data-manual-valuation-form>
-            <label><span>{cash ? $t.manualAssets.countedOn : $t.manualAssets.valuedOn}</span><input type="date" bind:value={valuation.valuedOn} /></label>
+            <label><span>{cash ? $t.manualAssets.countedOn : $t.manualAssets.valuedOn}</span><input type="date" max={today} bind:value={valuation.valuedOn} /></label>
             <label><span>{cash ? $t.manualAssets.countedAmount : $t.manualAssets.amount} ({manual.currency})</span><input bind:value={valuation.amount} inputmode="decimal" class="num" data-field="valuation-amount" /></label>
             <label>
               <span>{$t.manualAssets.source}</span>
@@ -307,7 +307,7 @@
             <button class="button secondary" type="button" disabled={saving} onclick={() => void run({ kind: "endAsset", assetId: manual.assetId, endedOn: null })}>{$t.manualAssets.reopen}</button>
           {:else}
             <form class="inline" onsubmit={(event) => { event.preventDefault(); void run({ kind: "endAsset", assetId: manual.assetId, endedOn: endDate }); }}>
-              <label><span>{$t.manualAssets.endDate}</span><input type="date" bind:value={endDate} /></label>
+              <label><span>{$t.manualAssets.endDate}</span><input type="date" max={today} bind:value={endDate} /></label>
               <button class="button secondary" type="submit" disabled={saving} data-manual-end>{$t.manualAssets.endAsset}</button>
             </form>
           {/if}

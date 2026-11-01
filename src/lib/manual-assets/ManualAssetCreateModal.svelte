@@ -43,7 +43,7 @@
       name,
       currency: currency.trim().toUpperCase(),
       firstValuation: { valuedOn, amount: amount.trim().replaceAll(",", ""), source, note },
-    }, $t);
+    }, today, $t);
     if (!checked.ok) {
       error = checked.message;
       return;
@@ -97,7 +97,7 @@
         <div class="row">
           <label>
             <span>{counting ? $t.manualAssets.countedOn : $t.manualAssets.valuedOn}</span>
-            <input type="date" bind:value={valuedOn} data-field="valuedOn" />
+            <input type="date" max={today} bind:value={valuedOn} data-field="valuedOn" />
           </label>
           <label>
             <span>{$t.manualAssets.source}</span>

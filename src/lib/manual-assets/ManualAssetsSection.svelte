@@ -73,7 +73,7 @@
               </span>
             {/if}
             <span class="value money" data-sensitive>
-              {account.manual?.endedOn ? "—" : account.manual?.balance ? formatAmountLines([account.manual.balance.amount], $locale) : "—"}
+              {account.amountLines.length > 0 ? formatAmountLines(account.amountLines, $locale) : "—"}
             </span>
           </button>
         </li>
