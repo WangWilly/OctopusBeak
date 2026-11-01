@@ -1,5 +1,5 @@
 import { constants, createCipheriv, createHash, createPublicKey, publicEncrypt, randomInt, type KeyObject } from "node:crypto";
-import type { PreviewAccount, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
+import type { PreviewAccount, PreviewLoan, PreviewLoanCollection, PreviewTransaction } from "../../ledger/pglite/preview-financial-data.ts";
 import { ProviderProtocolOutdatedError } from "../automation/source-access.ts";
 import type { PreviewHttp, PreviewHttpOpener } from "./browser-http.ts";
 import { nodeHttp } from "./node-http.ts";
@@ -42,6 +42,7 @@ const API = {
   logout: "NNBI010103",
   summary: "NNBN020101",
   transactions: "NNBN010201",
+  loans: "NNBL010401",
 } as const;
 
 const MONTHS = 3;
@@ -55,6 +56,9 @@ const APP_OUTDATED = /請(?:先)?(?:更新|升級)|(?:版本|版號).{0,6}(?:過
 const CREDENTIAL_MESSAGE = /密碼|代號|使用者/u;
 const NO_DATA = /查無/u;
 const DEVICE_ID = /^[0-9a-f]{64}$/u;
+const NO_LOANS = "NSLOND";
+const FULL_CREDIT_NO = /^[0-9A-Z]{8,}$/u;
+const NO_DATE = new Set(["99999999", "00000000"]);
 const NT_DOLLAR_CURRENCY = "TWD";
 const CURRENCY_FIELDS = ["Currency", "CurrencyEnglish", "Ccy"] as const;
 const CURRENCY_ALIASES: Readonly<Record<string, string>> = { NTD: "TWD", "新臺幣": "TWD", "新台幣": "TWD", "臺幣": "TWD", "台幣": "TWD" };
@@ -323,13 +327,62 @@ async function collectDeposits(api: Client, collectedAt: string): Promise<Previe
   }];
 }
 
+const optionalDecimal = (value: unknown, field: string) => optionalText(value) === null ? null : exactDecimal(value, field);
+
+function loanDay(value: unknown, field: string): string | null {
+  const raw = optionalText(value);
+  if (raw === null || NO_DATE.has(halfWidth(raw))) return null;
+  return newnewbankDate(raw, field).value.slice(0, 10);
+}
+
+function loanFrom(entry: SourceRecord, field: string, observed: PreviewLoan["outstandingBalance"]["observedAt"]): PreviewLoan {
+  const creditNo = halfWidth(text(entry.CreditNo, `${field}.CreditNo`)).replace(/[\s-]/gu, "").toUpperCase();
+  if (!FULL_CREDIT_NO.test(creditNo)) return fail("unexpected-response", `${field}.CreditNo is not a full account number`);
+  // Unlike NNBN020101, NNBL010401 is not an NT-dollar-only answer, so a loan without a currency field is refused.
+  const name = CURRENCY_FIELDS.find((candidate) => optionalText(entry[candidate]) !== null);
+  if (name === undefined) return fail("missing-currency", `${field} reports no currency`);
+  return {
+    sourceAccountKey: creditNo,
+    displayLabel: `New New Bank 貸款 ${creditNo.slice(-4)}`,
+    currency: currencyCode(entry[name], `${field}.${name}`, CURRENCY_ALIASES),
+    category: null,
+    outstandingBalance: { amount: exactDecimal(entry.AmtPay, `${field}.AmtPay`), observedAt: observed },
+    originalAmount: null,
+    interestRate: optionalDecimal(entry.Rate9, `${field}.Rate9`),
+    // Unverified assumption: IntPay is read as the period's principal and interest due (應繳本息), though its name suggests interest only.
+    paymentAmount: optionalDecimal(entry.IntPay, `${field}.IntPay`),
+    // PayDay2 is a day of the month, not a date.
+    nextPaymentDate: null,
+    installmentsPaid: null,
+    installmentsTotal: null,
+    openedOn: loanDay(entry.LoanDate, `${field}.LoanDate`),
+    maturityDate: loanDay(entry.LoanExpDate, `${field}.LoanExpDate`),
+  };
+}
+
+/**
+ * Complete: `NNBL010401` is the App's whole personal-loan overview, taking no
+ * range or page, and `NSLOND` says the person has no loan. `MFOB`, the only
+ * truncation signal this API family sends, fails the list.
+ */
+async function collectLoans(api: Client, collectedAt: string): Promise<PreviewLoanCollection> {
+  const envelope = await api.query(API.loans, {});
+  if (envelope.code === NO_LOANS) return { collectedAt, completeness: "complete", loans: [] };
+  if (envelope.code !== OK) return fail("unexpected-response", `${API.loans} answered ${envelope.code}`);
+  if (optionalText(envelope.body.WarnCode) === "MFOB") return fail("incomplete-data", `${API.loans} reports more loans than one answer`);
+  const observed = observedAt(envelope.date, collectedAt);
+  const loans = records(envelope.body.LoanList, `${API.loans}.LoanList`)
+    .map((entry, index) => loanFrom(entry, `${API.loans}.LoanList[${index}]`, observed));
+  return { collectedAt, completeness: "complete", loans };
+}
+
 export function createNewnewbankSource(options: Readonly<{ http?: PreviewHttpOpener }> = {}): PreviewSource {
   const open = options.http ?? nodeHttp;
   return {
     id: "newnewbank-deposit",
     institution: PREVIEW_SOURCE_INSTITUTIONS["newnewbank-deposit"],
-    products: ["deposit"],
-    displayName: { en: "Union Bank New New Bank deposits (preview)", "zh-TW": "聯邦銀行 New New Bank 存款（預覽）" },
+    products: ["deposit", "loan"],
+    displayName: { en: "Union Bank New New Bank deposits and loans (preview)", "zh-TW": "聯邦銀行 New New Bank 存款與貸款（預覽）" },
     searchAliases: ["New New Bank", "NNB", "Union Bank", "Union Bank of Taiwan", "UBOT", "聯邦", "聯邦銀行", "聯邦商業銀行", "新新銀行"],
     credentialFields: [
       { key: NEWNEWBANK_KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
@@ -339,8 +392,8 @@ export function createNewnewbankSource(options: Readonly<{ http?: PreviewHttpOpe
     deviceIdentityKey: NEWNEWBANK_KEY.deviceId,
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live New New Bank account. Its data may be incomplete or wrong. It signs in through the New New Bank App protocol as a separate device and collects the NT-dollar digital account balance and three months of transactions.",
-        "zh-TW": "預覽來源，從未以真實的 New New Bank 帳戶執行過，資料可能不完整或有誤。它以 New New Bank App 的協定、作為另一台裝置登入，收集臺幣數位帳戶餘額與近三個月交易明細。",
+        en: "Preview source, never run against a live New New Bank account. Its data may be incomplete or wrong. It signs in through the New New Bank App protocol as a separate device and collects the NT-dollar digital account balance, three months of transactions, and the personal-loan overview.",
+        "zh-TW": "預覽來源，從未以真實的 New New Bank 帳戶執行過，資料可能不完整或有誤。它以 New New Bank App 的協定、作為另一台裝置登入，收集臺幣數位帳戶餘額、近三個月交易明細與個人貸款總覽。",
       },
       requirements: [{ en: "A Union Bank New New Bank digital account that signs in to the New New Bank App.", "zh-TW": "可登入 New New Bank App 的聯邦銀行 New New Bank 數位帳戶。" }],
       steps: [
@@ -368,7 +421,7 @@ export function createNewnewbankSource(options: Readonly<{ http?: PreviewHttpOpe
     },
     startUrl: `${ORIGIN}/nnbank/`,
     async run(context, input) {
-      if (!input.products.includes("deposit")) return context.preview.collect({});
+      if (input.products.length === 0) return context.preview.collect({});
       const deviceId = input.credentials[NEWNEWBANK_KEY.deviceId] ?? "";
       if (!DEVICE_ID.test(deviceId)) return fail("sign-in-rejected", "no device identity is stored with the sign-in details");
       await context.event("authentication", "started", "authentication-started");
@@ -384,7 +437,10 @@ export function createNewnewbankSource(options: Readonly<{ http?: PreviewHttpOpe
           await context.event("authentication", "completed", "authentication-completed");
           await context.event("collection", "started", "collection-started");
           const collectedAt = context.now();
-          const output = await context.preview.collect({ deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, collectedAt) }) });
+          const output = await context.preview.collect({
+            deposit: async () => ({ collectedAt, accounts: await collectDeposits(api, collectedAt) }),
+            loan: async () => collectLoans(api, collectedAt),
+          });
           await context.event("collection", "completed", "collection-completed");
           return output;
         } finally {

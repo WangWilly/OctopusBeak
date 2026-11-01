@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { blankPng, depositCollection, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
+import type { PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
+import { blankPng, depositCollection, productCollections, runPreviewSource, scriptedOcrEngine } from "./preview-source-harness.ts";
 import { calibratedCaptchaSolver, RAKUTEN_CAPTCHA_FAMILY } from "./preview-captcha.ts";
 import { createRakutenSource, playwrightRakutenPage, type RakutenCapture, type RakutenPage, type RakutenPageOpener, type RakutenSignInOutcome } from "./rakuten-source.ts";
 import { PreviewSourceFailure } from "./source-kit.ts";
@@ -19,9 +20,21 @@ const month = (rows: readonly string[], display = '{"dataEnd":true,"dataLimit":f
 
 const PK = { a: "20261003091500001", b: "20261003091500002", c: "20260915120000003" } as const;
 
+// Derived, unverified: no live CLNQU0001 sample exists. Field names follow all-set-tw's Rakuten parser
+// (commit d217135); the home page summary carries only marketingName and remainLoanAmount.
+const loanEntry = (fields: Readonly<Record<string, string | number>> = {}) => JSON.stringify({
+  loanAcctNo: "880-012345", marketingName: "樂天信貸", remainLoanAmount: 182345, initLoanAmount: 300000,
+  currentRate: 2.06, initPeriod: 84, remainPeriod: 60, monthlyPayDay: "20", nextRepaymentDate: "2026/11/05",
+  nextRepaymentAmount: 4120, lastDrawdownDate: "2024/11/05", currency: "TWD", ...fields,
+});
+
+const loanPage = (entries: readonly string[], field = "loanProjects") => `{"statusCode":"0000","rsData":{"${field}":[${entries.join(",")}]}}`;
+const SUMMARY = loanPage(['{"marketingName":"樂天信貸","remainLoanAmount":999}']);
+
 type Script = Readonly<{
   signIn?: RakutenSignInOutcome;
   months?: readonly string[];
+  loans?: readonly string[];
   image?: Buffer;
 }>;
 
@@ -44,6 +57,15 @@ function fakePage(script: Script = {}) {
         date: back === 0 ? "Thu, 15 Oct 2026 01:59:00 GMT" : null,
         text: months[back]!,
       };
+    },
+    async loanOverview() {
+      calls.push("loans");
+      return (script.loans ?? [SUMMARY, loanPage([loanEntry()])]).map((text, index) => ({
+        endpoint: "/ixtein/adapters/ebank/txns/channel-cln/CLNQU0001/010",
+        status: 200,
+        date: index === 0 ? null : "Thu, 15 Oct 2026 01:58:00 GMT",
+        text,
+      }));
     },
     async signOut() { calls.push("signOut"); },
   };
@@ -90,11 +112,77 @@ test("Rakuten reports undecodable CAPTCHA media as a typed source failure before
   }
 });
 
-async function run(script: Script = {}) {
+async function run(script: Script = {}, products: readonly PreviewProduct[] = ["deposit"]) {
   const fake = fakePage(script);
-  const result = await runPreviewSource(createRakutenSource({ page: fake.opener, solveCaptcha }), credentials);
+  const result = await runPreviewSource(createRakutenSource({ page: fake.opener, solveCaptcha }), credentials, undefined, products);
   return { ...result, fake };
 }
+
+const outcomes = (output: { products: readonly { typeId: string; status: string; errorCode?: string }[] } | null) =>
+  output?.products.map(({ typeId, status, errorCode }) => errorCode ? `${typeId}:${status}:${errorCode}` : `${typeId}:${status}`);
+
+test("Rakuten loans come from the loan page's full CLNQU0001 answer, keyed by the full number and labelled with its last four", async () => {
+  const { writes, observations, output, fake } = await run({}, ["deposit", "loan"]);
+  assert.deepEqual(outcomes(output), ["deposit:success", "loan:success"]);
+  assert.deepEqual(fake.calls, ["captcha", "signIn:A000000001:AB12", "month:0", "month:1", "month:2", "loans", "signOut"]);
+  const [collection] = productCollections(writes, "loan");
+  assert.deepEqual(collection, {
+    collectedAt: "2026-10-15T02:00:00.000Z",
+    completeness: "unproven",
+    loans: [{
+      sourceAccountKey: "880012345",
+      displayLabel: "樂天國際銀行 樂天信貸 2345",
+      currency: "TWD",
+      category: null,
+      outstandingBalance: { amount: "182345", observedAt: { at: "2026-10-15T01:58:00.000Z", source: "reported" } },
+      originalAmount: "300000",
+      interestRate: "2.06",
+      paymentAmount: "4120",
+      nextPaymentDate: "2026-11-05",
+      installmentsPaid: 24,
+      installmentsTotal: 84,
+      openedOn: null,
+      maturityDate: null,
+    }],
+  }, "the home page summary is ignored, installments paid is initPeriod minus remainPeriod, and lastDrawdownDate and monthlyPayDay are not used");
+  assert.equal(observations.filter((entry) => entry.endpoint.includes("CLNQU0001")).length, 2, "both loan captures are observed");
+});
+
+test("Rakuten loan terms the source does not report stay null, and loanList is read when loanProjects is absent", async () => {
+  const sparse = JSON.stringify({ loanAcctNo: "880012345", remainLoanAmount: "1,000", initPeriod: "84", remainPeriod: "", currency: "NTD" });
+  const { writes } = await run({ loans: [loanPage([sparse], "loanList")] }, ["loan"]);
+  const [loan] = productCollections(writes, "loan")[0]!.loans;
+  assert.deepEqual(loan, {
+    sourceAccountKey: "880012345", displayLabel: "樂天國際銀行 貸款 2345", currency: "TWD", category: null,
+    outstandingBalance: { amount: "1000", observedAt: { at: "2026-10-15T02:00:00.000Z", source: "collection-time" } },
+    originalAmount: null, interestRate: null, paymentAmount: null, nextPaymentDate: null,
+    installmentsPaid: null, installmentsTotal: 84, openedOn: null, maturityDate: null,
+  });
+});
+
+test("a Rakuten loan failure fails only the loan product and keeps the deposit", async () => {
+  const cases: Readonly<Record<string, readonly [readonly string[], string]>> = {
+    "no currency": [[loanPage([loanEntry().replace(',"currency":"TWD"', "")])], "source-validation-failed"],
+    "a masked loan number": [[loanPage([loanEntry({ loanAcctNo: "880****45" })])], "source-validation-failed"],
+    "no loan number": [[loanPage([loanEntry().replace('"loanAcctNo":"880-012345",', "")])], "source-validation-failed"],
+    "only the home page summary": [[SUMMARY, SUMMARY], "source-collection-failed"],
+    "no capture": [[], "source-validation-failed"],
+    "a failed statusCode": [[loanPage([loanEntry()]).replace('"0000"', '"E001"')], "source-validation-failed"],
+    "more remaining than total periods": [[loanPage([loanEntry({ remainPeriod: 90 })])], "source-validation-failed"],
+  };
+  for (const [name, [loans, code]] of Object.entries(cases)) {
+    const result = await run({ loans }, ["deposit", "loan"]);
+    assert.deepEqual(outcomes(result.output), ["deposit:success", `loan:failed:${code}`], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["deposit"], `${name} writes no loan list`);
+  }
+});
+
+test("a Rakuten loan page that lists nothing writes an empty unproven list", async () => {
+  const { writes, output, fake } = await run({ loans: [loanPage([]), loanPage([])] }, ["loan"]);
+  assert.deepEqual(outcomes(output), ["deposit:skipped", "loan:not_held"]);
+  assert.deepEqual(productCollections(writes, "loan"), [{ collectedAt: "2026-10-15T02:00:00.000Z", completeness: "unproven", loans: [] }]);
+  assert.ok(!fake.calls.some((call) => call.startsWith("month:")), "an unselected deposit is not read");
+});
 
 test("a Rakuten run writes the NT-dollar demand deposit with exact amounts, pk row keys, and per-row currency", async () => {
   const { receipt, writes, observations, fake } = await run();
