@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
+import { strictSourceText } from "../lib/automation/source-text.ts";
+import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import {
-  CathayDomesticAccountAbsentError,
+  CathayApiClient,
   type CathayDateTimeSuffixShape,
-  classifyCathayDomesticAccountScope,
   classifyCathayRowDateShapes,
   classifyCathayDateScopeMismatch,
   cathayQueryPeriod,
   collectCathayDomesticFinancialRequests,
-  prepareCathayDomesticStatementQuery,
-  resolveCathayDomesticQueryPlan,
-  type CathayQueryPeriod,
 } from "./cathay-statements.ts";
-import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 
 const dateScopeTelemetry = classifyCathayDateScopeMismatch(
   { startDate: "2025-01-01", endDate: "2025-12-31" },
@@ -378,597 +374,203 @@ for (const [suffix, expected] of [
   );
 }
 
-const structuralScopeTelemetry = classifyCathayDomesticAccountScope(
-  [
-    { accountNo: "0001" },
-    { accountNo: "20002" },
-    { accountNo: "0003" },
-    { accountNo: "0004" },
-  ],
-  [
-    "請選擇",
-    "活期存款 0001",
-    "活期存款 ****0002",
-    "活期存款 00003",
-    "活期存款 9999",
-    "另一個顯示項目 0001",
-  ],
-);
-assert.deepEqual(structuralScopeTelemetry, {
-  providerAccountCount: 4,
-  uiNonPlaceholderOptionCount: 5,
-  matchClasses: {
-    exact: 2,
-    suffix: 1,
-    masked: 1,
-    singletonUnique: 0,
-    unmatched: 2,
-    duplicates: 1,
-  },
-});
-const serializedStructuralScopeTelemetry = JSON.stringify(
-  structuralScopeTelemetry,
-);
-for (const privateFixtureToken of [
-  "0001",
-  "20002",
-  "0003",
-  "0004",
-  "9999",
-  "活期存款",
-  "另一個顯示項目",
-]) {
-  assert.doesNotMatch(
-    serializedStructuralScopeTelemetry,
-    new RegExp(privateFixtureToken),
-  );
-}
-
-const firstAccount = {
+const directFirstAccount = {
   accountNo: "0001",
   currency: "TWD",
   branchName: "Synthetic branch 1",
 };
-const secondAccount = {
+const directSecondAccount = {
   accountNo: "20002",
   currency: "TWD",
   branchName: "Synthetic branch 2",
 };
 
-assert.deepEqual(
-  resolveCathayDomesticQueryPlan(
-    [firstAccount, secondAccount],
-    ["請選擇", "活期存款 20002", "活期存款 0001"],
-    ["請選擇", "最近一個月", "最近一年"],
-    "one_year",
-  ),
-  { accountOptionIndexes: [1, 2], dateOptionIndex: 2 },
+const injectedClientPage = new Proxy({}, {
+  get(_target, property) {
+    throw new Error(`Injected-client collection unexpectedly accessed page.${String(property)}.`);
+  },
+});
+const expectedScope = {
+  startDate: "2025-10-29",
+  endDate: "2026-10-29",
+};
+const domesticPeriod = cathayQueryPeriod(
+  collectionPeriod({
+    today: "2026-10-29",
+    lookBack: { years: 1, days: 1 },
+  }),
 );
+assert.deepEqual(domesticPeriod, {
+  option: "one_year",
+  ...expectedScope,
+});
+function emptyTransferResponse(accountNo: string): string {
+  return JSON.stringify({
+    success: true,
+    returnCode: "0000",
+    content: {
+      datas: [{
+        queryStatus: "Success",
+        accountNumber: accountNo,
+        count: 0,
+        ...expectedScope,
+        details: [],
+      }],
+    },
+  });
+}
 
-assert.deepEqual(
-  resolveCathayDomesticQueryPlan(
-    [firstAccount],
-    ["請選擇", "Synthetic provider display alias without an identifier"],
-    ["請選擇", "最近一年"],
-    "one_year",
-  ),
-  { accountOptionIndexes: [1], dateOptionIndex: 1 },
+const requestedAccounts: string[] = [];
+const directApiCollection = await collectCathayDomesticFinancialRequests(
+  injectedClientPage as never,
+  domesticPeriod,
+  [],
+  { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+  {
+    client: {
+      fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
+      fetchTransferDetailsRaw: async (_session, accountNo, bounds) => {
+        assert.deepEqual(bounds, expectedScope);
+        requestedAccounts.push(accountNo);
+        return emptyTransferResponse(accountNo);
+      },
+    },
+  },
 );
+assert.deepEqual(requestedAccounts, ["0001", "20002"]);
+assert.equal(directApiCollection.captureCount, 2);
+assert.equal(directApiCollection.rowCount, 0);
+
+const evaluatedRequests: unknown[] = [];
+const apiOnlyPage = new Proxy(
+  {
+    evaluate: async (_callback: unknown, request: unknown) => {
+      evaluatedRequests.push(request);
+      return emptyTransferResponse("0001");
+    },
+  },
+  {
+    get(target, property, receiver) {
+      if (property === "evaluate") return Reflect.get(target, property, receiver);
+      throw new Error(`Cathay API client unexpectedly accessed page.${String(property)}.`);
+    },
+  },
+);
+const apiOnlyClient = new CathayApiClient(apiOnlyPage as never);
+await apiOnlyClient.fetchTransferDetailsRaw(
+  { jwtToken: "synthetic-token", customerId: "synthetic-customer", idType: "id" },
+  "0001",
+  expectedScope,
+);
+assert.deepEqual(evaluatedRequests, [{
+  path: "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
+  token: "synthetic-token",
+  body: {
+    functionSeqNo: (evaluatedRequests[0] as { body: { functionSeqNo: string } }).body.functionSeqNo,
+    content: {
+      customerId: "synthetic-customer",
+      queryFilters: [{
+        accountNumber: "0001",
+        ...expectedScope,
+      }],
+    },
+  },
+}]);
+
+const failedAccounts: string[] = [];
+await assert.rejects(
+  collectCathayDomesticFinancialRequests(
+    injectedClientPage as never,
+    domesticPeriod,
+    [],
+    { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+    {
+      client: {
+        fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
+        fetchTransferDetailsRaw: async (_session, accountNo) => {
+          failedAccounts.push(accountNo);
+          if (accountNo === directSecondAccount.accountNo) {
+            throw new Error("synthetic transfer failure");
+          }
+          return emptyTransferResponse(accountNo);
+        },
+      },
+    },
+  ),
+  /synthetic transfer failure/,
+);
+assert.deepEqual(failedAccounts, ["0001", "20002"]);
+
+const cancellation = new AbortController();
+const cancellationReason = new Error("synthetic cancellation");
+const cancelledAccounts: string[] = [];
+await assert.rejects(
+  collectCathayDomesticFinancialRequests(
+    injectedClientPage as never,
+    domesticPeriod,
+    [],
+    { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+    {
+      source: { text: strictSourceText, signal: cancellation.signal },
+      client: {
+        fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
+        fetchTransferDetailsRaw: async (_session, accountNo) => {
+          cancelledAccounts.push(accountNo);
+          cancellation.abort(cancellationReason);
+          return emptyTransferResponse(accountNo);
+        },
+      },
+    },
+  ),
+  (error) => error === cancellationReason,
+);
+assert.deepEqual(cancelledAccounts, ["0001"]);
+
+const oneYearAndOneDay = { years: 1, days: 1 } as const;
 assert.deepEqual(
-  classifyCathayDomesticAccountScope(
-    [firstAccount],
-    ["請選擇", "Synthetic provider display alias without an identifier"],
+  cathayQueryPeriod(
+    collectionPeriod({
+      today: taipeiToday("2028-02-28T16:30:00.000Z"),
+      lookBack: oneYearAndOneDay,
+    }),
   ),
   {
-    providerAccountCount: 1,
-    uiNonPlaceholderOptionCount: 1,
-    matchClasses: {
-      exact: 0,
-      suffix: 0,
-      masked: 0,
-      singletonUnique: 1,
-      unmatched: 0,
-      duplicates: 0,
-    },
-  },
-);
-
-for (const [accounts, accountOptionTexts] of [
-  [
-    [firstAccount],
-    [
-      "請選擇",
-      "Synthetic unmatched display alias A",
-      "Synthetic unmatched display alias B",
-    ],
-  ],
-  [
-    [firstAccount, secondAccount],
-    ["請選擇", "Synthetic unmatched display alias A"],
-  ],
-  [
-    [firstAccount, secondAccount],
-    [
-      "請選擇",
-      "Synthetic unmatched display alias A",
-      "Synthetic unmatched display alias B",
-    ],
-  ],
-  [
-    [firstAccount, secondAccount],
-    ["請選擇", "活期存款 0001", "Synthetic unmatched display alias B"],
-  ],
-  [
-    [firstAccount, secondAccount],
-    ["請選擇", "活期存款 ****0001", "Synthetic unmatched display alias B"],
-  ],
-] as const) {
-  assert.throws(
-    () =>
-      resolveCathayDomesticQueryPlan(
-        [...accounts],
-        accountOptionTexts,
-        ["請選擇", "最近一年"],
-        "one_year",
-      ),
-    /account scope does not match/,
-  );
-}
-
-assert.throws(
-  () =>
-    resolveCathayDomesticQueryPlan(
-      [{ accountNo: "1111" }, { accountNo: "221111" }],
-      ["請選擇", "顯示帳戶 1111", "Synthetic unmatched display alias"],
-      ["請選擇", "最近一年"],
-      "one_year",
-    ),
-  /ambiguous/,
-);
-
-assert.throws(
-  () =>
-    resolveCathayDomesticQueryPlan(
-      [firstAccount],
-      ["請選擇"],
-      ["請選擇", "最近一年"],
-      "one_year",
-    ),
-  CathayDomesticAccountAbsentError,
-);
-assert.throws(
-  () =>
-    resolveCathayDomesticQueryPlan(
-      [firstAccount],
-      ["請選擇", "活期存款 0001"],
-      ["請選擇", "最近一個月"],
-      "one_year",
-    ),
-  /period is not supported/,
-);
-assert.throws(
-  () =>
-    resolveCathayDomesticQueryPlan(
-      [firstAccount],
-      ["請選擇", "活期存款 0001"],
-      ["請選擇", "最近一年", "一年"],
-      "one_year",
-    ),
-  /period is ambiguous/,
-);
-assert.throws(
-  () =>
-    resolveCathayDomesticQueryPlan(
-      [firstAccount],
-      ["請選擇", "活期存款 0001", "活期存款 20002"],
-      ["請選擇", "最近一年"],
-      "one_year",
-    ),
-  /account scope does not match/,
-);
-
-const oneAccountOption = ["請選擇", "活期存款 0001"];
-for (const [dateRange, supportedLabels] of [
-  ["one_week", ["最近一週", "近 1 週"]],
-  ["one_month", ["最近一個月", "近 1 個 月"]],
-  ["three_months", ["最近三個月", "近 3 個 月"]],
-  ["six_months", ["最近六個月", "近 6 個 月"]],
-  ["one_year", ["最近一年", "近 1 年"]],
-] as const) {
-  for (const supportedLabel of supportedLabels) {
-    assert.deepEqual(
-      resolveCathayDomesticQueryPlan(
-        [firstAccount],
-        oneAccountOption,
-        ["請選擇", supportedLabel],
-        dateRange,
-      ),
-      { accountOptionIndexes: [1], dateOptionIndex: 1 },
-    );
-  }
-}
-
-for (const [dateRange, wrongQuantityLabel] of [
-  ["one_week", "最近兩週"],
-  ["one_month", "最近三個月"],
-  ["three_months", "最近六個月"],
-  ["six_months", "最近三個月"],
-  ["one_year", "最近三年"],
-] as const) {
-  assert.throws(
-    () =>
-      resolveCathayDomesticQueryPlan(
-        [firstAccount],
-        oneAccountOption,
-        ["請選擇", wrongQuantityLabel],
-        dateRange,
-      ),
-    /period is not supported/,
-  );
-}
-
-type OptionSet = { texts: string[]; selected: number[] };
-const accountOptions: OptionSet = {
-  texts: ["請選擇", "活期存款 20002", "活期存款 0001"],
-  selected: [],
-};
-const periodOptions: OptionSet = {
-  texts: ["請選擇", "最近一個月", "最近一年"],
-  selected: [],
-};
-let openOptions: OptionSet | null = null;
-let queryCount = 0;
-const controlInteractions: string[] = [];
-
-function optionLocator(options: OptionSet) {
-  return {
-    first: () => ({ waitFor: async () => undefined }),
-    allTextContents: async () => options.texts,
-    nth: (index: number) => ({
-      click: async () => {
-        options.selected.push(index);
-        openOptions = null;
-      },
-    }),
-  };
-}
-
-function comboLocator(options: OptionSet, label: string) {
-  return {
-    click: async () => {
-      throw new Error("synthetic React Select dummy input is outside viewport");
-    },
-    locator: (selector: string) => {
-      assert.equal(selector, "..");
-      return {
-        waitFor: async () => controlInteractions.push(`${label}:wait`),
-        scrollIntoViewIfNeeded: async () =>
-          controlInteractions.push(`${label}:scroll`),
-        click: async () => {
-          controlInteractions.push(`${label}:click`);
-          openOptions = options;
-        },
-      };
-    },
-  };
-}
-
-const comboboxes = [
-  comboLocator(accountOptions, "account"),
-  comboLocator(periodOptions, "period"),
-];
-const page = {
-  locator: (selector: string) => {
-    if (selector === '[role="combobox"]') {
-      return {
-        count: async () => comboboxes.length,
-        nth: (index: number) => comboboxes[index],
-      };
-    }
-    if (selector === '[role="listbox"] [role="option"]') {
-      if (!openOptions) throw new Error("No Cathay query options are open.");
-      return optionLocator(openOptions);
-    }
-    if (selector === "table") {
-      return { first: () => ({ isVisible: async () => queryCount > 0 }) };
-    }
-    throw new Error(`Unexpected locator: ${selector}`);
-  },
-  getByRole: () => ({
-    count: async () => 1,
-    click: async () => {
-      queryCount += 1;
-    },
-  }),
-  getByText: () => ({ first: () => ({ isVisible: async () => false }) }),
-  keyboard: {
-    press: async () => {
-      openOptions = null;
-    },
-  },
-  waitForTimeout: async () => undefined,
-};
-
-await prepareCathayDomesticStatementQuery(
-  page as never,
-  [firstAccount, secondAccount],
-  "one_year",
-);
-assert.deepEqual(accountOptions.selected, [1, 2]);
-assert.deepEqual(periodOptions.selected, [2, 2]);
-assert.equal(queryCount, 2);
-assert.deepEqual(controlInteractions, [
-  "account:wait",
-  "account:scroll",
-  "account:click",
-  "period:wait",
-  "period:scroll",
-  "period:click",
-  "account:wait",
-  "account:scroll",
-  "account:click",
-  "period:wait",
-  "period:scroll",
-  "period:click",
-  "account:wait",
-  "account:scroll",
-  "account:click",
-  "period:wait",
-  "period:scroll",
-  "period:click",
-]);
-
-await assert.rejects(
-  () =>
-    prepareCathayDomesticStatementQuery(
-      page as never,
-      [firstAccount],
-      "one_year",
-    ),
-  /account scope does not match/,
-);
-
-function delayedDomesticQueryPage(
-  initialUrl: string,
-  options: {
-    controlsAvailable?: boolean;
-    interactiveControlsAvailable?: boolean;
-    interactiveClickError?: Error;
-    navigationError?: Error;
-  } = {},
-) {
-  const accountOptions: OptionSet = {
-    texts: ["請選擇", "活期存款 0001"],
-    selected: [],
-  };
-  const periodOptions: OptionSet = {
-    texts: ["請選擇", "最近一年"],
-    selected: [],
-  };
-  let currentUrl = initialUrl;
-  let controlsReady = false;
-  let openOptions: OptionSet | null = null;
-  let queryCount = 0;
-  const navigations: string[] = [];
-  const comboboxes = [accountOptions, periodOptions].map((optionSet) => ({
-    click: async () => {
-      throw new Error("synthetic dummy input click must not be used");
-    },
-    locator: (selector: string) => {
-      assert.equal(selector, "..");
-      return {
-        waitFor: async () => {
-          if (options.interactiveControlsAvailable === false) {
-            throw new Error("synthetic interactive control timeout");
-          }
-        },
-        scrollIntoViewIfNeeded: async () => undefined,
-        click: async () => {
-          if (options.interactiveClickError) {
-            throw options.interactiveClickError;
-          }
-          openOptions = optionSet;
-        },
-      };
-    },
-  }));
-
-  return {
-    accountOptions,
-    periodOptions,
-    navigations,
-    queryCount: () => queryCount,
-    page: {
-      url: () => currentUrl,
-      goto: async (url: string) => {
-        if (options.navigationError) throw options.navigationError;
-        navigations.push(url);
-        currentUrl = url;
-      },
-      waitForLoadState: async () => undefined,
-      locator: (selector: string) => {
-        if (selector === '[role="combobox"]') {
-          return {
-            count: async () => (controlsReady ? comboboxes.length : 0),
-            nth: (index: number) => ({
-              ...comboboxes[index],
-              waitFor: async () => {
-                if (options.controlsAvailable === false) {
-                  throw new Error("synthetic controls timeout");
-                }
-                controlsReady = true;
-              },
-            }),
-          };
-        }
-        if (selector === '[role="listbox"] [role="option"]') {
-          if (!openOptions)
-            throw new Error("No Cathay query options are open.");
-          return optionLocator(openOptions);
-        }
-        if (selector === "table") {
-          return { first: () => ({ isVisible: async () => queryCount > 0 }) };
-        }
-        throw new Error(`Unexpected locator: ${selector}`);
-      },
-      getByRole: () => ({
-        count: async () => 1,
-        click: async () => {
-          queryCount += 1;
-        },
-      }),
-      getByText: () => ({ first: () => ({ isVisible: async () => false }) }),
-      keyboard: {
-        press: async () => {
-          openOptions = null;
-        },
-      },
-      waitForTimeout: async () => undefined,
-    },
-  };
-}
-
-const oneYear: CathayQueryPeriod = { option: "one_year", startDate: "2025-09-25", endDate: "2026-09-25" };
-
-// Cathay's one-year option covers one year and one day ending on the run's
-// Taipei date. On Feb 29 it starts on Mar 1, the start the earlier rolled-over
-// date produced, instead of the clamped Feb 28.
-{
-  const declaration = CATHAY_SOURCE.statementSelection!.products.find(({ id }) => id === "domestic")!.collectionPeriod!;
-  // 16:30Z on Feb 28 is 00:30 on Feb 29 in Taipei.
-  const today = taipeiToday("2028-02-28T16:30:00.000Z");
-  assert.deepEqual(cathayQueryPeriod(collectionPeriod({ today, ...declaration })), {
     option: "one_year",
     startDate: "2027-03-01",
     endDate: "2028-02-29",
-  });
-  assert.deepEqual(cathayQueryPeriod(collectionPeriod({ today: "2028-03-01", ...declaration })), {
+  },
+);
+assert.deepEqual(
+  cathayQueryPeriod(
+    collectionPeriod({ today: "2028-03-01", lookBack: oneYearAndOneDay }),
+  ),
+  {
     option: "one_year",
     startDate: "2027-03-01",
     endDate: "2028-03-01",
-  }, "the day after a leap day starts one year back");
-  assert.deepEqual(
-    cathayQueryPeriod(collectionPeriod({ today: "2026-03-31", lookBack: { months: 1, days: 1 } })),
-    { option: "one_month", startDate: "2026-02-28", endDate: "2026-03-31" },
-    "a month back from Mar 31 clamps to Feb 28 instead of rolling over to Mar 3",
-  );
-  assert.throws(
-    () => cathayQueryPeriod(collectionPeriod({ today: "2026-03-31", lookBack: { months: 2, days: 1 } })),
-    /No Cathay period option/,
-  );
-}
-
-const delayedPage = delayedDomesticQueryPage(
-  "https://www.cathaybk.com.tw/OnlineBanking/",
+  },
 );
-let transferReads = 0;
-await assert.rejects(
-  () =>
-    collectCathayDomesticFinancialRequests(
-      delayedPage.page as never,
-      oneYear,
-      [],
-      { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {
-        client: {
-          fetchDomesticAccounts: async () => [firstAccount],
-          fetchTransferDetailsRaw: async () => {
-            transferReads += 1;
-            throw new Error("stop after Cathay UI query preparation");
-          },
-        },
-      },
-    ),
-  /stop after Cathay UI query preparation/,
-);
-assert.equal(delayedPage.navigations.length, 1);
-assert.equal(delayedPage.queryCount(), 1);
-assert.equal(transferReads, 1);
-
-const alreadyOpenPage = delayedDomesticQueryPage(
-  "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-);
-await assert.rejects(
-  () =>
-    collectCathayDomesticFinancialRequests(
-      alreadyOpenPage.page as never,
-      oneYear,
-      [],
-      { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-      {
-        client: {
-          fetchDomesticAccounts: async () => [firstAccount],
-          fetchTransferDetailsRaw: async () => {
-            throw new Error(
-              "stop after already-open Cathay UI query preparation",
-            );
-          },
-        },
-      },
-    ),
-  /stop after already-open Cathay UI query preparation/,
-);
-assert.deepEqual(alreadyOpenPage.navigations, []);
-assert.equal(alreadyOpenPage.queryCount(), 1);
-
-for (const [label, unavailablePage, expectedError] of [
-  [
-    "navigation",
-    delayedDomesticQueryPage("https://www.cathaybk.com.tw/OnlineBanking/", {
-      navigationError: new Error("synthetic Cathay navigation failure"),
+assert.deepEqual(
+  cathayQueryPeriod(
+    collectionPeriod({
+      today: "2026-03-31",
+      lookBack: { months: 1, days: 1 },
     }),
-    /synthetic Cathay navigation failure/,
-  ],
-  [
-    "controls",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      { controlsAvailable: false },
+  ),
+  {
+    option: "one_month",
+    startDate: "2026-02-28",
+    endDate: "2026-03-31",
+  },
+  "a month back from Mar 31 clamps to Feb 28",
+);
+assert.throws(
+  () =>
+    cathayQueryPeriod(
+      collectionPeriod({
+        today: "2026-03-31",
+        lookBack: { months: 2, days: 1 },
+      }),
     ),
-    /query controls are unavailable/,
-  ],
-  [
-    "interactive control",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      { interactiveControlsAvailable: false },
-    ),
-    /query control is not interactive/,
-  ],
-  [
-    "intercepting content layer",
-    delayedDomesticQueryPage(
-      "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq",
-      {
-        interactiveClickError: new Error(
-          "synthetic Cathay content layer intercepts pointer events",
-        ),
-      },
-    ),
-    /query control is not interactive/,
-  ],
-] as const) {
-  let unavailableTransferReads = 0;
-  await assert.rejects(
-    () =>
-      collectCathayDomesticFinancialRequests(
-        unavailablePage.page as never,
-        oneYear,
-        [],
-        { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
-        {
-          client: {
-            fetchDomesticAccounts: async () => [firstAccount],
-            fetchTransferDetailsRaw: async () => {
-              unavailableTransferReads += 1;
-              return "unreachable";
-            },
-          },
-        },
-      ),
-    expectedError,
-    `${label} failure must propagate before statement reads`,
-  );
-  assert.equal(unavailableTransferReads, 0);
-  assert.equal(unavailablePage.queryCount(), 0);
-}
+  /No Cathay period option/,
+);

@@ -18,11 +18,12 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
-import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
+import {
+  periodSpans,
+  type CollectionPeriod,
+  type CollectionSpan,
+} from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
-
-const DOMESTIC_STATEMENTS_URL =
-  "https://www.cathaybk.com.tw/OnlineBanking/AcctInq/B0103_TxnDtlInq";
 
 export type CathayCredentials = {
   cathay_user_id?: string;
@@ -45,13 +46,15 @@ const dateRangeSchema = z.enum([
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
-/** The dates Cathay's API is asked for, as YYYY-MM-DD, both inclusive. */
-export type CathayQueryRange = Readonly<{ startDate: string; endDate: string }>;
+export type CathayQueryPeriod = CathayQueryRange & Readonly<{
+  option: CathayDateRange;
+}>;
 
-/** A domestic query: the query form's period option and the dates the API is asked for. */
-export type CathayQueryPeriod = CathayQueryRange & Readonly<{ option: CathayDateRange }>;
+export type CathayQueryRange = Readonly<{
+  startDate: string;
+  endDate: string;
+}>;
 
-/** The span each of Cathay's period options covers, ending today with both ends inclusive. */
 const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> = {
   one_week: { days: 8 },
   one_month: { months: 1, days: 1 },
@@ -60,13 +63,13 @@ const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> =
   one_year: { years: 1, days: 1 },
 };
 
-/** The Cathay period option that covers the product's collection period exactly. */
+/** Match a product's exact collection period to a Cathay query-form option. */
 export function cathayQueryPeriod(period: CollectionPeriod): CathayQueryPeriod {
   const option = (Object.keys(CATHAY_PERIOD_OPTIONS) as CathayDateRange[])
     .find((candidate) => periodSpans(period, CATHAY_PERIOD_OPTIONS[candidate]));
   if (!option) throw new Error("No Cathay period option covers the collection period.");
-  // A year back from Feb 29 clamps to Feb 28, a start Cathay has never been
-  // sent. Keep Mar 1, the start the earlier rolled-over date produced (ADR 0077).
+  // Cathay's one-year query uses Mar 1 for the year before a Feb 29 end date.
+  // Preserve that provider boundary while the product collection period stays clamped.
   if (option === "one_year" && period.end.endsWith("-02-29")) {
     return { option, startDate: `${Number(period.end.slice(0, 4)) - 1}-03-01`, endDate: period.end };
   }
@@ -84,13 +87,6 @@ export type CathayDomesticStatementsClient = {
     range: CathayQueryRange,
   ): Promise<string>;
 };
-
-export type CathayDomesticQueryPreparation = (
-  page: Page,
-  accounts: CathayAccount[],
-  dateRange: CathayDateRange,
-  requireCompleteAccountScope?: boolean,
-) => Promise<void>;
 
 export class CathayDomesticAccountAbsentError extends StatementComponentAbsentError {
   constructor() {
@@ -801,377 +797,6 @@ export async function signInCathayForApp(context: WorkflowContext, page: Page, p
   }
 }
 
-async function openDomesticStatementsPage(page: Page): Promise<void> {
-  const domesticUrl = new URL(DOMESTIC_STATEMENTS_URL);
-  const currentUrl = new URL(page.url());
-  const domesticPath = domesticUrl.pathname.replace(/\/+$/, "");
-  const currentPath = currentUrl.pathname.replace(/\/+$/, "");
-  if (
-    currentUrl.origin !== domesticUrl.origin ||
-    currentPath !== domesticPath
-  ) {
-    await page.goto(DOMESTIC_STATEMENTS_URL, { waitUntil: "domcontentloaded" });
-    await page.waitForLoadState("domcontentloaded");
-  }
-
-  const queryControls = page.locator('[role="combobox"]');
-  await queryControls
-    .nth(1)
-    .waitFor({ state: "visible", timeout: 15_000 })
-    .catch(() => {
-      throw new Error(
-        "Cathay domestic statement query controls are unavailable.",
-      );
-    });
-}
-
-export type CathayDomesticQueryPlan = {
-  accountOptionIndexes: number[];
-  dateOptionIndex: number;
-};
-
-function normalizedQueryOption(value: string): string {
-  return toAsciiDigits(cleanText(value)).toLowerCase();
-}
-
-function isCathayQueryPlaceholder(value: string): boolean {
-  return /^(?:請選擇|select)(?:\s|$)/i.test(normalizedQueryOption(value));
-}
-
-function accountOptionMatches(
-  optionText: string,
-  account: CathayAccount,
-): boolean {
-  const optionDigits = digitsOnly(optionText);
-  const accountDigits = digitsOnly(account.accountNo);
-  if (optionDigits && accountDigits) {
-    return (
-      optionDigits === accountDigits ||
-      optionDigits.endsWith(accountDigits) ||
-      accountDigits.endsWith(optionDigits)
-    );
-  }
-
-  const option = normalizedQueryOption(optionText);
-  const accountLabelText = normalizedQueryOption(accountLabel(account));
-  return Boolean(accountLabelText && option.includes(accountLabelText));
-}
-
-export type CathayDomesticAccountScopeTelemetry = {
-  providerAccountCount: number;
-  uiNonPlaceholderOptionCount: number;
-  matchClasses: {
-    exact: number;
-    suffix: number;
-    masked: number;
-    singletonUnique: number;
-    unmatched: number;
-    duplicates: number;
-  };
-};
-
-type CathayDomesticAccountMatchClass = "exact" | "suffix" | "masked";
-
-function cathayDomesticAccountMatchClass(
-  optionText: string,
-  account: CathayAccount,
-): CathayDomesticAccountMatchClass | null {
-  const optionDigits = digitsOnly(optionText);
-  const accountDigits = digitsOnly(account.accountNo);
-  if (optionDigits && accountDigits) {
-    if (optionDigits === accountDigits) return "exact";
-    if (
-      optionDigits.endsWith(accountDigits) ||
-      accountDigits.endsWith(optionDigits)
-    ) {
-      return /[*＊xX•●]/.test(optionText) ? "masked" : "suffix";
-    }
-    return null;
-  }
-  return accountOptionMatches(optionText, account) ? "exact" : null;
-}
-
-/** Privacy-safe structural diagnostics only; never returns account or label material. */
-export function classifyCathayDomesticAccountScope(
-  accounts: CathayAccount[],
-  accountOptionTexts: readonly string[],
-): CathayDomesticAccountScopeTelemetry {
-  const options = accountOptionTexts
-    .map((text) => cleanText(text))
-    .filter((text) => text.length > 0 && !isCathayQueryPlaceholder(text));
-  const providerMatchCounts = accounts.map(() => 0);
-  const matchClasses = {
-    exact: 0,
-    suffix: 0,
-    masked: 0,
-    singletonUnique: 0,
-    unmatched: 0,
-    duplicates: 0,
-  };
-
-  if (
-    accounts.length === 1 &&
-    options.length === 1 &&
-    cathayDomesticAccountMatchClass(options[0]!, accounts[0]!) === null
-  ) {
-    matchClasses.singletonUnique = 1;
-    return {
-      providerAccountCount: 1,
-      uiNonPlaceholderOptionCount: 1,
-      matchClasses,
-    };
-  }
-
-  for (const option of options) {
-    const matches = accounts
-      .map((account, index) => ({
-        index,
-        matchClass: cathayDomesticAccountMatchClass(option, account),
-      }))
-      .filter(
-        (
-          match,
-        ): match is {
-          index: number;
-          matchClass: CathayDomesticAccountMatchClass;
-        } => match.matchClass !== null,
-      );
-    if (matches.length === 0) {
-      matchClasses.unmatched += 1;
-      continue;
-    }
-    for (const match of matches) providerMatchCounts[match.index] += 1;
-    if (matches.length > 1) {
-      matchClasses.duplicates += 1;
-      continue;
-    }
-    matchClasses[matches[0]!.matchClass] += 1;
-  }
-
-  for (const count of providerMatchCounts) {
-    if (count === 0) matchClasses.unmatched += 1;
-    if (count > 1) matchClasses.duplicates += 1;
-  }
-
-  return {
-    providerAccountCount: accounts.length,
-    uiNonPlaceholderOptionCount: options.length,
-    matchClasses,
-  };
-}
-
-function dateOptionMatches(
-  optionText: string,
-  dateRange: CathayDateRange,
-): boolean {
-  const option = normalizedQueryOption(optionText);
-  const quantities: Record<string, number> = {
-    一: 1,
-    二: 2,
-    三: 3,
-    四: 4,
-    五: 5,
-    六: 6,
-    七: 7,
-    八: 8,
-    九: 9,
-    十: 10,
-  };
-  const matches = [
-    ...option.matchAll(
-      /([0-9]+|[一二三四五六七八九十]+)\s*(?:個\s*)?(週|周|月|年)/g,
-    ),
-  ];
-  if (matches.length !== 1) return false;
-  const quantityText = matches[0]![1]!;
-  const quantity = /^[0-9]+$/.test(quantityText)
-    ? Number(quantityText)
-    : quantities[quantityText];
-  const unit = matches[0]![2] === "周" ? "週" : matches[0]![2];
-  const expected: Record<
-    CathayDateRange,
-    { quantity: number; unit: "週" | "月" | "年" }
-  > = {
-    one_week: { quantity: 1, unit: "週" },
-    one_month: { quantity: 1, unit: "月" },
-    three_months: { quantity: 3, unit: "月" },
-    six_months: { quantity: 6, unit: "月" },
-    one_year: { quantity: 1, unit: "年" },
-  };
-  return (
-    quantity === expected[dateRange].quantity &&
-    unit === expected[dateRange].unit
-  );
-}
-
-export function resolveCathayDomesticQueryPlan(
-  accounts: CathayAccount[],
-  accountOptionTexts: readonly string[],
-  dateOptionTexts: readonly string[],
-  dateRange: CathayDateRange,
-  requireCompleteAccountScope = true,
-): CathayDomesticQueryPlan {
-  if (accounts.length === 0) throw new CathayDomesticAccountAbsentError();
-
-  const availableAccounts = accountOptionTexts
-    .map((text, index) => ({ text: cleanText(text), index }))
-    .filter(({ text }) => text.length > 0 && !isCathayQueryPlaceholder(text));
-  if (availableAccounts.length === 0) {
-    throw new CathayDomesticAccountAbsentError();
-  }
-  if (
-    requireCompleteAccountScope &&
-    availableAccounts.length !== accounts.length
-  ) {
-    throw new Error(
-      "Cathay domestic account scope does not match the statement query.",
-    );
-  }
-
-  const matchedAccountIndexes = new Set<number>();
-  const accountOptionIndexes: number[] = [];
-  for (const option of availableAccounts) {
-    const matches = accounts
-      .map((account, index) => ({ account, index }))
-      .filter(({ account }) => accountOptionMatches(option.text, account));
-    if (matches.length > 1) {
-      throw new Error(
-        "Cathay domestic account option is ambiguous in the statement query.",
-      );
-    }
-    if (matches.length === 0) {
-      if (accounts.length === 1 && availableAccounts.length === 1) {
-        matchedAccountIndexes.add(0);
-        accountOptionIndexes.push(option.index);
-        continue;
-      }
-      if (requireCompleteAccountScope) {
-        throw new Error(
-          "Cathay domestic account scope does not match the statement query.",
-        );
-      }
-      continue;
-    }
-    const match = matches[0]!;
-    if (matchedAccountIndexes.has(match.index)) {
-      throw new Error(
-        "Cathay domestic account option is ambiguous in the statement query.",
-      );
-    }
-    matchedAccountIndexes.add(match.index);
-    accountOptionIndexes.push(option.index);
-  }
-  if (matchedAccountIndexes.size !== accounts.length) {
-    throw new Error(
-      "Cathay domestic account scope does not match the statement query.",
-    );
-  }
-
-  const matchingDateOptions = dateOptionTexts
-    .map((text, index) => ({ text: cleanText(text), index }))
-    .filter(
-      ({ text }) =>
-        text.length > 0 &&
-        !isCathayQueryPlaceholder(text) &&
-        dateOptionMatches(text, dateRange),
-    );
-  if (matchingDateOptions.length === 0) {
-    throw new Error(
-      `Cathay domestic statement period is not supported by the query form: ${dateRange}.`,
-    );
-  }
-  if (matchingDateOptions.length > 1) {
-    throw new Error(
-      `Cathay domestic statement period is ambiguous in the query form: ${dateRange}.`,
-    );
-  }
-
-  return {
-    accountOptionIndexes,
-    dateOptionIndex: matchingDateOptions[0]!.index,
-  };
-}
-
-async function openCathayQueryOptions(
-  page: Page,
-  combobox: Locator,
-): Promise<{ locator: Locator; texts: string[] }> {
-  // Cathay's React Select exposes a role=combobox dummy input whose own box
-  // can remain outside the viewport. Interact with its visible control
-  // container using ordinary Playwright actionability checks instead.
-  const control = combobox.locator("..");
-  try {
-    await control.waitFor({ state: "visible", timeout: 5_000 });
-    await control.scrollIntoViewIfNeeded({ timeout: 5_000 });
-    await control.click({ timeout: 5_000 });
-  } catch (cause) {
-    throw new Error(
-      "Cathay domestic statement query control is not interactive.",
-      { cause },
-    );
-  }
-  const locator = page.locator('[role="listbox"] [role="option"]');
-  await locator.first().waitFor({ state: "visible", timeout: 5_000 });
-  return { locator, texts: await locator.allTextContents() };
-}
-
-async function waitForCathayQueryResult(page: Page): Promise<void> {
-  const deadline = Date.now() + 15_000;
-  const noData = page.getByText(/查無資料|無資料|沒有資料/).first();
-  const table = page.locator("table").first();
-  while (Date.now() < deadline) {
-    if (await table.isVisible().catch(() => false)) return;
-    if (await noData.isVisible().catch(() => false)) return;
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Cathay domestic statement query did not produce a result.");
-}
-
-export async function prepareCathayDomesticStatementQuery(
-  page: Page,
-  accounts: CathayAccount[],
-  dateRange: CathayDateRange,
-  requireCompleteAccountScope = true,
-): Promise<void> {
-  const comboboxes = page.locator('[role="combobox"]');
-  if ((await comboboxes.count()) < 2) {
-    throw new Error(
-      "Cathay domestic statement query controls are unavailable.",
-    );
-  }
-
-  const accountCombo = comboboxes.nth(0);
-  const dateCombo = comboboxes.nth(1);
-  const accountOptions = await openCathayQueryOptions(page, accountCombo);
-  await page.keyboard.press("Escape");
-  const dateOptions = await openCathayQueryOptions(page, dateCombo);
-  await page.keyboard.press("Escape");
-  const plan = resolveCathayDomesticQueryPlan(
-    accounts,
-    accountOptions.texts,
-    dateOptions.texts,
-    dateRange,
-    requireCompleteAccountScope,
-  );
-
-  const queryButton = page.getByRole("button", { name: "查詢", exact: true });
-  if ((await queryButton.count()) !== 1) {
-    throw new Error("Cathay domestic statement query button is unavailable.");
-  }
-
-  for (const accountOptionIndex of plan.accountOptionIndexes) {
-    const openedAccountOptions = await openCathayQueryOptions(
-      page,
-      accountCombo,
-    );
-    await openedAccountOptions.locator.nth(accountOptionIndex).click();
-    const openedDateOptions = await openCathayQueryOptions(page, dateCombo);
-    await openedDateOptions.locator.nth(plan.dateOptionIndex).click();
-    await queryButton.click();
-    await waitForCathayQueryResult(page);
-  }
-}
-
 export function functionSeqNo(): string {
   return `${Date.now()}${randomUUID()}`;
 }
@@ -1283,19 +908,6 @@ export class CathayApiClient {
     if (accounts.length === 0) throw new CathayDomesticAccountAbsentError();
 
     return accounts;
-  }
-
-  async fetchTransferDetails(
-    session: CathaySession,
-    accountNo: string,
-    range: CathayQueryRange,
-  ): Promise<CathayTransferResult> {
-    const raw = await this.fetchTransferDetailsRaw(
-      session,
-      accountNo,
-      range,
-    );
-    return parseCathayTransferResponse(raw, accountNo);
   }
 
   /** Preserve the provider response lexemes for canonical admission before JSON numeric coercion. */
@@ -1589,7 +1201,6 @@ export async function collectCathayDomesticFinancialRequests(
   options: Readonly<{
     source?: CathayStrictSourceOptions;
     observedAt?: string;
-    prepareStatementQuery?: CathayDomesticQueryPreparation;
     client?: CathayDomesticStatementsClient;
   }>,
 ): Promise<CathayDomesticFinancialCollection> {
@@ -1599,25 +1210,16 @@ export async function collectCathayDomesticFinancialRequests(
     client.fetchDomesticAccounts(cathaySession, accountFilters),
     options.source?.signal,
   );
-  await withAbort(
-    openDomesticStatementsPage(page),
-    options.source?.signal,
-  );
-  await withAbort(
-    (options.prepareStatementQuery ?? prepareCathayDomesticStatementQuery)(
-      page,
-      accounts,
-      period.option,
-      accountFilters.length === 0,
-    ),
-    options.source?.signal,
-  );
 
   const sourceConnectionId =
     process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
   const identityEpoch =
     process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
-  const scope = { startDate: period.startDate, endDate: period.endDate };
+  const bounds: CathayQueryRange = {
+    startDate: period.startDate,
+    endDate: period.endDate,
+  };
+  const scope = { startDate: bounds.startDate, endDate: bounds.endDate };
   const observedAt = options.observedAt ?? new Date().toISOString();
   const stagedPages: CathayStagedCapturePage[] = [];
   const stagedStatements: CathayTransferResult[] = [];
@@ -1627,7 +1229,7 @@ export async function collectCathayDomesticFinancialRequests(
       client.fetchTransferDetailsRaw(
         cathaySession,
         account.accountNo,
-        period,
+        bounds,
       ),
       options.source?.signal,
     );
