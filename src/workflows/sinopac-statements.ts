@@ -82,6 +82,7 @@ import {
   sinopacCardPageTransport,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
+import { collectSinopacLoans, sinopacLoanPageTransport, type SinopacLoanTransport } from "./sinopac-loan.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
 const TRANSACTION_URL =
@@ -1630,6 +1631,7 @@ export async function runSinopacDeposit(
 export type SinopacProviderWorkflowDependencies = Readonly<{
   collectDeposit?: typeof runSinopacDeposit;
   cardTransport?: SinopacCardTransport;
+  loanTransport?: SinopacLoanTransport;
 }>;
 
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
@@ -1667,6 +1669,10 @@ export async function runSinopacProviderWorkflow(
           return {
             // Attached products have no structure report yet, so responses are validated but not kept.
             credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
+            loan: () => collectSinopacLoans({
+              transport: dependencies.loanTransport ?? sinopacLoanPageTransport(page, context.signal),
+              collectedAt: context.now(),
+            }),
           };
         },
         assertSession,

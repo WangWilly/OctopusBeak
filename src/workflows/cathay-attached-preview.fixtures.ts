@@ -1,6 +1,7 @@
 import type {
   CathayAttachedPreviewPort,
   CathayCardEndpoint,
+  CathayLoanOverview,
   CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
 import { previewCreditAccountId, type PreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
@@ -36,8 +37,43 @@ export const CATHAY_PREVIEW_RESPONSES = {
 
 export type CathayPreviewResponses = Record<string, string | null>;
 
+/**
+ * The L0101 loan overview as the page port reads it, shaped after all-set-tw's
+ * `cathay-loan-overview-table.html` fixture (commit 156e2eb). Derived from
+ * all-set-tw, not observed on a live Cathay account; the numbers are fake.
+ */
+export const CATHAY_LOAN_OVERVIEW: CathayLoanOverview = {
+  recognized: true,
+  noLoanMessage: false,
+  currency: "TWD",
+  totalBalance: "NT$ 1,234,567",
+  date: DATE,
+  rows: [
+    {
+      section: "房屋貸款",
+      category: null,
+      accountNumber: "100200301",
+      interestRate: "1.37%",
+      paymentAmount: "NT$ 12,345",
+      paymentDue: "2026/11/05",
+      balance: "NT$ 1,000,000",
+      installments: "已繳 17 期，共 180 期",
+    },
+    {
+      section: "其他貸款",
+      category: null,
+      accountNumber: "100200302",
+      interestRate: "",
+      paymentAmount: "NT$ 2,345",
+      paymentDue: "未完成扣款",
+      balance: "NT$ 234,567",
+      installments: null,
+    },
+  ],
+};
+
 /** A signed-in Cathay page that answers from synthetic responses and records each one it served. */
-export function fakeCathayAttachedPreviewPort(overrides: CathayPreviewResponses = {}) {
+export function fakeCathayAttachedPreviewPort(overrides: CathayPreviewResponses = {}, loanOverview: CathayLoanOverview = CATHAY_LOAN_OVERVIEW) {
   const bodies: CathayPreviewResponses = { ...CATHAY_PREVIEW_RESPONSES, ...overrides };
   const seen: string[] = [];
   const respond = (key: string, endpoint: string): CathayPreviewResponse => {
@@ -59,6 +95,10 @@ export function fakeCathayAttachedPreviewPort(overrides: CathayPreviewResponses 
     },
     async domesticOverview() {
       return respond("domesticOverview", "/B_ACCT_Q_DepositOverview");
+    },
+    async loanOverview() {
+      seen.push("loanOverview");
+      return loanOverview;
     },
   };
   return { port, seen };

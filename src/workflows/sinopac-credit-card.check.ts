@@ -359,6 +359,7 @@ test("the SinoPac workflow writes attached cards only through the preview port, 
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
     { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
+    { typeId: "loan", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
   ]);
   const lateCancellation = interruptedProductCollectionFromOutput(output)!;
   assert.equal(lateCancellation.summary.sourceCaptureCount, 1);
@@ -383,6 +384,7 @@ test("a failing attached card product leaves the verified SinoPac result intact"
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },
     { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
+    { typeId: "loan", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
   ]);
 });
 
@@ -485,7 +487,7 @@ for (const timing of ["after verified commit", "after attached write"] as const)
         error.summary.products.map((product) => [product.typeId, product.status]),
         timing === "after verified commit"
           ? [["deposit", "success"]]
-          : [["deposit", "success"], ["credit_card", "success"]],
+          : [["deposit", "success"], ["credit_card", "success"], ["loan", "skipped"]],
         "a cancellation before the attached products reports only the verified outcome",
       );
       return true;
@@ -551,5 +553,6 @@ test("a recoverable SinoPac verified failure still collects the attached cards",
   assert.deepEqual(output.products, [
     { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
     { typeId: "credit_card", status: "success", itemCount: 3, committedCount: 3 },
+    { typeId: "loan", status: "skipped", itemCount: 0, committedCount: 0, skipReason: "not_selected" },
   ]);
 });

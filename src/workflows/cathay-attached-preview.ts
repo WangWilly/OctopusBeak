@@ -8,6 +8,7 @@ import type {
   PreviewTimeDeposit,
   PreviewTimeDepositCollection,
 } from "../ledger/pglite/preview-financial-data.ts";
+import type { PreviewLoan, PreviewLoanCollection } from "../ledger/pglite/preview-loan.ts";
 import type { PreviewProductAbsence, PreviewProductCollectors } from "../lib/preview-sources/product-collection.ts";
 import {
   currencyCode,
@@ -57,6 +58,39 @@ export type CathayAttachedPreviewPort = Readonly<{
   cardApi(endpoint: CathayCardEndpoint, content?: Readonly<Record<string, string>>): Promise<CathayPreviewResponse>;
   /** The page's own `B_ACCT_Q_DepositOverview` response from the NT-dollar account overview. */
   domesticOverview(): Promise<CathayPreviewResponse>;
+  /** The loan overview page (`L0101_LoanInq`), read from its rendered DOM. */
+  loanOverview(): Promise<CathayLoanOverview>;
+}>;
+
+/** One loan on the L0101 overview, each field the page text under its label, or `null` when the page shows none. */
+export type CathayLoanRow = Readonly<{
+  /** The heading of the section that lists the loan, such as `房屋貸款`. */
+  section: string | null;
+  /** The value under `貸款類別`, when the layout has one. */
+  category: string | null;
+  accountNumber: string | null;
+  interestRate: string | null;
+  paymentAmount: string | null;
+  /** The value under `扣款日`: a date, or a status such as `未完成扣款`. */
+  paymentDue: string | null;
+  balance: string | null;
+  /** The value under `期數`, such as `已繳 17 期，共 180 期`. */
+  installments: string | null;
+}>;
+
+/** What the rendered L0101 overview shows. No request behind it is documented, so the page is read instead. */
+export type CathayLoanOverview = Readonly<{
+  /** The `貸款帳戶總覽` heading is present. */
+  recognized: boolean;
+  /** The page shows `目前無貸款資料`. */
+  noLoanMessage: boolean;
+  /** The value of the `幣別` line. */
+  currency: string | null;
+  /** The value of the `貸款總餘額` line. */
+  totalBalance: string | null;
+  rows: readonly CathayLoanRow[];
+  /** The HTTP `Date` header of the page, when readable. */
+  date: string | null;
 }>;
 
 const CURRENCY_ALIASES: Readonly<Record<string, string>> = { NTD: "TWD", "新臺幣": "TWD", "新台幣": "TWD", "臺幣": "TWD", "台幣": "TWD" };
@@ -361,9 +395,95 @@ export async function collectCathayTimeDeposits(
   return { collectedAt, completeness: "complete", deposits };
 }
 
+const LOAN_AMOUNT = /^(?:(NT\$|NTD|TWD)\s*)?\$?\s*(-?[\d,]+(?:\.\d+)?)$/u;
+const LOAN_RATE = /^(\d+(?:\.\d+)?)\s*%$/u;
+const LOAN_INSTALLMENTS = /^已繳\s*([\d,]+)\s*期[，,]?\s*共\s*([\d,]+)\s*期$/u;
+const SOURCE_DAY = /^(\d{2,4})[/-](\d{1,2})[/-](\d{1,2})$/u;
+
+/** An L0101 amount such as `NT$ 123,456`; a currency prefix must agree with the page's `幣別`. */
+function loanAmount(value: string | null, field: string, currency: string): string {
+  const match = LOAN_AMOUNT.exec(value?.trim() ?? "");
+  if (!match) return fail("malformed-amount", `L0101 ${field} is not an amount`);
+  if (match[1] !== undefined && currency !== "TWD") fail("unexpected-response", `L0101 ${field} is in NT dollars, the page in ${currency}`);
+  return exactDecimal(match[2], `L0101 ${field}`);
+}
+
+function optionalLoanAmount(value: string | null, field: string, currency: string): string | null {
+  return optionalText(value) === null ? null : loanAmount(value, field, currency);
+}
+
+/** A Gregorian or ROC (民國) date as YYYY-MM-DD, or `null` for anything else, such as a payment status. */
+function loanDay(value: string | null): string | null {
+  const match = SOURCE_DAY.exec(value?.trim() ?? "");
+  if (!match) return null;
+  const year = match[1]!.length <= 3 ? Number(match[1]) + 1911 : Number(match[1]);
+  return day(`${String(year).padStart(4, "0")}-${match[2]!.padStart(2, "0")}-${match[3]!.padStart(2, "0")}`, "L0101 扣款日");
+}
+
+/** `已繳 N 期，共 M 期`, or both `null` when the page shows no such text. */
+function installments(value: string | null): Readonly<{ paid: number | null; total: number | null }> {
+  const match = LOAN_INSTALLMENTS.exec(value?.replace(/\s+/gu, " ").trim() ?? "");
+  if (!match) return { paid: null, total: null };
+  return { paid: Number(match[1]!.replaceAll(",", "")), total: Number(match[2]!.replaceAll(",", "")) };
+}
+
+/** Only Cathay's own `房屋貸款` names a category; `其他貸款` may hold personal loans, so it names none. */
+function loanCategory(row: CathayLoanRow): PreviewLoan["category"] {
+  return row.category === "房屋貸款" || (row.category === null && row.section === "房屋貸款") ? "housing" : null;
+}
+
+/**
+ * Loans from the L0101 overview, as all-set-tw reads it (`cathaybk/loan-overview.ts`, MIT). The
+ * list is complete only when the parsed balances add up to the page's `貸款總餘額`, or the page
+ * says it holds no loan; any other page fails the product rather than writing a list that may
+ * miss a loan or misread a balance. The overview shows no original amount, opening date, or maturity.
+ */
+export async function collectCathayLoans(port: CathayAttachedPreviewPort, collectedAt: string): Promise<PreviewLoanCollection> {
+  const overview = await port.loanOverview();
+  if (!overview.recognized) fail("unexpected-response", "L0101 loan overview was not recognized");
+  if (overview.rows.length === 0) {
+    if (overview.noLoanMessage) return { collectedAt, completeness: "complete", loans: [] };
+    fail("incomplete-data", "L0101 lists no loan and shows no no-loan message");
+  }
+  const currency = currencyCode(overview.currency, "L0101 幣別", CURRENCY_ALIASES);
+  const balanceAt = observedAt(overview.date, collectedAt);
+  const loans = overview.rows.map((row, index): PreviewLoan => {
+    const field = `loan ${index + 1}`;
+    const accountNumber = row.accountNumber?.replace(/[\s-]/gu, "") ?? "";
+    if (!/^\d{8,20}$/u.test(accountNumber)) fail("unexpected-response", `L0101 ${field} shows no full account number`);
+    const rate = optionalText(row.interestRate);
+    const rateMatch = rate === null ? null : LOAN_RATE.exec(rate);
+    if (rate !== null && rateMatch === null) fail("malformed-amount", `L0101 ${field} rate is not a percentage`);
+    const paid = installments(row.installments);
+    return {
+      sourceAccountKey: accountNumber,
+      displayLabel: `國泰世華貸款 ${accountNumber.slice(-4)}`,
+      currency,
+      category: loanCategory(row),
+      outstandingBalance: { amount: loanAmount(row.balance, `${field} 貸款餘額`, currency), observedAt: balanceAt },
+      originalAmount: null,
+      interestRate: rateMatch === null ? null : exactDecimal(rateMatch[1], `L0101 ${field} rate`),
+      paymentAmount: optionalLoanAmount(row.paymentAmount, `${field} 本期應繳金額`, currency),
+      nextPaymentDate: loanDay(row.paymentDue),
+      installmentsPaid: paid.paid,
+      installmentsTotal: paid.total,
+      openedOn: null,
+      maturityDate: null,
+    };
+  });
+  if (new Set(loans.map((loan) => loan.sourceAccountKey)).size !== loans.length)
+    fail("unexpected-response", "L0101 repeats a loan account number");
+  if (optionalText(overview.totalBalance) === null) fail("incomplete-data", "L0101 shows no 貸款總餘額");
+  const total = loanAmount(overview.totalBalance, "貸款總餘額", currency);
+  const sum = decimalSum(loans.map((loan) => [1, loan.outstandingBalance.amount] as const));
+  if (!isZeroDecimal(decimalSum([[1, sum], [-1, total]]))) fail("incomplete-data", "L0101 loan balances do not add up to 貸款總餘額");
+  return { collectedAt, completeness: "complete", loans };
+}
+
 export function cathayAttachedPreviewCollectors(port: CathayAttachedPreviewPort, now: () => string): PreviewProductCollectors {
   return {
     credit_card: () => collectCathayCreditCards(port, now()),
     time_deposit: () => collectCathayTimeDeposits(port, now()),
+    loan: () => collectCathayLoans(port, now()),
   };
 }
