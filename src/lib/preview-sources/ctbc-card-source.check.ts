@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import test from "node:test";
-import type { PreviewCreditCollection } from "../../ledger/pglite/preview-financial-data.ts";
+import { parsePreviewWrite, type PreviewCreditCollection, type PreviewDepositCollection, type PreviewProduct } from "../../ledger/pglite/preview-financial-data.ts";
 import { parsePreviewCreditCollection } from "../../ledger/pglite/preview-credit.ts";
 import type { PreviewHttpRequest } from "./browser-http.ts";
-import { CTBC_APP_VERSION, createCtbcCardSource, encryptCtbcPin } from "./ctbc-card-source.ts";
+import { CTBC_APP_VERSION, createCtbcCardSource, ctbcFxMonths, encryptCtbcPin } from "./ctbc-card-source.ts";
 import { fakeHttpOpener, jsonResponse, runPreviewSource, type FakeRoute } from "./preview-source-harness.ts";
 
 const credentials = {
@@ -54,6 +54,34 @@ const REALTIME = [
   { txnDate: "20261015", txnAmt: "88", merchName: "UBER", cardNo: "****3333" },
 ];
 
+const FX_ID = "123456789";
+
+const fxOverview = (summary: Record<string, unknown> = {}) => ok({
+  fxAcctSummaryResponse: {
+    demDepBalSummaryResponse: {
+      rspCode: "0000",
+      infoList: [
+        { accountId: FX_ID, curCode: "USD", currentBal: "1200.50", accountNickName: "旅遊金" },
+        { accountId: FX_ID, curCode: "JPY", currentBal: "30000", accountNickName: "" },
+      ],
+      ...summary,
+    },
+  },
+});
+
+const FX_ROWS: Readonly<Record<string, readonly Record<string, unknown>[]>> = {
+  "USD:20260901": [
+    { trnDtRaw: "20260903", actDtFull: "2026-09-04", debitAmt: "0", creditAmt: "500.00", balAmt: "1300.50", userMemo: "薪轉" },
+    { trnDtRaw: "20260910", actDtFull: "", debitAmt: "99.5", creditAmt: "", memo1: "換匯" },
+  ],
+  "USD:20261001": [{ trnDtRaw: "20261002", debitAmt: "0.5", creditAmt: "0", memo1: "手續費" }],
+};
+
+const fxMonth = (currency: string, startDate: string) => {
+  const rows = FX_ROWS[`${currency}:${startDate}`];
+  return rows ? ok({ detailList: rows }) : { code: "9201", sys: "ESB", rsData: {} };
+};
+
 type Envelope = Readonly<{ resource?: string; rqData: Record<string, unknown>; token?: string; appVer: string }>;
 type ResourceRoute = (envelope: Envelope) => unknown;
 
@@ -80,6 +108,12 @@ function resources(overrides: Readonly<Record<string, ResourceRoute>> = {}): Fak
       return ok({ allItems: [UNBILLED_TWD[1]] });
     },
     "/twrbm-card/qu041/010": () => ok({ allItems: REALTIME, displayPaging: false, totalRow: 2 }),
+    "/twrbm-fx/qu001/010": () => fxOverview(),
+    "/twrbm-fx/qu002/010": ({ rqData }) => ok({ infoList: [
+      { accountId: FX_ID, curCode: "USD", currentBal: "1,200.50", avialBal: "1,100.50" },
+      { accountId: FX_ID, curCode: "JPY", currentBal: "30000", avialBal: "" },
+    ].filter((row) => row.curCode === rqData.curCode) }),
+    "/twrbm-fx/qu002/011": ({ rqData }) => fxMonth(String(rqData.curCode), String(rqData.startDate)),
     ...overrides,
   };
   return (request) => {
@@ -98,7 +132,7 @@ function routes(overrides: Readonly<Record<string, ResourceRoute>> = {}): Record
   };
 }
 
-async function run(overrides: Readonly<Record<string, ResourceRoute>> = {}, products?: readonly "credit_card"[]) {
+async function run(overrides: Readonly<Record<string, ResourceRoute>> = {}, products: readonly PreviewProduct[] = ["credit_card"]) {
   const http = fakeHttpOpener(routes(overrides));
   const result = await runPreviewSource(createCtbcCardSource({ http }), credentials, undefined, products);
   const sent = http.requests.filter((request) => request.url.endsWith("/ebmwResource")).map((request) => envelopeOf(request).resource ?? "handshake");
@@ -120,7 +154,9 @@ const failsBeforeWrite = (result: Awaited<ReturnType<typeof run>>, reason: RegEx
 
 test("a CTBC run writes each card currency with its cards, used credit, statements, and purchases", async () => {
   const { writes, output, observations, sent } = await run();
-  assert.deepEqual(output?.products.map(({ typeId, status }) => ({ typeId, status })), [{ typeId: "credit_card", status: "success" }]);
+  assert.deepEqual(output?.products.map(({ typeId, status }) => ({ typeId, status })), [
+    { typeId: "credit_card", status: "success" }, { typeId: "foreign_currency", status: "skipped" },
+  ]);
   const collection = credit(writes);
   assert.deepEqual(collection.accounts.map((account) => account.sourceAccountKey), ["TWD", "USD"]);
   const [twd, usd] = collection.accounts;
@@ -270,14 +306,14 @@ test("an incomplete list fails the product before its write", async () => {
 
 test("not_held comes only from an explicit no-card message or a complete empty list", async () => {
   const message = await run({ "/twrbm-card/qu002/010": () => ({ code: "1234", message: "1234：您目前尚未持有本行信用卡。" }) });
-  assert.deepEqual(message.output?.products.map(({ status }) => status), ["not_held"]);
+  assert.deepEqual(message.output?.products.map(({ status }) => status), ["not_held", "skipped"]);
   assert.equal(message.writes.length, 0);
   assert.ok(!message.sent.includes("/twrbm-card/qu046/010"), "no card means no further card queries");
   const empty = await run({ "/twrbm-card/qu002/010": () => ok({ cardDataList: [], billData: {} }) });
-  assert.deepEqual(empty.output?.products.map(({ status }) => status), ["not_held"]);
+  assert.deepEqual(empty.output?.products.map(({ status }) => status), ["not_held", "skipped"]);
   failsBeforeWrite(await run({ "/twrbm-card/qu002/010": () => ok({ billData: {} }) }), /unexpected-response.*cardDataList/u, "a missing card list is not evidence");
   const billsOnly = await run({ "/twrbm-card/qu002/010": () => billsBody({ cards: [] }) });
-  assert.deepEqual(billsOnly.output?.products.map(({ status }) => status), ["success"], "an empty card list beside bills is not evidence of no card");
+  assert.deepEqual(billsOnly.output?.products.map(({ status }) => status), ["success", "skipped"], "an empty card list beside bills is not evidence of no card");
   failsBeforeWrite(await run({ "/twrbm-card/qu002/010": () => ({ code: "1234", message: "查無帳單資料" }) }), /unexpected-response/u, "a failure message that does not say no card");
 });
 
@@ -298,4 +334,93 @@ test("a collection with one sign keeps every direction unknown", async () => {
   const directions = credit(result.writes).accounts.flatMap((account) => account.purchases.map((row) => row.direction));
   assert.equal(directions.length, 5);
   assert.ok(directions.every((direction) => direction === "unknown"), "the sign decides nothing without both signs in the collection");
+});
+
+function foreign(writes: Awaited<ReturnType<typeof run>>["writes"]): PreviewDepositCollection {
+  const fx = writes.filter((write) => write.product === "foreign_currency");
+  assert.equal(fx.length, 1);
+  const parsed = parsePreviewWrite(fx[0]!);
+  if (parsed.product !== "foreign_currency") throw new Error("expected a foreign-currency write");
+  return parsed.collection;
+}
+
+test("the foreign-currency query covers each calendar month of the window", () => {
+  assert.deepEqual(ctbcFxMonths("2026-10-15T02:00:00.000Z"), [
+    { startDate: "20260801", endDate: "20260831" },
+    { startDate: "20260901", endDate: "20260930" },
+    { startDate: "20261001", endDate: "20261015" },
+  ]);
+  assert.deepEqual(ctbcFxMonths("2026-02-28T17:00:00.000Z").map((month) => month.startDate), ["20260101", "20260201", "20260301"],
+    "the window follows the Taipei date");
+});
+
+test("foreign currency writes each non-TWD account and currency with its balances and monthly transactions", async () => {
+  const { writes, output, sent } = await run({}, ["foreign_currency"]);
+  assert.deepEqual(output?.products.map(({ typeId, status }) => ({ typeId, status })), [
+    { typeId: "credit_card", status: "skipped" }, { typeId: "foreign_currency", status: "success" },
+  ]);
+  const collection = foreign(writes);
+  assert.deepEqual(collection.accounts.map(({ sourceAccountKey, displayLabel, currency }) => ({ sourceAccountKey, displayLabel, currency })), [
+    { sourceAccountKey: `${FX_ID}:USD`, displayLabel: "旅遊金 6789 (USD)", currency: "USD" },
+    { sourceAccountKey: `${FX_ID}:JPY`, displayLabel: "中國信託外幣活存 6789 (JPY)", currency: "JPY" },
+  ], "one account per account and currency; the label shows only the last four digits");
+  const [usd, jpy] = collection.accounts;
+  const asOf = { at: "2026-10-15T01:59:00.000Z", source: "reported" };
+  assert.deepEqual(usd!.balances, [
+    { kind: "current", amount: "1200.50", currency: "USD", observedAt: asOf },
+    { kind: "available", amount: "1100.50", currency: "USD", observedAt: asOf },
+  ]);
+  assert.deepEqual(jpy!.balances, [{ kind: "current", amount: "30000", currency: "JPY", observedAt: asOf }], "an empty avialBal is no available balance");
+  assert.deepEqual(usd!.transactions.map(({ amount, currency, direction, postedAt, description }) => ({ amount, currency, direction, postedAt: postedAt.value, description })), [
+    { amount: "500.00", currency: "USD", direction: "inflow", postedAt: "2026-09-04", description: "薪轉" },
+    { amount: "99.5", currency: "USD", direction: "outflow", postedAt: "2026-09-10", description: "換匯" },
+    { amount: "0.5", currency: "USD", direction: "outflow", postedAt: "2026-10-02", description: "手續費" },
+  ], "the direction comes from debitAmt or creditAmt, and the amount keeps its source currency");
+  assert.deepEqual(jpy!.transactions, [], "ESB 9201 is an empty month");
+  const months = sent.filter((resource) => resource === "/twrbm-fx/qu002/011");
+  assert.equal(months.length, 6, "three months for each of the two accounts");
+  assert.ok(!sent.some((resource) => resource.startsWith("/twrbm-card/")), "an unselected card product sends no card query");
+});
+
+test("an overview already in the login answer is not queried again", async () => {
+  const login = (fxOverview().rsData as Record<string, unknown>);
+  const { writes, sent } = await run({ "/twrbm-general/ot001/010": () => ok(login, { token: "t-login" }) }, ["foreign_currency"]);
+  assert.equal(foreign(writes).accounts.length, 2);
+  assert.ok(!sent.includes("/twrbm-fx/qu001/010"));
+});
+
+test("a TWD row, an unclear debit and credit, or an unknown overview code fails only the foreign-currency product", async () => {
+  const cases: Array<[string, Record<string, ResourceRoute>, RegExp]> = [
+    ["an NT-dollar overview row", { "/twrbm-fx/qu001/010": () => fxOverview({ infoList: [{ accountId: FX_ID, curCode: "NTD", currentBal: "1" }] }) }, /NT-dollar/u],
+    ["both debit and credit", { "/twrbm-fx/qu002/011": () => ok({ detailList: [{ trnDtRaw: "20260903", debitAmt: "1", creditAmt: "2" }] }) }, /exactly one nonzero/u],
+    ["neither debit nor credit", { "/twrbm-fx/qu002/011": () => ok({ detailList: [{ trnDtRaw: "20260903", debitAmt: "0", creditAmt: "" }] }) }, /exactly one nonzero/u],
+    ["an unknown overview code", { "/twrbm-fx/qu001/010": () => fxOverview({ rspCode: "8888" }) }, /rspCode 8888/u],
+    ["a masked account", { "/twrbm-fx/qu001/010": () => fxOverview({ infoList: [{ accountId: "12345****", curCode: "USD", currentBal: "1" }] }) }, /masked/u],
+    ["a missing init balance", { "/twrbm-fx/qu002/010": () => ok({ infoList: [{ accountId: FX_ID, curCode: "USD" }] }) }, /currentBal/u],
+    ["a failing month", { "/twrbm-fx/qu002/011": () => ({ code: "8888", rsData: {} }) }, /qu002\/011 code 8888/u],
+  ];
+  for (const [name, overrides, reason] of cases) {
+    const alone = await run(overrides, ["foreign_currency"]);
+    assert.match(String(alone.error), reason, name);
+    assert.equal(alone.writes.length, 0, `${name}: nothing is written`);
+    const result = await run(overrides, ["credit_card", "foreign_currency"]);
+    assert.deepEqual(result.output?.products.map(({ typeId, status }) => ({ typeId, status })), [
+      { typeId: "credit_card", status: "success" }, { typeId: "foreign_currency", status: "failed" },
+    ], name);
+    assert.deepEqual(result.writes.map((write) => write.product), ["credit_card"], `${name}: the card is written, foreign currency is not`);
+    assert.equal(result.sent.at(-1), "/twrbm-general/ot002/010", `${name}: the run signs out`);
+  }
+  const cardFails = await run({ "/twrbm-card/qu041/010": () => ok({ allItems: [{ ...REALTIME[0], txnAmt: "x" }] }) }, ["credit_card", "foreign_currency"]);
+  assert.deepEqual(cardFails.output?.products.map(({ status }) => status), ["failed", "success"], "a card failure leaves foreign currency written");
+  assert.deepEqual(cardFails.writes.map((write) => write.product), ["foreign_currency"]);
+});
+
+test("9002 and 9004 report no foreign-currency account only with no rows", async () => {
+  for (const rspCode of ["9002", "9004"]) {
+    const result = await run({ "/twrbm-fx/qu001/010": () => fxOverview({ rspCode, infoList: [] }) }, ["foreign_currency"]);
+    assert.deepEqual(result.output?.products.map(({ status }) => status), ["skipped", "not_held"], rspCode);
+    assert.equal(result.writes.length, 0);
+  }
+  const contradictory = await run({ "/twrbm-fx/qu001/010": () => fxOverview({ rspCode: "9002" }) }, ["foreign_currency"]);
+  assert.match(String(contradictory.error), /lists rows/u);
 });

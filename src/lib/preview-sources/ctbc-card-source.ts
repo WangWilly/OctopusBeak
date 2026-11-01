@@ -1,12 +1,16 @@
 import { constants, createCipheriv, createHash, createPublicKey, pbkdf2Sync, publicEncrypt, randomBytes, randomUUID } from "node:crypto";
 import type {
+  PreviewAccount,
+  PreviewBalanceObservation,
   PreviewCard,
   PreviewCreditAccount,
   PreviewCreditBalance,
   PreviewCreditCollection,
+  PreviewDepositCollection,
   PreviewLocalDate,
   PreviewPurchase,
   PreviewStatement,
+  PreviewTransaction,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { FailureCodeError } from "../automation/workflow-failures.ts";
 import type { PreviewHttp, PreviewHttpOpener } from "./browser-http.ts";
@@ -27,7 +31,10 @@ import {
   record,
   records,
   requireDeviceRegistration,
+  taipeiMonthWindow,
   text,
+  uniqueTransactions,
+  unsignedDecimal,
   type SourceRecord,
 } from "./source-kit.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
@@ -60,6 +67,9 @@ const RESOURCE = {
   unbilledPage: "/twrbm-card/qu006/015",
   realtime: "/twrbm-card/qu041/010",
   realtimePage: "/twrbm-card/qu041/015",
+  fxOverview: "/twrbm-fx/qu001/010",
+  fxInit: "/twrbm-fx/qu002/010",
+  fxTransactions: "/twrbm-fx/qu002/011",
 } as const;
 
 const KEY = {
@@ -161,6 +171,7 @@ function client(context: PreviewWorkflowContext, http: PreviewHttp, deviceCode: 
   let transactionToken = "mfpInit";
   let seed = "";
   let signedIn = false;
+  let loginData: SourceRecord = {};
 
   const baseHeaders = (): Record<string, string> => ({
     Accept: "application/json",
@@ -269,6 +280,7 @@ function client(context: PreviewWorkflowContext, http: PreviewHttp, deviceCode: 
         pin: encryptCtbcPin(password),
       });
       const data = optionalRecord(response.body.rsData);
+      loginData = data;
       if (data.forcePwdChange !== undefined && data.forcePwdChange !== null) {
         signedIn = true;
         return fail("sign-in-rejected", "CTBC requires a password change in its App");
@@ -279,6 +291,8 @@ function client(context: PreviewWorkflowContext, http: PreviewHttp, deviceCode: 
       if (rejected(response.body)) return fail("sign-in-rejected", `login code ${resultCode(response.body) || "missing"}`);
       signedIn = true;
     },
+    /** The login answer's `rsData`, which may already carry the foreign-currency overview. */
+    loginData: () => loginData,
     async query(path: string, rqData: Record<string, unknown>, accept: (body: SourceRecord) => boolean = () => false): Promise<Response> {
       const response = await resource(path, rqData);
       if (accept(response.body)) return response;
@@ -629,14 +643,174 @@ export function ctbcCreditCollection(payloads: CtbcCardPayloads, collectedAt: st
   return { collectedAt, accounts };
 }
 
+const FX_MONTHS = 3;
+// The App's fx-qu001 page treats these overview codes as holding no foreign-currency demand deposit.
+const FX_NO_ACCOUNT_CODES = new Set(["9002", "9004"]);
+const MASKED = /[*＊XxＸ#•]/u;
+
+type FxAccount = Readonly<{ accountId: string; currency: string; nickname: string | null }>;
+
+/** One `{ startDate, endDate }` per Taipei calendar month of the window, oldest first, as YYYYMMDD. */
+export function ctbcFxMonths(now: string): readonly Readonly<{ startDate: string; endDate: string }>[] {
+  const window = taipeiMonthWindow(now, FX_MONTHS);
+  const months: { startDate: string; endDate: string }[] = [];
+  for (let start = window.start; start <= window.end;) {
+    const [year, month] = start.split("-").map(Number) as [number, number];
+    const monthEnd = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+    const end = monthEnd < window.end ? monthEnd : window.end;
+    months.push({ startDate: start.replaceAll("-", ""), endDate: end.replaceAll("-", "") });
+    start = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
+  }
+  return months;
+}
+
+function fxAccounts(rsData: SourceRecord): FxAccount[] | PreviewProductAbsence {
+  const field = `${RESOURCE.fxOverview}.demDepBalSummaryResponse`;
+  const summary = record(record(rsData.fxAcctSummaryResponse, `${RESOURCE.fxOverview}.fxAcctSummaryResponse`).demDepBalSummaryResponse, field);
+  const code = optionalText(summary.rspCode) ?? "";
+  if (FX_NO_ACCOUNT_CODES.has(code)) {
+    if (summary.infoList === undefined || summary.infoList === null || (Array.isArray(summary.infoList) && summary.infoList.length === 0))
+      return { absent: "not_held" };
+    return fail("unexpected-response", `${field} reports no account (${code}) but lists rows`);
+  }
+  if (code !== OK) return fail("unexpected-response", `${field}.rspCode ${code || "missing"}`);
+  const balances = new Map<string, string>();
+  const accounts: FxAccount[] = [];
+  for (const [index, row] of records(summary.infoList, `${field}.infoList`).entries()) {
+    const rowField = `${field}.infoList[${index}]`;
+    const accountId = text(row.accountId, `${rowField}.accountId`);
+    if (MASKED.test(accountId)) return fail("unexpected-response", `${rowField}.accountId is masked`);
+    const currency = currencyCode(row.curCode, `${rowField}.curCode`, CURRENCY_ALIASES);
+    if (currency === "TWD") return fail("unexpected-response", `${rowField} is an NT-dollar account`);
+    const balance = exactDecimal(row.currentBal, `${rowField}.currentBal`);
+    const key = `${accountId}:${currency}`;
+    const previous = balances.get(key);
+    if (previous !== undefined) {
+      if (!isZeroDecimal(decimalSum([[1, previous], [-1, balance]])))
+        return fail("unexpected-response", `${field} lists one account and currency twice with different balances`);
+      continue;
+    }
+    balances.set(key, balance);
+    accounts.push({ accountId, currency, nickname: optionalText(row.accountNickName) });
+  }
+  return accounts;
+}
+
+function fxLabel(account: FxAccount): string {
+  const last4 = account.accountId.replace(/\D/gu, "").slice(-4);
+  // A nickname with a long digit run may be an account number, so it never reaches the label.
+  const name = account.nickname !== null && !/\d{5}/u.test(account.nickname) ? account.nickname : "中國信託外幣活存";
+  return `${name} ${last4} (${account.currency})`;
+}
+
+function fxDate(value: unknown, field: string): string {
+  const raw = typeof value === "string" ? value.trim().split(/[T\s]/u)[0] ?? "" : "";
+  return localDate(raw, field).value.slice(0, 10);
+}
+
+const optionalAmount = (value: unknown, field: string): string | null =>
+  value === undefined || value === null || (typeof value === "string" && value.trim() === "") ? null : exactDecimal(value, field);
+
+/** One month's rows. CTBC states the direction with separate `debitAmt` and `creditAmt` fields, exactly one of them nonzero. */
+function fxTransactions(rows: readonly SourceRecord[], account: FxAccount, field: string): PreviewTransaction[] {
+  const occurrences = new Map<string, number>();
+  return rows.map((row, index) => {
+    const rowField = `${field}[${index}]`;
+    if (!Object.hasOwn(row, "debitAmt") && !Object.hasOwn(row, "creditAmt"))
+      return fail("unexpected-response", `${rowField} has neither debitAmt nor creditAmt`);
+    const debit = optionalAmount(row.debitAmt, `${rowField}.debitAmt`);
+    const credit = optionalAmount(row.creditAmt, `${rowField}.creditAmt`);
+    const nonzero = [debit, credit].filter((amount) => amount !== null && !isZeroDecimal(amount));
+    if (nonzero.length !== 1) return fail("unexpected-response", `${rowField} does not have exactly one nonzero debitAmt or creditAmt`);
+    const inflow = credit !== null && !isZeroDecimal(credit);
+    const amount = unsignedDecimal(inflow ? credit : debit!);
+    const transactionDate = fxDate(row.trnDtRaw, `${rowField}.trnDtRaw`);
+    const postedAt = hasText(row.actDtFull) ? fxDate(row.actDtFull, `${rowField}.actDtFull`) : transactionDate;
+    const description = optionalText(row.userMemo) ?? optionalText(row.memo1);
+    const identity = [transactionDate, postedAt, inflow ? "in" : "out", amount, optionalText(row.balAmt) ?? "", description ?? ""].join("\u0000");
+    const hash = createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 16);
+    const occurrence = (occurrences.get(hash) ?? 0) + 1;
+    occurrences.set(hash, occurrence);
+    return {
+      sourceRowKey: `fx:${hash}:${occurrence}`,
+      amount,
+      currency: account.currency,
+      direction: inflow ? "inflow" : "outflow",
+      postedAt: { precision: "day", value: postedAt },
+      description,
+    };
+  });
+}
+
+const isEsbEmpty = (body: SourceRecord) =>
+  (optionalText(body.sys) ?? optionalText(body.systemId)) === "ESB" && resultCode(body) === "9201";
+
+/**
+ * Foreign-currency demand deposits from the App's fx-qu001 and fx-qu002
+ * pages. A query failure fails this product only; the card product is
+ * collected or failed on its own.
+ */
+async function collectForeignCurrency(api: Api, collectedAt: string): Promise<PreviewDepositCollection | PreviewProductAbsence> {
+  const login = api.loginData();
+  const overview = Object.hasOwn(login, "fxAcctSummaryResponse")
+    ? login
+    : record((await api.query(RESOURCE.fxOverview, {})).body.rsData, `${RESOURCE.fxOverview}.rsData`);
+  const listed = fxAccounts(overview);
+  if ("absent" in listed) return listed;
+  const months = ctbcFxMonths(collectedAt);
+  const accounts: PreviewAccount[] = [];
+  for (const account of listed) {
+    const init = await api.query(RESOURCE.fxInit, { accountId: account.accountId, curCode: account.currency });
+    const matches = records(record(init.body.rsData, `${RESOURCE.fxInit}.rsData`).infoList, `${RESOURCE.fxInit}.infoList`)
+      .filter((row) => optionalText(row.accountId) === account.accountId
+        && optionalText(row.curCode) !== null && currencyCode(row.curCode, `${RESOURCE.fxInit}.curCode`, CURRENCY_ALIASES) === account.currency);
+    if (matches.length !== 1) return fail("unexpected-response", `${RESOURCE.fxInit} lists the account ${matches.length} times`);
+    const selected = matches[0]!;
+    const observed = observedAt(init.date, collectedAt);
+    const available = optionalAmount(selected.avialBal, `${RESOURCE.fxInit}.avialBal`);
+    const balances: PreviewBalanceObservation[] = [
+      { kind: "current", amount: exactDecimal(selected.currentBal, `${RESOURCE.fxInit}.currentBal`), currency: account.currency, observedAt: observed },
+      ...(available === null ? [] : [{ kind: "available" as const, amount: available, currency: account.currency, observedAt: observed }]),
+    ];
+    const rows: PreviewTransaction[] = [];
+    for (const month of months) {
+      const response = await api.query(RESOURCE.fxTransactions, {
+        accountId: account.accountId,
+        curCode: account.currency,
+        ...month,
+        keyWord: "",
+        type: "custom",
+        isFromEnterPrise: false,
+      }, isEsbEmpty);
+      const field = `${RESOURCE.fxTransactions}[${month.startDate}]`;
+      const data = optionalRecord(response.body.rsData);
+      if (isEsbEmpty(response.body)) {
+        if (data.detailList !== undefined && data.detailList !== null && (!Array.isArray(data.detailList) || data.detailList.length > 0))
+          return fail("unexpected-response", `${field} reports no rows but lists some`);
+        continue;
+      }
+      rows.push(...fxTransactions(records(data.detailList, `${field}.detailList`), account, `${field}.detailList`));
+    }
+    accounts.push({
+      sourceAccountKey: `${account.accountId}:${account.currency}`,
+      displayLabel: fxLabel(account),
+      currency: account.currency,
+      type: "depository",
+      balances,
+      transactions: uniqueTransactions(rows, "foreign-currency transaction"),
+    });
+  }
+  return { collectedAt, accounts };
+}
+
 export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpener }> = {}): PreviewSource {
   const open = options.http ?? nodeHttp;
   return {
     id: "ctbc-credit-card",
     institution: PREVIEW_SOURCE_INSTITUTIONS["ctbc-credit-card"],
-    products: ["credit_card"],
-    displayName: { en: "CTBC credit cards (preview)", "zh-TW": "中國信託信用卡（預覽）" },
-    searchAliases: ["CTBC", "CTBC credit card", "中國信託", "中信", "中信信用卡"],
+    products: ["credit_card", "foreign_currency"],
+    displayName: { en: "CTBC foreign currency and credit cards (preview)", "zh-TW": "中國信託外幣與信用卡（預覽）" },
+    searchAliases: ["CTBC", "CTBC credit card", "CTBC foreign currency", "中國信託", "中信", "中信信用卡", "中信外幣"],
     credentialFields: [
       { key: KEY.idNumber, label: { en: "Taiwan ID number", "zh-TW": "身分證字號" }, input: "text", redaction: "partial" },
       { key: KEY.userCode, label: { en: "User code", "zh-TW": "使用者代號" }, input: "text", redaction: "partial" },
@@ -644,10 +818,10 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live CTBC account. Its data may be incomplete or wrong. It signs in through the CTBC mobile banking App protocol, separately from the verified CTBC deposit source, so it has its own sign-in details. CTBC may ask a new device to approve the sign-in in its App; the sync then stops instead of waiting.",
-        "zh-TW": "預覽來源，從未以真實的中國信託帳戶執行過，資料可能不完整或有誤。它透過中國信託行動銀行 App 的協定登入，與已驗證的中國信託存款來源分開登入，因此有自己的登入資料。中國信託可能要求新裝置在 App 核准登入，這時同步會停止，不會等待。",
+        en: "Preview source, never run against a live CTBC account. Its data may be incomplete or wrong. It collects CTBC credit cards and foreign currency demand deposits, which the verified CTBC deposit source does not collect. It signs in through the CTBC mobile banking App protocol, separately from the verified CTBC deposit source, so it has its own sign-in details. CTBC may ask a new device to approve the sign-in in its App; the sync then stops instead of waiting.",
+        "zh-TW": "預覽來源，從未以真實的中國信託帳戶執行過，資料可能不完整或有誤。它收集中國信託信用卡與外幣活期存款，已驗證的中國信託存款來源不收集這些資料。它透過中國信託行動銀行 App 的協定登入，與已驗證的中國信託存款來源分開登入，因此有自己的登入資料。中國信託可能要求新裝置在 App 核准登入，這時同步會停止，不會等待。",
       },
-      requirements: [{ en: "A CTBC account with online or mobile banking sign-in and a CTBC credit card.", "zh-TW": "可登入網路銀行或行動銀行、並持有中國信託信用卡的中國信託帳戶。" }],
+      requirements: [{ en: "A CTBC account with online or mobile banking sign-in, and a CTBC credit card or foreign currency account.", "zh-TW": "可登入網路銀行或行動銀行、並持有中國信託信用卡或外幣帳戶的中國信託帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to CTBC online or mobile banking.", "zh-TW": "輸入登入中國信託網路銀行或行動銀行使用的身分證字號、使用者代號與密碼。" }],
       links: [{
         id: "ctbc-site",
@@ -664,7 +838,7 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
     },
     startUrl: `${IMP}/`,
     async run(context, input) {
-      if (!input.products.includes("credit_card")) return context.preview.collect({});
+      if (input.products.length === 0) return context.preview.collect({});
       await context.event("authentication", "started", "authentication-started");
       return open(context, { pageUrl: input.startUrl }, async (http) => {
         const credentials = input.credentials;
@@ -679,6 +853,7 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
               const payloads = await collectPayloads(api);
               return "absent" in payloads ? payloads : ctbcCreditCollection(payloads, collectedAt);
             },
+            foreign_currency: () => collectForeignCurrency(api, context.now()),
           });
         } finally {
           await api.logout().catch(() => undefined);
