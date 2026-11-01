@@ -32,12 +32,15 @@ import {
   readPreviewTransactions,
   type PreviewVisibility,
 } from "./preview-financial-data.ts";
+import { readPreviewLoanAccounts, readPreviewLoanBalanceHistory } from "./preview-loan.ts";
 import {
   countableWithRates,
   previewAccountRow,
   previewBalanceSeries,
   previewCreditAccountRow,
   previewCreditSeries,
+  previewLoanAccountRow,
+  previewLoanSeries,
   previewSummaryMarkers,
   withPreviewHistory,
   type PreviewBalanceSeries,
@@ -257,7 +260,8 @@ const NO_PREVIEW: PreviewOverview = { accounts: [], series: [] };
 async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<PreviewOverview> {
   const views = await readPreviewAccounts(reader, visibility);
   const creditViews = await readPreviewCreditAccounts(reader, visibility);
-  if (views.length === 0 && creditViews.length === 0) return NO_PREVIEW;
+  const loanViews = await readPreviewLoanAccounts(reader, visibility);
+  if (views.length === 0 && creditViews.length === 0 && loanViews.length === 0) return NO_PREVIEW;
   const accounts: AccountRowDto[] = [];
   for (const view of views)
     accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
@@ -267,11 +271,13 @@ async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisi
       await readPreviewPurchases(reader, visibility, view.previewAccountId),
       await readPreviewStatements(reader, visibility, view.previewAccountId),
     ));
+  for (const view of loanViews) accounts.push(previewLoanAccountRow(view));
   return {
     accounts,
     series: [
       ...previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)),
       ...previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)),
+      ...previewLoanSeries(await readPreviewLoanBalanceHistory(reader, visibility)),
     ],
   };
 }

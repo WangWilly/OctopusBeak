@@ -5,9 +5,14 @@ import type {
   PreviewTimeDepositDto,
 } from "./types.ts";
 
-/** Whether a preview liability row's balance is unknown, so any total holding it is incomplete. */
+/** When a complete list from the source last lacked this time deposit or loan; `null` while it is open. */
+export const previewClosedAt = (account: AccountRowDto): string | null =>
+  account.preview?.timeDeposit?.closedAt ?? account.preview?.loan?.closedAt ?? null;
+
+/** Whether a preview liability row's balance is unknown, so any total holding it is incomplete. A closed loan owes nothing. */
 export const previewBalanceUnknown = (account: AccountRowDto): boolean =>
-  account.preview !== undefined && account.group === "liability" && account.valueAvailability === "unavailable";
+  account.preview !== undefined && account.group === "liability" && account.valueAvailability === "unavailable"
+    && previewClosedAt(account) === null;
 
 /** A total over these accounts is not a figure while any of them owes an unknown amount. */
 export const totalIncomplete = (accounts: readonly AccountRowDto[]): boolean => accounts.some(previewBalanceUnknown);
@@ -22,7 +27,7 @@ export type PreviewRowValue =
 export function previewRowValue(account: AccountRowDto): PreviewRowValue | null {
   const preview = account.preview;
   if (!preview) return null;
-  const closedAt = preview.timeDeposit?.closedAt;
+  const closedAt = previewClosedAt(account);
   if (closedAt) return { kind: "closed", closedOn: closedAt.slice(0, 10) };
   if (previewBalanceUnknown(account)) return { kind: "credit-unknown" };
   return account.amountLines.length > 0 ? { kind: "amount" } : { kind: "awaiting" };

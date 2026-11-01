@@ -80,6 +80,7 @@ const CASES: Record<PGliteOperationalOperation, Readonly<{ accepted: readonly un
   "preview.creditAccounts": { accepted: [visibility], refused: [{ visible: "all" }] },
   "preview.purchases": { accepted: [visibility, "account"], refused: [visibility, ""] },
   "preview.statements": { accepted: [visibility, "account"], refused: [{}, "account"] },
+  "preview.loanAccounts": { accepted: [visibility], refused: [{ visible: "all" }] },
 };
 
 type RecordedCall = Readonly<{ operation: string; args: readonly unknown[] }>;

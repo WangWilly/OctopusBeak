@@ -3,7 +3,6 @@ import type {
   PreviewProduct,
   PreviewProductCollection,
   PreviewProductWrite,
-  PreviewTimeDepositCollection,
   PreviewWrite,
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
@@ -25,11 +24,12 @@ import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts
 export type PreviewProductAbsence = Readonly<{ absent: "not_held" | "no_data" }>;
 
 /**
- * What a product collector returns. A time-deposit collector must return the
- * complete list, because an empty complete list is what closes deposits.
+ * What a product collector returns. A time-deposit or loan collector must
+ * return its list, because an empty complete list is what closes them; a
+ * loan source that cannot show its list complete returns it `unproven`.
  */
 export type PreviewProductCollectorResult<P extends PreviewProduct> =
-  P extends "time_deposit" ? PreviewTimeDepositCollection : PreviewProductCollection[P] | PreviewProductAbsence;
+  P extends "time_deposit" | "loan" ? PreviewProductCollection[P] : PreviewProductCollection[P] | PreviewProductAbsence;
 
 export type PreviewProductCollectors = Readonly<{
   [P in PreviewProduct]?: () => Promise<PreviewProductCollectorResult<P>>;

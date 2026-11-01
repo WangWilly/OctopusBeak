@@ -153,3 +153,45 @@ function cardUtilization(
 function exactNumber(exact: { coefficient: string; scale: number }): number {
   return Number(exact.coefficient) / 10 ** exact.scale;
 }
+
+/** The repaid share of principal for one currency: 1 − Σ outstanding ÷ Σ original. */
+export type MortgageRepaidShare = Readonly<{
+  currency: string;
+  outstanding: number;
+  original: number;
+  repaid: number;
+}>;
+
+export type MortgageRepaid = Readonly<{
+  /** One entry per currency with a countable mortgage; empty shows the tile's empty state. */
+  shares: readonly MortgageRepaidShare[];
+  /** Some open preview mortgages report no original amount, so the shares leave them out. */
+  omitted: boolean;
+}>;
+
+/**
+ * Only open preview loans the source itself labels as housing count. A
+ * verified loan carries no category or original amount, so it never does.
+ */
+export function readMortgageRepaid(accounts: readonly AccountRowDto[]): MortgageRepaid {
+  const sums = new Map<string, { outstanding: number; original: number }>();
+  let omitted = false;
+  for (const account of accounts) {
+    const loan = account.preview?.loan;
+    const owed = account.amountLines[0];
+    if (!loan || loan.category !== "housing" || loan.closedAt !== null || !owed) continue;
+    if (loan.originalAmount === null) {
+      omitted = true;
+      continue;
+    }
+    const sum = sums.get(loan.currency) ?? { outstanding: 0, original: 0 };
+    sum.outstanding += owed.value;
+    sum.original += Number(loan.originalAmount);
+    sums.set(loan.currency, sum);
+  }
+  const shares = [...sums.entries()]
+    .filter(([, sum]) => sum.original > 0)
+    .sort(([left], [right]) => (left === "TWD" ? -1 : right === "TWD" ? 1 : left.localeCompare(right)))
+    .map(([currency, sum]) => ({ currency, ...sum, repaid: 1 - sum.outstanding / sum.original }));
+  return { shares, omitted };
+}

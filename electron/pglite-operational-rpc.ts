@@ -286,6 +286,7 @@ export const PGLITE_OPERATIONAL_CONTRACTS: Readonly<Record<PGliteOperationalOper
   "preview.statements": {
     accepts: (args) => args.length === 2 && previewVisibility(args[0]) && stringValue(args[1]),
   },
+  "preview.loanAccounts": { accepts: (args) => args.length === 1 && previewVisibility(args[0]) },
 } satisfies Record<PGliteOperationalOperation, OperationalContract>);
 
 export const PGLITE_OPERATIONAL_OPERATIONS = Object.freeze(

@@ -363,7 +363,7 @@
       </div>
       <div class="action-group">
         <button class="button secondary" type="button" on:click={openTransactions}>
-          {selectedAccount.preview && selectedAccount.preview.product !== "deposit" ? $t.preview.accountDetails : $t.accounts.tx}
+          {selectedAccount.preview && !["deposit", "foreign_currency"].includes(selectedAccount.preview.product) ? $t.preview.accountDetails : $t.accounts.tx}
         </button>
         {#if !selectedAccount.preview}
           <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>

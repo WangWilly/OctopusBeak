@@ -1,5 +1,7 @@
 import type {
   PreviewCreditCollection,
+  PreviewDepositCollection,
+  PreviewLoanCollection,
   PreviewProductWrite,
   PreviewTimeDepositCollection,
 } from "../../ledger/pglite/preview-financial-data.ts";
@@ -132,10 +134,62 @@ function fixtureCredit(collectedAt: string, posted: boolean, now: Date): Preview
   };
 }
 
+function fixtureForeignCurrency(collectedAt: string, now: Date): PreviewDepositCollection {
+  return {
+    collectedAt,
+    accounts: [{
+      sourceAccountKey: "fixture-usd", displayLabel: "Fixture USD savings", currency: "USD", type: "depository",
+      balances: [{ kind: "current", amount: "3250.75", currency: "USD", observedAt: { at: collectedAt, source: "reported" } }],
+      transactions: [{
+        sourceRowKey: "usd-interest", amount: "1.25", currency: "USD", direction: "inflow",
+        postedAt: { precision: "day", value: day(now, -2) }, description: "Fixture interest",
+      }],
+    }],
+  };
+}
+
+/**
+ * Two housing loans, one without an original amount, and a personal loan.
+ * The first list also holds a car loan that the second, complete, list lacks.
+ */
+function fixtureLoans(collectedAt: string, withRepaid: boolean, now: Date): PreviewLoanCollection {
+  const observedAt = { at: collectedAt, source: "reported" } as const;
+  const terms = {
+    interestRate: null, paymentAmount: null, nextPaymentDate: null, installmentsPaid: null,
+    installmentsTotal: null, openedOn: null, maturityDate: null,
+  };
+  return {
+    collectedAt,
+    completeness: "complete",
+    loans: [
+      {
+        ...terms, sourceAccountKey: "fixture-mortgage", displayLabel: "Fixture home loan ****5678", currency: "TWD",
+        category: "housing", outstandingBalance: { amount: "6000000", observedAt }, originalAmount: "8000000",
+        interestRate: "2.185", paymentAmount: "32150", nextPaymentDate: day(now, 9), installmentsPaid: 60,
+        installmentsTotal: 360, openedOn: "2021-09-01", maturityDate: "2051-09-01",
+      },
+      {
+        ...terms, sourceAccountKey: "fixture-second-home", displayLabel: "Fixture second home loan ****1357", currency: "TWD",
+        category: "housing", outstandingBalance: { amount: "1500000", observedAt }, originalAmount: null,
+      },
+      {
+        ...terms, sourceAccountKey: "fixture-personal", displayLabel: "Fixture personal loan ****2468", currency: "TWD",
+        category: "personal", outstandingBalance: { amount: "180000", observedAt }, originalAmount: "300000",
+        interestRate: "3.5", paymentAmount: "9200", nextPaymentDate: day(now, 3),
+      },
+      ...(withRepaid ? [{
+        ...terms, sourceAccountKey: "fixture-car", displayLabel: "Fixture car loan ****9753", currency: "TWD",
+        category: "other" as const, outstandingBalance: { amount: "12000", observedAt }, originalAmount: "600000",
+      }] : []),
+    ],
+  };
+}
+
 /**
  * The writes of the multi-product fixture over two collections a day apart,
  * oldest first: the second time-deposit list lacks one deposit and so closes
- * it, and the second credit write posts the first write's authorization.
+ * it, the second credit write posts the first write's authorization, and
+ * the second complete loan list closes the car loan it lacks.
  */
 export function previewProductsFixtureWrites(now: Date): readonly PreviewProductWrite[] {
   const first = new Date(now.getTime() - 86_400_000).toISOString();
@@ -145,6 +199,9 @@ export function previewProductsFixtureWrites(now: Date): readonly PreviewProduct
     { product: "credit_card", collection: fixtureCredit(first, false, now) },
     { product: "time_deposit", collection: fixtureTimeDeposits(second, false, now) },
     { product: "credit_card", collection: fixtureCredit(second, true, now) },
+    { product: "foreign_currency", collection: fixtureForeignCurrency(second, now) },
+    { product: "loan", collection: fixtureLoans(first, true, now) },
+    { product: "loan", collection: fixtureLoans(second, false, now) },
   ];
 }
 
@@ -152,7 +209,7 @@ export const PREVIEW_PRODUCTS_FIXTURE_SOURCE: PreviewSource = {
   ...PREVIEW_FIXTURE_SOURCE,
   id: "synthetic-products",
   institution: "bank-017",
-  products: ["deposit", "credit_card", "time_deposit"],
+  products: ["deposit", "credit_card", "time_deposit", "foreign_currency", "loan"],
   displayName: text("Preview fixture bank (products)", "預覽測試銀行（多產品）"),
   searchAliases: ["preview fixture products"],
   credentialFields: [{ ...PREVIEW_FIXTURE_SOURCE.credentialFields[0]!, key: "PREVIEW_SYNTHETIC_PRODUCTS_USER_ID" }],
@@ -163,6 +220,8 @@ export const PREVIEW_PRODUCTS_FIXTURE_SOURCE: PreviewSource = {
       deposit: async () => ({ absent: "not_held" }),
       credit_card: async () => fixtureCredit(collectedAt, true, new Date(collectedAt)),
       time_deposit: async () => fixtureTimeDeposits(collectedAt, false, new Date(collectedAt)),
+      foreign_currency: async () => fixtureForeignCurrency(collectedAt, new Date(collectedAt)),
+      loan: async () => fixtureLoans(collectedAt, false, new Date(collectedAt)),
     });
   },
 };
