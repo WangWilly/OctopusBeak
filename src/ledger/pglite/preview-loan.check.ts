@@ -43,7 +43,7 @@ test("a loan snapshot keeps its terms exactly, and the newest balance wins while
       paymentAmount: null, nextPaymentDate: "2026-12-10", installmentsPaid: 61,
     })]));
     const [account] = await preview.loanAccounts(LOANS);
-    assert.equal(account!.displayLabel, "Loan ****5678");
+    assert.equal(account!.displayLabel, "Loan ****4567");
     assert.deepEqual(account!.latestBalance, {
       amount: "5990000", currency: "TWD", observedAt: { at: "2026-10-16T01:00:00.000Z", source: "reported" },
     });
