@@ -173,7 +173,7 @@ test("attached products write only through a writer bound to the verified source
       time_deposit: async () => emptyTimeDeposits,
     },
   });
-  assert.deepEqual(statuses(result), ["credit_card:success", "time_deposit:skipped:not_selected"],
+  assert.deepEqual(statuses(result), ["credit_card:success", "time_deposit:skipped:not_selected", "loan:skipped:not_selected"],
     "a product the source does not declare is never collected, even when selected");
   assert.deepEqual(writes.map((write) => [write.sourceId, write.institution, write.product]), [["cathay", "cathay", "credit_card"]]);
 
