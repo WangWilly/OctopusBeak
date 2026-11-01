@@ -4,6 +4,7 @@ import {
   canonicalSourceRouteRegistration,
   type CanonicalSourceRouteRegistration,
 } from "../canonical/canonical-source-route-registry.ts";
+import { MANUAL_ASSET_TABLES } from "./manual-assets.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 /**
@@ -11,7 +12,8 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * financial state and is emptied. Kept are schema metadata, the trusted source
  * contract catalog and reference data the baseline installs, and Preserved
  * Operational Configuration: exchange rates and the automation run history the
- * schedulers read to decide whether an occurrence already ran.
+ * schedulers read to decide whether an occurrence already ran. Manual Assets
+ * are kept too: nothing could recollect what a person typed in (ADR 0087).
  */
 export const CANONICAL_RESET_PRESERVED_TABLES: ReadonlySet<string> = new Set([
   "pglite_baseline_metadata",
@@ -33,6 +35,7 @@ export const CANONICAL_RESET_PRESERVED_TABLES: ReadonlySet<string> = new Set([
   "automation_task_runs",
   "automation_task_run_commit_attempts",
   "automation_task_prerequisite_notices",
+  ...MANUAL_ASSET_TABLES,
 ]);
 
 const quoted = (identifier: string) => `"${identifier.replaceAll("\"", "\"\"")}"`;

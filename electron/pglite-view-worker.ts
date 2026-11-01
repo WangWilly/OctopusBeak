@@ -11,6 +11,7 @@ import {
 import { createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
+import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
 import { applyPglitePreviewFinancialDataSchema } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   applyPgliteOperationalBaseline,
@@ -65,6 +66,7 @@ export async function startPGliteViewWorker(
     await applyPgliteOperationalBaseline(database);
     await applyPgliteMaicoinOperationalSchema(database);
     await applyPglitePreviewFinancialDataSchema(database);
+    await applyPgliteManualAssetsSchema(database);
   } catch (error) {
     await database.close().catch(() => undefined);
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
