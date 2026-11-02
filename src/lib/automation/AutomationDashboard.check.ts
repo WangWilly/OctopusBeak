@@ -5,6 +5,14 @@ const source = readFileSync(
   new URL("./AutomationDashboard.svelte", import.meta.url),
   "utf8",
 );
+/** The source from one anchor up to the next; both anchors must exist, or the slice would check nothing. */
+function sourceBetween(start: string, end: string) {
+  const from = source.indexOf(start);
+  const to = source.indexOf(end, from);
+  assert.notEqual(from, -1, `missing anchor ${start}`);
+  assert.notEqual(to, -1, `missing anchor ${end}`);
+  return source.slice(from, to);
+}
 const runTaskSource = source.slice(
   source.indexOf("async function runTask"),
   source.indexOf("async function runParallelTasks"),
@@ -142,9 +150,9 @@ assert.match(
   source,
   /\$: activeTasks = live\.tasks\.filter\(\(task\) => task\.isActive\);/,
 );
-const primaryTaskActionSource = source.slice(
-  source.indexOf("async function primaryTaskAction"),
-  source.indexOf("async function openRunHistory"),
+const primaryTaskActionSource = sourceBetween(
+  "async function primaryTaskAction",
+  "async function saveCredentials",
 );
 // automation-actions.check.ts covers force-terminating a run waiting for a person.
 assert.match(primaryTaskActionSource, /state\.cancel\(task\)/);
@@ -159,7 +167,6 @@ assert.match(
   /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
 );
 assert.doesNotMatch(source, /automation\.forceQuit\(/);
-assert.match(source, /historyTaskCount\(catalogHistoryRows\.length\)/);
 assert.match(source, /class="stage-toggle-action"/);
 assert.match(source, /aria-expanded=\{stageOpen\[stage\.id\]\}/);
 assert.doesNotMatch(source, /<details class="stage-section"/);
@@ -182,8 +189,6 @@ assert.match(source, /class="sync-sheet"/);
 assert.doesNotMatch(source, /\$t\.automation\.commandId/);
 assert.doesNotMatch(source, /class="task-command"/);
 assert.doesNotMatch(source, /(?:task|run)\.script/);
-assert.doesNotMatch(source, /run\.errorMessage/);
-assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
 assert.match(
   source,
   /<colgroup>[\s\S]*width: 22%[\s\S]*width: 16%[\s\S]*width: 17%[\s\S]*width: 16%[\s\S]*width: 29%[\s\S]*<\/colgroup>/,
@@ -237,29 +242,12 @@ assert.match(
   source,
   /value=\{sheet\.search\} oninput=\{updateCredentialSearch\}/,
 );
-assert.match(source, /class="modal-body history-layout"/);
-assert.match(source, /class="history-filters"/);
-assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
-assert.match(source, /<code>\{run\.appWorkflowOutcome\.errorCode\}<\/code>/);
-assert.match(source, /historySearch/);
-assert.match(source, /historyFilter/);
-assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, live\.tasks\)/);
-assert.match(source, /const catalogTaskIds = new Set\(tasks\.map\(\(task\) => task\.id\)\)/);
-assert.match(source, /return rows\.filter\(\(run\) => catalogTaskIds\.has\(run\.taskId\)\)/);
-assert.match(source, /\$: historyCounts = catalogHistoryRows\.reduce/);
-assert.match(source, /historyCounts\.completed/);
-assert.doesNotMatch(source, /historyFinishedTime/);
-assert.doesNotMatch(source, /class="modal-footer"/);
-
-const currentTaskIds = new Set(["source-task"]);
-const historyRowsForCheck = [
-  { taskId: "source-task" },
-  { taskId: "retired-source" },
-];
-assert.deepEqual(
-  historyRowsForCheck.filter((run) => currentTaskIds.has(run.taskId)),
-  [{ taskId: "source-task" }],
+assert.match(
+  source,
+  /<RunHistoryDialog tasks=\{live\.tasks\} port=\{window\.octopusBeak\.automation\}/,
+  "Run history reads the current task catalog and its own IPC port",
 );
+assert.doesNotMatch(source, /class="modal-footer"/);
 
 assert.match(source, /<fieldset[^>]*class="statement-selection"/);
 assert.match(
@@ -294,9 +282,9 @@ assert.match(
   /@media \(max-width: 820px\)[\s\S]*?\.credential-layout\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
 );
 
-const saveCredentialsSource = source.slice(
-  source.indexOf("async function saveCredentials"),
-  source.indexOf("function taskIdLabel"),
+const saveCredentialsSource = sourceBetween(
+  "async function saveCredentials",
+  "const ONBOARDING_PROGRESS_NODES",
 );
 assert.match(
   saveCredentialsSource,
