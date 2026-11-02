@@ -10,7 +10,8 @@ import {
   createPGliteViewWorkerClient,
   PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS,
 } from "./pglite-view-worker-client.ts";
-import { startPGliteViewWorker } from "./pglite-view-worker.ts";
+import { startPGliteViewWorker, workerViewSource } from "./pglite-view-worker.ts";
+import { createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -107,4 +108,31 @@ test("closing the client gives a slow worker shutdown its full bound before term
   worker.emit("message", { kind: "worker-stopped" });
   await closing;
   assert.equal(terminated, 1);
+});
+
+test("a financial view's error after its first value reaches the port as a failed subscription", async () => {
+  let fail: (error: unknown) => void = () => {};
+  const financial = {
+    async subscribe(_view: string, _params: object, onRows: (rows: unknown[]) => void, onError?: (error: unknown) => void) {
+      onRows([{ page: 1 }]);
+      fail = (error) => onError?.(error);
+      return async () => {};
+    },
+  };
+  const health = { subscribe: async () => async () => {} };
+  const channel = new MessageChannel();
+  const server = createViewPortServer(channel.port1, workerViewSource(financial, health));
+  const responses: unknown[] = [];
+  channel.port2.on("message", (message) => responses.push(message));
+  try {
+    channel.port2.postMessage({ kind: "subscribe", id: 1, view: "financial.overview.current", params: {} });
+    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "rows"));
+    fail(new Error("recompute failed"));
+    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "error"));
+    assert.deepEqual(responses.at(-1), { kind: "error", id: 1, code: "subscription-failed" });
+  } finally {
+    await server.close();
+    channel.port1.close();
+    channel.port2.close();
+  }
 });

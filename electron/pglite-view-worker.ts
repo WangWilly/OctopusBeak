@@ -41,6 +41,32 @@ export const pgliteWorkerViews = {
   })),
 };
 
+type ViewSubscribe = (
+  view: string,
+  params: object,
+  onRows: (rows: unknown[]) => void,
+  onError?: (error: unknown) => void,
+) => Promise<() => Promise<void>>;
+
+/** Routes each named view to the source that owns it, carrying every subscribe argument through. */
+export function workerViewSource(
+  financial: Readonly<{ subscribe: ViewSubscribe }>,
+  health: Readonly<{
+    subscribe(view: "system.health", params: Record<string, never>, onRows: (rows: HealthRow[]) => void): Promise<() => Promise<void>>;
+  }>,
+): Readonly<{ subscribe: ViewSubscribe }> {
+  return {
+    subscribe(view, params, onRows, onError) {
+      if (view !== "system.health") return financial.subscribe(view, params, onRows, onError);
+      return health.subscribe(
+        view,
+        params as Record<string, never>,
+        onRows as (rows: HealthRow[]) => void,
+      );
+    },
+  };
+}
+
 export type PGliteViewWorkerRuntime = {
   dataDir: string;
   close(): Promise<void>;
@@ -97,18 +123,7 @@ export async function startPGliteViewWorker(
     scheduler,
     { manualAssets: true, today },
   );
-  const source = {
-    subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {
-      if (view !== "system.health") {
-        return financialViews.subscribe(view, params, onRows);
-      }
-      return views.subscribe(
-        view,
-        params as Record<string, never>,
-        onRows as (rows: HealthRow[]) => void,
-      );
-    },
-  };
+  const source = workerViewSource(financialViews, views);
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
