@@ -36,6 +36,7 @@
 <Modal
   titleId="error-report-title"
   title={$t.automation.errorReport.title}
+  subtitleGap="loose"
   subtitle={$t.automation.errorReport.intro}
   width="min(760px, 100%)"
   closable={closeAllowed(status)}

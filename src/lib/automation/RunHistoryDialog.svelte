@@ -52,7 +52,7 @@
   titleId="history-title"
   title={$t.automation.runHistory}
   subtitle={$t.automation.historyTaskCount(catalogRows.length)}
-  closeLabel={$t.automation.closeRunHistory}
+  backdropLabel={$t.automation.closeRunHistory}
   width="min(1180px, 100%)"
   height="min(760px, calc(100vh - 40px))"
   {onClose}

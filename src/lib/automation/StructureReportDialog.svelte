@@ -31,6 +31,7 @@
 <Modal
   titleId="structure-report-title"
   title={$t.automation.structureReport.title}
+  subtitleGap="loose"
   subtitle={$t.automation.structureReport.intro}
   width="min(760px, 100%)"
   {onClose}
