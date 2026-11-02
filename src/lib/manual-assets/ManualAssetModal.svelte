@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, Info, Pencil, Plus, Trash2, X } from "@lucide/svelte";
+  import { Check, Pencil, Plus, Trash2, X } from "@lucide/svelte";
   import { PERSONAL_CATEGORY_CODES } from "../../ledger/canonical/personal-category-codes.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { groupDigits } from "$lib/shared-ledger/preview-account.ts";
@@ -167,7 +167,7 @@
   <form class="grid-row form-row" onsubmit={(event) => { event.preventDefault(); if (draft) saveTransaction(draft); }} data-manual-transaction-form>
     <input type="date" max={today} bind:value={draft.occurredOn} aria-label={$t.manualAssets.occurredOn} />
     <div class="pair">
-      <select bind:value={draft.kind} aria-label={$t.manualAssets.category} data-field="kind">
+      <select bind:value={draft.kind} aria-label={$t.manualAssets.transactionKind} data-field="kind">
         {#each ["purchase", "receipt", "transfer"] as const as kind}
           <option value={kind} disabled={kind === "transfer" && counterparts.length === 0}>{$t.manualAssets.kinds[kind]}</option>
         {/each}
@@ -201,7 +201,7 @@
 {#if open && account && manual && rule}
   <div class="modal open">
     <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
-    <div class="modal-panel manual-panel" role="dialog" aria-modal="true" aria-labelledby="manual-asset-title" tabindex="-1" data-manual-asset={manual.category}>
+    <div class="modal-panel manual-panel" role="dialog" aria-modal="true" aria-label={account.label} tabindex="-1" data-manual-asset={manual.category}>
       <header class="manual-head">
         <div class="identity">
           <p class="eyebrow-label"><span class="chip category-chip">{$t.manualAssets.categories[manual.category]}</span><ManualMarker /></p>
@@ -213,7 +213,7 @@
               <button class="icon-button" type="button" aria-label={$t.manualAssets.cancel} title={$t.manualAssets.cancel} onclick={() => (renaming = null)}><X size={15} strokeWidth={2.2} aria-hidden="true" /></button>
             </form>
           {:else}
-            <h2 id="manual-asset-title">
+            <h2>
               {account.label}
               <button class="icon-button" type="button" aria-label={$t.manualAssets.rename} title={$t.manualAssets.rename} onclick={() => (renaming = account.label)} data-manual-rename>
                 <Pencil size={14} strokeWidth={2} aria-hidden="true" />
@@ -222,16 +222,13 @@
           {/if}
         </div>
         <div class="value">
-          <span class="value-label" title={cash ? $t.manualAssets.balanceNote : undefined}>
-            {cash ? $t.manualAssets.balance : $t.manualAssets.currentValue}
-            {#if cash}<Info size={12} strokeWidth={2} aria-hidden="true" />{/if}
-          </span>
+          <span class="value-label">{cash ? $t.manualAssets.balance : $t.manualAssets.currentValue}</span>
           <strong class="money" data-sensitive data-manual-balance>
             {manual.balance ? formatAmountLines([manual.balance.amount], $locale) : "—"}
           </strong>
           {#if state && state.kind !== "ended"}
             <span class="value-meta" data-manual-state={state.kind}>
-              {#if state.kind === "stale"}<span class="chip stale-chip" title={$t.manualAssets.staleTitle} data-manual-stale>{$t.manualAssets.stale}</span>{/if}
+              {#if state.kind === "stale" && manual.endedOn === null}<span class="chip stale-chip" title={$t.manualAssets.staleTitle} data-manual-stale>{$t.manualAssets.stale}</span>{/if}
               {state.source === "counted" ? $t.manualAssets.countLine(state.date) : $t.manualAssets.valuationLine(state.date, $t.manualAssets.sources[state.source])}
             </span>
           {/if}
@@ -248,6 +245,7 @@
 
       <div class="modal-body manual-body">
         {#if error}<p class="error" role="alert">{error}</p>{/if}
+        {#if cash}<p class="balance-note" data-manual-balance-note>{$t.manualAssets.balanceNote}</p>{/if}
 
         {#if cash && tab === "transactions"}
           <div class="panel" role="tabpanel" aria-label={$t.manualAssets.transactionsTab}>
@@ -527,6 +525,12 @@
     padding-top: var(--space-2);
     padding-bottom: var(--space-2);
     background: var(--surface-soft);
+  }
+
+  .balance-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
   }
 
   .row-help {
