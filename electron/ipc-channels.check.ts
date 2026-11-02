@@ -7,8 +7,11 @@ import {
   RENDERER_FINANCIAL_OPERATIONS,
   SETTINGS_SERVICE_CHANNELS,
   settingsForwardHandlers,
+  SPENDING_SERVICE_CHANNELS,
+  spendingForwardHandlers,
   type AutomationServiceForwards,
   type SettingsServiceForwards,
+  type SpendingServiceForwards,
 } from "./ipc-channels.ts";
 import { PGLITE_FINANCIAL_CONTRACTS, type PGliteFinancialPort } from "./pglite-financial-rpc-client.ts";
 
@@ -78,4 +81,9 @@ test("each settings service channel calls its bridge method's namesake with the 
 
   assert.equal(Object.hasOwn(handlers, "settings:clearSignInData"), false, "sign-in erasure stays with automation");
   await assertForwards(handlers, SETTINGS_SERVICE_CHANNELS, calls);
+});
+
+test("each spending service channel calls its bridge method's namesake with the renderer's arguments", async () => {
+  const { service, calls } = recordingService<SpendingServiceForwards>();
+  await assertForwards(spendingForwardHandlers(service), SPENDING_SERVICE_CHANNELS, calls);
 });

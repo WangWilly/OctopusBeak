@@ -3,6 +3,7 @@ import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
 import type { OctopusBeakInvokeChannels } from "./preload.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
 import type { SettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
+import type { SpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
 import type {
   PGliteFinancialArgs,
   PGliteFinancialOperation,
@@ -126,6 +127,13 @@ export const SETTINGS_SERVICE_CHANNELS = {
   "data:acknowledgeVersion": "acknowledgeVersion",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
 
+/** Channels whose handler only forwards to the spending desktop service method of the bridge method's name. */
+export const SPENDING_SERVICE_CHANNELS = {
+  "spending:candidate-page": "loadCandidatePage",
+  "spending:candidate-page-cancel": "cancelCandidatePage",
+  "spending:pairing-prewarm": "prewarmPairingCandidates",
+} as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
+
 type ServiceChannels = Readonly<Partial<Record<InvokeChannel, string>>>;
 
 type ForwardedChannel<Table extends ServiceChannels> = keyof Table & InvokeChannel;
@@ -185,10 +193,19 @@ export type SettingsServiceForwards = Pick<
   typeof SETTINGS_SERVICE_CHANNELS[keyof typeof SETTINGS_SERVICE_CHANNELS]
 >;
 
+export type SpendingServiceForwards = Pick<
+  SpendingDesktopService,
+  typeof SPENDING_SERVICE_CHANNELS[keyof typeof SPENDING_SERVICE_CHANNELS]
+>;
+
 export function automationForwardHandlers(service: AutomationServiceForwards) {
   return serviceForwardHandlers(AUTOMATION_SERVICE_CHANNELS, service);
 }
 
 export function settingsForwardHandlers(service: SettingsServiceForwards) {
   return serviceForwardHandlers(SETTINGS_SERVICE_CHANNELS, service);
+}
+
+export function spendingForwardHandlers(service: SpendingServiceForwards) {
+  return serviceForwardHandlers(SPENDING_SERVICE_CHANNELS, service);
 }

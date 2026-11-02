@@ -53,6 +53,7 @@ import {
 } from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
 import { createSettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
+import { createSpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
 import { deleteAllFinancialData } from "../src/lib/settings/data-erasure.ts";
 import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
 import { broadcast } from "./broadcast.ts";
@@ -655,6 +656,7 @@ async function start() {
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     settings,
+    spending: createSpendingDesktopService({ financial: operationalRuntime.worker.financial }),
     appUpdates: {
       view: appUpdateView,
       check: () => void appUpdater?.check(),
