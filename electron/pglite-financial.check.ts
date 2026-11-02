@@ -208,7 +208,7 @@ test("one worker exposes named financial reads/writes and complete live snapshot
   try {
     const initial = await client.financial.request("financial.overview.current", [[]]);
     assert.equal(initial.availability, "empty");
-    assert.equal(await client.financial.request("financial.spending.version", []), 0);
+    assert.deepEqual(await client.financial.request("financial.spending.version", []), { knowledgeAt: 0, manualRevision: 0 });
     assert.ok(PGLITE_FINANCIAL_OPERATIONS.includes("financial.overview.current"));
     assert.deepEqual(await client.financial.request("financial.loanRelations.current", []), []);
     assert.deepEqual(await client.financial.request("financial.loanSettlementGroups.current", []), []);

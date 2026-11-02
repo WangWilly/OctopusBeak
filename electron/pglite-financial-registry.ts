@@ -85,12 +85,8 @@ import {
   type PGliteCanonicalInvestmentRelationResolutionRequest,
 } from "../src/ledger/pglite/relations.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
-import {
-  applyManualAssetCommand,
-  readManualAssetRevision,
-  readManualSpendingPurchases,
-} from "../src/ledger/pglite/manual-assets.ts";
-import { spendingPageWithManual } from "../src/lib/spending/manual-spending.ts";
+import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
+import { readSpendingPage, readSpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -270,26 +266,16 @@ export function createPGliteFinancialRegistry(
       store.transaction((transaction) => readAssetsPage(transaction, pageScope(expectedSources))),
     "financial.liabilities.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readLiabilitiesPage(transaction, pageScope(expectedSources))),
-    async "financial.spending.current"([input = {}]) {
-      const page = await spending.summaryPage(input);
-      if (!manualAssets) return page;
-      return store.transaction(async (transaction) => spendingPageWithManual(page, {
-        revision: await readManualAssetRevision(transaction),
-        purchases: await readManualSpendingPurchases(transaction),
-      }));
-    },
+    "financial.spending.current": ([input = {}]) =>
+      store.transaction((transaction) => readSpendingPage(transaction, { manualAssets }, input)),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
     "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),
     "financial.spending.mergeLog": ([request]) => spending.mergeLog(request),
     "financial.spending.monthInsight": ([request]) => spending.monthInsight(request),
     "financial.spending.merchantStats": ([request]) => spending.merchantStats(request),
-    async "financial.spending.version"() {
-      const result = await store.query<{ value: number | string }>(
-        "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
-      );
-      return Number(result.rows[0]?.value ?? 0);
-    },
+    "financial.spending.version": () =>
+      store.transaction((transaction) => readSpendingPageVersion(transaction, { manualAssets })),
     "financial.spending.prewarmPairing"([dataVersion]) {
       return spending.prewarmPairing(dataVersion);
     },
@@ -358,7 +344,6 @@ export function createPGliteFinancialRegistry(
       if (!manualAssets) throw new Error("This store holds no Manual Asset tables.");
       return applyManualAssetCommand(store, command, manualClock);
     },
-    "financial.manualAssets.revision": () => manualAssets ? readManualAssetRevision(store) : Promise.resolve(0),
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),
     "financial.canonical.resetRequired": () => canonicalResetRequiredNamespaces(store),
   });

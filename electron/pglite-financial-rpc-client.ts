@@ -65,6 +65,7 @@ import type {
 } from "../src/ledger/pglite/investment.ts";
 import type { TdccAdmittedFundAccount } from "../src/ledger/canonical/tdcc-investment-admission.ts";
 import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../src/ledger/pglite/account-identity-continuity.ts";
+import type { SpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
@@ -217,7 +218,8 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
   ),
-  "financial.spending.version": operation<[], number>(
+  /** The canonical knowledge point and the Manual Asset revision, read together (ADR 0089). */
+  "financial.spending.version": operation<[], SpendingPageVersion>(
     (args) => args.length === 0,
     { lane: "interactive" },
   ),
@@ -346,11 +348,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   /** One Manual Asset command (ADR 0087); the worker parses it against the category registry. */
   "financial.manualAssets.apply": operation<[command: ManualAssetCommand], ManualAssetCommandResult>(
     (args) => args.length === 1 && plainRecord(args[0]),
-    { lane: "interactive" },
-  ),
-  /** Advances on every Manual Asset write, so a live view can tell a manual change from none. */
-  "financial.manualAssets.revision": operation<[], number>(
-    (args) => args.length === 0,
     { lane: "interactive" },
   ),
   /** Canonical Reset (ADR 0062): replaces all financial state with an empty store. */

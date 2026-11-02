@@ -401,7 +401,7 @@ test("preview transactions stay out of Spending reads", async () => {
   await withLedger(async ({ registry, writePreview }) => {
     const shown = registry(() => VISIBLE);
     const readSpending = async () => {
-      const knowledgeAt = await shown["financial.spending.version"]([]);
+      const { knowledgeAt } = await shown["financial.spending.version"]([]);
       return {
         summary: await shown["financial.spending.current"]([]),
         records: await shown["financial.spending.recordPage"]([{ knowledgeAt, month: "2026-10" }]),
