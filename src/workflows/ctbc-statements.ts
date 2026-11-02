@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -882,16 +883,6 @@ function buildCtbcCapture(
   };
 }
 
-function ctbcCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\u0000`)
-    .update(parts.join("\u0000"))
-    .digest("base64url")}`;
-}
-
 /**
  * Join the current summary to an already admitted CTBC statement identity.
  * The provider accountId is retained as exact evidence, including leading
@@ -933,7 +924,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
     sourceValue: String(row.providerServerTime),
     contractVersion,
   };
-  const sourceRecordKey = ctbcCurrentDepositOpaqueKey(
+  const sourceRecordKey = canonicalDigest(
     "ctbc-current-deposit-source-record-v1",
     sourceAccountKey,
     row.effectiveAt,
@@ -955,7 +946,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
   };
   const provisional = currentDepositSourceRecord({
     sourceRecordKey,
-    providerKey: ctbcCurrentDepositOpaqueKey(
+    providerKey: canonicalDigest(
       "ctbc-current-deposit-provider-record-v1",
       sourceAccountKey,
       row.effectiveAt,
@@ -973,7 +964,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
     contentHash: currentDepositSourceRecordContentHash(provisional.compact),
   };
   const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: ctbcCurrentDepositOpaqueKey(
+    observationKey: canonicalDigest(
       "ctbc-current-deposit-observation-v1",
       sourceAccountKey,
     ),
@@ -1002,8 +993,8 @@ export function buildCtbcCurrentDepositBalanceCapture(
     scope: {
       startDate: scopeDate,
       endDate: scopeDate,
-      contractFingerprint: ctbcCurrentDepositOpaqueKey("ctbc-current-deposit-contract-v1", route),
-      preflightFingerprint: ctbcCurrentDepositOpaqueKey(
+      contractFingerprint: canonicalDigest("ctbc-current-deposit-contract-v1", route),
+      preflightFingerprint: canonicalDigest(
         "ctbc-current-deposit-preflight-v1",
         identity.subjectDigest,
         scopeDate,
@@ -1122,13 +1113,13 @@ export async function stageCtbcDeposit(
   context.signal.throwIfAborted();
   if (snapshot.captures.length === 0 ||
     snapshot.output.count !== snapshot.captures.length) {
-    await context.event("validation", "failed", "source-validation-rejected", {
+    await product.event("validation", "failed", "source-validation-rejected", {
       completed: snapshot.captures.length,
       total: snapshot.output.count,
     });
     throw new Error("CTBC source has no complete selected account capture.");
   }
-  await context.event("validation", "started", "source-validation-started", {
+  await product.event("validation", "started", "source-validation-started", {
     completed: 0,
     total: snapshot.captures.length,
   });
@@ -1140,7 +1131,7 @@ export async function stageCtbcDeposit(
       buildCtbcCapture(observed, observedAt),
     );
     if (admission.status !== "admissible" || !admission.capture) {
-      await context.event("validation", "failed", "source-validation-rejected", {
+      await product.event("validation", "failed", "source-validation-rejected", {
         completed: validatedCaptures.length,
         total: snapshot.captures.length,
       });
@@ -1154,7 +1145,7 @@ export async function stageCtbcDeposit(
   const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
   const financialCaptures: ExistingCtbcFinancialCapture[] = [];
   const items: ProductStageRequest[] = [];
-  await context.event("validation", "started", "canonical-admission-started", {
+  await product.event("validation", "started", "canonical-admission-started", {
     completed: 0,
     total: validatedCaptures.length,
   });
@@ -1176,7 +1167,7 @@ export async function stageCtbcDeposit(
       humanAttestation: manifest,
     });
     if (admission.status !== "admitted" || !admission.capture) {
-      await context.event("validation", "failed", "canonical-admission-rejected", {
+      await product.event("validation", "failed", "canonical-admission-rejected", {
         completed: financialCaptures.length,
         total: validatedCaptures.length,
       });
@@ -1197,25 +1188,25 @@ export async function stageCtbcDeposit(
       },
     });
   }
-  await context.event("validation", "completed", "canonical-admission-completed", {
+  await product.event("validation", "completed", "canonical-admission-completed", {
     completed: validatedCaptures.length,
     total: validatedCaptures.length,
   });
   context.signal.throwIfAborted();
   const balances: ProductStageRequest[] = [];
   if (financialCaptures.length > 0) {
-    await context.event("collection", "started", "current-balance-collection-started");
-    await context.event("decoding", "started", "current-balance-decoding-started");
+    await product.event("collection", "started", "current-balance-collection-started");
+    await product.event("decoding", "started", "current-balance-decoding-started");
     let currentRows: readonly CtbcCurrentDepositBalanceRow[];
     try {
       currentRows = await readCurrentBalances();
-    } catch {
-      await context.event("decoding", "failed", "current-balance-decoding-failed");
-      await context.event("collection", "failed", "current-balance-collection-failed");
-      throw new Error("CTBC current balance source collection failed.");
+    } catch (error) {
+      await product.event("decoding", "failed", "current-balance-decoding-failed");
+      await product.event("collection", "failed", "current-balance-collection-failed");
+      throw error;
     }
-    await context.event("decoding", "completed", "current-balance-decoding-completed");
-    await context.event("collection", "completed", "current-balance-collection-completed", {
+    await product.event("decoding", "completed", "current-balance-decoding-completed");
+    await product.event("collection", "completed", "current-balance-collection-completed", {
       completed: currentRows.length,
       total: currentRows.length,
     });
@@ -1223,7 +1214,7 @@ export async function stageCtbcDeposit(
       financialCaptures,
       ctbcCurrentBalanceCaptureMatching,
     );
-    await context.event("validation", "started", "current-balance-validation-started", {
+    await product.event("validation", "started", "current-balance-validation-started", {
       completed: 0,
       total: currentRows.length,
     });
@@ -1242,14 +1233,14 @@ export async function stageCtbcDeposit(
           },
         });
       }
-    } catch {
-      await context.event("validation", "failed", "current-balance-validation-rejected", {
+    } catch (error) {
+      await product.event("validation", "failed", "current-balance-validation-rejected", {
         completed: 0,
         total: currentRows.length,
       });
-      throw new Error("CTBC current balance source admission was rejected.");
+      throw error;
     }
-    await context.event("validation", "completed", "current-balance-validation-completed", {
+    await product.event("validation", "completed", "current-balance-validation-completed", {
       completed: balances.length,
       total: currentRows.length,
     });

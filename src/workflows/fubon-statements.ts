@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -282,16 +283,6 @@ type ExistingFubonFinancialCapture = Readonly<{
   }>;
 }>;
 
-function fubonCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\0`)
-    .update(parts.join("\0"))
-    .digest("base64url")}`;
-}
-
 export function selectFubonDomesticCurrentDepositRows(
   rows: readonly FubonCurrentDepositBalanceRow[],
 ): readonly FubonCurrentDepositBalanceRow[] {
@@ -321,7 +312,7 @@ export function buildFubonCurrentDepositBalanceCapture(
     ["available", "可用餘額", row.availableBalance],
   ];
   for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = fubonCurrentDepositOpaqueKey(
+    const sourceRecordKey = canonicalDigest(
       "fubon-current-deposit-source-record-v1",
       sourceAccountKey,
       row.currency,
@@ -343,7 +334,7 @@ export function buildFubonCurrentDepositBalanceCapture(
     };
     const record = currentDepositSourceRecord({
       sourceRecordKey,
-      providerKey: fubonCurrentDepositOpaqueKey(
+      providerKey: canonicalDigest(
         "fubon-current-deposit-provider-record-v1",
         row.accountNumber,
         row.currency,
@@ -362,7 +353,7 @@ export function buildFubonCurrentDepositBalanceCapture(
       contentHash: currentDepositSourceRecordContentHash(record.compact),
     });
     observations.push({
-      observationKey: fubonCurrentDepositOpaqueKey(
+      observationKey: canonicalDigest(
         "fubon-current-deposit-observation-v1",
         sourceAccountKey,
       ),
@@ -2935,21 +2926,7 @@ export async function stageFubonDeposit(
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
       context.signal.throwIfAborted();
-      const authority =
-        financialCaptures[0]?.identity ??
-        deriveFubonDomesticDepositAccountIdentity(
-          deferred[0]!.statements[0]!.accountOption,
-          undefined,
-          stableSourceConnectionKey as `sha256:${string}`,
-        );
-      currentRows = await readCurrentBalances({
-        observedAt: context.now(),
-        financialAuthority: {
-          sourceConnectionKey: authority.sourceConnectionKey,
-          identityEpochKey: authority.identityEpochKey,
-          authorityClass: "existing-financial-admission",
-        },
-      });
+      currentRows = await readCurrentBalances({ observedAt: context.now() });
       currentObservedAt = context.now();
     }
 

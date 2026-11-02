@@ -134,11 +134,6 @@ const domestic = parseYuantaCurrentDepositBalanceSnapshot({
   rows: domesticRows,
   response: response(),
   observedAt,
-  financialAuthority: {
-    sourceConnectionKey: "sha256:authority-connection",
-    identityEpochKey: "yuanta-epoch-v2",
-    authorityClass: "authenticated-current-state",
-  },
 });
 
 assert.equal(domestic.length, 2);
@@ -158,11 +153,6 @@ assert.notDeepEqual(domestic[0]?.available, domestic[0]?.ledger);
 assert.equal(domestic[0]?.effectiveAt, "2026-09-08T13:20:04.000Z");
 assert.equal(domestic[0]?.providerHttpDate, "Tue, 08 Sep 2026 13:20:04 GMT");
 assert.equal(domestic[0]?.observedAt, observedAt);
-assert.deepEqual(domestic[0]?.financialAuthority, {
-  sourceConnectionKey: "sha256:authority-connection",
-  identityEpochKey: "yuanta-epoch-v2",
-  authorityClass: "authenticated-current-state",
-});
 assert.match(domestic[0]?.sourceAccountKey ?? "", /^sha256:/u);
 assert.equal(domestic[0]?.sourceEvidence.cacheControl, "no-store");
 

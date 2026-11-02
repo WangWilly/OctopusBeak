@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -49,7 +50,6 @@ import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
-  type YuantaCurrentDepositFinancialAuthority,
 } from "./yuanta-current-deposit-balances.ts";
 import {
   matchCurrentBalanceCaptures,
@@ -153,16 +153,6 @@ type ExistingYuantaFinancialCapture = Readonly<{
   }>;
 }>;
 
-function yuantaCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\0`)
-    .update(parts.join("\0"))
-    .digest("base64url")}`;
-}
-
 /**
  * Build the current-balance capture only after the ordinary financial
  * admission has supplied the existing identity.  The provider's HTTP Date
@@ -191,7 +181,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
     ["available", "可用餘額", row.available],
   ];
   for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = yuantaCurrentDepositOpaqueKey(
+    const sourceRecordKey = canonicalDigest(
       "yuanta-current-deposit-source-record-v1",
       sourceAccountKey,
       row.currency,
@@ -211,7 +201,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
     };
     const record = currentDepositSourceRecord({
       sourceRecordKey,
-      providerKey: yuantaCurrentDepositOpaqueKey(
+      providerKey: canonicalDigest(
         "yuanta-current-deposit-provider-record-v1",
         row.accountNumber,
         row.currency,
@@ -230,7 +220,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
       contentHash: currentDepositSourceRecordContentHash(record.compact),
     });
     observations.push({
-      observationKey: yuantaCurrentDepositOpaqueKey(
+      observationKey: canonicalDigest(
         "yuanta-current-deposit-observation-v1",
         sourceAccountKey,
       ),
@@ -795,7 +785,6 @@ export type YuantaDepositSourceSnapshot = Readonly<{
 export type YuantaReadCurrentDepositBalances = (
   input: Readonly<{
     observedAt: string;
-    financialAuthority: YuantaCurrentDepositFinancialAuthority;
   }>,
 ) => Promise<readonly YuantaCurrentDepositBalanceRow[]>;
 
@@ -930,14 +919,8 @@ export async function stageYuantaDeposit(
   // failure here must not leave statement captures from this run behind.
   if (financialDepositCaptures.length > 0) {
     context.signal.throwIfAborted();
-    const authority = financialDepositCaptures[0]!.identity;
     const currentRows = await readCurrentBalances({
       observedAt: yuantaObservedAt(new Date(context.now())),
-      financialAuthority: {
-        sourceConnectionKey: authority.sourceConnectionKey,
-        identityEpochKey: authority.identityEpochKey,
-        authorityClass: "existing-financial-admission",
-      },
     });
     context.text.assertIntact(JSON.stringify(currentRows));
     const currentObservedAt = yuantaObservedAt(new Date(context.now()));

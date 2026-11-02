@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
@@ -147,16 +148,6 @@ type ExistingYuantaForeignFinancialCapture = Readonly<{
   }>;
 }>;
 
-function yuantaForeignCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\0`)
-    .update(parts.join("\0"))
-    .digest("base64url")}`;
-}
-
 /** Join an FX current-balance row to the existing multi-currency account
  * admitted by the foreign transaction capture. */
 export function buildYuantaForeignCurrentDepositBalanceCapture(
@@ -180,7 +171,7 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
     ["available", "可用餘額", row.available],
   ];
   for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = yuantaForeignCurrentDepositOpaqueKey(
+    const sourceRecordKey = canonicalDigest(
       "yuanta-foreign-current-deposit-source-record-v1",
       sourceAccountKey,
       row.currency,
@@ -200,7 +191,7 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
     };
     const record = currentDepositSourceRecord({
       sourceRecordKey,
-      providerKey: yuantaForeignCurrentDepositOpaqueKey(
+      providerKey: canonicalDigest(
         "yuanta-foreign-current-deposit-provider-record-v1",
         row.accountNumber,
         row.currency,
@@ -219,7 +210,7 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
       contentHash: currentDepositSourceRecordContentHash(record.compact),
     });
     observations.push({
-      observationKey: yuantaForeignCurrentDepositOpaqueKey(
+      observationKey: canonicalDigest(
         "yuanta-foreign-current-deposit-observation-v1",
         sourceAccountKey,
       ),

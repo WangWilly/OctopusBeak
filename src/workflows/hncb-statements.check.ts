@@ -528,7 +528,6 @@ try {
 const balanceReads: string[] = [];
 const balanceInput = {
   observedAt: "2026-09-09T13:57:10+08:00",
-  financialAuthority: { authorityClass: "existing-financial-admission" },
 };
 const overviewOnly = await hncbCurrentDepositBalances(
   async () => { balanceReads.push("overview"); return [overviewCurrentRow]; },

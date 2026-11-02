@@ -40,12 +40,6 @@ export type FubonCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type FubonCurrentDepositFinancialAuthority = Readonly<{
-  sourceConnectionKey?: string;
-  identityEpochKey?: string;
-  authorityClass?: string;
-}>;
-
 export type FubonCurrentDepositResponseMetadata = Readonly<{
   url: string;
   status: number;
@@ -74,14 +68,12 @@ export type FubonCurrentDepositBalanceRow = Readonly<{
     cacheControl: string;
     contractVersion: typeof FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
   }>;
-  financialAuthority?: FubonCurrentDepositFinancialAuthority;
 }>;
 
 export type FubonCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: FubonCurrentDepositResponseMetadata;
   observedAt: string;
-  financialAuthority?: FubonCurrentDepositFinancialAuthority;
 }>;
 
 function cleanText(value: string | null | undefined): string {
@@ -221,25 +213,12 @@ function parseCurrency(value: string, rowIndex: number): {
   return { value: currency, sourceLexeme };
 }
 
-function validateFinancialAuthority(
-  authority: FubonCurrentDepositFinancialAuthority | undefined,
-): FubonCurrentDepositFinancialAuthority | undefined {
-  if (authority === undefined) return undefined;
-  for (const [key, value] of Object.entries(authority)) {
-    if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
-      throw new Error(`Fubon current deposit authority ${key} is invalid.`);
-    }
-  }
-  return authority;
-}
-
 /** Parse the ten visible contract columns. Hidden/internal cells are excluded by the DOM reader. */
 export function parseFubonCurrentDepositBalanceSnapshot(
   input: FubonCurrentDepositSnapshotInput,
 ): readonly FubonCurrentDepositBalanceRow[] {
   const { providerDate, cacheControl } = validateResponse(input.response);
   const observedAt = requireObservedAt(input.observedAt);
-  const financialAuthority = validateFinancialAuthority(input.financialAuthority);
   if (input.rows.length === 0) {
     throw new Error("Fubon current deposit table has no account rows.");
   }
@@ -279,7 +258,6 @@ export function parseFubonCurrentDepositBalanceSnapshot(
         cacheControl,
         contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       },
-      ...(financialAuthority ? { financialAuthority } : {}),
     });
   }
   return rows;
@@ -433,7 +411,6 @@ export async function readFubonCurrentDepositBalances(
   site: FubonEbankSite,
   input: Readonly<{
     observedAt: string;
-    financialAuthority?: FubonCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly FubonCurrentDepositBalanceRow[]> {
@@ -451,7 +428,6 @@ export async function readFubonCurrentDepositBalances(
   const table = await findCurrentDepositTable(frames, timeoutMs);
   return parseFubonCurrentDepositBalanceTable(table, {
     observedAt: input.observedAt,
-    financialAuthority: input.financialAuthority,
     response: {
       url: response.url(),
       status: response.status(),

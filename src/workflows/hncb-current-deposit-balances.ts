@@ -54,12 +54,6 @@ export type HncbCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type HncbCurrentDepositFinancialAuthority = Readonly<{
-  sourceConnectionKey?: string;
-  identityEpochKey?: string;
-  authorityClass?: string;
-}>;
-
 export type HncbCurrentDepositResponseMetadata = Readonly<{
   url: string;
   status: number;
@@ -86,7 +80,6 @@ export type HncbCurrentDepositBalanceRow = Readonly<{
     /** The exact authenticated response URL, retained when available. */
     url?: string;
   }>;
-  financialAuthority?: HncbCurrentDepositFinancialAuthority;
 }>;
 
 /**
@@ -113,21 +106,18 @@ export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
     contractVersion: typeof HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION;
     url: string;
   }>;
-  financialAuthority?: HncbCurrentDepositFinancialAuthority;
 }>;
 
 export type HncbCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: HncbCurrentDepositResponseMetadata;
   observedAt: string;
-  financialAuthority?: HncbCurrentDepositFinancialAuthority;
 }>;
 
 export type HncbCurrentDepositOverviewSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: HncbCurrentDepositResponseMetadata;
   observedAt: string;
-  financialAuthority?: HncbCurrentDepositFinancialAuthority;
 }>;
 
 type BrowserScope = Page | Frame;
@@ -328,25 +318,12 @@ function normalizedHeader(value: string): string {
   return cleanText(value);
 }
 
-function validateFinancialAuthority(
-  authority: HncbCurrentDepositFinancialAuthority | undefined,
-): HncbCurrentDepositFinancialAuthority | undefined {
-  if (authority === undefined) return undefined;
-  for (const [key, value] of Object.entries(authority)) {
-    if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
-      throw new Error(`HNCB current deposit authority ${key} is invalid.`);
-    }
-  }
-  return authority;
-}
-
 /** Parse only account, currency, available balance, and 帳上餘額. */
 export function parseHncbCurrentDepositBalanceSnapshot(
   input: HncbCurrentDepositSnapshotInput,
 ): readonly HncbCurrentDepositBalanceRow[] {
   const { providerDate, cacheControl } = validateResponse(input.response);
   const observedAt = requireObservedAt(input.observedAt);
-  const financialAuthority = validateFinancialAuthority(input.financialAuthority);
   if (input.rows.length === 0) throw new Error("HNCB current deposit table has no account rows.");
 
   const seen = new Set<string>();
@@ -382,7 +359,6 @@ export function parseHncbCurrentDepositBalanceSnapshot(
         contractVersion: HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
         url: input.response.url,
       },
-      ...(financialAuthority ? { financialAuthority } : {}),
     });
   }
   return rows;
@@ -583,7 +559,6 @@ export function parseHncbCurrentDepositOverviewSnapshot(
     { requireHtml: true },
   );
   const observedAt = requireObservedAt(input.observedAt);
-  const financialAuthority = validateFinancialAuthority(input.financialAuthority);
   if (input.rows.length === 0)
     throw new Error("HNCB current deposit overview table has no account rows.");
   const seen = new Set<string>();
@@ -620,7 +595,6 @@ export function parseHncbCurrentDepositOverviewSnapshot(
         contractVersion: HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
         url: input.response.url,
       },
-      ...(financialAuthority ? { financialAuthority } : {}),
     });
   }
   return rows;
@@ -839,7 +813,6 @@ export async function readHncbCurrentDepositBalances(
   page: Page,
   input: Readonly<{
     observedAt: string;
-    financialAuthority?: HncbCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly HncbCurrentDepositBalanceRow[]> {
@@ -856,7 +829,6 @@ export async function readHncbCurrentDepositBalances(
   const result = await findResultTable(page, timeoutMs);
   return parseHncbCurrentDepositBalanceTable(result.scope, {
     observedAt: input.observedAt,
-    financialAuthority: input.financialAuthority,
     response: {
       url: response.url(),
       status: response.status(),
@@ -871,7 +843,6 @@ export async function readHncbCurrentDepositOverviewBalances(
   page: Page,
   input: Readonly<{
     observedAt: string;
-    financialAuthority?: HncbCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly HncbCurrentDepositOverviewBalanceRow[]> {
@@ -895,7 +866,6 @@ export async function readHncbCurrentDepositOverviewBalances(
   const result = await findOverviewResultTable(page, timeoutMs);
   return parseHncbCurrentDepositOverviewTable(result.scope, {
     observedAt: input.observedAt,
-    financialAuthority: input.financialAuthority,
     response: {
       url: response.url(),
       status: response.status(),
