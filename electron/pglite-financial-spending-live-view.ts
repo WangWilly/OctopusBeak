@@ -16,7 +16,9 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
     // commit notification may arrive just after that publication;
     // avoid rebuilding the same full summary ahead of a Pairing click.
     // A separate commit still has a newer version and is recomputed.
-    return spendingPageBehind(lastValue() as SpendingPageDto | undefined, await registry["financial.spending.version"]([]));
+    // Read the version first: a recompute may publish while this read waits.
+    const version = await registry["financial.spending.version"]([]);
+    return spendingPageBehind(lastValue() as SpendingPageDto | undefined, version);
   },
   watch({ registry, lastValue, publish, recompute, fail }) {
     if (!registry.onSpendingPageActionSettled) return () => {};
