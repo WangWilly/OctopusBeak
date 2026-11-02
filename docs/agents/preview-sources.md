@@ -20,7 +20,8 @@ A preview product is `deposit`, `credit_card`, `time_deposit`, `foreign_currency
 
 ## Invariants
 
-- Preview data is written only to the tables in the Products table above. They live in the App's PGlite database and are created by the `preview-financial-data-v1`, `-v2`, and `-v3` operational migrations (`PREVIEW_FINANCIAL_DATA_TABLES`).
+- Preview data is written only to the tables in the Products table above. They live in the App's PGlite database and are created by the `preview-financial-data-v1` through `-v4` operational migrations (`PREVIEW_FINANCIAL_DATA_TABLES`).
+- Every write goes through the port's `write` or `deleteAll`, which advance the one `preview_data_revision` row in the same transaction. The live views watch that row, so a new preview table needs no change to them (ADR 0088).
 - A row without an ISO 4217 currency is refused. Amounts are exact decimal strings such as `"1234.50"`, never numbers. Both the port and the table `CHECK` constraints enforce this. A card purchase with a zero amount is refused.
 - A direction is `inflow`, `outflow`, or `unknown`. Use `unknown` when the source does not say. Never infer a direction from the sign, except for a card purchase whose bank section states that assumption and whose collection holds both signs.
 - A used-credit balance carries its basis (`PreviewCreditBasis`) with every operand the basis used. A missing operand fails the product; nothing defaults to zero. An account whose latest used credit is unknown shows as such and makes every total that would include it incomplete.
