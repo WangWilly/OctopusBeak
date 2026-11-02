@@ -2,7 +2,7 @@
   import { ChevronLeft, ChevronRight, Download } from "@lucide/svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import {
     buildBalanceHistory,
     historyCurrencies,
@@ -19,7 +19,6 @@
     type DateRange,
     type RangePreset,
   } from "$lib/shared-accounts/transaction-filters.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, DailyHistoryRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatAmount, formatAmountLines } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
@@ -42,7 +41,7 @@
   let rangeOpen = false;
   let shownAccountId: string | null = null;
 
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: kind = account ? historyKind(account) : "snapshots";
   // Each account opens on its own default window: a year of statements, or thirty days of balances.
   $: if (open && account && account.id !== shownAccountId) {

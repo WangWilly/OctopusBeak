@@ -4,7 +4,7 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatShare } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
   import {
@@ -13,7 +13,6 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     positionsCsv,
     recentDividends,
   } from "$lib/shared-accounts/position-summary.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, AssetPositionDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
@@ -29,7 +28,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   // Largest holdings first; awaiting valuations follow.
   $: sortedRows = [...rows].sort((left, right) => (right.value ?? -1) - (left.value ?? -1));
   $: shares = positionShares(rows);
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: dividends = recentDividends(transactions, today, $systemTimezone);
   $: showTwd = twdValue !== null && account?.amountLines.some((amount) => amount.currency !== "TWD");
 

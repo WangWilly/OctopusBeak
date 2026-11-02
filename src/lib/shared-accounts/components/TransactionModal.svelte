@@ -12,7 +12,7 @@
   } from "@lucide/svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
   import {
@@ -25,7 +25,6 @@
     type FlowFilter,
     type RangePreset,
   } from "$lib/shared-accounts/transaction-filters.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
   import { formatAmountLines, formatExactQuantity, formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
@@ -54,7 +53,7 @@
     page = 1;
     menu = null;
   }
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: exportName = account ? accountModalTitle(account, $t) : $t.transactions.title;
   $: primaryCurrency = account?.amountLines[0]?.currency ?? "TWD";
   $: inRange = filterTransactions(rows, { range, flow: "all", timeZone: $systemTimezone });

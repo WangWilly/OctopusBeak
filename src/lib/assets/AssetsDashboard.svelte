@@ -6,13 +6,12 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { ASSET_CATEGORY_COLOR, formatShare, formatShortDate } from "$lib/overview/overview-format.ts";
 import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
   import SummaryTile from "$lib/shared-accounts/components/SummaryTile.svelte";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import { currencyCount } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
@@ -41,7 +40,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 
 
 
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: stackedChart = buildStackedBalanceChartData({
     accounts: localizeAccounts(assets.accounts, $t),
     dailyHistoryByAccount: assets.dailyHistoryByAccount,

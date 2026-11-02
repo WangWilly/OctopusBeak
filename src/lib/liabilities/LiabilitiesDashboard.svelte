@@ -10,7 +10,7 @@
   import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
   import { formatShare, formatShortDate, liabilityColor } from "$lib/overview/overview-format.ts";
 import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate } from "$lib/settings/system-timezone-store.ts";
   import AccountTable from "$lib/shared-accounts/components/AccountTable.svelte";
   import PageTotalCard from "$lib/shared-accounts/components/PageTotalCard.svelte";
   import ProjectionStateBanner from "$lib/shared-accounts/components/ProjectionStateBanner.svelte";
@@ -21,7 +21,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   } from "$lib/shared-ledger/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { totalIncomplete } from "$lib/shared-ledger/preview-account.ts";
-  import { accountShares, dateInTimeZone, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
+  import { accountShares, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
   import { currencyCount, formatAmount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
@@ -52,7 +52,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 
 
 
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: stackedChart = buildStackedBalanceChartData({
     accounts: localizeAccounts(liabilities.accounts, $t),
     dailyHistoryByAccount: liabilities.dailyHistoryByAccount,

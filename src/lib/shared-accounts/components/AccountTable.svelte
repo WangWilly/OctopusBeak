@@ -20,9 +20,8 @@
   import PreviewAccountModal from "./PreviewAccountModal.svelte";
   import ManualAssetModal from "$lib/manual-assets/ManualAssetModal.svelte";
   import { manualValuationState } from "$lib/manual-assets/manual-assets.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import TransactionModal from "./TransactionModal.svelte";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import { groupDigits, previewRowValue, timeDepositTerms, type TimeDepositTerm } from "$lib/shared-ledger/preview-account.ts";
@@ -103,7 +102,7 @@
   $: query = search.trim().toLowerCase();
   $: listedAccounts = accounts;
   $: manualAccounts = accounts.filter((account) => account.manual);
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: filtered = matchingAccounts(listedAccounts.filter((account) => !account.preview), filter, query, $t);
   $: filteredPreview = matchingAccounts(listedAccounts.filter((account) => account.preview), filter, query, $t);
   $: filteredCovered = matchingAccounts(coveredAccounts, filter, query, $t);

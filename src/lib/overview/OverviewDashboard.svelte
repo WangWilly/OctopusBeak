@@ -9,14 +9,13 @@
   import { ASSET_CATEGORY_COLOR, formatShortDate, liabilityColor, maskedAccountDigits } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
   import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import {
     createOnboardingTargetRegistry,
     registerOnboardingTarget,
@@ -32,7 +31,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
 
 
 
-  $: model = readOverview(overview, { today: dateInTimeZone(new Date(), $systemTimezone) });
+  $: model = readOverview(overview, { today: $localDate });
   $: net = overview.summary.net;
   $: liabilitiesMetric = overview.summary.liabilities;
   $: sideValue = net.incomplete
