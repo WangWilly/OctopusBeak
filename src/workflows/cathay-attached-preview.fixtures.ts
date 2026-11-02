@@ -5,7 +5,8 @@ import type {
   CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
 import { previewCreditAccountId, type PreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
-import { previewCreditAccountRow, previewSummaryMarkers } from "../ledger/pglite/preview-overview.ts";
+import { previewSummaryMarkers } from "../ledger/pglite/outside-counting.ts";
+import { previewCreditAccountRow } from "../ledger/pglite/outside-preview-credit.ts";
 
 export const CATHAY_PREVIEW_NOW = "2026-10-18T02:00:00.000Z";
 const DATE = "Sun, 18 Oct 2026 01:59:58 GMT";

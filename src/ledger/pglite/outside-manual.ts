@@ -1,9 +1,16 @@
 import { manualBalancePoints } from "../../lib/manual-assets/manual-assets.ts";
-import type { AccountRowDto, SummaryMetricDto } from "../../lib/shared-ledger/types.ts";
+import type { AccountRowDto } from "../../lib/shared-ledger/types.ts";
 import { exactToNumber } from "../../lib/shared-money/exact-money.ts";
 import { addDays } from "../../lib/shared-ledger/twd-valuation.ts";
-import type { ManualAssetView } from "./manual-assets.ts";
-import type { BalanceSeries } from "./preview-overview.ts";
+import { readManualAssets, type ManualAssetView } from "./manual-assets.ts";
+import type { OutsideFinancialData, OutsideReader } from "./outside-financial-data.ts";
+import type { BalanceSeries } from "./outside-row.ts";
+
+/** Manual Assets, each an asset row with a manual marker and its dated values. */
+export async function readManualOutside(reader: OutsideReader, today: string): Promise<OutsideFinancialData> {
+  const views = await readManualAssets(reader);
+  return { accounts: views.map((view) => manualAssetRow(view, today)), series: views.map(manualAssetSeries) };
+}
 
 export function manualRowId(assetId: string): string {
   return `manual:${assetId}`;
@@ -60,9 +67,4 @@ export function manualAssetSeries(view: ManualAssetView): BalanceSeries {
     closedOn: view.asset.endedOn === null ? null : addDays(view.asset.endedOn, 1),
     points: points(view).map((point) => ({ date: point.date, currency: view.asset.currency, exact: point.exact })),
   };
-}
-
-/** Whether any counted asset row is manual, for the summary's manual marker. */
-export function manualSummaryMarker(accounts: readonly AccountRowDto[]): Pick<SummaryMetricDto, "includesManual"> {
-  return accounts.some((account) => account.manual && account.amountLines.length > 0) ? { includesManual: true } : {};
 }

@@ -2,21 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
-import type { PreviewCreditAccountView, PreviewLoanAccountView } from "./preview-financial-data.ts";
-import { previewRowValue, totalIncomplete } from "../../lib/shared-ledger/preview-account.ts";
 import {
-  countableWithRates,
-  exactFromDecimal,
-  previewAccountRow,
-  previewBalanceSeries,
-  previewCreditAccountRow,
-  previewCreditSeries,
-  previewLoanAccountRow,
-  previewLoanSeries,
-  previewSummaryMarkers,
-  withBalanceSeriesHistory,
-  type BalanceSeries,
-} from "./preview-overview.ts";
+  applyPglitePreviewFinancialDataSchema,
+  createPGlitePreviewFinancialData,
+  type PreviewCreditAccountView,
+  type PreviewLoanAccountView,
+} from "./preview-financial-data.ts";
+import { PGliteStore } from "./transaction.ts";
+import { previewRowValue, totalIncomplete } from "../../lib/shared-ledger/preview-account.ts";
+import { createTestPGlite } from "./baseline-test-template.ts";
+import { countableWithRates, previewSummaryMarkers, withBalanceSeriesHistory } from "./outside-counting.ts";
+import { readOutsideFinancialData } from "./outside-financial-data.ts";
+import { previewAccountRow, previewBalanceSeries } from "./outside-preview-deposit.ts";
+import { previewCreditAccountRow, previewCreditSeries } from "./outside-preview-credit.ts";
+import { previewLoanAccountRow, previewLoanSeries } from "./outside-preview-loan.ts";
+import { exactFromDecimal, type BalanceSeries } from "./outside-row.ts";
 
 const twd = (coefficient: string, scale = 0) => ({
   currency: "TWD",
@@ -281,4 +281,67 @@ test("a closed preview loan owes nothing, shows as closed, and leaves no total i
   const byDate = new Map(withBalanceSeriesHistory(canonical, [series!], always).dailyHistory.map((entry) => [entry.date, entry]));
   assert.deepEqual(byDate.get("2026-10-03")!.liabilities, [twd("500")], "canonical 200 plus the loan's 300 while open");
   assert.deepEqual(byDate.get("2026-10-05")!.liabilities, [twd("200")], "gone from the closure date on");
+});
+
+test("rows read for many preview accounts at once land on their own account, newest first", async () => {
+  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  try {
+    await applyPglitePreviewFinancialDataSchema(store);
+    const preview = createPGlitePreviewFinancialData(store);
+    const observedAt = { at: "2026-10-15T01:00:00.000Z", source: "collection-time" } as const;
+    const deposit = (key: string, rows: readonly [string, string][]) => ({
+      sourceAccountKey: key, displayLabel: key, currency: "TWD", type: "depository" as const,
+      balances: [{ kind: "current" as const, amount: "100", currency: "TWD", observedAt }],
+      transactions: rows.map(([sourceRowKey, day]) => ({
+        sourceRowKey, amount: "-1", currency: "TWD", direction: "outflow" as const,
+        postedAt: { precision: "day" as const, value: day }, description: null,
+      })),
+    });
+    await preview.write({
+      sourceId: "deposits", institution: "bank-017", product: "deposit",
+      collection: { collectedAt: observedAt.at, accounts: [
+        deposit("first", [["first-old", "2026-10-01"], ["first-new", "2026-10-03"]]),
+        deposit("second", [["second-mid", "2026-10-02"]]),
+        deposit("quiet", []),
+      ] },
+    });
+    const card = (key: string, purchaseDays: readonly [string, string][], statementKeys: readonly string[]) => ({
+      sourceAccountKey: key, displayLabel: key, currency: "TWD", creditLimit: "100000", cards: [],
+      balances: [{ amount: "10", currency: "TWD", observedAt, basis: { kind: "provider-used-credit" as const, usedCredit: "10" } }],
+      purchases: purchaseDays.map(([sourceRowKey, day]) => ({
+        sourceRowKey, amount: "10", currency: "TWD", direction: "outflow" as const,
+        posting: { status: "posted" as const, billing: "unbilled" as const, postingDate: day },
+        consumedAt: { precision: "day" as const, value: day }, sourceCardKey: null, statementKey: null,
+        bankReference: null, description: null,
+      })),
+      statements: statementKeys.map((statementKey) => ({
+        statementKey, cycleStart: null, cycleEnd: null, closingDate: `${statementKey}-15`, dueDate: `${statementKey}-28`,
+        amount: "10", currency: "TWD", minimumPayment: null, billingPeriod: statementKey,
+        paidAmount: null, paid: null, noPaymentNeeded: null,
+      })),
+    });
+    await preview.write({
+      sourceId: "cards", institution: "bank-017", product: "credit_card",
+      collection: { collectedAt: observedAt.at, accounts: [
+        card("travel", [["travel-old", "2026-10-01"], ["travel-new", "2026-10-04"]], ["2026-08", "2026-09"]),
+        card("daily", [["daily-mid", "2026-10-02"]], ["2026-09"]),
+      ] },
+    });
+
+    const { accounts } = await readOutsideFinancialData(store, {
+      previewVisibility: { visible: [{ sourceId: "deposits", product: "deposit" }, { sourceId: "cards", product: "credit_card" }] },
+      manualAssets: false,
+      today: "2026-10-15",
+    });
+    const byLabel = new Map(accounts.map((account) => [account.label, account.preview!]));
+    assert.deepEqual(byLabel.get("first")!.transactions.map((row) => row.postedAt.value), ["2026-10-03", "2026-10-01"]);
+    assert.deepEqual(byLabel.get("second")!.transactions.map((row) => row.postedAt.value), ["2026-10-02"]);
+    assert.deepEqual(byLabel.get("quiet")!.transactions, []);
+    assert.deepEqual(byLabel.get("travel")!.credit!.purchases.map((row) => row.sourceRowKey), ["travel-new", "travel-old"]);
+    assert.deepEqual(byLabel.get("travel")!.credit!.statements.map((row) => row.statementKey), ["2026-09", "2026-08"]);
+    assert.deepEqual(byLabel.get("daily")!.credit!.purchases.map((row) => row.sourceRowKey), ["daily-mid"]);
+    assert.deepEqual(byLabel.get("daily")!.credit!.statements.map((row) => row.statementKey), ["2026-09"]);
+  } finally {
+    await store.close();
+  }
 });

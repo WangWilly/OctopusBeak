@@ -163,6 +163,10 @@ _Avoid_: Canonical loan, loan transaction, repayment schedule
 The preview product for non-TWD deposit accounts at an Institution whose verified source collects only TWD deposits, chosen separately from deposits in a Statement Selection. Its balances and transactions keep their source currency exactly.
 _Avoid_: Foreign deposit as deposit, converted transaction
 
+**Outside financial data**:
+Financial data kept apart from canonical data, namely Preview Financial Data and Manual Assets. It counts toward totals and the Net position with its own marker, and the Financial pages read it together with canonical data in one snapshot.
+_Avoid_: Non-canonical data, extra accounts
+
 **Manual asset**:
 An asset a person enters by hand in one of the categories cash (a Manual Account), house, insurance (its cash value), vehicle, Labor Pension individual account, or other, kept outside canonical financial data and never a Financial Account. Its value comes only from its Manual Valuations; it counts toward assets and net position with a visible manual marker, in any currency, converted at the valuation date, and a currency without a rate leaves it out of the TWD total with that currency listed rather than withholding the total. A protection-only insurance policy has no cash value and is not a Manual Asset. No category covers deposits, securities, funds, or crypto, which sources collect, and nothing matches a Manual Asset against a collected account. Selling or surrendering it records an end date, after which it no longer counts while its history stays; deleting it, meant for one created by mistake, removes its history too. A Manual Asset survives a Canonical Reset and is removed only by the person's own explicit action.
 _Avoid_: Manual Financial Account, user-asserted balance, preview asset, net worth item

@@ -21,32 +21,12 @@ import {
   selectPGliteOverviewLiabilities,
 } from "./overview.ts";
 import {
-  readPreviewCreditAccounts,
-  readPreviewCreditBalanceHistory,
-  readPreviewPurchases,
-  readPreviewStatements,
-} from "./preview-credit.ts";
-import {
-  readPreviewAccounts,
-  readPreviewBalanceHistory,
-  readPreviewTransactions,
-  type PreviewVisibility,
-} from "./preview-financial-data.ts";
-import { readManualAssets } from "./manual-assets.ts";
-import { manualAssetRow, manualAssetSeries, manualSummaryMarker } from "./manual-overview.ts";
-import { readPreviewLoanAccounts, readPreviewLoanBalanceHistory } from "./preview-loan.ts";
-import {
   countableWithRates,
-  previewAccountRow,
-  previewBalanceSeries,
-  previewCreditAccountRow,
-  previewCreditSeries,
-  previewLoanAccountRow,
-  previewLoanSeries,
+  manualSummaryMarker,
   previewSummaryMarkers,
   withBalanceSeriesHistory,
-  type BalanceSeries,
-} from "./preview-overview.ts";
+} from "./outside-counting.ts";
+import { readOutsideFinancialData, type OutsideFinancialData, type OutsideScope } from "./outside-financial-data.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 /**
@@ -56,13 +36,8 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 type PGliteReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
 
-export type FinancialPageScope = Readonly<{
+export type FinancialPageScope = OutsideScope & Readonly<{
   expectedSources: readonly CanonicalOverviewExpectedSource[];
-  previewVisibility: PreviewVisibility;
-  /** Whether the store holds the Manual Asset tables; a ledger-only store has none to read. */
-  manualAssets: boolean;
-  /** The person's local date; an ended Manual Asset still counts on its end date. */
-  today: string;
 }>;
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
@@ -246,7 +221,7 @@ function readHeldCurrencyRates(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
   history: PGliteDailyHistory,
-  outside: OutsideOverview,
+  outside: OutsideFinancialData,
 ): Promise<ExchangeRateRecord[]> {
   const currencies = [...new Set([
     ...result.projection.positions.map((position) => position.currency),
@@ -262,42 +237,6 @@ function readHeldCurrencyRates(
   return readExchangeRateRows(reader, currencies);
 }
 
-/** Rows and dated balances kept outside canonical data: Preview Financial Data and Manual Assets. */
-type OutsideOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly BalanceSeries[] }>;
-
-const NOTHING_OUTSIDE: OutsideOverview = { accounts: [], series: [] };
-
-async function readManualOverview(reader: PGliteReader, scope: FinancialPageScope): Promise<OutsideOverview> {
-  if (!scope.manualAssets) return NOTHING_OUTSIDE;
-  const views = await readManualAssets(reader);
-  return { accounts: views.map((view) => manualAssetRow(view, scope.today)), series: views.map(manualAssetSeries) };
-}
-
-async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<OutsideOverview> {
-  const views = await readPreviewAccounts(reader, visibility);
-  const creditViews = await readPreviewCreditAccounts(reader, visibility);
-  const loanViews = await readPreviewLoanAccounts(reader, visibility);
-  if (views.length === 0 && creditViews.length === 0 && loanViews.length === 0) return NOTHING_OUTSIDE;
-  const accounts: AccountRowDto[] = [];
-  for (const view of views)
-    accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
-  for (const view of creditViews)
-    accounts.push(previewCreditAccountRow(
-      view,
-      await readPreviewPurchases(reader, visibility, view.previewAccountId),
-      await readPreviewStatements(reader, visibility, view.previewAccountId),
-    ));
-  for (const view of loanViews) accounts.push(previewLoanAccountRow(view));
-  return {
-    accounts,
-    series: [
-      ...previewBalanceSeries(await readPreviewBalanceHistory(reader, visibility)),
-      ...previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)),
-      ...previewLoanSeries(await readPreviewLoanBalanceHistory(reader, visibility)),
-    ],
-  };
-}
-
 async function readHistoryWithOutside(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
@@ -308,12 +247,7 @@ async function readHistoryWithOutside(
     result.projection.knowledgePoint,
     result.projection.accounts,
   );
-  const preview = await readPreviewOverview(reader, scope.previewVisibility);
-  const manual = await readManualOverview(reader, scope);
-  const outside: OutsideOverview = {
-    accounts: [...preview.accounts, ...manual.accounts],
-    series: [...preview.series, ...manual.series],
-  };
+  const outside = await readOutsideFinancialData(reader, scope);
   const rates = await readHeldCurrencyRates(reader, result, canonical, outside);
   const history = withBalanceSeriesHistory(canonical, outside.series, countableWithRates(rates));
   return { canonical, history, outside, rates };
