@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
+import type { LiveViewDependency, LiveViewDependencySignals } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
   createPGliteFinancialRegistry,
@@ -556,34 +557,42 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
   }
 });
 
-test("financial live views recover after a transient read failure and stop during a read", async () => {
-  const triggers: Array<() => void> = [];
-  let unsubscribeCount = 0;
-  const database = {
-    live: {
-      query: async (
-        _sql: string,
-        _args: readonly unknown[],
-        onChange: () => void,
-      ) => {
-        triggers.push(onChange);
-        return { unsubscribe: async () => { unsubscribeCount += 1; } };
-      },
+/** Every dependency a view can name, each recording its watchers so a check can fire them. */
+function fakeDependencies(watch: () => void = () => {}) {
+  const watchers: LiveViewDependencySignals[] = [];
+  let active = 0;
+  const dependency: LiveViewDependency = {
+    async watch(signals) {
+      watch();
+      watchers.push(signals);
+      active += 1;
+      return async () => { active -= 1; };
     },
-  } as unknown as import("@electric-sql/pglite/live").PGliteWithLive;
-  const page = {
-    availability: "empty" as const,
-    coverage: "complete" as const,
-    historyAvailability: "unavailable" as const,
-    sourceGaps: [],
-    importedAt: null,
-    summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
-    dailyHistory: [],
-    dailyHistoryByAccount: {},
-    accounts: [],
-    holdingPrices: [],
-    exchangeRates: [],
   };
+  return {
+    dependencies: { canonical: dependency, exchangeRates: dependency, preview: dependency, manual: dependency, today: dependency },
+    watchers,
+    active: () => active,
+  };
+}
+
+const EMPTY_OVERVIEW = {
+  availability: "empty" as const,
+  coverage: "complete" as const,
+  historyAvailability: "unavailable" as const,
+  sourceGaps: [],
+  importedAt: null,
+  summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+  dailyHistory: [],
+  dailyHistoryByAccount: {},
+  accounts: [],
+  holdingPrices: [],
+  exchangeRates: [],
+};
+
+test("financial live views recover after a transient read failure and stop during a read", async () => {
+  const { dependencies, watchers, active } = fakeDependencies();
+  const page = EMPTY_OVERVIEW;
   let failNext = false;
   let blocked: Promise<typeof page> | null = null;
   let readCount = 0;
@@ -598,7 +607,7 @@ test("financial live views recover after a transient read failure and stop durin
       return page;
     },
   } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews(database, registry);
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
   const rows: unknown[] = [];
   const errors: unknown[] = [];
   const stop = await views.subscribe(
@@ -608,58 +617,77 @@ test("financial live views recover after a transient read failure and stop durin
     (error) => errors.push(error),
   );
   assert.equal(rows.length, 1);
+  assert.equal(watchers.length, 5, "the overview watches canonical commits and the four dependencies it names");
   failNext = true;
-  triggers[0]!();
+  watchers[0]!.changed();
   await waitFor(() => errors.length === 1);
-  triggers[0]!();
+  watchers[0]!.changed();
   await waitFor(() => rows.length === 2);
   assert.ok(readCount >= 3, "a later dependency event must retry after a failed read");
 
   let resolveBlocked!: (value: typeof page) => void;
   blocked = new Promise((resolve) => { resolveBlocked = resolve; });
   const rowCountBeforeStop = rows.length;
-  triggers[0]!();
+  watchers[0]!.changed();
   await waitFor(() => readCount >= 4);
   await stop();
   resolveBlocked(page);
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(rows.length, rowCountBeforeStop, "unsubscribe during a read must suppress its eventual result");
-  assert.equal(unsubscribeCount, 3, "all overview dependencies must drain on stop");
+  assert.equal(active(), 0, "all overview dependencies must drain on stop");
+});
+
+test("a dependency's own failure reaches every listener of the view, and a later change still recomputes", async () => {
+  const { dependencies, watchers } = fakeDependencies();
+  let readCount = 0;
+  const registry = {
+    "financial.overview.current": async () => {
+      readCount += 1;
+      return EMPTY_OVERVIEW;
+    },
+  } as unknown as PGliteFinancialRegistry;
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
+  const errors: unknown[][] = [[], []];
+  const stops = await Promise.all(errors.map((seen) =>
+    views.subscribe("financial.overview.current", {}, () => {}, (error) => seen.push(error))));
+  try {
+    const failure = new Error("date read failed");
+    watchers.at(-1)!.failed(failure);
+    assert.deepEqual(errors, [[failure], [failure]]);
+    const before = readCount;
+    watchers.at(-1)!.changed();
+    await waitFor(() => readCount > before);
+  } finally {
+    await Promise.all(stops.map((stop) => stop()));
+  }
 });
 
 test("failed live subscription releases started dependencies and permits retry", async () => {
   let failSetup = true;
   let failRead = false;
-  let activeDependencies = 0;
-  const database = {
-    live: {
-      query: async () => {
-        if (failSetup) {
-          failSetup = false;
-          throw new Error("dependency setup failed");
-        }
-        activeDependencies += 1;
-        return { unsubscribe: async () => { activeDependencies -= 1; } };
-      },
-    },
-  } as unknown as import("@electric-sql/pglite/live").PGliteWithLive;
+  const { dependencies, active } = fakeDependencies(() => {
+    if (failSetup) {
+      failSetup = false;
+      throw new Error("dependency setup failed");
+    }
+  });
   const registry = {
     "financial.overview.current": async () => {
       if (failRead) throw new Error("initial read failed");
       return { availability: "empty" };
     },
   } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews(database, registry);
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
   await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /dependency setup failed/u);
-  assert.equal(activeDependencies, 0, "a partial dependency setup must be drained");
+  assert.equal(active(), 0, "a partial dependency setup must be drained");
   failRead = true;
   await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /initial read failed/u);
-  assert.equal(activeDependencies, 0, "failed initial recompute must be drained");
+  assert.equal(active(), 0, "failed initial recompute must be drained");
   failRead = false;
   const stop = await views.subscribe("financial.overview.current", {}, () => {});
-  assert.equal(activeDependencies, 3, "a later subscription must start every dependency");
+  assert.equal(active(), 5, "a later subscription must start every dependency");
   await stop();
-  assert.equal(activeDependencies, 0);
+  assert.equal(active(), 0);
 });
 
 test("financial operation names stay allowlisted and transport failures are typed", () => {

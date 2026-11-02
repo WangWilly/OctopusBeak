@@ -1,4 +1,3 @@
-import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import type {
   PGliteFinancialExpectedSources,
   PGliteFinancialHandlerResult,
@@ -6,47 +5,20 @@ import type {
   PGliteFinancialRegistry,
 } from "./pglite-financial-rpc-client.ts";
 import type { PGliteFinancialPageActionEvents, PGliteWorkScheduler } from "./pglite-financial-registry.ts";
+import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
 import { SPENDING_LIVE_VIEW } from "./pglite-financial-spending-live-view.ts";
-
-const PREVIEW_DATA_FINGERPRINT_SQL = `SELECT
-  (SELECT COUNT(*) FROM preview_accounts) AS accounts,
-  (SELECT MAX(last_collected_at) FROM preview_accounts) AS account_collected_at,
-  (SELECT COUNT(*) FROM preview_balance_observations) AS balances,
-  (SELECT MAX(collected_at) FROM preview_balance_observations) AS balance_collected_at,
-  (SELECT COUNT(*) FROM preview_transactions) AS transactions,
-  (SELECT MAX(collected_at) FROM preview_transactions) AS transaction_collected_at,
-  (SELECT COUNT(*) FROM preview_credit_accounts) AS credit_accounts,
-  (SELECT MAX(last_collected_at) FROM preview_credit_accounts) AS credit_collected_at,
-  (SELECT COUNT(*) FROM preview_credit_balance_observations) AS credit_balances,
-  (SELECT COUNT(*) FROM preview_credit_purchases) AS purchases,
-  (SELECT MAX(last_collected_at) FROM preview_credit_purchases) AS purchase_collected_at,
-  (SELECT COUNT(*) FROM preview_credit_statements) AS statements,
-  (SELECT COUNT(*) FROM preview_credit_relations) AS relations,
-  (SELECT COUNT(*) FROM preview_loan_accounts) AS loan_accounts,
-  (SELECT MAX(last_collected_at) FROM preview_loan_accounts) AS loan_collected_at,
-  (SELECT COUNT(*) FROM preview_loan_accounts WHERE closed_at IS NOT NULL) AS closed_loans,
-  (SELECT COUNT(*) FROM preview_loan_balance_observations) AS loan_balances`;
 
 type LiveViewRegistry = PGliteFinancialRegistry & PGliteFinancialPageActionEvents;
 
-/**
- * What a live view reads besides canonical commits, which every financial
- * page depends on: source admissions, e-invoice/card commits, and projection
- * rebuilds can change the knowledge point even when a current projection
- * marker is unchanged.
- */
-type LiveViewDependency =
-  | "exchangeRates"
-  /** Preview rows and the Preview features visibility setting. */
-  | "preview"
-  /** Manual Assets: one revision row every manual write advances, deletes included. */
-  | "manual";
-
-const MANUAL_REVISION_SQL = "SELECT revision FROM manual_asset_revision";
-
 export type FinancialLiveViewDefinition = Readonly<{
   load(registry: LiveViewRegistry, params: object, sources: PGliteFinancialExpectedSources): Promise<unknown>;
-  dependsOn: readonly LiveViewDependency[];
+  /**
+   * What the page reads besides canonical commits, which every Financial page
+   * depends on: source admissions, e-invoice/card commits, and projection
+   * rebuilds can change the knowledge point even when a current projection
+   * marker is unchanged.
+   */
+  dependsOn: readonly LiveViewDependencyName[];
   /** Decides whether a dependency change needs a full recompute. */
   shouldRecompute?(registry: LiveViewRegistry, lastValue: () => unknown): Promise<boolean>;
   /** Subscribes to view-specific events; returns the unsubscribe. */
@@ -62,15 +34,15 @@ export type FinancialLiveViewDefinition = Readonly<{
 const FINANCIAL_LIVE_VIEWS = {
   "financial.overview.current": {
     load: (registry, _params, sources) => registry["financial.overview.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview", "manual"],
+    dependsOn: ["exchangeRates", "preview", "manual", "today"],
   },
   "financial.assets.current": {
     load: (registry, _params, sources) => registry["financial.assets.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview", "manual"],
+    dependsOn: ["exchangeRates", "preview", "manual", "today"],
   },
   "financial.liabilities.current": {
     load: (registry, _params, sources) => registry["financial.liabilities.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview", "manual"],
+    dependsOn: ["exchangeRates", "preview", "manual", "today"],
   },
   "financial.spending.current": SPENDING_LIVE_VIEW,
 } as const satisfies Partial<Record<PGliteFinancialOperation, FinancialLiveViewDefinition>>;
@@ -94,16 +66,10 @@ function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {
  * invalidate a complete financial DTO on every task update.
  */
 export function createPGliteFinancialLiveViews(
-  db: PGliteWithLive,
   registry: LiveViewRegistry,
+  dependencies: LiveViewDependencies,
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
   scheduler?: PGliteWorkScheduler,
-  /** The store holds the Manual Asset tables, so the "manual" dependency has a row to watch. */
-  options: Readonly<{
-    manualAssets?: boolean;
-    /** The person's local date; a manual asset stops counting the day after it ends, with no write to mark it. */
-    today?: () => string;
-  }> = {},
 ) {
   const entries = new Map<string, {
     stop: () => Promise<void>;
@@ -123,8 +89,6 @@ export function createPGliteFinancialLiveViews(
         let initialReady = false;
         let stopped = false;
         let stopWatch = () => {};
-        let stopPreviewVisibilityListener = () => {};
-        let stopDateWatch = () => {};
         const fail = (error: unknown) => {
           for (const listener of listeners) listener.error(error);
         };
@@ -181,52 +145,17 @@ export function createPGliteFinancialLiveViews(
             fail,
           });
         }
-        const dependsOnPreview = definition.dependsOn.includes("preview");
-        if (dependsOnPreview && registry.onPreviewVisibilityChanged)
-          stopPreviewVisibilityListener = registry.onPreviewVisibilityChanged(trigger);
-        const today = options.today;
-        if (options.manualAssets && today && definition.dependsOn.includes("manual")) {
-          const readDate = () => {
-            try {
-              return today();
-            } catch (error) {
-              fail(error);
-              return null;
-            }
-          };
-          let watchedDate = readDate();
-          const timer = setInterval(() => {
-            const date = readDate();
-            if (date === null || date === watchedDate) return;
-            const changed = watchedDate !== null;
-            watchedDate = date;
-            if (changed) trigger();
-          }, 60_000);
-          timer.unref?.();
-          stopDateWatch = () => clearInterval(timer);
-        }
-        // Each dependency is one bounded row set rather than a materialized
-        // history result.
-        const dependencyQueries = [
-          db.live.query("SELECT MAX(commit_sequence) AS commit_sequence FROM canonical_commits", [], trigger),
-          ...(definition.dependsOn.includes("exchangeRates")
-            ? [db.live.query("SELECT rate_date, currency, twd_per_unit, source, fetched_at FROM exchange_rates", [], trigger)]
-            : []),
-          ...(dependsOnPreview ? [db.live.query(PREVIEW_DATA_FINGERPRINT_SQL, [], trigger)] : []),
-          ...(options.manualAssets && definition.dependsOn.includes("manual")
-            ? [db.live.query(MANUAL_REVISION_SQL, [], trigger)]
-            : []),
-        ];
+        const signals = { changed: trigger, failed: fail };
+        const watching = [dependencies.canonical, ...definition.dependsOn.map((name) => dependencies[name])]
+          .map((dependency) => dependency.watch(signals));
         const stop = async () => {
           if (stopped) return;
           stopped = true;
           stopWatch();
-          stopPreviewVisibilityListener();
-          stopDateWatch();
           if (entries.get(key) === entry) entries.delete(key);
-          const dependencies = await Promise.allSettled(dependencyQueries);
-          await Promise.allSettled(dependencies.flatMap((result) =>
-            result.status === "fulfilled" ? [result.value.unsubscribe()] : []));
+          const started = await Promise.allSettled(watching);
+          await Promise.allSettled(started.flatMap((result) =>
+            result.status === "fulfilled" ? [result.value()] : []));
         };
         entry = { stop, listeners };
         entries.set(key, entry);
@@ -240,7 +169,7 @@ export function createPGliteFinancialLiveViews(
         };
         entry.listeners.add(listener);
         try {
-          await Promise.all(dependencyQueries);
+          await Promise.all(watching);
           initialReady = true;
           await recompute();
         } catch (error) {

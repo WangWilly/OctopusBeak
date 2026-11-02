@@ -10,6 +10,7 @@ import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import {
   applyPglitePreviewFinancialDataSchema,
+  PREVIEW_DATA_REVISION_SQL,
   PREVIEW_FINANCIAL_DATA_TABLES,
   type PreviewVisibility,
   type PreviewWrite,
@@ -83,7 +84,10 @@ async function nonPreviewRowCounts(store: PGliteStore): Promise<Record<string, n
   return counts;
 }
 
-const EMPTY_COUNTS = Object.fromEntries(PREVIEW_FINANCIAL_DATA_TABLES.map((table) => [table, 0]));
+const EMPTY_COUNTS = {
+  ...Object.fromEntries(PREVIEW_FINANCIAL_DATA_TABLES.map((table) => [table, 0])),
+  preview_data_revision: 1,
+};
 
 async function previewRowCounts(store: PGliteStore) {
   return Object.fromEntries(await Promise.all(PREVIEW_FINANCIAL_DATA_TABLES.map(async (table) => [
@@ -175,6 +179,21 @@ test("delete all preview data empties only preview tables", async () => {
     await preview.deleteAll();
     assert.deepEqual(await previewRowCounts(store), EMPTY_COUNTS);
     assert.deepEqual(await nonPreviewRowCounts(store), before, "canonical rows survive the delete");
+  });
+});
+
+test("every preview write and delete advances the one revision row, which a delete keeps", async () => {
+  await withPreviewStore(async ({ store, preview }) => {
+    const revision = async () => (await store.query<{ revision: number | string }>(PREVIEW_DATA_REVISION_SQL)).rows.map((row) => Number(row.revision));
+    assert.deepEqual(await revision(), [0]);
+    await preview.write(write);
+    assert.deepEqual(await revision(), [1]);
+    await preview.write(write);
+    assert.deepEqual(await revision(), [2], "a write that changes nothing still advances");
+    await preview.deleteAll();
+    assert.deepEqual(await revision(), [3]);
+    await assert.rejects(preview.write({ ...write, collection: { ...write.collection, collectedAt: "not a date" } } as PreviewWrite));
+    assert.deepEqual(await revision(), [3], "a refused write leaves the revision alone");
   });
 });
 

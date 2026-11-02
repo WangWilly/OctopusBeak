@@ -20,6 +20,7 @@ import {
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
+import { createLocalDateClock, createPGliteLiveViewDependencies } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
   createPGliteFinancialRegistry,
@@ -40,6 +41,32 @@ export const pgliteWorkerViews = {
     args: [],
   })),
 };
+
+type ViewSubscribe = (
+  view: string,
+  params: object,
+  onRows: (rows: unknown[]) => void,
+  onError?: (error: unknown) => void,
+) => Promise<() => Promise<void>>;
+
+/** Routes each named view to the source that owns it, carrying every subscribe argument through. */
+export function workerViewSource(
+  financial: Readonly<{ subscribe: ViewSubscribe }>,
+  health: Readonly<{
+    subscribe(view: "system.health", params: Record<string, never>, onRows: (rows: HealthRow[]) => void): Promise<() => Promise<void>>;
+  }>,
+): Readonly<{ subscribe: ViewSubscribe }> {
+  return {
+    subscribe(view, params, onRows, onError) {
+      if (view !== "system.health") return financial.subscribe(view, params, onRows, onError);
+      return health.subscribe(
+        view,
+        params as Record<string, never>,
+        onRows as (rows: HealthRow[]) => void,
+      );
+    },
+  };
+}
 
 export type PGliteViewWorkerRuntime = {
   dataDir: string;
@@ -75,10 +102,10 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const today = () => dateInTimeZone(new Date(), automationBusinessTimezone());
+  const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone()));
   const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
     manualAssets: true,
-    today,
+    today: clock.today,
   });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
@@ -91,24 +118,12 @@ export async function startPGliteViewWorker(
     ),
   });
   const financialViews = createPGliteFinancialLiveViews(
-    db,
     financialRegistry,
+    createPGliteLiveViewDependencies(db, financialRegistry, clock),
     () => configuredOverviewSources(),
     scheduler,
-    { manualAssets: true, today },
   );
-  const source = {
-    subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {
-      if (view !== "system.health") {
-        return financialViews.subscribe(view, params, onRows);
-      }
-      return views.subscribe(
-        view,
-        params as Record<string, never>,
-        onRows as (rows: HealthRow[]) => void,
-      );
-    },
-  };
+  const source = workerViewSource(financialViews, views);
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
