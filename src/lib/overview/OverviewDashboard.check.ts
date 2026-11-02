@@ -25,7 +25,7 @@ const base: OverviewPageDto = {
 
 test("every card reads one model built from the live overview page", () => {
   assert.doesNotMatch(source, /blocks|ProgressiveBlock|resolveOverview/);
-  assert.match(source, /\$: model = readOverview\(overview, \{ today: dateInTimeZone\(new Date\(\), \$systemTimezone\) \}\)/);
+  assert.match(source, /\$: model = readOverview\(overview, \{ today: \$localDate \}\)/);
 });
 
 test("the daily detail modal receives TWD rows converted per date", () => {
