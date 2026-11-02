@@ -632,7 +632,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       pageError: "",
       isUpdating: false,
       report: nextReport,
-      selectedMonth: month,
       canonical: spendingCanonicalAt(this.value.canonical, summary, result.knowledgeAt),
     });
     // Request keys are implementation state, deliberately kept off the public
@@ -728,7 +727,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       });
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
-      if (!this.disposed) this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -939,7 +937,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       });
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
-      this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {

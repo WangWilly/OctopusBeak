@@ -166,7 +166,7 @@
     spendingSession.receiveLive(purchaseReport, fallbackCanonical);
   }
   $: today = $taipeiDate;
-  $: spendingSession.setToday(today);
+  $: followToday(today);
   $: actionErrorText = actionError
     ? actionError.kind === "error"
       ? actionError.message
@@ -322,6 +322,15 @@
       records: entries,
       totals: recordTotals(entries),
     }));
+  }
+
+  function followToday(date: string) {
+    const before = get(spendingState).activeMonth;
+    spendingSession.setToday(date);
+    if (get(spendingState).activeMonth === before) return;
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    searchTimer = null;
+    searchText = "";
   }
 
   function chooseMonth(month: string) {

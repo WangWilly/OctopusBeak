@@ -72,7 +72,7 @@ assert.match(source, /readSpendingMonth\(report\.summary, \{ month: activeMonth,
 assert.match(source, /readSpendingTrend\(report\.summary, \{ currency: selectedCurrency, selectedMonth: reading\.month, today \}\)/);
 assert.match(source, /let today = get\(taipeiDate\);/);
 assert.match(source, /\$: today = \$taipeiDate;/);
-assert.match(source, /\$: spendingSession\.setToday\(today\);/);
+assert.match(source, /\$: followToday\(today\);/);
 assert.doesNotMatch(source, /chartMode|monthlyChartData|dailyChartData|PurchaseActivityBarChart/);
 assert.match(source, /data-purchase-day/);
 assert.match(source, /dayTotalsFor\(reading, group\.date, group\.totals\)/);

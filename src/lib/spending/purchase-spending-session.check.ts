@@ -359,6 +359,24 @@ test("crossing into a new month moves the default month and loads it, but keeps 
   chosen.session.dispose();
 });
 
+test("a pairing action on today's month leaves the page following today", async () => {
+  const invoice = invoiceRecord("Invoice", ["candidate-1"]);
+  const payment = paymentRecord("Payment", ["candidate-1"]);
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => { calls.actions.push(input); return actionResult(2, [linkedRecord()]); },
+  });
+  const { session, current } = createSession(report(1, [invoice, payment], [candidate("candidate-1")]), transport);
+  session.start();
+  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  assert.equal(calls.actions.length, 1);
+  assert.equal(current().actionError, null);
+  assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
+  assert.equal(current().selectedMonth, null, "the action does not turn today's month into an explicit choice");
+  session.setToday("2026-11-01");
+  assert.equal(current().activeMonth, "2026-11");
+  session.dispose();
+});
+
 test("month and day changes ignore late reads from earlier selections", async () => {
   const pending: ReturnType<typeof deferred<any>>[] = [];
   const { calls, transport } = makeTransport({
