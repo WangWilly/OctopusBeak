@@ -18,11 +18,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
-import {
-  periodSpans,
-  type CollectionPeriod,
-  type CollectionSpan,
-} from "../lib/automation/collection-period.ts";
+import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 export type CathayCredentials = {
@@ -46,15 +42,13 @@ const dateRangeSchema = z.enum([
 
 export type CathayDateRange = z.infer<typeof dateRangeSchema>;
 
-export type CathayQueryPeriod = CathayQueryRange & Readonly<{
-  option: CathayDateRange;
-}>;
+/** The dates Cathay's API is asked for, as YYYY-MM-DD, both inclusive. */
+export type CathayQueryRange = Readonly<{ startDate: string; endDate: string }>;
 
-export type CathayQueryRange = Readonly<{
-  startDate: string;
-  endDate: string;
-}>;
+/** A domestic query: Cathay's period option and the dates the API is asked for. */
+export type CathayQueryPeriod = CathayQueryRange & Readonly<{ option: CathayDateRange }>;
 
+/** The span each of Cathay's period options covers, ending today with both ends inclusive. */
 const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> = {
   one_week: { days: 8 },
   one_month: { months: 1, days: 1 },
@@ -63,13 +57,13 @@ const CATHAY_PERIOD_OPTIONS: Readonly<Record<CathayDateRange, CollectionSpan>> =
   one_year: { years: 1, days: 1 },
 };
 
-/** Match a product's exact collection period to a Cathay query-form option. */
+/** The Cathay period option that covers the product's collection period exactly. */
 export function cathayQueryPeriod(period: CollectionPeriod): CathayQueryPeriod {
   const option = (Object.keys(CATHAY_PERIOD_OPTIONS) as CathayDateRange[])
     .find((candidate) => periodSpans(period, CATHAY_PERIOD_OPTIONS[candidate]));
   if (!option) throw new Error("No Cathay period option covers the collection period.");
-  // Cathay's one-year query uses Mar 1 for the year before a Feb 29 end date.
-  // Preserve that provider boundary while the product collection period stays clamped.
+  // A year back from Feb 29 clamps to Feb 28, a start Cathay has never been
+  // sent. Keep Mar 1, the start the earlier rolled-over date produced (ADR 0077).
   if (option === "one_year" && period.end.endsWith("-02-29")) {
     return { option, startDate: `${Number(period.end.slice(0, 4)) - 1}-03-01`, endDate: period.end };
   }

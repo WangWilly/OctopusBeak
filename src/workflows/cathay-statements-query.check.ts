@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import {
@@ -526,12 +527,13 @@ await assert.rejects(
 );
 assert.deepEqual(cancelledAccounts, ["0001"]);
 
-const oneYearAndOneDay = { years: 1, days: 1 } as const;
+// The domestic product's declared look-back must map to a Cathay period option.
+const domesticDeclaration = CATHAY_SOURCE.statementSelection!.products.find(({ id }) => id === "domestic")!.collectionPeriod!;
 assert.deepEqual(
   cathayQueryPeriod(
     collectionPeriod({
       today: taipeiToday("2028-02-28T16:30:00.000Z"),
-      lookBack: oneYearAndOneDay,
+      ...domesticDeclaration,
     }),
   ),
   {
@@ -542,7 +544,7 @@ assert.deepEqual(
 );
 assert.deepEqual(
   cathayQueryPeriod(
-    collectionPeriod({ today: "2028-03-01", lookBack: oneYearAndOneDay }),
+    collectionPeriod({ today: "2028-03-01", ...domesticDeclaration }),
   ),
   {
     option: "one_year",
