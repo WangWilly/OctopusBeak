@@ -186,12 +186,21 @@ export function createPGliteFinancialLiveViews(
           stopPreviewVisibilityListener = registry.onPreviewVisibilityChanged(trigger);
         const today = options.today;
         if (options.manualAssets && today && definition.dependsOn.includes("manual")) {
-          let watchedDate = today();
+          const readDate = () => {
+            try {
+              return today();
+            } catch (error) {
+              fail(error);
+              return null;
+            }
+          };
+          let watchedDate = readDate();
           const timer = setInterval(() => {
-            const date = today();
-            if (date === watchedDate) return;
+            const date = readDate();
+            if (date === null || date === watchedDate) return;
+            const changed = watchedDate !== null;
             watchedDate = date;
-            trigger();
+            if (changed) trigger();
           }, 60_000);
           timer.unref?.();
           stopDateWatch = () => clearInterval(timer);
