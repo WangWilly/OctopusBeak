@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
+import { createLocalDateClock, createPGliteLiveViewDependencies } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
@@ -12,6 +13,7 @@ import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import type { PGliteCanonicalBalanceCaptureRequest } from "../src/ledger/pglite/balance.ts";
 import type { PGliteCanonicalFinancialCommitRequest } from "../src/ledger/pglite/canonical-source-store.ts";
+import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import {
   applyPglitePreviewFinancialDataSchema,
@@ -169,6 +171,7 @@ async function withLedger(run: (input: {
   const store = new PGliteStore(database ?? await createTestPGlite("ledger+operational"));
   try {
     await applyPglitePreviewFinancialDataSchema(store);
+    await applyPgliteManualAssetsSchema(store);
     const operational = createPgliteOperationalProvider(store);
     const canonical = createPGliteFinancialRegistry(store);
     await canonical["financial.source.commit"]([depositCommit()]);
@@ -449,7 +452,7 @@ test("live overview republishes on a preview collection and on a visibility chan
   await withLedger(async ({ registry, writePreview }) => {
     let visibility = VISIBLE;
     const shown = registry(() => visibility);
-    const views = createPGliteFinancialLiveViews(database, shown);
+    const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: OverviewPageDto[] = [];
     const stop = await views.subscribe("financial.overview.current", {}, (rows) => published.push(rows[0] as OverviewPageDto));
     const until = async (predicate: () => boolean) => {
@@ -480,7 +483,7 @@ test("live liabilities republish on a preview credit collection and on a visibil
   await withLedger(async ({ registry, preview }) => {
     let visibility: PreviewVisibility = { visible: [{ sourceId: "synthetic", product: "credit_card" }] };
     const shown = registry(() => visibility);
-    const views = createPGliteFinancialLiveViews(database, shown);
+    const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: LiabilitiesPageDto[] = [];
     const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
     const until = async (predicate: () => boolean) => {
@@ -525,7 +528,7 @@ test("live liabilities republish on a preview loan collection, including one tha
   await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withLedger(async ({ registry, preview }) => {
     const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
-    const views = createPGliteFinancialLiveViews(database, shown);
+    const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: LiabilitiesPageDto[] = [];
     const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
     const until = async (predicate: () => boolean) => {
@@ -570,7 +573,7 @@ test("each live view republishes on exactly the dependencies it reads", async ()
   await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withLedger(async ({ registry, writePreview, addUsdRate }) => {
     const shown = registry(() => VISIBLE);
-    const views = createPGliteFinancialLiveViews(database, shown);
+    const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const expected = {
       "financial.overview.current": { preview: true, exchangeRates: true },
       "financial.assets.current": { preview: true, exchangeRates: true },

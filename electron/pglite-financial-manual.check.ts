@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
+import {
+  createLocalDateClock,
+  createPGliteLiveViewDependencies,
+  type LocalDateClock,
+} from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
@@ -193,7 +198,7 @@ test("every live page republishes on each kind of manual write", async () => {
   await applyPgliteBaseline(database as unknown as PGlite);
   await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withManualLedger(async ({ registry, apply }) => {
-    const views = createPGliteFinancialLiveViews(database, registry, () => [], undefined, { manualAssets: true });
+    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
     const latest = new Map<string, unknown>();
     const counts = new Map<string, number>();
     const stops: Array<() => Promise<void>> = [];
@@ -252,29 +257,32 @@ test("every live page republishes on each kind of manual write", async () => {
   }, database as unknown as PGlite);
 });
 
-test("a live page republishes when the date moves past an asset's end date, with no write", async (t) => {
-  t.mock.timers.enable({ apis: ["setInterval"] });
+test("a live page republishes when the date moves past an asset's end date, with no write", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
   await applyPgliteBaseline(database as unknown as PGlite);
   await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withManualLedger(async ({ store, apply }) => {
     let date = CLOCK.today();
-    const today = () => date;
-    const registry = createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today });
+    let midnight = () => {};
+    const clock: LocalDateClock = {
+      today: () => date,
+      async watch({ changed }) {
+        midnight = changed;
+        return async () => {};
+      },
+    };
+    const registry = createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: clock.today });
     const { assetId } = await apply(create("other", "Watch", "TWD", "2026-10-01", "50000", "market_quote"));
     await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
-    const views = createPGliteFinancialLiveViews(database, registry, () => [], undefined, { manualAssets: true, today });
+    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, clock));
     const published: OverviewPageDto[] = [];
     const stop = await views.subscribe("financial.overview.current", {}, (rows) => published.push(rows[0] as OverviewPageDto));
     const watchLines = () => published.at(-1)!.accounts.find((account) => account.manual)!.amountLines.length;
     try {
       assert.equal(watchLines(), 1, "on its end date the watch counts");
       const before = published.length;
-      t.mock.timers.tick(60_000);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      assert.equal(published.length, before, "a minute on the same date recomputes nothing");
       date = "2026-11-02";
-      t.mock.timers.tick(60_000);
+      midnight();
       const deadline = Date.now() + 5_000;
       while (published.length === before) {
         if (Date.now() > deadline) throw new Error("the overview did not republish after midnight");
@@ -302,7 +310,7 @@ test("a manual write during a Spending page action is published once the action 
         return () => {};
       },
     } as typeof registry;
-    const views = createPGliteFinancialLiveViews(database, racing, () => [], undefined, { manualAssets: true });
+    const views = createPGliteFinancialLiveViews(racing, createPGliteLiveViewDependencies(database, racing, createLocalDateClock(CLOCK.today)));
     const pages: SpendingPageDto[] = [];
     const stop = await views.subscribe("financial.spending.current", {}, (rows) => pages.push(rows[0] as SpendingPageDto));
     const purchases = () => pages.at(-1)?.manual?.purchases.length ?? 0;

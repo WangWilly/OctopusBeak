@@ -20,6 +20,7 @@ import {
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
+import { createLocalDateClock, createPGliteLiveViewDependencies } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
   createPGliteFinancialRegistry,
@@ -101,10 +102,10 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const today = () => dateInTimeZone(new Date(), automationBusinessTimezone());
+  const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone()));
   const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
     manualAssets: true,
-    today,
+    today: clock.today,
   });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
@@ -117,11 +118,10 @@ export async function startPGliteViewWorker(
     ),
   });
   const financialViews = createPGliteFinancialLiveViews(
-    db,
     financialRegistry,
+    createPGliteLiveViewDependencies(db, financialRegistry, clock),
     () => configuredOverviewSources(),
     scheduler,
-    { manualAssets: true, today },
   );
   const source = workerViewSource(financialViews, views);
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
