@@ -53,9 +53,9 @@ assert.match(
 );
 // squirrel-update-handoff.check.ts covers the hand-off itself.
 assert.doesNotMatch(source, /autoUpdater\./, "main only hands autoUpdater to the Squirrel hand-off");
-assert.match(
-  source,
-  /quitAndInstall: squirrelHandoff\.quitAndInstall,/,
+assert.deepEqual(
+  source.match(/squirrelHandoff\.quitAndInstall\b.*/g),
+  ["squirrelHandoff.quitAndInstall,"],
   "only the updater's restart, which refuses while a run is active, installs an update",
 );
 assert.match(

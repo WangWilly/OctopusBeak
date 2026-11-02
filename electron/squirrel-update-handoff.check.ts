@@ -80,6 +80,15 @@ test("without Squirrel the hand-off is rehearsed, closed, and answered directly"
   }
 });
 
+test("a rehearsal that throws still answers as a failed fixture hand-off", async () => {
+  const { handoff, signals, closed, settle } = harness(FIXTURE, { rehearse: () => Promise.reject(new Error("fetch failed")) });
+  handoff.install(RELEASE);
+  await settle();
+  await settle();
+  assert.deepEqual(signals, [{ type: "error", message: "fixture hand-off" }]);
+  assert.equal(closed(), 1);
+});
+
 test("only a Squirrel build restarts to install", () => {
   const squirrel = harness(SQUIRREL);
   squirrel.handoff.quitAndInstall();
