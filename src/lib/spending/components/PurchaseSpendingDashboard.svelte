@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
+  import { taipeiDate } from "$lib/settings/system-timezone-store.ts";
   import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
@@ -7,7 +9,6 @@
     type SpendingPurchaseRecordView as PurchaseRecord,
   } from "../purchase-matching.ts";
   import {
-    taipeiDateKey,
     type SpendingCandidatePairRef,
     type SpendingPageDto,
     type SpendingPairingCandidateView,
@@ -63,7 +64,7 @@
   export let refreshSummary: () => Promise<void> = async () => {};
   /** Manual Account purchases, already counted in the summary totals. */
   export let manualPurchases: readonly ManualSpendingPurchase[] = [];
-  const today = taipeiDateKey(Date.now() / 1000);
+  let today = get(taipeiDate);
   const spendingSession = createPurchaseSpendingSession({
     report: purchaseReport,
     canonical: fallbackCanonical,
@@ -164,6 +165,8 @@
     previousCanonical = fallbackCanonical;
     spendingSession.receiveLive(purchaseReport, fallbackCanonical);
   }
+  $: today = $taipeiDate;
+  $: followToday(today);
   $: actionErrorText = actionError
     ? actionError.kind === "error"
       ? actionError.message
@@ -319,6 +322,15 @@
       records: entries,
       totals: recordTotals(entries),
     }));
+  }
+
+  function followToday(date: string) {
+    const before = get(spendingState).activeMonth;
+    spendingSession.setToday(date);
+    if (get(spendingState).activeMonth === before) return;
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    searchTimer = null;
+    searchText = "";
   }
 
   function chooseMonth(month: string) {

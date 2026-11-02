@@ -104,6 +104,8 @@ export interface PurchaseSpendingSession {
   start(): void;
   receiveLive(report: PurchaseSpendingReport, canonical: SpendingPageDto["canonical"]): void;
   chooseMonth(month: string): void;
+  /** Moves the default month forward when the date crosses into a new month. */
+  setToday(today: string): void;
   chooseDay(day: string | null): void;
   setRecordFilter(filter: SpendingRecordFilter): void;
   selectPayment(transactionId: string): void;
@@ -159,7 +161,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private readonly options: PurchaseSpendingSessionOptions;
   private readonly clock: PurchaseSpendingClock;
   private readonly sessionId: number;
-  private readonly todayMonth: string;
+  private todayMonth: string;
   private started = false;
   private disposed = false;
   private previousIncomingReport: PurchaseSpendingReport;
@@ -189,7 +191,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   private nextCandidateRequestId = 1;
   private pairingDataVersion: number | null = null;
   private pairingPrewarmVersion: number | null = null;
-  private readonly monthsCache = new WeakMap<object, readonly string[]>();
+  private monthsCache = new WeakMap<object, readonly string[]>();
 
   constructor(options: PurchaseSpendingSessionOptions, clock: PurchaseSpendingClock, sessionId: number) {
     this.options = options;
@@ -305,6 +307,19 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   chooseMonth(month: string) {
     if (this.disposed) return;
     this.publish({ selectedMonth: month, selectedDay: null, recordFilter: noRecordFilter });
+    this.ensureMonthData();
+  }
+
+  setToday(today: string) {
+    const month = today.slice(0, 7);
+    if (this.disposed || month === this.todayMonth) return;
+    this.todayMonth = month;
+    this.monthsCache = new WeakMap();
+    if (this.value.selectedMonth !== null) {
+      this.publish({});
+      return;
+    }
+    this.publish({ selectedDay: null, recordFilter: noRecordFilter });
     this.ensureMonthData();
   }
 
@@ -617,7 +632,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       pageError: "",
       isUpdating: false,
       report: nextReport,
-      selectedMonth: month,
       canonical: spendingCanonicalAt(this.value.canonical, summary, result.knowledgeAt),
     });
     // Request keys are implementation state, deliberately kept off the public
@@ -713,7 +727,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       });
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
-      if (!this.disposed) this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {
@@ -924,7 +937,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       });
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
-      this.publish({ selectedMonth: this.value.activeMonth });
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
     } finally {

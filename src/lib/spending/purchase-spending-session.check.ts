@@ -337,6 +337,46 @@ test("an explicit month choice wins over today's month across a newer summary", 
   session.dispose();
 });
 
+test("crossing into a new month moves the default month and loads it, but keeps an explicit choice", async () => {
+  const { calls, transport } = makeTransport();
+  const following = createSession(reportForMonths(1, ["2026-10"]), transport, undefined, undefined, "2026-10-31");
+  following.session.start();
+  await waitFor(() => calls.recordPages.length === 1 && !following.current().recordPageLoading);
+  following.session.setToday("2026-10-31");
+  assert.equal(calls.recordPages.length, 1, "a date inside the same month reads nothing");
+  following.session.setToday("2026-11-01");
+  assert.equal(following.current().activeMonth, "2026-11");
+  assert.deepEqual(following.current().months, ["2026-10", "2026-11"]);
+  await waitFor(() => calls.recordPages.some((input: any) => input.month === "2026-11"));
+  following.session.dispose();
+
+  const chosen = createSession(reportForMonths(1, ["2026-09", "2026-10"]), makeTransport().transport, undefined, undefined, "2026-10-31");
+  chosen.session.start();
+  chosen.session.chooseMonth("2026-09");
+  chosen.session.setToday("2026-11-01");
+  assert.equal(chosen.current().activeMonth, "2026-09", "an explicit month stays chosen");
+  assert.deepEqual(chosen.current().months, ["2026-09", "2026-10", "2026-11"], "the new month joins the month list");
+  chosen.session.dispose();
+});
+
+test("a pairing action on today's month leaves the page following today", async () => {
+  const invoice = invoiceRecord("Invoice", ["candidate-1"]);
+  const payment = paymentRecord("Payment", ["candidate-1"]);
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => { calls.actions.push(input); return actionResult(2, [linkedRecord()]); },
+  });
+  const { session, current } = createSession(report(1, [invoice, payment], [candidate("candidate-1")]), transport);
+  session.start();
+  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  assert.equal(calls.actions.length, 1);
+  assert.equal(current().actionError, null);
+  assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
+  assert.equal(current().selectedMonth, null, "the action does not turn today's month into an explicit choice");
+  session.setToday("2026-11-01");
+  assert.equal(current().activeMonth, "2026-11");
+  session.dispose();
+});
+
 test("month and day changes ignore late reads from earlier selections", async () => {
   const pending: ReturnType<typeof deferred<any>>[] = [];
   const { calls, transport } = makeTransport({
