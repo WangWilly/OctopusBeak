@@ -126,7 +126,15 @@
   // Runtime ownership lives at the app shell so route changes never drop
   // events or lose the latest state while Automation is off-screen.
   const automationState = createAutomationPageState({
-    api: window.octopusBeak.automation,
+    // Read the bridge per call: the shell starts before any Automation request is made.
+    api: {
+      run: (taskId) => window.octopusBeak.automation.run(taskId),
+      runMany: (taskIds) => window.octopusBeak.automation.runMany(taskIds),
+      cancel: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
+      forceTerminate: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
+      runtimeSnapshot: () => window.octopusBeak.automation.runtimeSnapshot(),
+      fatalRuntimeSnapshot: () => window.octopusBeak.automation.fatalRuntimeSnapshot(),
+    },
     requestReload: (reason) => {
       if (reason === "poll" && route !== "automation") return;
       return loadRoute("automation", {
@@ -580,11 +588,11 @@
         if (!value) throw new Error("Overview data unavailable.");
         return value;
       },
-      cancelTask: (taskId) => settleOnboardingStop(automationState.cancel({
+      cancelTask: (taskId, expectedRunId) => settleOnboardingStop(automationState.cancel({
         id: taskId,
         status: $automationState.live?.tasks.find((task) => task.id === taskId)?.status ?? "running",
-      })),
-      forceTerminateTask: (taskId) => settleOnboardingStop(automationState.forceTerminate(taskId)),
+      }, expectedRunId)),
+      forceTerminateTask: (taskId, expectedRunId) => settleOnboardingStop(automationState.forceTerminate(taskId, expectedRunId)),
     }));
     onboardingController.hydrate(onboardingState);
     return onboardingController;

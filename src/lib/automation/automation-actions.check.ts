@@ -233,3 +233,21 @@ test("a refused stop releases its task, and a pending task cannot be stopped twi
   assert.deepEqual([...controller.pendingTaskIds()], []);
   actions.dispose();
 });
+
+test("a stop carries the run it is meant for to the runtime", async () => {
+  const seen: Array<[string, string | undefined]> = [];
+  const { actions } = harness({
+    async cancel(taskId, expectedRunId) {
+      seen.push(["cancel", expectedRunId]);
+      return { cancelled: taskId };
+    },
+    async forceTerminate(taskId, expectedRunId) {
+      seen.push(["force", expectedRunId]);
+      return { cancelled: taskId };
+    },
+  });
+  await actions.cancel({ id: "a", status: "running" }, "run-a")!.settled;
+  await actions.cancel({ id: "b", status: "waiting_for_human" }, "run-b")!.settled;
+  await actions.forceTerminate("c", "run-c")!.settled;
+  assert.deepEqual(seen, [["cancel", "run-a"], ["force", "run-b"], ["force", "run-c"]]);
+});

@@ -150,13 +150,14 @@ export function createAutomationActions(input: Readonly<{
     run,
     runMany,
     /** A run waiting for a person cannot clean up on its own, so it is force-terminated. */
-    cancel(task: Readonly<{ id: string; status: AutomationTaskStatus }>) {
+    /** `expectedRunId` lets the runtime refuse a stop meant for an earlier run of the task. */
+    cancel(task: Readonly<{ id: string; status: AutomationTaskStatus }>, expectedRunId?: string) {
       return stop(task.id, "cancel", () => task.status === "waiting_for_human"
-        ? api.forceTerminate(task.id)
-        : api.cancel(task.id));
+        ? api.forceTerminate(task.id, expectedRunId)
+        : api.cancel(task.id, expectedRunId));
     },
-    forceTerminate(taskId: string) {
-      return stop(taskId, "force-terminate", () => api.forceTerminate(taskId));
+    forceTerminate(taskId: string, expectedRunId?: string) {
+      return stop(taskId, "force-terminate", () => api.forceTerminate(taskId, expectedRunId));
     },
     dispose() {
       unsubscribe();
