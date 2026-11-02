@@ -40,3 +40,8 @@ Its `includesPreview` describes only the figure shown. The history chips' previe
 - A change to how a page is composed touches only `src/ledger`. The pages can be checked against a PGlite reader without the worker.
 - The dashboard and the Net position card render the `net` metric as given. A history chip that includes preview data still marks the card, but it no longer marks the side figure.
 - The Assets and Liabilities live views now also depend on exchange rates, because their DTOs carry the rates that their TWD totals are converted with.
+
+## Later decisions
+
+- [ADR 0089](0089-spending-page-composed-in-the-ledger-with-one-version.md) composes the Spending page in the ledger the same way. The page scope now carries the person's date so an ended Manual Asset stops counting; valuing accounts without history still uses the latest stored rates as described above.
+- [ADR 0091](0091-one-provenance-marks-every-financial-figure.md) replaces `includesPreview` with one `provenance` on every figure, adds the manual marker wherever the preview marker appears, and shows both markers on the native Net position.
