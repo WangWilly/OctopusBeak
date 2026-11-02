@@ -4,6 +4,7 @@ import {
   type SpendingPageDto,
 } from "../src/lib/spending/model.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
+import { spendingPageBehind } from "../src/ledger/pglite/spending-page.ts";
 import type { FinancialLiveViewDefinition } from "./pglite-financial-live-views.ts";
 
 export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
@@ -15,12 +16,9 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
     // commit notification may arrive just after that publication;
     // avoid rebuilding the same full summary ahead of a Pairing click.
     // A separate commit still has a newer version and is recomputed.
+    // Read the version first: a recompute may publish while this read waits.
     const version = await registry["financial.spending.version"]([]);
-    const last = lastValue() as SpendingPageDto | undefined;
-    const published = last?.purchaseReport.knowledgeAt ?? -1;
-    if (version > published) return true;
-    // Manual purchases sit outside the canonical version, so their own revision decides.
-    return await registry["financial.manualAssets.revision"]([]) !== (last?.manual?.revision ?? 0);
+    return spendingPageBehind(lastValue() as SpendingPageDto | undefined, version);
   },
   watch({ registry, lastValue, publish, recompute, fail }) {
     if (!registry.onSpendingPageActionSettled) return () => {};
@@ -58,14 +56,11 @@ export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
           }
         }
 
-        const currentVersion = await registry["financial.spending.version"]([]);
-        const published = lastValue() as SpendingPageDto | undefined;
-        const publishedVersion = published?.purchaseReport.knowledgeAt ?? -1;
+        const version = await registry["financial.spending.version"]([]);
         const actionVersion = result?.knowledgeAt ?? -1;
-        // A manual write that arrived while the action ran was skipped by shouldRecompute.
-        const manualMoved = await registry["financial.manualAssets.revision"]([]) !== (published?.manual?.revision ?? 0);
-        if (currentVersion > publishedVersion || manualMoved
-          || (result && !actionResultPublished && currentVersion >= actionVersion)) {
+        // A canonical commit or a manual write that arrived while the action ran was skipped by shouldRecompute.
+        if (spendingPageBehind(lastValue() as SpendingPageDto | undefined, version)
+          || (result && !actionResultPublished && version.knowledgeAt >= actionVersion)) {
           recompute();
         }
       })().catch(fail);

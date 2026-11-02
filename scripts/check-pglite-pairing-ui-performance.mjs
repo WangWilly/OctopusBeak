@@ -217,7 +217,7 @@ async function startWorker(dataDir) {
   const startupAt = performance.now();
   let dataVersion;
   try {
-    dataVersion = await client.financial.request("financial.spending.version", []);
+    ({ knowledgeAt: dataVersion } = await client.financial.request("financial.spending.version", []));
   } catch (error) {
     progress(`worker startup/version request failed for ${dataDir}: ${String(error)}`);
     await client.close().catch(() => undefined);
@@ -383,7 +383,7 @@ async function runSingle(runNumber) {
       prewarmBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const currentVersion = await actual.client.financial.request("financial.spending.version", []);
+        const { knowledgeAt: currentVersion } = await actual.client.financial.request("financial.spending.version", []);
         const result = currentVersion === input.dataVersion
           ? { status: "ready", dataVersion: input.dataVersion, reused: false }
           : { status: "stale", dataVersion: currentVersion, requestedVersion: input.dataVersion };
