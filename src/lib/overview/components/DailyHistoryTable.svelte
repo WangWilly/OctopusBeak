@@ -8,7 +8,7 @@
     formatSignedAmountLines,
   } from "$lib/shared-money/money.ts";
   import { formatUtcDate } from "$lib/time/timezone.ts";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
 
   type SortKey = "date" | "netAssets" | "dailyChange" | "assets" | "liabilities";
   type SortDirection = "asc" | "desc";
@@ -151,7 +151,7 @@
                   FX
                 </span>
               {/if}
-              {#if row.provenance.preview}<PreviewMarker />{/if}
+              <OriginMarkers provenance={row.provenance} />
             </td>
             <td class="right money">{formatCurrencyAmount(row, "netAssets")}</td>
             <td

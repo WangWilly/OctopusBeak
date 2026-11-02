@@ -1,5 +1,6 @@
 <script lang="ts">
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { NO_PROVENANCE, type Provenance } from "$lib/shared-ledger/provenance.ts";
 
   export let color: string;
   export let head: string;
@@ -11,12 +12,12 @@
   export let share: number | null = null;
   export let approx = false;
   export let urgent = false;
-  /** The value counts Preview source data. */
-  export let preview = false;
+  /** The origins the value counts. */
+  export let provenance: Provenance = NO_PROVENANCE;
 </script>
 
 <div class="tile" style:--tile-color={color} data-summary-tile>
-  <span class="head" class:urgent><i class="swatch" aria-hidden="true"></i>{head}{#if preview}<PreviewMarker />{/if}</span>
+  <span class="head" class:urgent><i class="swatch" aria-hidden="true"></i>{head}<OriginMarkers {provenance} /></span>
   <strong class="value">
     {#if approx}<span class="approx" aria-hidden="true">≈</span>{/if}<span class="money" data-sensitive>{value}</span>
   </strong>

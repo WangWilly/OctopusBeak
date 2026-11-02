@@ -12,7 +12,8 @@
   import { ArrowRight, LayoutGrid } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { NO_PROVENANCE, type Provenance } from "$lib/shared-ledger/provenance.ts";
   import { formatShare } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
   import { squarify } from "$lib/overview/treemap-layout.ts";
@@ -23,7 +24,8 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   /** Liabilities / assets; omitted on the asset card. */
   export let ratio: number | null | undefined = undefined;
   export let rateNote = "";
-  export let includesPreview = false;
+  /** The origins the total counts. */
+  export let provenance: Provenance = NO_PROVENANCE;
   /** An account in the total owes an unknown amount, so the total and ratio are not figures. */
   export let incomplete = false;
   export let note = "";
@@ -54,7 +56,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           {#if incomplete}<span class="incomplete">{$t.preview.incomplete}</span>{:else if ratio === null}—{:else}<span class="num" data-sensitive>{formatShare(ratio, $locale)}</span>{/if}
         {/if}
         {#if rateNote}<span aria-hidden="true">·</span> {rateNote}{/if}
-        {#if includesPreview}<PreviewMarker />{/if}
+        <OriginMarkers {provenance} />
       </p>
     </div>
     <a class="link" {href}>{linkLabel}<ArrowRight size={14} strokeWidth={2} aria-hidden="true" /></a>

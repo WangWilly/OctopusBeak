@@ -23,7 +23,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { NO_PROVENANCE } from "$lib/shared-ledger/provenance.ts";
   import ManualAssetCreateModal from "$lib/manual-assets/ManualAssetCreateModal.svelte";
 
   export let assets: AssetsPageDto;
@@ -80,7 +81,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
-  sideIncludesPreview={!isEmpty && summary.state === "ready" && summary.provenance.preview}
+  sideProvenance={!isEmpty && summary.state === "ready" ? summary.provenance : NO_PROVENANCE}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
@@ -110,14 +111,11 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
-        includesPreview={summary.state === "ready" && summary.provenance.preview}
+        provenance={summary.state === "ready" ? summary.provenance : NO_PROVENANCE}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
-          : summary.state === "ready"
-            ? [
-              ...(summary.unconvertedCurrencies.length > 0 ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))] : []),
-              ...(summary.provenance.manual ? [$t.manualAssets.includesManual] : []),
-            ]
+          : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
+            ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
             : []}
       >
         {#if isEmpty}
@@ -161,7 +159,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
-        {#if stackedChart.provenance.preview}<PreviewMarker align="end" />{/if}
+        <OriginMarkers provenance={stackedChart.provenance} align="end" />
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}

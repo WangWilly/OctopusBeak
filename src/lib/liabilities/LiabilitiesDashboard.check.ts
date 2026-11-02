@@ -14,7 +14,7 @@ test("liabilities exposes canonical coverage gaps and keeps awaiting ahead of pa
 test("an incomplete liabilities total shows the incomplete copy in the card and the side value, never a figure", () => {
   assert.match(source, /\$: incomplete = totalIncomplete\(liabilities\.accounts\)/);
   assert.match(source, /: incomplete\s*\? \$t\.preview\.incomplete/);
-  assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}[\s\S]*?\{includesPreview\}/);
+  assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}[\s\S]*?\{provenance\}/);
 });
 
 test("chart and list read the live page, as Assets does, so a visibility change drops preview rows", () => {
@@ -41,4 +41,10 @@ test("margin exposure keeps an independent investment-kind filter", () => {
     lastUpdated: null,
     valueAvailability: "available",
   });
+});
+
+test("the total, side figure and chart carry the provenance their figures count", () => {
+  assert.match(source, /\$: provenance = summary\.state === "ready" \? summary\.provenance : NO_PROVENANCE;/);
+  assert.match(source, /sideProvenance=\{isEmpty \? NO_PROVENANCE : provenance\}/);
+  assert.match(source, /<OriginMarkers provenance=\{stackedChart\.provenance\} align="end" \/>/);
 });

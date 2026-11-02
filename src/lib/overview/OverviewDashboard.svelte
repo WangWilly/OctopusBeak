@@ -41,7 +41,6 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   $: sideSub = nativeRest ||
     (overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet);
   $: sideSubSensitive = nativeRest !== "";
-  $: sideIncludesPreview = net.provenance.preview;
   $: awaitingData = awaitingFirstData(overview);
   $: holdsForeign = overview.accounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
   $: assetTiles = model.assetAllocation.slices.map((slice): AllocationTile => ({
@@ -92,7 +91,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   {sideSub}
   {sideSubSensitive}
   sideValueSensitive={!net.incomplete}
-  {sideIncludesPreview}
+  sideProvenance={net.provenance}
   syncLabel={overview.importedAt ? $t.common.importedAt(formatImportedAt(overview.importedAt)) : $t.common.notYet}
 >
   <div class="content overview-content">
@@ -154,7 +153,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           total={model.assetAllocation.slices.length > 0 ? model.assetAllocation.total : null}
           rateNote={rateNote(model, holdsForeign, $t)}
           note={unconvertedNote(model.assetAllocation.unconvertedCurrencies)}
-          includesPreview={model.assetAllocation.provenance.preview}
+          provenance={model.assetAllocation.provenance}
           href="#/assets"
           linkLabel={$t.nav.assets}
           tiles={assetTiles}
@@ -167,7 +166,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           total={model.liabilityAllocation.slices.length > 0 ? model.liabilityAllocation.total : null}
           ratio={model.liabilityAllocation.ratio}
           incomplete={liabilitiesMetric.incomplete === true}
-          includesPreview={liabilitiesMetric.provenance.preview}
+          provenance={model.liabilityAllocation.provenance}
           note={unconvertedNote(model.liabilityAllocation.unconvertedCurrencies)}
           href="#/liabilities"
           linkLabel={$t.nav.liabilities}

@@ -3,8 +3,8 @@
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import NetWorthChart from "$lib/overview/components/NetWorthChart.svelte";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
-  import ManualMarker from "$lib/manual-assets/ManualMarker.svelte";
+import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { mergeProvenance } from "$lib/shared-ledger/provenance.ts";
   import {
     seriesInRange,
     type NetWorth,
@@ -40,8 +40,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 <article class="card net-worth-card" data-net-worth>
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
-    {#if (net.display === "converted" && net.provenance.preview) || netWorth.chipsProvenance.preview}<PreviewMarker />{/if}
-    {#if net.provenance.manual}<ManualMarker />{/if}
+    <OriginMarkers provenance={mergeProvenance(net.provenance, netWorth.chipsProvenance)} />
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
@@ -89,7 +88,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     <NetWorthChart points={visible} label={$t.overview.chartAria} />
     <p class="caption">
       {$t.overview.chartCaption}
-      {#if visible.some((point) => point.provenance.preview)}<PreviewMarker placement="above" />{/if}
+      <OriginMarkers provenance={mergeProvenance(...visible.map((point) => point.provenance))} placement="above" />
     </p>
   {:else}
     <CardPlaceholder state="net-worth" title={$t.overview.chartEmptyTitle} body={$t.overview.chartEmptyBody}>

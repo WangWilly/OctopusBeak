@@ -21,7 +21,8 @@
     supportsDisplayScale,
   } from "$lib/settings/display-scale.ts";
   import AppUpdateSidebar from "./AppUpdateSidebar.svelte";
-  import PreviewMarker from "./PreviewMarker.svelte";
+  import { hasProvenance, NO_PROVENANCE, type Provenance } from "$lib/shared-ledger/provenance.ts";
+  import OriginMarkers from "./OriginMarkers.svelte";
   import ValueVisibilityToggle from "./ValueVisibilityToggle.svelte";
   import { readStoredValuesVisible, writeStoredValuesVisible } from "./value-visibility.ts";
 
@@ -34,7 +35,8 @@
   export let titleHidden = false;
   export let sideSub = "";
   export let sideSubSensitive = false;
-  export let sideIncludesPreview = false;
+  /** The origins the side figure counts. */
+  export let sideProvenance: Provenance = NO_PROVENANCE;
   export let search = "";
   export let searchPlaceholder: string | null = null;
   export let syncLabel: string | null = null;
@@ -296,8 +298,8 @@
         <p class="label">{sideLabel}</p>
         <p class="side-value" class:money={sideValueSensitive}>{sideValue}</p>
         <p class="sub" data-sensitive={sideSubSensitive ? "" : undefined}>{sideSub}</p>
-        {#if sideIncludesPreview}
-          <p class="side-preview"><PreviewMarker placement="above" /></p>
+        {#if hasProvenance(sideProvenance)}
+          <p class="side-preview"><OriginMarkers provenance={sideProvenance} placement="above" /></p>
         {/if}
       </div>
     </div>

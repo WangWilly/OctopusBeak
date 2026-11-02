@@ -3,7 +3,8 @@
   import { formatPct } from "$lib/overview/overview-format.ts";
 import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import type { SpanChange } from "$lib/shared-ledger/twd-valuation.ts";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { NO_PROVENANCE, type Provenance } from "$lib/shared-ledger/provenance.ts";
 
   export let label: string;
   export let total: number | null;
@@ -12,7 +13,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   export let goodWhen: "up" | "down" = "up";
   export let notes: string[] = [];
   export let ariaLabel = label;
-  export let includesPreview = false;
+  /** The origins the total and its 30-day change count. */
+  export let provenance: Provenance = NO_PROVENANCE;
   /** An account in the total owes an unknown amount, so no figure is shown. */
   export let incomplete = false;
 
@@ -25,7 +27,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   <div class="headline">
     <p class="total-label">
       {label}
-      {#if includesPreview}<PreviewMarker />{/if}
+      <OriginMarkers {provenance} />
     </p>
     {#if incomplete}
       <p class="figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>

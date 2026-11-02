@@ -511,7 +511,6 @@ const en = {
   manualAssets: {
     marker: "Manual",
     markerTooltip: "You entered this value. No source collects or checks it.",
-    includesManual: "Includes manual values",
     categories: {
       cash: "Cash",
       house: "House",
@@ -2034,7 +2033,6 @@ const zh: typeof en = {
   manualAssets: {
     marker: "手動",
     markerTooltip: "這是你自己輸入的數值，沒有來源收集或核對。",
-    includesManual: "含手動輸入的數值",
     categories: {
       cash: "現金",
       house: "房屋",

@@ -20,3 +20,11 @@ test("the sidebar shows update downloads under the nav, and Restart to update wa
   assert.match(sidebar, /\$: restartBlocked = \$runActive;/, "a refused restart does not keep the button disabled");
   assert.match(sidebar, /\$: showRunActive = \$runActive \|\| \(restartResult\?\.ok === false && restartResult\.reason === "run-active"\)/);
 });
+
+test("the side figure shows the markers of every origin it counts", () => {
+  assert.match(source, /export let sideProvenance: Provenance = NO_PROVENANCE;/);
+  assert.match(source, /\{#if hasProvenance\(sideProvenance\)\}[\s\S]*?<OriginMarkers provenance=\{sideProvenance\} placement="above" \/>/);
+  const markers = readFileSync(new URL("./OriginMarkers.svelte", import.meta.url), "utf8");
+  assert.match(markers, /\{#if provenance\.preview\}<PreviewMarker \{placement\} \{align\} \/>\{\/if\}/);
+  assert.match(markers, /\{#if provenance\.manual\}<ManualMarker \{placement\} \{align\} \/>\{\/if\}/);
+});
