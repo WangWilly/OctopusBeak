@@ -10,6 +10,10 @@ import {
   selectStackedBalanceChartSeries,
   stackedBalanceChartState,
 } from "./stacked-balance-chart-data.ts";
+import { NO_PROVENANCE, originProvenance } from "../../shared-ledger/provenance.ts";
+
+const PREVIEW = originProvenance("preview");
+const MANUAL = originProvenance("manual");
 
 const accounts = [
   account("bank-a", "Bank A", "bank", 100),
@@ -138,12 +142,28 @@ assert.equal(
   const chart = buildStackedBalanceChartData({
     accounts: [...accounts, previewBank], dailyHistoryByAccount: withPreview, filter: "all", currency: "TWD", mode: "asset",
   });
-  assert.equal(allAssets.includesPreview, false);
-  assert.equal(chart.includesPreview, true, "a preview balance in the stacked total marks the chart");
-  assert.equal(selectStackedBalanceChartSeries(chart, ["fund"]).includesPreview, false, "hiding its series drops the mark");
-  assert.equal(buildStackedBalanceChartData({
+  assert.deepEqual(allAssets.provenance, NO_PROVENANCE);
+  assert.deepEqual(chart.provenance, PREVIEW, "a preview balance in the stacked total marks the chart");
+  assert.deepEqual(chart.series.find((item) => item.key === "bank")?.provenance, PREVIEW, "and the series that holds it");
+  assert.deepEqual(selectStackedBalanceChartSeries(chart, ["fund"]).provenance, NO_PROVENANCE, "hiding its series drops the mark");
+  assert.deepEqual(buildStackedBalanceChartData({
     accounts: [...accounts, previewBank], dailyHistoryByAccount: withPreview, filter: "all", currency: "USD", mode: "asset",
-  }).includesPreview, false, "another currency's chart holds no preview balance");
+  }).provenance, NO_PROVENANCE, "another currency's chart holds no preview balance");
+}
+
+{
+  const house: AccountRowDto = {
+    ...account("manual:house", "House", "manual", 9000),
+    manual: { assetId: "house", category: "house", currency: "TWD", endedOn: null, valuations: [], transactions: [], balance: null },
+  };
+  const withManual = { ...dailyHistoryByAccount, "manual:house": [row("2026-06-24", 9000, 0)] };
+  const chart = buildStackedBalanceChartData({
+    accounts: [...accounts, house], dailyHistoryByAccount: withManual, filter: "all", currency: "TWD", mode: "asset",
+  });
+  assert.deepEqual(chart.series.find((item) => item.key === "manual")?.provenance, MANUAL, "a manual series is marked manual");
+  assert.deepEqual(chart.series.find((item) => item.key === "bank")?.provenance, NO_PROVENANCE);
+  assert.deepEqual(chart.provenance, MANUAL, "a manual balance in the stacked total marks the chart");
+  assert.deepEqual(selectStackedBalanceChartSeries(chart, ["bank"]).provenance, NO_PROVENANCE);
 }
 
 function account(id: string, label: string, kind: AccountKind, value: number): AccountRowDto {
@@ -179,6 +199,7 @@ function row(date: string, assets: number, liabilities: number, pointAt?: string
     liabilities: [{ currency: "TWD", value: liabilities }],
     accountChanges: [],
     positionCount: 0,
+    provenance: NO_PROVENANCE,
   };
 }
 

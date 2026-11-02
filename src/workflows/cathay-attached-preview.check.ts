@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { originProvenance } from "../lib/shared-ledger/provenance.ts";
 import { parsePreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import type { PreviewCreditCollection, PreviewTimeDepositCollection } from "../ledger/pglite/preview-financial-data.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
@@ -82,7 +83,7 @@ test("Cathay credit cards write one NT-dollar account with balance, cards, bille
     paid: false,
     noPaymentNeeded: null,
   }]);
-  assert.deepEqual(cathayCardTotals(collection).net, { includesPreview: true }, "the foreign bill leaves the totals complete");
+  assert.deepEqual(cathayCardTotals(collection).net, { provenance: originProvenance("preview") }, "the foreign bill leaves the totals complete");
 });
 
 test("a Cathay bill without a foreign part writes only the NT-dollar statement", async () => {

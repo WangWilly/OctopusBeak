@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { Worker } from "node:worker_threads";
 import test from "node:test";
+import { NO_PROVENANCE } from "../src/lib/shared-ledger/provenance.ts";
 import type { LiveViewDependency, LiveViewDependencySignals } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
@@ -582,7 +583,7 @@ const EMPTY_OVERVIEW = {
   historyAvailability: "unavailable" as const,
   sourceGaps: [],
   importedAt: null,
-  summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+  summary: { net: { display: "native", amounts: [], provenance: NO_PROVENANCE, incomplete: false }, assets: { amounts: [], provenance: NO_PROVENANCE }, liabilities: { amounts: [], provenance: NO_PROVENANCE } },
   dailyHistory: [],
   dailyHistoryByAccount: {},
   accounts: [],

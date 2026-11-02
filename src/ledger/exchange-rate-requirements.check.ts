@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { exchangeRateRequestFromOverview } from "./exchange-rate-requirements.ts";
+import { NO_PROVENANCE } from "../lib/shared-ledger/provenance.ts";
 
 test("exchange-rate request uses the earliest overview date and all foreign amounts", () => {
   assert.deepEqual(exchangeRateRequestFromOverview({
@@ -13,6 +14,7 @@ test("exchange-rate request uses the earliest overview date and all foreign amou
         liabilities: [],
         accountChanges: [],
         positionCount: 1,
+        provenance: NO_PROVENANCE,
       },
       {
         date: "2026-01-03",
@@ -22,6 +24,7 @@ test("exchange-rate request uses the earliest overview date and all foreign amou
         liabilities: [],
         accountChanges: [],
         positionCount: 1,
+        provenance: NO_PROVENANCE,
       },
     ],
   }), {

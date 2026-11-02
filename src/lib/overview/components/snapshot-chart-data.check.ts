@@ -6,6 +6,7 @@ import {
   selectSnapshotDivergingSeries,
 } from "./snapshot-chart-data.ts";
 import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+import { NO_PROVENANCE } from "../../shared-ledger/provenance.ts";
 
 const timeZone = "Asia/Taipei";
 const locale = "en-CA";
@@ -22,6 +23,7 @@ const rows: DailyHistoryRowDto[] = [
     dailyChange: [{ currency: "TWD", value: -10 }],
     accountChanges: [],
     positionCount: 0,
+    provenance: NO_PROVENANCE,
   },
   {
     date: "2026-07-01",
@@ -34,6 +36,7 @@ const rows: DailyHistoryRowDto[] = [
     dailyChange: [{ currency: "TWD", value: 5 }],
     accountChanges: [],
     positionCount: 0,
+    provenance: NO_PROVENANCE,
   },
   {
     date: "2026-07-03",
@@ -43,6 +46,7 @@ const rows: DailyHistoryRowDto[] = [
     dailyChange: [{ currency: "USD", value: 1 }],
     accountChanges: [],
     positionCount: 0,
+    provenance: NO_PROVENANCE,
   },
 ];
 

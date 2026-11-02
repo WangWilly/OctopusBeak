@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
 import type { OverviewPageDto } from "./types.ts";
 
 const source = readFileSync(new URL("./OverviewDashboard.svelte", import.meta.url), "utf8");
@@ -15,7 +16,7 @@ const base: OverviewPageDto = {
   historyAvailability: "unavailable",
   sourceGaps: [],
   importedAt: null,
-  summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+  summary: { net: { display: "native", amounts: [], provenance: NO_PROVENANCE, incomplete: false }, assets: { amounts: [], provenance: NO_PROVENANCE }, liabilities: { amounts: [], provenance: NO_PROVENANCE } },
   dailyHistory: [],
   dailyHistoryByAccount: {},
   accounts: [],
@@ -69,4 +70,14 @@ test("an incomplete Net position or Liabilities metric replaces its figure with 
   assert.match(source, /sideValue = net\.incomplete\s*\? \$t\.preview\.incomplete/);
   assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{net\.incomplete\}/);
   assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\.incomplete === true\}/);
+});
+
+test("each overview figure carries the provenance of what it counts", () => {
+  assert.match(source, /sideProvenance=\{net\.provenance\}/);
+  assert.match(source, /state="assets"[\s\S]*?provenance=\{model\.assetAllocation\.provenance\}/);
+  assert.match(source, /state="liabilities"[\s\S]*?provenance=\{model\.liabilityAllocation\.provenance\}/, "the marker comes from the same rate-aware accounts as the total");
+  assert.doesNotMatch(source, /liabilitiesMetric\.provenance/);
+  const netWorthCard = readFileSync(new URL("./components/NetWorthCard.svelte", import.meta.url), "utf8");
+  assert.match(netWorthCard, /<OriginMarkers provenance=\{mergeProvenance\(net\.provenance, netWorth\.chipsProvenance\)\} \/>/, "both markers show on either display");
+  assert.match(netWorthCard, /<OriginMarkers provenance=\{mergeProvenance\(\.\.\.visible\.map\(\(point\) => point\.provenance\)\)\} placement="above" \/>/);
 });

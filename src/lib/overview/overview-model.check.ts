@@ -5,6 +5,10 @@ import { indexExchangeRates } from "../shared-money/exchange-rates.ts";
 import { currentNetPosition, valuationDateFor } from "../shared-ledger/twd-valuation.ts";
 import { readOverview, seriesInRange, type OverviewModelInput } from "./overview-model.ts";
 import type { OverviewHoldingPriceDto } from "./types.ts";
+import { NO_PROVENANCE, originProvenance } from "../shared-ledger/provenance.ts";
+
+const PREVIEW = originProvenance("preview");
+const MANUAL = originProvenance("manual");
 
 function account(id: string, kind: AccountRowDto["kind"], amountLines: CurrencyAmountDto[]): AccountRowDto {
   return {
@@ -23,7 +27,7 @@ function account(id: string, kind: AccountRowDto["kind"], amountLines: CurrencyA
 }
 
 function row(date: string, net: CurrencyAmountDto[]): DailyHistoryRowDto {
-  return { date, netAssets: net, dailyChange: [], assets: net, liabilities: [], accountChanges: [], positionCount: 0 };
+  return { date, netAssets: net, dailyChange: [], assets: net, liabilities: [], accountChanges: [], positionCount: 0, provenance: NO_PROVENANCE };
 }
 
 const usd = (value: number): CurrencyAmountDto[] => [{ currency: "USD", value }];
@@ -59,7 +63,7 @@ test("each history date converts at that date's rate, so an FX-only move shows o
   });
   const model = readOverview(dto, { today: "2026-10-02" });
   const current = currentNet(dto, "2026-10-02");
-  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, includesPreview: false }, { date: "2026-10-02", value: 3100, includesPreview: false }]);
+  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, provenance: NO_PROVENANCE }, { date: "2026-10-02", value: 3100, provenance: NO_PROVENANCE }]);
   assert.deepEqual(model.netWorth.chips[0], {
     kind: "latest", date: "2026-10-02", previousDate: "2026-10-01", isToday: true, change: 100, pct: 100 / 3000,
   });
@@ -73,7 +77,7 @@ test("a date with no rate yet is left off the chart instead of plotted as zero",
     ...only(account("usd", "foreign", usd(100)), [row("2026-09-01", usd(100)), row("2026-10-01", usd(100))]),
     exchangeRates: [rate("2026-09-20", "USD", 30)],
   }), { today: "2026-10-01" });
-  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, includesPreview: false }]);
+  assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, provenance: NO_PROVENANCE }]);
   assert.equal(model.historyRows[0]?.exchangeRateMissing, true);
   assert.deepEqual(model.netWorth.chips, [], "one point has nothing to compare against");
 });
@@ -98,16 +102,16 @@ test("daily bars cover 14 calendar days ending today and leave days without a re
   assert.equal(model.dailyBars[0]?.date, "2026-09-22");
   assert.equal(model.dailyBars.at(-1)?.date, "2026-10-05");
   assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null), [
-    { date: "2026-10-03", change: 100, includesPreview: false },
-    { date: "2026-10-05", change: 100, includesPreview: false },
+    { date: "2026-10-03", change: 100, provenance: NO_PROVENANCE },
+    { date: "2026-10-05", change: 100, provenance: NO_PROVENANCE },
   ]);
   const later = readOverview(input({
     ...only(account("bank", "bank", twd(1100)), [row("2026-10-03", twd(1000)), row("2026-10-05", twd(1100))]),
   }), { today: "2026-10-08" });
   assert.deepEqual(later.dailyBars.slice(-3), [
-    { date: "2026-10-06", change: null, includesPreview: false },
-    { date: "2026-10-07", change: null, includesPreview: false },
-    { date: "2026-10-08", change: null, includesPreview: false },
+    { date: "2026-10-06", change: null, provenance: NO_PROVENANCE },
+    { date: "2026-10-07", change: null, provenance: NO_PROVENANCE },
+    { date: "2026-10-08", change: null, provenance: NO_PROVENANCE },
   ], "days after the last sync stay empty rather than shifting the window");
 });
 
@@ -221,10 +225,10 @@ test("allocations group assets by kind, list each debt, and relate them", () => 
 
 test("a range keeps the points inside that many days of the newest point", () => {
   const series = [
-    { date: "2026-06-01", value: 1, includesPreview: false },
-    { date: "2026-09-04", value: 2, includesPreview: false },
-    { date: "2026-09-05", value: 3, includesPreview: false },
-    { date: "2026-10-05", value: 4, includesPreview: false },
+    { date: "2026-06-01", value: 1, provenance: NO_PROVENANCE },
+    { date: "2026-09-04", value: 2, provenance: NO_PROVENANCE },
+    { date: "2026-09-05", value: 3, provenance: NO_PROVENANCE },
+    { date: "2026-10-05", value: 4, provenance: NO_PROVENANCE },
   ];
   assert.deepEqual(seriesInRange(series, "30d").map((point) => point.date), ["2026-09-05", "2026-10-05"]);
   assert.deepEqual(seriesInRange(series, "90d").map((point) => point.date), ["2026-09-04", "2026-09-05", "2026-10-05"]);
@@ -250,8 +254,8 @@ test("an account recorded for the first time is new coverage, not a change in ne
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.value), [1000, 6050, 806300], "the chart still plots recorded net worth");
   assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null), [
-    { date: "2026-09-30", change: 50, includesPreview: false },
-    { date: "2026-10-05", change: 250, includesPreview: false },
+    { date: "2026-09-30", change: 50, provenance: NO_PROVENANCE },
+    { date: "2026-10-05", change: 250, provenance: NO_PROVENANCE },
   ], "a bar never counts a newly recorded balance");
   assert.equal(model.todayChange.state, "ready");
   if (model.todayChange.state !== "ready") return;
@@ -279,7 +283,7 @@ test("a preview balance without a rate never blanks verified net worth", () => {
   });
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 1000);
-  assert.equal(current.includesPreview, false);
+  assert.deepEqual(current.provenance, NO_PROVENANCE);
   assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
 });
 
@@ -291,7 +295,7 @@ test("a preview balance with a rate is converted into net worth and marked", () 
   });
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 1320);
-  assert.equal(current.includesPreview, true);
+  assert.deepEqual(current.provenance, PREVIEW);
   assert.deepEqual(current.unconvertedCurrencies, []);
 });
 
@@ -302,7 +306,7 @@ test("a counted TWD preview balance marks net worth beside a rateless preview on
   });
   const current = currentNet(dto, "2026-10-05");
   assert.equal(current.value, 500);
-  assert.equal(current.includesPreview, true);
+  assert.deepEqual(current.provenance, PREVIEW);
   assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
 });
 
@@ -314,10 +318,10 @@ test("a rateless or balance-less preview account leaves the allocation unmarked"
   const model = readOverview(dto, { today: "2026-10-05" });
   const current = currentNet(dto, "2026-10-05");
   assert.equal(model.assetAllocation.total, 1000);
-  assert.equal(model.assetAllocation.includesPreview, false);
+  assert.deepEqual(model.assetAllocation.provenance, NO_PROVENANCE);
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["USD"]);
   assert.equal(current.value, 1000);
-  assert.equal(current.includesPreview, false);
+  assert.deepEqual(current.provenance, NO_PROVENANCE);
 });
 
 test("a canonical account without a rate still blanks net worth", () => {
@@ -331,24 +335,94 @@ test("a canonical account without a rate still blanks net worth", () => {
 
 test("history-driven totals carry the preview flag only where a preview row is counted", () => {
   const previewRows = [
-    { ...row("2026-10-03", twd(100)), includesPreview: true },
-    { ...row("2026-10-05", twd(300)), includesPreview: true },
+    { ...row("2026-10-03", twd(100)), provenance: PREVIEW },
+    { ...row("2026-10-05", twd(300)), provenance: PREVIEW },
   ];
   const model = readOverview(input({
     accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:twd", twd(300))],
     dailyHistory: [
       row("2026-10-01", twd(1000)),
-      { ...row("2026-10-03", twd(1100)), includesPreview: true },
-      { ...row("2026-10-05", twd(1300)), includesPreview: true },
+      { ...row("2026-10-03", twd(1100)), provenance: PREVIEW },
+      { ...row("2026-10-05", twd(1300)), provenance: PREVIEW },
     ],
     dailyHistoryByAccount: { bank: [row("2026-10-01", twd(1000))], "preview:twd": previewRows },
   }), { today: "2026-10-05" });
-  assert.deepEqual(model.series.map((point) => point.includesPreview), [false, true, true]);
-  assert.equal(model.todayChange.state === "ready" && model.todayChange.includesPreview, true);
+  assert.deepEqual(model.series.map((point) => point.provenance.preview), [false, true, true]);
+  assert.equal(model.todayChange.state === "ready" && model.todayChange.provenance.preview, true);
   assert.equal(model.todayChange.state === "ready" && model.todayChange.total, 200);
-  assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null).map((bar) => [bar.date, bar.includesPreview]), [
+  assert.deepEqual(model.dailyBars.filter((bar) => bar.change !== null).map((bar) => [bar.date, bar.provenance.preview]), [
     ["2026-10-03", false],
     ["2026-10-05", true],
   ]);
-  assert.equal(model.historyRows.at(-1)!.includesPreview, true);
+  assert.deepEqual(model.historyRows.at(-1)!.provenance, PREVIEW);
+});
+
+function manualAccount(id: string, category: "cash" | "house", amountLines: CurrencyAmountDto[]): AccountRowDto {
+  return {
+    ...account(id, "manual", amountLines),
+    manual: { assetId: id, category, currency: "TWD", endedOn: null, valuations: [], transactions: [], balance: null },
+  };
+}
+
+const marked = (entry: DailyHistoryRowDto, provenance = MANUAL): DailyHistoryRowDto => ({ ...entry, provenance });
+
+test("a manual cash asset revalued today marks every change figure that counts it", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), manualAccount("manual:cash", "cash", twd(600))],
+    dailyHistory: [row("2026-10-04", twd(1500)), row("2026-10-05", twd(1600))],
+    dailyHistoryByAccount: {
+      bank: [row("2026-10-04", twd(1000))],
+      "manual:cash": [marked(row("2026-10-04", twd(500))), marked(row("2026-10-05", twd(600)))],
+    },
+  }), { today: "2026-10-05" });
+  assert.equal(model.todayChange.state === "ready" && model.todayChange.total, 100);
+  assert.deepEqual(model.todayChange.state === "ready" && model.todayChange.provenance, MANUAL);
+  assert.deepEqual(model.dailyBars.at(-1), { date: "2026-10-05", change: 100, provenance: MANUAL });
+  assert.deepEqual(model.netWorth.chipsProvenance, MANUAL);
+  assert.deepEqual(model.historyRows.at(-1)!.provenance, MANUAL, "the row's daily change counts the revaluation");
+});
+
+test("a change over verified accounts only stays unmarked", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1100)), manualAccount("manual:cash", "cash", twd(500))],
+    dailyHistory: [row("2026-10-04", twd(1500)), row("2026-10-05", twd(1600))],
+    dailyHistoryByAccount: {
+      bank: [row("2026-10-04", twd(1000)), row("2026-10-05", twd(1100))],
+      "manual:cash": [marked(row("2026-10-05", twd(500)))],
+    },
+  }), { today: "2026-10-05" });
+  assert.deepEqual(model.todayChange.state === "ready" && model.todayChange.provenance, NO_PROVENANCE, "new manual coverage is not change");
+  assert.deepEqual(model.dailyBars.at(-1)!.provenance, NO_PROVENANCE);
+});
+
+test("an asset allocation counting a manual house is marked manual", () => {
+  const model = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), manualAccount("manual:house", "house", twd(9000000))],
+    dailyHistory: [row("2026-10-05", twd(9001000))],
+  }), { today: "2026-10-05" });
+  assert.equal(model.assetAllocation.total, 9001000);
+  assert.deepEqual(model.assetAllocation.provenance, MANUAL);
+});
+
+function previewLoan(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {
+  return {
+    ...account(id, "loan", amountLines),
+    preview: { sourceId: "synthetic", product: "loan", lastCollectedAt: "2026-10-05T00:00:00Z", balanceTime: null, transactions: [] },
+  };
+}
+
+test("the liability allocation's marker follows the accounts its rate-aware total counts", () => {
+  const rateless = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), account("card", "credit-card", twd(200)), previewLoan("preview:usd-loan", usd(1000))],
+    dailyHistory: [row("2026-10-05", twd(800))],
+  }), { today: "2026-10-05" });
+  assert.equal(rateless.liabilityAllocation.total, 200);
+  assert.deepEqual(rateless.liabilityAllocation.unconvertedCurrencies, ["USD"]);
+  assert.deepEqual(rateless.liabilityAllocation.provenance, NO_PROVENANCE, "a loan left out for lack of a rate marks nothing");
+
+  const counted = readOverview(input({
+    accounts: [account("bank", "bank", twd(1000)), previewLoan("preview:loan", twd(300))],
+    dailyHistory: [row("2026-10-05", twd(700))],
+  }), { today: "2026-10-05" });
+  assert.deepEqual(counted.liabilityAllocation.provenance, PREVIEW);
 });

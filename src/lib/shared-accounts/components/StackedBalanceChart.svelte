@@ -6,13 +6,14 @@
   import { formatSnapshotAxisLabel } from "$lib/overview/components/snapshot-chart-data.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatUtcDate } from "$lib/time/timezone.ts";
+  import { NO_PROVENANCE } from "$lib/shared-ledger/provenance.ts";
   import {
     selectStackedBalanceChartSeries,
     stackedBalanceChartState,
     type StackedBalanceChartData,
   } from "./stacked-balance-chart-data.ts";
 
-  export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "", includesPreview: false };
+  export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "", provenance: NO_PROVENANCE };
   export let currency = "TWD";
   export let label = "";
 

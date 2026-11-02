@@ -14,3 +14,9 @@ test("the assets list reads its accounts, covered accounts, and per-account rows
   for (const field of ["accounts", "coveredAccounts", "positionsByAccount", "transactionsByAccount", "dailyHistoryByAccount"])
     assert.match(source, new RegExp(`${field}=\\{assets\\.${field}\\}`));
 });
+
+test("the total, side figure and chart mark manual and preview data with markers", () => {
+  assert.match(source, /sideProvenance=\{!isEmpty && summary\.state === "ready" \? summary\.totalProvenance : NO_PROVENANCE\}/);
+  assert.match(source, /<PageTotalCard[\s\S]*?provenance=\{summary\.state === "ready" \? summary\.provenance : NO_PROVENANCE\}/);
+  assert.match(source, /<OriginMarkers provenance=\{stackedChart\.provenance\} align="end" \/>/);
+});

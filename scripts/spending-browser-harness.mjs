@@ -3,6 +3,7 @@ import { createServer } from "vite";
 
 const HOST = "127.0.0.1";
 const MAX_PORT_ATTEMPTS = 8;
+const NO_PROVENANCE = { preview: false, manual: false };
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -57,7 +58,7 @@ const emptyOverview = {
   historyAvailability: "unavailable",
   sourceGaps: [],
   importedAt: null,
-  summary: { net: { display: "native", amounts: [], includesPreview: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+  summary: { net: { display: "native", amounts: [], provenance: NO_PROVENANCE, incomplete: false }, assets: { amounts: [], provenance: NO_PROVENANCE }, liabilities: { amounts: [], provenance: NO_PROVENANCE } },
   dailyHistory: [],
   dailyHistoryByAccount: {},
   accounts: [],
@@ -197,7 +198,7 @@ function installSpendingDesktopApi(model) {
     historyAvailability: "unavailable",
     sourceGaps: [],
     importedAt: null,
-    summary: { net: { display: "native", amounts: [], includesPreview: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+    summary: { net: { display: "native", amounts: [], provenance: { preview: false, manual: false }, incomplete: false }, assets: { amounts: [], provenance: { preview: false, manual: false } }, liabilities: { amounts: [], provenance: { preview: false, manual: false } } },
     dailyHistory: [],
     dailyHistoryByAccount: {},
     accounts: [],

@@ -13,7 +13,7 @@ import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import type { PGliteCanonicalBalanceCaptureRequest } from "../src/ledger/pglite/balance.ts";
 import type { PGliteCanonicalFinancialCommitRequest } from "../src/ledger/pglite/canonical-source-store.ts";
-import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
+import { applyManualAssetCommand, applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
 import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import {
   applyPglitePreviewFinancialDataSchema,
@@ -23,6 +23,7 @@ import {
   type PreviewVisibility,
 } from "../src/ledger/pglite/preview-financial-data.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { commitTdccSettlement } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 
 process.env.OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE = "1";
 const { currentPreviewVisibility } = await import("../src/lib/automation/server/settings.ts");
@@ -212,12 +213,12 @@ test("visible preview balances count in overview and assets totals with exact de
     assert.deepEqual(overview.summary.assets.amounts.map((amount) => [amount.currency, amount.exact]), [
       ["TWD", { coefficient: "133460", scale: 2 }],
     ], "100.1 canonical plus 1234.50 preview, exactly");
-    assert.equal(overview.summary.assets.includesPreview, true);
+    assert.equal(overview.summary.assets.provenance.preview, true);
     const preview = overview.accounts.find((account) => account.preview)!;
     assert.match(preview.id, /^preview:[0-9a-f]{32}$/u);
     assert.equal(preview.canonicalAccountId, undefined);
     assert.deepEqual(preview.preview!.transactions.map((row) => row.direction), ["outflow", "unknown"]);
-    assert.deepEqual(overview.dailyHistory.map((row) => [row.date, row.includesPreview === true]), [
+    assert.deepEqual(overview.dailyHistory.map((row) => [row.date, row.provenance.preview]), [
       ["2026-10-01", false],
       ["2026-10-03", true],
       ["2026-10-05", true],
@@ -232,11 +233,11 @@ test("visible preview balances count in overview and assets totals with exact de
     const model = readOverview(overview, { today: TODAY });
     const net = convertedNet(overview);
     assert.equal(net.twd, 1334.6);
-    assert.equal(net.includesPreview, true);
-    assert.equal(model.assetAllocation.includesPreview, true);
-    assert.equal(model.series.at(-1)!.includesPreview, true);
+    assert.equal(net.provenance.preview, true);
+    assert.equal(model.assetAllocation.provenance.preview, true);
+    assert.equal(model.series.at(-1)!.provenance.preview, true);
     const summary = readAssetsSummary(assets, { today: TODAY });
-    assert.ok(summary.state === "ready" && summary.includesPreview && summary.total === 1334.6);
+    assert.ok(summary.state === "ready" && summary.provenance.preview && summary.total === 1334.6);
   });
 });
 
@@ -249,14 +250,14 @@ test("hidden preview data adds no account, history row, total, or flag", async (
     assert.equal(convertedNet(overview).twd, 100.1);
     assert.equal(overview.accounts.some((account) => account.preview), false);
     assert.deepEqual(overview.dailyHistory.map((row) => row.date), ["2026-10-01"]);
-    assert.equal(overview.dailyHistory.some((row) => row.includesPreview), false);
+    assert.equal(overview.dailyHistory.some((row) => row.provenance.preview), false);
     const assets = await hidden["financial.assets.current"]([]);
     assert.equal(assets.accounts.some((account) => account.preview), false);
     assert.equal(Object.keys(assets.dailyHistoryByAccount).some((id) => id.startsWith("preview:")), false);
     const model = readOverview(overview, { today: TODAY });
-    assert.equal(overview.summary.net.includesPreview, false);
-    assert.equal(model.netWorth.chipsIncludePreview, false);
-    assert.equal(model.assetAllocation.includesPreview, false);
+    assert.equal(overview.summary.net.provenance.preview, false);
+    assert.equal(model.netWorth.chipsProvenance.preview, false);
+    assert.equal(model.assetAllocation.provenance.preview, false);
   });
 });
 
@@ -269,9 +270,9 @@ test("the Preview features setting decides visibility at each read", async () =>
     settings = { PREVIEW_FEATURES_ENABLED: "false" };
     const off = await live["financial.overview.current"]([]);
     assert.equal(off.accounts.some((account) => account.preview), false);
-    assert.equal(off.dailyHistory.some((row) => row.includesPreview), false);
-    assert.equal(off.summary.net.includesPreview, false);
-    assert.equal(readOverview(off, { today: TODAY }).netWorth.chipsIncludePreview, false);
+    assert.equal(off.dailyHistory.some((row) => row.provenance.preview), false);
+    assert.equal(off.summary.net.provenance.preview, false);
+    assert.equal(readOverview(off, { today: TODAY }).netWorth.chipsProvenance.preview, false);
     assert.equal((await live["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
   });
 });
@@ -285,23 +286,23 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     const ratelessNet = convertedNet(ratelessPage);
     assert.equal(ratelessNet.twd, 100.1, "verified net worth stays when preview data has no rate");
     assert.deepEqual(ratelessNet.unconvertedCurrencies, ["USD"]);
-    assert.equal(ratelessNet.includesPreview, false);
+    assert.equal(ratelessNet.provenance.preview, false);
     assert.equal(rateless.assetAllocation.total, 100.1);
     assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);
-    assert.equal(rateless.assetAllocation.includesPreview, false);
-    assert.equal(rateless.series.some((point) => point.includesPreview), false);
+    assert.equal(rateless.assetAllocation.provenance.preview, false);
+    assert.equal(rateless.series.some((point) => point.provenance.preview), false);
     const ratelessAssets = readAssetsSummary(await shown["financial.assets.current"]([]), { today: TODAY });
-    assert.ok(ratelessAssets.state === "ready" && !ratelessAssets.includesPreview);
+    assert.ok(ratelessAssets.state === "ready" && !ratelessAssets.provenance.preview);
 
     await addUsdRate();
     const ratedPage = await shown["financial.overview.current"]([]);
     const rated = readOverview(ratedPage, { today: TODAY });
     const ratedNet = convertedNet(ratedPage);
     assert.equal(ratedNet.twd, 100.1 + 320);
-    assert.equal(ratedNet.includesPreview, true);
-    assert.equal(rated.assetAllocation.includesPreview, true);
+    assert.equal(ratedNet.provenance.preview, true);
+    assert.equal(rated.assetAllocation.provenance.preview, true);
     assert.deepEqual(rated.assetAllocation.unconvertedCurrencies, []);
-    assert.equal(rated.series.at(-1)!.includesPreview, true);
+    assert.equal(rated.series.at(-1)!.provenance.preview, true);
   });
 });
 
@@ -313,8 +314,7 @@ test("the published Net position converts verified TWD beside a USD preview, nam
       display: "converted",
       twd: 100.1,
       unconvertedCurrencies: ["USD"],
-      includesPreview: false,
-      includesManual: false,
+      provenance: { preview: false, manual: false },
       incomplete: false,
     }, "the rateless USD preview is named, not shown as a native line, and does not mark the figure");
 
@@ -323,10 +323,29 @@ test("the published Net position converts verified TWD beside a USD preview, nam
       display: "converted",
       twd: 100.1 + 320,
       unconvertedCurrencies: [],
-      includesPreview: true,
-      includesManual: false,
+      provenance: { preview: true, manual: false },
       incomplete: false,
     }, "with a rate the USD preview counts in the TWD figure and marks it");
+  });
+});
+
+test("a native Net position carries the preview and manual markers its per-currency amounts include", async () => {
+  await withLedger(async ({ store, writePreview }) => {
+    await writePreview(twdSavings);
+    await commitTdccSettlement(store, "013", { currency: "USD" });
+    const clock = { now: () => "2026-10-15T02:00:00.000Z", today: () => TODAY };
+    const created = await applyManualAssetCommand(store, {
+      kind: "createAsset", category: "house", name: "Apartment", currency: "TWD",
+      firstValuation: { valuedOn: "2026-10-05", amount: "5000000", source: "appraisal_report", note: null },
+    }, clock);
+    assert.ok(created.ok);
+    const shown = createPGliteFinancialRegistry(store, () => VISIBLE, { manualAssets: true, today: () => TODAY });
+    const overview = await shown["financial.overview.current"]([]);
+    const net = overview.summary.net;
+    assert.equal(net.display, "native", "a verified USD balance without a rate withholds the TWD figure");
+    assert.deepEqual(net.provenance, { preview: true, manual: true });
+    assert.deepEqual(overview.summary.assets.provenance, { preview: true, manual: true });
+    assert.deepEqual(overview.summary.liabilities.provenance, { preview: false, manual: false });
   });
 });
 
@@ -388,7 +407,7 @@ test("preview loans list on Liabilities only, count against the Net position wit
     ]);
     assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
     assert.deepEqual(convertedNet(await shown["financial.overview.current"]([])), {
-      display: "converted", twd: 100.1 - 60.1, unconvertedCurrencies: [], includesPreview: true, includesManual: false, incomplete: false,
+      display: "converted", twd: 100.1 - 60.1, unconvertedCurrencies: [], provenance: { preview: true, manual: false }, incomplete: false,
     });
     assert.equal(convertedNet(await registry(() => HIDDEN)["financial.overview.current"]([])).twd, 100.1, "hidden loans count toward nothing");
 

@@ -8,6 +8,7 @@ import type {
   TransactionRowDto,
 } from "../shared-ledger/types.ts";
 import { buildBalanceHistory, historyKind, historyStats } from "./balance-history.ts";
+import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
 
 const TZ = "Asia/Taipei";
 const today = "2026-10-06";
@@ -39,6 +40,7 @@ const snapshot = (date: string, value: number, side: "assets" | "liabilities" = 
   liabilities: side === "liabilities" ? [{ currency: "TWD", value }] : [],
   accountChanges: [],
   positionCount: 0,
+  provenance: NO_PROVENANCE,
 });
 
 const statement = (cycleEnd: string, balance: number, memberships = 1, revisionNumber = 1): CreditCardStatementDto => ({

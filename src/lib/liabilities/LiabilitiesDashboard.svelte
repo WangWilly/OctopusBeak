@@ -34,7 +34,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { NO_PROVENANCE, originProvenance } from "$lib/shared-ledger/provenance.ts";
 
   export let liabilities: LiabilitiesPageDto;
   export let focusAccountId: string | null = null;
@@ -70,7 +71,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     ),
   );
   $: incomplete = totalIncomplete(liabilities.accounts);
-  $: includesPreview = summary.state === "ready" && summary.includesPreview;
+  $: provenance = summary.state === "ready" ? summary.provenance : NO_PROVENANCE;
+  $: totalProvenance = summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE;
   $: sideValue = isEmpty
     ? "—"
     : incomplete
@@ -123,7 +125,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {sideValue}
   {sideSub}
   sideValueSensitive={!incomplete}
-  sideIncludesPreview={!isEmpty && includesPreview}
+  sideProvenance={isEmpty ? NO_PROVENANCE : totalProvenance}
   searchPlaceholder={$t.liabilities.searchPlaceholder}
   bind:search
 >
@@ -143,7 +145,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
         {incomplete}
-        {includesPreview}
+        {provenance}
         notes={isEmpty ? [$t.liabilities.empty.totalNote] : [
           summary.state === "ready" && summary.unconvertedCurrencies.length > 0
             ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
@@ -190,7 +192,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
               sub={`${formatMoney({ currency: share.currency, value: share.outstanding }, { locale: $locale })} / ${formatAmount(share.original, share.currency, { locale: $locale })}`}
               subSensitive
               share={share.repaid}
-              preview
+              provenance={originProvenance("preview")}
             />
           {:else}
             <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.mortgageRepaid} value="—" sub="–" share={0} />
@@ -221,7 +223,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
-        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
+        <OriginMarkers provenance={stackedChart.provenance} align="end" />
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}

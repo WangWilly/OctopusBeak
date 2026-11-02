@@ -2,7 +2,8 @@
   import { ArrowRight, ChartColumn } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
-  import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import { mergeProvenance } from "$lib/shared-ledger/provenance.ts";
   import type { DailyBar } from "$lib/overview/overview-model.ts";
   import { formatShortDate } from "$lib/overview/overview-format.ts";
 import { formatTwdNumber } from "$lib/shared-money/money.ts";
@@ -22,7 +23,7 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
       <h2>{`${$t.overview.dailyChangeTitle} · ${$t.overview.dailyChangeRange}`}</h2>
       <p>
         {$t.overview.dailyChangeLead}
-        {#if bars.some((bar) => bar.includesPreview)}<PreviewMarker />{/if}
+        <OriginMarkers provenance={mergeProvenance(...bars.map((bar) => bar.provenance))} />
       </p>
     </div>
     {#if hasDetail}

@@ -8,6 +8,9 @@ import type {
   DailyHistoryRowDto,
 } from "../shared-ledger/types.ts";
 import { readLiabilitiesSummary, readMortgageRepaid, type LiabilitiesSummaryInput } from "./liabilities-summary.ts";
+import { NO_PROVENANCE, originProvenance } from "../shared-ledger/provenance.ts";
+
+const PREVIEW = originProvenance("preview");
 
 const twd = (value: number): CurrencyAmountDto[] => [{ currency: "TWD", value }];
 
@@ -58,7 +61,7 @@ function used(value: number, limit: number | null): CreditCardBalanceDto {
 }
 
 function debtRow(date: string, owed: number): DailyHistoryRowDto {
-  return { date, netAssets: twd(-owed), dailyChange: [], assets: [], liabilities: twd(owed), accountChanges: [], positionCount: 0 };
+  return { date, netAssets: twd(-owed), dailyChange: [], assets: [], liabilities: twd(owed), accountChanges: [], positionCount: 0, provenance: NO_PROVENANCE };
 }
 
 function input(overrides: Partial<LiabilitiesSummaryInput>): LiabilitiesSummaryInput {
@@ -109,9 +112,9 @@ test("a counted preview credit balance marks the total; an unknown one adds noth
     },
   });
   const known = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), preview("known", 300)] }), { today: TODAY });
-  assert.ok(known.state === "ready" && known.includesPreview && known.total === 400);
+  assert.ok(known.state === "ready" && known.provenance.preview && known.total === 400);
   const unknown = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), preview("unknown", null)] }), { today: TODAY });
-  assert.ok(unknown.state === "ready" && !unknown.includesPreview && unknown.total === 100);
+  assert.ok(unknown.state === "ready" && !unknown.provenance.preview && unknown.total === 100);
 });
 
 test("utilization counts only cards that report a limit", () => {
@@ -139,6 +142,22 @@ test("the 30-day change is the change in what is owed, over this page's accounts
   if (summary.state !== "ready") return;
   assert.equal(summary.trailing?.change, -100, "paying down 100 is a drop in debt");
   assert.equal(summary.trailing?.pct, -0.1);
+});
+
+test("a closed preview loan that drives the 30-day change marks the total preview", () => {
+  const verified = [debtRow("2026-09-01", 1000), debtRow("2026-10-05", 900)];
+  const closed = [{ ...debtRow("2026-09-01", 500), provenance: PREVIEW }, { ...debtRow("2026-10-01", 0), provenance: PREVIEW }];
+  const summary = readLiabilitiesSummary(input({
+    accounts: [account("loan", "loan", 900), previewLoan("preview:closed", "TWD", null, { category: "personal", originalAmount: null, closedAt: "2026-10-01T00:00:00Z" })],
+    dailyHistory: [debtRow("2026-09-01", 1500), debtRow("2026-10-01", 1000), debtRow("2026-10-05", 900)],
+    dailyHistoryByAccount: { loan: verified, "preview:closed": closed },
+  }), { today: TODAY });
+  assert.equal(summary.state, "ready");
+  if (summary.state !== "ready") return;
+  assert.equal(summary.total, 900, "the closed loan owes nothing today");
+  assert.equal(summary.trailing?.change, -600);
+  assert.deepEqual(summary.trailing?.provenance, PREVIEW);
+  assert.deepEqual(summary.provenance, PREVIEW, "the total's 30-day change counts the loan's payoff");
 });
 
 function previewLoan(

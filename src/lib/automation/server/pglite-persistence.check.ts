@@ -22,6 +22,7 @@ import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-r
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { NO_PROVENANCE } from "../../shared-ledger/provenance.ts";
 
 class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly stdout = null;
@@ -96,6 +97,7 @@ try {
         liabilities: [],
         accountChanges: [],
         positionCount: 0,
+        provenance: NO_PROVENANCE,
       }, {
         date: "2026-01-01",
         netAssets: [{ currency: "TWD", value: 1 }],
@@ -104,6 +106,7 @@ try {
         liabilities: [],
         accountChanges: [],
         positionCount: 0,
+        provenance: NO_PROVENANCE,
       }],
     }),
     { requiredFrom: "2026-01-01", currencies: ["JPY", "USD"] },
