@@ -52,6 +52,9 @@ import {
   type CollectionTrigger,
 } from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
+import { createSettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
+import { deleteAllFinancialData } from "../src/lib/settings/data-erasure.ts";
+import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
 import { broadcast } from "./broadcast.ts";
 import {
   createAutomationDesktopService,
@@ -630,9 +633,11 @@ async function start() {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
     usagePinger?.recordFailures(runFailures(run));
   });
-  ipcRegistration = registerOctopusBeakIpc({
-    automation,
-    collection,
+  const settings = createSettingsDesktopService({
+    settingsFile: {
+      read: () => readAutomationSettings(),
+      write: (value) => writeAutomationSettings(value),
+    },
     onSystemSettingsChanged: (settings) => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
@@ -640,6 +645,16 @@ async function start() {
       appUpdater?.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
     },
     usagePing: usagePinger,
+    dataVersions: dataVersionStore,
+    collection,
+    preview: operationalRuntime.provider.preview,
+    financial: { reset: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []) },
+    deleteAllPreviewData,
+    deleteAllFinancialData,
+  });
+  ipcRegistration = registerOctopusBeakIpc({
+    automation,
+    settings,
     appUpdates: {
       view: appUpdateView,
       check: () => void appUpdater?.check(),
@@ -662,7 +677,6 @@ async function start() {
       dataDir: operationalRuntime.dataDir,
     },
     pgliteOperational: {
-      provider: operationalRuntime.provider,
       worker: operationalRuntime.worker,
       dataDir: operationalRuntime.dataDir,
     },
