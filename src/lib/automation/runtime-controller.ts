@@ -57,7 +57,9 @@ export function createAutomationRuntimeController() {
   }
 
   function beginAction(taskId: string, kind: AutomationActionKind): AutomationActionToken | null {
-    if (pending.has(taskId)) return null;
+    // A stop may replace a run still waiting for the runtime; any other pending action refuses a second one.
+    const existing = pending.get(taskId);
+    if (existing && !(existing.kind === "run" && kind !== "run")) return null;
     const token: AutomationActionToken = {
       token: tokenId(),
       taskId,

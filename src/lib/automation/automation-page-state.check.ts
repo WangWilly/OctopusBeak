@@ -161,3 +161,15 @@ test("the blocks refresh on a timer while work is active or pending, and stop on
   t.mock.timers.tick(4_000);
   assert.deepEqual(calls.reloads, ["poll", "poll"], "a finished run stops the refresh");
 });
+
+test("Stop all reaches a run that the runtime has not shown yet", async (t) => {
+  const { state, calls, current } = harness(t);
+  state.setModel(model([task({ id: "a" })]));
+  const run = state.run("a")!;
+  const stops = state.cancelAll([{ id: "a", status: "preparing" }]);
+  assert.equal(stops.length, 1, "the pending run does not hide the task from Stop all");
+  await Promise.all([run.settled, ...stops.map((stop) => stop.settled)]);
+  assert.deepEqual(calls.cancel, ["a"]);
+  assert.equal(row(current, "a").status, "cancelling");
+  assert.equal(state.run("a"), null, "a pending stop still refuses a new run");
+});
