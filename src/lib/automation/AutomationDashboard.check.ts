@@ -247,6 +247,13 @@ assert.match(
   /<RunHistoryDialog tasks=\{live\.tasks\} port=\{window\.octopusBeak\.automation\}/,
   "Run history reads the current task catalog and its own IPC port",
 );
+assert.match(
+  source,
+  /const selected = selectStructureReportRun\(structureReport, key\);[\s\S]*?\{#if structureReport\.open && structureReport\.report\}\s*<StructureReportDialog/,
+  "the Structure report dialog shows only while the report it opened on is current",
+);
+assert.match(source, /\{#if errorReportsAvailable\}[\s\S]*?errorReport = errorReportTarget\(task, errorCode\)/);
+assert.match(source, /\{#if errorReport\}\s*<ErrorReportDialog target=\{errorReport\} port=\{window\.octopusBeak\.errorReports\}/);
 assert.doesNotMatch(source, /class="modal-footer"/);
 
 assert.match(source, /<fieldset[^>]*class="statement-selection"/);

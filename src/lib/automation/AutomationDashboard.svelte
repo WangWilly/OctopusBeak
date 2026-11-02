@@ -3,6 +3,7 @@
   import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
   import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
   import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
+  import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -31,6 +32,14 @@
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus } from "$lib/desktop/api.ts";
   import { errorReportTarget, type ErrorReportTarget } from "$lib/automation/error-report-form.ts";
+  import {
+    NO_STRUCTURE_REPORT,
+    closeStructureReport,
+    openStructureReport,
+    selectStructureReportRun,
+    structureReportKey,
+    structureReportLoaded,
+  } from "$lib/automation/structure-report-state.ts";
   import type { AutomationPageState } from "$lib/automation/automation-page-state.ts";
   import {
     deviceRegistrationSource,
@@ -164,45 +173,18 @@ import type {
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
   $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
-  let structureReport: { taskId: string; text: string } | null = null;
-  let structureReportKey: string | null = null;
-  let structureReportOpen = false;
-  let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
+  let structureReport = NO_STRUCTURE_REPORT;
   $: expandedFailedTask = live.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
   $: void loadStructureReport(expandedFailedTask);
 
   async function loadStructureReport(task: AutomationTaskRow | null) {
-    const key = task ? `${task.id}:${task.latestFinishedAt ?? ""}` : null;
-    if (key === structureReportKey) return;
-    structureReportKey = key;
-    structureReport = null;
+    const key = structureReportKey(task);
+    const selected = selectStructureReportRun(structureReport, key);
+    if (selected === structureReport) return;
+    structureReport = selected;
     if (!task || !key) return;
     const text = await window.octopusBeak.automation.previewStructureReport(task.id).catch(() => null);
-    if (structureReportKey === key && text) structureReport = { taskId: task.id, text };
-  }
-
-  function openStructureReport() {
-    structureReportNotice = null;
-    structureReportOpen = true;
-  }
-
-  async function copyStructureReport() {
-    if (!structureReport) return;
-    try {
-      await navigator.clipboard.writeText(structureReport.text);
-      structureReportNotice = "copied";
-    } catch {
-      structureReportNotice = "copyFailed";
-    }
-  }
-
-  async function openStructureReportIssue() {
-    if (!structureReport) return;
-    try {
-      await window.octopusBeak.automation.openPreviewStructureReportIssue(structureReport.taskId);
-    } catch {
-      structureReportNotice = "openIssueFailed";
-    }
+    structureReport = structureReportLoaded(structureReport, key, text ? { taskId: task.id, text } : null);
   }
   // ADR 0081: an Error report the person sends by hand. Hidden in builds without a receiver.
   let errorReportsAvailable = false;
@@ -1218,8 +1200,8 @@ import type {
                               {$t.automation.deviceRegistrationOpenSettings}
                             </button>
                           {/if}
-                          {#if structureReport?.taskId === task.id}
-                            <button class="button secondary structure-report-action" type="button" onclick={openStructureReport}>
+                          {#if structureReport.report?.taskId === task.id}
+                            <button class="button secondary structure-report-action" type="button" onclick={() => (structureReport = openStructureReport(structureReport))}>
                               {$t.automation.structureReport.share}
                             </button>
                           {/if}
@@ -1914,34 +1896,12 @@ import type {
   </div>
 {/if}
 
-{#if structureReportOpen && structureReport}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="structure-report-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}></button>
-    <div class="modal-panel structure-report-modal">
-      <div class="modal-head">
-        <div>
-          <h2 id="structure-report-title">{$t.automation.structureReport.title}</h2>
-          <p>{$t.automation.structureReport.intro}</p>
-        </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}><X size={20} /></button>
-      </div>
-      <div class="modal-body structure-report-body">
-        <ul class="structure-report-scope">
-          <li>{$t.automation.structureReport.contains}</li>
-          <li>{$t.automation.structureReport.neverContains}</li>
-          <li>{$t.automation.structureReport.sending}</li>
-        </ul>
-        <pre class="structure-report-text">{structureReport.text}</pre>
-        <div class="structure-report-actions">
-          {#if structureReportNotice}
-            <span class="structure-report-notice" role="status">{$t.automation.structureReport[structureReportNotice]}</span>
-          {/if}
-          <button class="button secondary" type="button" onclick={() => void copyStructureReport()}>{$t.automation.structureReport.copy}</button>
-          <button class="button" type="button" onclick={() => void openStructureReportIssue()}>{$t.automation.structureReport.openIssue}</button>
-        </div>
-      </div>
-    </div>
-  </div>
+{#if structureReport.open && structureReport.report}
+  <StructureReportDialog
+    report={structureReport.report}
+    port={window.octopusBeak.automation}
+    onClose={() => (structureReport = closeStructureReport(structureReport))}
+  />
 {/if}
 
 {#if errorReport}
@@ -3103,57 +3063,6 @@ import type {
     padding: 18px 28px 28px;
     border-top: 1px solid var(--border);
     background: var(--surface);
-  }
-
-  .structure-report-modal {
-    width: min(760px, 100%);
-  }
-
-  .structure-report-modal .modal-head p {
-    margin: var(--space-2) 0 0;
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .structure-report-body {
-    display: grid;
-    gap: var(--space-4);
-    padding: var(--space-5);
-  }
-
-  .structure-report-scope {
-    display: grid;
-    gap: var(--space-2);
-    margin: 0;
-    padding-left: var(--space-5);
-    font-size: 13px;
-  }
-
-  .structure-report-text {
-    max-height: 360px;
-    margin: 0;
-    padding: var(--space-3);
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    white-space: pre;
-    user-select: text;
-  }
-
-  .structure-report-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-3);
-  }
-
-  .structure-report-notice {
-    margin-right: auto;
-    color: var(--muted);
-    font-size: 13px;
   }
 
   .structure-report-action {
