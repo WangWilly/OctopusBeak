@@ -75,9 +75,10 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
+  const today = () => dateInTimeZone(new Date(), automationBusinessTimezone());
   const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
     manualAssets: true,
-    today: () => dateInTimeZone(new Date(), automationBusinessTimezone()),
+    today,
   });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
@@ -94,7 +95,7 @@ export async function startPGliteViewWorker(
     financialRegistry,
     () => configuredOverviewSources(),
     scheduler,
-    { manualAssets: true },
+    { manualAssets: true, today },
   );
   const source = {
     subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {

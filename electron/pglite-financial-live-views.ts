@@ -99,7 +99,11 @@ export function createPGliteFinancialLiveViews(
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
   scheduler?: PGliteWorkScheduler,
   /** The store holds the Manual Asset tables, so the "manual" dependency has a row to watch. */
-  options: Readonly<{ manualAssets?: boolean }> = {},
+  options: Readonly<{
+    manualAssets?: boolean;
+    /** The person's local date; a manual asset stops counting the day after it ends, with no write to mark it. */
+    today?: () => string;
+  }> = {},
 ) {
   const entries = new Map<string, {
     stop: () => Promise<void>;
@@ -120,6 +124,7 @@ export function createPGliteFinancialLiveViews(
         let stopped = false;
         let stopWatch = () => {};
         let stopPreviewVisibilityListener = () => {};
+        let stopDateWatch = () => {};
         const fail = (error: unknown) => {
           for (const listener of listeners) listener.error(error);
         };
@@ -179,6 +184,27 @@ export function createPGliteFinancialLiveViews(
         const dependsOnPreview = definition.dependsOn.includes("preview");
         if (dependsOnPreview && registry.onPreviewVisibilityChanged)
           stopPreviewVisibilityListener = registry.onPreviewVisibilityChanged(trigger);
+        const today = options.today;
+        if (options.manualAssets && today && definition.dependsOn.includes("manual")) {
+          const readDate = () => {
+            try {
+              return today();
+            } catch (error) {
+              fail(error);
+              return null;
+            }
+          };
+          let watchedDate = readDate();
+          const timer = setInterval(() => {
+            const date = readDate();
+            if (date === null || date === watchedDate) return;
+            const changed = watchedDate !== null;
+            watchedDate = date;
+            if (changed) trigger();
+          }, 60_000);
+          timer.unref?.();
+          stopDateWatch = () => clearInterval(timer);
+        }
         // Each dependency is one bounded row set rather than a materialized
         // history result.
         const dependencyQueries = [
@@ -196,6 +222,7 @@ export function createPGliteFinancialLiveViews(
           stopped = true;
           stopWatch();
           stopPreviewVisibilityListener();
+          stopDateWatch();
           if (entries.get(key) === entry) entries.delete(key);
           const dependencies = await Promise.allSettled(dependencyQueries);
           await Promise.allSettled(dependencies.flatMap((result) =>

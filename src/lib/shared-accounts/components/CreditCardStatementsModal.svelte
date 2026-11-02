@@ -2,7 +2,7 @@
   import { CalendarCheck, CalendarClock, CalendarDays, Check, ChevronDown, Download, FileText } from "@lucide/svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
+  import { localDate } from "$lib/settings/system-timezone-store.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
   import {
@@ -11,7 +11,6 @@
     statementYears,
     statementsCsv,
   } from "$lib/shared-accounts/statement-list.ts";
-  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import type { AccountRowDto, CreditCardStatementDto, CurrencyAmountDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
@@ -36,7 +35,7 @@
     yearMenuOpen = false;
   }
   $: shown = year === null ? statements : statements.filter((statement) => statement.cycleEnd.startsWith(`${year}-`));
-  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: today = $localDate;
   $: primaryCurrency = account?.amountLines[0]?.currency ?? "TWD";
 
   function close() {
