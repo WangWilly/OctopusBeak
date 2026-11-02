@@ -4,8 +4,9 @@
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import UsageStatisticsPrompt from "$lib/settings/UsageStatisticsPrompt.svelte";
+  import { createAutomationPageState } from "$lib/automation/automation-page-state.ts";
+  import type { AutomationActionStart, AutomationStopRequested } from "$lib/automation/automation-actions.ts";
   import {
-    createAutomationRuntimeController,
     createAutomationBlockRefreshCoordinator,
     type AutomationActionToken,
     type AutomationBlockRefreshReason,
@@ -124,9 +125,24 @@
   let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
   // Runtime ownership lives at the app shell so route changes never drop
   // events or lose the latest state while Automation is off-screen.
-  let automationRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  const automationRuntimeController = createAutomationRuntimeController();
-  let automationPendingActions: readonly AutomationActionToken[] = [];
+  const automationState = createAutomationPageState({
+    // Read the bridge per call: the shell starts before any Automation request is made.
+    api: {
+      run: (taskId) => window.octopusBeak.automation.run(taskId),
+      runMany: (taskIds) => window.octopusBeak.automation.runMany(taskIds),
+      cancel: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
+      forceTerminate: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
+      runtimeSnapshot: () => window.octopusBeak.automation.runtimeSnapshot(),
+      fatalRuntimeSnapshot: () => window.octopusBeak.automation.fatalRuntimeSnapshot(),
+    },
+    requestReload: (reason) => {
+      if (reason === "poll" && route !== "automation") return;
+      return loadRoute("automation", {
+        force: true,
+        ...(reason === "session-resync" ? { automationRefreshReason: "session-resync" } : {}),
+      });
+    },
+  });
   let onboardingState: OnboardingState | null = null;
   let onboardingController: ReturnType<typeof createOnboardingController> | null = null;
   const onboardingTargets = createOnboardingTargetRegistry();
@@ -163,7 +179,7 @@
   const appUpdateView = writable<AppUpdateView | null>(null);
   const automationRunActive = writable(false);
   $: automationRunActive.set(
-    automationRuntimeSnapshot?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false,
+    $automationState.runtime?.tasks.some((task) => isActiveAutomationRuntimeStatus(task.status)) ?? false,
   );
   setContext<AppUpdateUiContext>(APP_UPDATE_CONTEXT_KEY, {
     view: appUpdateView,
@@ -206,8 +222,8 @@
     route,
     viewData(automation) ?? null,
     viewData(overview) ?? null,
-    automationRuntimeSnapshot,
-    automationPendingActions,
+    $automationState.runtime,
+    $automationState.pendingActions,
   );
   $: overviewValue = viewData(overview);
   $: assetsValue = viewData(assets);
@@ -321,20 +337,24 @@
     return automationFromBlockStates(automationBlocks);
   }
 
+  function automationBlockValue<Key extends "summary" | "list" | "details">(
+    states: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
+    key: Key,
+  ): DashboardBlockValueMap["automation"][Key] | undefined {
+    const state = states[key];
+    if (!state || !("data" in state) || state.data === undefined) return undefined;
+    const payload = state.data;
+    return payload.route === "automation" && payload.block === key
+      ? payload.data as DashboardBlockValueMap["automation"][Key]
+      : undefined;
+  }
+
   function automationFromBlockStates(
     states: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
   ): AutomationDesktopModel | undefined {
-    const read = <Key extends "summary" | "list" | "details">(key: Key) => {
-      const state = states[key];
-      if (!state || !("data" in state) || state.data === undefined) return undefined;
-      const payload = state.data;
-      return payload.route === "automation" && payload.block === key
-        ? payload.data as DashboardBlockValueMap["automation"][Key]
-        : undefined;
-    };
-    const summary = read("summary");
-    const list = read("list");
-    const details = read("details");
+    const summary = automationBlockValue(states, "summary");
+    const list = automationBlockValue(states, "list");
+    const details = automationBlockValue(states, "details");
     const source = details ?? list ?? summary;
     if (!source) return undefined;
     return {
@@ -348,11 +368,14 @@
   $: liabilitiesRenderValue = liabilitiesValue;
   $: spendingRenderValue = spendingValue;
   $: automationRenderValue = automationValue ?? progressiveAutomation();
+  $: automationState.setModel(
+    automationBlockValue(automationBlocks, "list")?.automation ?? automationRenderValue?.automation ?? null,
+  );
   $: settingsAutomation = route === "settings" && automationRenderValue
     ? {
       linkedSources: linkedSourceCount(automationRenderValue.credentialGroups, automationRenderValue.automation.credentials),
       exchangeRateLastRun: latestExchangeRateRun(
-        mergeAutomationRuntime(automationRenderValue.automation, automationRuntimeSnapshot, automationPendingActions).tasks,
+        mergeAutomationRuntime(automationRenderValue.automation, $automationState.runtime, $automationState.pendingActions).tasks,
       ),
     }
     : null;
@@ -392,7 +415,7 @@
       const payload = "data" in state ? state.data : undefined;
       if (
         payload?.route === "automation"
-        && isAutomationBlockStale(payload.data, automationRuntimeSnapshot)
+        && isAutomationBlockStale(payload.data, $automationState.runtime)
         && refreshPhase !== "trailing"
       ) {
         // Commit the block first. Starting a refresh from inside this
@@ -521,19 +544,6 @@
     writeOnboardingState(localStorage, next);
   }
 
-  function acceptAutomationRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
-    const result = automationRuntimeController.acceptSnapshot(snapshot);
-    if (!result.accepted) return;
-    automationRuntimeSnapshot = result.snapshot;
-    automationPendingActions = automationRuntimeController.pendingActions();
-    if (result.hadGap || result.sessionChanged) {
-      void loadRoute("automation", {
-        force: true,
-        automationRefreshReason: "session-resync",
-      });
-    }
-  }
-
   function saveFirstRunWelcome(next: FirstRunWelcomeState) {
     firstRunWelcomeState = next;
     writeFirstRunWelcomeState(localStorage, next);
@@ -566,7 +576,7 @@
       },
       runtimeSnapshot: async () => {
         const snapshot = await window.octopusBeak.automation.runtimeSnapshot();
-        acceptAutomationRuntimeSnapshot(snapshot);
+        automationState.acceptSnapshot(snapshot);
         return snapshot;
       },
       loadOverview: async () => {
@@ -578,11 +588,21 @@
         if (!value) throw new Error("Overview data unavailable.");
         return value;
       },
-      cancelTask: (taskId, expectedRunId) => window.octopusBeak.automation.cancel(taskId, expectedRunId),
-      forceTerminateTask: (taskId, expectedRunId) => window.octopusBeak.automation.forceTerminate(taskId, expectedRunId),
+      cancelTask: (taskId, expectedRunId) => settleOnboardingStop(automationState.cancel({
+        id: taskId,
+        status: $automationState.live?.tasks.find((task) => task.id === taskId)?.status ?? "running",
+      }, expectedRunId)),
+      forceTerminateTask: (taskId, expectedRunId) => settleOnboardingStop(automationState.forceTerminate(taskId, expectedRunId)),
     }));
     onboardingController.hydrate(onboardingState);
     return onboardingController;
+  }
+
+  async function settleOnboardingStop(
+    stop: AutomationActionStart<AutomationStopRequested> | null,
+  ) {
+    const result = await stop?.settled;
+    if (result?.error) throw new Error(result.error);
   }
 
   function completeFirstRunWelcome() {
@@ -874,13 +894,8 @@
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
     const automationApi = window.octopusBeak.automation;
-    const unsubscribeAutomationController = automationRuntimeController.subscribe(() => {
-      const current = automationRuntimeController.snapshot();
-      if (current) automationRuntimeSnapshot = current;
-      automationPendingActions = automationRuntimeController.pendingActions();
-    });
     const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
-      ? automationApi.onRuntimeChanged(acceptAutomationRuntimeSnapshot)
+      ? automationApi.onRuntimeChanged(automationState.acceptSnapshot)
       : () => {};
     const takeNotificationTarget = () => {
       void automationApi.takeNotificationTarget?.().then((target) => {
@@ -898,7 +913,7 @@
     takeNotificationTarget();
     if (typeof automationApi.runtimeSnapshot === "function") {
       void automationApi.runtimeSnapshot()
-        .then(acceptAutomationRuntimeSnapshot)
+        .then(automationState.acceptSnapshot)
         .catch((error) => {
           console.error("automation-runtime-snapshot-failed", error);
           if (typeof automationApi.fatalRuntimeSnapshot === "function") {
@@ -909,7 +924,7 @@
     const onAutomationRuntimeResync = () => {
       if (typeof automationApi.runtimeSnapshot !== "function") return;
       void automationApi.runtimeSnapshot()
-        .then(acceptAutomationRuntimeSnapshot)
+        .then(automationState.acceptSnapshot)
         .catch((error) => {
           console.error("automation-runtime-resync-failed", error);
           if (typeof automationApi.fatalRuntimeSnapshot === "function") {
@@ -933,7 +948,7 @@
       financialPage.dispose();
       unsubscribeAutomationRuntime();
       unsubscribeNotificationTargets();
-      unsubscribeAutomationController();
+      automationState.dispose();
       removeEventListener("focus", onAutomationRuntimeResync);
       document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
       removeEventListener("hashchange", normalizeRoute);
@@ -1011,13 +1026,10 @@
   {#if automationRenderValue}
     <AutomationDashboard
       bind:this={automationDashboard}
-      automation={automationRenderValue.automation}
+      state={automationState}
       credentialGroups={automationRenderValue.credentialGroups}
       blocks={automationBlocks}
-      runtimeSnapshot={automationRuntimeSnapshot}
-      runtimeController={automationRuntimeController}
       retryBlock={retryAutomationBlock}
-      reload={() => loadRoute("automation", { force: true })}
       overviewLive={$financialState.enabled ? financialPage.overviewStore() : null}
       onboardingSourceSelection={[
         "source-entry",

@@ -27,14 +27,9 @@
     X,
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
-  import type { AutomationCredentialStatus, AutomationRuntimeSnapshot } from "$lib/desktop/api.ts";
-  import { applyOptimisticAutomationAction, isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
+  import type { AutomationCredentialStatus } from "$lib/desktop/api.ts";
   import type { ErrorReportPayload } from "$lib/automation/server/error-report.ts";
-  import type {
-    AutomationActionToken,
-    createAutomationRuntimeController,
-  } from "$lib/automation/runtime-controller.ts";
-  import { createAutomationActions } from "$lib/automation/automation-actions.ts";
+  import type { AutomationPageState } from "$lib/automation/automation-page-state.ts";
   import {
     deviceRegistrationSource,
     type DeviceRegistrationSource,
@@ -87,7 +82,6 @@ import type {
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { resolveAutomationBlock } from "$lib/shared-shell/progressive-dashboard-data.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
   import type {
     AutomationPageModel,
@@ -96,25 +90,18 @@ import type {
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
   } from "./types.ts";
-  import { mergeAutomationRuntime } from "./runtime-sync.ts";
+  import { selectAutomationBlockModel } from "./runtime-sync.ts";
   import { workflowFailureExplanation, workflowFailureShortExplanation } from "./workflow-failures.ts";
   import { unvaluedAccountLabels } from "./unvalued-accounts.ts";
   import { productFailures, runStageTrack } from "./run-stage-track.ts";
   import type { Readable } from "svelte/store";
   import type { ViewState } from "$lib/data-views/client/view-stores.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
-  import {
-    automationStageTasks,
-    dispatchAutomationStageSync,
-  } from "./progressive-automation-actions.ts";
 
-  export let automation: AutomationPageModel;
+  export let state: AutomationPageState;
   export let credentialGroups: CredentialGroupDto[];
   export let blocks: Readonly<Record<string, BlockState<DashboardBlockPayload>>> = {};
-  export let runtimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  export let runtimeController: ReturnType<typeof createAutomationRuntimeController>;
   export let retryBlock: (key: string) => void = () => {};
-  export let reload: () => Promise<void>;
   /** The current overview, read only while run details are open to list accounts without a current value. */
   export let overviewLive: Readable<ViewState<OverviewPageDto>> | null = null;
   export let onboardingSourceSelection = false;
@@ -141,6 +128,14 @@ import type {
     token: OnboardingWorkflowToken | null,
     message: string,
   ) => void = () => {};
+
+  function loaded(model: AutomationPageModel | null): AutomationPageModel {
+    if (!model) throw new Error("The Automation page renders only after its model loads.");
+    return model;
+  }
+
+  $: pageModel = loaded($state.model);
+  $: live = loaded($state.live);
 
   function blockState(
     source: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
@@ -172,7 +167,7 @@ import type {
   let structureReportKey: string | null = null;
   let structureReportOpen = false;
   let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
-  $: expandedFailedTask = automation.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
+  $: expandedFailedTask = live.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
   $: void loadStructureReport(expandedFailedTask);
 
   async function loadStructureReport(task: AutomationTaskRow | null) {
@@ -284,50 +279,36 @@ import type {
   let historyRows: AutomationTaskHistoryRow[] = [];
   let historySearch = "";
   let historyFilter: "all" | "running" | "completed" | "failed" = "all";
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let appliedRuntimeSnapshot: AutomationRuntimeSnapshot | null = null;
-  const controller = runtimeController;
-  let pendingActions: readonly AutomationActionToken[] = controller.pendingActions();
-  onDestroy(controller.subscribe(() => {
-    pendingActions = controller.pendingActions();
-  }));
-  const actions = createAutomationActions({
-    controller,
-    api: window.octopusBeak.automation,
-    onSnapshot: applyAuthoritativeRuntimeSnapshot,
-  });
-  onDestroy(actions.dispose);
   let actionError = "";
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
   let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
   let stageOpen: Record<string, boolean> = { sync: true };
 
-  $: sideValue = automation.active
-    ? $t.common.runningCount(automation.activeTaskCount)
+  $: sideValue = live.active
+    ? $t.common.runningCount(live.activeTaskCount)
     : $t.common.ready;
-  $: sideSub = $t.common.businessDay(automation.businessDate);
-  $: parallelTaskIds = new Set(automation.parallelRunnableTaskIds);
-  $: activeTasks = automation.tasks.filter((task) => task.isActive);
-  $: iconTasks = automation.tasks.filter((task) =>
+  $: sideSub = $t.common.businessDay(live.businessDate);
+  $: parallelTaskIds = new Set(live.parallelRunnableTaskIds);
+  $: activeTasks = live.tasks.filter((task) => task.isActive);
+  $: iconTasks = live.tasks.filter((task) =>
     task.isActive
     || task.status === "failed"
   );
   $: credentialReadyCount = syncTasks.filter((task) =>
-    task.credentialKeys.every((key) => automation.credentials[key]),
+    task.credentialKeys.every((key) => live.credentials[key]),
   ).length;
-  $: taskStages = taskStagesFor(automation);
-  $: pendingTaskIds = new Set(pendingActions.map((action) => action.taskId));
-  $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(automation);
+  $: pendingTaskIds = $state.pendingTaskIds;
+  $: prerequisiteNoticeGroups = prerequisiteNoticeGroupsFor(live);
   $: collectionGroupIds = new Set(
-    automation.tasks
+    live.tasks
       .filter((task) => task.credentialGroupId)
       .map((task) => task.credentialGroupId as string),
   );
   $: onboardingDisclosure = onboardingTaskDisclosure(
     onboardingNodeId ?? "source-entry",
     onboardingSelectedCredentialGroupId,
-    automation.tasks,
+    live.tasks,
   );
   $: revealOnboardingTask(onboardingDisclosure);
   $: sheetContext = {
@@ -339,13 +320,13 @@ import type {
     onboardingSingleSource,
     onboardingNodeId,
     onboardingSelectedCredentialGroupId,
-    credentialState: (key: string) => credentialState(key, automation),
+    credentialState: (key: string) => credentialState(key, live),
   } satisfies CredentialSheetContext;
   $: sheetView = credentialSheetView(sheet, sheetContext);
   $: selectedGroupTask = sheetView.selectedGroup
-    ? credentialGroupTask(sheetView.selectedGroup.id, automation)
+    ? credentialGroupTask(sheetView.selectedGroup.id, live)
     : undefined;
-  $: catalogHistoryRows = filterHistoryToCurrentTasks(historyRows, automation.tasks);
+  $: catalogHistoryRows = filterHistoryToCurrentTasks(historyRows, live.tasks);
   $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
     const term = historySearch.trim().toLowerCase();
     return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
@@ -359,29 +340,9 @@ import type {
     { running: 0, completed: 0, failed: 0 },
   );
 
-  $: if ((automation.active || pendingTaskIds.size > 0) && !pollTimer) {
-    pollTimer = setInterval(() => {
-      void reload();
-    }, 2_000);
-  } else if (!automation.active && pollTimer) {
-    stopPolling();
-  }
-
-  $: if (runtimeSnapshot && runtimeSnapshot !== appliedRuntimeSnapshot) {
-    appliedRuntimeSnapshot = runtimeSnapshot;
-    applyRuntimeSnapshot(runtimeSnapshot);
-  }
-
   onDestroy(() => {
-    stopPolling();
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
   });
-
-  function stopPolling() {
-    if (!pollTimer) return;
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
 
   function statusClass(status: string) {
     if (status === "completed") return "good";
@@ -407,19 +368,6 @@ import type {
     if (!stageOpen[disclosure.stageId]) {
       stageOpen = { ...stageOpen, [disclosure.stageId]: true };
     }
-  }
-
-  function taskStagesFor(
-    sourceAutomation: AutomationPageModel,
-    block?: Parameters<typeof automationStageTasks>[1],
-    liveRuntime?: AutomationRuntimeSnapshot | null,
-    liveActions: readonly AutomationActionToken[] = pendingActions,
-  ) {
-    return [{
-      id: "sync",
-      title: $t.automation.syncStage,
-      tasks: automationStageTasks(sourceAutomation, block, liveRuntime, liveActions),
-    }];
   }
 
   function prerequisiteNoticeGroupsFor(sourceAutomation: AutomationPageModel) {
@@ -482,43 +430,24 @@ import type {
     return formatTime(task.latestFinishedAt ?? task.latestStartedAt);
   }
 
-  function taskCredentialsReady(task: AutomationTaskRow, sourceAutomation = automation) {
+  function taskCredentialsReady(task: AutomationTaskRow, sourceAutomation = live) {
     return task.status !== "needs_setup" && task.credentialKeys.every((key) =>
       (sourceAutomation.credentialStates?.[key] ?? (sourceAutomation.credentials[key] ? "ready" : "missing")) === "ready",
     );
   }
 
-  function credentialState(key: string, sourceAutomation = automation): AutomationCredentialStatus {
+  function credentialState(key: string, sourceAutomation = live): AutomationCredentialStatus {
     return sourceAutomation.credentialStates?.[key]
       ?? (sourceAutomation.credentials[key] ? "ready" : "missing");
   }
 
-  function allCredentialsLoading(task: AutomationTaskRow, sourceAutomation = automation) {
+  function allCredentialsLoading(task: AutomationTaskRow, sourceAutomation = live) {
     const states = task.credentialKeys.map((key) => credentialState(key, sourceAutomation));
     return states.length > 0 && states.every((state) => state === "loading");
   }
 
-  function anyCredentialReadFailed(task: AutomationTaskRow, sourceAutomation = automation) {
+  function anyCredentialReadFailed(task: AutomationTaskRow, sourceAutomation = live) {
     return task.credentialKeys.some((key) => credentialState(key, sourceAutomation) === "read_failed");
-  }
-
-  /** Component IPC responses must pass the shell's session/revision gate. */
-  function applyAuthoritativeRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
-    const accepted = controller.acceptSnapshot(snapshot);
-    if (!accepted.accepted) return false;
-    runtimeSnapshot = accepted.snapshot;
-    appliedRuntimeSnapshot = accepted.snapshot;
-    applyRuntimeSnapshot(accepted.snapshot);
-    if (accepted.hadGap || accepted.sessionChanged) void reload();
-    return true;
-  }
-
-  function applyRuntimeSnapshot(snapshot: AutomationRuntimeSnapshot) {
-    // Keep the component on the same pure merge contract as list/details and
-    // let the authoritative runtime status derive terminal actions and
-    // partial summaries. This also means every task row receives the exact
-    // progress belonging to the current runId in the snapshot.
-    automation = mergeAutomationRuntime(automation, snapshot);
   }
 
   function localizedText(value: { en: string; "zh-TW": string }) {
@@ -616,7 +545,7 @@ import type {
   }
 
   export async function retryOnboardingWorkflow() {
-    const task = automation.tasks.find(
+    const task = live.tasks.find(
       (candidate) => candidate.credentialGroupId === onboardingSelectedCredentialGroupId,
     );
     if (task) await runTask(task);
@@ -788,10 +717,9 @@ import type {
       actionError = $t.automation.deviceRegistrationBlocksSync;
       return;
     }
-    const start = actions.run(task.id);
+    const start = state.run(task.id);
     if (!start) return;
     const onboardingToken = onOnboardingWorkflowStarting(task.id, task.credentialGroupId ?? null);
-    applyLocalPreparing(task.id);
     actionError = "";
     const result = await start.settled;
     if (result.error !== null) {
@@ -800,18 +728,7 @@ import type {
       return;
     }
     onOnboardingWorkflowStarted(onboardingToken, { taskId: task.id, runId: result.runId });
-    await reload();
-  }
-
-  function applyLocalPreparing(taskId: string) {
-    automation = {
-      ...automation,
-      active: true,
-      activeTaskCount: Math.max(automation.activeTaskCount, 1),
-      tasks: automation.tasks.map((task) => task.id === taskId
-        ? applyOptimisticAutomationAction(task, "run")
-        : task),
-    };
+    await state.reload();
   }
 
   async function openExternalPrerequisite(prerequisiteId: string) {
@@ -836,9 +753,8 @@ import type {
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
-    const start = actions.runMany(tasks.map((task) => task.id));
+    const start = state.runMany(tasks.map((task) => task.id));
     if (!start) return;
-    for (const taskId of start.taskIds) applyLocalPreparing(taskId);
     actionError = "";
     const result = await start.settled;
     if (result.error !== null) {
@@ -848,23 +764,21 @@ import type {
     actionError = Object.entries(result.errors)
       .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $locale)}: ${runStartErrorMessage(message)}`)
       .join("\n");
-    await reload();
+    await state.reload();
   }
 
   async function stopAllTasks() {
     if (!activeTasks.length || !confirm($t.automation.confirmStopAll)) return;
-    const results = await Promise.allSettled(activeTasks.map((task) => window.octopusBeak.automation.cancel(task.id)));
+    const results = await Promise.all(state.cancelAll(activeTasks).map((stop) => stop.settled));
     actionError = results
-      .flatMap((result) => result.status === "rejected"
-        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
-        : [])
+      .flatMap((result) => result.error === null ? [] : [result.error])
       .join("\n");
-    await reload();
+    await state.reload();
   }
 
   async function forceTerminateTask(task: AutomationTaskRow) {
     if (!confirm($t.automation.confirmForceQuit)) return;
-    const stop = actions.forceTerminate(task.id);
+    const stop = state.forceTerminate(task.id);
     if (stop) await settleStop(stop.settled);
   }
 
@@ -872,7 +786,7 @@ import type {
     actionError = "";
     const { error } = await settled;
     if (error !== null) actionError = error;
-    else await reload();
+    else await state.reload();
   }
 
   async function revealTaskDetails(task: AutomationTaskRow) {
@@ -936,7 +850,7 @@ import type {
       return;
     }
     if (!confirm($t.automation.confirmCancel(taskLabel(task, $locale)))) return;
-    const stop = actions.cancel(task);
+    const stop = state.cancel(task);
     if (stop) await settleStop(stop.settled);
   }
 
@@ -994,7 +908,7 @@ import type {
       sheet = applyCredentialSaveResult(sheet, generation, { kind: "result", result }, sheetContext);
       if (!result.saved) return;
       // The sheet stays open, still saving, while the page reloads.
-      await reload();
+      await state.reload();
       if (sheet.generation !== generation) return;
       const savedGroupId = save.savedGroupId;
       if (onboardingSourceSelection && savedGroupId) {
@@ -1004,7 +918,7 @@ import type {
           configuredAt: new Date().toISOString(),
         });
         dispatchSheet({ type: "saved-and-reloaded", generation });
-        const selectedTask = automation.tasks.find(
+        const selectedTask = live.tasks.find(
           (task) => task.credentialGroupId === savedGroupId,
         );
         if (selectedTask?.canRun) {
@@ -1024,12 +938,12 @@ import type {
   }
 
   function taskIdLogo(taskId: string) {
-    const task = automation.tasks.find((candidate) => candidate.id === taskId);
+    const task = live.tasks.find((candidate) => candidate.id === taskId);
     return task ? taskLogo(task) : null;
   }
 
   function taskIdLabel(taskId: string, language: Locale) {
-    const task = automation.tasks.find((candidate) => candidate.id === taskId);
+    const task = live.tasks.find((candidate) => candidate.id === taskId);
     return task ? taskLabel(task, language) : taskId;
   }
 
@@ -1050,11 +964,11 @@ import type {
     locale: $locale,
     timeZone: $systemTimezone,
     onboardingProgressTaskId: ONBOARDING_PROGRESS_NODES.includes(onboardingNodeId ?? "") ? onboardingTrackedTaskId : null,
-    credentialState: (key: string) => credentialState(key, automation),
+    credentialState: (key: string) => credentialState(key, live),
   } satisfies TaskRowViewContext;
   $: present = (task: AutomationTaskRow) => presentTaskRow(task, taskRowViewContext);
   $: groupSyncStatus = (group: CredentialGroupDto) => {
-    const task = credentialGroupTask(group.id, automation);
+    const task = credentialGroupTask(group.id, live);
     return task ? present(task).syncStatus : null;
   };
 </script>
@@ -1094,7 +1008,7 @@ import type {
 
   <div class="content automation-content">
     <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
-    {@const summaryAutomation = resolveAutomationBlock(automation, automationBlockData("summary", data), runtimeSnapshot, pendingActions)}
+    {@const summaryAutomation = selectAutomationBlockModel(pageModel, automationBlockData("summary", data)?.automation, $state.runtime, $state.pendingActions)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
         {#if summaryAutomation.active}
@@ -1143,7 +1057,7 @@ import type {
           </div>
         {/if}
       </div>
-      {#if automation.active}
+      {#if live.active}
         <div class="sync-hero-actions">
           <button class="button danger hero-action" type="button" onclick={() => void stopAllTasks()}>
             {$t.automation.stopAll}
@@ -1158,7 +1072,7 @@ import type {
     </ProgressiveBlock>
 
     <ProgressiveBlock label="details" state={blockState(blocks, "details")} showSpinner={false} retry={() => retryBlock("details")} let:data>
-    {@const detailsAutomation = resolveAutomationBlock(automation, automationBlockData("details", data), runtimeSnapshot, pendingActions)}
+    {@const detailsAutomation = selectAutomationBlockModel(pageModel, automationBlockData("details", data)?.automation, $state.runtime, $state.pendingActions)}
     {@const detailsNoticeGroups = prerequisiteNoticeGroupsFor(detailsAutomation)}
     {#if detailsNoticeGroups.length}
       <section class="card prerequisite-notices" aria-labelledby="prerequisite-notices-title">
@@ -1213,8 +1127,8 @@ import type {
     </ProgressiveBlock>
 
     <ProgressiveBlock label="list" state={blockState(blocks, "list")} showSpinner={false} retry={() => retryBlock("list")} let:data>
-    {@const listAutomation = resolveAutomationBlock(automation, automationBlockData("list", data), runtimeSnapshot, pendingActions)}
-    {@const listTaskStages = taskStagesFor(automation, automationBlockData("list", data), runtimeSnapshot, pendingActions)}
+    {@const listAutomation = selectAutomationBlockModel(pageModel, automationBlockData("list", data)?.automation, $state.runtime, $state.pendingActions)}
+    {@const listTaskStages = [{ id: "sync", title: $t.automation.syncStage, tasks: listAutomation.tasks }]}
     {@const listParallelTaskIds = new Set(listAutomation.parallelRunnableTaskIds)}
     {@const multiStage = listTaskStages.length > 1}
     <section class="card workflow-card" class:single-stage={!multiStage} aria-label={$t.automation.taskQueue}>
@@ -1235,10 +1149,7 @@ import type {
                   class="button primary stage-sync-action"
                   type="button"
                   disabled={!stageRunnableTasks(stage.tasks, listParallelTaskIds).length}
-                  onclick={() => dispatchAutomationStageSync(
-                    stage.tasks,
-                    (tasks) => openSyncSheet(tasks, listParallelTaskIds),
-                  )}
+                  onclick={() => openSyncSheet(listAutomation.tasks, listParallelTaskIds)}
                 >
                   {$t.automation.syncAll}
                 </button>

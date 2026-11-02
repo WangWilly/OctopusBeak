@@ -1,11 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
-import type { DashboardBlockValueMap } from "$lib/shared-shell/dashboard-blocks.ts";
-import {
-  automationStageTasks,
-  dispatchAutomationStageSync,
-} from "./progressive-automation-actions.ts";
 
 const source = readFileSync(
   new URL("./AutomationDashboard.svelte", import.meta.url),
@@ -22,7 +16,7 @@ const runParallelTasksSource = source.slice(
 
 assert.doesNotMatch(runTaskSource, /expandedRunDetailsTaskId\s*=/);
 assert.doesNotMatch(runParallelTasksSource, /expandedRunDetailsTaskId\s*=/);
-assert.match(runParallelTasksSource, /actions\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
+assert.match(runParallelTasksSource, /state\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
 assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
 assert.match(source, /function disclosureSlide\(node: Element\)/);
@@ -44,10 +38,6 @@ assert.doesNotMatch(
 assert.doesNotMatch(source, /\$t\.automation\.assist\b|human-viewer-modal|humanTask/);
 assert.doesNotMatch(source, /shouldOfferManualVerification|verificationActorsByCredentialGroup/);
 assert.match(source, /class="inline-run-details-row"/);
-assert.match(
-  source,
-  /\$: if \(\(automation\.active[\s\S]*?pollTimer = setInterval\(\(\) => \{\s*void reload\(\);\s*\}, 2_000\)/,
-);
 assert.doesNotMatch(source, /activeLogsOpen/);
 assert.doesNotMatch(source, /openActiveLogs/);
 assert.doesNotMatch(source, /aria-labelledby="active-logs-title"/);
@@ -65,7 +55,7 @@ assert.match(source, /class="active-task-jump-list"/);
 assert.match(source, /class="active-task-filter"/);
 assert.match(
   source,
-  /\$: iconTasks = automation\.tasks\.filter\([\s\S]*?task\.status === "failed"/,
+  /\$: iconTasks = live\.tasks\.filter\([\s\S]*?task\.status === "failed"/,
 );
 assert.match(source, /\{#if iconTasks\.length\}/);
 assert.match(source, /\{#each iconTasks as task \(task\.id\)\}/);
@@ -121,7 +111,7 @@ assert.match(source, /present\(hoveredTask\)\.statusLabel/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
 assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
-assert.match(runTaskSource, /actions\.run\(task\.id\)/);
+assert.match(runTaskSource, /state\.run\(task\.id\)/);
 assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
@@ -150,20 +140,20 @@ assert.match(source, /class:working=\{present\(task\)\.progressWorking\}/);
 assert.match(source, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.progress-bar\.working::after/);
 assert.match(
   source,
-  /\$: activeTasks = automation\.tasks\.filter\(\(task\) => task\.isActive\);/,
+  /\$: activeTasks = live\.tasks\.filter\(\(task\) => task\.isActive\);/,
 );
 const primaryTaskActionSource = source.slice(
   source.indexOf("async function primaryTaskAction"),
   source.indexOf("async function openRunHistory"),
 );
 // automation-actions.check.ts covers force-terminating a run waiting for a person.
-assert.match(primaryTaskActionSource, /actions\.cancel\(task\)/);
+assert.match(primaryTaskActionSource, /state\.cancel\(task\)/);
 const forceTerminateTaskSource = source.slice(
   source.indexOf("async function forceTerminateTask"),
   source.indexOf("async function revealTaskDetails"),
 );
 assert.match(forceTerminateTaskSource, /confirm\(\$t\.automation\.confirmForceQuit\)/);
-assert.match(forceTerminateTaskSource, /actions\.forceTerminate\(task\.id\)/);
+assert.match(forceTerminateTaskSource, /state\.forceTerminate\(task\.id\)/);
 assert.match(
   source,
   /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
@@ -178,18 +168,13 @@ assert.doesNotMatch(source, /\$: parallelTasks =/);
 assert.match(source, /class="button primary stage-sync-action"/);
 assert.match(source, /\{#each stage\.tasks as task \(task\.id\)\}/);
 assert.match(source, /stageRunnableTasks\(stage\.tasks, listParallelTaskIds\)/);
-assert.match(source, /dispatchAutomationStageSync\(/);
-assert.match(source, /taskStagesFor\(automation, automationBlockData\("list", data\)[\s\S]*?runtimeSnapshot/);
-assert.match(source, /function applyAuthoritativeRuntimeSnapshot\(snapshot: AutomationRuntimeSnapshot\)/);
-assert.match(source, /controller\.acceptSnapshot\(snapshot\)/);
-assert.match(source, /onSnapshot: applyAuthoritativeRuntimeSnapshot/);
-assert.doesNotMatch(runTaskSource, /applyRuntimeSnapshot\(result\.runtime\)/);
-assert.doesNotMatch(runParallelTasksSource, /applyRuntimeSnapshot\(result\.runtime\)/);
+assert.match(source, /listTaskStages = \[\{ id: "sync", title: \$t\.automation\.syncStage, tasks: listAutomation\.tasks \}\]/);
+assert.match(source, /onclick=\{\(\) => openSyncSheet\(listAutomation\.tasks, listParallelTaskIds\)\}/);
 assert.doesNotMatch(source, /stage\.description/);
 assert.match(source, /\$t\.automation\.startSyncHeading/);
 assert.match(
   source,
-  /summaryAutomation\s*=\s*resolveAutomationBlock\(automation,\s*automationBlockData\("summary", data\),\s*runtimeSnapshot,\s*pendingActions\)/,
+  /summaryAutomation\s*=\s*selectAutomationBlockModel\(pageModel,\s*automationBlockData\("summary", data\)\?\.automation,\s*\$state\.runtime,\s*\$state\.pendingActions\)/,
 );
 assert.match(source, /:global\(html\) \{\s*overflow-y: scroll;/);
 assert.match(source, /class="card workflow-card"/);
@@ -243,7 +228,7 @@ const sourceGroupIdsSource = source.slice(
 );
 assert.match(sourceGroupIdsSource, /\.filter\(\(task\) => task\.credentialGroupId\)/);
 const saveSourceTaskSource = source.slice(
-  source.indexOf("const selectedTask = automation.tasks.find"),
+  source.indexOf("const selectedTask = live.tasks.find"),
   source.indexOf("if (selectedTask?.canRun)"),
 );
 assert.match(saveSourceTaskSource, /task\.credentialGroupId === savedGroupId/);
@@ -258,35 +243,13 @@ assert.match(source, /run\.appWorkflowOutcome\?\.errorCode/);
 assert.match(source, /<code>\{run\.appWorkflowOutcome\.errorCode\}<\/code>/);
 assert.match(source, /historySearch/);
 assert.match(source, /historyFilter/);
-assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, automation\.tasks\)/);
+assert.match(source, /\$: catalogHistoryRows = filterHistoryToCurrentTasks\(historyRows, live\.tasks\)/);
 assert.match(source, /const catalogTaskIds = new Set\(tasks\.map\(\(task\) => task\.id\)\)/);
 assert.match(source, /return rows\.filter\(\(run\) => catalogTaskIds\.has\(run\.taskId\)\)/);
 assert.match(source, /\$: historyCounts = catalogHistoryRows\.reduce/);
 assert.match(source, /historyCounts\.completed/);
 assert.doesNotMatch(source, /historyFinishedTime/);
 assert.doesNotMatch(source, /class="modal-footer"/);
-
-const fallbackTask = { id: "fallback-task" } as unknown as AutomationTaskRow;
-const blockTask = { id: "block-task" } as unknown as AutomationTaskRow;
-const fallbackAutomation = {
-  tasks: [fallbackTask],
-} as unknown as AutomationPageModel;
-const blockAutomation = {
-  ...fallbackAutomation,
-  tasks: [blockTask],
-} as unknown as AutomationPageModel;
-const listBlock = {
-  automation: blockAutomation,
-  credentialGroups: [],
-} as unknown as DashboardBlockValueMap["automation"]["list"];
-let syncedTasks: AutomationTaskRow[] | undefined;
-const displayedBlockTasks = automationStageTasks(fallbackAutomation, listBlock);
-dispatchAutomationStageSync(displayedBlockTasks, (tasks) => { syncedTasks = tasks; });
-assert.strictEqual(syncedTasks, blockAutomation.tasks);
-syncedTasks = undefined;
-const displayedFallbackTasks = automationStageTasks(fallbackAutomation);
-dispatchAutomationStageSync(displayedFallbackTasks, (tasks) => { syncedTasks = tasks; });
-assert.strictEqual(syncedTasks, fallbackAutomation.tasks);
 
 const currentTaskIds = new Set(["source-task"]);
 const historyRowsForCheck = [
@@ -341,7 +304,7 @@ assert.match(
 );
 assert.match(
   saveCredentialsSource,
-  /const \{ generation \} = sheet;[\s\S]*?applyCredentialSaveResult\(sheet, generation,[\s\S]*?await reload\(\);\s*if \(sheet\.generation !== generation\) return;/,
+  /const \{ generation \} = sheet;[\s\S]*?applyCredentialSaveResult\(sheet, generation,[\s\S]*?await state\.reload\(\);\s*if \(sheet\.generation !== generation\) return;/,
   "a save result applies only to the sheet generation that submitted it",
 );
 assert.match(
