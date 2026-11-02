@@ -163,6 +163,18 @@ _Avoid_: Canonical loan, loan transaction, repayment schedule
 The preview product for non-TWD deposit accounts at an Institution whose verified source collects only TWD deposits, chosen separately from deposits in a Statement Selection. Its balances and transactions keep their source currency exactly.
 _Avoid_: Foreign deposit as deposit, converted transaction
 
+**Manual asset**:
+An asset a person enters by hand in one of the categories cash (a Manual Account), house, insurance (its cash value), vehicle, Labor Pension individual account, or other, kept outside canonical financial data and never a Financial Account. Its value comes only from its Manual Valuations; it counts toward assets and net position with a visible manual marker, in any currency, converted at the valuation date, and a currency without a rate leaves it out of the TWD total with that currency listed rather than withholding the total. A protection-only insurance policy has no cash value and is not a Manual Asset. No category covers deposits, securities, funds, or crypto, which sources collect, and nothing matches a Manual Asset against a collected account. Selling or surrendering it records an end date, after which it no longer counts while its history stays; deleting it, meant for one created by mistake, removes its history too. A Manual Asset survives a Canonical Reset and is removed only by the person's own explicit action.
+_Avoid_: Manual Financial Account, user-asserted balance, preview asset, net worth item
+
+**Manual valuation**:
+One dated value of a Manual Asset: amount, valuation date, valuation source, and an optional note. Every valuation is kept, the latest is the current value, and one asset has at most one valuation per date, a later entry for the same date replacing it. The valuation source is chosen from a list fitting the asset, such as own estimate, actual-price registration, appraisal report, insurer statement, used-vehicle quote, or purchase price. A value is never depreciated or adjusted automatically; a valuation older than its asset's freshness period is shown as stale.
+_Avoid_: Balance observation, depreciation, auto-valuation, purchase price as current value
+
+**Manual account**:
+A Manual Asset for cash a person tracks by hand, such as a wallet, whose transactions the person enters: an expense (`purchase`), a receipt (`receipt`, never income), or a transfer between two Manual Accounts recorded on both sides and outside Spending. Its balance is the latest counted balance, itself a Manual Valuation with the opening balance as the first, plus the transactions after it; a difference between counted and recorded cash is never turned into a transaction. Expenses count in Spending and take a Personal Category, but never join cross-source deduplication or transfer pairing with collected accounts. Manual transactions belong only to a Manual Account and are never added to a collected Financial Account.
+_Avoid_: Manual transaction on a bank account, cash Financial Account
+
 **Attached preview product**:
 A product without a live-verified source contract that a verified source collects during its own sign-in while Preview Features are on, writing only Preview Financial Data for that product. A product whose collection cannot share the verified source's sign-in is offered as its own Preview Source instead.
 _Avoid_: Partially verified source, preview mode of a verified source
@@ -320,8 +332,8 @@ The exclusive read boundary through which product consumers request a Current Fi
 _Avoid_: Direct write-model query, consumer-specific precedence, source-payload calculation, product fallback
 
 **Canonical reset**:
-A deliberate, resumable replacement of all existing financial state, Preview Financial Data included, with an empty validated canonical store, preserving only Preserved Operational Configuration and rebuilding financial knowledge through new contract-compliant collection. It happens once at a legacy cutover or whenever a person triggers it from Settings (「刪除所有財務資料」); legacy stores and downloads are discarded without migration or quarantine, and ordinary restarts never fall back to prior data.
-_Avoid_: Canonical reset cutover, financial data erasure, 刪除所有帳戶資料, legacy migration, compatibility backfill, dual read, partial history carry-forward
+A deliberate, resumable replacement of all existing financial state, Preview Financial Data included, with an empty validated canonical store, preserving only Preserved Operational Configuration and Manual Assets and rebuilding financial knowledge through new contract-compliant collection. It happens once at a legacy cutover or whenever a person triggers it from Settings (「刪除所有收集的財務資料」); legacy stores and downloads are discarded without migration or quarantine, and ordinary restarts never fall back to prior data.
+_Avoid_: Canonical reset cutover, financial data erasure, 刪除所有帳戶資料, 刪除所有財務資料, legacy migration, compatibility backfill, dual read, partial history carry-forward
 
 **Preserved operational configuration**:
 The non-financial local state carried across a Canonical Reset: Sign-in Details, enabled-integration configuration and schedules, Statement Selections, exchange-rate reference data, onboarding completion, and user-interface preferences that neither assert a financial fact nor identify a canonical Financial Account. Preserving it authorizes future collection but never preserves Source Connection identity, Source Sync State, Captures, provenance, user financial classifications, or other financial history.

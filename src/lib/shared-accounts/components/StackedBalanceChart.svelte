@@ -54,6 +54,7 @@
     foreign: $t.accounts.foreign,
     "credit-card": $t.accounts.creditCard,
     loan: $t.accounts.loan,
+    manual: $t.accounts.manual,
     other: $t.accounts.other,
   } as Record<string, string>;
   $: ariaLabel = $t.chart.labelAria(displayLabel, currency);

@@ -38,7 +38,11 @@ type LiveViewRegistry = PGliteFinancialRegistry & PGliteFinancialPageActionEvent
 type LiveViewDependency =
   | "exchangeRates"
   /** Preview rows and the Preview features visibility setting. */
-  | "preview";
+  | "preview"
+  /** Manual Assets: one revision row every manual write advances, deletes included. */
+  | "manual";
+
+const MANUAL_REVISION_SQL = "SELECT revision FROM manual_asset_revision";
 
 export type FinancialLiveViewDefinition = Readonly<{
   load(registry: LiveViewRegistry, params: object, sources: PGliteFinancialExpectedSources): Promise<unknown>;
@@ -58,15 +62,15 @@ export type FinancialLiveViewDefinition = Readonly<{
 const FINANCIAL_LIVE_VIEWS = {
   "financial.overview.current": {
     load: (registry, _params, sources) => registry["financial.overview.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview"],
+    dependsOn: ["exchangeRates", "preview", "manual"],
   },
   "financial.assets.current": {
     load: (registry, _params, sources) => registry["financial.assets.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview"],
+    dependsOn: ["exchangeRates", "preview", "manual"],
   },
   "financial.liabilities.current": {
     load: (registry, _params, sources) => registry["financial.liabilities.current"]([sources]),
-    dependsOn: ["exchangeRates", "preview"],
+    dependsOn: ["exchangeRates", "preview", "manual"],
   },
   "financial.spending.current": SPENDING_LIVE_VIEW,
 } as const satisfies Partial<Record<PGliteFinancialOperation, FinancialLiveViewDefinition>>;
@@ -94,6 +98,8 @@ export function createPGliteFinancialLiveViews(
   registry: LiveViewRegistry,
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
   scheduler?: PGliteWorkScheduler,
+  /** The store holds the Manual Asset tables, so the "manual" dependency has a row to watch. */
+  options: Readonly<{ manualAssets?: boolean }> = {},
 ) {
   const entries = new Map<string, {
     stop: () => Promise<void>;
@@ -181,6 +187,9 @@ export function createPGliteFinancialLiveViews(
             ? [db.live.query("SELECT rate_date, currency, twd_per_unit, source, fetched_at FROM exchange_rates", [], trigger)]
             : []),
           ...(dependsOnPreview ? [db.live.query(PREVIEW_DATA_FINGERPRINT_SQL, [], trigger)] : []),
+          ...(options.manualAssets && definition.dependsOn.includes("manual")
+            ? [db.live.query(MANUAL_REVISION_SQL, [], trigger)]
+            : []),
         ];
         const stop = async () => {
           if (stopped) return;

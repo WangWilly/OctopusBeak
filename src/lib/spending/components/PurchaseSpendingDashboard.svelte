@@ -52,6 +52,8 @@
   import MonthTrendChart from "./MonthTrendChart.svelte";
   import SpendingMergeModal from "./SpendingMergeModal.svelte";
   import SpendingPurchaseModal from "./SpendingPurchaseModal.svelte";
+  import ManualSpendingList from "./ManualSpendingList.svelte";
+  import type { ManualSpendingPurchase } from "$lib/spending/manual-spending.ts";
   import { moneyText, type ExactMoney } from "./money-text.ts";
 
   type PurchaseReport = PurchaseSpendingReport;
@@ -59,6 +61,8 @@
   export let purchaseReport: PurchaseReport;
   export let fallbackCanonical: SpendingPageDto["canonical"];
   export let refreshSummary: () => Promise<void> = async () => {};
+  /** Manual Account purchases, already counted in the summary totals. */
+  export let manualPurchases: readonly ManualSpendingPurchase[] = [];
   const today = taipeiDateKey(Date.now() / 1000);
   const spendingSession = createPurchaseSpendingSession({
     report: purchaseReport,
@@ -798,6 +802,7 @@
           </button>
         </div>
       {/if}
+      <ManualSpendingList purchases={manualPurchases} month={activeMonth} day={selectedDay} group={recordFilter.group} query={recordFilter.query} />
     </section>
     </div>
 

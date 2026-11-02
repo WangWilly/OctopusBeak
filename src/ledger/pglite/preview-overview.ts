@@ -22,18 +22,20 @@ import type {
   PreviewTransactionView,
 } from "./preview-financial-data.ts";
 
-export type PreviewBalancePoint = Readonly<{ date: string; currency: string; exact: ExactAmount }>;
+export type BalancePoint = Readonly<{ date: string; currency: string; exact: ExactAmount }>;
 
-export type PreviewBalanceSeries = Readonly<{
+/** One account's dated balances kept outside canonical history: Preview Financial Data or a Manual Asset. */
+export type BalanceSeries = Readonly<{
   accountId: string;
   label: string;
   side: "asset" | "liability";
-  /** From this date on the account counts toward nothing (Preview Time Deposit Closure, or a closed loan). */
+  marker: "preview" | "manual";
+  /** From this date on the account counts toward nothing (Preview Time Deposit Closure, a closed loan, an ended Manual Asset). */
   closedOn: string | null;
-  points: readonly PreviewBalancePoint[];
+  points: readonly BalancePoint[];
 }>;
 
-export type PreviewCountable = (currency: string, date: string) => boolean;
+export type RateCountable = (currency: string, date: string) => boolean;
 
 const INSTITUTION_NAMES = institutionNames("en");
 const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
@@ -202,9 +204,9 @@ export function previewSummaryMarkers(accounts: readonly AccountRowDto[]): Previ
   };
 }
 
-function pointsByDate(observations: readonly Readonly<{ amount: string; currency: string; observedAt: Readonly<{ at: string }> }>[]): PreviewBalancePoint[] {
+function pointsByDate(observations: readonly Readonly<{ amount: string; currency: string; observedAt: Readonly<{ at: string }> }>[]): BalancePoint[] {
   const sorted = [...observations].sort((left, right) => Date.parse(left.observedAt.at) - Date.parse(right.observedAt.at));
-  const byDate = new Map<string, PreviewBalancePoint>();
+  const byDate = new Map<string, BalancePoint>();
   for (const observation of sorted) {
     const date = observation.observedAt.at.slice(0, 10);
     byDate.set(date, { date, currency: observation.currency, exact: exactFromDecimal(observation.amount) });
@@ -212,40 +214,43 @@ function pointsByDate(observations: readonly Readonly<{ amount: string; currency
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-export function previewBalanceSeries(histories: readonly PreviewBalanceHistory[]): PreviewBalanceSeries[] {
+export function previewBalanceSeries(histories: readonly PreviewBalanceHistory[]): BalanceSeries[] {
   return histories.map((history) => {
     const current = history.observations.filter((observation) => observation.kind === "current");
     return {
       accountId: previewRowId(history.previewAccountId),
       label: history.displayLabel,
       side: "asset",
+      marker: "preview",
       closedOn: history.closedAt === null ? null : history.closedAt.slice(0, 10),
       points: pointsByDate(current.length > 0 ? current : history.observations),
     };
   });
 }
 
-export function previewCreditSeries(histories: readonly PreviewCreditBalanceHistory[]): PreviewBalanceSeries[] {
+export function previewCreditSeries(histories: readonly PreviewCreditBalanceHistory[]): BalanceSeries[] {
   return histories.map((history) => ({
     accountId: previewRowId(history.previewAccountId),
     label: history.displayLabel,
     side: "liability",
+    marker: "preview",
     closedOn: null,
     points: pointsByDate(history.observations),
   }));
 }
 
-export function previewLoanSeries(histories: readonly PreviewLoanBalanceHistory[]): PreviewBalanceSeries[] {
+export function previewLoanSeries(histories: readonly PreviewLoanBalanceHistory[]): BalanceSeries[] {
   return histories.map((history) => ({
     accountId: previewRowId(history.previewAccountId),
     label: history.displayLabel,
     side: "liability",
+    marker: "preview",
     closedOn: history.closedAt === null ? null : history.closedAt.slice(0, 10),
     points: pointsByDate(history.observations),
   }));
 }
 
-export function countableWithRates(rates: readonly ExchangeRateRecord[]): PreviewCountable {
+export function countableWithRates(rates: readonly ExchangeRateRecord[]): RateCountable {
   const index = indexExchangeRates(rates);
   return (currency, date) => rateOnOrBefore(index, currency, date) !== null;
 }
@@ -285,15 +290,15 @@ function lines(bucket: Buckets): CurrencyAmountDto[] {
     .map(([currency, exact]) => amountLine(currency, exact));
 }
 
-function latestOnOrBefore(series: PreviewBalanceSeries, date: string): PreviewBalancePoint | undefined {
+function latestOnOrBefore(series: BalanceSeries, date: string): BalancePoint | undefined {
   if (series.closedOn !== null && date >= series.closedOn) return undefined;
   return series.points.findLast((point) => point.date <= date);
 }
 
-export function withPreviewHistory(
+export function withBalanceSeriesHistory(
   history: PGliteDailyHistory,
-  series: readonly PreviewBalanceSeries[],
-  countable: PreviewCountable,
+  series: readonly BalanceSeries[],
+  countable: RateCountable,
 ): PGliteDailyHistory {
   if (series.length === 0) return history;
   const canonical = [...history.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
@@ -315,6 +320,7 @@ export function withPreviewHistory(
     const net = buckets(base?.netAssets);
     const observed: string[] = [];
     let includesPreview = false;
+    let includesManual = false;
     for (const account of series) {
       const point = latestOnOrBefore(account, date);
       if (!point) continue;
@@ -327,7 +333,8 @@ export function withPreviewHistory(
         add(liabilities, point.currency, point.exact);
         add(net, point.currency, negate(point.exact));
       }
-      includesPreview = true;
+      if (account.marker === "preview") includesPreview = true;
+      else includesManual = true;
     }
     const sameDay = base !== null && base.date === date ? base : null;
     rows.push({
@@ -340,13 +347,20 @@ export function withPreviewHistory(
       accountChanges: [...(sameDay?.accountChanges ?? []), ...observed],
       positionCount: base?.positionCount ?? 0,
       ...(includesPreview ? { includesPreview: true } : {}),
+      ...(includesManual ? { includesManual: true } : {}),
     });
     previousNet = net;
   }
   const dailyHistoryByAccount = { ...history.dailyHistoryByAccount };
   for (const account of series) {
     const sign = account.side === "asset" ? 1 : -1;
-    dailyHistoryByAccount[account.accountId] = account.points.map((point) => ({
+    const open = account.points.filter((point) => account.closedOn === null || point.date < account.closedOn);
+    const last = open.at(-1);
+    // A closed account drops to zero on its close date, so a carried-forward value or a change across the close sees it leave.
+    const points = last && account.closedOn !== null
+      ? [...open, { date: account.closedOn, currency: last.currency, exact: { coefficient: "0", scale: 0 } }]
+      : open;
+    dailyHistoryByAccount[account.accountId] = points.map((point) => ({
       date: point.date,
       netAssets: [amountLine(point.currency, sign === 1 ? point.exact : negate(point.exact))],
       dailyChange: [],
@@ -354,7 +368,7 @@ export function withPreviewHistory(
       liabilities: account.side === "liability" ? [amountLine(point.currency, point.exact)] : [],
       accountChanges: [account.label],
       positionCount: 0,
-      includesPreview: true,
+      ...(account.marker === "preview" ? { includesPreview: true } : { includesManual: true }),
     }));
   }
   return { dailyHistory: rows, dailyHistoryByAccount };

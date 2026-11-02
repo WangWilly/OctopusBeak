@@ -11,6 +11,7 @@ import type {
   DeviceRegistrationStep,
 } from "$lib/automation/types.ts";
 import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
+import type { ManualAssetCommand, ManualAssetCommandResult } from "$lib/manual-assets/manual-assets.ts";
 import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type {
   SpendingPairingCandidatesInput,
@@ -310,6 +311,10 @@ export type OctopusBeakApi = {
     onNotificationTargetRequested(listener: () => void): () => void;
     previewStructureReport(taskId: string): Promise<string | null>;
     openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
+  };
+  /** Manual Assets (ADR 0087); the worker parses every command again before it runs. */
+  manualAssets: {
+    apply(command: ManualAssetCommand): Promise<ManualAssetCommandResult>;
   };
   data: {
     getVersion(): Promise<DataVersionSnapshot>;

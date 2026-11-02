@@ -18,6 +18,9 @@
   import AssetModal from "./AssetModal.svelte";
   import CreditCardStatementsModal from "./CreditCardStatementsModal.svelte";
   import PreviewAccountModal from "./PreviewAccountModal.svelte";
+  import ManualAssetModal from "$lib/manual-assets/ManualAssetModal.svelte";
+  import { manualValuationState } from "$lib/manual-assets/manual-assets.ts";
+  import { dateInTimeZone } from "$lib/shared-ledger/twd-valuation.ts";
   import TransactionModal from "./TransactionModal.svelte";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatUtcDateTime } from "$lib/time/timezone.ts";
@@ -57,6 +60,7 @@
   let handledFocusAccountId: string | null = null;
   let transactionsOpen = false;
   let previewAccountOpen = false;
+  let manualAssetOpen = false;
   let positionsOpen = false;
   let historyOpen = false;
   let statementsOpen = false;
@@ -76,6 +80,7 @@
     { id: "brokerage" as const, label: $t.accounts.brokerage },
     { id: "crypto" as const, label: $t.accounts.crypto },
     { id: "foreign" as const, label: $t.accounts.foreign },
+    { id: "manual" as const, label: $t.accounts.manual },
   ] satisfies Filter[];
   $: liabilityFilters = [
     { id: "all" as const, label: $t.accounts.allDebts },
@@ -87,19 +92,22 @@
     { id: "other" as const, label: $t.accounts.other },
   ] satisfies Filter[];
 
-  $: availableKinds = new Set([...accounts, ...coveredAccounts].map((account) => account.kind));
+  $: availableKinds = new Set([...listedAccounts, ...coveredAccounts].map((account) => account.kind));
   $: filters = (mode === "asset" ? assetFilters : liabilityFilters).filter((item) =>
-    accounts.length === 0
+    listedAccounts.length === 0
       ? EMPTY_PAGE_FILTERS[mode].includes(item.id)
       : item.id === "all" || availableKinds.has(item.id),
   );
   $: emptyCopy = mode === "asset" ? $t.assets.empty : $t.liabilities.empty;
   $: if (!filters.some((item) => item.id === filter)) filter = "all";
   $: query = search.trim().toLowerCase();
-  $: filtered = matchingAccounts(accounts.filter((account) => !account.preview), filter, query, $t);
-  $: filteredPreview = matchingAccounts(accounts.filter((account) => account.preview), filter, query, $t);
+  $: listedAccounts = accounts;
+  $: manualAccounts = accounts.filter((account) => account.manual);
+  $: today = dateInTimeZone(new Date(), $systemTimezone);
+  $: filtered = matchingAccounts(listedAccounts.filter((account) => !account.preview), filter, query, $t);
+  $: filteredPreview = matchingAccounts(listedAccounts.filter((account) => account.preview), filter, query, $t);
   $: filteredCovered = matchingAccounts(coveredAccounts, filter, query, $t);
-  $: latestUpdated = [...accounts, ...coveredAccounts].reduce<string | null>(
+  $: latestUpdated = [...listedAccounts, ...coveredAccounts].reduce<string | null>(
     (latest, account) => account.lastUpdated && (!latest || account.lastUpdated > latest) ? account.lastUpdated : latest,
     null,
   );
@@ -133,8 +141,9 @@
     if (focusAccountId) void focusAccount(focusAccountId);
   }
 
-  function selectAccount(accountId: string) {
-    selectedAccountId = accountId;
+  function selectAccount(account: AccountRowDto) {
+    selectedAccountId = account.id;
+    if (account.manual) manualAssetOpen = true;
   }
 
   async function focusAccount(accountId: string) {
@@ -157,6 +166,7 @@
         account.institution,
         account.product,
         accountKindLabel(account.kind, dictionary),
+        account.manual ? dictionary.manualAssets.categories[account.manual.category] : "",
       ]
         .join(" ")
         .toLowerCase();
@@ -283,14 +293,18 @@
     data-account-id={account.id}
     data-covered-by={account.coveredBy?.namespace}
     tabindex={account.id === selectedAccountId ? 0 : -1}
-    on:click={() => selectAccount(account.id)}
+    on:click={() => selectAccount(account)}
   >
     <td>
       <span class="account-name">
         <InstitutionLogo institution={institutionLogo(account.institutionKey)} />
         <strong>{account.label}</strong>
       </span>
-      {#if covered}
+      {#if account.manual}
+        {#if account.manual.category === "cash"}
+          <span class="account-meta"><span class="num">{$t.accounts.txCount(account.transactionCount)}</span></span>
+        {/if}
+      {:else if covered}
         <span class="account-meta covered-by">{$t.accounts.coveredBy(coveredByName(account, $t))}</span>
       {:else if account.preview}
         <span class="account-meta">{account.product} / {$t.preview.collectedAt(formatTime(account.preview.lastCollectedAt))}</span>
@@ -302,8 +316,21 @@
       {/if}
     </td>
     <td class="institution-cell">
-      {account.institution}
-      {#if account.viaSource}<span class="account-meta via-source">{$t.accounts.viaSource[account.viaSource]}</span>{/if}
+      {#if account.manual}
+        {@const valuation = manualValuationState(account.manual, today)}
+        {$t.manualAssets.categories[account.manual.category]}
+        {#if valuation}
+          <span class="account-meta manual-valuation" data-manual-state={valuation.kind}>
+            {#if valuation.kind === "stale"}<span class="chip manual-stale">{$t.manualAssets.stale}</span>{/if}
+            {valuation.kind === "ended" ? $t.manualAssets.endedLine(valuation.date)
+              : valuation.source === "counted" ? $t.manualAssets.countLine(valuation.date)
+              : $t.manualAssets.valuationLine(valuation.date, $t.manualAssets.sources[valuation.source])}
+          </span>
+        {/if}
+      {:else}
+        {account.institution}
+        {#if account.viaSource}<span class="account-meta via-source">{$t.accounts.viaSource[account.viaSource]}</span>{/if}
+      {/if}
     </td>
     <td><span class="chip">{accountKindLabel(account.kind, $t)}</span></td>
     <td class="right">
@@ -316,6 +343,8 @@
           <span class="preview-unknown" data-preview-value="credit-unknown">{$t.preview.creditUnknown}</span>
         {:else if previewValue?.kind === "closed"}
           <span class="chip preview-closed" data-preview-value="closed">{$t.preview.closed}</span>
+        {:else if account.manual && account.amountLines.length === 0 && account.manual.endedOn}
+          <span class="chip preview-closed" data-manual-value="ended">{$t.manualAssets.ended}</span>
         {:else if account.valueAvailability === "awaiting"}
           <span>{$t.overview.currentAwaiting}</span>
         {:else if account.valueAvailability === "unavailable"}
@@ -362,11 +391,15 @@
         <strong>{selectedAccount.label}</strong>
       </div>
       <div class="action-group">
+        {#if selectedAccount.manual}
+          <button class="button secondary" type="button" on:click={() => (manualAssetOpen = true)}>{$t.manualAssets.details}</button>
+        {:else}
         <button class="button secondary" type="button" on:click={openTransactions}>
           {selectedAccount.preview && !["deposit", "foreign_currency"].includes(selectedAccount.preview.product) ? $t.preview.accountDetails : $t.accounts.tx}
         </button>
         {#if !selectedAccount.preview}
           <button class="button secondary" type="button" on:click={() => (historyOpen = true)}>{$t.accounts.history}</button>
+        {/if}
         {/if}
         {#if selectedAccount.creditCard}
           <button class="button secondary" type="button" on:click={() => (statementsOpen = true)}>{$t.accounts.statements}</button>
@@ -382,7 +415,7 @@
 <section class="layout-accounts">
   <div>
     <div class="account-list card">
-      {#if accounts.length === 0}
+      {#if listedAccounts.length === 0}
         <div class="account-empty">
           <EmptyPanel icon={List} title={emptyCopy.listTitle} body={emptyCopy.listBody} />
         </div>
@@ -465,6 +498,7 @@
 
 <TransactionModal bind:open={transactionsOpen} account={selectedAccount} rows={selectedTransactions} />
 <PreviewAccountModal bind:open={previewAccountOpen} account={selectedAccount} />
+<ManualAssetModal bind:open={manualAssetOpen} account={selectedAccount?.manual ? selectedAccount : null} {manualAccounts} {today} />
 <AssetModal
   bind:open={positionsOpen}
   account={selectedAccount}
@@ -579,6 +613,19 @@
     color: var(--warn);
     font-size: 13px;
     font-weight: 650;
+  }
+
+  .manual-valuation {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .manual-stale {
+    min-height: 20px;
+    color: var(--warn);
+    font-size: 11px;
+    background: color-mix(in oklch, var(--warn) 10%, var(--surface));
   }
 
   .preview-closed {

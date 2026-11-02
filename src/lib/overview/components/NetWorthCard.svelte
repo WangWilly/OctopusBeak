@@ -4,6 +4,7 @@
   import CardPlaceholder from "$lib/overview/components/CardPlaceholder.svelte";
   import NetWorthChart from "$lib/overview/components/NetWorthChart.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import ManualMarker from "$lib/manual-assets/ManualMarker.svelte";
   import {
     seriesInRange,
     type NetWorth,
@@ -40,6 +41,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
     {#if (net.display === "converted" && net.includesPreview) || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
+    {#if net.includesManual}<ManualMarker />{/if}
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
@@ -49,8 +51,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {:else}
     <p class="net-worth-figure money" data-sensitive>{formatTwd(net.twd, $locale)}</p>
   {/if}
-  {#if net.display === "converted" && net.unconvertedPreviewCurrencies.length > 0}
-    <p class="net-worth-note">{$t.overview.unconverted(net.unconvertedPreviewCurrencies.join(", "))}</p>
+  {#if net.display === "converted" && net.unconvertedCurrencies.length > 0}
+    <p class="net-worth-note">{$t.overview.unconverted(net.unconvertedCurrencies.join(", "))}</p>
   {/if}
   <div class="net-worth-toolbar">
     {#if !incomplete}

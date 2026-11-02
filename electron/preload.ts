@@ -124,6 +124,9 @@ const INVOKE_CHANNELS = {
     previewStructureReport: "automation:previewStructureReport",
     openPreviewStructureReportIssue: "automation:openPreviewStructureReportIssue",
   },
+  manualAssets: {
+    apply: "financial.manualAssets.apply",
+  },
   data: {
     getVersion: "data:getVersion",
     acknowledgeVersion: "data:acknowledgeVersion",
@@ -158,6 +161,7 @@ const api: OctopusBeakApi = {
   },
   errorReports: invokers("errorReports"),
   spending: invokers("spending"),
+  manualAssets: invokers("manualAssets"),
   automation: {
     ...invokers("automation"),
     onRuntimeChanged(listener) {

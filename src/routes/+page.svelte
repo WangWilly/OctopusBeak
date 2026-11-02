@@ -998,6 +998,7 @@
     <PurchaseSpendingDashboard
       purchaseReport={spendingRenderValue.purchaseReport}
       fallbackCanonical={spendingRenderValue.canonical}
+      manualPurchases={spendingRenderValue.manual?.purchases ?? []}
       refreshSummary={() => route === "spending" ? financialPage.reload("spending") : Promise.resolve()}
     />
     <RouteLoadNotice state={spending} retry={() => void loadRoute("spending", { force: true })} />

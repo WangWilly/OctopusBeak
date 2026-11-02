@@ -12,6 +12,7 @@ export function accountKindLabel(kind: AccountKind, dictionary: Translation): st
     crypto: dictionary.accounts.crypto,
     "credit-card": dictionary.accounts.creditCard,
     loan: dictionary.accounts.loan,
+    manual: dictionary.accounts.manual,
     other: dictionary.accounts.other,
   };
   return labels[kind];

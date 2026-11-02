@@ -36,7 +36,7 @@ const STACK_COLORS = [
   "oklch(50% 0.05 285)",
   "oklch(46% 0.035 250)",
 ];
-const ASSET_KIND_ORDER: AccountKind[] = ["bank", "fund", "brokerage", "crypto", "foreign"];
+const ASSET_KIND_ORDER: AccountKind[] = ["bank", "fund", "brokerage", "crypto", "foreign", "manual"];
 const LIABILITY_KIND_ORDER: AccountKind[] = ["credit-card", "loan", "crypto", "other"];
 const EPSILON = 0.000001;
 

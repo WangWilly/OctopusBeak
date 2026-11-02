@@ -50,6 +50,7 @@ import {
   type PreviewLoanAccountView,
   type PreviewLoanCollection,
 } from "./preview-loan.ts";
+import { applyOperationalMigrations } from "./operational-migrations.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 export type {
@@ -270,41 +271,8 @@ const PREVIEW_MIGRATIONS = [
   { id: "preview-financial-data-v3", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V3_SQL },
 ] as const;
 
-const signature = (sql: string) => createHash("sha256").update(sql).digest("hex");
-
-export async function applyPglitePreviewFinancialDataSchema(store: PGliteStore): Promise<void> {
-  await store.transaction(async (transaction) => {
-    await transaction.exec(`CREATE TABLE IF NOT EXISTS pglite_operational_migrations (
-      migration_key TEXT PRIMARY KEY,
-      schema_signature TEXT NOT NULL,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )`);
-    for (const [index, migration] of PREVIEW_MIGRATIONS.entries()) {
-      const installed = await transaction.query<{ schema_signature: string }>(
-        "SELECT schema_signature FROM pglite_operational_migrations WHERE migration_key=$1",
-        [migration.id],
-      );
-      if (installed.rows[0]) {
-        if (installed.rows[0].schema_signature !== signature(migration.sql))
-          throw new Error(`Preview financial data migration signature has changed: ${migration.id}`);
-        continue;
-      }
-      if (index === 0) {
-        const prior = await transaction.query<{ table_name: string }>(
-          `SELECT table_name FROM information_schema.tables
-            WHERE table_schema = current_schema() AND table_name = ANY($1::text[])`,
-          [PREVIEW_FINANCIAL_DATA_TABLES],
-        );
-        if (prior.rows.length > 0)
-          throw new Error("Preview financial data tables exist without a migration record.");
-      }
-      await transaction.exec(migration.sql);
-      await transaction.query(
-        "INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)",
-        [migration.id, signature(migration.sql)],
-      );
-    }
-  });
+export function applyPglitePreviewFinancialDataSchema(store: PGliteStore): Promise<void> {
+  return applyOperationalMigrations(store, "Preview financial data", PREVIEW_MIGRATIONS, PREVIEW_FINANCIAL_DATA_TABLES);
 }
 
 function balance(value: PreviewBalanceObservation): PreviewBalanceObservation {

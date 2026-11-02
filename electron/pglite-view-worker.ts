@@ -11,6 +11,7 @@ import {
 import { createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
+import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
 import { applyPglitePreviewFinancialDataSchema } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   applyPgliteOperationalBaseline,
@@ -27,7 +28,8 @@ import {
   createPGliteWorkScheduler,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
-import { currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 
 type HealthRow = { ready: boolean };
 
@@ -65,6 +67,7 @@ export async function startPGliteViewWorker(
     await applyPgliteOperationalBaseline(database);
     await applyPgliteMaicoinOperationalSchema(database);
     await applyPglitePreviewFinancialDataSchema(database);
+    await applyPgliteManualAssetsSchema(database);
   } catch (error) {
     await database.close().catch(() => undefined);
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
@@ -72,7 +75,10 @@ export async function startPGliteViewWorker(
   }
   const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
-  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility());
+  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
+    manualAssets: true,
+    today: () => dateInTimeZone(new Date(), automationBusinessTimezone()),
+  });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
   const scheduler = createPGliteWorkScheduler();
@@ -88,6 +94,7 @@ export async function startPGliteViewWorker(
     financialRegistry,
     () => configuredOverviewSources(),
     scheduler,
+    { manualAssets: true },
   );
   const source = {
     subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {

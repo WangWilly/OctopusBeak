@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChartLine } from "@lucide/svelte";
+  import { ChartLine, Plus } from "@lucide/svelte";
 
   import { readAssetsSummary, type AssetsSummary } from "$lib/assets/assets-summary.ts";
   import type { AssetsPageDto } from "$lib/assets/types.ts";
@@ -25,6 +25,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import EmptyPanel from "$lib/shared-shell/components/EmptyPanel.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import PreviewMarker from "$lib/shared-shell/components/PreviewMarker.svelte";
+  import ManualAssetCreateModal from "$lib/manual-assets/ManualAssetCreateModal.svelte";
 
   export let assets: AssetsPageDto;
   export let focusAccountId: string | null = null;
@@ -35,6 +36,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   let search = "";
   let chartCurrency = "TWD";
   let accountFilter: BalanceChartFilter = "all";
+  let creatingAsset = false;
 
 
 
@@ -83,6 +85,18 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
+  <svelte:fragment slot="topbar-leading">
+    <button
+      class="topbar-tool"
+      type="button"
+      aria-label={$t.manualAssets.createTitle}
+      title={$t.manualAssets.createTitle}
+      data-add-asset
+      onclick={() => (creatingAsset = true)}
+    >
+      <Plus size={16} strokeWidth={2.2} aria-hidden="true" />
+    </button>
+  </svelte:fragment>
   <div class="content">
     {#if isEmpty}
       <div class="empty-banner">
@@ -100,8 +114,11 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         includesPreview={summary.state === "ready" && summary.includesPreview}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
-          : summary.state === "ready" && summary.unconvertedCurrencies.length > 0
-            ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))]
+          : summary.state === "ready"
+            ? [
+              ...(summary.unconvertedCurrencies.length > 0 ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))] : []),
+              ...(summary.includesManual ? [$t.manualAssets.includesManual] : []),
+            ]
             : []}
       >
         {#if isEmpty}
@@ -178,6 +195,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     </div>
   </div>
 </DashboardShell>
+
+<ManualAssetCreateModal bind:open={creatingAsset} {today} />
 
 <style>
   .block-frame { position: relative; min-width: 0; }

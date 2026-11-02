@@ -32,6 +32,8 @@ import {
   readPreviewTransactions,
   type PreviewVisibility,
 } from "./preview-financial-data.ts";
+import { readManualAssets } from "./manual-assets.ts";
+import { manualAssetRow, manualAssetSeries, manualSummaryMarker } from "./manual-overview.ts";
 import { readPreviewLoanAccounts, readPreviewLoanBalanceHistory } from "./preview-loan.ts";
 import {
   countableWithRates,
@@ -42,8 +44,8 @@ import {
   previewLoanAccountRow,
   previewLoanSeries,
   previewSummaryMarkers,
-  withPreviewHistory,
-  type PreviewBalanceSeries,
+  withBalanceSeriesHistory,
+  type BalanceSeries,
 } from "./preview-overview.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
@@ -57,6 +59,10 @@ type PGliteReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query"
 export type FinancialPageScope = Readonly<{
   expectedSources: readonly CanonicalOverviewExpectedSource[];
   previewVisibility: PreviewVisibility;
+  /** Whether the store holds the Manual Asset tables; a ledger-only store has none to read. */
+  manualAssets: boolean;
+  /** The person's local date; an ended Manual Asset still counts on its end date. */
+  today: string;
 }>;
 
 type Trace = NonNullable<CurrencyAmountDto["traces"]>[number];
@@ -128,17 +134,19 @@ function netPosition(
   history: PGliteDailyHistory,
   rates: readonly ExchangeRateRecord[],
   markers: ReturnType<typeof previewSummaryMarkers>["net"],
+  includesManual: boolean,
 ): NetPositionDto {
   const valuationDate = valuationDateFor(history.dailyHistory, accounts, LATEST_RATES);
   const current = currentNetPosition(accounts, indexExchangeRates(rates), valuationDate);
   const incomplete = markers.incomplete === true;
   return current.value === null
-    ? { display: "native", amounts: amountLines(net), includesPreview: markers.includesPreview === true, incomplete }
+    ? { display: "native", amounts: amountLines(net), includesPreview: markers.includesPreview === true, includesManual, incomplete }
     : {
       display: "converted",
       twd: current.value,
-      unconvertedPreviewCurrencies: current.unconvertedPreviewCurrencies,
+      unconvertedCurrencies: current.unconvertedCurrencies,
       includesPreview: current.includesPreview,
+      includesManual: current.includesManual,
       incomplete,
     };
 }
@@ -160,9 +168,10 @@ function overviewSummary(
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
   const preview = previewSummaryMarkers(accounts);
+  const manual = manualSummaryMarker(accounts);
   return {
-    net: netPosition(accounts, net, history, rates, preview.net),
-    assets: { amounts: amountLines(assetValue), ...preview.assets },
+    net: netPosition(accounts, net, history, rates, preview.net, manual.includesManual === true),
+    assets: { amounts: amountLines(assetValue), ...preview.assets, ...manual },
     liabilities: { amounts: amountLines(liabilityTotals), ...preview.liabilities },
   };
 }
@@ -172,7 +181,7 @@ function mapOverview(
   rates: readonly ExchangeRateRecord[],
   history: PGliteDailyHistory,
   prices: readonly PGliteHoldingPrice[],
-  previewAccounts: readonly AccountRowDto[],
+  outsideAccounts: readonly AccountRowDto[],
 ): OverviewPageDto {
   const projection = result.projection;
   const canonicalAccounts: AccountRowDto[] = projection.accounts.map((account) => ({
@@ -193,7 +202,7 @@ function mapOverview(
     valueAvailability: account.availability,
     ...(account.creditCard ? { creditCard: mapCanonicalCreditCard(account.creditCard) } : {}),
   }));
-  const accounts = [...canonicalAccounts, ...previewAccounts];
+  const accounts = [...canonicalAccounts, ...outsideAccounts];
   return {
     availability: projection.availability,
     coverage: projection.availability === "unavailable" ? "unavailable" : projection.sourceGaps.length > 0 || projection.availability !== "available" ? "partial" : "complete",
@@ -237,7 +246,7 @@ function readHeldCurrencyRates(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
   history: PGliteDailyHistory,
-  preview: PreviewOverview,
+  outside: OutsideOverview,
 ): Promise<ExchangeRateRecord[]> {
   const currencies = [...new Set([
     ...result.projection.positions.map((position) => position.currency),
@@ -247,21 +256,28 @@ function readHeldCurrencyRates(
       ...row.assets,
       ...row.liabilities,
     ].map((amount) => amount.currency)),
-    ...preview.accounts.flatMap((account) => account.amountLines.map((amount) => amount.currency)),
-    ...preview.series.flatMap((series) => series.points.map((point) => point.currency)),
+    ...outside.accounts.flatMap((account) => account.amountLines.map((amount) => amount.currency)),
+    ...outside.series.flatMap((series) => series.points.map((point) => point.currency)),
   ].filter((currency) => currency !== "TWD" && currency !== "UNKNOWN"))];
   return readExchangeRateRows(reader, currencies);
 }
 
-type PreviewOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly PreviewBalanceSeries[] }>;
+/** Rows and dated balances kept outside canonical data: Preview Financial Data and Manual Assets. */
+type OutsideOverview = Readonly<{ accounts: readonly AccountRowDto[]; series: readonly BalanceSeries[] }>;
 
-const NO_PREVIEW: PreviewOverview = { accounts: [], series: [] };
+const NOTHING_OUTSIDE: OutsideOverview = { accounts: [], series: [] };
 
-async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<PreviewOverview> {
+async function readManualOverview(reader: PGliteReader, scope: FinancialPageScope): Promise<OutsideOverview> {
+  if (!scope.manualAssets) return NOTHING_OUTSIDE;
+  const views = await readManualAssets(reader);
+  return { accounts: views.map((view) => manualAssetRow(view, scope.today)), series: views.map(manualAssetSeries) };
+}
+
+async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisibility): Promise<OutsideOverview> {
   const views = await readPreviewAccounts(reader, visibility);
   const creditViews = await readPreviewCreditAccounts(reader, visibility);
   const loanViews = await readPreviewLoanAccounts(reader, visibility);
-  if (views.length === 0 && creditViews.length === 0 && loanViews.length === 0) return NO_PREVIEW;
+  if (views.length === 0 && creditViews.length === 0 && loanViews.length === 0) return NOTHING_OUTSIDE;
   const accounts: AccountRowDto[] = [];
   for (const view of views)
     accounts.push(previewAccountRow(view, await readPreviewTransactions(reader, visibility, view.previewAccountId)));
@@ -282,27 +298,32 @@ async function readPreviewOverview(reader: PGliteReader, visibility: PreviewVisi
   };
 }
 
-async function readHistoryWithPreview(
+async function readHistoryWithOutside(
   reader: PGliteReader,
   result: CanonicalOverviewCurrentQueryResult,
-  visibility: PreviewVisibility,
+  scope: FinancialPageScope,
 ) {
   const canonical = await readPGliteDailyHistoryWithAccounts(
     reader,
     result.projection.knowledgePoint,
     result.projection.accounts,
   );
-  const preview = await readPreviewOverview(reader, visibility);
-  const rates = await readHeldCurrencyRates(reader, result, canonical, preview);
-  const history = withPreviewHistory(canonical, preview.series, countableWithRates(rates));
-  return { canonical, history, preview, rates };
+  const preview = await readPreviewOverview(reader, scope.previewVisibility);
+  const manual = await readManualOverview(reader, scope);
+  const outside: OutsideOverview = {
+    accounts: [...preview.accounts, ...manual.accounts],
+    series: [...preview.series, ...manual.series],
+  };
+  const rates = await readHeldCurrencyRates(reader, result, canonical, outside);
+  const history = withBalanceSeriesHistory(canonical, outside.series, countableWithRates(rates));
+  return { canonical, history, outside, rates };
 }
 
 export async function readOverviewPage(reader: PGliteReader, scope: FinancialPageScope): Promise<OverviewPageDto> {
   const result = await createPGliteCanonicalOverviewQuery(reader, { expectedSources: scope.expectedSources }).current();
-  const { history, preview, rates } = await readHistoryWithPreview(reader, result, scope.previewVisibility);
+  const { history, outside, rates } = await readHistoryWithOutside(reader, result, scope);
   const prices = await readPGliteHoldingPrices(reader, result.projection.knowledgePoint);
-  return mapOverview(result, rates, history, prices, preview.accounts);
+  return mapOverview(result, rates, history, prices, outside.accounts);
 }
 
 async function readProductPage(
@@ -311,19 +332,24 @@ async function readProductPage(
   product: "assets" | "liabilities",
 ) {
   const result = await createPGliteCanonicalOverviewQuery(reader, { expectedSources: scope.expectedSources }).current();
-  const { canonical, history, preview, rates } = await readHistoryWithPreview(reader, result, scope.previewVisibility);
+  const { canonical, history, outside, rates } = await readHistoryWithOutside(reader, result, scope);
   const projection = product === "assets"
     ? selectPGliteOverviewAssets(result.projection)
     : selectPGliteOverviewLiabilities(result.projection);
   const productDto = mapCanonicalProduct(projection, product, canonical);
-  const previewAccounts = preview.accounts.filter((account) => isProductAccount(product, account));
+  const outsideAccounts = outside.accounts.filter((account) => isProductAccount(product, account));
+  // Without canonical accounts or expected sources the page is "empty", but preview or manual rows still fill it.
+  const filled = productDto.availability === "empty" && outsideAccounts.length > 0
+    ? { availability: "available" as const, coverage: "complete" as const }
+    : {};
   return {
     ...productDto,
-    accounts: [...productDto.accounts, ...previewAccounts],
+    ...filled,
+    accounts: [...productDto.accounts, ...outsideAccounts],
     dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
     dailyHistoryByAccount: {
       ...productDto.dailyHistoryByAccount,
-      ...Object.fromEntries(previewAccounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
+      ...Object.fromEntries(outsideAccounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
     },
     exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
   };
