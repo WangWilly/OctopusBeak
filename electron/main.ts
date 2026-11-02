@@ -52,6 +52,11 @@ import {
   type CollectionTrigger,
 } from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
+import { createSettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
+import { createSpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
+import { deleteAllFinancialData } from "../src/lib/settings/data-erasure.ts";
+import { deleteAllPreviewData } from "../src/lib/preview-sources/delete-preview-data.ts";
+import { broadcast } from "./broadcast.ts";
 import {
   createAutomationDesktopService,
   type AutomationDesktopService,
@@ -518,11 +523,7 @@ async function start() {
       : dialog.showOpenDialog(options),
     openExternal: (url) => shell.openExternal(url),
     appVersion: () => app.getVersion(),
-    publishRuntimeChanged: (snapshot) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
-      }
-    },
+    publishRuntimeChanged: (snapshot) => broadcast("automation:runtime-changed", snapshot),
     onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
@@ -609,12 +610,7 @@ async function start() {
       ? autoUpdater.quitAndInstall()
       : console.error("app-update-fixture-restart-skipped"),
     hasActiveRun: () => runtime.hasActive(),
-    onChange: () => {
-      const view = appUpdateView();
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send("appUpdates:changed", view);
-      }
-    },
+    onChange: () => broadcast("appUpdates:changed", appUpdateView()),
     onReady: notifyUpdateReady,
     setInterval: (callback, ms) => setInterval(callback, ms).unref(),
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
@@ -638,9 +634,11 @@ async function start() {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
     usagePinger?.recordFailures(runFailures(run));
   });
-  ipcRegistration = registerOctopusBeakIpc({
-    automation,
-    collection,
+  const settings = createSettingsDesktopService({
+    settingsFile: {
+      read: () => readAutomationSettings(),
+      write: (value) => writeAutomationSettings(value),
+    },
     onSystemSettingsChanged: (settings) => {
       scheduler?.reschedule();
       collectionScheduler?.reschedule();
@@ -648,6 +646,17 @@ async function start() {
       appUpdater?.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
     },
     usagePing: usagePinger,
+    dataVersions: dataVersionStore,
+    collection,
+    preview: operationalRuntime.provider.preview,
+    financial: { reset: () => operationalRuntime.worker.financial.request("financial.canonical.reset", []) },
+    deleteAllPreviewData,
+    deleteAllFinancialData,
+  });
+  ipcRegistration = registerOctopusBeakIpc({
+    automation,
+    settings,
+    spending: createSpendingDesktopService({ financial: operationalRuntime.worker.financial }),
     appUpdates: {
       view: appUpdateView,
       check: () => void appUpdater?.check(),
@@ -670,7 +679,6 @@ async function start() {
       dataDir: operationalRuntime.dataDir,
     },
     pgliteOperational: {
-      provider: operationalRuntime.provider,
       worker: operationalRuntime.worker,
       dataDir: operationalRuntime.dataDir,
     },

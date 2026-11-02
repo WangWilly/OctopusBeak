@@ -14,11 +14,12 @@ import {
   createPGliteViewWorkerClient,
   type PGliteViewWorkerClient,
 } from "./pglite-view-worker-client.ts";
+import type { OctopusBeakDataViewChannels } from "./preload.ts";
 
-export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const;
-export const DATA_VIEWS_UNSUBSCRIBE_CHANNEL = "data-views:unsubscribe" as const;
-export const DATA_VIEWS_ROWS_CHANNEL = "data-views:rows" as const;
-export const DATA_VIEWS_ERROR_CHANNEL = "data-views:error" as const;
+export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const satisfies OctopusBeakDataViewChannels["subscribe"];
+export const DATA_VIEWS_UNSUBSCRIBE_CHANNEL = "data-views:unsubscribe" as const satisfies OctopusBeakDataViewChannels["unsubscribe"];
+export const DATA_VIEWS_ROWS_CHANNEL = "data-views:rows" as const satisfies OctopusBeakDataViewChannels["rows"];
+export const DATA_VIEWS_ERROR_CHANNEL = "data-views:error" as const satisfies OctopusBeakDataViewChannels["error"];
 
 export type PGliteViewIpcOptions = {
   /** The only database directory this worker may open. */

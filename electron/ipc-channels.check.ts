@@ -5,7 +5,13 @@ import {
   automationForwardHandlers,
   financialForwardHandlers,
   RENDERER_FINANCIAL_OPERATIONS,
+  SETTINGS_SERVICE_CHANNELS,
+  settingsForwardHandlers,
+  SPENDING_SERVICE_CHANNELS,
+  spendingForwardHandlers,
   type AutomationServiceForwards,
+  type SettingsServiceForwards,
+  type SpendingServiceForwards,
 } from "./ipc-channels.ts";
 import { PGLITE_FINANCIAL_CONTRACTS, type PGliteFinancialPort } from "./pglite-financial-rpc-client.ts";
 
@@ -37,21 +43,47 @@ test("each forwarded channel requests its own operation with the renderer's argu
   }
 });
 
-test("each automation service channel calls its bridge method's namesake with the renderer's arguments", async () => {
+function recordingService<Service>() {
   const calls: Array<[string, readonly unknown[]]> = [];
   const service = new Proxy({}, {
     get: (_target, method: string) => (...args: unknown[]) => {
       calls.push([method, args]);
       return { answered: method };
     },
-  }) as AutomationServiceForwards;
-  const handlers = automationForwardHandlers(service);
+  }) as Service;
+  return { service, calls };
+}
 
-  assert.deepEqual(Object.keys(handlers).sort(), Object.keys(AUTOMATION_SERVICE_CHANNELS).sort());
-  assert.equal(Object.hasOwn(handlers, "automation:selectCertificateFile"), false);
-  for (const [channel, method] of Object.entries(AUTOMATION_SERVICE_CHANNELS)) {
-    const handler = handlers[channel as keyof typeof handlers] as (event: unknown, ...args: unknown[]) => unknown;
+async function assertForwards(
+  handlers: object,
+  table: Readonly<Record<string, string>>,
+  calls: Array<[string, readonly unknown[]]>,
+) {
+  assert.deepEqual(Object.keys(handlers).sort(), Object.keys(table).sort());
+  for (const [channel, method] of Object.entries(table)) {
+    const handler = (handlers as Record<string, (event: unknown, ...args: unknown[]) => unknown>)[channel]!;
     assert.deepEqual(await handler({ sender: "renderer" }, "task-1", "run-1"), { answered: method });
     assert.deepEqual(calls.at(-1), [method, ["task-1", "run-1"]]);
   }
+}
+
+test("each automation service channel calls its bridge method's namesake with the renderer's arguments", async () => {
+  const { service, calls } = recordingService<AutomationServiceForwards>();
+  const handlers = automationForwardHandlers(service);
+
+  assert.equal(Object.hasOwn(handlers, "automation:selectCertificateFile"), false);
+  await assertForwards(handlers, AUTOMATION_SERVICE_CHANNELS, calls);
+});
+
+test("each settings service channel calls its bridge method's namesake with the renderer's arguments", async () => {
+  const { service, calls } = recordingService<SettingsServiceForwards>();
+  const handlers = settingsForwardHandlers(service);
+
+  assert.equal(Object.hasOwn(handlers, "settings:clearSignInData"), false, "sign-in erasure stays with automation");
+  await assertForwards(handlers, SETTINGS_SERVICE_CHANNELS, calls);
+});
+
+test("each spending service channel calls its bridge method's namesake with the renderer's arguments", async () => {
+  const { service, calls } = recordingService<SpendingServiceForwards>();
+  await assertForwards(spendingForwardHandlers(service), SPENDING_SERVICE_CHANNELS, calls);
 });

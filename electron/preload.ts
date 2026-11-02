@@ -10,6 +10,40 @@ import type {
 import type { AppUpdateView } from "../src/lib/settings/app-updates.ts";
 import type { DataInvalidationEvent } from "../src/lib/shared-shell/data-version.ts";
 
+/** The payload each main-process broadcast carries to every window (electron/broadcast.ts). */
+export type OctopusBeakPushEvents = {
+  "data:invalidated": DataInvalidationEvent;
+  "automation:runtime-changed": AutomationRuntimeSnapshot;
+  "automation:notification-target-requested": undefined;
+  "appUpdates:changed": AppUpdateView;
+};
+
+/** The one fire-and-forget channel the renderer sends on. */
+export type OctopusBeakSendChannel = "display:setScale";
+
+const DATA_VIEW_CHANNELS = {
+  enabled: "data-views:enabled",
+  subscribe: "data-views:subscribe",
+  unsubscribe: "data-views:unsubscribe",
+  rows: "data-views:rows",
+  error: "data-views:error",
+} as const;
+
+export type OctopusBeakDataViewChannels = typeof DATA_VIEW_CHANNELS;
+
+function onPush<Channel extends keyof OctopusBeakPushEvents>(
+  channel: Channel,
+  listener: (payload: OctopusBeakPushEvents[Channel]) => void,
+) {
+  const handler = (_event: Electron.IpcRendererEvent, payload: OctopusBeakPushEvents[Channel]) => {
+    listener(payload);
+  };
+  ipcRenderer.on(channel, handler);
+  return () => {
+    ipcRenderer.removeListener(channel, handler);
+  };
+}
+
 let nextDataViewRequestId = 1;
 
 function dataViewError(result: { code: string; message: string }): Error {
@@ -19,12 +53,12 @@ function dataViewError(result: { code: string; message: string }): Error {
 }
 
 const dataViews = {
-  enabled: () => ipcRenderer.invoke("data-views:enabled"),
+  enabled: () => ipcRenderer.invoke(DATA_VIEW_CHANNELS.enabled),
   subscribe(view: string, params: object, onRows: (rows: unknown[]) => void, onError?: (error: DataViewErrorEvent) => void) {
     const requestId = `renderer-view-${nextDataViewRequestId++}`;
     const removeListeners = () => {
-      ipcRenderer.removeListener("data-views:rows", rowsHandler);
-      ipcRenderer.removeListener("data-views:error", errorHandler);
+      ipcRenderer.removeListener(DATA_VIEW_CHANNELS.rows, rowsHandler);
+      ipcRenderer.removeListener(DATA_VIEW_CHANNELS.error, errorHandler);
     };
     const rowsHandler = (_event: Electron.IpcRendererEvent, event: DataViewRowsEvent) => {
       if (event.requestId === requestId) {
@@ -37,9 +71,9 @@ const dataViews = {
         onError?.(event);
       }
     };
-    ipcRenderer.on("data-views:rows", rowsHandler);
-    ipcRenderer.on("data-views:error", errorHandler);
-    return ipcRenderer.invoke("data-views:subscribe", { requestId, view, params })
+    ipcRenderer.on(DATA_VIEW_CHANNELS.rows, rowsHandler);
+    ipcRenderer.on(DATA_VIEW_CHANNELS.error, errorHandler);
+    return ipcRenderer.invoke(DATA_VIEW_CHANNELS.subscribe, { requestId, view, params })
       .then((result: DataViewSubscribeResult) => {
         if (!result.ok) {
           removeListeners();
@@ -51,7 +85,7 @@ const dataViews = {
           stopped = true;
           removeListeners();
           const response = await ipcRenderer.invoke(
-            "data-views:unsubscribe",
+            DATA_VIEW_CHANNELS.unsubscribe,
             { requestId, subscriptionId: result.subscriptionId },
           ) as DataViewUnsubscribeResult;
           if (!response.ok) throw dataViewError(response);
@@ -145,47 +179,25 @@ function invokers<Namespace extends keyof OctopusBeakInvokeChannels>(namespace: 
 const api: OctopusBeakApi = {
   display: {
     setScale(percent) {
-      ipcRenderer.send("display:setScale", percent);
+      ipcRenderer.send("display:setScale" satisfies OctopusBeakSendChannel, percent);
     },
   },
   settings: invokers("settings"),
   appUpdates: {
     ...invokers("appUpdates"),
-    onChanged(listener) {
-      const handler = (_event: Electron.IpcRendererEvent, view: AppUpdateView) => {
-        listener(view);
-      };
-      ipcRenderer.on("appUpdates:changed", handler);
-      return () => ipcRenderer.removeListener("appUpdates:changed", handler);
-    },
+    onChanged: (listener) => onPush("appUpdates:changed", listener),
   },
   errorReports: invokers("errorReports"),
   spending: invokers("spending"),
   manualAssets: invokers("manualAssets"),
   automation: {
     ...invokers("automation"),
-    onRuntimeChanged(listener) {
-      const handler = (_event: Electron.IpcRendererEvent, snapshot: AutomationRuntimeSnapshot) => {
-        listener(snapshot);
-      };
-      ipcRenderer.on("automation:runtime-changed", handler);
-      return () => ipcRenderer.removeListener("automation:runtime-changed", handler);
-    },
-    onNotificationTargetRequested(listener) {
-      const handler = () => listener();
-      ipcRenderer.on("automation:notification-target-requested", handler);
-      return () => ipcRenderer.removeListener("automation:notification-target-requested", handler);
-    },
+    onRuntimeChanged: (listener) => onPush("automation:runtime-changed", listener),
+    onNotificationTargetRequested: (listener) => onPush("automation:notification-target-requested", () => listener()),
   },
   data: {
     ...invokers("data"),
-    onInvalidated(listener) {
-      const handler = (_event: Electron.IpcRendererEvent, event: DataInvalidationEvent) => {
-        listener(event);
-      };
-      ipcRenderer.on("data:invalidated", handler);
-      return () => ipcRenderer.removeListener("data:invalidated", handler);
-    },
+    onInvalidated: (listener) => onPush("data:invalidated", listener),
   },
   dataViews,
 };

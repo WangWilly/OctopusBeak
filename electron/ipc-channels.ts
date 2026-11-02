@@ -2,6 +2,8 @@ import type { IpcMainInvokeEvent } from "electron";
 import type { OctopusBeakApi } from "../src/lib/desktop/api.ts";
 import type { OctopusBeakInvokeChannels } from "./preload.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
+import type { SettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
+import type { SpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
 import type {
   PGliteFinancialArgs,
   PGliteFinancialOperation,
@@ -109,14 +111,40 @@ export const AUTOMATION_SERVICE_CHANNELS = {
   "settings:collectAllSources": "collectAllSources",
 } as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
 
-export type ForwardedAutomationChannel = keyof typeof AUTOMATION_SERVICE_CHANNELS;
+/**
+ * Channels whose handler only forwards to the settings desktop service
+ * method of the bridge method's name.
+ */
+export const SETTINGS_SERVICE_CHANNELS = {
+  "settings:load": "load",
+  "settings:save": "save",
+  "settings:previewUsagePing": "previewUsagePing",
+  "settings:shouldAskUsageStatistics": "shouldAskUsageStatistics",
+  "settings:answerUsageStatistics": "answerUsageStatistics",
+  "settings:deletePreviewData": "deletePreviewData",
+  "settings:deleteFinancialData": "deleteFinancialData",
+  "data:getVersion": "getVersion",
+  "data:acknowledgeVersion": "acknowledgeVersion",
+} as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
 
-type AutomationServiceMethod = typeof AUTOMATION_SERVICE_CHANNELS[ForwardedAutomationChannel];
+/** Channels whose handler only forwards to the spending desktop service method of the bridge method's name. */
+export const SPENDING_SERVICE_CHANNELS = {
+  "spending:candidate-page": "loadCandidatePage",
+  "spending:candidate-page-cancel": "cancelCandidatePage",
+  "spending:pairing-prewarm": "prewarmPairingCandidates",
+} as const satisfies { readonly [Channel in InvokeChannel]?: ChannelMethod<Channel> };
 
-export type AutomationServiceForwards = Pick<AutomationDesktopService<unknown>, AutomationServiceMethod>;
+type ServiceChannels = Readonly<Partial<Record<InvokeChannel, string>>>;
 
-type ServiceForward<Channel extends ForwardedAutomationChannel> =
-  AutomationServiceForwards[typeof AUTOMATION_SERVICE_CHANNELS[Channel]] extends (...args: infer Args) => infer Result
+type ForwardedChannel<Table extends ServiceChannels> = keyof Table & InvokeChannel;
+
+/** The methods a service must have to answer every channel of its table. */
+type ServiceForwards<Table extends ServiceChannels> = {
+  readonly [Method in Table[keyof Table] & string]: (...args: never[]) => unknown;
+};
+
+type ServiceForward<Table extends ServiceChannels, Service, Channel extends ForwardedChannel<Table>> =
+  Service[Table[Channel] & keyof Service] extends (...args: infer Args) => infer Result
     ? (event: IpcMainInvokeEvent, ...args: Args) => Result
     : never;
 
@@ -130,26 +158,54 @@ type ServiceForward<Channel extends ForwardedAutomationChannel> =
 type SameArity<A extends readonly unknown[], B extends readonly unknown[]> =
   [A["length"]] extends [B["length"]] ? [B["length"]] extends [A["length"]] ? true : false : false;
 
-/** Each forwarded automation channel whose service method's arguments or result differ from its bridge method. */
-type MismatchedServiceForwards = {
-  [Channel in ForwardedAutomationChannel]: ServiceForward<Channel> extends OctopusBeakInvokeHandlers[Channel]
-    ? SameArity<Parameters<ServiceForward<Channel>>, Parameters<OctopusBeakInvokeHandlers[Channel]>> extends true
+/** Each forwarded channel whose service method's arguments or result differ from its bridge method. */
+type MismatchedServiceForwards<Table extends ServiceChannels, Service> = {
+  [Channel in ForwardedChannel<Table>]: ServiceForward<Table, Service, Channel> extends OctopusBeakInvokeHandlers[Channel]
+    ? SameArity<Parameters<ServiceForward<Table, Service, Channel>>, Parameters<OctopusBeakInvokeHandlers[Channel]>> extends true
       ? never
       : Channel
     : Channel;
-}[ForwardedAutomationChannel];
+}[ForwardedChannel<Table>];
 
 /**
- * Forwarding handlers for every automation service channel. When a service
+ * Forwarding handlers for every channel of a service table. When a service
  * method's arguments or result differ from its bridge method, this returns
  * never and spreading it into the handler record fails to compile.
  */
-export function automationForwardHandlers(
-  service: AutomationServiceForwards,
-): [MismatchedServiceForwards] extends [never] ? Pick<OctopusBeakInvokeHandlers, ForwardedAutomationChannel> : never {
-  return Object.fromEntries(Object.entries(AUTOMATION_SERVICE_CHANNELS).map(([channel, method]) => [
+function serviceForwardHandlers<Table extends ServiceChannels, Service extends ServiceForwards<Table>>(
+  table: Table,
+  service: Service,
+): [MismatchedServiceForwards<Table, Service>] extends [never] ? Pick<OctopusBeakInvokeHandlers, ForwardedChannel<Table>> : never {
+  return Object.fromEntries(Object.entries(table).map(([channel, method]) => [
     channel,
     (_event: IpcMainInvokeEvent, ...args: unknown[]) =>
-      (service[method] as (...forwarded: unknown[]) => unknown)(...args),
+      (service as unknown as Record<string, (...forwarded: unknown[]) => unknown>)[method]!(...args),
   ])) as never;
+}
+
+export type AutomationServiceForwards = Pick<
+  AutomationDesktopService<unknown>,
+  typeof AUTOMATION_SERVICE_CHANNELS[keyof typeof AUTOMATION_SERVICE_CHANNELS]
+>;
+
+export type SettingsServiceForwards = Pick<
+  SettingsDesktopService,
+  typeof SETTINGS_SERVICE_CHANNELS[keyof typeof SETTINGS_SERVICE_CHANNELS]
+>;
+
+export type SpendingServiceForwards = Pick<
+  SpendingDesktopService,
+  typeof SPENDING_SERVICE_CHANNELS[keyof typeof SPENDING_SERVICE_CHANNELS]
+>;
+
+export function automationForwardHandlers(service: AutomationServiceForwards) {
+  return serviceForwardHandlers(AUTOMATION_SERVICE_CHANNELS, service);
+}
+
+export function settingsForwardHandlers(service: SettingsServiceForwards) {
+  return serviceForwardHandlers(SETTINGS_SERVICE_CHANNELS, service);
+}
+
+export function spendingForwardHandlers(service: SpendingServiceForwards) {
+  return serviceForwardHandlers(SPENDING_SERVICE_CHANNELS, service);
 }

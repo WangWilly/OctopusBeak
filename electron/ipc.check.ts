@@ -40,9 +40,15 @@ assert.match(
   /"automation:selectCertificateFile": \(event, locale\) =>\s*automation\.selectCertificateFile\(BrowserWindow\.fromWebContents\(event\.sender\), locale\)/,
 );
 assert.doesNotMatch(serviceSource, /from "electron"/, "the desktop service reaches Electron only through its ports");
+for (const service of ["settings/server/settings-desktop-service.ts", "spending/server/spending-desktop-service.ts"]) {
+  assert.doesNotMatch(
+    readFileSync(new URL(`../src/lib/${service}`, import.meta.url), "utf8"),
+    /from "electron"/,
+    `${service} reaches Electron only through its ports`,
+  );
+}
 assert.match(source, /await pgliteViewRegistration\.close\(\)/);
 assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransactionOverride/);
-assert.match(source, /await onSystemSettingsChanged\?\.\(value\)/);
 
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
