@@ -78,6 +78,7 @@ import {
   packagedBrowserFixtureEnabled,
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
 import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
+import { createSquirrelHandoff } from "./squirrel-update-handoff.ts";
 import { createHumanAssistanceContract } from "../src/lib/automation/human-assistance.ts";
 import { createTdccRegistrationFixtureFetch } from "../src/lib/automation/server/tdcc-registration-fixture.ts";
 import { useTdccRegistrationFixture } from "../src/lib/automation/server/tdcc-registration-service.ts";
@@ -564,11 +565,15 @@ async function start() {
   const updatesPruned = appUpdatesSupport.supported
     ? pruneAppUpdates(updatesDirectory, app.getVersion()).catch(() => console.error("app-update-prune-failed"))
     : Promise.resolve();
-  let closeSquirrelHandoff: (() => void) | null = null;
-  const endSquirrelHandoff = () => {
-    closeSquirrelHandoff?.();
-    closeSquirrelHandoff = null;
-  };
+  const squirrelHandoff = createSquirrelHandoff({
+    support: appUpdatesSupport,
+    autoUpdater,
+    zipPath: (release) => verifiedZipPath(updatesDirectory, release.version),
+    start: startSquirrelHandoff,
+    rehearse: rehearseSquirrelHandoff,
+    receive: (signal) => appUpdater?.receive(signal),
+    reportError: (code) => console.error(code),
+  });
   const appUpdateView = (): AppUpdateView => ({
     currentVersion: app.getVersion(),
     state: appUpdater?.state() ?? { status: "unsupported", reason: "development-build" },
@@ -586,29 +591,8 @@ async function start() {
       await updatesPruned;
       return downloadAppRelease({ directory: updatesDirectory, release, onProgress });
     },
-    install: (release) => {
-      void startSquirrelHandoff(verifiedZipPath(updatesDirectory, release.version))
-        .then(async (handoff) => {
-          closeSquirrelHandoff = handoff.close;
-          if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
-            autoUpdater.setFeedURL({ url: handoff.feedUrl, serverType: "default" });
-            autoUpdater.checkForUpdates();
-            return;
-          }
-          const served = await rehearseSquirrelHandoff(handoff.feedUrl, release).catch(() => false);
-          endSquirrelHandoff();
-          appUpdater?.receive(served ? { type: "update-downloaded" } : { type: "error", message: "fixture hand-off" });
-        })
-        .catch(() => {
-          // setFeedURL throws in an unsigned packaged build.
-          endSquirrelHandoff();
-          appUpdater?.receive({ type: "error", message: "hand-off" });
-        });
-    },
-    // Squirrel.Mac closes the windows, then quits through before-quit, so the ledger closes before ShipIt installs.
-    quitAndInstall: () => appUpdatesSupport.supported && appUpdatesSupport.squirrel
-      ? autoUpdater.quitAndInstall()
-      : console.error("app-update-fixture-restart-skipped"),
+    install: squirrelHandoff.install,
+    quitAndInstall: squirrelHandoff.quitAndInstall,
     hasActiveRun: () => runtime.hasActive(),
     onChange: () => broadcast("appUpdates:changed", appUpdateView()),
     onReady: notifyUpdateReady,
@@ -616,20 +600,6 @@ async function start() {
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (code) => console.error(code),
   });
-  if (appUpdatesSupport.supported && appUpdatesSupport.squirrel) {
-    autoUpdater.on("update-downloaded", () => {
-      endSquirrelHandoff();
-      appUpdater?.receive({ type: "update-downloaded" });
-    });
-    autoUpdater.on("update-not-available", () => {
-      endSquirrelHandoff();
-      appUpdater?.receive({ type: "error", message: "hand-off answered no update" });
-    });
-    autoUpdater.on("error", (error) => {
-      endSquirrelHandoff();
-      appUpdater?.receive({ type: "error", message: error.message });
-    });
-  }
   onTaskRunFinished((run) => {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
     usagePinger?.recordFailures(runFailures(run));
