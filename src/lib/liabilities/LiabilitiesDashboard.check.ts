@@ -45,6 +45,6 @@ test("margin exposure keeps an independent investment-kind filter", () => {
 
 test("the total, side figure and chart carry the provenance their figures count", () => {
   assert.match(source, /\$: provenance = summary\.state === "ready" \? summary\.provenance : NO_PROVENANCE;/);
-  assert.match(source, /sideProvenance=\{isEmpty \? NO_PROVENANCE : provenance\}/);
+  assert.match(source, /sideProvenance=\{isEmpty \? NO_PROVENANCE : totalProvenance\}/);
   assert.match(source, /<OriginMarkers provenance=\{stackedChart\.provenance\} align="end" \/>/);
 });

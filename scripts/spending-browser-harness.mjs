@@ -198,7 +198,7 @@ function installSpendingDesktopApi(model) {
     historyAvailability: "unavailable",
     sourceGaps: [],
     importedAt: null,
-    summary: { net: { display: "native", amounts: [], provenance: NO_PROVENANCE, incomplete: false }, assets: { amounts: [], provenance: NO_PROVENANCE }, liabilities: { amounts: [], provenance: NO_PROVENANCE } },
+    summary: { net: { display: "native", amounts: [], provenance: { preview: false, manual: false }, incomplete: false }, assets: { amounts: [], provenance: { preview: false, manual: false } }, liabilities: { amounts: [], provenance: { preview: false, manual: false } } },
     dailyHistory: [],
     dailyHistoryByAccount: {},
     accounts: [],
