@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import {
   SourceTextIntegrityError,
   type SourceTextPort,
@@ -136,16 +137,6 @@ type HncbCurrentDepositRow =
   | HncbCurrentDepositBalanceRow
   | HncbCurrentDepositOverviewBalanceRow;
 
-function hncbCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\0`)
-    .update(parts.join("\0"))
-    .digest("base64url")}`;
-}
-
 /** Join HNCB's full numeric account evidence to the existing financial
  * identity and retain both provider balance fields independently. */
 export function buildHncbCurrentDepositBalanceCapture(
@@ -188,7 +179,7 @@ export function buildHncbCurrentDepositBalanceCapture(
     ["available", availableSourceField, row.available],
   ];
   for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = hncbCurrentDepositOpaqueKey(
+    const sourceRecordKey = canonicalDigest(
       "hncb-current-deposit-source-record-v1",
       sourceAccountKey,
       row.sourceEvidence.contractVersion,
@@ -210,7 +201,7 @@ export function buildHncbCurrentDepositBalanceCapture(
     };
     const record = currentDepositSourceRecord({
       sourceRecordKey,
-      providerKey: hncbCurrentDepositOpaqueKey(
+      providerKey: canonicalDigest(
         "hncb-current-deposit-provider-record-v1",
         row.accountNumber,
         row.sourceEvidence.contractVersion,
@@ -230,7 +221,7 @@ export function buildHncbCurrentDepositBalanceCapture(
       contentHash: currentDepositSourceRecordContentHash(record.compact),
     });
     observations.push({
-      observationKey: hncbCurrentDepositOpaqueKey(
+      observationKey: canonicalDigest(
         "hncb-current-deposit-observation-v1",
         sourceAccountKey,
       ),

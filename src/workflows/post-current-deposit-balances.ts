@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page, Response } from "playwright";
 import {
   currentDepositSourceRecord,
@@ -511,13 +512,6 @@ export async function readPostCurrentDepositBalances(
   });
 }
 
-function opaqueKey(domain: string, ...parts: readonly string[]): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\u0000`)
-    .update(parts.join("\u0000"))
-    .digest("base64url")}`;
-}
-
 /**
  * Join a PS row to an already admitted Post financial account.  This function
  * never creates identity keys from a current-summary row.
@@ -555,7 +549,7 @@ export function buildPostCurrentDepositBalanceCapture(
     sourceValue: row.effectiveTimeSourceValue,
     contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   } as const;
-  const sourceRecordKey = opaqueKey(
+  const sourceRecordKey = canonicalDigest(
     "post-current-deposit-source-record-v1",
     row.sourceAccountKey,
     row.currency,
@@ -580,7 +574,7 @@ export function buildPostCurrentDepositBalanceCapture(
   } satisfies Record<string, unknown>;
   const provisional = currentDepositSourceRecord({
     sourceRecordKey,
-    providerKey: opaqueKey(
+    providerKey: canonicalDigest(
       "post-current-deposit-provider-record-v1",
       row.sourceAccountKey,
       row.currency,
@@ -599,7 +593,7 @@ export function buildPostCurrentDepositBalanceCapture(
     contentHash: currentDepositSourceRecordContentHash(provisional.compact),
   };
   const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: opaqueKey(
+    observationKey: canonicalDigest(
       "post-current-deposit-observation-v1",
       row.sourceAccountKey,
       row.currency,
@@ -628,11 +622,11 @@ export function buildPostCurrentDepositBalanceCapture(
     scope: {
       startDate: scopeDate,
       endDate: scopeDate,
-      contractFingerprint: opaqueKey(
+      contractFingerprint: canonicalDigest(
         "post-current-deposit-contract-v1",
         POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       ),
-      preflightFingerprint: opaqueKey(
+      preflightFingerprint: canonicalDigest(
         "post-current-deposit-preflight-v1",
         identity.subjectDigest,
         scopeDate,

@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -882,16 +883,6 @@ function buildCtbcCapture(
   };
 }
 
-function ctbcCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\u0000`)
-    .update(parts.join("\u0000"))
-    .digest("base64url")}`;
-}
-
 /**
  * Join the current summary to an already admitted CTBC statement identity.
  * The provider accountId is retained as exact evidence, including leading
@@ -933,7 +924,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
     sourceValue: String(row.providerServerTime),
     contractVersion,
   };
-  const sourceRecordKey = ctbcCurrentDepositOpaqueKey(
+  const sourceRecordKey = canonicalDigest(
     "ctbc-current-deposit-source-record-v1",
     sourceAccountKey,
     row.effectiveAt,
@@ -955,7 +946,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
   };
   const provisional = currentDepositSourceRecord({
     sourceRecordKey,
-    providerKey: ctbcCurrentDepositOpaqueKey(
+    providerKey: canonicalDigest(
       "ctbc-current-deposit-provider-record-v1",
       sourceAccountKey,
       row.effectiveAt,
@@ -973,7 +964,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
     contentHash: currentDepositSourceRecordContentHash(provisional.compact),
   };
   const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: ctbcCurrentDepositOpaqueKey(
+    observationKey: canonicalDigest(
       "ctbc-current-deposit-observation-v1",
       sourceAccountKey,
     ),
@@ -1002,8 +993,8 @@ export function buildCtbcCurrentDepositBalanceCapture(
     scope: {
       startDate: scopeDate,
       endDate: scopeDate,
-      contractFingerprint: ctbcCurrentDepositOpaqueKey("ctbc-current-deposit-contract-v1", route),
-      preflightFingerprint: ctbcCurrentDepositOpaqueKey(
+      contractFingerprint: canonicalDigest("ctbc-current-deposit-contract-v1", route),
+      preflightFingerprint: canonicalDigest(
         "ctbc-current-deposit-preflight-v1",
         identity.subjectDigest,
         scopeDate,

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page, Response } from "playwright";
 import { z } from "zod";
 import {
@@ -192,16 +193,6 @@ type ExistingSinopacFinancialCapture = Readonly<{
   sourceCurrency: string;
 }>;
 
-function sinopacCurrentDepositOpaqueKey(
-  domain: string,
-  ...parts: readonly string[]
-): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(`${domain}\u0000`)
-    .update(parts.join("\u0000"))
-    .digest("base64url")}`;
-}
-
 /**
  * Build a point-in-time current-balance capture from a row and an identity
  * that has already crossed the ordinary SinoPac financial admission.  The
@@ -250,7 +241,7 @@ export function buildSinopacCurrentDepositBalanceCapture(
     sourceValue: row.providerHttpDate,
     contractVersion,
   };
-  const sourceRecordKey = sinopacCurrentDepositOpaqueKey(
+  const sourceRecordKey = canonicalDigest(
     "sinopac-current-deposit-source-record-v1",
     row.stream,
     sourceAccountKey,
@@ -274,7 +265,7 @@ export function buildSinopacCurrentDepositBalanceCapture(
   };
   const provisional = currentDepositSourceRecord({
     sourceRecordKey,
-    providerKey: sinopacCurrentDepositOpaqueKey(
+    providerKey: canonicalDigest(
       "sinopac-current-deposit-provider-record-v1",
       row.stream,
       row.accountNumber,
@@ -294,7 +285,7 @@ export function buildSinopacCurrentDepositBalanceCapture(
     contentHash: currentDepositSourceRecordContentHash(provisional.compact),
   };
   const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: sinopacCurrentDepositOpaqueKey(
+    observationKey: canonicalDigest(
       "sinopac-current-deposit-observation-v1",
       row.stream,
       sourceAccountKey,
@@ -309,7 +300,7 @@ export function buildSinopacCurrentDepositBalanceCapture(
   };
   const scopeDate = row.effectiveAt.slice(0, 10);
   return {
-    captureId: `sinopac-current-${sinopacCurrentDepositOpaqueKey(
+    captureId: `sinopac-current-${canonicalDigest(
       "sinopac-current-deposit-capture-v1",
       row.stream,
       sourceAccountKey,
