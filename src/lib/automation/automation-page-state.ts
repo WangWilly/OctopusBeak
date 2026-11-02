@@ -25,6 +25,8 @@ export type AutomationPageStateValue = Readonly<{
   runtime: AutomationRuntimeSnapshot | null;
   pendingActions: readonly AutomationActionToken[];
   pendingTaskIds: ReadonlySet<string>;
+  /** The page model the shell last loaded, before the runtime is merged; null before the first load. */
+  model: AutomationPageModel | null;
   /** The page model the shell last loaded, merged with the runtime and the pending actions; null before the first load. */
   live: AutomationPageModel | null;
   /** A task runs or an action waits for the runtime, so the blocks are refreshed on a timer. */
@@ -41,7 +43,7 @@ type StopTask = Readonly<{ id: string; status: AutomationTaskStatus }>;
  */
 export function createAutomationPageState(input: Readonly<{
   api: AutomationActionPort;
-  requestReload(reason: AutomationReloadReason): void;
+  requestReload(reason: AutomationReloadReason): void | Promise<void>;
   pollIntervalMs?: number;
 }>) {
   const pollIntervalMs = input.pollIntervalMs ?? 2_000;
@@ -62,6 +64,7 @@ export function createAutomationPageState(input: Readonly<{
       runtime,
       pendingActions,
       pendingTaskIds: new Set(pendingActions.map((action) => action.taskId)),
+      model,
       live,
       active: running || pendingActions.length > 0,
     };
@@ -112,8 +115,8 @@ export function createAutomationPageState(input: Readonly<{
     cancelAll(tasks: readonly StopTask[]): readonly AutomationActionStart<AutomationStopRequested>[] {
       return tasks.flatMap((task) => actions.cancel(task) ?? []);
     },
-    reload() {
-      input.requestReload("manual");
+    async reload() {
+      await input.requestReload("manual");
     },
     dispose() {
       stopPolling();

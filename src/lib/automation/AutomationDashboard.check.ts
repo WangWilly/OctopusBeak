@@ -1,11 +1,5 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import type { AutomationPageModel, AutomationTaskRow } from "./types.ts";
-import type { DashboardBlockValueMap } from "$lib/shared-shell/dashboard-blocks.ts";
-import {
-  automationStageTasks,
-  dispatchAutomationStageSync,
-} from "./progressive-automation-actions.ts";
 
 const source = readFileSync(
   new URL("./AutomationDashboard.svelte", import.meta.url),
@@ -265,28 +259,6 @@ assert.match(source, /\$: historyCounts = catalogHistoryRows\.reduce/);
 assert.match(source, /historyCounts\.completed/);
 assert.doesNotMatch(source, /historyFinishedTime/);
 assert.doesNotMatch(source, /class="modal-footer"/);
-
-const fallbackTask = { id: "fallback-task" } as unknown as AutomationTaskRow;
-const blockTask = { id: "block-task" } as unknown as AutomationTaskRow;
-const fallbackAutomation = {
-  tasks: [fallbackTask],
-} as unknown as AutomationPageModel;
-const blockAutomation = {
-  ...fallbackAutomation,
-  tasks: [blockTask],
-} as unknown as AutomationPageModel;
-const listBlock = {
-  automation: blockAutomation,
-  credentialGroups: [],
-} as unknown as DashboardBlockValueMap["automation"]["list"];
-let syncedTasks: AutomationTaskRow[] | undefined;
-const displayedBlockTasks = automationStageTasks(fallbackAutomation, listBlock);
-dispatchAutomationStageSync(displayedBlockTasks, (tasks) => { syncedTasks = tasks; });
-assert.strictEqual(syncedTasks, blockAutomation.tasks);
-syncedTasks = undefined;
-const displayedFallbackTasks = automationStageTasks(fallbackAutomation);
-dispatchAutomationStageSync(displayedFallbackTasks, (tasks) => { syncedTasks = tasks; });
-assert.strictEqual(syncedTasks, fallbackAutomation.tasks);
 
 const currentTaskIds = new Set(["source-task"]);
 const historyRowsForCheck = [

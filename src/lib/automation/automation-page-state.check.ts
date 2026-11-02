@@ -87,7 +87,7 @@ function harness(t: import("node:test").TestContext) {
     },
     async fatalRuntimeSnapshot() {},
   };
-  const state = createAutomationPageState({ api, requestReload: (reason) => calls.reloads.push(reason), pollIntervalMs: 2_000 });
+  const state = createAutomationPageState({ api, requestReload: (reason) => { calls.reloads.push(reason); }, pollIntervalMs: 2_000 });
   let latest!: Parameters<Parameters<typeof state.subscribe>[0]>[0];
   const unsubscribe = state.subscribe((value) => { latest = value; });
   t.after(() => {
