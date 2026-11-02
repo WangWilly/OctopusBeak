@@ -337,6 +337,28 @@ test("an explicit month choice wins over today's month across a newer summary", 
   session.dispose();
 });
 
+test("crossing into a new month moves the default month and loads it, but keeps an explicit choice", async () => {
+  const { calls, transport } = makeTransport();
+  const following = createSession(reportForMonths(1, ["2026-10"]), transport, undefined, undefined, "2026-10-31");
+  following.session.start();
+  await waitFor(() => calls.recordPages.length === 1 && !following.current().recordPageLoading);
+  following.session.setToday("2026-10-31");
+  assert.equal(calls.recordPages.length, 1, "a date inside the same month reads nothing");
+  following.session.setToday("2026-11-01");
+  assert.equal(following.current().activeMonth, "2026-11");
+  assert.deepEqual(following.current().months, ["2026-10", "2026-11"]);
+  await waitFor(() => calls.recordPages.some((input: any) => input.month === "2026-11"));
+  following.session.dispose();
+
+  const chosen = createSession(reportForMonths(1, ["2026-09", "2026-10"]), makeTransport().transport, undefined, undefined, "2026-10-31");
+  chosen.session.start();
+  chosen.session.chooseMonth("2026-09");
+  chosen.session.setToday("2026-11-01");
+  assert.equal(chosen.current().activeMonth, "2026-09", "an explicit month stays chosen");
+  assert.deepEqual(chosen.current().months, ["2026-09", "2026-10", "2026-11"], "the new month joins the month list");
+  chosen.session.dispose();
+});
+
 test("month and day changes ignore late reads from earlier selections", async () => {
   const pending: ReturnType<typeof deferred<any>>[] = [];
   const { calls, transport } = makeTransport({

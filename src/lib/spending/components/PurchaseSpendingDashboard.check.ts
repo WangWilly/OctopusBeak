@@ -70,7 +70,9 @@ assert.match(source, /<MonthPaceChart reading=\{current\} span=\{reading\.span\}
 assert.match(source, /<MonthTrendChart months=\{trend\} selectedMonth=\{reading\.month\} onSelectMonth=\{chooseMonth\} \/>/);
 assert.match(source, /readSpendingMonth\(report\.summary, \{ month: activeMonth, today \}\)/);
 assert.match(source, /readSpendingTrend\(report\.summary, \{ currency: selectedCurrency, selectedMonth: reading\.month, today \}\)/);
-assert.match(source, /const today = taipeiDateKey\(Date\.now\(\) \/ 1000\);/);
+assert.match(source, /let today = get\(taipeiDate\);/);
+assert.match(source, /\$: today = \$taipeiDate;/);
+assert.match(source, /\$: spendingSession\.setToday\(today\);/);
 assert.doesNotMatch(source, /chartMode|monthlyChartData|dailyChartData|PurchaseActivityBarChart/);
 assert.match(source, /data-purchase-day/);
 assert.match(source, /dayTotalsFor\(reading, group\.date, group\.totals\)/);
