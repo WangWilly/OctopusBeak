@@ -585,17 +585,17 @@ export async function readPreviewAccounts(
 export async function readPreviewTransactions(
   reader: PreviewReader,
   visibility: PreviewVisibility,
-  previewAccountId: string,
+  previewAccountIds: readonly string[],
 ): Promise<readonly PreviewTransactionView[]> {
-  if (visibility.visible.length === 0) return [];
+  if (visibility.visible.length === 0 || previewAccountIds.length === 0) return [];
   const result = await reader.query<TransactionRow>(
     `SELECT row.preview_account_id, row.source_row_key, row.amount, row.currency, row.direction,
             row.posted_at, row.posted_at_precision, row.description
        FROM preview_transactions row
        JOIN preview_accounts account ON account.preview_account_id = row.preview_account_id
-      WHERE ${DEPOSITORY_VISIBLE} AND row.preview_account_id = $3
+      WHERE ${DEPOSITORY_VISIBLE} AND row.preview_account_id = ANY($3::text[])
       ORDER BY row.posted_at DESC, row.source_row_key`,
-    [...visibilityParams(visibility), previewAccountId],
+    [...visibilityParams(visibility), previewAccountIds],
   );
   return result.rows.map((row) => ({
     previewAccountId: row.preview_account_id,
@@ -660,10 +660,10 @@ export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePrev
       });
     },
     accounts: (visibility) => readPreviewAccounts(store, visibility),
-    transactions: (visibility, previewAccountId) => readPreviewTransactions(store, visibility, previewAccountId),
+    transactions: (visibility, previewAccountId) => readPreviewTransactions(store, visibility, [previewAccountId]),
     creditAccounts: (visibility) => readPreviewCreditAccounts(store, visibility),
-    purchases: (visibility, previewAccountId) => readPreviewPurchases(store, visibility, previewAccountId),
-    statements: (visibility, previewAccountId) => readPreviewStatements(store, visibility, previewAccountId),
+    purchases: (visibility, previewAccountId) => readPreviewPurchases(store, visibility, [previewAccountId]),
+    statements: (visibility, previewAccountId) => readPreviewStatements(store, visibility, [previewAccountId]),
     loanAccounts: (visibility) => readPreviewLoanAccounts(store, visibility),
   });
 }

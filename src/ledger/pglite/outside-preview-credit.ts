@@ -1,6 +1,7 @@
 import type { AccountRowDto, PreviewCreditDto } from "../../lib/shared-ledger/types.ts";
 import {
   amountLine,
+  byPreviewAccount,
   exactFromDecimal,
   pointsByDate,
   PREVIEW_INSTITUTION_NAMES as INSTITUTION_NAMES,
@@ -26,14 +27,13 @@ import type {
 export async function readPreviewCreditOutside(reader: OutsideReader, visibility: PreviewVisibility): Promise<OutsideFinancialData> {
   const views = await readPreviewCreditAccounts(reader, visibility);
   if (views.length === 0) return { accounts: [], series: [] };
-  const accounts: AccountRowDto[] = [];
-  for (const view of views)
-    accounts.push(previewCreditAccountRow(
-      view,
-      await readPreviewPurchases(reader, visibility, view.previewAccountId),
-      await readPreviewStatements(reader, visibility, view.previewAccountId),
-    ));
-  return { accounts, series: previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)) };
+  const ids = views.map((view) => view.previewAccountId);
+  const purchases = byPreviewAccount(await readPreviewPurchases(reader, visibility, ids));
+  const statements = byPreviewAccount(await readPreviewStatements(reader, visibility, ids));
+  return {
+    accounts: views.map((view) => previewCreditAccountRow(view, purchases(view.previewAccountId), statements(view.previewAccountId))),
+    series: previewCreditSeries(await readPreviewCreditBalanceHistory(reader, visibility)),
+  };
 }
 
 /**

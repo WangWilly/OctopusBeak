@@ -42,3 +42,14 @@ export function pointsByDate(observations: readonly Readonly<{ amount: string; c
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
+
+/** Groups rows read for many accounts in one query, keeping the query's order within each account. */
+export function byPreviewAccount<Row extends Readonly<{ previewAccountId: string }>>(rows: readonly Row[]): (previewAccountId: string) => readonly Row[] {
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const group = groups.get(row.previewAccountId);
+    if (group) group.push(row);
+    else groups.set(row.previewAccountId, [row]);
+  }
+  return (previewAccountId) => groups.get(previewAccountId) ?? [];
+}

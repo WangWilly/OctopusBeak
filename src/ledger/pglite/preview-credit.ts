@@ -634,9 +634,9 @@ type PurchaseRow = {
 export async function readPreviewPurchases(
   reader: PreviewReader,
   visibility: PreviewVisibility,
-  previewAccountId: string,
+  previewAccountIds: readonly string[],
 ): Promise<readonly PreviewPurchaseView[]> {
-  if (visibility.visible.length === 0) return [];
+  if (visibility.visible.length === 0 || previewAccountIds.length === 0) return [];
   const result = await reader.query<PurchaseRow>(
     `SELECT row.preview_account_id, row.source_row_key, row.amount, row.currency, row.direction, row.posting_status,
             row.billing_status, row.consumed_at, row.consumed_at_precision, row.posting_date, row.source_card_key,
@@ -656,12 +656,12 @@ export async function readPreviewPurchases(
             AND (pairing.to_row_key = row.source_row_key OR supersession.to_row_key = row.source_row_key)
           LIMIT 1
        ) paired ON TRUE
-      WHERE ${CREDIT_VISIBLE} AND row.preview_account_id = $3
+      WHERE ${CREDIT_VISIBLE} AND row.preview_account_id = ANY($3::text[])
         AND NOT EXISTS (
           SELECT 1 FROM preview_credit_relations hidden
            WHERE hidden.preview_account_id = row.preview_account_id AND hidden.from_row_key = row.source_row_key)
       ORDER BY row.consumed_at DESC, row.source_row_key`,
-    [...visibilityParams(visibility), previewAccountId],
+    [...visibilityParams(visibility), previewAccountIds],
   );
   return result.rows.map((row) => ({
     previewAccountId: row.preview_account_id,
@@ -690,18 +690,18 @@ type StatementRow = {
 export async function readPreviewStatements(
   reader: PreviewReader,
   visibility: PreviewVisibility,
-  previewAccountId: string,
+  previewAccountIds: readonly string[],
 ): Promise<readonly PreviewStatementView[]> {
-  if (visibility.visible.length === 0) return [];
+  if (visibility.visible.length === 0 || previewAccountIds.length === 0) return [];
   const result = await reader.query<StatementRow>(
     `SELECT statement.preview_account_id, statement.statement_key, statement.cycle_start, statement.cycle_end,
             statement.closing_date, statement.due_date, statement.amount, statement.currency, statement.minimum_payment,
             statement.billing_period, statement.paid_amount, statement.paid, statement.no_payment_needed
        FROM preview_credit_statements statement
        JOIN preview_credit_accounts account ON account.preview_account_id = statement.preview_account_id
-      WHERE ${CREDIT_VISIBLE} AND statement.preview_account_id = $3
+      WHERE ${CREDIT_VISIBLE} AND statement.preview_account_id = ANY($3::text[])
       ORDER BY statement.billing_period DESC, statement.closing_date DESC, statement.statement_key`,
-    [...visibilityParams(visibility), previewAccountId],
+    [...visibilityParams(visibility), previewAccountIds],
   );
   return result.rows.map((row) => ({
     previewAccountId: row.preview_account_id,
