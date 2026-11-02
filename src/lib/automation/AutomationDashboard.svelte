@@ -1,6 +1,9 @@
 <script lang="ts">
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import SourceDeviceRegistration from "$lib/automation/SourceDeviceRegistration.svelte";
+  import RunHistoryDialog from "$lib/automation/RunHistoryDialog.svelte";
+  import ErrorReportDialog from "$lib/automation/ErrorReportDialog.svelte";
+  import StructureReportDialog from "$lib/automation/StructureReportDialog.svelte";
   import { sourceLogo } from "$lib/institutions/institutions.ts";
   import { onDestroy, onMount, tick } from "svelte";
   import { slide } from "svelte/transition";
@@ -28,13 +31,21 @@
   } from "@lucide/svelte";
   import type { CertificateFileValidationReason, CredentialGroupDto } from "$lib/desktop/api.ts";
   import type { AutomationCredentialStatus } from "$lib/desktop/api.ts";
-  import type { ErrorReportPayload } from "$lib/automation/server/error-report.ts";
+  import { errorReportTarget, type ErrorReportTarget } from "$lib/automation/error-report-form.ts";
+  import {
+    NO_STRUCTURE_REPORT,
+    closeStructureReport,
+    openStructureReport,
+    selectStructureReportRun,
+    structureReportKey,
+    structureReportLoaded,
+  } from "$lib/automation/structure-report-state.ts";
   import type { AutomationPageState } from "$lib/automation/automation-page-state.ts";
   import {
     deviceRegistrationSource,
     type DeviceRegistrationSource,
   } from "$lib/automation/types.ts";
-  import { locale, t, type Locale, type Translation } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
 import { onboardingTaskDisclosure } from "$lib/onboarding/state.ts";
   import { credentialInputValue } from "$lib/automation/credential-redaction.ts";
   import {
@@ -82,11 +93,10 @@ import type {
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { formatUtcDateTime } from "$lib/time/timezone.ts";
+  import { formatRunTime, statusClass, taskLabel, taskLogo } from "./task-display.ts";
   import type {
     AutomationPageModel,
     AutomationCredentialRedaction,
-    AutomationTaskHistoryRow,
     AutomationTaskPrerequisiteNotice,
     AutomationTaskRow,
   } from "./types.ts";
@@ -163,102 +173,27 @@ import type {
   let watchedOverview: Readable<ViewState<OverviewPageDto>> | null = null;
   let stopRunDetailsOverview: (() => void) | null = null;
   $: watchRunDetailsOverview(expandedRunDetailsTaskId === null ? null : overviewLive);
-  let structureReport: { taskId: string; text: string } | null = null;
-  let structureReportKey: string | null = null;
-  let structureReportOpen = false;
-  let structureReportNotice: "copied" | "copyFailed" | "openIssueFailed" | null = null;
+  let structureReport = NO_STRUCTURE_REPORT;
   $: expandedFailedTask = live.tasks.find((task) => task.id === expandedRunDetailsTaskId && task.status === "failed") ?? null;
   $: void loadStructureReport(expandedFailedTask);
 
   async function loadStructureReport(task: AutomationTaskRow | null) {
-    const key = task ? `${task.id}:${task.latestFinishedAt ?? ""}` : null;
-    if (key === structureReportKey) return;
-    structureReportKey = key;
-    structureReport = null;
+    const key = structureReportKey(task);
+    const selected = selectStructureReportRun(structureReport, key);
+    if (selected === structureReport) return;
+    structureReport = selected;
     if (!task || !key) return;
     const text = await window.octopusBeak.automation.previewStructureReport(task.id).catch(() => null);
-    if (structureReportKey === key && text) structureReport = { taskId: task.id, text };
-  }
-
-  function openStructureReport() {
-    structureReportNotice = null;
-    structureReportOpen = true;
-  }
-
-  async function copyStructureReport() {
-    if (!structureReport) return;
-    try {
-      await navigator.clipboard.writeText(structureReport.text);
-      structureReportNotice = "copied";
-    } catch {
-      structureReportNotice = "copyFailed";
-    }
-  }
-
-  async function openStructureReportIssue() {
-    if (!structureReport) return;
-    try {
-      await window.octopusBeak.automation.openPreviewStructureReportIssue(structureReport.taskId);
-    } catch {
-      structureReportNotice = "openIssueFailed";
-    }
+    structureReport = structureReportLoaded(structureReport, key, text ? { taskId: task.id, text } : null);
   }
   // ADR 0081: an Error report the person sends by hand. Hidden in builds without a receiver.
-  const ERROR_REPORT_NOTE_LENGTH = 1000;
   let errorReportsAvailable = false;
-  let errorReportTask: { taskId: string; code: string; stage: string | null } | null = null;
-  let errorReportNote = "";
-  let errorReportEmail = "";
-  let errorReportPreview: ErrorReportPayload | null = null;
-  let errorReportState: "editing" | "sending" | "sent" | "invalid" | "rate-limited" | "unavailable" | "network" = "editing";
-  let errorReportId = "";
-  let errorReportPreviewVersion = 0;
+  let errorReport: ErrorReportTarget | null = null;
   onMount(() => {
     void window.octopusBeak.errorReports?.available()
       .then((available) => (errorReportsAvailable = available))
       .catch(() => (errorReportsAvailable = false));
   });
-  $: if (errorReportTask) void refreshErrorReportPreview(errorReportNote, errorReportEmail);
-
-  function openErrorReport(task: AutomationTaskRow, code: string) {
-    // The last operating stage, as the host's failure classification reads it.
-    const stage = task.events.findLast((event) => event.stage !== "finalization")?.stage ?? null;
-    errorReportTask = { taskId: task.id, code, stage };
-    errorReportNote = "";
-    errorReportEmail = "";
-    errorReportPreview = null;
-    errorReportState = "editing";
-    errorReportId = "";
-  }
-
-  function closeErrorReport() {
-    if (errorReportState === "sending") return;
-    errorReportTask = null;
-  }
-
-  async function refreshErrorReportPreview(note: string, email: string) {
-    if (!errorReportTask) return;
-    const version = ++errorReportPreviewVersion;
-    // An email still being typed is malformed; preview it once it is complete.
-    const preview = await window.octopusBeak.errorReports
-      .preview({ ...errorReportTask, note, email: email.includes("@") ? email : "" })
-      .catch(() => null);
-    if (version === errorReportPreviewVersion) errorReportPreview = preview;
-  }
-
-  async function sendErrorReport() {
-    if (!errorReportTask || errorReportState === "sending") return;
-    errorReportState = "sending";
-    const result = await window.octopusBeak.errorReports
-      .send({ ...errorReportTask, note: errorReportNote, email: errorReportEmail })
-      .catch(() => ({ ok: false as const, reason: "network" as const }));
-    if (result.ok) {
-      errorReportId = result.id;
-      errorReportState = "sent";
-    } else {
-      errorReportState = result.reason;
-    }
-  }
   onDestroy(() => stopRunDetailsOverview?.());
   onDestroy(() => clearTimeout(copiedErrorTimer));
 
@@ -275,10 +210,6 @@ import type {
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
-  let historyLoading = false;
-  let historyRows: AutomationTaskHistoryRow[] = [];
-  let historySearch = "";
-  let historyFilter: "all" | "running" | "completed" | "failed" = "all";
   let actionError = "";
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
@@ -326,30 +257,10 @@ import type {
   $: selectedGroupTask = sheetView.selectedGroup
     ? credentialGroupTask(sheetView.selectedGroup.id, live)
     : undefined;
-  $: catalogHistoryRows = filterHistoryToCurrentTasks(historyRows, live.tasks);
-  $: visibleHistoryRows = catalogHistoryRows.filter((run) => {
-    const term = historySearch.trim().toLowerCase();
-    return (historyFilter === "all" || historyStatusGroup(run.status) === historyFilter)
-      && (!term || taskIdLabel(run.taskId, $locale).toLowerCase().includes(term));
-  });
-  $: historyCounts = catalogHistoryRows.reduce(
-    (counts, run) => {
-      counts[historyStatusGroup(run.status)] += 1;
-      return counts;
-    },
-    { running: 0, completed: 0, failed: 0 },
-  );
 
   onDestroy(() => {
     if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
   });
-
-  function statusClass(status: string) {
-    if (status === "completed") return "good";
-    if (status === "failed" || status === "locked") return "bad";
-    if (status === "running" || status === "waiting_for_human" || status === "partial" || status === "needs_setup" || status === "reset_required") return "warn";
-    return "";
-  }
 
   function disclosureSlide(node: Element) {
     return slide(node, {
@@ -396,7 +307,7 @@ import type {
   }
 
   function formatTime(value: string | null) {
-    return formatUtcDateTime(value, $systemTimezone, $locale) || "--";
+    return formatRunTime(value, $systemTimezone, $locale);
   }
 
   function formatClock(value: string) {
@@ -854,43 +765,6 @@ import type {
     if (stop) await settleStop(stop.settled);
   }
 
-  async function openRunHistory() {
-    historyOpen = true;
-    historyLoading = true;
-    historySearch = "";
-    historyFilter = "all";
-    try {
-      actionError = "";
-      historyRows = await window.octopusBeak.automation.runHistory();
-    } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
-    } finally {
-      historyLoading = false;
-    }
-  }
-
-  function historyStatusGroup(status: AutomationTaskHistoryRow["status"]): "running" | "completed" | "failed" {
-    if (status === "completed" || status === "partial") return "completed";
-    if (status === "failed" || status === "locked") return "failed";
-    return "running";
-  }
-
-  function formatDuration(run: AutomationTaskHistoryRow) {
-    const start = Date.parse(run.startedAt);
-    const end = Date.parse(run.finishedAt ?? new Date().toISOString());
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return "--";
-    const seconds = Math.max(0, Math.floor((end - start) / 1_000));
-    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
-  }
-
-  function filterHistoryToCurrentTasks(
-    rows: readonly AutomationTaskHistoryRow[],
-    tasks: readonly AutomationTaskRow[],
-  ) {
-    const catalogTaskIds = new Set(tasks.map((task) => task.id));
-    return rows.filter((run) => catalogTaskIds.has(run.taskId));
-  }
-
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
     const save = planCredentialSave(sheet, sheetContext);
@@ -931,24 +805,6 @@ import type {
       sheet = applyCredentialSaveResult(sheet, generation, { kind: "failed" }, sheetContext);
       actionError = $t.automation.saveCredentialsFailed;
     }
-  }
-
-  function taskLogo(task: AutomationTaskRow) {
-    return task.credentialGroupId ? sourceLogo(task.credentialGroupId) : null;
-  }
-
-  function taskIdLogo(taskId: string) {
-    const task = live.tasks.find((candidate) => candidate.id === taskId);
-    return task ? taskLogo(task) : null;
-  }
-
-  function taskIdLabel(taskId: string, language: Locale) {
-    const task = live.tasks.find((candidate) => candidate.id === taskId);
-    return task ? taskLabel(task, language) : taskId;
-  }
-
-  function taskLabel(task: AutomationTaskRow, language: Locale) {
-    return task.displayName[language];
   }
 
   const ONBOARDING_PROGRESS_NODES: readonly string[] = [
@@ -1001,7 +857,7 @@ import type {
     >
       {$t.automation.credentials}
     </button>
-    <button class="button secondary topbar-action" type="button" onclick={() => void openRunHistory()}>
+    <button class="button secondary topbar-action" type="button" onclick={() => (historyOpen = true)}>
       {$t.automation.runHistory}
     </button>
   </svelte:fragment>
@@ -1344,13 +1200,13 @@ import type {
                               {$t.automation.deviceRegistrationOpenSettings}
                             </button>
                           {/if}
-                          {#if structureReport?.taskId === task.id}
-                            <button class="button secondary structure-report-action" type="button" onclick={openStructureReport}>
+                          {#if structureReport.report?.taskId === task.id}
+                            <button class="button secondary structure-report-action" type="button" onclick={() => (structureReport = openStructureReport(structureReport))}>
                               {$t.automation.structureReport.share}
                             </button>
                           {/if}
                           {#if errorReportsAvailable}
-                            <button class="button secondary structure-report-action" type="button" onclick={() => openErrorReport(task, errorCode)}>
+                            <button class="button secondary structure-report-action" type="button" onclick={() => (errorReport = errorReportTarget(task, errorCode))}>
                               {$t.automation.errorReport.open}
                             </button>
                           {/if}
@@ -2040,149 +1896,20 @@ import type {
   </div>
 {/if}
 
-{#if structureReportOpen && structureReport}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="structure-report-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}></button>
-    <div class="modal-panel structure-report-modal">
-      <div class="modal-head">
-        <div>
-          <h2 id="structure-report-title">{$t.automation.structureReport.title}</h2>
-          <p>{$t.automation.structureReport.intro}</p>
-        </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (structureReportOpen = false)}><X size={20} /></button>
-      </div>
-      <div class="modal-body structure-report-body">
-        <ul class="structure-report-scope">
-          <li>{$t.automation.structureReport.contains}</li>
-          <li>{$t.automation.structureReport.neverContains}</li>
-          <li>{$t.automation.structureReport.sending}</li>
-        </ul>
-        <pre class="structure-report-text">{structureReport.text}</pre>
-        <div class="structure-report-actions">
-          {#if structureReportNotice}
-            <span class="structure-report-notice" role="status">{$t.automation.structureReport[structureReportNotice]}</span>
-          {/if}
-          <button class="button secondary" type="button" onclick={() => void copyStructureReport()}>{$t.automation.structureReport.copy}</button>
-          <button class="button" type="button" onclick={() => void openStructureReportIssue()}>{$t.automation.structureReport.openIssue}</button>
-        </div>
-      </div>
-    </div>
-  </div>
+{#if structureReport.open && structureReport.report}
+  <StructureReportDialog
+    report={structureReport.report}
+    port={window.octopusBeak.automation}
+    onClose={() => (structureReport = closeStructureReport(structureReport))}
+  />
 {/if}
 
-{#if errorReportTask}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="error-report-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={closeErrorReport}></button>
-    <div class="modal-panel structure-report-modal">
-      <div class="modal-head">
-        <div>
-          <h2 id="error-report-title">{$t.automation.errorReport.title}</h2>
-          <p>{$t.automation.errorReport.intro}</p>
-        </div>
-        <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeErrorReport}><X size={20} /></button>
-      </div>
-      <div class="modal-body structure-report-body">
-        {#if errorReportState === "sent"}
-          <p role="status">{$t.automation.errorReport.sent(errorReportId)}</p>
-          <div class="structure-report-actions">
-            <button class="button" type="button" onclick={closeErrorReport}>{$t.common.close}</button>
-          </div>
-        {:else}
-          <ul class="structure-report-scope">
-            <li>{$t.automation.errorReport.contains}</li>
-            <li>{$t.automation.errorReport.neverContains}</li>
-            <li>{$t.automation.errorReport.kept}</li>
-          </ul>
-          <label class="error-report-field">
-            <span>{$t.automation.errorReport.noteLabel}</span>
-            <textarea bind:value={errorReportNote} maxlength={ERROR_REPORT_NOTE_LENGTH} rows="4" placeholder={$t.automation.errorReport.notePlaceholder}></textarea>
-            <small>{$t.automation.errorReport.noteHint}</small>
-          </label>
-          <label class="error-report-field">
-            <span>{$t.automation.errorReport.emailLabel}</span>
-            <input type="email" bind:value={errorReportEmail} autocomplete="email" maxlength="254" />
-            <small>{$t.automation.errorReport.emailHint}</small>
-          </label>
-          <details class="error-report-preview">
-            <summary>{$t.automation.errorReport.preview}</summary>
-            <pre class="structure-report-text">{errorReportPreview ? JSON.stringify(errorReportPreview, null, 2) : ""}</pre>
-          </details>
-          <div class="structure-report-actions">
-            {#if errorReportState !== "editing" && errorReportState !== "sending"}
-              <span class="structure-report-notice" role="alert">{$t.automation.errorReport.failed[errorReportState]}</span>
-            {/if}
-            <button class="button secondary" type="button" onclick={closeErrorReport} disabled={errorReportState === "sending"}>{$t.automation.errorReport.cancel}</button>
-            <button class="button" type="button" onclick={() => void sendErrorReport()} disabled={errorReportState === "sending"} aria-busy={errorReportState === "sending"}>
-              {errorReportState === "sending" ? $t.automation.errorReport.sending : $t.automation.errorReport.send}
-            </button>
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
+{#if errorReport}
+  <ErrorReportDialog target={errorReport} port={window.octopusBeak.errorReports} onClose={() => (errorReport = null)} />
 {/if}
 
 {#if historyOpen}
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
-    <button class="modal-backdrop" type="button" aria-label={$t.automation.closeRunHistory} onclick={() => (historyOpen = false)}></button>
-    <div class="modal-panel history-modal">
-      <div class="modal-head">
-        <div>
-          <h2 id="history-title">{$t.automation.runHistory}</h2>
-          <p>{$t.automation.historyTaskCount(catalogHistoryRows.length)}</p>
-        </div>
-        <div class="history-head-actions">
-          <label class="modal-search history-search">
-            <Search size={18} />
-            <input bind:value={historySearch} placeholder={$t.automation.historySearch} />
-          </label>
-          <button class="modal-close" type="button" aria-label={$t.common.close} onclick={() => (historyOpen = false)}><X size={20} /></button>
-        </div>
-      </div>
-      <div class="modal-body history-layout">
-        <aside class="history-filters">
-          <button class:selected={historyFilter === "all"} type="button" onclick={() => (historyFilter = "all")}><span>{$t.automation.historyAll}</span><strong>{catalogHistoryRows.length}</strong></button>
-          <button class:selected={historyFilter === "running"} type="button" onclick={() => (historyFilter = "running")}><span>{$t.automation.historyRunning}</span><strong>{historyCounts.running}</strong></button>
-          <button class:selected={historyFilter === "completed"} type="button" onclick={() => (historyFilter = "completed")}><span>{$t.automation.historyCompleted}</span><strong>{historyCounts.completed}</strong></button>
-          <button class:selected={historyFilter === "failed"} type="button" onclick={() => (historyFilter = "failed")}><span>{$t.automation.historyFailed}</span><strong>{historyCounts.failed}</strong></button>
-        </aside>
-        <div class="history-body">
-          <table class="table history-table">
-            <thead>
-              <tr>
-                <th>{$t.automation.task}</th>
-                <th>{$t.automation.status}</th>
-                <th>{$t.automation.historyStartedTime($systemTimezone)}</th>
-                <th>{$t.automation.historyDuration}</th>
-                <th>{$t.automation.historyError}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#if historyLoading}
-                <tr><td colspan="5">{$t.common.loading}</td></tr>
-              {/if}
-              {#each visibleHistoryRows as run}
-                <tr>
-                  <td><div class="task-name"><span class="task-logo"><InstitutionLogo institution={taskIdLogo(run.taskId)} /></span><strong>{taskIdLabel(run.taskId, $locale)}</strong></div></td>
-                  <td><span class={`chip ${statusClass(run.status)}`}>{$t.automation.statusLabels[run.status]}</span></td>
-                  <td class="mono">{formatTime(run.startedAt)}</td>
-                  <td class="mono">{formatDuration(run)}</td>
-                  <td class="history-error">
-                    {#if run.appWorkflowOutcome?.errorCode}
-                      <code>{run.appWorkflowOutcome.errorCode}</code>
-                      {#if workflowFailureShortExplanation(run.appWorkflowOutcome.errorCode, $locale)}
-                        <small>{workflowFailureShortExplanation(run.appWorkflowOutcome.errorCode, $locale)}</small>
-                      {/if}
-                    {:else}--{/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
+  <RunHistoryDialog tasks={live.tasks} port={window.octopusBeak.automation} onClose={() => (historyOpen = false)} />
 {/if}
 
 <style>
@@ -3338,102 +3065,8 @@ import type {
     background: var(--surface);
   }
 
-  .history-modal {
-    width: min(1180px, 100%);
-    height: min(760px, calc(100vh - 40px));
-  }
-
-  .structure-report-modal {
-    width: min(760px, 100%);
-  }
-
-  .structure-report-modal .modal-head p {
-    margin: var(--space-2) 0 0;
-    color: var(--muted);
-    font-size: 13px;
-  }
-
-  .structure-report-body {
-    display: grid;
-    gap: var(--space-4);
-    padding: var(--space-5);
-  }
-
-  .structure-report-scope {
-    display: grid;
-    gap: var(--space-2);
-    margin: 0;
-    padding-left: var(--space-5);
-    font-size: 13px;
-  }
-
-  .structure-report-text {
-    max-height: 360px;
-    margin: 0;
-    padding: var(--space-3);
-    overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    font-family: var(--font-mono);
-    font-size: 12px;
-    white-space: pre;
-    user-select: text;
-  }
-
-  .structure-report-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-3);
-  }
-
-  .structure-report-notice {
-    margin-right: auto;
-    color: var(--muted);
-    font-size: 13px;
-  }
-
   .structure-report-action {
     min-height: 32px;
-  }
-
-  .error-report-field {
-    display: grid;
-    gap: var(--space-1);
-    font-size: 13px;
-  }
-
-  .error-report-field textarea,
-  .error-report-field input {
-    width: 100%;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--surface);
-    color: var(--fg);
-    font: inherit;
-  }
-
-  .error-report-field small,
-  .error-report-preview summary {
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .error-report-preview summary {
-    cursor: pointer;
-  }
-
-  .error-report-preview pre {
-    margin-top: var(--space-2);
-  }
-
-  .history-head-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: var(--space-3);
   }
 
   .modal-search {
@@ -3460,80 +3093,6 @@ import type {
     outline: 0;
     background: transparent;
     color: var(--fg);
-  }
-
-  .history-search {
-    width: min(320px, 34vw);
-  }
-
-  .history-layout {
-    min-height: 0;
-    flex: 1;
-    display: grid;
-    grid-template-columns: 190px minmax(0, 1fr);
-    overflow: hidden;
-  }
-
-  .history-filters {
-    padding: var(--space-3);
-    border-right: 1px solid var(--border);
-  }
-
-  .history-filters button {
-    width: 100%;
-    min-height: 46px;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 0 var(--space-3);
-    border: 0;
-    background: transparent;
-    color: var(--muted);
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .history-filters button:hover {
-    color: var(--fg);
-  }
-
-  .history-filters button.selected {
-    color: var(--fg);
-    font-weight: 760;
-  }
-
-  .history-filters button.selected span {
-    text-decoration: underline;
-    text-decoration-color: var(--muted);
-    text-underline-offset: 6px;
-  }
-
-  .history-body {
-    min-width: 0;
-    overflow: auto;
-    padding: 0;
-  }
-
-  .history-table {
-    table-layout: fixed;
-    min-width: 820px;
-  }
-
-  .history-table th:nth-child(1) { width: 31%; }
-  .history-table th:nth-child(2) { width: 13%; }
-  .history-table th:nth-child(3) { width: 21%; }
-  .history-table th:nth-child(4) { width: 10%; }
-  .history-table th:nth-child(5) { width: 25%; }
-
-  .history-table td {
-    vertical-align: middle;
-  }
-
-  .history-error {
-    max-width: 0;
-    color: var(--muted);
-    font-size: 12px;
   }
 
   .spinner {
