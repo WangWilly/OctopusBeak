@@ -14,6 +14,8 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
  * Operational Configuration: exchange rates and the automation run history the
  * schedulers read to decide whether an occurrence already ran. Manual Assets
  * are kept too: nothing could recollect what a person typed in (ADR 0087).
+ * The preview revision counter is kept so it only moves forward (ADR 0088);
+ * the reset's own commit refreshes the live views.
  */
 export const CANONICAL_RESET_PRESERVED_TABLES: ReadonlySet<string> = new Set([
   "pglite_baseline_metadata",
@@ -36,6 +38,7 @@ export const CANONICAL_RESET_PRESERVED_TABLES: ReadonlySet<string> = new Set([
   "automation_task_run_commit_attempts",
   "automation_task_prerequisite_notices",
   ...MANUAL_ASSET_TABLES,
+  "preview_data_revision",
 ]);
 
 const quoted = (identifier: string) => `"${identifier.replaceAll("\"", "\"\"")}"`;

@@ -257,18 +257,31 @@ ALTER TABLE preview_accounts
   ADD CONSTRAINT preview_accounts_foreign_currency CHECK (product <> 'foreign_currency' OR currency <> 'TWD');
 ${PGLITE_PREVIEW_LOAN_SQL}`;
 
+/** One counter that every preview write and delete advances, so a live view can depend on one row (ADR 0088). */
+export const PGLITE_PREVIEW_FINANCIAL_DATA_V4_SQL = String.raw`
+CREATE TABLE preview_data_revision (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  revision BIGINT NOT NULL
+);
+INSERT INTO preview_data_revision(singleton, revision) VALUES (TRUE, 0);
+`;
+
+export const PREVIEW_DATA_REVISION_SQL = "SELECT revision FROM preview_data_revision";
+
 export const PREVIEW_FINANCIAL_DATA_TABLES = [
   "preview_accounts",
   "preview_balance_observations",
   "preview_transactions",
   ...PREVIEW_CREDIT_TABLES,
   ...PREVIEW_LOAN_TABLES,
+  "preview_data_revision",
 ] as const;
 
 const PREVIEW_MIGRATIONS = [
   { id: "preview-financial-data-v1", sql: PGLITE_PREVIEW_FINANCIAL_DATA_SQL },
   { id: "preview-financial-data-v2", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V2_SQL },
   { id: "preview-financial-data-v3", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V3_SQL },
+  { id: "preview-financial-data-v4", sql: PGLITE_PREVIEW_FINANCIAL_DATA_V4_SQL },
 ] as const;
 
 export function applyPglitePreviewFinancialDataSchema(store: PGliteStore): Promise<void> {
@@ -624,17 +637,26 @@ export async function readPreviewBalanceHistory(
   return [...byAccount.values()];
 }
 
+async function bumpPreviewRevision(transaction: PGliteTransaction): Promise<void> {
+  await transaction.query("UPDATE preview_data_revision SET revision = revision + 1");
+}
+
 export function createPGlitePreviewFinancialData(store: PGliteStore): PGlitePreviewFinancialDataPort {
   return Object.freeze({
     async write(input) {
       const write = parsePreviewWrite(input);
-      return store.transaction((transaction) => writeInTransaction(transaction, write));
+      return store.transaction(async (transaction) => {
+        const receipt = await writeInTransaction(transaction, write);
+        await bumpPreviewRevision(transaction);
+        return receipt;
+      });
     },
     async deleteAll() {
       await store.transaction(async (transaction) => {
         await transaction.query("DELETE FROM preview_accounts");
         await transaction.query("DELETE FROM preview_credit_accounts");
         await transaction.query("DELETE FROM preview_loan_accounts");
+        await bumpPreviewRevision(transaction);
       });
     },
     accounts: (visibility) => readPreviewAccounts(store, visibility),

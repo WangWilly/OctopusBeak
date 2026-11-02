@@ -148,9 +148,11 @@ export async function readManualAssets(reader: Reader): Promise<readonly ManualA
   }));
 }
 
+export const MANUAL_ASSET_REVISION_SQL = "SELECT revision FROM manual_asset_revision";
+
 /** Changes on every manual write, deletes included, so a live view can depend on one row. */
 export async function readManualAssetRevision(reader: Reader): Promise<number> {
-  const result = await reader.query<{ revision: number | string }>("SELECT revision FROM manual_asset_revision");
+  const result = await reader.query<{ revision: number | string }>(MANUAL_ASSET_REVISION_SQL);
   return Number(result.rows[0]?.revision ?? 0);
 }
 
