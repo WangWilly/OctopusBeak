@@ -31,6 +31,7 @@ export type AssetsSummary =
     twdValues: ReadonlyMap<string, number>;
     /** The origins the total and its trailing change count. */
     provenance: Provenance;
+    totalProvenance: Provenance;
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
@@ -48,5 +49,7 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
     provenance: mergeProvenance(allocation.provenance, trailing?.provenance ?? NO_PROVENANCE),
+    /** The total alone, for a figure that shows no change. */
+    totalProvenance: allocation.provenance,
   };
 }

@@ -55,6 +55,7 @@ export type LiabilitiesSummary =
     shares: ReadonlyMap<string, number>;
     /** The origins the total and its trailing change count. */
     provenance: Provenance;
+    totalProvenance: Provenance;
   };
 
 const MAX_PAYMENTS = 3;
@@ -79,6 +80,8 @@ export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: 
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
     provenance: mergeProvenance(allocation.provenance, netChange?.provenance ?? NO_PROVENANCE),
+    /** The total alone, for a figure that shows no change. */
+    totalProvenance: allocation.provenance,
   };
 }
 

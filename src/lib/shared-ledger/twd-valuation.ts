@@ -114,7 +114,9 @@ export function accountLedger(
         }
         change += after - before;
         base += before;
-        provenance = mergeProvenance(provenance, provenanceByAccount.get(accountId) ?? NO_PROVENANCE);
+        // A closed account stays at zero after its close date; 0 to 0 counts nothing toward this change.
+        if (before !== 0 || after !== 0)
+          provenance = mergeProvenance(provenance, provenanceByAccount.get(accountId) ?? NO_PROVENANCE);
       }
       return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts, provenance };
     },

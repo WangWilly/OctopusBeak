@@ -81,7 +81,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
-  sideProvenance={!isEmpty && summary.state === "ready" ? summary.provenance : NO_PROVENANCE}
+  sideProvenance={!isEmpty && summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >

@@ -119,4 +119,26 @@ test("an ended manual vehicle that drives the 30-day change marks the total manu
   assert.equal(summary.trailing?.change, -300_000);
   assert.deepEqual(summary.trailing?.provenance, MANUAL);
   assert.deepEqual(summary.provenance, MANUAL);
+  assert.deepEqual(summary.totalProvenance, NO_PROVENANCE, "the total alone counts no manual asset");
+});
+
+test("an account closed before the span marks no later change", () => {
+  const vehicle: AccountRowDto = {
+    ...account("manual:car", "manual", []),
+    manual: { assetId: "car", category: "vehicle", currency: "TWD", endedOn: "2026-08-15", valuations: [], transactions: [], balance: null },
+  };
+  const bankHistory = [row("2026-08-01", twd(1000)), row("2026-09-01", twd(1100)), row("2026-10-05", twd(1200))];
+  const vehicleHistory = [
+    { ...row("2026-08-01", twd(300_000)), provenance: MANUAL },
+    { ...row("2026-08-15", twd(0)), provenance: MANUAL },
+  ];
+  const summary = readAssetsSummary(input({
+    accounts: [account("bank", "bank", twd(1200)), vehicle],
+    dailyHistory: [row("2026-08-01", twd(301_000)), row("2026-08-15", twd(1000)), row("2026-09-01", twd(1100)), row("2026-10-05", twd(1200))],
+    dailyHistoryByAccount: { bank: bankHistory, "manual:car": vehicleHistory },
+  }), { today: "2026-10-05" });
+  assert.equal(summary.state, "ready");
+  if (summary.state !== "ready") return;
+  assert.equal(summary.trailing?.change, 100);
+  assert.deepEqual(summary.trailing?.provenance, NO_PROVENANCE, "a vehicle at zero on both dates is not in the change");
 });

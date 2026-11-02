@@ -72,6 +72,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   );
   $: incomplete = totalIncomplete(liabilities.accounts);
   $: provenance = summary.state === "ready" ? summary.provenance : NO_PROVENANCE;
+  $: totalProvenance = summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE;
   $: sideValue = isEmpty
     ? "—"
     : incomplete
@@ -124,7 +125,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {sideValue}
   {sideSub}
   sideValueSensitive={!incomplete}
-  sideProvenance={isEmpty ? NO_PROVENANCE : provenance}
+  sideProvenance={isEmpty ? NO_PROVENANCE : totalProvenance}
   searchPlaceholder={$t.liabilities.searchPlaceholder}
   bind:search
 >
