@@ -203,11 +203,6 @@ const parsed = parseHncbCurrentDepositBalanceSnapshot({
   rows: [rowA, rowB],
   response: response(),
   observedAt,
-  financialAuthority: {
-    sourceConnectionKey: "sha256:hncb-connection",
-    identityEpochKey: "hncb-epoch-v1",
-    authorityClass: "authenticated-current-state",
-  },
 });
 assert.equal(parsed.length, 2);
 assert.equal(parsed[0]?.accountNumber, "00123456789012");

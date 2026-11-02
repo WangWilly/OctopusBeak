@@ -177,11 +177,6 @@ const parsed = parseFubonCurrentDepositBalanceSnapshot({
   rows: visibleRows,
   response: response(),
   observedAt,
-  financialAuthority: {
-    sourceConnectionKey: "sha256:fubon-connection",
-    identityEpochKey: "fubon-epoch-v1",
-    authorityClass: "authenticated-current-state",
-  },
 });
 assert.equal(parsed.length, 2);
 assert.equal(parsed[0]?.accountNumber, visibleRows[0]![0]);
@@ -201,11 +196,6 @@ assert.notDeepEqual(parsed[0]?.instantBalance, parsed[0]?.availableBalance);
 assert.equal(parsed[0]?.providerHttpDate, "Tue, 08 Sep 2026 13:40:10 GMT");
 assert.equal(parsed[0]?.effectiveAt, "2026-09-08T13:40:10.000Z");
 assert.equal(parsed[0]?.observedAt, observedAt);
-assert.deepEqual(parsed[0]?.financialAuthority, {
-  sourceConnectionKey: "sha256:fubon-connection",
-  identityEpochKey: "fubon-epoch-v1",
-  authorityClass: "authenticated-current-state",
-});
 
 const currentTable = tableLocator([
   header(FUBON_CURRENT_DEPOSIT_HEADERS),

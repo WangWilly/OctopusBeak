@@ -2935,21 +2935,7 @@ export async function stageFubonDeposit(
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
       context.signal.throwIfAborted();
-      const authority =
-        financialCaptures[0]?.identity ??
-        deriveFubonDomesticDepositAccountIdentity(
-          deferred[0]!.statements[0]!.accountOption,
-          undefined,
-          stableSourceConnectionKey as `sha256:${string}`,
-        );
-      currentRows = await readCurrentBalances({
-        observedAt: context.now(),
-        financialAuthority: {
-          sourceConnectionKey: authority.sourceConnectionKey,
-          identityEpochKey: authority.identityEpochKey,
-          authorityClass: "existing-financial-admission",
-        },
-      });
+      currentRows = await readCurrentBalances({ observedAt: context.now() });
       currentObservedAt = context.now();
     }
 

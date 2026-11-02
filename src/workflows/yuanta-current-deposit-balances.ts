@@ -55,12 +55,6 @@ export type YuantaCurrentDepositExactDecimal = Readonly<{
  * The parser carries them through unchanged and never invents an epoch or
  * account identity.
  */
-export type YuantaCurrentDepositFinancialAuthority = Readonly<{
-  sourceConnectionKey?: string;
-  identityEpochKey?: string;
-  authorityClass?: string;
-}>;
-
 export type YuantaCurrentDepositResponseMetadata = Readonly<{
   url: string;
   status: number;
@@ -92,7 +86,6 @@ export type YuantaCurrentDepositBalanceRow = Readonly<{
     cacheControl: string;
     contractVersion: typeof YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
   }>;
-  financialAuthority?: YuantaCurrentDepositFinancialAuthority;
 }>;
 
 export type YuantaCurrentDepositSnapshotInput = Readonly<{
@@ -100,7 +93,6 @@ export type YuantaCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: YuantaCurrentDepositResponseMetadata;
   observedAt: string;
-  financialAuthority?: YuantaCurrentDepositFinancialAuthority;
 }>;
 
 const SUMMARY_HEADING: Record<YuantaCurrentDepositKind, string> = {
@@ -256,18 +248,6 @@ function parseAccount(value: string, label: string): string {
   return normalized;
 }
 
-function validateFinancialAuthority(
-  authority: YuantaCurrentDepositFinancialAuthority | undefined,
-): YuantaCurrentDepositFinancialAuthority | undefined {
-  if (authority === undefined) return undefined;
-  for (const [key, value] of Object.entries(authority)) {
-    if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
-      throw new Error(`Yuanta current deposit authority ${key} is invalid.`);
-    }
-  }
-  return authority;
-}
-
 function expectedHeaders(kind: YuantaCurrentDepositKind): readonly string[] {
   return kind === "domestic"
     ? YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS
@@ -292,7 +272,6 @@ export function parseYuantaCurrentDepositBalanceSnapshot(
 ): readonly YuantaCurrentDepositBalanceRow[] {
   const { providerDate, cacheControl } = validateResponse(input.response);
   const observedAt = requireObservedAt(input.observedAt);
-  const financialAuthority = validateFinancialAuthority(input.financialAuthority);
   const headers = expectedHeaders(input.kind);
   const rows: YuantaCurrentDepositBalanceRow[] = [];
   const seen = new Set<string>();
@@ -356,7 +335,6 @@ export function parseYuantaCurrentDepositBalanceSnapshot(
         cacheControl,
         contractVersion: YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       },
-      ...(financialAuthority ? { financialAuthority } : {}),
     });
   }
 
@@ -538,7 +516,6 @@ export async function readYuantaCurrentDepositBalances(
   kind: YuantaCurrentDepositKind,
   input: Readonly<{
     observedAt: string;
-    financialAuthority?: YuantaCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly YuantaCurrentDepositBalanceRow[]> {
@@ -570,7 +547,6 @@ export async function readYuantaCurrentDepositBalances(
   return await frames.race(parseYuantaCurrentDepositBalanceTable(table, {
     kind,
     observedAt: input.observedAt,
-    financialAuthority: input.financialAuthority,
     response: {
       url: response.url(),
       status: response.status(),

@@ -49,7 +49,6 @@ import {
   readYuantaCurrentDepositBalances,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
-  type YuantaCurrentDepositFinancialAuthority,
 } from "./yuanta-current-deposit-balances.ts";
 import {
   matchCurrentBalanceCaptures,
@@ -795,7 +794,6 @@ export type YuantaDepositSourceSnapshot = Readonly<{
 export type YuantaReadCurrentDepositBalances = (
   input: Readonly<{
     observedAt: string;
-    financialAuthority: YuantaCurrentDepositFinancialAuthority;
   }>,
 ) => Promise<readonly YuantaCurrentDepositBalanceRow[]>;
 
@@ -930,14 +928,8 @@ export async function stageYuantaDeposit(
   // failure here must not leave statement captures from this run behind.
   if (financialDepositCaptures.length > 0) {
     context.signal.throwIfAborted();
-    const authority = financialDepositCaptures[0]!.identity;
     const currentRows = await readCurrentBalances({
       observedAt: yuantaObservedAt(new Date(context.now())),
-      financialAuthority: {
-        sourceConnectionKey: authority.sourceConnectionKey,
-        identityEpochKey: authority.identityEpochKey,
-        authorityClass: "existing-financial-admission",
-      },
     });
     context.text.assertIntact(JSON.stringify(currentRows));
     const currentObservedAt = yuantaObservedAt(new Date(context.now()));

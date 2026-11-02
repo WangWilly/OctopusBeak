@@ -49,11 +49,6 @@ const domestic = parseCathayCurrentDepositBalanceSnapshot({
   rawBody: domesticBody,
   observedAt,
   uiAccountNumbers: ["123456789012"],
-  financialAuthority: {
-    sourceConnectionKey: "sha256:cathay-connection",
-    identityEpochKey: "cathay-epoch-v1",
-    authorityClass: "authenticated-current-state",
-  },
 });
 
 assert.equal(domestic.length, 1);
@@ -88,11 +83,6 @@ assert.equal(domesticRow.observedAt, observedAt);
 assert.equal(domesticRow.observations[0]?.effectiveTimeBasis, "provider-system-time");
 assert.equal(domesticRow.observations[0]?.effectiveTimeEvidence.value, systemTime);
 assert.doesNotMatch(JSON.stringify(domestic), /999999/u);
-assert.deepEqual(domesticRow.financialAuthority, {
-  sourceConnectionKey: "sha256:cathay-connection",
-  identityEpochKey: "cathay-epoch-v1",
-  authorityClass: "authenticated-current-state",
-});
 
 const foreignBody = `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"123456789012","nickName":null,"demandType":"DemandDeposit","status":"Normal","details":[{"currencyId":"02","currencyCode":"USD","currency":"美元","balance":10.00,"equalTwdBalance":320.00,"dueDate":null},{"currencyId":"16","currencyCode":"JPY","currency":"日幣","balance":2000,"equalTwdBalance":450.00,"dueDate":null}]}],"depositAccounts":[{"account":"ignored-deposit-account"}]}}`;
 

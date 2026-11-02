@@ -37,7 +37,6 @@ import {
   HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
   type HncbCurrentDepositOverviewBalanceRow,
   type HncbCurrentDepositBalanceRow,
-  type HncbCurrentDepositFinancialAuthority,
   readHncbCurrentDepositOverviewBalances,
 } from "./hncb-current-deposit-balances.ts";
 import {
@@ -1059,7 +1058,6 @@ export type HncbDepositSourceSnapshot = Readonly<{
 export type HncbReadCurrentDepositBalances = (
   input: Readonly<{
     observedAt: string;
-    financialAuthority: HncbCurrentDepositFinancialAuthority;
   }>,
 ) => Promise<readonly HncbCurrentDepositRow[]>;
 
@@ -1244,15 +1242,7 @@ export async function stageHncbDeposit(
   // this run behind.
   if (financialCaptures.length > 0) {
     context.signal.throwIfAborted();
-    const authority = financialCaptures[0]!.identity;
-    const currentRows = await readCurrentBalances({
-      observedAt: hncbObservedAt(),
-      financialAuthority: {
-        sourceConnectionKey: authority.sourceConnectionKey,
-        identityEpochKey: authority.identityEpochKey,
-        authorityClass: "existing-financial-admission",
-      },
-    });
+    const currentRows = await readCurrentBalances({ observedAt: hncbObservedAt() });
     const currentObservedAt = hncbObservedAt();
     const { matched } = matchCurrentBalanceCaptures(
       currentRows.map((row) => ({ ...row, observedAt: currentObservedAt })),

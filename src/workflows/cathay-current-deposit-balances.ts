@@ -26,12 +26,6 @@ export type CathayCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type CathayCurrentDepositFinancialAuthority = Readonly<{
-  sourceConnectionKey?: string;
-  identityEpochKey?: string;
-  authorityClass?: string;
-}>;
-
 export type CathayCurrentDepositResponseMetadata = Readonly<{
   url: string;
   status: number;
@@ -77,7 +71,6 @@ export type CathayCurrentDomesticDepositBalanceRow = Readonly<{
     responseDigest: string;
     contractVersion: typeof CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION;
   }>;
-  financialAuthority?: CathayCurrentDepositFinancialAuthority;
 }>;
 
 export type CathayCurrentForeignDepositBalanceRow = Readonly<{
@@ -103,7 +96,6 @@ export type CathayCurrentForeignDepositBalanceRow = Readonly<{
     responseDigest: string;
     contractVersion: typeof CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION;
   }>;
-  financialAuthority?: CathayCurrentDepositFinancialAuthority;
 }>;
 
 export type CathayCurrentDepositBalanceRow =
@@ -117,7 +109,6 @@ export type CathayCurrentDepositSnapshotInput = Readonly<{
   observedAt: string;
   /** Required for domestic rows to bind API accountNo to the UI account key. */
   uiAccountNumbers?: readonly string[];
-  financialAuthority?: CathayCurrentDepositFinancialAuthority;
 }>;
 
 type CathayDomesticApiRow = {
@@ -328,18 +319,6 @@ function parseAccount(value: unknown, label: string, digits: number): string {
   return value;
 }
 
-function validateAuthority(
-  authority: CathayCurrentDepositFinancialAuthority | undefined,
-): CathayCurrentDepositFinancialAuthority | undefined {
-  if (authority === undefined) return undefined;
-  for (const [key, value] of Object.entries(authority)) {
-    if (value !== undefined && (typeof value !== "string" || value.trim() === "")) {
-      throw new Error(`Cathay current deposit authority ${key} is invalid.`);
-    }
-  }
-  return authority;
-}
-
 function requireSuccess(value: unknown): void {
   if (value !== true) throw new Error("Cathay current deposit API response was not successful.");
 }
@@ -382,7 +361,6 @@ function domesticRows(
   rawBody: string,
   observedAt: string,
   uiAccountNumbers: readonly string[] | undefined,
-  financialAuthority: CathayCurrentDepositFinancialAuthority | undefined,
   httpDate: string,
 ): readonly CathayCurrentDomesticDepositBalanceRow[] {
   const parsed = parseCathayCurrentApiJson<CathayDomesticApiResponse>(rawBody);
@@ -401,7 +379,6 @@ function domesticRows(
     throw new Error("Cathay current domestic UI account binding is missing.");
   }
   const normalizedUi = uiAccountNumbers.map((value) => parseAccount(value, "UI", 12));
-  const authority = validateAuthority(financialAuthority);
   const rows: CathayCurrentDomesticDepositBalanceRow[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < accounts.length; index += 1) {
@@ -441,7 +418,6 @@ function domesticRows(
         responseDigest: digest,
         contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
       },
-      ...(authority ? { financialAuthority: authority } : {}),
     });
   }
   if (rows.length === 0) throw new Error("Cathay current domestic response has no accounts.");
@@ -454,7 +430,6 @@ function domesticRows(
 function foreignRows(
   rawBody: string,
   observedAt: string,
-  financialAuthority: CathayCurrentDepositFinancialAuthority | undefined,
   httpDate: string,
 ): readonly CathayCurrentForeignDepositBalanceRow[] {
   const parsed = parseCathayCurrentApiJson<CathayForeignApiResponse>(rawBody);
@@ -467,7 +442,6 @@ function foreignRows(
     throw new Error("Cathay current foreign demand-account response was not successful.");
   }
   const accounts = requireArray(content.demandAccounts, "foreign demand accounts");
-  const authority = validateAuthority(financialAuthority);
   const rows: CathayCurrentForeignDepositBalanceRow[] = [];
   const seen = new Set<string>();
   for (let accountIndex = 0; accountIndex < accounts.length; accountIndex += 1) {
@@ -509,7 +483,6 @@ function foreignRows(
           responseDigest: digest,
           contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
         },
-        ...(authority ? { financialAuthority: authority } : {}),
       });
     }
   }
@@ -528,11 +501,10 @@ export function parseCathayCurrentDepositBalanceSnapshot(
       input.rawBody,
       observedAt,
       input.uiAccountNumbers,
-      input.financialAuthority,
       httpDate,
     );
   }
-  return foreignRows(input.rawBody, observedAt, input.financialAuthority, httpDate);
+  return foreignRows(input.rawBody, observedAt, httpDate);
 }
 
 async function findExactControl(
@@ -601,7 +573,6 @@ export async function readCathayCurrentDepositBalances(
   input: Readonly<{
     /** If omitted, capture knowledge time is sampled after the provider response arrives. */
     observedAt?: string;
-    financialAuthority?: CathayCurrentDepositFinancialAuthority;
     timeoutMs?: number;
   }>,
 ): Promise<readonly CathayCurrentDepositBalanceRow[]> {
@@ -636,6 +607,5 @@ export async function readCathayCurrentDepositBalances(
     rawBody,
     observedAt: input.observedAt ?? new Date().toISOString(),
     uiAccountNumbers,
-    financialAuthority: input.financialAuthority,
   });
 }
