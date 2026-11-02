@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mapCanonicalProduct } from "./canonical-product.ts";
 import type { CanonicalOverviewProjection } from "../../../ledger/canonical/canonical-overview-query.ts";
+import { NO_PROVENANCE } from "../provenance.ts";
 
 test("canonical product rows retain exact signed transaction and position values", () => {
   const transactionCoefficient = "9007199254740993";
@@ -124,6 +125,7 @@ test("canonical products carry daily history only for the accounts they show", (
     liabilities: [],
     accountChanges: [],
     positionCount: 0,
+    provenance: NO_PROVENANCE,
   });
   const projection = {
     availability: "available",

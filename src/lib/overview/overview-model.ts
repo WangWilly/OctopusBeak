@@ -23,6 +23,7 @@ import {
   type Change,
   type LiabilityAllocation,
 } from "../shared-ledger/twd-valuation.ts";
+import { mergeProvenance, NO_PROVENANCE, type Provenance } from "../shared-ledger/provenance.ts";
 import type { OverviewHoldingPriceDto, OverviewPageDto } from "./types.ts";
 
 export type OverviewModelInput = Pick<
@@ -44,7 +45,7 @@ export type Ticker =
   | { state: "rates-pending" }
   | { state: "domestic-only" };
 
-export type NetWorthPoint = { date: string; value: number; includesPreview: boolean };
+export type NetWorthPoint = { date: string; value: number; provenance: Provenance };
 
 export type NetWorthChip =
   | ({ kind: "latest"; date: string; previousDate: string; isToday: boolean } & Change)
@@ -57,11 +58,12 @@ export type NetWorth = {
   asOf: string | null;
   valuationDate: string | null;
   chips: NetWorthChip[];
-  chipsIncludePreview: boolean;
+  /** The origins the chips' changes count. */
+  chipsProvenance: Provenance;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
-export type DailyBar = { date: string; change: number | null; includesPreview: boolean };
+export type DailyBar = { date: string; change: number | null; provenance: Provenance };
 
 export type ChangeReason =
   | { kind: "fx"; currency: string; pct: number }
@@ -87,7 +89,7 @@ export type TodayChange =
     newAccountCount: number;
     /** |crypto contributions| / Σ|contributions|; null when crypto did not move. */
     cryptoShare: number | null;
-    includesPreview: boolean;
+    provenance: Provenance;
   };
 
 export type OverviewModel = {
@@ -123,7 +125,7 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
       asOf: dto.importedAt,
       valuationDate,
       chips: chips.chips,
-      chipsIncludePreview: chips.includesPreview,
+      chipsProvenance: chips.provenance,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
@@ -192,7 +194,7 @@ function readTicker(
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {
   return history.flatMap((row) => {
     const converted = convertToTwd(row.netAssets, row.date, rates);
-    return converted ? [{ date: row.date, value: converted.value, includesPreview: row.includesPreview === true }] : [];
+    return converted ? [{ date: row.date, value: converted.value, provenance: row.provenance }] : [];
   });
 }
 
@@ -205,10 +207,10 @@ function netWorthChips(
   series: readonly NetWorthPoint[],
   ledger: AccountLedger,
   today: string,
-): { chips: NetWorthChip[]; includesPreview: boolean } {
+): { chips: NetWorthChip[]; provenance: Provenance } {
   const latest = series.at(-1);
   const previous = series.at(-2);
-  if (!latest || !previous) return { chips: [], includesPreview: false };
+  if (!latest || !previous) return { chips: [], provenance: NO_PROVENANCE };
   const first = series[0]!;
   const spans = [ledger.change(previous.date, latest.date), ledger.change(first.date, latest.date)];
   const chips: NetWorthChip[] = [{
@@ -224,7 +226,7 @@ function netWorthChips(
     spans.push(trailing);
   }
   chips.push({ kind: "since-start", since: first.date, ...changeOf(ledger, first.date, latest.date) });
-  return { chips, includesPreview: spans.some((span) => span.includesPreview) };
+  return { chips, provenance: mergeProvenance(...spans.map((span) => span.provenance)) };
 }
 
 function readDailyBars(series: readonly NetWorthPoint[], ledger: AccountLedger, today: string): DailyBar[] {
@@ -232,9 +234,9 @@ function readDailyBars(series: readonly NetWorthPoint[], ledger: AccountLedger, 
   return Array.from({ length: DAILY_BAR_DAYS }, (_, offset) => {
     const date = addDays(today, offset - DAILY_BAR_DAYS + 1);
     const index = byDate.get(date);
-    if (index === undefined || index === 0) return { date, change: null, includesPreview: false };
-    const { change, includesPreview } = ledger.change(series[index - 1]!.date, date);
-    return { date, change, includesPreview };
+    if (index === undefined || index === 0) return { date, change: null, provenance: NO_PROVENANCE };
+    const { change, provenance } = ledger.change(series[index - 1]!.date, date);
+    return { date, change, provenance };
   });
 }
 
@@ -279,7 +281,7 @@ function readTodayChange(
     rows,
     newAccountCount: total.newAccounts.length,
     cryptoShare: cryptoMoved > 0 && moved > 0 ? cryptoMoved / moved : null,
-    includesPreview: total.includesPreview,
+    provenance: total.provenance,
   };
 }
 
@@ -331,10 +333,13 @@ function convertedHistoryRows(
       return { ...row, exchangeRateDates: [], exchangeRateMissing: true };
     const index = seriesIndex.get(row.date) ?? 0;
     const previous = index > 0 ? series[index - 1]! : null;
+    const change = previous ? ledger.change(previous.date, row.date) : null;
     return {
       ...row,
       netAssets: twd(net.value),
-      dailyChange: previous ? twd(ledger.change(previous.date, row.date).change) : [],
+      dailyChange: change ? twd(change.change) : [],
+      // The daily change can count an account the balances no longer do, such as one that ended that day.
+      provenance: mergeProvenance(row.provenance, change?.provenance ?? NO_PROVENANCE),
       assets: twd(assets.value),
       liabilities: twd(liabilities.value),
       exchangeRateDates: [...new Set([...net.rateDates, ...assets.rateDates, ...liabilities.rateDates])].sort(),

@@ -22,9 +22,9 @@ import {
 } from "./overview.ts";
 import {
   countableWithRates,
-  manualSummaryMarker,
-  previewSummaryMarkers,
+  summaryMarkers,
   withBalanceSeriesHistory,
+  type SummaryMarker,
 } from "./outside-counting.ts";
 import { readOutsideFinancialData, type OutsideFinancialData, type OutsideScope } from "./outside-financial-data.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
@@ -108,20 +108,18 @@ function netPosition(
   net: Map<string, AggregatedAmount>,
   history: PGliteDailyHistory,
   rates: readonly ExchangeRateRecord[],
-  markers: ReturnType<typeof previewSummaryMarkers>["net"],
-  includesManual: boolean,
+  markers: SummaryMarker,
 ): NetPositionDto {
   const valuationDate = valuationDateFor(history.dailyHistory, accounts, LATEST_RATES);
   const current = currentNetPosition(accounts, indexExchangeRates(rates), valuationDate);
   const incomplete = markers.incomplete === true;
   return current.value === null
-    ? { display: "native", amounts: amountLines(net), includesPreview: markers.includesPreview === true, includesManual, incomplete }
+    ? { display: "native", amounts: amountLines(net), provenance: markers.provenance, incomplete }
     : {
       display: "converted",
       twd: current.value,
       unconvertedCurrencies: current.unconvertedCurrencies,
-      includesPreview: current.includesPreview,
-      includesManual: current.includesManual,
+      provenance: current.provenance,
       incomplete,
     };
 }
@@ -142,12 +140,11 @@ function overviewSummary(
   const assetValue = new Map<string, AggregatedAmount>();
   addSigned(assetValue, assetTotals, 1);
   addSigned(assetValue, investmentTotals, 1);
-  const preview = previewSummaryMarkers(accounts);
-  const manual = manualSummaryMarker(accounts);
+  const markers = summaryMarkers(accounts);
   return {
-    net: netPosition(accounts, net, history, rates, preview.net, manual.includesManual === true),
-    assets: { amounts: amountLines(assetValue), ...preview.assets, ...manual },
-    liabilities: { amounts: amountLines(liabilityTotals), ...preview.liabilities },
+    net: netPosition(accounts, net, history, rates, markers.net),
+    assets: { amounts: amountLines(assetValue), ...markers.assets },
+    liabilities: { amounts: amountLines(liabilityTotals), ...markers.liabilities },
   };
 }
 

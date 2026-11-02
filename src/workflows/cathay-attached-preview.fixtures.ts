@@ -5,7 +5,7 @@ import type {
   CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
 import { previewCreditAccountId, type PreviewCreditCollection } from "../ledger/pglite/preview-credit.ts";
-import { previewSummaryMarkers } from "../ledger/pglite/outside-counting.ts";
+import { summaryMarkers } from "../ledger/pglite/outside-counting.ts";
 import { previewCreditAccountRow } from "../ledger/pglite/outside-preview-credit.ts";
 
 export const CATHAY_PREVIEW_NOW = "2026-10-18T02:00:00.000Z";
@@ -107,7 +107,7 @@ export function fakeCathayAttachedPreviewPort(overrides: CathayPreviewResponses 
 
 /** The overview's totals markers for a written card collection, read the way the overview reads stored accounts. */
 export function cathayCardTotals(collection: PreviewCreditCollection) {
-  return previewSummaryMarkers(collection.accounts.map((account) => {
+  return summaryMarkers(collection.accounts.map((account) => {
     const previewAccountId = previewCreditAccountId("cathay", account.sourceAccountKey);
     return previewCreditAccountRow({
       previewAccountId,

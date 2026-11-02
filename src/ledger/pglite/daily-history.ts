@@ -1,4 +1,5 @@
 import type { CanonicalOverviewAccount } from "../canonical/canonical-overview-query.ts";
+import { NO_PROVENANCE } from "../../lib/shared-ledger/provenance.ts";
 import type { CurrencyAmountDto, DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
 import {
   addExact,
@@ -340,6 +341,7 @@ export async function readPGliteDailyHistoryWithAccounts(
       liabilities: amountLines(liabilities),
       accountChanges,
       positionCount: holdingStates.size,
+      provenance: NO_PROVENANCE,
     });
     for (const accountId of changedAccounts) {
       const state = accountState(accountId);
@@ -352,6 +354,7 @@ export async function readPGliteDailyHistoryWithAccounts(
         liabilities: amountLines(state.liabilities),
         accountChanges: label === undefined ? [] : [label],
         positionCount: state.holdings.size,
+        provenance: NO_PROVENANCE,
       });
     }
     previousNet = net;

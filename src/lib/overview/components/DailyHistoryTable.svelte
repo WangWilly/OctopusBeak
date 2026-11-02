@@ -151,7 +151,7 @@
                   FX
                 </span>
               {/if}
-              {#if row.includesPreview}<PreviewMarker />{/if}
+              {#if row.provenance.preview}<PreviewMarker />{/if}
             </td>
             <td class="right money">{formatCurrencyAmount(row, "netAssets")}</td>
             <td

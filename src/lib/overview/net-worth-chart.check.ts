@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
 import { dayOffset, monthTicks, niceTicks } from "./net-worth-chart.ts";
 
 test("axis ticks are round and cover the data", () => {
@@ -11,10 +12,10 @@ test("axis ticks are round and cover the data", () => {
 
 test("each month is labelled once at its first point", () => {
   const ticks = monthTicks([
-    { date: "2026-06-08", value: 1, includesPreview: false },
-    { date: "2026-06-20", value: 1, includesPreview: false },
-    { date: "2026-07-01", value: 1, includesPreview: false },
-    { date: "2026-09-02", value: 1, includesPreview: false },
+    { date: "2026-06-08", value: 1, provenance: NO_PROVENANCE },
+    { date: "2026-06-20", value: 1, provenance: NO_PROVENANCE },
+    { date: "2026-07-01", value: 1, provenance: NO_PROVENANCE },
+    { date: "2026-09-02", value: 1, provenance: NO_PROVENANCE },
   ]);
   assert.deepEqual(ticks.map((tick) => tick.date), ["2026-06-08", "2026-07-01", "2026-09-02"]);
 });

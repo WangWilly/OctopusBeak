@@ -70,7 +70,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     ),
   );
   $: incomplete = totalIncomplete(liabilities.accounts);
-  $: includesPreview = summary.state === "ready" && summary.includesPreview;
+  $: includesPreview = summary.state === "ready" && summary.provenance.preview;
   $: sideValue = isEmpty
     ? "—"
     : incomplete
@@ -221,7 +221,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
-        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
+        {#if stackedChart.provenance.preview}<PreviewMarker align="end" />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}

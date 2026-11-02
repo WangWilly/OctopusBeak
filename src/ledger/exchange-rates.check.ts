@@ -9,6 +9,7 @@ import {
 } from "./exchange-rates.ts";
 import type { ExchangeRateRequest } from "./exchange-rate-requirements.ts";
 import type { DailyHistoryRowDto } from "../lib/shared-ledger/types.ts";
+import { NO_PROVENANCE } from "../lib/shared-ledger/provenance.ts";
 
 function memoryPersistence(initial: ExchangeRateRecord[] = []) {
   const rates = new Map(initial.map((row) => [`${row.rateDate}/${row.currency}`, { ...row }]));
@@ -38,6 +39,7 @@ const history: DailyHistoryRowDto[] = [{
   liabilities: [{ currency: "JPY", value: 1000 }],
   accountChanges: [],
   positionCount: 2,
+  provenance: NO_PROVENANCE,
 }];
 
 test("required exchange-rate currencies include every non-TWD amount line", () => {

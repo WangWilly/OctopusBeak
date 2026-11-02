@@ -1,4 +1,5 @@
 import { totalIncomplete } from "../../lib/shared-ledger/preview-account.ts";
+import { accountOrigin, mergeProvenance, NO_PROVENANCE, originProvenance, withOrigin } from "../../lib/shared-ledger/provenance.ts";
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, SummaryMetricDto } from "../../lib/shared-ledger/types.ts";
 import { addExact, decimalToExact, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
 import { indexExchangeRates, rateOnOrBefore } from "../../lib/shared-money/exchange-rates.ts";
@@ -12,22 +13,28 @@ export type RateCountable = (currency: string, date: string) => boolean;
 
 const CURRENCY_ORDER = ["TWD", "USD", "JPY"];
 
-export type PreviewSummaryMarkers = Readonly<{
-  assets: Pick<SummaryMetricDto, "includesPreview">;
-  liabilities: Pick<SummaryMetricDto, "includesPreview" | "incomplete">;
-  net: Pick<SummaryMetricDto, "includesPreview" | "incomplete">;
+export type SummaryMarker = Pick<SummaryMetricDto, "provenance" | "incomplete">;
+
+export type SummaryMarkers = Readonly<{
+  assets: SummaryMarker;
+  liabilities: SummaryMarker;
+  net: SummaryMarker;
 }>;
 
-export function previewSummaryMarkers(accounts: readonly AccountRowDto[]): PreviewSummaryMarkers {
-  const counted = (group: AccountRowDto["group"][]) => accounts.some((account) =>
-    account.preview && group.includes(account.group) && account.amountLines.length > 0);
-  const incomplete = totalIncomplete(accounts);
-  const assets = counted(["asset", "investment"]);
-  const liabilities = counted(["liability"]);
+/** The origins and completeness of the summary's per-currency totals, which count every row with an amount. */
+export function summaryMarkers(accounts: readonly AccountRowDto[]): SummaryMarkers {
+  let assets = NO_PROVENANCE;
+  let liabilities = NO_PROVENANCE;
+  for (const account of accounts) {
+    if (account.amountLines.length === 0) continue;
+    if (account.group === "liability") liabilities = withOrigin(liabilities, accountOrigin(account));
+    else assets = withOrigin(assets, accountOrigin(account));
+  }
+  const incomplete = totalIncomplete(accounts) ? { incomplete: true } : {};
   return {
-    assets: assets ? { includesPreview: true } : {},
-    liabilities: { ...(liabilities ? { includesPreview: true } : {}), ...(incomplete ? { incomplete: true } : {}) },
-    net: { ...(assets || liabilities ? { includesPreview: true } : {}), ...(incomplete ? { incomplete: true } : {}) },
+    assets: { provenance: assets },
+    liabilities: { provenance: liabilities, ...incomplete },
+    net: { provenance: mergeProvenance(assets, liabilities), ...incomplete },
   };
 }
 
@@ -100,8 +107,7 @@ export function withBalanceSeriesHistory(
     const liabilities = buckets(base?.liabilities);
     const net = buckets(base?.netAssets);
     const observed: string[] = [];
-    let includesPreview = false;
-    let includesManual = false;
+    let provenance = NO_PROVENANCE;
     for (const account of series) {
       const point = latestOnOrBefore(account, date);
       if (!point) continue;
@@ -114,8 +120,7 @@ export function withBalanceSeriesHistory(
         add(liabilities, point.currency, point.exact);
         add(net, point.currency, negate(point.exact));
       }
-      if (account.marker === "preview") includesPreview = true;
-      else includesManual = true;
+      provenance = withOrigin(provenance, account.marker);
     }
     const sameDay = base !== null && base.date === date ? base : null;
     rows.push({
@@ -127,8 +132,7 @@ export function withBalanceSeriesHistory(
       liabilities: lines(liabilities),
       accountChanges: [...(sameDay?.accountChanges ?? []), ...observed],
       positionCount: base?.positionCount ?? 0,
-      ...(includesPreview ? { includesPreview: true } : {}),
-      ...(includesManual ? { includesManual: true } : {}),
+      provenance,
     });
     previousNet = net;
   }
@@ -149,13 +153,8 @@ export function withBalanceSeriesHistory(
       liabilities: account.side === "liability" ? [amountLine(point.currency, point.exact)] : [],
       accountChanges: [account.label],
       positionCount: 0,
-      ...(account.marker === "preview" ? { includesPreview: true } : { includesManual: true }),
+      provenance: originProvenance(account.marker),
     }));
   }
   return { dailyHistory: rows, dailyHistoryByAccount };
-}
-
-/** Whether any counted asset row is manual, for the summary's manual marker. */
-export function manualSummaryMarker(accounts: readonly AccountRowDto[]): Pick<SummaryMetricDto, "includesManual"> {
-  return accounts.some((account) => account.manual && account.amountLines.length > 0) ? { includesManual: true } : {};
 }

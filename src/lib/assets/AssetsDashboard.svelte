@@ -80,7 +80,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
-  sideIncludesPreview={!isEmpty && summary.state === "ready" && summary.includesPreview}
+  sideIncludesPreview={!isEmpty && summary.state === "ready" && summary.provenance.preview}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
 >
@@ -110,13 +110,13 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
-        includesPreview={summary.state === "ready" && summary.includesPreview}
+        includesPreview={summary.state === "ready" && summary.provenance.preview}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
           : summary.state === "ready"
             ? [
               ...(summary.unconvertedCurrencies.length > 0 ? [$t.overview.unconverted(summary.unconvertedCurrencies.join(", "))] : []),
-              ...(summary.includesManual ? [$t.manualAssets.includesManual] : []),
+              ...(summary.provenance.manual ? [$t.manualAssets.includesManual] : []),
             ]
             : []}
       >
@@ -161,7 +161,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         {#if stackedChart.series.length > 0}
           <span class="chip">{$t.common.days30}</span>
         {/if}
-        {#if stackedChart.includesPreview}<PreviewMarker align="end" />{/if}
+        {#if stackedChart.provenance.preview}<PreviewMarker align="end" />{/if}
       </div>
       <div class="pad balance-chart">
         {#if isEmpty}

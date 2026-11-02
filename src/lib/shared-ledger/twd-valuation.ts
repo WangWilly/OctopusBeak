@@ -1,10 +1,11 @@
 import { convertToTwd, indexExchangeRates, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
+import { accountOrigin, mergeProvenance, NO_PROVENANCE, withOrigin, type Provenance } from "./provenance.ts";
 import type { AccountKind, AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "./types.ts";
 
 export type Change = { change: number; pct: number | null };
 
 /** A change between two history dates over the accounts recorded on both. */
-export type SpanChange = Change & { from: string; to: string; newAccounts: string[]; includesPreview: boolean };
+export type SpanChange = Change & { from: string; to: string; newAccounts: string[]; provenance: Provenance };
 
 export type AccountLedger = Readonly<{
   /** The account's carried-forward TWD value at `date`, or null before its first record. */
@@ -13,8 +14,9 @@ export type AccountLedger = Readonly<{
    * Net worth change from `from` to `to` over the accounts recorded on both
    * dates. An account first recorded inside the span is not a change in
    * wealth, only new coverage, so it is counted in `newAccounts` instead.
+   * `provenance` holds the origins of the accounts the change counts.
    */
-  change(from: string, to: string): Change & { newAccounts: string[]; includesPreview: boolean };
+  change(from: string, to: string): Change & { newAccounts: string[]; provenance: Provenance };
 }>;
 
 export const TRAILING_DAYS = 30;
@@ -26,8 +28,7 @@ export type AssetAllocation = {
   valuationDate: string | null;
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
-  includesPreview: boolean;
-  includesManual: boolean;
+  provenance: Provenance;
 };
 
 export type LiabilityAllocation = {
@@ -36,6 +37,7 @@ export type LiabilityAllocation = {
   ratio: number | null;
   slices: { account: AccountRowDto; value: number; share: number }[];
   unconvertedCurrencies: string[];
+  provenance: Provenance;
 };
 
 const ASSET_CATEGORY: Record<AccountKind, AssetCategory> = {
@@ -86,9 +88,10 @@ export function accountLedger(
     accountId,
     [...rows].sort((left, right) => left.date.localeCompare(right.date)),
   ]));
-  const previewAccounts = new Set([...rowsByAccount]
-    .filter(([, rows]) => rows.some((row) => row.includesPreview === true))
-    .map(([accountId]) => accountId));
+  const provenanceByAccount = new Map([...rowsByAccount].map(([accountId, rows]) => [
+    accountId,
+    mergeProvenance(...rows.map((row) => row.provenance)),
+  ]));
   const valueAt = (accountId: string, date: string): number | null => {
     const rows = rowsByAccount.get(accountId) ?? [];
     if (!rows[0] || rows[0].date > date) return null;
@@ -99,7 +102,7 @@ export function accountLedger(
     change(from, to) {
       let change = 0;
       let base = 0;
-      let includesPreview = false;
+      let provenance = NO_PROVENANCE;
       const newAccounts: string[] = [];
       for (const accountId of rowsByAccount.keys()) {
         const before = valueAt(accountId, from);
@@ -111,9 +114,9 @@ export function accountLedger(
         }
         change += after - before;
         base += before;
-        if (previewAccounts.has(accountId)) includesPreview = true;
+        provenance = mergeProvenance(provenance, provenanceByAccount.get(accountId) ?? NO_PROVENANCE);
       }
-      return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts, includesPreview };
+      return { change, pct: base === 0 ? null : change / Math.abs(base), newAccounts, provenance };
     },
   };
 }
@@ -145,20 +148,22 @@ export function readAssetAllocation(
   rates: ExchangeRateIndex,
   valuationDate: string | null,
 ): AssetAllocation {
-  const byCategory = new Map<AssetCategory, number>();
+  const byCategory = new Map<AssetCategory, { value: number; provenance: Provenance }>();
   const unconverted = new Set<string>();
-  let includesPreview = false;
-  let includesManual = false;
   for (const account of accounts) {
     if (account.group === "liability" || !valuationDate) continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
-    if (account.preview && account.amountLines.length > 0) includesPreview = true;
-    if (account.manual && account.amountLines.length > 0) includesManual = true;
     const category = ASSET_CATEGORY[account.kind];
-    byCategory.set(category, (byCategory.get(category) ?? 0) + value);
+    const current = byCategory.get(category) ?? { value: 0, provenance: NO_PROVENANCE };
+    byCategory.set(category, {
+      value: current.value + value,
+      provenance: account.amountLines.length > 0 ? withOrigin(current.provenance, accountOrigin(account)) : current.provenance,
+    });
   }
-  const positive = [...byCategory].filter(([, value]) => value > 0);
+  // Only categories with a positive value reach the total, so only theirs mark it.
+  const counted = [...byCategory].filter(([, sum]) => sum.value > 0);
+  const positive = counted.map(([category, sum]) => [category, sum.value] as const);
   const total = positive.reduce((sum, [, value]) => sum + value, 0);
   return {
     total,
@@ -167,8 +172,7 @@ export function readAssetAllocation(
       .map(([category, value]) => ({ category, value, share: value / total }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
-    includesPreview,
-    includesManual,
+    provenance: mergeProvenance(...counted.map(([, sum]) => sum.provenance)),
   };
 }
 
@@ -192,6 +196,7 @@ export function readLiabilityAllocation(
       .map((row) => ({ ...row, share: row.value / total }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
+    provenance: owed.reduce((provenance, row) => withOrigin(provenance, accountOrigin(row.account)), NO_PROVENANCE),
   };
 }
 
@@ -232,15 +237,15 @@ export function currentNetPosition(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string | null,
-): { value: number | null; unconvertedCurrencies: string[]; includesPreview: boolean; includesManual: boolean } {
+): { value: number | null; unconvertedCurrencies: string[]; provenance: Provenance } {
   const unconverted = new Set<string>();
-  const blank = { value: null, unconvertedCurrencies: [], includesPreview: false, includesManual: false };
+  const blank = { value: null, unconvertedCurrencies: [], provenance: NO_PROVENANCE };
   if (!valuationDate || accounts.length === 0) return blank;
   let total = 0;
-  let includesPreview = false;
-  let includesManual = false;
+  let provenance = NO_PROVENANCE;
   for (const account of accounts) {
-    if (!account.preview && !account.manual) {
+    const origin = accountOrigin(account);
+    if (origin === null) {
       const converted = convertToTwd(account.amountLines, valuationDate, rates);
       if (!converted) return blank;
       total += account.group === "liability" ? -converted.value : converted.value;
@@ -249,11 +254,9 @@ export function currentNetPosition(
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
     total += account.group === "liability" ? -value : value;
-    if (account.amountLines.length === 0) continue;
-    if (account.preview) includesPreview = true;
-    else includesManual = true;
+    if (account.amountLines.length > 0) provenance = withOrigin(provenance, origin);
   }
-  return { value: total, unconvertedCurrencies: [...unconverted].sort(), includesPreview, includesManual };
+  return { value: total, unconvertedCurrencies: [...unconverted].sort(), provenance };
 }
 
 export function convertAccount(

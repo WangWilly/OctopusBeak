@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import type { AssetsPageDto } from "./types.ts";
+import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
 
 const model = {
   availability: "empty",
@@ -21,6 +22,7 @@ const model = {
       liabilities: [],
       accountChanges: [],
       positionCount: 0,
+      provenance: NO_PROVENANCE,
     },
   ],
 } satisfies AssetsPageDto;

@@ -67,14 +67,13 @@ function converted(overview: OverviewPageDto) {
 test("a manual asset counts toward assets and the Net position with a manual marker, never a preview one", async () => {
   await withManualLedger(async ({ registry, apply }) => {
     const before = converted(await registry["financial.overview.current"]([]));
-    assert.equal(before.includesManual, false);
+    assert.equal(before.provenance.manual, false);
     await apply(create("house", "Apartment", "TWD", "2026-10-05", "5000000.5", "appraisal_report"));
     const overview = await registry["financial.overview.current"]([]);
     const net = converted(overview);
     assert.equal(net.twd, before.twd + 5000000.5);
-    assert.equal(net.includesManual, true);
-    assert.equal(net.includesPreview, false);
-    assert.equal(overview.summary.assets.includesManual, true);
+    assert.deepEqual(net.provenance, { preview: false, manual: true });
+    assert.equal(overview.summary.assets.provenance.manual, true);
     const row = overview.accounts.find((account) => account.manual);
     assert.equal(row?.kind, "manual");
     assert.equal(row?.preview, undefined);
@@ -94,12 +93,12 @@ test("a manual currency without a rate leaves the asset out of the TWD figure an
     const rateless = converted(await registry["financial.overview.current"]([]));
     assert.equal(rateless.twd, before.twd, "the total stays a figure");
     assert.deepEqual(rateless.unconvertedCurrencies, ["USD"]);
-    assert.equal(rateless.includesManual, false, "the marker describes only the figure shown");
+    assert.equal(rateless.provenance.manual, false, "the marker describes only the figure shown");
     await addUsdRate();
     const withRate = converted(await registry["financial.overview.current"]([]));
     assert.equal(withRate.twd, before.twd + 32000);
     assert.deepEqual(withRate.unconvertedCurrencies, []);
-    assert.equal(withRate.includesManual, true);
+    assert.equal(withRate.provenance.manual, true);
   });
 });
 
@@ -112,11 +111,11 @@ test("an asset counts through its end date, sale price included, and drops to ze
     const overview = await registry["financial.overview.current"]([]);
     const assetsOn = (date: string) => overview.dailyHistory.find((row) => row.date === date);
     assert.deepEqual(assetsOn("2026-09-01")?.assets, [{ currency: "TWD", value: 600000, exact: { coefficient: "600000", scale: 0 } }]);
-    assert.equal(assetsOn("2026-09-01")?.includesManual, true);
+    assert.equal(assetsOn("2026-09-01")?.provenance.manual, true);
     assert.equal(assetsOn("2026-10-20")!.assets[0]!.value, 550000 + 1000, "the car beside the 1000 TWD Cathay account");
     assert.equal(assetsOn("2026-10-25")?.assets[0]?.value, 520000 + 1000, "on its end date the sale price counts");
     assert.equal(assetsOn("2026-10-26")?.assets[0]?.value, 1000, "from the next day the car counts toward nothing");
-    assert.equal(assetsOn("2026-10-26")?.includesManual, undefined);
+    assert.equal(assetsOn("2026-10-26")?.provenance.manual, false);
     const row = overview.accounts.find((account) => account.manual)!;
     assert.deepEqual(row.amountLines, [], "after its end date an ended asset shows no amount");
     assert.equal(row.manual?.endedOn, "2026-10-25");
@@ -126,6 +125,10 @@ test("an asset counts through its end date, sale price included, and drops to ze
     ], "its own history stays and records the drop to zero");
     const ledger = accountLedger(overview.dailyHistoryByAccount, indexExchangeRates(overview.exchangeRates));
     assert.equal(ledger.change("2026-10-25", "2026-10-31").change, -520000, "a change across the sale sees the car leave");
+    assert.deepEqual(ledger.change("2026-10-25", "2026-10-31").provenance, { preview: false, manual: true }, "and is marked manual");
+    const assets = readAssetsSummary(await registry["financial.assets.current"]([]), { today: "2026-10-31" });
+    assert.deepEqual(assets.state === "ready" && assets.trailing?.provenance, { preview: false, manual: true }, "the ended car marks the Assets 30-day change");
+    assert.deepEqual(assets.state === "ready" && assets.provenance, { preview: false, manual: true });
   });
 });
 

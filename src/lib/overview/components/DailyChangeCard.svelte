@@ -22,7 +22,7 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
       <h2>{`${$t.overview.dailyChangeTitle} · ${$t.overview.dailyChangeRange}`}</h2>
       <p>
         {$t.overview.dailyChangeLead}
-        {#if bars.some((bar) => bar.includesPreview)}<PreviewMarker />{/if}
+        {#if bars.some((bar) => bar.provenance.preview)}<PreviewMarker />{/if}
       </p>
     </div>
     {#if hasDetail}

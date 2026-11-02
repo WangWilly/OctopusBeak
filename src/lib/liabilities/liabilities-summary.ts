@@ -1,5 +1,6 @@
 import type { AccountRowDto, CreditCardStatementDto, CurrencyAmountDto } from "../shared-ledger/types.ts";
 import { convertToTwd, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
+import { mergeProvenance, NO_PROVENANCE, type Provenance } from "../shared-ledger/provenance.ts";
 import {
   accountShares,
   daysBetween,
@@ -52,8 +53,8 @@ export type LiabilitiesSummary =
     utilization: CardUtilization | null;
     unconvertedCurrencies: string[];
     shares: ReadonlyMap<string, number>;
-    /** The total counts a Preview source balance. */
-    includesPreview: boolean;
+    /** The origins the total and its trailing change count. */
+    provenance: Provenance;
   };
 
 const MAX_PAYMENTS = 3;
@@ -77,10 +78,7 @@ export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: 
     utilization: cardUtilization(input.accounts, rates, valuationDate),
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
-    includesPreview: input.accounts.some((account) =>
-      account.preview !== undefined
-      && account.amountLines.length > 0
-      && convertToTwd(account.amountLines, valuationDate, rates) !== null),
+    provenance: mergeProvenance(allocation.provenance, netChange?.provenance ?? NO_PROVENANCE),
   };
 }
 

@@ -40,8 +40,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
 <article class="card net-worth-card" data-net-worth>
   <p class="net-worth-label">
     {$t.overview.netWorth}{#if asOfLabel}{` · ${asOfLabel}`}{/if}
-    {#if (net.display === "converted" && net.includesPreview) || netWorth.chipsIncludePreview}<PreviewMarker />{/if}
-    {#if net.includesManual}<ManualMarker />{/if}
+    {#if (net.display === "converted" && net.provenance.preview) || netWorth.chipsProvenance.preview}<PreviewMarker />{/if}
+    {#if net.provenance.manual}<ManualMarker />{/if}
   </p>
   {#if incomplete}
     <p class="net-worth-figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
@@ -89,7 +89,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     <NetWorthChart points={visible} label={$t.overview.chartAria} />
     <p class="caption">
       {$t.overview.chartCaption}
-      {#if visible.some((point) => point.includesPreview)}<PreviewMarker placement="above" />{/if}
+      {#if visible.some((point) => point.provenance.preview)}<PreviewMarker placement="above" />{/if}
     </p>
   {:else}
     <CardPlaceholder state="net-worth" title={$t.overview.chartEmptyTitle} body={$t.overview.chartEmptyBody}>

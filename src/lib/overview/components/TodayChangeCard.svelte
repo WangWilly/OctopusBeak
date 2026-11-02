@@ -41,7 +41,7 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
     <p class="total" data-direction={ready.total < 0 ? "down" : "up"}>
       <strong class="money" data-sensitive>{formatTwdNumber(ready.total, $locale, true)}</strong>
       {#if ready.pct !== null}<span data-sensitive>{formatPct(ready.pct, $locale)}</span>{/if}
-      {#if ready.includesPreview}<PreviewMarker />{/if}
+      {#if ready.provenance.preview}<PreviewMarker />{/if}
     </p>
     {#if rows.length > 0}
       <ul class="contributions">

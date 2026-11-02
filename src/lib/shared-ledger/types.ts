@@ -4,6 +4,7 @@ import type {
   ManualTransaction,
   ManualValuation,
 } from "../manual-assets/manual-assets.ts";
+import type { Provenance } from "./provenance.ts";
 
 export type CurrencyAmountDto = {
   currency: string;
@@ -47,17 +48,16 @@ export type ExchangeRateDto = {
 
 export type SummaryMetricDto = {
   amounts: CurrencyAmountDto[];
-  includesPreview?: boolean;
-  /** The figure counts a Manual Asset's value. */
-  includesManual?: boolean;
+  /** The origins of the amounts the figure counts. */
+  provenance: Provenance;
   /** A visible preview credit account's used credit is unknown, so this total is not a figure. */
   incomplete?: boolean;
 };
 
 /**
  * Net position (CONTEXT.md): one TWD total when every account converts at the
- * valuation date, otherwise each currency's own amount. `includesPreview` and
- * `includesManual` describe only the figure shown.
+ * valuation date, otherwise each currency's own amount. `provenance` describes
+ * only the figure shown.
  */
 export type NetPositionDto =
   | Readonly<{
@@ -65,15 +65,13 @@ export type NetPositionDto =
     twd: number;
     /** Preview or manual currencies left out of `twd` because they have no rate. */
     unconvertedCurrencies: string[];
-    includesPreview: boolean;
-    includesManual: boolean;
+    provenance: Provenance;
     incomplete: boolean;
   }>
   | Readonly<{
     display: "native";
     amounts: CurrencyAmountDto[];
-    includesPreview: boolean;
-    includesManual: boolean;
+    provenance: Provenance;
     incomplete: boolean;
   }>;
 
@@ -95,8 +93,8 @@ export type DailyHistoryRowDto = {
   exchangeRateMissing?: boolean;
   accountChanges: string[];
   positionCount: number;
-  includesPreview?: boolean;
-  includesManual?: boolean;
+  /** The origins of the balances the row counts. */
+  provenance: Provenance;
 };
 
 export function historyPointKey(row: Pick<DailyHistoryRowDto, "date" | "pointAt" | "captureId">) {

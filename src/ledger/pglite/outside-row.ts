@@ -1,4 +1,5 @@
 import { institutionNames } from "../../lib/institutions/institutions.ts";
+import type { Origin } from "../../lib/shared-ledger/provenance.ts";
 import type { CurrencyAmountDto } from "../../lib/shared-ledger/types.ts";
 import { exactToNumber, type ExactAmount } from "../../lib/shared-money/exact-money.ts";
 
@@ -11,7 +12,7 @@ export type BalanceSeries = Readonly<{
   accountId: string;
   label: string;
   side: "asset" | "liability";
-  marker: "preview" | "manual";
+  marker: Origin;
   /** From this date on the account counts toward nothing (Preview Time Deposit Closure, a closed loan, an ended Manual Asset). */
   closedOn: string | null;
   points: readonly BalancePoint[];

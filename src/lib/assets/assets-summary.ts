@@ -6,6 +6,7 @@ import {
   type SpanChange,
   readSideValuation,
 } from "../shared-ledger/twd-valuation.ts";
+import { mergeProvenance, NO_PROVENANCE, type Provenance } from "../shared-ledger/provenance.ts";
 import type { AssetsPageDto } from "./types.ts";
 
 export type AssetsSummaryInput = Pick<AssetsPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates">;
@@ -28,8 +29,8 @@ export type AssetsSummary =
     shares: ReadonlyMap<string, number>;
     /** Each account's converted value, for its positions. */
     twdValues: ReadonlyMap<string, number>;
-    includesPreview: boolean;
-    includesManual: boolean;
+    /** The origins the total and its trailing change count. */
+    provenance: Provenance;
   };
 
 export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
@@ -46,7 +47,6 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     unconvertedCurrencies: allocation.unconvertedCurrencies,
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
-    includesPreview: allocation.includesPreview || (trailing?.includesPreview ?? false),
-    includesManual: allocation.includesManual,
+    provenance: mergeProvenance(allocation.provenance, trailing?.provenance ?? NO_PROVENANCE),
   };
 }

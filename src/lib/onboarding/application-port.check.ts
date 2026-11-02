@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
 import type {
   AutomationDesktopModel,
   AutomationRuntimeSnapshot,
@@ -24,7 +25,7 @@ function emptyOverview(): OverviewPageDto {
     historyAvailability: "unavailable",
     sourceGaps: [],
     importedAt: null,
-    summary: { net: { display: "native", amounts: [], includesPreview: false, includesManual: false, incomplete: false }, assets: { amounts: [] }, liabilities: { amounts: [] } },
+    summary: { net: { display: "native", amounts: [], provenance: NO_PROVENANCE, incomplete: false }, assets: { amounts: [], provenance: NO_PROVENANCE }, liabilities: { amounts: [], provenance: NO_PROVENANCE } },
     dailyHistory: [],
     dailyHistoryByAccount: {},
     accounts: [],
