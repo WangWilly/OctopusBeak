@@ -17,7 +17,8 @@ import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort 
 import { CTBC_SOURCE } from "./server/sources/ctbc.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
-import { strictSourceText } from "./source-text.ts";
+import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
+import { SourceUnavailableError } from "./source-access.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
 import {
@@ -391,6 +392,54 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
     && /source admission blocked/u.test(String((error as { cause?: unknown }).cause)));
   assert.equal(incomplete.committed.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
+});
+
+test("CTBC current-balance failures keep their thrown error and its failure code", async () => {
+  const integrity = new SourceTextIntegrityError("invalid-encoding");
+  const otherAccountId = ["0000", "3145", "4055", "4200"].join("");
+  const cases: readonly Readonly<{
+    name: string;
+    read: CtbcReadCurrentDepositBalances;
+    errorCode: string;
+    /** A failure that ends the run carries no cause, so only its code is checked. */
+    cause?: (cause: unknown) => boolean;
+  }>[] = [
+    {
+      name: "a balance page whose text is not intact",
+      read: async () => { throw integrity; },
+      errorCode: "source-integrity-failed",
+      cause: (cause) => cause === integrity,
+    },
+    {
+      name: "a balance page the source cannot serve",
+      read: async () => { throw new SourceUnavailableError(); },
+      errorCode: "source-unavailable",
+    },
+    {
+      name: "a balance row with no admitted account",
+      read: async () => [{
+        ...currentBalanceRow(),
+        accountNumber: otherAccountId,
+        sourceAccountKey: otherAccountId,
+        providerFields: { ...currentBalanceRow().providerFields, accountId: otherAccountId },
+      }],
+      errorCode: "source-validation-failed",
+      cause: (cause) => /no admitted account identity/u.test(String(cause)),
+    },
+  ];
+  for (const { name, read, errorCode, cause } of cases) {
+    const harness = createContext();
+    await assert.rejects(
+      runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(read)),
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError, name);
+        assert.equal(error.errorCode, errorCode, name);
+        if (cause) assert.ok(cause((error as { cause?: unknown }).cause), name);
+        return true;
+      },
+    );
+    assert.equal(harness.committed.length, 0, name);
+  }
 });
 
 test("CTBC delayed automatic login does not request human assistance and honors cancellation", async () => {
