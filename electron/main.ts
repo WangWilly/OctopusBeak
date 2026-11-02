@@ -52,6 +52,7 @@ import {
   type CollectionTrigger,
 } from "../src/lib/automation/server/collection-summary.ts";
 import { registerOctopusBeakIpc } from "./ipc.ts";
+import { broadcast } from "./broadcast.ts";
 import {
   createAutomationDesktopService,
   type AutomationDesktopService,
@@ -518,11 +519,7 @@ async function start() {
       : dialog.showOpenDialog(options),
     openExternal: (url) => shell.openExternal(url),
     appVersion: () => app.getVersion(),
-    publishRuntimeChanged: (snapshot) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send("automation:runtime-changed", snapshot);
-      }
-    },
+    publishRuntimeChanged: (snapshot) => broadcast("automation:runtime-changed", snapshot),
     onAutomationRuntimeFatal: handleAutomationRuntimeFatal,
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
@@ -609,12 +606,7 @@ async function start() {
       ? autoUpdater.quitAndInstall()
       : console.error("app-update-fixture-restart-skipped"),
     hasActiveRun: () => runtime.hasActive(),
-    onChange: () => {
-      const view = appUpdateView();
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.webContents.send("appUpdates:changed", view);
-      }
-    },
+    onChange: () => broadcast("appUpdates:changed", appUpdateView()),
     onReady: notifyUpdateReady,
     setInterval: (callback, ms) => setInterval(callback, ms).unref(),
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),

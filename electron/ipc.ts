@@ -8,6 +8,8 @@ import {
   financialForwardHandlers,
   type OctopusBeakInvokeHandlers,
 } from "./ipc-channels.ts";
+import type { OctopusBeakDataViewChannels, OctopusBeakSendChannel } from "./preload.ts";
+import { broadcast } from "./broadcast.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
 import {
   registerPGliteViewIpc,
@@ -87,12 +89,7 @@ export function registerOctopusBeakIpc({
   pgliteFinancial: PGliteFinancialPort;
 }) {
   const operationalProvider = pgliteOperational.provider;
-  const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => {
-    const windows = BrowserWindow.getAllWindows();
-    for (const window of windows) {
-      if (!window.isDestroyed()) window.webContents.send("data:invalidated", event);
-    }
-  });
+  const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => broadcast("data:invalidated", event));
   const financialPages = pgliteFinancial;
   const spendingCandidatePageControllers = new Map<string, AbortController>();
   const sharedPgliteWorker = pgliteOperational.worker;
@@ -101,8 +98,8 @@ export function registerOctopusBeakIpc({
     workerPath: pgliteOperational.workerPath ?? pgliteViews.workerPath,
     ...(sharedPgliteWorker ? { worker: sharedPgliteWorker, workerOwned: false } : {}),
   }, ipcMain);
-  ipcMain.handle("data-views:enabled", () => true);
-  ipcMain.on("display:setScale", (event, percent: unknown) => {
+  ipcMain.handle("data-views:enabled" satisfies OctopusBeakDataViewChannels["enabled"], () => true);
+  ipcMain.on("display:setScale" satisfies OctopusBeakSendChannel, (event, percent: unknown) => {
     if (!isFiniteDisplayScale(percent)) return;
     event.sender.setZoomFactor(displayScaleZoomFactor(percent));
     if (process.platform !== "darwin") return;
