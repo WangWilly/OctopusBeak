@@ -519,7 +519,12 @@ async function clickExactText(page: Page, text: string, timeoutMs: number): Prom
  */
 export async function readCtbcCurrentDepositBalances(
   page: Page,
-  input: Readonly<{ observedAt: string; timeoutMs?: number }>,
+  input: Readonly<{
+    observedAt: string;
+    /** Strictly decode the response body; a malformed byte must not reach a row. */
+    decode: (bytes: Uint8Array) => unknown;
+    timeoutMs?: number;
+  }>,
 ): Promise<readonly CtbcCurrentDepositBalanceRow[]> {
   const timeoutMs = input.timeoutMs ?? 60_000;
   try {
@@ -535,13 +540,7 @@ export async function readCtbcCurrentDepositBalances(
       await clickExactText(page, "臺幣存款概要", timeoutMs);
       await page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs });
       const response = await responsePromise;
-      const body = await response.body();
-      let payload: unknown;
-      try {
-        payload = JSON.parse(Buffer.from(body).toString("utf8"));
-      } catch {
-        throw new Error("CTBC current deposit balance response is not valid JSON.");
-      }
+      const payload = input.decode(await response.body());
       const headers = await response.allHeaders();
       return parseCtbcCurrentDepositBalanceSnapshot({
         payload,

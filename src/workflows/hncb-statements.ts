@@ -1282,8 +1282,14 @@ const collectHncbDeposit: HncbDepositRunner = async (page, input, context, produ
     context,
     product,
     hncbCurrentDepositBalances(
-      (options) => withAbort(readHncbCurrentDepositOverviewBalances(page, options), context.signal),
-      (options) => withAbort(readHncbCurrentDepositBalances(page, options), context.signal),
+      (options) => withAbort(
+        readHncbCurrentDepositOverviewBalances(page, { ...options, text: context.text }),
+        context.signal,
+      ),
+      (options) => withAbort(
+        readHncbCurrentDepositBalances(page, { ...options, text: context.text }),
+        context.signal,
+      ),
     ),
   );
 

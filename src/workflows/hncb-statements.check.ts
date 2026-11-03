@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import { readFileSync } from "node:fs";
 import { chromium, type Frame } from "playwright";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
@@ -350,6 +351,7 @@ try {
   `);
   const overview = await parseHncbCurrentDepositOverviewTable(overviewPage, {
     observedAt: "2026-09-09T13:57:10+08:00",
+    text: strictSourceText,
     response: {
       url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
       status: 200,

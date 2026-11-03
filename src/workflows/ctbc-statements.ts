@@ -1086,12 +1086,11 @@ async function readCtbcCurrentDepositBalancesFromPage(
   try {
     const rows = await withAbort(readCtbcCurrentDepositBalances(page, {
       observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
+      decode: (bytes) => decodeCtbcSourceJson(bytes, context.text),
     }), context.signal);
     context.signal.throwIfAborted();
     if (responses.length !== 1)
       throw new Error("CTBC current balance source response was missing or ambiguous.");
-    const bytes = await withAbort(responses[0]!.body(), context.signal);
-    decodeCtbcSourceJson(bytes, context.text);
     return rows;
   } finally {
     page.off("response", listener);

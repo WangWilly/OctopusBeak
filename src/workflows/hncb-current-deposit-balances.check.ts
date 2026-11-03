@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
@@ -264,7 +264,7 @@ const currentTable = fixtureTable([
 ]);
 const parsedTable = await parseHncbCurrentDepositBalanceTable(
   currentTable as never,
-  { response: response(), observedAt },
+  { response: response(), observedAt, text: strictSourceText },
 );
 assert.equal(parsedTable.length, 2);
 assert.equal(parsedTable[1]?.ledger.coefficient, "2450");
@@ -348,7 +348,7 @@ const overviewTable = fixtureTable([
 ]);
 const parsedOverview = await parseHncbCurrentDepositOverviewTable(
   overviewTable as never,
-  { response: overviewResponse(), observedAt },
+  { response: overviewResponse(), observedAt, text: strictSourceText },
 );
 assert.equal(parsedOverview.length, 2);
 assert.equal(parsedOverview[0]?.currency, "TWD");
@@ -366,7 +366,7 @@ await assert.rejects(
   () =>
     parseHncbCurrentDepositOverviewTable(
       fixtureTable([malformedOverviewHeader, overviewSecondHeader(), ...overviewRows]) as never,
-      { response: overviewResponse(), observedAt },
+      { response: overviewResponse(), observedAt, text: strictSourceText },
     ),
   /headers are not recognized|parent header must span/u,
 );
@@ -378,7 +378,7 @@ const unmarkedSingleCell = fixtureTable([
   { kind: "row", cells: [{ kind: "cell", tag: "td", text: "查詢結果" }] },
 ]);
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(unmarkedSingleCell as never, { response: response(), observedAt }),
+  () => parseHncbCurrentDepositBalanceTable(unmarkedSingleCell as never, { response: response(), observedAt, text: strictSourceText }),
   /12 TD cells/u,
 );
 
@@ -398,13 +398,13 @@ const nestedTable = new FixtureLocator([
 // as another account row. The fixture intentionally uses the same observed
 // header so the nested-table guard is the decisive check.
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(nestedTable as never, { response: response(), observedAt }),
+  () => parseHncbCurrentDepositBalanceTable(nestedTable as never, { response: response(), observedAt, text: strictSourceText }),
   /headers are not recognized/u,
 );
 
 const overlong = fixtureTable([header(), data([...rowA, "unexpected"])]);
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(overlong as never, { response: response(), observedAt }),
+  () => parseHncbCurrentDepositBalanceTable(overlong as never, { response: response(), observedAt, text: strictSourceText }),
   /12 TD cells/u,
 );
 
@@ -513,5 +513,13 @@ assert.match(source, /活期存款/u);
 assert.match(source, /waitForResponse/);
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
 assert.doesNotMatch(source, /click\(\{\s*force:/u);
+
+await assert.rejects(
+  () => parseHncbCurrentDepositBalanceTable(
+    fixtureTable([header(), data(rowA.map((value, index) => index === 10 ? `${value}\uFFFD` : value))]) as never,
+    { response: response(), observedAt, text: strictSourceText },
+  ),
+  SourceTextIntegrityError,
+);
 
 console.log("hncb-current-deposit-balances.check passed");

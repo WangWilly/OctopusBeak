@@ -1,4 +1,5 @@
 import type { Frame, Locator, Page, Response } from "playwright";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 
 /** HNCB's current deposit balance query is a provider snapshot. */
 export const HNCB_CURRENT_DEPOSIT_BALANCE_PATH =
@@ -377,7 +378,7 @@ async function readCellTexts(row: Locator, selector: string): Promise<string[]> 
 /** Locate the un-nested observed HNCB result table by its exact header row. */
 export async function parseHncbCurrentDepositBalanceTable(
   scope: Page | Frame | Locator,
-  input: Omit<HncbCurrentDepositSnapshotInput, "rows">,
+  input: Omit<HncbCurrentDepositSnapshotInput, "rows"> & Readonly<{ text: SourceTextPort }>,
 ): Promise<readonly HncbCurrentDepositBalanceRow[]> {
   const scopedTables = scope.locator("table");
   const scopedTableCount = await scopedTables.count();
@@ -430,7 +431,12 @@ export async function parseHncbCurrentDepositBalanceTable(
       dataRows.push(values);
     }
     if (headerFound) {
-      return parseHncbCurrentDepositBalanceSnapshot({ ...input, rows: dataRows });
+      for (const cell of dataRows.flat()) input.text.assertIntact(cell);
+      return parseHncbCurrentDepositBalanceSnapshot({
+        response: input.response,
+        observedAt: input.observedAt,
+        rows: dataRows,
+      });
     }
   }
   throw new Error("HNCB current deposit result table headers are not recognized.");
@@ -603,7 +609,7 @@ export function parseHncbCurrentDepositOverviewSnapshot(
 /** Locate the un-nested account-overview table and preserve its span layout. */
 export async function parseHncbCurrentDepositOverviewTable(
   scope: Page | Frame | Locator,
-  input: Omit<HncbCurrentDepositOverviewSnapshotInput, "rows">,
+  input: Omit<HncbCurrentDepositOverviewSnapshotInput, "rows"> & Readonly<{ text: SourceTextPort }>,
 ): Promise<readonly HncbCurrentDepositOverviewBalanceRow[]> {
   const scopedTables = scope.locator("table");
   const scopedTableCount = await scopedTables.count();
@@ -667,8 +673,14 @@ export async function parseHncbCurrentDepositOverviewTable(
         throw new Error(`HNCB current deposit overview data row ${rowIndex} must have 11 TD cells.`);
       dataRows.push(row.values);
     }
-    if (headerFound && (parentHeaderFound || tableRows.some((row) => overviewHeader(row.values))))
-      return parseHncbCurrentDepositOverviewSnapshot({ ...input, rows: dataRows });
+    if (headerFound && (parentHeaderFound || tableRows.some((row) => overviewHeader(row.values)))) {
+      for (const cell of dataRows.flat()) input.text.assertIntact(cell);
+      return parseHncbCurrentDepositOverviewSnapshot({
+        response: input.response,
+        observedAt: input.observedAt,
+        rows: dataRows,
+      });
+    }
   }
   throw new Error("HNCB current deposit overview table headers are not recognized.");
 }
@@ -813,6 +825,7 @@ export async function readHncbCurrentDepositBalances(
   page: Page,
   input: Readonly<{
     observedAt: string;
+    text: SourceTextPort;
     timeoutMs?: number;
   }>,
 ): Promise<readonly HncbCurrentDepositBalanceRow[]> {
@@ -829,6 +842,7 @@ export async function readHncbCurrentDepositBalances(
   const result = await findResultTable(page, timeoutMs);
   return parseHncbCurrentDepositBalanceTable(result.scope, {
     observedAt: input.observedAt,
+    text: input.text,
     response: {
       url: response.url(),
       status: response.status(),
@@ -843,6 +857,7 @@ export async function readHncbCurrentDepositOverviewBalances(
   page: Page,
   input: Readonly<{
     observedAt: string;
+    text: SourceTextPort;
     timeoutMs?: number;
   }>,
 ): Promise<readonly HncbCurrentDepositOverviewBalanceRow[]> {
@@ -866,6 +881,7 @@ export async function readHncbCurrentDepositOverviewBalances(
   const result = await findOverviewResultTable(page, timeoutMs);
   return parseHncbCurrentDepositOverviewTable(result.scope, {
     observedAt: input.observedAt,
+    text: input.text,
     response: {
       url: response.url(),
       status: response.status(),
