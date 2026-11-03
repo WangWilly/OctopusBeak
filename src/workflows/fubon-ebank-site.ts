@@ -67,14 +67,16 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
   };
 
   const activate = async (control: Locator, scope?: BrowserScope) => {
-    const href = await frames.race(control.getAttribute("href", { timeout: CONTROL_TIMEOUT_MS }).catch(() => null));
+    const href = await frames.withSignal((signal) =>
+      control.getAttribute("href", { timeout: CONTROL_TIMEOUT_MS, signal }).catch(() => null));
     if (scope && isFollowableHref(href)) {
-      await frames.race(scope.goto(new URL(href, FUBON_EBANK_ENTRY_URL).toString(), { waitUntil: "domcontentloaded" }));
+      const url = new URL(href, FUBON_EBANK_ENTRY_URL).toString();
+      await frames.withSignal((signal) => scope.goto(url, { waitUntil: "domcontentloaded", signal }));
       return;
     }
     // A dispatched click takes the run's signal, so a click queued behind a bank redirect cannot outlive the run.
-    await frames.race(activateControlWithoutPointer(control, {
-      signal: AbortSignal.any([context.signal, AbortSignal.timeout(CONTROL_TIMEOUT_MS)]),
+    await frames.withSignal((signal) => activateControlWithoutPointer(control, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(CONTROL_TIMEOUT_MS)]),
       timeout: CONTROL_TIMEOUT_MS,
     }));
   };

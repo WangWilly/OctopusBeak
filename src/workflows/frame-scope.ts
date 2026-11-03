@@ -33,6 +33,12 @@ export type FrameScope = Readonly<{
   signal: AbortSignal;
   /** The page itself, then each child frame in document order. */
   scopes(): BrowserScope[];
+  /**
+   * Run a Playwright operation that accepts the `signal` option, so cancelling
+   * the run stops it in the browser too; it rejects with the run's reason.
+   */
+  withSignal<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  /** Abandon an operation that takes no signal, such as `evaluate`, when the run is cancelled; it keeps running. */
   race<T>(operation: Promise<T>): Promise<T>;
   pause(ms: number): Promise<void>;
   /** Probe until it returns a value, then return that value. */
@@ -60,6 +66,12 @@ export type FrameScope = Readonly<{
 
 export function frameScope(page: Page, signal: AbortSignal): FrameScope {
   const race = <T>(operation: Promise<T>) => withAbort(operation, signal);
+
+  // Playwright rejects an aborted operation with its own AbortError; the race keeps the run's reason.
+  const withSignal = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    signal.throwIfAborted();
+    return await race(operation(signal));
+  };
 
   const pause = (ms: number) => new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -111,7 +123,7 @@ export function frameScope(page: Page, signal: AbortSignal): FrameScope {
 
   const settleScope = async (scope: BrowserScope) => {
     try {
-      await race(scope.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }));
+      await withSignal((signal) => scope.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS, signal }));
     } catch (error) {
       // Bank pages keep timers and polling alive; the element wait that follows confirms readiness.
       if (signal.aborted) throw error;
@@ -122,6 +134,7 @@ export function frameScope(page: Page, signal: AbortSignal): FrameScope {
     page,
     signal,
     scopes,
+    withSignal,
     race,
     pause,
     until,

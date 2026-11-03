@@ -27,6 +27,7 @@ import {
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
+import { frameScope } from "./frame-scope.ts";
 
 const MMA_ORIGIN = "https://mma.sinopac.com";
 export const SINOPAC_CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
@@ -54,13 +55,14 @@ export type SinopacCardCollectionInput = Readonly<{
 }>;
 
 export function sinopacCardPageTransport(page: Page, signal: AbortSignal): SinopacCardTransport {
+  const scope = frameScope(page, signal);
   const send = async (endpoint: string, init: Readonly<{ headers: Record<string, string>; body: string; referrer?: string }>) => {
     signal.throwIfAborted();
     if (new URL(page.url()).origin !== MMA_ORIGIN) fail("unexpected-response", "the signed-in page is not on the MMA origin");
-    const response = await page.evaluate(async ({ url, init }) => {
+    const response = await scope.race(page.evaluate(async ({ url, init }) => {
       const reply = await fetch(url, { method: "POST", credentials: "same-origin", ...init });
       return { status: reply.status, date: reply.headers.get("date"), text: await reply.text() };
-    }, { url: `${MMA_ORIGIN}${endpoint}`, init });
+    }, { url: `${MMA_ORIGIN}${endpoint}`, init }));
     signal.throwIfAborted();
     return { endpoint, ...response };
   };

@@ -46,6 +46,7 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -763,8 +764,8 @@ async function acceptDisclaimerIfPresent(page: Page, signal?: AbortSignal): Prom
     return;
   }
 
-  await checkbox.check({ force: true });
-  await page.locator("#btnConfirm").click();
+  await checkbox.check({ force: true, signal });
+  await page.locator("#btnConfirm").click({ signal });
   await settleAfterNavigation(page, signal);
 }
 
@@ -878,15 +879,18 @@ const YUANTA_REPORT_ERROR_PATH = "/NexusWebTrade/AssetReport/Error";
 const YUANTA_REPORT_ATTEMPTS = 3;
 
 async function submitReportForm(
-  page: Page,
+  scope: FrameScope,
   reportUrl: string,
   params: Record<string, string | number>,
 ): Promise<Response | null> {
-  const navigation = page.waitForNavigation({
+  const { page } = scope;
+  const navigation = scope.withSignal((signal) => page.waitForNavigation({
     waitUntil: "domcontentloaded",
     timeout: 60_000,
-  });
-  await page.evaluate(
+    signal,
+  }));
+  navigation.catch(() => undefined);
+  await scope.race(page.evaluate(
     ({ reportUrl, params }) => {
       const form = document.createElement("form");
       form.method = "POST";
@@ -902,7 +906,7 @@ async function submitReportForm(
       window.setTimeout(() => form.submit(), 0);
     },
     { reportUrl, params },
-  );
+  ));
   return await navigation;
 }
 
@@ -912,6 +916,7 @@ export async function captureTypedReport(
   params: Record<string, string | number>,
   context: WorkflowContext,
 ): Promise<ReportPage> {
+  const scope = frameScope(page, context.signal);
   const reportUrl = new URL(
     `/NexusWebTrade/AssetReport/${reportType}`,
     YUANTA_TRADE_LOGIN_URL,
@@ -919,22 +924,21 @@ export async function captureTypedReport(
   let response: Response | null = null;
   for (let attempt = 1; attempt <= YUANTA_REPORT_ATTEMPTS; attempt += 1) {
     context.signal.throwIfAborted();
-    response = await submitReportForm(page, reportUrl, params);
-    context.signal.throwIfAborted();
+    response = await submitReportForm(scope, reportUrl, params);
     if (!response || new URL(response.url()).pathname !== YUANTA_REPORT_ERROR_PATH) break;
-    if (attempt < YUANTA_REPORT_ATTEMPTS) await page.waitForTimeout(2_000 * attempt);
+    if (attempt < YUANTA_REPORT_ATTEMPTS) await scope.pause(2_000 * attempt);
   }
   if (!response) {
     throw new Error("Yuanta Trade report navigation returned no source response.");
   }
-  const captured = await decodeYuantaTradeReportResponse(
+  const captured = await scope.race(decodeYuantaTradeReportResponse(
     response,
     context.text,
     reportType,
     { request: page.context().request, params },
-  );
-  await acceptDisclaimerIfPresent(page);
-  await page.locator("#btnLogout").waitFor({ timeout: 60_000 });
+  ));
+  await scope.race(acceptDisclaimerIfPresent(page, context.signal));
+  await scope.withSignal((signal) => page.locator("#btnLogout").waitFor({ timeout: 60_000, signal }));
   return captured;
 }
 

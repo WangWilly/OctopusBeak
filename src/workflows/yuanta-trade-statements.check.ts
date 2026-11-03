@@ -61,7 +61,7 @@ const workflowSource = await readFile(
 );
 assert.doesNotMatch(
   workflowSource,
-  /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u,
+  /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|(?<!\.)\bpause\(|npx libretto/u,
 );
 assert.doesNotMatch(
   workflowSource,

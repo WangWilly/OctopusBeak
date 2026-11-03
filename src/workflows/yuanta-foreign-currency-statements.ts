@@ -2090,7 +2090,7 @@ async function readYuantaForeignCurrencySelectedAccount(
 ): Promise<string | null> {
   const selector = scope.locator("#acctno");
   try {
-    const value = await frames.race(selector.inputValue());
+    const value = await frames.withSignal((signal) => selector.inputValue({ signal }));
     return value.trim();
   } catch {
     frames.signal.throwIfAborted();
@@ -2157,7 +2157,7 @@ async function selectAccount(
 ): Promise<void> {
   const { frames } = site;
   const originalScope = await frames.scopeWith("#acctno");
-  await frames.race(originalScope.locator("#acctno").selectOption(account.value));
+  await frames.withSignal((signal) => originalScope.locator("#acctno").selectOption(account.value, { signal }));
   await settleYuantaForeignCurrencyScopeNavigation(site, originalScope);
   await frames.pause(ACCOUNT_CHANGE_PAUSE_MS);
 
@@ -2197,8 +2197,8 @@ export async function readYuantaForeignCurrencyAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await frames.race(option.getAttribute("value"))) ?? "";
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableOption(value, label)) continue;
 
     const account = { label, value };
@@ -2230,8 +2230,8 @@ export async function readYuantaForeignCurrencyOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await frames.race(option.getAttribute("value"))) ?? "";
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableOption(value, label)) continue;
     currencies.push({ label, value });
   }
@@ -2273,9 +2273,9 @@ async function queryAccountCurrency(
     account,
     "before setting currency",
   );
-  await frames.race(currencyScope
+  await frames.withSignal((signal) => currencyScope
     .locator('select[name="currency"]')
-    .selectOption(currency.value));
+    .selectOption(currency.value, { signal }));
   await chooseDateRange(site, input);
 
   const channelScope = await frames.scopeWith("#acctno");
@@ -2285,9 +2285,9 @@ async function queryAccountCurrency(
     account,
     "before setting channel",
   );
-  await frames.race(channelScope
+  await frames.withSignal((signal) => channelScope
     .locator("#channelType")
-    .selectOption(channelTypeValues[input.channelType]));
+    .selectOption(channelTypeValues[input.channelType], { signal }));
 
   const submitScope = await frames.scopeWith("#acctno");
   await assertYuantaForeignCurrencyAccountSelection(
@@ -2298,7 +2298,7 @@ async function queryAccountCurrency(
   );
   const previousResultFingerprint =
     await readYuantaForeignCurrencyResultFingerprint(site);
-  await frames.race(submitScope.locator("#submitbutton").click());
+  await frames.withSignal((signal) => submitScope.locator("#submitbutton").click({ signal }));
   await frames.settle();
   await waitForYuantaForeignCurrencyResultTransition(
     site,

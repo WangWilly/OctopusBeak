@@ -23,6 +23,8 @@ import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort 
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "./server/sources/hncb.ts";
+import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-current-deposit-balances.ts";
+import { frameScope } from "../../workflows/frame-scope.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -465,4 +467,64 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
   setTimeout(() => run.abort(reason), 10);
   await assert.rejects(download, (error: unknown) => error === reason);
   assert.equal(closed, true);
+});
+
+test("cancelling the run stops a pending export click in the browser and stages nothing", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<iframe name="main" srcdoc="<script>function doSubmit() { top.exportClicked = true; }</script><p>查詢結果</p>"></iframe>`);
+    const frame = page.frame({ name: "main" });
+    assert.ok(frame);
+    const cancellation = new Error("synthetic cancellation");
+    const run = new AbortController();
+    const commitItems: unknown[] = [];
+    const financialCommit: WorkflowFinancialCommitPort = {
+      async execute(items) {
+        for await (const item of items) commitItems.push(item);
+        throw new Error("a cancelled run must not reach the commit");
+      },
+    };
+    let readError: unknown;
+    const download = () => downloadCurrentStatementInMemory(page, account, frame, strictSourceText, run.signal)
+      .catch((error: unknown) => { readError = error; throw error; });
+    setTimeout(() => run.abort(cancellation), 300);
+    // The export link appears only after the cancellation; an abandoned click would still land on it.
+    setTimeout(() => void frame.evaluate(() => {
+      document.body.insertAdjacentHTML("beforeend", `<a href="javascript:doSubmit('5')">下載</a>`);
+    }).catch(() => undefined), 600);
+    const started = Date.now();
+    await assert.rejects(
+      runHncbStatements(page, { accountFilters: [] }, runContext(financialCommit, { signal: run.signal }), {
+        collectDeposit: oneAccount(download),
+      }),
+      (error: unknown) => error instanceof ProductCollectionInterruptedError && error.errorCode === "cancelled",
+    );
+    assert.equal(readError, cancellation);
+    assert.ok(Date.now() - started < 2_000, "cancellation ends the export click wait well before its 30 s timeout");
+    await page.waitForTimeout(1_000);
+    assert.equal(await page.evaluate(() => (window as { exportClicked?: boolean }).exportClicked ?? false), false);
+    assert.deepEqual(commitItems, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("cancelling the run stops the current-balance overview polling for its menu", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<a href="#">帳務查詢</a>`);
+    const cancellation = new Error("synthetic cancellation");
+    const run = new AbortController();
+    setTimeout(() => run.abort(cancellation), 300);
+    const started = Date.now();
+    await assert.rejects(
+      readHncbCurrentDepositOverviewTable(frameScope(page, run.signal)),
+      (error: unknown) => error === cancellation,
+    );
+    assert.ok(Date.now() - started < 2_000, "cancellation ends the menu wait well before its 60 s timeout");
+  } finally {
+    await browser.close();
+  }
 });

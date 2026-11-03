@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   activateControlWithoutPointer,
-  clickAndWaitForNavigation,
   hasAttachedLocator,
 } from "./browser-interaction.ts";
 
@@ -36,52 +35,6 @@ assert.equal(
   ),
   false,
 );
-
-let finishNavigation!: () => void;
-const navigation = new Promise<void>((resolve) => {
-  finishNavigation = resolve;
-});
-let clicked = false;
-let completed = false;
-let seenNavigationOptions: {
-  waitUntil: "domcontentloaded";
-  timeout: number;
-} | null = null;
-let seenSelector: string | null = null;
-const navigationScope = {
-  waitForNavigation: (options: {
-    waitUntil: "domcontentloaded";
-    timeout: number;
-  }) => {
-    seenNavigationOptions = options;
-    return navigation;
-  },
-  locator: (selector: string) => ({
-    click: async () => {
-      seenSelector = selector;
-      clicked = true;
-    },
-  }),
-};
-
-const pendingNavigation = clickAndWaitForNavigation(
-  navigationScope,
-  "#submitbutton",
-).then(() => {
-  completed = true;
-});
-await new Promise<void>((resolve) => setImmediate(resolve));
-assert.equal(clicked, true);
-assert.equal(completed, false);
-assert.deepEqual(seenNavigationOptions, {
-  waitUntil: "domcontentloaded",
-  timeout: 60_000,
-});
-assert.equal(seenSelector, "#submitbutton");
-
-finishNavigation();
-await pendingNavigation;
-assert.equal(completed, true);
 
 let evaluateCalled = false;
 let dispatchType: string | null = null;

@@ -257,19 +257,19 @@ export function parseFubonCurrentDepositBalanceSnapshot(
   return rows;
 }
 
-async function readCellTexts(row: Locator, selector: string): Promise<string[]> {
+async function readCellTexts(frames: FrameScope, row: Locator, selector: string): Promise<string[]> {
   const cells = row.locator(selector);
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await cells.nth(index).innerText()));
+    values.push(cleanText(await frames.withSignal((signal) => cells.nth(index).innerText({ signal }))));
   }
   return values;
 }
 
-async function readClass(locator: Locator): Promise<Set<string>> {
+async function readClass(frames: FrameScope, locator: Locator): Promise<Set<string>> {
   return new Set(
-    cleanText(await locator.getAttribute("class"))
+    cleanText(await frames.withSignal((signal) => locator.getAttribute("class", { signal })))
       .split(/\s+/u)
       .filter(Boolean),
   );
@@ -282,11 +282,12 @@ function isCurrentDepositHeader(cells: readonly string[]): boolean {
   );
 }
 
-async function tableHasCurrentDepositHeader(table: Locator): Promise<boolean> {
+async function tableHasCurrentDepositHeader(frames: FrameScope, table: Locator): Promise<boolean> {
   const rows = table.locator("tr");
   const rowCount = await rows.count();
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
     const cells = await readCellTexts(
+      frames,
       rows.nth(rowIndex),
       "th:not(.hide), td:not(.hide)",
     );
@@ -303,12 +304,13 @@ async function tableHasCurrentDepositHeader(table: Locator): Promise<boolean> {
  * evidence.
  */
 export async function readFubonCurrentDepositTableCells(
+  frames: FrameScope,
   table: Locator,
 ): Promise<readonly (readonly string[])[]> {
-  if ((await table.getAttribute("id")) !== FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID) {
+  if ((await frames.withSignal((signal) => table.getAttribute("id", { signal }))) !== FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID) {
     throw new Error("Fubon current deposit table id is unexpected.");
   }
-  const classes = await readClass(table);
+  const classes = await readClass(frames, table);
   if (!classes.has("tb_bkBody") || !classes.has("m10")) {
     throw new Error("Fubon current deposit table classes are unexpected.");
   }
@@ -323,7 +325,7 @@ export async function readFubonCurrentDepositTableCells(
     if ((await row.locator("table").count()) !== 0) {
       throw new Error(`Fubon current deposit row ${rowIndex} contains a nested table.`);
     }
-    const cells = await readCellTexts(row, "th:not(.hide), td:not(.hide)");
+    const cells = await readCellTexts(frames, row, "th:not(.hide), td:not(.hide)");
     if (
       !headerFound &&
       isCurrentDepositHeader(cells)
@@ -348,7 +350,7 @@ export async function readFubonCurrentDepositTableCells(
         `Fubon current deposit data row ${rowIndex} must contain 10 visible and 2 hidden TD cells.`,
       );
     }
-    dataRows.push(await readCellTexts(row, "td:not(.hide)"));
+    dataRows.push(await readCellTexts(frames, row, "td:not(.hide)"));
   }
 
   if (!headerFound) {
@@ -381,7 +383,7 @@ async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): P
   }, "Could not find Fubon current deposit table.", { timeoutMs });
   // The table can attach before its header row renders; give the header a grace period, then let the parser decide.
   await ifFound(frames.until(
-    () => tableHasCurrentDepositHeader(table),
+    () => tableHasCurrentDepositHeader(frames, table),
     "Timed out waiting for the Fubon current deposit header.",
     { timeoutMs: Math.min(Math.max(0, deadline - Date.now()), FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS) },
   ));
@@ -414,17 +416,17 @@ export async function readFubonCurrentDepositBalanceTable(
   const { frames } = site;
   const timeoutMs = input.timeoutMs ?? 60_000;
   const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
-  await frames.race(depositMenu.click());
+  await frames.withSignal((signal) => depositMenu.click({ signal }));
   const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
   // The page's own response carries the HTTP Date and Cache-Control evidence, so it is paired with the click that requests it.
-  const [response] = await frames.race(Promise.all([
-    frames.page.waitForResponse(responseMatches, { timeout: timeoutMs }),
-    myDeposit.click(),
-  ]));
+  const [response] = await Promise.all([
+    frames.withSignal((signal) => frames.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal })),
+    frames.withSignal((signal) => myDeposit.click({ signal })),
+  ]);
   const headers = await frames.race(response.allHeaders());
   const table = await findCurrentDepositTable(frames, timeoutMs);
   return {
-    evidence: { kind: "cells", rows: await readFubonCurrentDepositTableCells(table) },
+    evidence: { kind: "cells", rows: await readFubonCurrentDepositTableCells(frames, table) },
     response: {
       url: response.url(),
       status: response.status(),

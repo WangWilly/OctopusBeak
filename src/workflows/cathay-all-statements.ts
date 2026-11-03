@@ -137,10 +137,7 @@ export async function runCathayAllProviderWorkflow(
     let statementCaptureCount = 0;
     const acquireCurrentBalances = (kind: "domestic" | "foreign") => async () => {
       const capturedAt = context.now();
-      const response = await withAbort(
-        readCathayCurrentDepositBalanceResponse(page, kind),
-        context.signal,
-      );
+      const response = await readCathayCurrentDepositBalanceResponse(page, kind, context.signal);
       return { ...response, observedAt: capturedAt };
     };
 

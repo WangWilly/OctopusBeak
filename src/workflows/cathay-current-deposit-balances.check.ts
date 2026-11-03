@@ -300,10 +300,11 @@ assert.throws(
 
 {
   const { readCathayCurrentDepositBalanceResponse } = await import("./cathay-current-deposit-balances.ts");
+  const running = new AbortController().signal;
   const ui = ["9990", "0000", "0001"].join("");
   const body = cathayDomesticOverviewBody(systemTime, [{ ui, ledger: "1000.00", available: "900.25" }]);
   const overview = { body, date: httpDate, uiAccounts: [ui] };
-  const read = await readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: overview }), "domestic");
+  const read = await readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: overview }), "domestic", running);
   assert.equal(new TextDecoder().decode(read.evidence.bytes), body, "the reader hands over the response bytes undecoded");
   assert.deepEqual(read.uiAccountNumbers, [ui]);
   assert.equal(read.response.url, `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`);
@@ -311,10 +312,11 @@ assert.throws(
   const foreignRead = await readCathayCurrentDepositBalanceResponse(
     cathayOverviewPage({}, { foreign: { body: foreignBody, date: httpDate } }),
     "foreign",
+    running,
   );
   assert.equal(foreignRead.uiAccountNumbers, undefined);
   await assert.rejects(
-    readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: { ...overview, posts: 2 } }), "domestic"),
+    readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: { ...overview, posts: 2 } }), "domestic", running),
     /^Error: Cathay current balance source response was missing or ambiguous\.$/u,
   );
 }

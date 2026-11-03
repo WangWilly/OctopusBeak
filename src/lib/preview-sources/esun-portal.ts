@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import { withAbort } from "../../workflows/abort.ts";
 
 export const ESUN_PORTAL_HOST = "ebank.esunbank.com.tw";
 
@@ -57,12 +58,13 @@ async function postPortalInPage(
   return { kind: "json", httpStatus: response.status, text, date: response.headers.get("date") };
 }
 
-export async function waitForEsunPortalSession(page: Page, timeout = 30_000): Promise<void> {
+/** A missing session is left to the transport to report; a cancelled run rejects with its reason. */
+export async function waitForEsunPortalSession(page: Page, timeout = 30_000, signal?: AbortSignal): Promise<void> {
   await page.waitForFunction(
     () => Boolean((window as Window & { mibApiService?: PortalState }).mibApiService?.uuid),
     undefined,
-    { timeout },
-  ).catch(() => undefined);
+    { timeout, signal },
+  ).catch(() => signal?.throwIfAborted());
 }
 
 /** Posts to the `/esb/` portal from the signed-in page, so the page's own session and cookies apply. */
@@ -70,6 +72,6 @@ export function createEsunPortalTransport(page: Page, signal: AbortSignal): Esun
   return async (path, requestBody, resetFlow) => {
     signal.throwIfAborted();
     if (new URL(page.url()).hostname !== ESUN_PORTAL_HOST) return { kind: "portal-session-missing" };
-    return await page.evaluate(postPortalInPage, { path, requestBody, resetFlow });
+    return await withAbort(page.evaluate(postPortalInPage, { path, requestBody, resetFlow }), signal);
   };
 }

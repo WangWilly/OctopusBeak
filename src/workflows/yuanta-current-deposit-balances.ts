@@ -535,7 +535,7 @@ export async function readYuantaCurrentDepositBalanceTable(
       "Yuanta foreign-currency summary tab",
       { timeoutMs: Math.min(timeoutMs, 5_000) },
     ));
-    if (tab) await frames.race(tab.click());
+    if (tab) await frames.withSignal((signal) => tab.click({ signal }));
   }
   const link = await frames.until(async () => {
     for (const scope of frames.scopes()) {
@@ -545,8 +545,8 @@ export async function readYuantaCurrentDepositBalanceTable(
     return null;
   }, `Could not find Yuanta ${kind} current deposit details link.`, { timeoutMs });
   const [response] = await Promise.all([
-    frames.race(frames.page.waitForResponse(responseMatches, { timeout: timeoutMs })),
-    frames.race(link.click()),
+    frames.withSignal((signal) => frames.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal })),
+    frames.withSignal((signal) => link.click({ signal })),
   ]);
   const headers = await frames.race(response.allHeaders());
   const table = await findCurrentDepositTable(frames, kind, timeoutMs);

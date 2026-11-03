@@ -71,3 +71,40 @@ test("Yuanta report submission uses the report route when login ends on a differ
     await browser.close();
   }
 });
+
+test("cancelling the run stops a Yuanta report read at each of its waits", async () => {
+  const browser = await chromium.launch({ headless: true });
+  const cancelled = new Error("synthetic cancellation");
+  const readCancelledAfter = async (landing: "hang" | "error" | "no-logout") => {
+    const page = await browser.newPage();
+    await page.route("https://global.yuanta.com.tw/**", (route) => {
+      const { pathname } = new URL(route.request().url());
+      if (pathname === "/NexusWebTrade/Main/Index" || pathname === "/NexusWebTrade/AssetReport/Error") {
+        return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<p>signed in</p>" });
+      }
+      if (landing === "hang") return;
+      if (landing === "error") {
+        return route.fulfill({ status: 302, headers: { location: "/NexusWebTrade/AssetReport/Error" } });
+      }
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<script>var currAssetType = 'Stock';</script>" });
+    });
+    await page.goto("https://global.yuanta.com.tw/NexusWebTrade/Main/Index");
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(cancelled), 500);
+    const started = Date.now();
+    await assert.rejects(
+      captureTypedReport(page, "Stock", { index: -1 }, { text: strictSourceText, signal: controller.signal } as WorkflowContext),
+      (error: unknown) => error === cancelled,
+      landing,
+    );
+    assert.ok(Date.now() - started < 2_000, `${landing} stopped promptly`);
+    await page.close();
+  };
+  try {
+    await readCancelledAfter("hang");
+    await readCancelledAfter("error");
+    await readCancelledAfter("no-logout");
+  } finally {
+    await browser.close();
+  }
+});

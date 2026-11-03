@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
   "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview" as const;
@@ -508,10 +509,11 @@ export function parseCathayCurrentDepositBalanceSnapshot(
 }
 
 async function findExactControl(
-  page: Page,
+  scope: FrameScope,
   text: string,
   timeoutMs: number,
 ): Promise<Locator> {
+  const { page } = scope;
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -523,12 +525,13 @@ async function findExactControl(
         if (await control.isVisible().catch(() => false)) return control;
       }
     }
-    await page.waitForTimeout(250);
+    await scope.pause(250);
   }
   throw new Error(`Could not find Cathay control "${text}".`);
 }
 
-async function readDomesticUiAccountNumbers(page: Page, timeoutMs: number): Promise<readonly string[]> {
+async function readDomesticUiAccountNumbers(scope: FrameScope, timeoutMs: number): Promise<readonly string[]> {
+  const { page } = scope;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     for (const scope of [page, ...page.frames()]) {
@@ -541,7 +544,7 @@ async function readDomesticUiAccountNumbers(page: Page, timeoutMs: number): Prom
       }
       if (accounts.length > 0) return accounts;
     }
-    await page.waitForTimeout(250);
+    await scope.pause(250);
   }
   throw new Error("Could not read Cathay domestic UI account buttons.");
 }
@@ -581,33 +584,36 @@ export type CathayCurrentDepositResponse = Readonly<{
 export async function readCathayCurrentDepositBalanceResponse(
   page: Page,
   kind: CathayCurrentDepositKind,
+  signal: AbortSignal,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<CathayCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
+  const scope = frameScope(page, signal);
   let matching = 0;
   const listener = (candidate: Response) => {
     if (responseMatches(kind, candidate)) matching += 1;
   };
   page.on("response", listener);
   try {
-    const section = await findExactControl(page, kind === "domestic" ? "臺幣" : "外幣", timeoutMs);
-    await section.click();
+    const section = await findExactControl(scope, kind === "domestic" ? "臺幣" : "外幣", timeoutMs);
+    await scope.withSignal((signal) => section.click({ signal }));
     const overview = await findExactControl(
-      page,
+      scope,
       kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
       timeoutMs,
     );
-    const responsePromise = page.waitForResponse(
+    const responsePromise = scope.withSignal((signal) => page.waitForResponse(
       (response) => responseMatches(kind, response),
-      { timeout: timeoutMs },
-    );
-    await overview.click();
+      { timeout: timeoutMs, signal },
+    ));
+    responsePromise.catch(() => undefined);
+    await scope.withSignal((signal) => overview.click({ signal }));
     const response = await responsePromise;
-    const bytes = await response.body();
-    const headers = await response.allHeaders();
+    const bytes = await scope.race(response.body());
+    const headers = await scope.race(response.allHeaders());
     const uiAccountNumbers =
       kind === "domestic"
-        ? await readDomesticUiAccountNumbers(page, timeoutMs)
+        ? await readDomesticUiAccountNumbers(scope, timeoutMs)
         : undefined;
     if (matching !== 1) {
       throw new Error("Cathay current balance source response was missing or ambiguous.");

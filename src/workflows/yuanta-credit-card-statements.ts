@@ -306,8 +306,7 @@ async function openCreditCardBillsPage(
 ): Promise<CreditCardBillsPage> {
   const { frames } = site;
   const [html, scope] = await Promise.all([
-    frames
-      .race(frames.page.waitForResponse(isCreditCardBillsPageResponse))
+    frames.withSignal((signal) => frames.page.waitForResponse(isCreditCardBillsPageResponse, { signal }))
       .then((response) => site.readHtml(response)),
     site.open(CREDIT_CARD_BILLS_ROUTE),
   ]);
@@ -508,7 +507,7 @@ async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean
       "YuanTa home link",
     );
     if (homeLink) {
-      await frames.race(homeLink.click({ force: true }));
+      await frames.withSignal((signal) => homeLink.click({ force: true, signal }));
       await frames.settle();
       link = await findYuantaVisibleTextControl(
         frames,
@@ -520,7 +519,7 @@ async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean
   }
   if (!link) return false;
 
-  await frames.race(link.click({ force: true }));
+  await frames.withSignal((signal) => link.click({ force: true, signal }));
   await frames.settle();
   const shown = await ifFound(frames.until(async () => {
     const fmain = frames.page.frame({ name: "fmain" });
@@ -587,17 +586,17 @@ export async function loadYuantaCreditCardSummaryPage(
   const { frames } = site;
   const [response] = await Promise.all([
     unlessTimedOut(
-      frames.race(
+      frames.withSignal((signal) =>
         frames.page.waitForResponse(
           (candidate) =>
             candidate.url().includes("/nib/tx/creditcardsummary") &&
             candidate.request().method() === "POST",
-          { timeout: 30_000 },
+          { timeout: 30_000, signal },
         ),
       ),
     ),
     (async () => {
-      if (link) await frames.race(link.click());
+      if (link) await frames.withSignal((signal) => link.click({ signal }));
       else
         await site.menuAction("creditcardsummary", "menu_creditcardsummary", 60_000);
       await frames.settle();
@@ -647,7 +646,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
           throw new Error(
             "YuanTa settled statement pagination control disappeared before traversal.",
           );
-        await frames.race(pager.click({ force: true }));
+        await frames.withSignal((signal) => pager.click({ force: true, signal }));
         await frames.settle();
         frames.signal.throwIfAborted();
         const nextHtml = await readYuantaSummaryHtml(frames, currentHtml);
@@ -999,10 +998,10 @@ async function waitForCreditCardForm(
   frames: FrameScope,
   bills: BrowserScope,
 ): Promise<void> {
-  await frames.race(
+  await frames.withSignal((signal) =>
     bills.waitForSelector(
       'form#mform [name="cdHistoryQuery"], form[name="mform"] [name="cdHistoryQuery"]',
-      { state: "attached", timeout: 120_000 },
+      { state: "attached", timeout: 120_000, signal },
     ),
   );
 }
@@ -1015,14 +1014,14 @@ async function submitCreditCardMonth(
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
   const [response] = await Promise.all([
-    frames.race(
+    frames.withSignal((signal) =>
       frames.page.waitForResponse(
         (response) =>
           response
             .url()
             .includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
           response.request().method() === "POST",
-        { timeout: 120_000 },
+        { timeout: 120_000, signal },
       ),
     ),
     frames.race(
@@ -1050,12 +1049,12 @@ async function submitCreditCardUnbilled(
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
   const [response] = await Promise.all([
-    frames.race(
+    frames.withSignal((signal) =>
       frames.page.waitForResponse(
         (response) =>
           response.url().includes("/nib/tx/creditcardunbilled") &&
           response.request().method() === "POST",
-        { timeout: 120_000 },
+        { timeout: 120_000, signal },
       ),
     ),
     frames.race(

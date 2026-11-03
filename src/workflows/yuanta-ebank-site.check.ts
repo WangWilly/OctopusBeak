@@ -177,6 +177,24 @@ test("a date range is picked from the visible duration links, and a custom range
     assert.equal(await scope.locator("#edate").inputValue(), "2026/03/31");
   }));
 
+test("cancelling the run stops a pending date fill instead of letting it fill once the field appears", () =>
+  withYuantaShell(async (page) => {
+    const controller = new AbortController();
+    const site = yuantaEbankSite(page, context(controller.signal));
+    const scope = await site.open(DEPOSIT);
+    await scope.evaluate(() => {
+      const field = document.querySelector("#sdate")!;
+      field.remove();
+      setTimeout(() => document.querySelector("form")!.append(field), 400);
+    });
+    setTimeout(() => controller.abort(CANCELLED), 100);
+    const choosing = site.chooseDuration(scope, { customLabel: "自訂", startDate: "2026/01/01", endDate: "2026/03/31" });
+    await assert.rejects(choosing, (error: unknown) => error === CANCELLED);
+    await scope.locator("#sdate").waitFor({ state: "attached" });
+    await page.waitForTimeout(300);
+    assert.equal(await scope.locator("#sdate").inputValue(), "", "the cancelled fill never ran");
+  }));
+
 test("an HTML response decodes as strict UTF-8, and malformed bytes fail the read", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());

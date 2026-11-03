@@ -18,6 +18,7 @@ import type {
   CathayLoanRow,
   CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 const ORIGIN = `https://${CATHAY_CURRENT_DEPOSIT_HOST}`;
 const CARD_OVERVIEW_URL = `${ORIGIN}/OnlineBanking/CQuery/C0101_BillOverview`;
@@ -120,10 +121,14 @@ function isPost(response: Response, matches: (path: string) => boolean): boolean
   }
 }
 
-async function captured(response: Response, source: CathayStrictSourceOptions): Promise<CathayPreviewResponse> {
-  const metadata = await cathayResponseMetadata(response);
+async function captured(
+  scope: FrameScope,
+  response: Response,
+  source: CathayStrictSourceOptions,
+): Promise<CathayPreviewResponse> {
+  const metadata = await scope.race(cathayResponseMetadata(response));
   const endpoint = new URL(metadata.url).pathname;
-  const text = decodeCathayApiSourceResponse(metadata, endpoint, await response.body(), source.text);
+  const text = decodeCathayApiSourceResponse(metadata, endpoint, await scope.race(response.body()), source.text);
   const date = Object.entries(metadata.headers).find(([name]) => name.toLowerCase() === "date")?.[1] ?? null;
   return { endpoint, status: metadata.status, text, date };
 }
@@ -139,24 +144,34 @@ export function playwrightCathayAttachedPreviewPort(
   session: () => CathaySession,
   source: CathayStrictSourceOptions,
 ): CathayAttachedPreviewPort {
+  const scope = frameScope(page, source.signal);
+  // An optional wait that times out or fails leaves the read to decide; a cancellation still stops it.
+  const unlessCancelled = () => source.signal.throwIfAborted();
+  const responseTo = (matches: (path: string) => boolean, timeout: number) =>
+    scope.withSignal((signal) => page.waitForResponse((response) => isPost(response, matches), { timeout, signal }));
+  const open = (url: string) =>
+    scope.withSignal((signal) => page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS, signal }));
+  const settled = (settles: () => boolean, timeout: number) =>
+    scope.withSignal((signal) => page.waitForFunction(settles, undefined, { timeout, signal }))
+      .then(() => undefined, unlessCancelled);
+
   return {
     async cardOverview() {
-      const status = page.waitForResponse((response) => isPost(response, (path) => path.endsWith("/C_COM_Q_CardStatus")), { timeout: TIMEOUT_MS });
-      const latest = page.waitForResponse((response) => isPost(response, (path) => path.endsWith("/C_CardInfo_Q_LatestBill")), { timeout: LATEST_BILL_TIMEOUT_MS })
+      const status = responseTo((path) => path.endsWith("/C_COM_Q_CardStatus"), TIMEOUT_MS);
+      const latest = responseTo((path) => path.endsWith("/C_CardInfo_Q_LatestBill"), LATEST_BILL_TIMEOUT_MS)
         .catch(() => null);
       status.catch(() => undefined);
-      await page.goto(CARD_OVERVIEW_URL, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS });
-      const cardStatus = await captured(await status, source);
+      await open(CARD_OVERVIEW_URL);
+      const cardStatus = await captured(scope, await status, source);
       const latestResponse = await latest;
-      await page.waitForFunction(
+      await settled(
         () => /卡片末四碼[：:]\s*\d{4}|立即(?:線上)?辦卡/u.test(document.body?.innerText ?? ""),
-        undefined,
-        { timeout: LATEST_BILL_TIMEOUT_MS },
-      ).catch(() => undefined);
+        LATEST_BILL_TIMEOUT_MS,
+      );
       return {
         cardStatus,
-        latestBill: latestResponse ? await captured(latestResponse, source) : null,
-        text: await page.evaluate(() => document.body?.innerText ?? ""),
+        latestBill: latestResponse ? await captured(scope, latestResponse, source) : null,
+        text: await scope.race(page.evaluate(() => document.body?.innerText ?? "")),
       };
     },
     async cardApi(endpoint, content = {}) {
@@ -169,16 +184,16 @@ export function playwrightCathayAttachedPreviewPort(
       return { endpoint: path, status: 200, text, date: null };
     },
     async domesticOverview() {
-      const response = page.waitForResponse((candidate) => isPost(candidate, (path) => path === CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH), { timeout: TIMEOUT_MS });
+      const response = responseTo((path) => path === CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH, TIMEOUT_MS);
       response.catch(() => undefined);
-      await page.goto(`${ORIGIN}${CATHAY_CURRENT_DOMESTIC_UI_PATH}`, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS });
-      return await captured(await response, source);
+      await open(`${ORIGIN}${CATHAY_CURRENT_DOMESTIC_UI_PATH}`);
+      return await captured(scope, await response, source);
     },
     async loanOverview() {
-      const response = await page.goto(LOAN_OVERVIEW_URL, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS });
-      await page.waitForFunction(loanOverviewSettled, undefined, { timeout: LOAN_SETTLE_TIMEOUT_MS }).catch(() => undefined);
-      const date = response ? (await response.allHeaders())["date"] ?? null : null;
-      return { ...await page.evaluate(extractLoanOverview), date };
+      const response = await open(LOAN_OVERVIEW_URL);
+      await settled(loanOverviewSettled, LOAN_SETTLE_TIMEOUT_MS);
+      const date = response ? (await scope.race(response.allHeaders()))["date"] ?? null : null;
+      return { ...await scope.race(page.evaluate(extractLoanOverview)), date };
     },
   };
 }

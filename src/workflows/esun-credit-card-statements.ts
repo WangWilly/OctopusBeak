@@ -41,6 +41,7 @@ import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
 import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
@@ -659,20 +660,15 @@ const timelineResponseSchema = z.object({
   }),
 });
 
-async function openCardPopup(
-  page: Page,
-  label: string,
-  path: string,
-  signal?: AbortSignal,
-): Promise<Page> {
-  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-  await withAbort(page.getByText(label, { exact: true }).click(), signal);
-  const popup = await withAbort(popupPromise, signal);
-  await withAbort(
-    popup.waitForURL((url) => url.pathname === path, { timeout: 60_000 }),
-    signal,
-  );
-  return popup;
+async function openCardPopup(scope: FrameScope, label: string, path: string): Promise<FrameScope> {
+  const { page } = scope;
+  const popupPromise = scope.withSignal((signal) => page.waitForEvent("popup", { timeout: 30_000, signal }));
+  popupPromise.catch(() => undefined);
+  await scope.withSignal((signal) => page.getByText(label, { exact: true }).click({ signal }));
+  const popup = await popupPromise;
+  await scope.withSignal((signal) =>
+    popup.waitForURL((url) => url.pathname === path, { timeout: 60_000, signal }));
+  return frameScope(popup, scope.signal);
 }
 
 function priorMonth(month: string): string {
@@ -724,63 +720,53 @@ export function rowsFromTimelineResponse(raw: unknown): {
 }
 
 export async function loadNextEsunTimelineResponse(
-  popup: Page,
-  signal?: AbortSignal,
+  popup: FrameScope,
   timeoutMs = 15_000,
 ): Promise<Response> {
-  signal?.throwIfAborted();
-  const response = popup.waitForResponse(
+  const response = popup.withSignal((signal) => popup.page.waitForResponse(
     (candidate) => candidate.url().includes("/GW/creditLastYear/getFilterResult") &&
       candidate.request().method() === "POST",
-    { timeout: timeoutMs },
-  );
+    { timeout: timeoutMs, signal },
+  ));
   void response.catch(() => undefined);
   // Timeline content can grow after the response but before layout settles.
   // Follow the current bottom until the bank emits the next page response.
   while (true) {
-    signal?.throwIfAborted();
-    await withAbort(popup.locator(".timeline-query-continer").evaluate(
+    await popup.withSignal((signal) => popup.page.locator(".timeline-query-continer").evaluate(
       (element) => { element.scrollTop = element.scrollHeight; },
-    ), signal);
-    const next = await withAbort(Promise.race([
-      response,
-      popup.waitForTimeout(150).then(() => null),
-    ]), signal);
+      undefined,
+      { signal },
+    ));
+    const next = await Promise.race([response, popup.pause(150).then(() => null)]);
     if (next) return next;
   }
 }
 
 async function queryStatements(
-  page: Page,
+  scope: FrameScope,
   input: Readonly<{ startDate: string; endDate: string }>,
-  options: Readonly<{
-    readJson?: (response: Response) => Promise<unknown>;
-    signal?: AbortSignal;
-  }> = {},
+  readJson: (response: Response) => Promise<unknown>,
 ): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
   const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
-  const popup = await openCardPopup(page, "刷卡明細", "/IESC/cardTrans", options.signal);
+  const popup = await openCardPopup(scope, "刷卡明細", "/IESC/cardTrans");
   try {
-    options.signal?.throwIfAborted();
-    const responsePromise = popup.waitForResponse(
+    const responsePromise = popup.withSignal((signal) => popup.page.waitForResponse(
       (response) => response.url().includes("/GW/creditLastYear/getFilterResult") &&
         response.request().method() === "POST",
-      { timeout: 30_000 },
-    );
-    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
-    await withAbort(popup.getByText("近一年刷卡明細", { exact: true }).click(), options.signal);
-    let response = await withAbort(responsePromise, options.signal);
+      { timeout: 30_000, signal },
+    ));
+    responsePromise.catch(() => undefined);
+    await popup.withSignal((signal) => popup.page.locator('input[name="comboFilter"]').click({ signal }));
+    await popup.withSignal((signal) => popup.page.getByText("近一年刷卡明細", { exact: true }).click({ signal }));
+    let response = await responsePromise;
     const rows: StatementRow[] = [];
     const months: string[] = [];
     let pageCount = 0;
     let lastCursor = 0;
     while (pageCount < 4) {
-      options.signal?.throwIfAborted();
       if (response.status() !== 200) throw new Error("E.SUN timeline request failed.");
-      const raw = options.readJson
-        ? await options.readJson(response)
-        : await response.json();
+      const raw = await popup.race(readJson(response));
       let parsed: ReturnType<typeof rowsFromTimelineResponse>;
       try {
         parsed = rowsFromTimelineResponse(raw);
@@ -798,7 +784,7 @@ async function queryStatements(
       rows.push(...parsed.rows);
       pageCount += 1;
       if (lastCursor === 4) break;
-      response = await loadNextEsunTimelineResponse(popup, options.signal);
+      response = await loadNextEsunTimelineResponse(popup);
     }
     const oldestMonth = months.at(-1);
     const anniversaryMonth = startDate.slice(0, 7);
@@ -826,7 +812,7 @@ async function queryStatements(
       endDate,
     };
   } finally {
-    await popup.close();
+    await popup.page.close();
   }
 }
 
@@ -1083,40 +1069,35 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 }
 
 async function readIssuerStatementSummaries(
-  page: Page,
-  options: Readonly<{
-    readJson?: (response: Response) => Promise<unknown>;
-    signal?: AbortSignal;
-  }> = {},
+  scope: FrameScope,
+  readJson: (response: Response) => Promise<unknown>,
 ): Promise<EsunIssuerStatementSummary[]> {
-  const popup = await openCardPopup(page, "帳單明細", "/IESC/cardBill", options.signal);
+  const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
+  const { page } = popup;
   try {
-    await withAbort(popup.locator('input[name="comboFilter"]').click(), options.signal);
-    const periods = (await popup.locator(".info-scrollable li").allTextContents())
+    await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
+    const periods = (await popup.race(page.locator(".info-scrollable li").allTextContents()))
       .map(cleanText)
       .filter((value) => /^\d{4}\/\d{2}$/u.test(value));
     if (periods.length < 2)
       throw new Error("E.SUN needs at least two available statement periods.");
     const summaries: EsunIssuerStatementSummary[] = [];
     for (const period of [...periods].reverse()) {
-      options.signal?.throwIfAborted();
-      const responsePromise = popup.waitForResponse(
+      const responsePromise = popup.withSignal((signal) => page.waitForResponse(
         (response) => response.url().includes("/GW/creditBill/getSummaryResult") &&
           response.request().method() === "POST",
-        { timeout: 30_000 },
-      );
-      if (!(await popup.locator(".info-scrollable li").first().isVisible()))
-        await popup.locator('input[name="comboFilter"]').click();
-      await withAbort(popup.getByText(period, { exact: true }).click(), options.signal);
-      const response = await withAbort(responsePromise, options.signal);
+        { timeout: 30_000, signal },
+      ));
+      responsePromise.catch(() => undefined);
+      if (!(await popup.race(page.locator(".info-scrollable li").first().isVisible())))
+        await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
+      await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
+      const response = await responsePromise;
       if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
-      let raw: unknown;
       try {
-        raw = options.readJson
-          ? await options.readJson(response)
-          : await response.json();
-        summaries.push(issuerSummaryFromBillResponse(raw));
+        summaries.push(issuerSummaryFromBillResponse(await popup.race(readJson(response))));
       } catch (error) {
+        popup.signal.throwIfAborted();
         if (error instanceof SourceTextIntegrityError) throw error;
         throw new Error("E.SUN bill summary source is malformed or incomplete.");
       }
@@ -1125,7 +1106,7 @@ async function readIssuerStatementSummaries(
       throw new Error("E.SUN bill summary dates are duplicated.");
     return summaries;
   } finally {
-    await popup.close();
+    await page.close();
   }
 }
 
@@ -1231,11 +1212,13 @@ async function collectEsunCreditCard(
   stage: ProductCollectionHandle["stage"],
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
-  const currentCreditResponse = page.waitForResponse(
+  const scope = frameScope(page, context.signal);
+  const readJson = (response: Response) => readEsunResponseJson(response, context);
+  const currentCreditResponse = scope.withSignal((signal) => page.waitForResponse(
     (response) => response.url() ===
       "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
-    { timeout: 120_000 },
-  ).catch(() => undefined);
+    { timeout: 120_000, signal },
+  )).catch(() => undefined);
   await context.event("collection", "started", "collection-started");
   await context.event("decoding", "started", "source-decoding-started");
   const { endDate, startDate: anniversaryDate } = esunTimelineQueryDates(context.now());
@@ -1243,10 +1226,7 @@ async function collectEsunCreditCard(
   let rows: StatementRow[];
   let timeline: CreditCardMonthTimeline;
   try {
-    ({ rows, timeline, startDate } = await queryStatements(page, { startDate, endDate }, {
-      readJson: (response) => readEsunResponseJson(response, context),
-      signal: context.signal,
-    }));
+    ({ rows, timeline, startDate } = await queryStatements(scope, { startDate, endDate }, readJson));
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1259,10 +1239,7 @@ async function collectEsunCreditCard(
 
   let issuerSummaries: EsunIssuerStatementSummary[];
   try {
-    issuerSummaries = await readIssuerStatementSummaries(page, {
-      readJson: (response) => readEsunResponseJson(response, context),
-      signal: context.signal,
-    });
+    issuerSummaries = await readIssuerStatementSummaries(scope, readJson);
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1272,15 +1249,9 @@ async function collectEsunCreditCard(
     total: issuerSummaries.length,
   });
   let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
-  const response = await withAbort(
-    waitForOptionalResponse(currentCreditResponse, 5_000),
-    context.signal,
-  );
+  const response = await scope.race(waitForOptionalResponse(currentCreditResponse, 5_000));
   if (response) {
-    currentUsedCredit = await readEsunCurrentUsedCredit(
-      response,
-      (value) => readEsunResponseJson(value, context),
-    );
+    currentUsedCredit = await scope.race(readEsunCurrentUsedCredit(response, readJson));
   }
   let settledPeriods: EsunCreditCardSettledPeriod[];
   try {
@@ -1406,7 +1377,7 @@ export async function runEsunCreditCardProviderWorkflow(
       attached: {
         collectors: () => ({
           deposit: async () => {
-            await withAbort(waitForEsunPortalSession(page), context.signal);
+            await waitForEsunPortalSession(page, 30_000, context.signal);
             return await collectEsunDeposits(createEsunPortalTransport(page, context.signal), context.now());
           },
         }),

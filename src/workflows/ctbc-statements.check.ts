@@ -19,7 +19,7 @@ import {
 import { ctbcCurrentDepositResponse } from "./ctbc-current-deposit-balances.fixtures.ts";
 
 const providerSource = readFileSync(new URL("./ctbc-statements.ts", import.meta.url), "utf8");
-assert.doesNotMatch(providerSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u);
+assert.doesNotMatch(providerSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|(?<!\.)\bpause\(|npx libretto/u);
 assert.doesNotMatch(providerSource, /node:fs\/promises|writeFile|downloads|csvFilename|csvPath|jsonFilename|jsonPath|ctbcResponseDiagnostic/u);
 assert.doesNotMatch(providerSource, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|pglite-child-rpc-client|runCtbcStatements/u);
 

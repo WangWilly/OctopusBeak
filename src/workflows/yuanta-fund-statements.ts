@@ -675,7 +675,7 @@ async function openOffHourOrders(site: YuantaEbankSite): Promise<BrowserScope> {
     "YuanTa regular fund off-hour orders link",
     { in: scope },
   );
-  await site.frames.race(link.click({ force: true }));
+  await site.frames.withSignal((signal) => link.click({ force: true, signal }));
   await settleScope(site, scope);
   // No captured page shows whether doOffhourQuery navigates or rewrites the
   // overview in place, so there is no condition that the overview is gone.
@@ -693,8 +693,8 @@ async function queryOffHourOrders(
   endDate: string,
 ): Promise<BrowserScope> {
   const scope = await site.frames.scopeWith("#sdate, #edate");
-  await site.frames.race(scope.locator("#sdate").fill(startDate));
-  await site.frames.race(scope.locator("#edate").fill(endDate));
+  await site.frames.withSignal((signal) => scope.locator("#sdate").fill(startDate, { signal }));
+  await site.frames.withSignal((signal) => scope.locator("#edate").fill(endDate, { signal }));
   await markShownDocuments(site);
   await submitForm(site, scope, "offhourqueryandcancel?method=query", {});
   return await waitForSubmittedFundTables(
@@ -796,14 +796,14 @@ async function queryAccountFundTransactions(
   const scope = await site.open(FUND_ACCOUNT_HISTORY_ROUTE);
   for (const name of ["isFromFundDetail", "is_fromFund"]) {
     const field = scope.locator(`input[name="${name}"]`);
-    if (await field.count() && await site.frames.race(field.first().inputValue()) === "Y")
+    if (await field.count() && await site.frames.withSignal((signal) => field.first().inputValue({ signal })) === "Y")
       throw new Error("YuanTa account fund history retained a position detail scope.");
   }
   const queryFields = yuantaFundAccountHistoryQueryFields(query, startDate, endDate);
   await markShownDocuments(site);
-  const responsePromise = site.frames.race(site.frames.page.waitForResponse(response =>
+  const responsePromise = site.frames.withSignal((signal) => site.frames.page.waitForResponse(response =>
     response.request().method() === "POST" &&
-    new URL(response.url()).pathname === "/nib/tx/fundtransactiondetails", { timeout: 30_000 }));
+    new URL(response.url()).pathname === "/nib/tx/fundtransactiondetails", { timeout: 30_000, signal }));
   const [, response] = await Promise.all([
     submitForm(site, scope, "fundtransactiondetails", queryFields), responsePromise,
   ]);
@@ -812,7 +812,7 @@ async function queryAccountFundTransactions(
   const resultScope = await waitForSubmittedFundTables(site,
     /查詢日期|申購匯率|贖回日期|轉出日期|入帳日期|分配日期|查無資料/,
     "YuanTa account fund history result");
-  if (!yuantaFundHistoryResultIsUnpaged(await site.frames.race(resultScope.locator("body").innerHTML())))
+  if (!yuantaFundHistoryResultIsUnpaged(await site.frames.withSignal((signal) => resultScope.locator("body").innerHTML({ signal }))))
     throw new Error("YuanTa account fund history has untraversed pagination.");
 }
 
@@ -859,7 +859,7 @@ async function parseFundTables(
 ): Promise<ParsedTable[]> {
   site.frames.signal.throwIfAborted();
   const scope = await site.frames.scopeWith(FUND_TABLE_SELECTOR);
-  sourceText.assertIntact(await site.frames.race(scope.locator("body").innerHTML()));
+  sourceText.assertIntact(await site.frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })));
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();
   const parsed: ParsedTable[] = [];
@@ -1974,7 +1974,7 @@ export async function readYuantaFundSource(
     const overviewScope = await openInvestmentOverview(site);
     positions = await extractFundPositions(site, input.includeHistoricalTransactions);
     if (positions.length === 0 && input.includeHistoricalTransactions) {
-      if (!isYuantaFundPositionAbsentText(await site.frames.race(overviewScope.locator("body").innerText())))
+      if (!isYuantaFundPositionAbsentText(await site.frames.withSignal((signal) => overviewScope.locator("body").innerText({ signal }))))
         throw new Error("YuanTa empty position inventory has no explicit source absence evidence.");
       tables.push({ category: "investment-source-evidence", fund: null, period: null,
         tableLabel: "current-position-absence", rows: [["無基金部位"]] });

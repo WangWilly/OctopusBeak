@@ -171,3 +171,56 @@ test("settling returns once the frame is idle, and a cancellation interrupts a f
     await assert.rejects(settling, (error: unknown) => error === CANCELLED);
     assert.ok((await elapsed(settling)) < 2_000);
   }));
+
+const LATE_BUTTON = `<script>
+  window.clicks = 0;
+  setTimeout(() => {
+    const button = document.createElement("button");
+    button.id = "late";
+    button.onclick = () => { window.clicks += 1; };
+    document.body.append(button);
+  }, 400);
+</script>`;
+
+const clicksAfterTheButtonAppears = async (page: Page) => {
+  await page.waitForSelector("#late");
+  await page.waitForTimeout(300);
+  return await page.evaluate(() => (window as unknown as { clicks: number }).clicks);
+};
+
+test("withSignal stops a cancelled Playwright click in the browser, where race only abandons it", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent(LATE_BUTTON);
+    const stopped = frameScope(page, cancelAfter(100))
+      .withSignal((signal) => page.locator("#late").click({ timeout: 60_000, signal }));
+    await assert.rejects(stopped, (error: unknown) => error === CANCELLED);
+    assert.ok((await elapsed(stopped)) < 1_000);
+    assert.equal(await clicksAfterTheButtonAppears(page), 0, "the cancelled click never ran");
+
+    await page.setContent(LATE_BUTTON);
+    const abandoned = frameScope(page, cancelAfter(100)).race(page.locator("#late").click({ timeout: 60_000 }));
+    await assert.rejects(abandoned, (error: unknown) => error === CANCELLED);
+    assert.equal(await clicksAfterTheButtonAppears(page), 1, "a raced click still lands after the run was cancelled");
+  } finally {
+    await page.close();
+  }
+});
+
+test("withSignal starts nothing once the run is cancelled", async () => {
+  const controller = new AbortController();
+  controller.abort(CANCELLED);
+  const page = await browser.newPage();
+  try {
+    let started = false;
+    await assert.rejects(
+      frameScope(page, controller.signal).withSignal(async () => {
+        started = true;
+      }),
+      (error: unknown) => error === CANCELLED,
+    );
+    assert.equal(started, false);
+  } finally {
+    await page.close();
+  }
+});

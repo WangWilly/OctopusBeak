@@ -693,10 +693,11 @@ async function readLoanAccountOptions(
 ): Promise<LoanAccountOption[]> {
   const { frames } = site;
   const combo = scope.locator(LOAN_ACCOUNT_SELECTOR);
-  await frames.race(
+  await frames.withSignal((signal) =>
     combo.locator("option").first().waitFor({
       state: "attached",
       timeout: 60_000,
+      signal,
     }),
   );
 
@@ -706,8 +707,8 @@ async function readLoanAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await frames.race(option.getAttribute("value")));
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = cleanText(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     if (!value || value === "none" || !label) continue;
     if (!matchesFilter(label, filters)) continue;
     result.push({ label, value });
@@ -743,10 +744,11 @@ async function readAvailableLoanQueryItems(
 ): Promise<QueryItem[]> {
   const { frames } = site;
   const combo = scope.locator("#form1\\:queryItemCombo");
-  await frames.race(
+  await frames.withSignal((signal) =>
     combo.locator("option").first().waitFor({
       state: "attached",
       timeout: 60_000,
+      signal,
     }),
   );
 
@@ -756,7 +758,7 @@ async function readAvailableLoanQueryItems(
 
   for (let index = 0; index < count; index += 1) {
     const value = cleanText(
-      await frames.race(options.nth(index).getAttribute("value")),
+      await frames.withSignal((signal) => options.nth(index).getAttribute("value", { signal })),
     );
     const parsed = queryItemSchema.safeParse(value);
     if (parsed.success && !result.includes(parsed.data)) {
