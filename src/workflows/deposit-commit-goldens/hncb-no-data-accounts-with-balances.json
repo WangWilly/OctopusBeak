@@ -25,7 +25,6 @@
       },
       "items": [
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-0",
           "command": {
@@ -107,10 +106,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-1",
           "command": {
@@ -192,10 +191,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "current-balance",
           "itemKey": "current-balance:9000_0000_0011",
           "command": {
@@ -241,7 +240,7 @@
                     "occurrenceKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
                     "collisionKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
                     "providerKey": "sha256:i9K7DPlo97QdENVJVgKLpzxTPI-yMkEMdd1fSjCW3gU",
-                    "contentHash": "sha256:CHKCKcMCCLkb3ybXk47Qadq2q6mS_QHHA4LCofqitM0",
+                    "contentHash": "sha256:uhRcs7JpX5911MxmVqRIAXGXBnYblzF92P1szF1g878",
                     "compact": {
                       "accountNumber": "9000_0000_0011",
                       "currencySourceLexeme": "TWD",
@@ -255,7 +254,8 @@
                         "transaction": "com.lb.wibc.trx.EAccDDSummary",
                         "status": 200,
                         "cacheControl": "no-store",
-                        "contractVersion": "hncb/current-deposit-balance-v1"
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
                       },
                       "sourceField": "帳上餘額",
                       "balanceKind": "ledger",
@@ -273,7 +273,7 @@
                     "occurrenceKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
                     "collisionKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
                     "providerKey": "sha256:URHtZl-eZaMZDGGgmKUIoMgnS95y56B8-ECaaluI1Us",
-                    "contentHash": "sha256:EUG4aYMMfS5Y2YC22Pv_trsHfQFJNlNGacDgB0ZZyC8",
+                    "contentHash": "sha256:KSnrjVwKM7jzIfSFKf4KnSSxyFfPAIdGlbi7pz6wFFk",
                     "compact": {
                       "accountNumber": "9000_0000_0011",
                       "currencySourceLexeme": "TWD",
@@ -287,7 +287,8 @@
                         "transaction": "com.lb.wibc.trx.EAccDDSummary",
                         "status": 200,
                         "cacheControl": "no-store",
-                        "contractVersion": "hncb/current-deposit-balance-v1"
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
                       },
                       "sourceField": "可用餘額",
                       "balanceKind": "available",
@@ -353,10 +354,10 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "current-balance",
           "itemKey": "current-balance:9000_0000_0022",
           "command": {
@@ -402,7 +403,7 @@
                     "occurrenceKey": "sha256:X4UbL5BvvcU7OxqDq-PbUzVJQMsZ6e-EHlI_0KGNib0",
                     "collisionKey": "sha256:X4UbL5BvvcU7OxqDq-PbUzVJQMsZ6e-EHlI_0KGNib0",
                     "providerKey": "sha256:p04Mf3J9uIrm7DxF_Dt3keyxMzQ3JaEPlWVOFgGioTs",
-                    "contentHash": "sha256:n1for3o6JJTVdlJJPaX2DAumIiDy0FEwELgKhv9VU2o",
+                    "contentHash": "sha256:jv4IiNOR-Uj0GTmcXASQ-vXtBT4QTBB94HY6xez_T1M",
                     "compact": {
                       "accountNumber": "9000_0000_0022",
                       "currencySourceLexeme": "TWD",
@@ -416,7 +417,8 @@
                         "transaction": "com.lb.wibc.trx.EAccDDSummary",
                         "status": 200,
                         "cacheControl": "no-store",
-                        "contractVersion": "hncb/current-deposit-balance-v1"
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
                       },
                       "sourceField": "帳上餘額",
                       "balanceKind": "ledger",
@@ -434,7 +436,7 @@
                     "occurrenceKey": "sha256:8cAqchVWuf5qUdf-cjX6VfY9GY7neVnYxv-FrEQ7ayE",
                     "collisionKey": "sha256:8cAqchVWuf5qUdf-cjX6VfY9GY7neVnYxv-FrEQ7ayE",
                     "providerKey": "sha256:9XyUBgdashyOJHTqNFxpugLRkA6BvJm95cslSVPoRPc",
-                    "contentHash": "sha256:VBkJob6mUmb7zFWHh7T0KGIjzo9wbpU6iFp8WZa-Yos",
+                    "contentHash": "sha256:G-1UinKSx5O5sQOeIT3GkMA4YORwAASXjHV2XLMNB2M",
                     "compact": {
                       "accountNumber": "9000_0000_0022",
                       "currencySourceLexeme": "TWD",
@@ -448,7 +450,8 @@
                         "transaction": "com.lb.wibc.trx.EAccDDSummary",
                         "status": 200,
                         "cacheControl": "no-store",
-                        "contractVersion": "hncb/current-deposit-balance-v1"
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
                       },
                       "sourceField": "可用餘額",
                       "balanceKind": "available",
@@ -514,7 +517,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "hncb"
         }
       ]
     }

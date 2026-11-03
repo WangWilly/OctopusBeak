@@ -12,9 +12,12 @@ import {
   runHncbStatements,
   stageHncbDeposit,
   type HncbDepositSource,
-  type HncbReadCurrentDepositBalances,
   type HncbStatementDownload,
 } from "./hncb-statements.ts";
+import {
+  parseHncbCurrentDepositBalanceSnapshot,
+  parseHncbCurrentDepositOverviewSnapshot,
+} from "./hncb-current-deposit-balances.ts";
 import {
   assertDepositCommitGolden,
   recordDepositCommit,
@@ -37,8 +40,7 @@ const august: CollectionPeriod = {
 };
 
 type Statement = HncbStatementDownload;
-type CurrentRows = Awaited<ReturnType<HncbReadCurrentDepositBalances>>;
-type OverviewRows = CurrentRows;
+type CurrentCells = string[][];
 
 function row(date: string, time: string, outflow: string, inflow: string, balance: string, memo: string): string[] {
   return [date, time, date, "TWD", outflow, inflow, balance, memo, "", "", ""];
@@ -57,48 +59,31 @@ function statement(account: string, rows: string[][]): Statement {
   };
 }
 
-function currentRow(accountNumber: string, ledger: string, available: string): CurrentRows[number] {
-  return {
-    source: "hncb",
-    accountNumber,
-    currency: "TWD",
-    currencySourceLexeme: "TWD",
-    available: { coefficient: available.replace(".", ""), scale: 2, sourceLexeme: available },
-    ledger: { coefficient: ledger.replace(".", ""), scale: 2, sourceLexeme: ledger },
-    effectiveAt: "2026-09-01T03:59:00.000Z",
-    providerHttpDate: "Tue, 01 Sep 2026 03:59:00 GMT",
-    observedAt: "2026-09-01T11:59:30+08:00",
-    sourceEvidence: {
-      endpoint: "/netbank/servlet/TrxDispatcher",
-      transaction: "com.lb.wibc.trx.EAccDDSummary",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "hncb/current-deposit-balance-v1",
-    },
-  } as CurrentRows[number];
+const detailResponse = {
+  url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary",
+  status: 200,
+  method: "GET",
+  headers: { date: "Tue, 01 Sep 2026 03:59:00 GMT", "cache-control": "no-store" },
+};
+const overviewResponse = {
+  url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.AcctInfoInq&state=prompt&time_str=20260901115930",
+  status: 200,
+  method: "GET",
+  headers: {
+    date: "Tue, 01 Sep 2026 03:59:00 GMT",
+    "cache-control": "no-store",
+    "content-type": "text/html; charset=big5",
+  },
+};
+
+/** One 活期存款 result row: available balance in the fourth cell, 帳上餘額 in the eleventh. */
+function currentRow(accountNumber: string, ledger: string, available: string): CurrentCells[number] {
+  return ["SYNTHETIC", accountNumber, "TWD", available, "0", "0", "0", "0", "0", "0", ledger, "0"];
 }
 
-function overviewRow(accountNumber: string, amount: string): OverviewRows[number] {
-  return {
-    source: "hncb",
-    accountNumber,
-    currency: "",
-    currencySourceLexeme: "",
-    currencyResolution: "missing",
-    available: { coefficient: amount.replace(".", ""), scale: 2, sourceLexeme: amount },
-    ledger: { coefficient: amount.replace(".", ""), scale: 2, sourceLexeme: amount },
-    effectiveAt: "2026-09-01T03:59:00.000Z",
-    providerHttpDate: "Tue, 01 Sep 2026 03:59:00 GMT",
-    observedAt: "2026-09-01T11:59:30+08:00",
-    sourceEvidence: {
-      endpoint: "/netbank/servlet/TrxDispatcher",
-      transaction: "com.lb.wibc.trx.AcctInfoInq",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "hncb/current-deposit-balance-overview-v1",
-      url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.AcctInfoInq&state=prompt&time_str=20260901115930",
-    },
-  } as OverviewRows[number];
+/** One 帳戶總覽 row with the blank currency HNCB shows for some accounts. */
+function overviewRow(accountNumber: string, amount: string): CurrentCells[number] {
+  return [accountNumber, "活存", "", amount, amount, amount, "-", "餘額", "明細", "轉帳", "其他"];
 }
 
 type Account = Readonly<{ value: string; label: string; statement: Statement | null }>;
@@ -116,7 +101,7 @@ function source(accounts: readonly Account[]): HncbDepositSource {
 async function record(
   name: string,
   accounts: readonly Account[],
-  current: Readonly<{ detail?: CurrentRows; overview?: OverviewRows }> = {},
+  current: Readonly<{ detail?: CurrentCells; overview?: CurrentCells }> = {},
 ): Promise<Record<string, unknown>> {
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
@@ -136,7 +121,14 @@ async function record(
           await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
           depositContext,
           product,
-          hncbCurrentDepositBalances(async () => current.overview ?? [], async () => current.detail ?? []),
+          hncbCurrentDepositBalances(
+            async ({ observedAt }) => current.overview
+              ? parseHncbCurrentDepositOverviewSnapshot({ rows: current.overview, response: overviewResponse, observedAt })
+              : [],
+            async ({ observedAt }) => current.detail
+              ? parseHncbCurrentDepositBalanceSnapshot({ rows: current.detail, response: detailResponse, observedAt })
+              : [],
+          ),
         );
       },
     });
@@ -176,19 +168,27 @@ test("HNCB golden: two accounts with inflow and outflow rows and matched current
 });
 
 test("HNCB golden: an account with no data commits beside an admitted account", async () => {
-  const recorded = await record("hncb-no-data-account", [
-    { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
-    { value: accountB, label: accountB, statement: null },
-  ]);
-  assert.equal(commandKinds(recorded).length, 2);
+  const recorded = await record(
+    "hncb-no-data-account",
+    [
+      { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
+      { value: accountB, label: accountB, statement: null },
+    ],
+    { detail: [currentRow(accountA, "13800.00", "13800.00")] },
+  );
+  assert.equal(commandKinds(recorded).length, 3);
 });
 
 test("HNCB golden: a shared-account label falls back to a source-only commit", async () => {
-  const recorded = await record("hncb-shared-account-source-only", [
-    { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
-    { value: accountB, label: `HNCB 共同帳戶 ${accountB}`, statement: statement(accountB, accountBRows) },
-  ]);
-  assert.equal(commandKinds(recorded).length, 2);
+  const recorded = await record(
+    "hncb-shared-account-source-only",
+    [
+      { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
+      { value: accountB, label: `HNCB 共同帳戶 ${accountB}`, statement: statement(accountB, accountBRows) },
+    ],
+    { detail: [currentRow(accountA, "13800.00", "13800.00")] },
+  );
+  assert.equal(commandKinds(recorded).length, 3);
 });
 
 test("HNCB golden: account-overview current balances matched to admitted accounts", async () => {

@@ -25,7 +25,6 @@
       },
       "items": [
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-0",
           "command": {
@@ -174,10 +173,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-1",
           "command": {
@@ -326,10 +325,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "current-balance",
           "itemKey": "current-balance:9000_0000_0011",
           "command": {
@@ -489,10 +488,10 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "current-balance",
           "itemKey": "current-balance:9000_0000_0022",
           "command": {
@@ -652,7 +651,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "hncb"
         }
       ]
     }
