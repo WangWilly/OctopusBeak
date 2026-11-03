@@ -1,33 +1,41 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+/** ADR 0097: the LINE Bank workflow types its credentials and selection from these lists. */
+export const LINEBANK_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_LINEBANK_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_LINEBANK_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_LINEBANK_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const LINEBANK_PRODUCTS = [
+  // Twelve months inclusive, which one LINE Bank request may cover.
+  { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: { months: 12 } } },
+] as const;
+
 export const LINEBANK_SOURCE: VerifiedSource = {
   id: "linebank",
   label: "LINE Bank",
   enabledKey: "LIBRETTO_CLOUD_LINEBANK_ENABLED",
   displayName: localized("LINE Bank", "LINE Bank"),
   searchAliases: ["LINE Bank", "連線銀行"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_LINEBANK_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_LINEBANK_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_LINEBANK_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: LINEBANK_CREDENTIAL_FIELDS,
   setupGuide: {
     summary: localized(
       "Use the sign-in details registered for the LINE Bank web service.",
@@ -68,10 +76,7 @@ export const LINEBANK_SOURCE: VerifiedSource = {
   coverage: [{ institution: "linebank", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES",
-    products: [
-      // Twelve months inclusive, which one LINE Bank request may cover.
-      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: { months: 12 } } },
-    ],
+    products: LINEBANK_PRODUCTS,
   },
   task: {
     id: "linebank-statements",
@@ -84,7 +89,7 @@ export const LINEBANK_SOURCE: VerifiedSource = {
     runtime: browser("https://accessibility.linebank.com.tw/login"),
     input: { credentials: true, statementTypes: true, extra: () => ({ accountFilters: [], currencyFilters: [] }) },
     async load() {
-      return (await import("../../../../workflows/linebank-statements.ts")).runLineBankProviderWorkflow;
+      return (await import("../../../../workflows/linebank-statements.ts")).lineBankWorkflow;
     },
   }),
 };

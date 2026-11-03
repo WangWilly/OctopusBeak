@@ -1,6 +1,6 @@
 # The Product collection run is bound to its Verified source
 
-Status: accepted
+Status: accepted; completed by [ADR 0097](0097-the-host-checks-a-verified-runs-input-before-the-workflow.md), which moves input parsing to the host
 
 Completes [ADR 0057](0057-verified-source-definition-owns-every-per-source-fact.md). Applies [ADR 0063](0063-product-collection-run-stages-every-item.md) and [ADR 0064](0064-product-collection-run-commits-and-decides-source-only.md).
 

@@ -8,7 +8,7 @@ import type { Page } from "playwright";
 import {
   decodeSinopacJsonSource,
   readSinopacDepositSource,
-  runSinopacProviderWorkflow,
+  sinopacWorkflowWith,
   stageSinopacDeposit,
   type SinopacDepositSource,
   type SinopacJsonSourceResponse,
@@ -30,6 +30,7 @@ import { ProductCollectionInterruptedError, type ProductCollectionHandle, type P
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import type { CollectionPeriod } from "./collection-period.ts";
 import { SINOPAC_SOURCE } from "./server/sources/sinopac.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
 const response: SinopacJsonSourceResponse = {
@@ -193,6 +194,14 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
   };
 }
 
+function runSinopac(
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
+  input: unknown,
+  dependencies: SinopacProviderWorkflowDependencies,
+) {
+  return runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith(dependencies), context, input);
+}
+
 test("SinoPac production execution exposes only the typed App provider path", async () => {
   const providerSource = await readFile(
     new URL("../../workflows/sinopac-statements.ts", import.meta.url),
@@ -268,7 +277,7 @@ test("SinoPac queries twelve months inclusive in one-month-and-one-day windows e
     financialCommit: financialCommitStub([]),
     now: "2026-09-24T16:30:00.000Z",
   });
-  await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
+  await runSinopac(context, input, depositFrom(fakeSource({
     queryTransactions: async (_account, window, businessDate) => {
       queried.push(`${window.startDate}-${window.endDate} ${businessDate}`);
       return { Header: "FAIL", Message: "查無資料", SubInfo: [] };
@@ -416,7 +425,7 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
   });
   try {
     process.chdir(outputDir);
-    const output = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource()));
+    const output = await runSinopac(context, input, depositFrom(fakeSource()));
 
     assert.equal(output.status, "financial-admitted");
     assert.deepEqual(output.counts, {
@@ -461,7 +470,7 @@ test("a failed SinoPac Canonical Financial Commit is classified as a commit fail
     page: pageFixture(),
     financialCommit: failingCommit,
   });
-  const error = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource())).then(() => null, (thrown: unknown) => thrown);
+  const error = await runSinopac(context, input, depositFrom(fakeSource())).then(() => null, (thrown: unknown) => thrown);
 
   assert.ok(error instanceof Error);
   assert.equal(
@@ -475,7 +484,7 @@ test("typed SinoPac workflow rejects incomplete source before Canonical Financia
   const calls: unknown[][] = [];
   const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub(calls) });
   await assert.rejects(
-    runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
+    runSinopac(context, input, depositFrom(fakeSource({
       queryTransactions: async () => ({ Header: "SUCCESS", SubInfo: [] }),
     }))),
     (error: unknown) => {
@@ -507,7 +516,7 @@ test("typed SinoPac CAPTCHA assistance uses the existing solve contract and acce
     },
   });
 
-  const output = await runSinopacProviderWorkflow(context, input, depositFrom(fakeSource()));
+  const output = await runSinopac(context, input, depositFrom(fakeSource()));
 
   assert.equal(assistanceCalls, 1);
   assert.equal(calls.length, 1);
@@ -525,7 +534,7 @@ test("typed SinoPac cancellation while awaiting CAPTCHA assistance stops before 
       controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
     }),
   });
-  const running = runSinopacProviderWorkflow(context, input, depositFrom(fakeSource({
+  const running = runSinopac(context, input, depositFrom(fakeSource({
     listAccounts: async () => { readAccountsCalls += 1; return [account]; },
   })));
   await new Promise((resolve) => setTimeout(resolve, 0));

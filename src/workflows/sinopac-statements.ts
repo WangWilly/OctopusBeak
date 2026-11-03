@@ -10,7 +10,13 @@ import {
 import { withAbort } from "./abort.ts";
 import { frameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
-import { SINOPAC_MAX_WINDOW, SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import {
+  SINOPAC_CREDENTIAL_FIELDS,
+  SINOPAC_MAX_WINDOW,
+  SINOPAC_PRODUCTS,
+  SINOPAC_SOURCE,
+} from "../lib/automation/server/sources/sinopac.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import {
   collectionPeriod,
   collectionWindows,
@@ -76,7 +82,6 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import {
   collectSinopacCreditCards,
   sinopacCardPageTransport,
@@ -113,23 +118,13 @@ export const sinopacIdentityValidationSchema = z.object({
   accountFilter: z.string().min(1).optional(),
 });
 
-const typedWorkflowInputSchema = z.object({
-  credentials: z.object({
-    sinopac_user_id: z.string().trim().min(1),
-    sinopac_account: z.string().trim().min(1),
-    sinopac_password: z.string().trim().min(1),
-  }),
+const sinopacInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-  statementTypes: z.array(z.literal("deposit")),
-  attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
-type SinopacCredentials = {
-  sinopac_user_id?: string;
-  sinopac_account?: string;
-  sinopac_password?: string;
-};
+type SinopacVerifiedInput = VerifiedRunInput<typeof SINOPAC_CREDENTIAL_FIELDS, typeof SINOPAC_PRODUCTS>;
+type SinopacCredentials = SinopacVerifiedInput["credentials"];
 
 export type SinopacIdentityValidationInput = z.infer<
   typeof sinopacIdentityValidationSchema
@@ -176,7 +171,7 @@ export type SinopacJsonSourceResponse = Readonly<{
   contentType: string;
 }>;
 
-export type SinopacWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
+export type SinopacWorkflowInput = SinopacVerifiedInput & z.infer<typeof sinopacInputSchema>;
 
 type ExistingSinopacFinancialCapture = Readonly<{
   identity: Readonly<{
@@ -401,19 +396,6 @@ export function sinopacLoginEntryUrl(href: string): boolean {
   } catch {
     return false;
   }
-}
-
-function requireCredential(
-  credentials: SinopacCredentials,
-  name: keyof SinopacCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing SinoPac sign-in detail: ${name}.`,
-    );
-  }
-  return value;
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -759,13 +741,13 @@ async function fillLoginForm(
 
   await withAbort(loginInputs
     .first()
-    .fill(requireCredential(credentials, "sinopac_user_id")), signal);
+    .fill(credentials.sinopac_user_id), signal);
   await withAbort(loginInputs
     .nth(1)
-    .fill(requireCredential(credentials, "sinopac_account")), signal);
+    .fill(credentials.sinopac_account), signal);
   await withAbort(loginInputs
     .nth(2)
-    .fill(requireCredential(credentials, "sinopac_password")), signal);
+    .fill(credentials.sinopac_password), signal);
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
   await withAbort(captcha.fill(""), signal);
   await withAbort(captcha.focus(), signal);
@@ -1547,30 +1529,45 @@ export type SinopacProviderWorkflowDependencies = Readonly<{
   loanTransport?: SinopacLoanTransport;
 }>;
 
+export type SinopacWorkflowEntry = VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  SinopacWorkflowInput,
+  WorkflowRunResult,
+  "previewWrite",
+  SinopacVerifiedInput
+>;
+
+/** SinoPac's entry with its page transports replaced, for checks that run without a bank page. */
+export function sinopacWorkflowWith(dependencies: SinopacProviderWorkflowDependencies): SinopacWorkflowEntry {
+  return {
+    parseInput(verified, raw) {
+      const parsed = sinopacInputSchema.safeParse(raw);
+      if (!parsed.success) throw new Error("SinoPac workflow input is invalid.");
+      return { ...verified, ...parsed.data };
+    },
+    run: (context, input) => runSinopacWorkflow(context, input, dependencies),
+  };
+}
+
 /** App-owned entry point for SinoPac statement collection and canonical admission. */
-export async function runSinopacProviderWorkflow(
+export const sinopacWorkflow = sinopacWorkflowWith({});
+
+async function runSinopacWorkflow(
   context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
-  rawInput: unknown,
-  dependencies: SinopacProviderWorkflowDependencies = {},
+  input: SinopacWorkflowInput,
+  dependencies: SinopacProviderWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
-  const parsed = typedWorkflowInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("SinoPac workflow credentials or input are missing or invalid.");
-  if (parsed.data.statementTypes.length === 0 && parsed.data.attachedPreviewProducts.length === 0)
-    throw new Error("SinoPac workflow has no statement type or attached product selected.");
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
   const collectDeposit = dependencies.collectDeposit ?? runSinopacDeposit;
 
   return await context.browser.withPage(async (page) => {
-    const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(parsed.data.credentials));
+    const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(input.credentials));
 
     context.signal.throwIfAborted();
 
     let deposit: SinopacDepositCollection | null = null;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
-        const { sourceCaptureCount, ...collected } = await collectDeposit(page, parsed.data, context, product);
+        const { sourceCaptureCount, ...collected } = await collectDeposit(page, input, context, product);
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },

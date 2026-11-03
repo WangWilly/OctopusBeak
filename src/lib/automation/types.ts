@@ -22,6 +22,8 @@ export type AutomationCredentialField = {
   label: AutomationLocalizedText;
   input: "text" | "password" | "certificate-file";
   redaction: AutomationCredentialRedaction;
+  /** `false` keeps the value's surrounding whitespace, for a provider whose password may carry it. */
+  trim?: false;
 };
 
 export type AutomationSetupGuideLink = {

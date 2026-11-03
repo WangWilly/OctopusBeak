@@ -1,34 +1,41 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
+/** ADR 0097: the E.SUN workflow types its credentials and selection from these lists. */
+export const ESUN_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_ESUN_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_ESUN_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_ESUN_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const ESUN_PRODUCTS = [
+  { id: "credit_card", stream: "credit-card" },
+] as const;
+
 export const ESUN_SOURCE: VerifiedSource = {
   id: "esun",
   label: "ESun",
   enabledKey: "LIBRETTO_CLOUD_ESUN_ENABLED",
   displayName: localized("E.SUN Bank", "玉山銀行（E.SUN Bank）"),
   searchAliases: ["ESun", "E.SUN", "玉山"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_ESUN_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_ESUN_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_ESUN_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: ESUN_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "When E.SUN shows its sign-in confirmation instead of the signed-in page, every sync, including daily scheduled collection, confirms it, which signs you out of E.SUN online banking elsewhere.",
@@ -82,9 +89,7 @@ export const ESUN_SOURCE: VerifiedSource = {
   coverage: [{ institution: "esun", product: "credit_card" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES",
-    products: [
-      { id: "credit_card", stream: "credit-card" },
-    ],
+    products: ESUN_PRODUCTS,
   },
   task: {
     id: "esun-credit-card-statements",
@@ -98,7 +103,7 @@ export const ESUN_SOURCE: VerifiedSource = {
     runtime: browser("https://ebank.esunbank.com.tw/index.jsp", "esun-login"),
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/esun-credit-card-statements.ts")).runEsunCreditCardProviderWorkflow;
+      return (await import("../../../../workflows/esun-credit-card-statements.ts")).esunCreditCardWorkflow;
     },
   }),
 };

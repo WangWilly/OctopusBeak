@@ -11,10 +11,11 @@ import type {
   ProductCollectionInterruptedError,
   ProductStageRequest,
 } from "./product-collection.ts";
-import type { runYuantaAllStatementsWorkflow as runYuantaAllStatementsWorkflowType } from "../../workflows/yuanta-all-statements.ts";
+import type { YuantaAllWorkflowDependencies, yuantaWorkflowWith as yuantaWorkflowWithType } from "../../workflows/yuanta-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import type { withBoundProducts as withBoundProductsType } from "./product-collection.fixtures.ts";
 import type { VerifiedSource } from "./server/sources/verified-source.ts";
+import type { runVerifiedEntry as runVerifiedEntryType } from "./server/verified-entry.ts";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -25,12 +26,14 @@ const server = await createServer({
   logLevel: "silent",
 });
 // The bound Product collection run loads in the workflow's own module graph, as the executor's does.
-const [loaded, fixtures, sources] = await Promise.all([
+const [loaded, fixtures, sources, entries] = await Promise.all([
   server.ssrLoadModule("/src/workflows/yuanta-all-statements.ts"),
   server.ssrLoadModule("/src/lib/automation/product-collection.fixtures.ts"),
   server.ssrLoadModule("/src/lib/automation/server/sources/yuanta.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/verified-entry.ts"),
 ]).finally(() => server.close());
-const runYuantaAllStatementsWorkflowUnbound = loaded.runYuantaAllStatementsWorkflow as typeof runYuantaAllStatementsWorkflowType;
+const yuantaWorkflowWith = loaded.yuantaWorkflowWith as typeof yuantaWorkflowWithType;
+const runVerifiedEntry = entries.runVerifiedEntry as typeof runVerifiedEntryType;
 const withBoundProducts = fixtures.withBoundProducts as typeof withBoundProductsType;
 const YUANTA_SOURCE = sources.YUANTA_SOURCE as VerifiedSource;
 
@@ -38,9 +41,9 @@ const YUANTA_SOURCE = sources.YUANTA_SOURCE as VerifiedSource;
 function runYuantaAllStatementsWorkflow(
   context: WorkflowContextWith<"financialCommit">,
   input: unknown,
-  overrides?: Parameters<typeof runYuantaAllStatementsWorkflowType>[2],
+  overrides?: YuantaAllWorkflowDependencies,
 ) {
-  return runYuantaAllStatementsWorkflowUnbound(withBoundProducts(context, YUANTA_SOURCE, input), input, overrides);
+  return runVerifiedEntry(YUANTA_SOURCE, yuantaWorkflowWith(overrides), withBoundProducts(context, YUANTA_SOURCE, input), input);
 }
 
 function item(product: string, value = "complete"): ProductStageRequest {

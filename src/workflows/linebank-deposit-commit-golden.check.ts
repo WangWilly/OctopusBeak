@@ -7,10 +7,11 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
-  runLineBankProviderWorkflow,
+  lineBankWorkflow,
   type LineBankAccount,
   type LineBankTransactionRow,
   type LineBankTransactionsResponse,
@@ -220,7 +221,7 @@ async function runWithCountedUuids(holdings: readonly Holding[], options: RunOpt
     event: recorder.event,
     signalEvent: recorder.signalEvent,
   };
-  const output = await runLineBankProviderWorkflow(withBoundProducts(context, LINEBANK_SOURCE, input), input);
+  const output = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, withBoundProducts(context, LINEBANK_SOURCE, input), input);
   return { output, recorded: recorder.recorded() };
 }
 

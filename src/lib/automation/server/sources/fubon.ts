@@ -2,6 +2,44 @@ import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow 
 import { isFubonDuplicateLoginConfirm } from "../../fubon-dialog.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
+/** ADR 0097: the Fubon workflow types its credentials and selection from these lists. */
+export const FUBON_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_FUBON_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_FUBON_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_FUBON_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+    "none",
+    { trim: false },
+  ),
+] as const;
+
+export const FUBON_PRODUCTS = [
+  // Twelve months and one day: the "180" option ending today, then "180_365" for the six months before it.
+  {
+    id: "deposit",
+    stream: "domestic-deposit",
+    collectionPeriod: { lookBack: { months: 12, days: 1 }, maxWindow: { months: 6, days: 1 } },
+  },
+  { id: "credit_card", stream: "credit-card" },
+  // Six months and one day, Fubon's six-month quick period.
+  { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 6, days: 1 } } },
+] as const;
+
 export const FUBON_SOURCE: VerifiedSource = {
   id: "fubon",
   label: "Fubon",
@@ -11,28 +49,7 @@ export const FUBON_SOURCE: VerifiedSource = {
     "台北富邦銀行（Taipei Fubon Bank）",
   ),
   searchAliases: ["Fubon", "富邦", "台北富邦"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_FUBON_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_FUBON_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_FUBON_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: FUBON_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "Every sync, including daily scheduled collection, confirms Taipei Fubon Bank's duplicate sign-in prompt (code 0212), which signs you out of Taipei Fubon online banking elsewhere.",
@@ -89,17 +106,7 @@ export const FUBON_SOURCE: VerifiedSource = {
   ],
   statementSelection: {
     key: "LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES",
-    products: [
-      // Twelve months and one day: the "180" option ending today, then "180_365" for the six months before it.
-      {
-        id: "deposit",
-        stream: "domestic-deposit",
-        collectionPeriod: { lookBack: { months: 12, days: 1 }, maxWindow: { months: 6, days: 1 } },
-      },
-      { id: "credit_card", stream: "credit-card" },
-      // Six months and one day, Fubon's six-month quick period.
-      { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 6, days: 1 } } },
-    ],
+    products: FUBON_PRODUCTS,
   },
   task: {
     id: "fubon-all-statements",
@@ -119,7 +126,7 @@ export const FUBON_SOURCE: VerifiedSource = {
     },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/fubon-all-statements.ts")).runFubonAllStatementsWorkflow;
+      return (await import("../../../../workflows/fubon-all-statements.ts")).fubonWorkflow;
     },
   }),
 };

@@ -5,10 +5,11 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import {
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
-  runCtbcProviderWorkflow,
+  ctbcWorkflowWith,
   stageCtbcDeposit,
   type CtbcDepositSourceSnapshot,
   type CtbcDetailRow,
@@ -122,7 +123,7 @@ async function run(
     event: recorder.event,
     signalEvent: recorder.signalEvent,
   };
-  const output = await runCtbcProviderWorkflow(withBoundProducts(context, CTBC_SOURCE, input), input, {
+  const output = await runVerifiedEntry(CTBC_SOURCE, ctbcWorkflowWith({
     collectDeposit: async (_page, parsedInput, productContext, product) => await stageCtbcDeposit(
       snapshot(captures),
       parsedInput,
@@ -133,7 +134,7 @@ async function run(
         return ctbcCurrentDepositResponse(balances);
       },
     ),
-  });
+  }), withBoundProducts(context, CTBC_SOURCE, input), input);
   return { output, balanceReads, recorded: recorder.recorded() };
 }
 

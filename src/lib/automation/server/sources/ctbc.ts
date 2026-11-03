@@ -1,33 +1,40 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+/** ADR 0097: the CTBC workflow types its credentials and selection from these lists. */
+export const CTBC_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_CTBC_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_CTBC_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_CTBC_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const CTBC_PRODUCTS = [
+  { id: "deposit", stream: "domestic-deposit" },
+] as const;
+
 export const CTBC_SOURCE: VerifiedSource = {
   id: "ctbc",
   label: "CTBC",
   enabledKey: "LIBRETTO_CLOUD_CTBC_ENABLED",
   displayName: localized("CTBC Bank", "中國信託銀行（CTBC Bank）"),
   searchAliases: ["CTBC", "中國信託", "中信"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_CTBC_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_CTBC_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_CTBC_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: CTBC_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "Every sync, including daily scheduled collection, confirms CTBC's prompt that other locations will be signed out automatically, which signs you out of CTBC online banking elsewhere.",
@@ -81,9 +88,7 @@ export const CTBC_SOURCE: VerifiedSource = {
   coverage: [{ institution: "ctbc", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES",
-    products: [
-      { id: "deposit", stream: "domestic-deposit" },
-    ],
+    products: CTBC_PRODUCTS,
   },
   task: {
     id: "ctbc-statements",
@@ -96,7 +101,7 @@ export const CTBC_SOURCE: VerifiedSource = {
     runtime: browser("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", "ctbc-login"),
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/ctbc-statements.ts")).runCtbcProviderWorkflow;
+      return (await import("../../../../workflows/ctbc-statements.ts")).ctbcWorkflow;
     },
   }),
 };

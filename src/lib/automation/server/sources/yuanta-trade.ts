@@ -16,6 +16,40 @@ export const YUANTA_SERVISIGN_PREREQUISITE: AutomationExternalPrerequisite = {
   },
 };
 
+/** ADR 0097: the Yuanta Trade workflow types its credentials and selection from these lists. */
+export const YUANTA_TRADE_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD",
+    "Yuanta Securities password",
+    "元大證券登入密碼",
+    "password",
+  ),
+  field(
+    "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
+    "Certificate file",
+    "憑證檔案",
+    "certificate-file",
+  ),
+  field(
+    "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD",
+    "Certificate password",
+    "憑證密碼",
+    "password",
+  ),
+] as const;
+
+export const YUANTA_TRADE_PRODUCTS = [
+  // 91 days: today and the 90 days before it.
+  { id: "securities", stream: "investment", collectionPeriod: { lookBack: { days: 91 } } },
+] as const;
+
 export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   id: "yuanta-trade",
   label: "Yuanta Trade",
@@ -25,33 +59,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
     "元大證券（Yuanta Securities）",
   ),
   searchAliases: ["Yuanta Trade", "Yuanta Securities", "元大證券"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD",
-      "Yuanta Securities password",
-      "元大證券登入密碼",
-      "password",
-    ),
-    field(
-      "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PATH",
-      "Certificate file",
-      "憑證檔案",
-      "certificate-file",
-    ),
-    field(
-      "LIBRETTO_CLOUD_YUANTA_TRADE_CA_PASSWORD",
-      "Certificate password",
-      "憑證密碼",
-      "password",
-    ),
-  ],
+  credentialFields: YUANTA_TRADE_CREDENTIAL_FIELDS,
   setupGuide: {
     summary: localized(
       "Yuanta Securities requires your sign-in details and an exported certificate file for statement access.",
@@ -126,10 +134,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
   coverage: [{ institution: "yuanta-securities", product: "securities" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES",
-    products: [
-      // 91 days: today and the 90 days before it.
-      { id: "securities", stream: "investment", collectionPeriod: { lookBack: { days: 91 } } },
-    ],
+    products: YUANTA_TRADE_PRODUCTS,
   },
   task: {
     id: "yuanta-trade-statements",
@@ -149,7 +154,7 @@ export const YUANTA_TRADE_SOURCE: VerifiedSource = {
     },
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/yuanta-trade-statements.ts")).runYuantaTradeProviderWorkflow;
+      return (await import("../../../../workflows/yuanta-trade-statements.ts")).yuantaTradeWorkflow();
     },
   }),
 };

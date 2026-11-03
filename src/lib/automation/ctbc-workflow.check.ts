@@ -15,6 +15,7 @@ import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.t
 import type { Page, Response } from "playwright";
 import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { CTBC_SOURCE } from "./server/sources/ctbc.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
@@ -24,14 +25,23 @@ import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-p
 import {
   decodeCtbcSourceJson,
   readCtbcDepositSource,
-  runCtbcProviderWorkflow,
+  ctbcWorkflowWith,
   stageCtbcDeposit,
   type CtbcDepositRunner,
+  type CtbcWorkflowDependencies,
   type CtbcReadCurrentDepositBalanceResponse,
 } from "../../workflows/ctbc-statements.ts";
 import { ctbcCurrentDepositResponse } from "../../workflows/ctbc-current-deposit-balances.fixtures.ts";
 
 /** The real deposit runner over the synthetic page, with current balances replaced. */
+function runCtbc(
+  context: WorkflowContextWith<"financialCommit" | "products">,
+  input: unknown,
+  overrides: CtbcWorkflowDependencies = {},
+) {
+  return runVerifiedEntry(CTBC_SOURCE, ctbcWorkflowWith(overrides), context, input);
+}
+
 function withCurrentBalances(readCurrentBalances: CtbcReadCurrentDepositBalanceResponse): { collectDeposit: CtbcDepositRunner } {
   return {
     collectDeposit: async (page, input, context, product) =>
@@ -260,13 +270,13 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
       const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
         code: "0000", rsData: { detailList: rows, nextKey: "" },
       }) }), financialCommit: commit });
-      const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => currentBalanceResponse()));
+      const result = await runCtbc(harness.context, input, withCurrentBalances(async () => currentBalanceResponse()));
       assert.equal(result.status, "financial-admitted");
     }
     const conflicting = createContext({ page: createPage({ detailResponse: response(detailsResource, {
       code: "0000", rsData: { detailList: [{ ...original, memo1: "Changed provider claim" }], nextKey: "" },
     }) }), financialCommit: commit });
-    const conflicted = await runCtbcProviderWorkflow(conflicting.context, input, withCurrentBalances(async () => currentBalanceResponse()));
+    const conflicted = await runCtbc(conflicting.context, input, withCurrentBalances(async () => currentBalanceResponse()));
     assert.equal(conflicted.status, "partial");
     assert.deepEqual(conflicted.products, [
       { typeId: "deposit", status: "failed", itemCount: 2, committedCount: 1, errorCode: "canonical-commit-failed" },
@@ -290,7 +300,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
   try {
     process.chdir(directory);
     const harness = createContext();
-    const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => {
+    const result = await runCtbc(harness.context, input, withCurrentBalances(async () => {
       assert.equal(harness.committed.length, 0, "all sources are collected before commit");
       return currentBalanceResponse();
     }));
@@ -355,14 +365,14 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
       body: async () => Buffer.from([0xc3, 0x28]),
     } as Response }),
   });
-  await assert.rejects(runCtbcProviderWorkflow(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
+  await assert.rejects(runCtbc(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
     (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.committed.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ expectedRanges: 2 }) });
-  await assert.rejects(runCtbcProviderWorkflow(incomplete.context, input, withCurrentBalances(async () => currentBalanceResponse())),
+  await assert.rejects(runCtbc(incomplete.context, input, withCurrentBalances(async () => currentBalanceResponse())),
     (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-validation-failed"
     && /source admission blocked/u.test(String((error as { cause?: unknown }).cause)));
@@ -401,7 +411,7 @@ test("CTBC current-balance failures keep their thrown error and its failure code
   for (const { name, read, errorCode, cause } of cases) {
     const harness = createContext();
     await assert.rejects(
-      runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(read)),
+      runCtbc(harness.context, input, withCurrentBalances(read)),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError, name);
         assert.equal(error.errorCode, errorCode, name);
@@ -421,7 +431,7 @@ test("CTBC delayed automatic login does not request human assistance and honors 
     onAssistance: () => { signedIn = true; page.setSignedIn(true); },
   });
   let runError: unknown;
-  await runCtbcProviderWorkflow(context.context, input, {
+  await runCtbc(context.context, input, {
     collectDeposit: async (_page, parsedInput, productContext, product) => await stageCtbcDeposit(
       { output: { count: 1, rowCount: 0 }, captures: [] },
       parsedInput,
@@ -437,7 +447,7 @@ test("CTBC delayed automatic login does not request human assistance and honors 
   const controller = new AbortController();
   controller.abort();
   const cancelled = createContext({ signal: controller.signal });
-  await assert.rejects(runCtbcProviderWorkflow(cancelled.context, input));
+  await assert.rejects(runCtbc(cancelled.context, input));
   assert.equal(cancelled.browserCalls, 0);
   assert.equal(cancelled.committed.length, 0);
 });
@@ -445,7 +455,7 @@ test("CTBC delayed automatic login does not request human assistance and honors 
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`CTBC names a ${stop} commit ${errorCode}`, async () => {
     const harness = createContext({ financialCommit: stoppedCommitPort(stop) });
-    await assert.rejects(runCtbcProviderWorkflow(
+    await assert.rejects(runCtbc(
       harness.context,
       input,
       withCurrentBalances(async () => currentBalanceResponse()),

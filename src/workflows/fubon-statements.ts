@@ -211,12 +211,6 @@ export const fubonDepositTelemetryOutputSchema = z.object({
   ]),
 });
 
-export type FubonCredentials = {
-  fubon_user_id?: string;
-  fubon_account?: string;
-  fubon_password?: string;
-};
-
 export type FubonStatementsInput = z.infer<typeof fubonStatementsInputSchema>;
 export type FubonDepositTelemetryInput = z.infer<
   typeof fubonDepositTelemetryInputSchema

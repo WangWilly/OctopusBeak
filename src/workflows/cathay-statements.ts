@@ -6,7 +6,8 @@ import {
 } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
-import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
+import { CATHAY_CREDENTIAL_FIELDS, CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
+import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -22,11 +23,7 @@ import { frameScope } from "./frame-scope.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
-export type CathayCredentials = {
-  cathay_user_id?: string;
-  cathay_account?: string;
-  cathay_password?: string;
-};
+export type CathayCredentials = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS>["credentials"];
 
 /** A run's source options; every signed-in read yields to its signal. */
 export type CathayStrictSourceOptions = Readonly<{
@@ -525,17 +522,6 @@ export function classifyCathayDateScopeMismatch(
   };
 }
 
-function requireCredential(
-  credentials: CathayCredentials,
-  name: keyof CathayCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(`Cathay credential ${name} is missing.`);
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/\u00a0/g, " ")
@@ -677,15 +663,11 @@ export async function enterCathayCredentials(
   signal?: AbortSignal,
   progress?: Progress,
 ): Promise<void> {
-  const userId = requireCredential(credentials, "cathay_user_id");
-  const account = requireCredential(credentials, "cathay_account");
-  const password = requireCredential(credentials, "cathay_password");
-
   await withAbort(dismissStartupAnnouncements(page, 15_000, signal), signal);
   await progress?.("authentication-login-announcements-dismissed");
-  await withAbort(page.locator("#CustID").fill(userId), signal);
-  await withAbort(page.locator("#UserIdKeyin").fill(account), signal);
-  await withAbort(page.locator("#PasswordKeyin").fill(password), signal);
+  await withAbort(page.locator("#CustID").fill(credentials.cathay_user_id), signal);
+  await withAbort(page.locator("#UserIdKeyin").fill(credentials.cathay_account), signal);
+  await withAbort(page.locator("#PasswordKeyin").fill(credentials.cathay_password), signal);
   await progress?.("authentication-login-fields-entered");
   await withAbort(dismissStartupAnnouncements(page, 5_000, signal), signal);
 }

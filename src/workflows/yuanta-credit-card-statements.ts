@@ -45,7 +45,7 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   deriveYuantaSourceConnectionKey,
   yuantaSourceConnectionScope,
-  type YuantaCredentials,
+  type YuantaStableLoginCredentials,
 } from "./yuanta-auth.ts";
 import {
   FrameScopeTimeoutError,
@@ -204,7 +204,7 @@ export function deriveYuantaProjectedInstrumentIdentity(
  * never included in returned identity or workflow output.
  */
 export function deriveYuantaCanonicalHumanAttestation(
-  credentials: YuantaCredentials,
+  credentials: YuantaStableLoginCredentials,
   managedSecret: string,
 ): YuantaCanonicalHumanAttestation | undefined {
   const secret = managedSecret.trim();
@@ -227,7 +227,7 @@ export function deriveYuantaCanonicalHumanAttestation(
 
 /** Resolve the generic application-managed identity secret without exposing it. */
 export function yuantaCanonicalHumanAttestationFromEnvironment(
-  credentials: YuantaCredentials,
+  credentials: YuantaStableLoginCredentials,
 ): YuantaCanonicalHumanAttestation | undefined {
   const managedSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   return managedSecret

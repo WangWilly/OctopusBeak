@@ -1,33 +1,40 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+/** ADR 0097: the Chunghwa Post workflow types its credentials and selection from these lists. */
+export const POST_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_POST_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_POST_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_POST_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const POST_PRODUCTS = [
+  { id: "deposit", stream: "domestic-deposit" },
+] as const;
+
 export const POST_SOURCE: VerifiedSource = {
   id: "post",
   label: "Post Office",
   enabledKey: "LIBRETTO_CLOUD_POST_ENABLED",
   displayName: localized("Chunghwa Post", "中華郵政（Chunghwa Post）"),
   searchAliases: ["Post Office", "iPost", "郵局", "中華郵政"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_POST_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_POST_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_POST_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: POST_CREDENTIAL_FIELDS,
   setupGuide: {
     summary: localized(
       "Use the ID number, user code, and password registered for Chunghwa Post internet banking.",
@@ -74,9 +81,7 @@ export const POST_SOURCE: VerifiedSource = {
   coverage: [{ institution: "post", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_POST_STATEMENT_TYPES",
-    products: [
-      { id: "deposit", stream: "domestic-deposit" },
-    ],
+    products: POST_PRODUCTS,
   },
   task: {
     id: "post-statements",
@@ -90,7 +95,7 @@ export const POST_SOURCE: VerifiedSource = {
     verification: { rejection: { dialog: { exact: "圖形驗證錯誤" } } },
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/post-statements.ts")).runPostProviderWorkflow;
+      return (await import("../../../../workflows/post-statements.ts")).postWorkflow;
     },
   }),
 };

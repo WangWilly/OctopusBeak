@@ -18,19 +18,20 @@ import { createTdccSessionHost, tdccSessionHostCalls } from "./server/tdcc-sessi
 import { classifyFailure } from "./failure-classification.ts";
 import { summarizeInterruptedProductCollection } from "./server/typed-workflow-outcome.ts";
 import { createTdccWorkflow, type TdccWorkflowOptions } from "./tdcc-workflow.ts";
-import { productCollectionFacts } from "./server/app-workflow-registry.ts";
+import { appWorkflowRegistration } from "./server/app-workflow-registry.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { TDCC_SOURCE } from "./server/sources/tdcc.ts";
 import { strictSourceText } from "./source-text.ts";
-import { createWorkflowExecutor } from "./workflow-executor.ts";
+import { createWorkflowExecutor, type WorkflowDefinition } from "./workflow-executor.ts";
 import type { WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";
 
 /** The TDCC definition the registry runs, with the fake TDCC transport. */
-const tdccDefinition = (fetch: TdccWorkflowOptions["fetch"]) => ({
-  ...createTdccWorkflow({ fetch }),
-  productCollection: productCollectionFacts(TDCC_SOURCE),
+const tdccDefinition = (fetch: TdccWorkflowOptions["fetch"]): WorkflowDefinition => ({
+  ...appWorkflowRegistration("sync-tdcc")!.definition!,
+  run: (context, input) => runVerifiedEntry(TDCC_SOURCE, createTdccWorkflow({ fetch }), context as never, input),
 });
 
 // Built at runtime so the repository privacy and secret scanners do not read fixtures as real accounts.
@@ -691,9 +692,9 @@ test("through the supervised worker frames, a rotated token is saved when the ru
   });
 });
 
-test("a selection with no, a repeated, or an unknown TDCC product fails before it reports valid input or opens a session", async () => {
+test("a selection with a repeated or an unknown TDCC product fails before it reports valid input or opens a session", async () => {
   await withHarness(async ({ run, events }) => {
-    for (const statementTypes of [[], ["fund", "fund"], ["unknown"]]) {
+    for (const statementTypes of [["fund", "fund"], ["unknown"]]) {
       const fake = fakeTdcc();
       const error = await run({ statementTypes }, fake).then(() => null, (rejection: unknown) => rejection);
       assert.equal(classifyFailure({ error: error, events: events, stopped: false }), "workflow-failed");

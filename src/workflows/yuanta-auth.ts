@@ -7,7 +7,8 @@ import {
 } from "../ledger/canonical/source-connection-identity.ts";
 import { withAbort } from "./abort.ts";
 import type { DialogDecision, FormPlan } from "./sign-in.ts";
-import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import { YUANTA_CREDENTIAL_FIELDS, YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.ts";
 import {
   YUANTA_BANK_CAPTCHA_IMAGE_SELECTOR,
   YUANTA_BANK_CAPTCHA_IMAGE_SEMANTIC_ID,
@@ -25,13 +26,11 @@ const YUANTA_SIGNED_IN_LOGOUT_SELECTOR =
 const YUANTA_LOGIN_FIELD_SELECTOR =
   "#custidMask, #custnoInput, #custcode, #gcode";
 
-export type YuantaCredentials = {
-  yuanta_user_id?: string;
-  yuanta_account?: string;
-  yuanta_password?: string;
-};
+export type YuantaCredentials = VerifiedRunInput<typeof YUANTA_CREDENTIAL_FIELDS>["credentials"];
+/** The password may ride along but never enters the Source Connection identity. */
+export type YuantaStableLoginCredentials = Pick<YuantaCredentials, "yuanta_user_id" | "yuanta_account"> & Partial<YuantaCredentials>;
 
-function yuantaStableLoginFields(credentials: YuantaCredentials) {
+function yuantaStableLoginFields(credentials: YuantaStableLoginCredentials) {
   return [
     { name: "yuanta_user_id", value: credentials.yuanta_user_id },
     { name: "yuanta_account", value: credentials.yuanta_account },
@@ -49,7 +48,7 @@ function yuantaStableLoginFields(credentials: YuantaCredentials) {
  * derive the same source-connection key from the same login identity.
  */
 export function yuantaSourceConnectionScope(
-  credentials: YuantaCredentials,
+  credentials: YuantaStableLoginCredentials,
 ): string {
   return assembleStableSourceLoginScope(
     yuantaStableLoginFields(credentials),
@@ -59,7 +58,7 @@ export function yuantaSourceConnectionScope(
 
 /** Derive the same product-independent key used by Yuanta deposit and loan. */
 export function deriveYuantaSourceConnectionKey(
-  credentials: YuantaCredentials,
+  credentials: YuantaStableLoginCredentials,
 ): string | undefined {
   const scope = assembleStableSourceLoginScope(
     yuantaStableLoginFields(credentials),
@@ -132,19 +131,6 @@ function yuantaBankDialogDecision(dialog: DialogSnapshot): DialogDecision {
   const category = classifyYuantaBankDialogMessage(dialog.message);
   if (category === "active-session") return "accept";
   return category === "unknown" ? "fail" : new Error(YUANTA_BANK_DIALOG_FAILURES[category]);
-}
-
-function requireCredential(
-  credentials: YuantaCredentials,
-  name: keyof YuantaCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Provide it through the App workflow input.`,
-    );
-  }
-  return value;
 }
 
 async function waitForMainFrame(
@@ -358,18 +344,14 @@ async function fillLoginForm(
   page: Page,
   credentials: YuantaCredentials,
 ): Promise<void> {
-  const userId = requireCredential(credentials, "yuanta_user_id");
-  const account = requireCredential(credentials, "yuanta_account");
-  const password = requireCredential(credentials, "yuanta_password");
-
   await page.goto(YUANTA_ENTRY_URL, { waitUntil: "domcontentloaded" });
 
   const loginFrame = await waitForMainFrame(page);
   await dismissYuantaBankNotice(loginFrame);
-  await loginFrame.locator("#custidMask").fill(userId);
+  await loginFrame.locator("#custidMask").fill(credentials.yuanta_user_id);
   await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), password);
+  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), credentials.yuanta_account);
+  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), credentials.yuanta_password);
   await loginFrame.locator("#gcode").focus();
   await dismissYuantaBankNotice(await waitForMainFrame(page), 5_000);
 }
@@ -396,10 +378,7 @@ async function submitLogin(
   if (page.frame({ name: "fmain" }) && currentCidFromFrameUrls(page)) return;
 
   const loginFrame = await waitForMainFrame(page);
-  await restoreUserIdForSubmit(
-    loginFrame,
-    requireCredential(credentials, "yuanta_user_id"),
-  );
+  await restoreUserIdForSubmit(loginFrame, credentials.yuanta_user_id);
   await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
 }
 

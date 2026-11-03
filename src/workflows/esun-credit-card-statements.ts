@@ -35,22 +35,18 @@ import { productRunResult, type WorkflowRunResult } from "../lib/automation/work
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
-import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
-import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-core.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
-import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
+import { ESUN_CREDENTIAL_FIELDS, ESUN_PRODUCTS, ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
-export type EsunCredentials = {
-  esun_user_id?: string;
-  esun_account?: string;
-  esun_password?: string;
-};
+type EsunVerifiedInput = VerifiedRunInput<typeof ESUN_CREDENTIAL_FIELDS, typeof ESUN_PRODUCTS>;
+export type EsunCredentials = EsunVerifiedInput["credentials"];
 
 type StatementKind = "unbilled" | "billed";
 export type GridState = { currentPage?: string; currentPageSize?: string };
@@ -196,18 +192,6 @@ export function parseEsunCurrentCreditCardUsedCreditHtml(
   };
 }
 
-function requireCredential(
-  credentials: EsunCredentials,
-  name: keyof EsunCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -243,8 +227,8 @@ export function isEsunCompleteGrid({
 
 export const ESUN_CREDIT_CARD_IDENTITY_EPOCH = ESUN_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
-function normalizedEsunLoginPart(value: string | undefined): string {
-  return (value ?? "")
+function normalizedEsunLoginPart(value: string): string {
+  return value
     .normalize("NFKC")
     .trim()
     .replace(/\s+/gu, " ")
@@ -603,9 +587,7 @@ async function enterLoginCredentials(
   await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
   await withAbort(page.locator('input[name="id"]').waitFor({ timeout: 60_000 }), signal);
 
-  const userId = requireCredential(credentials, "esun_user_id");
-  const account = requireCredential(credentials, "esun_account");
-  const password = requireCredential(credentials, "esun_password");
+  const { esun_user_id: userId, esun_account: account, esun_password: password } = credentials;
   const fields = [
     { label: "user id", locator: page.locator('input[name="id"]'), value: userId },
     { label: "account", locator: page.locator('input[name="userName"]'), value: account },
@@ -1120,21 +1102,13 @@ function cardKeyForRow(row: StatementRow): string {
 
 type EsunCreditCardCollection = Readonly<{ count: number }>;
 
-const typedInputSchema = z.object({
+const esunInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
-  credentials: z.object({
-    esun_user_id: z.string().trim().min(1),
-    esun_account: z.string().trim().min(1),
-    esun_password: z.string().trim().min(1),
-  }),
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
-  /** The verified selection; empty when only attached products are selected. */
-  statementTypes: z.array(z.literal("credit_card")),
-  attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
 });
 
-type EsunWorkflowInput = z.infer<typeof typedInputSchema>;
+type EsunWorkflowInput = EsunVerifiedInput & z.infer<typeof esunInputSchema>;
 
 const ESUN_POST_LOGIN_STATES = [
   ["captcha", /驗證碼|圖形驗證/u],
@@ -1346,22 +1320,28 @@ async function collectEsunCreditCard(
 }
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
-export async function runEsunCreditCardProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
-  rawInput: unknown,
-): Promise<WorkflowRunResult> {
-  const parsed = typedInputSchema.safeParse(rawInput);
-  if (!parsed.success) throw new Error("E.SUN workflow credentials are missing or invalid.");
-  const input = parsed.data;
-  if (input.statementTypes.length === 0 && input.attachedPreviewProducts.length === 0) {
-    throw new FailureCodeError("collection-scope-changed");
-  }
-  if (input.startDate || input.endDate) {
-    throw new Error("E.SUN canonical collection requires the complete default one-year source.");
-  }
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
+export const esunCreditCardWorkflow: VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  EsunWorkflowInput,
+  WorkflowRunResult,
+  "previewWrite",
+  EsunVerifiedInput
+> = {
+  parseInput(verified, raw) {
+    const parsed = esunInputSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("E.SUN workflow input is invalid.");
+    if (parsed.data.startDate || parsed.data.endDate) {
+      throw new Error("E.SUN canonical collection requires the complete default one-year source.");
+    }
+    return { ...verified, ...parsed.data };
+  },
+  run: runEsunCreditCardWorkflow,
+};
 
+async function runEsunCreditCardWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
+  input: EsunWorkflowInput,
+): Promise<WorkflowRunResult> {
   return context.browser.withPage(async (page) => {
     await authenticateEsunPage(page, input.credentials, context);
 

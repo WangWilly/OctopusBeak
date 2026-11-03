@@ -1,34 +1,42 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
+/** ADR 0097: the HNCB workflow types its credentials and selection from these lists. */
+export const HNCB_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_HNCB_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_HNCB_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_HNCB_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const HNCB_PRODUCTS = [
+  // Two years and one day, both ends inclusive, in one request.
+  { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 2, days: 1 } } },
+] as const;
+
 export const HNCB_SOURCE: VerifiedSource = {
   id: "hncb",
   label: "HNCB",
   enabledKey: "LIBRETTO_CLOUD_HNCB_ENABLED",
   displayName: localized("Hua Nan Bank", "華南銀行（Hua Nan Bank）"),
   searchAliases: ["HNCB", "Hua Nan", "華南"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_HNCB_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_HNCB_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_HNCB_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: HNCB_CREDENTIAL_FIELDS,
   setupGuide: {
     summary: localized(
       "Use the ID number, user code, and password registered for Hua Nan Bank online banking.",
@@ -75,10 +83,7 @@ export const HNCB_SOURCE: VerifiedSource = {
   coverage: [{ institution: "hncb", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_HNCB_STATEMENT_TYPES",
-    products: [
-      // Two years and one day, both ends inclusive, in one request.
-      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 2, days: 1 } } },
-    ],
+    products: HNCB_PRODUCTS,
   },
   task: {
     id: "hncb-statements",
@@ -93,7 +98,7 @@ export const HNCB_SOURCE: VerifiedSource = {
     verification: {},
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/hncb-statements.ts")).runHncbProviderWorkflow;
+      return (await import("../../../../workflows/hncb-statements.ts")).hncbWorkflow;
     },
   }),
 };

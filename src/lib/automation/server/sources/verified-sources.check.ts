@@ -3,7 +3,6 @@ import { readdirSync } from "node:fs";
 import test from "node:test";
 import { createBinanceWorkflow } from "../../binance-workflow.ts";
 import { createMaicoinWorkflow } from "../../maicoin-workflow.ts";
-import { createTdccWorkflow } from "../../tdcc-workflow.ts";
 import { requiredWorkflowCapabilities } from "../../workflow-executor.ts";
 import { COLLECTION_PRODUCT_TYPE_IDS } from "../../product-collection.ts";
 import { appWorkflowRegistration } from "../app-workflow-registry.ts";
@@ -79,11 +78,10 @@ test("a source whose workflow collects products binds its run to the source's pr
   }
 });
 
-test("MaiCoin, Binance and TDCC keep the capabilities their modules declare", () => {
+test("MaiCoin and Binance keep the capabilities their modules declare", () => {
   const definition = (taskId: string) => appWorkflowRegistration(taskId)?.definition!;
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-maicoin")), requiredWorkflowCapabilities(createMaicoinWorkflow()));
   assert.deepEqual(requiredWorkflowCapabilities(definition("sync-binance")), requiredWorkflowCapabilities(createBinanceWorkflow()));
-  assert.deepEqual(requiredWorkflowCapabilities(definition("sync-tdcc")), requiredWorkflowCapabilities(createTdccWorkflow()));
 });
 
 test("TDCC funds fill the stream the TDCC investment contract writes", () => {

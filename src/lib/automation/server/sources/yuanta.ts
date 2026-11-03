@@ -2,34 +2,53 @@ import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow 
 
 const RELOGIN = '#reloginBT, a:has-text("立即登入")';
 
+/** ADR 0097: the Yuanta workflow types its credentials and selection from these lists. */
+export const YUANTA_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_YUANTA_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_YUANTA_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_YUANTA_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const YUANTA_PRODUCTS = [
+  // Three months and one day, Yuanta's 三個月 link.
+  { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
+  { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
+  { id: "credit_card", stream: "credit-card" },
+  // Twelve months and one day, Yuanta's 一年 loan link.
+  { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 12, days: 1 } } },
+  // 365 days ending today, entered as dates.
+  {
+    id: "fund",
+    stream: "investment",
+    integrationNamespace: "yuanta-fund",
+    collectionPeriod: { lookBack: { days: 365 } },
+  },
+] as const;
+
 export const YUANTA_SOURCE: VerifiedSource = {
   id: "yuanta",
   label: "Yuanta",
   enabledKey: "LIBRETTO_CLOUD_YUANTA_ENABLED",
   displayName: localized("Yuanta Bank", "元大銀行（Yuanta Bank）"),
   searchAliases: ["Yuanta", "元大銀行"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_YUANTA_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_YUANTA_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_YUANTA_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: YUANTA_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "When Yuanta Bank reports another active sign-in, every sync, including daily scheduled collection, chooses to sign in now, which signs you out of Yuanta Bank online banking elsewhere.",
@@ -92,21 +111,7 @@ export const YUANTA_SOURCE: VerifiedSource = {
   ],
   statementSelection: {
     key: "LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES",
-    products: [
-      // Three months and one day, Yuanta's 三個月 link.
-      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
-      { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { months: 3, days: 1 } } },
-      { id: "credit_card", stream: "credit-card" },
-      // Twelve months and one day, Yuanta's 一年 loan link.
-      { id: "loan", stream: "loan", collectionPeriod: { lookBack: { months: 12, days: 1 } } },
-      // 365 days ending today, entered as dates.
-      {
-        id: "fund",
-        stream: "investment",
-        integrationNamespace: "yuanta-fund",
-        collectionPeriod: { lookBack: { days: 365 } },
-      },
-    ],
+    products: YUANTA_PRODUCTS,
   },
   task: {
     id: "yuanta-all-statements",
@@ -120,7 +125,7 @@ export const YUANTA_SOURCE: VerifiedSource = {
     verification: { rejection: { dialog: { exact: "驗證碼不正確，請重新輸入" } } },
     input: { credentials: true, managedIdentitySecret: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/yuanta-all-statements.ts")).runYuantaAllStatementsWorkflow;
+      return (await import("../../../../workflows/yuanta-all-statements.ts")).yuantaWorkflow;
     },
   }),
 };

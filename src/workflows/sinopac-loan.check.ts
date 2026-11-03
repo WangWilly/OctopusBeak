@@ -6,6 +6,7 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "../lib/automation/workflow-executor.ts";
 import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import {
@@ -18,7 +19,7 @@ import {
 } from "./sinopac-loan.ts";
 import {
   readSinopacDepositSource,
-  runSinopacProviderWorkflow,
+  sinopacWorkflowWith,
   stageSinopacDeposit,
   type SinopacDepositSource,
 } from "./sinopac-statements.ts";
@@ -207,13 +208,13 @@ function runWithLoan(writes: PreviewWrite[], commits: unknown[][], loanTransport
     statementTypes: ["deposit"],
     attachedPreviewProducts: ["loan"],
   };
-  return runSinopacProviderWorkflow(withBoundProducts(workflowContext(writes, commits), SINOPAC_SOURCE, input), input, {
+  return runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith({
     collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
       await readSinopacDepositSource(depositSource, depositInput, context, product),
       depositInput, context, product, depositSource.readCurrentBalances,
     ),
     loanTransport,
-  });
+  }), withBoundProducts(workflowContext(writes, commits), SINOPAC_SOURCE, input), input);
 }
 
 test("the SinoPac workflow writes attached loans only through the preview port", async () => {

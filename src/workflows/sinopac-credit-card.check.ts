@@ -9,6 +9,7 @@ import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith 
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import {
@@ -23,7 +24,7 @@ import {
 } from "./sinopac-credit-card.ts";
 import {
   readSinopacDepositSource,
-  runSinopacProviderWorkflow,
+  sinopacWorkflowWith,
   stageSinopacDeposit,
   type SinopacDepositSource,
   type SinopacProviderWorkflowDependencies,
@@ -310,7 +311,7 @@ function runSinopac(
   input: unknown,
   dependencies: SinopacProviderWorkflowDependencies,
 ) {
-  return runSinopacProviderWorkflow(withBoundProducts(context, SINOPAC_SOURCE, input), input, dependencies);
+  return runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith(dependencies), withBoundProducts(context, SINOPAC_SOURCE, input), input);
 }
 
 const workflowInput = (selection: Readonly<{ statementTypes: string[]; attachedPreviewProducts: string[] }>) => ({

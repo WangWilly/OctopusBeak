@@ -26,7 +26,8 @@ import {
 import {
   HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/hncb-human-attestation-contract.ts";
-import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
+import { HNCB_CREDENTIAL_FIELDS, HNCB_PRODUCTS, HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -51,7 +52,6 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
@@ -72,27 +72,13 @@ const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
 const BANK_BASE_URL = "https://netbank.hncb.com.tw";
 
-const typedWorkflowInputSchema = z.object({
+const hncbInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
-  credentials: z.object({
-    hncb_user_id: z.string().trim().min(1),
-    hncb_account: z.string().trim().min(1),
-    hncb_password: z.string().trim().min(1),
-  }),
-  /** The verified products selected; HNCB has only `deposit`. */
-  statementTypes: z.array(z.literal("deposit")),
-  attachedPreviewProducts: z.array(z.enum(PREVIEW_PRODUCTS)).default([]),
-}).refine(
-  (input) => input.statementTypes.length > 0 || input.attachedPreviewProducts.length > 0,
-  "Select at least one HNCB product.",
-);
+});
 
-type HncbCredentials = {
-  hncb_user_id?: string;
-  hncb_account?: string;
-  hncb_password?: string;
-};
-export type HncbWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
+type HncbVerifiedInput = VerifiedRunInput<typeof HNCB_CREDENTIAL_FIELDS, typeof HNCB_PRODUCTS>;
+type HncbCredentials = HncbVerifiedInput["credentials"];
+export type HncbWorkflowInput = HncbVerifiedInput & z.infer<typeof hncbInputSchema>;
 export type HncbDepositInput = Pick<HncbWorkflowInput, "accountFilters">;
 export type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
 /** HNCB's own account count beside the product summary for one deposit collection. */
@@ -332,19 +318,6 @@ const sourceTransactionHeaders = [
   "補摺日期/票據號碼",
 ];
 
-function requireCredential(
-  credentials: HncbCredentials,
-  name: keyof HncbCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(
-      `Missing credential ${name}. Set LIBRETTO_CLOUD_${name.toUpperCase()} in .env.`,
-    );
-  }
-  return value;
-}
-
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/&#8203;|\u200b/g, "")
@@ -548,15 +521,15 @@ async function fillLoginForm(
   if (!isHncbLoginEntryUrl(page.url()))
     await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
   await withAbort(
-    page.locator("#USERIDTEXT").fill(requireCredential(credentials, "hncb_user_id")),
+    page.locator("#USERIDTEXT").fill(credentials.hncb_user_id),
     signal,
   );
   await withAbort(
-    page.locator("#NICKNAME").fill(requireCredential(credentials, "hncb_account")),
+    page.locator("#NICKNAME").fill(credentials.hncb_account),
     signal,
   );
   await withAbort(
-    page.locator("#password").fill(requireCredential(credentials, "hncb_password")),
+    page.locator("#password").fill(credentials.hncb_password),
     signal,
   );
   await withAbort(page.locator("#TrxCaptchaKey").focus(), signal);
@@ -614,7 +587,7 @@ export function hncbSignInPlan(credentials: HncbCredentials): FormPlan {
     submit: async (page, signal) => {
       const accountField = page.locator("#NICKNAME");
       if (!(await withAbort(accountField.inputValue(), signal)).trim())
-        await withAbort(accountField.fill(requireCredential(credentials, "hncb_account")), signal);
+        await withAbort(accountField.fill(credentials.hncb_account), signal);
       await withAbort(page.locator("li#WannaLogin a").click(), signal);
     },
     dialogs: "dismiss",
@@ -1308,19 +1281,28 @@ export async function runHncbStatements(
 }
 
 /** App-owned entry point for the HNCB domestic-deposit statement workflow. */
-export async function runHncbProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
-  rawInput: unknown,
-): Promise<WorkflowRunResult> {
-  const parsed = typedWorkflowInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("HNCB workflow input or sign-in details are missing or invalid.");
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
+export const hncbWorkflow: VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  HncbWorkflowInput,
+  WorkflowRunResult,
+  "previewWrite",
+  HncbVerifiedInput
+> = {
+  parseInput(verified, raw) {
+    const parsed = hncbInputSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("HNCB workflow input is invalid.");
+    return { ...verified, ...parsed.data };
+  },
+  run: runHncbWorkflow,
+};
 
+async function runHncbWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
+  input: HncbWorkflowInput,
+): Promise<WorkflowRunResult> {
   return await context.browser.withPage(async (page) => {
-    const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(parsed.data.credentials));
-    return await runHncbStatements(page, parsed.data, context, {
+    const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(input.credentials));
+    return await runHncbStatements(page, input, context, {
       ...(assertSession ? { assertSession } : {}),
       attached: {
         collectors: () => ({

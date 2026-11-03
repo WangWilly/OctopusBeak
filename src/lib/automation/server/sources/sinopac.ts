@@ -4,34 +4,42 @@ import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-pro
 /** The widest SinoPac deposit request: one month and one more day, both ends inclusive. */
 export const SINOPAC_MAX_WINDOW = { months: 1, days: 1 } as const;
 
+/** ADR 0097: the SinoPac workflow types its credentials and selection from these lists. */
+export const SINOPAC_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_SINOPAC_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_SINOPAC_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_SINOPAC_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const SINOPAC_PRODUCTS = [
+  // Twelve months inclusive, in requests of one month and one day.
+  { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: SINOPAC_MAX_WINDOW } },
+] as const;
+
 export const SINOPAC_SOURCE: VerifiedSource = {
   id: "sinopac",
   label: "SinoPac",
   enabledKey: "LIBRETTO_CLOUD_SINOPAC_ENABLED",
   displayName: localized("Bank SinoPac", "永豐銀行（Bank SinoPac）"),
   searchAliases: ["SinoPac", "MMA", "永豐"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_SINOPAC_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_SINOPAC_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_SINOPAC_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: SINOPAC_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "SinoPac allows one online banking sign-in at a time. Every sync, including daily scheduled collection, confirms SinoPac's duplicate sign-in prompt, which signs you out of SinoPac online banking or its phone App elsewhere.",
@@ -88,10 +96,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
   coverage: [{ institution: "sinopac", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_SINOPAC_STATEMENT_TYPES",
-    products: [
-      // Twelve months inclusive, in requests of one month and one day.
-      { id: "deposit", stream: "domestic-deposit", collectionPeriod: { lookBack: { months: 12 }, maxWindow: SINOPAC_MAX_WINDOW } },
-    ],
+    products: SINOPAC_PRODUCTS,
   },
   task: {
     id: "sinopac-statements",
@@ -106,7 +111,7 @@ export const SINOPAC_SOURCE: VerifiedSource = {
     verification: { rejection: { dialog: { exact: "驗證碼失效或輸入錯誤，請重新輸入" } } },
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/sinopac-statements.ts")).runSinopacProviderWorkflow;
+      return (await import("../../../../workflows/sinopac-statements.ts")).sinopacWorkflow;
     },
   }),
 };

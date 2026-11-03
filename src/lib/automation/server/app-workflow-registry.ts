@@ -18,6 +18,7 @@ import {
   packagedBrowserFixtureStartUrl,
 } from "./packaged-browser-fixture.ts";
 import { statementSelectionGroup, VERIFIED_SOURCES } from "./sources/index.ts";
+import { credentialInputKey, runVerifiedEntry } from "./verified-entry.ts";
 import { browser, NONBROWSER, type AppWorkflowRuntime, type VerifiedSource } from "./sources/verified-source.ts";
 
 export type { AppWorkflowRuntime } from "./sources/verified-source.ts";
@@ -66,7 +67,6 @@ function statementTypeIdsFromEnvironment(
   ).selectedIds.filter((id) => !attached.some((type) => type.id === id));
 }
 
-const credentialInputKey = (settingKey: string) => settingKey.replace(/^LIBRETTO_CLOUD_/u, "").toLowerCase();
 
 function verifiedWorkflowInput(source: VerifiedSource, environment: NodeJS.ProcessEnv) {
   const { input, attachedPreviewProducts } = source.workflow;
@@ -111,7 +111,10 @@ function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegist
       ...flags,
       ...(productCollection ? { productCollection } : {}),
       async run(context, input) {
-        return await (await load())(context, input);
+        const loaded = await load();
+        return typeof loaded === "function"
+          ? await loaded(context, input)
+          : await runVerifiedEntry(source, loaded, context as never, input);
       },
     },
     runtime,

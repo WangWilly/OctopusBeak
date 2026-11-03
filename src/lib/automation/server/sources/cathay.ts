@@ -1,6 +1,36 @@
 import { browser, field, link, localized, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../../preview-sources/attached-products.ts";
 
+/** ADR 0097: the Cathay workflow types its credentials and selection from these lists. */
+export const CATHAY_CREDENTIAL_FIELDS = [
+  field(
+    "LIBRETTO_CLOUD_CATHAY_USER_ID",
+    "Taiwan ID number",
+    "台灣身分證字號",
+    "text",
+    "partial",
+  ),
+  field(
+    "LIBRETTO_CLOUD_CATHAY_ACCOUNT",
+    "Online banking code",
+    "網路銀行代碼",
+    "password",
+    "full",
+  ),
+  field(
+    "LIBRETTO_CLOUD_CATHAY_PASSWORD",
+    "Online banking password",
+    "網路銀行密碼",
+    "password",
+  ),
+] as const;
+
+export const CATHAY_PRODUCTS = [
+  // One year and one day, Cathay's one-year period option.
+  { id: "domestic", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
+  { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
+] as const;
+
 export const CATHAY_SOURCE: VerifiedSource = {
   id: "cathay",
   label: "Cathay",
@@ -10,28 +40,7 @@ export const CATHAY_SOURCE: VerifiedSource = {
     "國泰世華銀行（Cathay United Bank）",
   ),
   searchAliases: ["Cathay", "國泰", "國泰世華"],
-  credentialFields: [
-    field(
-      "LIBRETTO_CLOUD_CATHAY_USER_ID",
-      "Taiwan ID number",
-      "台灣身分證字號",
-      "text",
-      "partial",
-    ),
-    field(
-      "LIBRETTO_CLOUD_CATHAY_ACCOUNT",
-      "Online banking code",
-      "網路銀行代碼",
-      "password",
-      "full",
-    ),
-    field(
-      "LIBRETTO_CLOUD_CATHAY_PASSWORD",
-      "Online banking password",
-      "網路銀行密碼",
-      "password",
-    ),
-  ],
+  credentialFields: CATHAY_CREDENTIAL_FIELDS,
   sessionTakeover: {
     notice: localized(
       "When Cathay United Bank reports a duplicate sign-in or a previous session that was not signed out, every sync, including daily scheduled collection, chooses to sign that session out, which signs you out of Cathay United Bank online banking elsewhere.",
@@ -83,11 +92,7 @@ export const CATHAY_SOURCE: VerifiedSource = {
   coverage: [{ institution: "cathay", product: "deposit" }],
   statementSelection: {
     key: "LIBRETTO_CLOUD_CATHAY_STATEMENT_TYPES",
-    products: [
-      // One year and one day, Cathay's one-year period option.
-      { id: "domestic", stream: "domestic-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
-      { id: "foreign_currency", stream: "foreign-currency-deposit", collectionPeriod: { lookBack: { years: 1, days: 1 } } },
-    ],
+    products: CATHAY_PRODUCTS,
   },
   task: {
     id: "cathay-all-statements",
@@ -101,7 +106,7 @@ export const CATHAY_SOURCE: VerifiedSource = {
     runtime: browser("https://www.cathaybk.com.tw/MyBank/", "cathay-login"),
     input: { credentials: true, statementTypes: true },
     async load() {
-      return (await import("../../../../workflows/cathay-all-statements.ts")).runCathayAllProviderWorkflow;
+      return (await import("../../../../workflows/cathay-all-statements.ts")).cathayAllWorkflow();
     },
   }),
 };

@@ -42,7 +42,8 @@ import type {
   ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
+import { CTBC_CREDENTIAL_FIELDS, CTBC_PRODUCTS, CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
@@ -62,25 +63,15 @@ const NO_DATA_CODE = "9201";
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
-type CtbcCredentials = {
-  ctbc_user_id?: string;
-  ctbc_account?: string;
-  ctbc_password?: string;
-};
-
-const typedInputSchema = z.object({
-  credentials: z.object({
-    ctbc_user_id: z.string().trim().min(1),
-    ctbc_account: z.string().trim().min(1),
-    ctbc_password: z.string().trim().min(1),
-  }),
+const ctbcInputSchema = z.object({
   startDate: dateSchema.optional(),
   endDate: dateSchema.optional(),
   accountFilters: z.array(z.string()).optional(),
-  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
-export type CtbcStatementsInput = z.infer<typeof typedInputSchema>;
+type CtbcVerifiedInput = VerifiedRunInput<typeof CTBC_CREDENTIAL_FIELDS, typeof CTBC_PRODUCTS>;
+type CtbcCredentials = CtbcVerifiedInput["credentials"];
+export type CtbcStatementsInput = CtbcVerifiedInput & z.infer<typeof ctbcInputSchema>;
 
 /** One deposit product run: read the source, then build and stage from it. */
 export type CtbcDepositRunner = (
@@ -220,17 +211,6 @@ export function decodeCtbcSourceJson<T>(
   // JSON may encode U+FFFD as an escape, so check the parsed source fields too.
   text.assertIntact(JSON.stringify(value));
   return value as T;
-}
-
-function requireCredential(
-  credentials: CtbcCredentials,
-  name: keyof CtbcCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(`Missing CTBC credential ${name}.`);
-  }
-  return value;
 }
 
 function cleanText(value: string | null | undefined): string {
@@ -383,14 +363,11 @@ async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Pro
 }
 
 async function fillCtbcLoginForm(page: Page, credentials: CtbcCredentials, signal: AbortSignal): Promise<void> {
-  const userId = requireCredential(credentials, "ctbc_user_id");
-  const account = requireCredential(credentials, "ctbc_account");
-  const password = requireCredential(credentials, "ctbc_password");
   await openCtbcLoginForm(page, signal);
-  await withAbort(page.locator("form input[type=text]").first().fill(userId), signal);
+  await withAbort(page.locator("form input[type=text]").first().fill(credentials.ctbc_user_id), signal);
   const passwordFields = page.locator("form input[type=password]");
-  await withAbort(passwordFields.nth(0).fill(account), signal);
-  await withAbort(passwordFields.nth(1).fill(password), signal);
+  await withAbort(passwordFields.nth(0).fill(credentials.ctbc_account), signal);
+  await withAbort(passwordFields.nth(1).fill(credentials.ctbc_password), signal);
 }
 
 export function ctbcSignInPlan(credentials: CtbcCredentials): FormPlan {
@@ -1203,28 +1180,47 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
   );
 };
 
+export type CtbcWorkflowDependencies = Readonly<{ collectDeposit?: CtbcDepositRunner }>;
+
+export type CtbcWorkflowEntry = VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  CtbcStatementsInput,
+  WorkflowRunResult,
+  never,
+  CtbcVerifiedInput
+>;
+
+/** CTBC's entry with its deposit runner replaced, for checks that run without a bank page. */
+export function ctbcWorkflowWith(overrides: CtbcWorkflowDependencies): CtbcWorkflowEntry {
+  return {
+    parseInput(verified, raw) {
+      const parsed = ctbcInputSchema.safeParse(raw);
+      if (!parsed.success) throw new Error("CTBC workflow input is invalid.");
+      return { ...verified, ...parsed.data };
+    },
+    run: (context, input) => runCtbcWorkflow(context, input, overrides),
+  };
+}
+
 /** App-owned CTBC statement provider. Source admission completes before either commit. */
-export async function runCtbcProviderWorkflow(
+export const ctbcWorkflow = ctbcWorkflowWith({});
+
+async function runCtbcWorkflow(
   context: WorkflowContextWith<"financialCommit" | "products">,
-  rawInput: unknown,
-  overrides: Readonly<{ collectDeposit?: CtbcDepositRunner }> = {},
+  input: CtbcStatementsInput,
+  overrides: CtbcWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
-  const parsed = typedInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("CTBC workflow credentials or input are missing or invalid.");
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
   const collectDeposit = overrides.collectDeposit ?? runCtbcDeposit;
 
   return context.browser.withPage(async (page) => {
-    await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(parsed.data.credentials));
+    await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(input.credentials));
 
     let count = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
-        const collected = await collectDeposit(page, parsed.data, productContext, product);
+        const collected = await collectDeposit(page, input, productContext, product);
         // stageCtbcDeposit admits only when every selected account was captured.
         count = collected.sourceCaptureCount;
         return collected;
