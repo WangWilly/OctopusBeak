@@ -1,4 +1,4 @@
-import type { AssetsPageDto } from "$lib/assets/types.ts";
+import type { FinancialBridge } from "../../../electron/pglite-financial-contracts.ts";
 import type {
   AutomationCredentialGroup,
   AutomationPageModel,
@@ -9,38 +9,13 @@ import type {
   DeviceRegistrationStatus,
   DeviceRegistrationStep,
 } from "$lib/automation/types.ts";
-import type { LiabilitiesPageDto } from "$lib/liabilities/types.ts";
-import type { ManualAssetCommand, ManualAssetCommandResult } from "$lib/manual-assets/manual-assets.ts";
-import type { OverviewPageDto } from "$lib/overview/types.ts";
 import type {
-  SpendingPairingCandidatesInput,
-  SpendingPairingCandidatesResult,
   SpendingPairingPrewarmInput,
   SpendingPairingPrewarmResult,
-  SpendingPageDto,
   SpendingPageReadResult,
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
-  SpendingRecordPageDto,
-  SpendingRecordPageRequest,
-  SpendingPageActionRequest,
-  SpendingPageActionResult,
-  SpendingPurchaseCategoryRequest,
-  SpendingPurchaseCategoryResult,
-  SpendingMergeLogDto,
-  SpendingMergeLogRequest,
-  SpendingMerchantStatsDto,
-  SpendingMerchantStatsRequest,
-  SpendingMonthInsightDto,
-  SpendingMonthInsightRequest,
-  SpendingPendingOverviewDto,
-  SpendingPendingOverviewRequest,
-  SpendingStrongConfirmRequest,
-  SpendingStrongConfirmResult,
 } from "$lib/spending/model.ts";
-import type {
-  SpendingLoadInput,
-} from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
 import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
@@ -271,18 +246,10 @@ export type OctopusBeakApi = {
     /** Starts every enabled source, as scheduled collection would. */
     collectAllSources(): Promise<AutomationRunManyResult>;
   };
-  spending: {
-    loadRecordPage(input: SpendingRecordPageRequest): Promise<SpendingPageReadResult<SpendingRecordPageDto>>;
+  /** The financial operations open to the renderer, typed by their contracts (ADR 0098), and the Spending desktop service's own calls. */
+  spending: FinancialBridge<"spending"> & {
     loadCandidatePage(input: SpendingCandidatePageRequest, requestId: string): Promise<SpendingPageReadResult<SpendingCandidatePageDto>>;
     cancelCandidatePage(requestId: string): Promise<boolean>;
-    applyPageAction(input: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
-    setPurchaseCategory(input: SpendingPurchaseCategoryRequest): Promise<SpendingPurchaseCategoryResult>;
-    loadPendingOverview(input: SpendingPendingOverviewRequest): Promise<SpendingPageReadResult<SpendingPendingOverviewDto>>;
-    loadMergeLog(input: SpendingMergeLogRequest): Promise<SpendingPageReadResult<SpendingMergeLogDto>>;
-    loadMonthInsight(input: SpendingMonthInsightRequest): Promise<SpendingPageReadResult<SpendingMonthInsightDto>>;
-    loadMerchantStats(input: SpendingMerchantStatsRequest): Promise<SpendingPageReadResult<SpendingMerchantStatsDto>>;
-    confirmStrongCandidates(input: SpendingStrongConfirmRequest): Promise<SpendingStrongConfirmResult>;
-    rankPairingCandidates(input: SpendingPairingCandidatesInput): Promise<SpendingPairingCandidatesResult>;
     prewarmPairingCandidates(input: SpendingPairingPrewarmInput): Promise<SpendingPairingPrewarmResult>;
   };
   automation: {
@@ -313,9 +280,7 @@ export type OctopusBeakApi = {
     openPreviewStructureReportIssue(taskId: string): Promise<{ ok: true }>;
   };
   /** Manual Assets (ADR 0087); the worker parses every command again before it runs. */
-  manualAssets: {
-    apply(command: ManualAssetCommand): Promise<ManualAssetCommandResult>;
-  };
+  manualAssets: FinancialBridge<"manualAssets">;
   data: {
     getVersion(): Promise<DataVersionSnapshot>;
     acknowledgeVersion(version: number): Promise<DataVersionSnapshot>;

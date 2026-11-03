@@ -1,6 +1,6 @@
 # Automation IPC forwards to one desktop service
 
-Status: accepted
+Status: accepted; its renderer financial operation list is now derived from the contracts, see [ADR 0098](0098-a-financial-contract-declares-its-renderer-bridge.md)
 
 `electron/ipc.ts` held the Automation logic behind every `automation:*` channel: the block read with its credential fallback and data-version guard, the device-registration validators, the certificate dialog, the setup-guide, prerequisite and structure-report links, runtime readiness and fatal reporting, and the runtime-changed broadcast. The handlers reached Electron (`dialog`, `shell`, `app`, `BrowserWindow`) and module singletons directly, so nothing but source regexes in `ipc.check.ts` could check them.
 

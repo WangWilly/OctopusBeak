@@ -10,13 +10,15 @@ import { NO_PROVENANCE } from "../src/lib/shared-ledger/provenance.ts";
 import type { LiveViewDependency, LiveViewDependencySignals } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
-  createPGliteFinancialRegistry,
-  prewarmPGlitePairingCandidates,
-  PGliteFinancialError,
   PGLITE_FINANCIAL_OPERATIONS,
   type PGliteFinancialPort,
   type PGliteFinancialRegistry,
   type PGliteFinancialOperation,
+} from "./pglite-financial-contracts.ts";
+import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import {
+  createPGliteFinancialRegistry,
+  prewarmPGlitePairingCandidates,
 } from "./pglite-financial-registry.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-requirements.ts";

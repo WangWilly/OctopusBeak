@@ -3,13 +3,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
-  createPGliteFinancialLocalPort,
-  createPGliteFinancialRpcServer,
-  type PGliteFinancialRegistry,
-} from "./pglite-financial-registry.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+  PGliteFinancialError,
+} from "./pglite-financial-rpc-client.ts";
+import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
+import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import { PGliteCanonicalCreditCardAdmissionError } from "../src/ledger/pglite/credit-card.ts";
 import {

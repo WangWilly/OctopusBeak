@@ -4,12 +4,13 @@ import type { OctopusBeakInvokeChannels } from "./preload.ts";
 import type { AutomationDesktopService } from "../src/lib/automation/server/automation-desktop-service.ts";
 import type { SettingsDesktopService } from "../src/lib/settings/server/settings-desktop-service.ts";
 import type { SpendingDesktopService } from "../src/lib/spending/server/spending-desktop-service.ts";
-import type {
-  PGliteFinancialArgs,
-  PGliteFinancialOperation,
-  PGliteFinancialPort,
-  PGliteFinancialResult,
-} from "./pglite-financial-rpc-client.ts";
+import {
+  RENDERER_FINANCIAL_OPERATIONS,
+  type PGliteFinancialPort,
+  type RendererFinancialGroup,
+  type RendererFinancialMethod,
+  type RendererFinancialOperation,
+} from "./pglite-financial-contracts.ts";
 
 export type InvokeChannel = {
   [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];
@@ -30,43 +31,30 @@ export type OctopusBeakInvokeHandlers = {
     : never;
 };
 
+type PreloadChannel<Group extends PropertyKey, Method extends PropertyKey> =
+  Group extends keyof OctopusBeakInvokeChannels
+    ? Method extends keyof OctopusBeakInvokeChannels[Group] ? OctopusBeakInvokeChannels[Group][Method] : never
+    : never;
+
 /**
- * Financial operations the renderer may call. Each is its own preload channel
- * and its handler only forwards to the worker, which validates the arguments
- * against the operation's contract. A preload channel named after an
- * operation but missing here has no handler, so it fails to compile.
+ * Each renderer financial operation whose preload channel is missing or is
+ * not its own name under its declared group and method (ADR 0098).
  */
-export const RENDERER_FINANCIAL_OPERATIONS = [
-  "financial.spending.recordPage",
-  "financial.spending.pageAction",
-  "financial.spending.setPurchaseCategory",
-  "financial.spending.pendingOverview",
-  "financial.spending.mergeLog",
-  "financial.spending.monthInsight",
-  "financial.spending.merchantStats",
-  "financial.spending.confirmStrongCandidates",
-  "financial.spending.pairing",
-  "financial.manualAssets.apply",
-] as const satisfies readonly Extract<InvokeChannel, PGliteFinancialOperation>[];
-
-export type ForwardedFinancialChannel = typeof RENDERER_FINANCIAL_OPERATIONS[number];
-
-type Forward<Op extends PGliteFinancialOperation> =
-  (event: IpcMainInvokeEvent, ...args: Extract<PGliteFinancialArgs<Op>, readonly unknown[]>) => Promise<PGliteFinancialResult<Op>>;
-
-/** Each forwarded operation whose arguments or result differ from its bridge method. */
-type MismatchedForwards = {
-  [Op in ForwardedFinancialChannel]: Forward<Op> extends OctopusBeakInvokeHandlers[Op] ? never : Op;
-}[ForwardedFinancialChannel];
+type MisroutedFinancialBridges = {
+  [Op in RendererFinancialOperation]:
+    [PreloadChannel<RendererFinancialGroup<Op>, RendererFinancialMethod<Op>>] extends [never] ? Op
+      : [PreloadChannel<RendererFinancialGroup<Op>, RendererFinancialMethod<Op>>] extends [Op] ? never : Op;
+}[RendererFinancialOperation];
 
 /**
- * Forwarding handlers for every renderer financial operation. When one's
- * arguments or result differ from its bridge method, this returns never and
- * spreading it into the handler record fails to compile.
+ * Forwarding handlers for every renderer financial operation; the worker
+ * validates the arguments against the operation's contract. When preload
+ * routes a bridge method to another channel, this returns never and spreading
+ * it into the handler record fails to compile.
  */
 export function financialForwardHandlers(
   financial: PGliteFinancialPort,
-): [MismatchedForwards] extends [never] ? Pick<OctopusBeakInvokeHandlers, ForwardedFinancialChannel> : never {
+): [MisroutedFinancialBridges] extends [never] ? Pick<OctopusBeakInvokeHandlers, RendererFinancialOperation> : never {
   return Object.fromEntries(RENDERER_FINANCIAL_OPERATIONS.map((operation) => [
     operation,
     (_event: IpcMainInvokeEvent, ...args: readonly unknown[]) => financial.request(operation, args as never),

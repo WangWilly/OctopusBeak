@@ -5,11 +5,13 @@ import {
   type PGliteOperationalOperation,
   type PGliteOperationalRpcClient,
 } from "./pglite-operational-rpc.ts";
+import type {
+  PGliteFinancialOperation,
+  PGliteFinancialRequestOptions,
+  PGliteFinancialPort,
+} from "./pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
-  type PGliteFinancialOperation,
-  type PGliteFinancialRequestOptions,
-  type PGliteFinancialPort,
   type PGliteFinancialRpcClient,
 } from "./pglite-financial-rpc-client.ts";
 import {

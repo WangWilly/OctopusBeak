@@ -11,7 +11,7 @@ import {
   type PGliteChildProvider,
 } from "./pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import { PGliteFinancialError } from "./pglite-financial-registry.ts";
+import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
 
 function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClient>): PGliteChildProvider {
   return {

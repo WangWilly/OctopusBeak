@@ -29,7 +29,7 @@ import {
 } from "./window-options.ts";
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
 
 export function registerOctopusBeakIpc({
   automation,

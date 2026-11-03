@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
+import { createPGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
 import {
-  createPGliteFinancialRpcClient,
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
-  type PGliteFinancialPort,
-} from "./pglite-financial-registry.ts";
+} from "./pglite-financial-rpc-server.ts";
 
 test("queued interactive work starts before queued background work, one job at a time", async () => {
   const scheduler = createPGliteWorkScheduler();

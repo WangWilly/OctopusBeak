@@ -10,7 +10,7 @@ import {
 import {
   createPGliteFinancialRpcClient,
   type PGliteFinancialRpcClient,
-} from "./pglite-financial-registry.ts";
+} from "./pglite-financial-rpc-client.ts";
 
 type WorkerPort = Pick<Worker, "on" | "off" | "postMessage" | "terminate">;
 

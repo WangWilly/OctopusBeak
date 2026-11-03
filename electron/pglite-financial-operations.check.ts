@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  createPGliteFinancialRpcClient,
-  createPGliteFinancialRpcServer,
-  type PGliteFinancialPort,
-} from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
+import { createPGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
+import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
 
 test("an interactive page read runs before queued background reads", async () => {
   type Listener = (value: unknown) => void;

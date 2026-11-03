@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { collectionScopeAdmitsCommit } from "../src/lib/automation/server/collection-scope.ts";
 import type { ActiveAutomationTaskRun } from "../src/lib/automation/server/active-task-run.ts";
 import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
 import {
   createPGliteChildRpcServer,
   type PGliteChildRpcServer,
