@@ -12,12 +12,14 @@ import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts
 import {
   createPGliteFinancialRegistry,
   prewarmPGlitePairingCandidates,
+} from "./pglite-financial-registry.ts";
+import {
   PGliteFinancialError,
   PGLITE_FINANCIAL_OPERATIONS,
   type PGliteFinancialPort,
   type PGliteFinancialRegistry,
   type PGliteFinancialOperation,
-} from "./pglite-financial-registry.ts";
+} from "./pglite-financial-rpc-client.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-requirements.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";

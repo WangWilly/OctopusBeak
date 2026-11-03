@@ -1,8 +1,6 @@
 import type { SpendingCandidatePageRequest, SpendingPairingPrewarmInput } from "../model.ts";
-import {
-  prewarmPGlitePairingCandidates,
-  type PGliteFinancialPort,
-} from "../../../../electron/pglite-financial-registry.ts";
+import { prewarmPGlitePairingCandidates } from "../../../../electron/pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "../../../../electron/pglite-financial-rpc-client.ts";
 
 /** Everything the spending desktop service reaches outside itself. */
 export type SpendingDesktopServiceDeps = Readonly<{

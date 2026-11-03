@@ -1,10 +1,13 @@
 import type {
+  PGliteFinancialPageActionEvents,
+  PGliteWorkScheduler,
+} from "./pglite-financial-registry.ts";
+import type {
   PGliteFinancialExpectedSources,
   PGliteFinancialOperation,
   PGliteFinancialRegistry,
   PGliteFinancialResult,
 } from "./pglite-financial-rpc-client.ts";
-import type { PGliteFinancialPageActionEvents, PGliteWorkScheduler } from "./pglite-financial-registry.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
 import { SPENDING_LIVE_VIEW } from "./pglite-financial-spending-live-view.ts";
 

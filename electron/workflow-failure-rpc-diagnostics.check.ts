@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  createPGliteFinancialRpcClient,
   createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
-  type PGliteFinancialRegistry,
 } from "./pglite-financial-registry.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import {
+  createPGliteFinancialRpcClient,
+  type PGliteFinancialRegistry,
+  PGliteFinancialError,
+} from "./pglite-financial-rpc-client.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
 import { PGliteCanonicalCreditCardAdmissionError } from "../src/ledger/pglite/credit-card.ts";
 import {

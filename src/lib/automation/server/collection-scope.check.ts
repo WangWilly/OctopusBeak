@@ -11,11 +11,13 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
-  createPGliteFinancialRpcClient,
   createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
-  type PGliteFinancialRegistry,
 } from "../../../../electron/pglite-financial-registry.ts";
+import {
+  createPGliteFinancialRpcClient,
+  type PGliteFinancialRegistry,
+} from "../../../../electron/pglite-financial-rpc-client.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {

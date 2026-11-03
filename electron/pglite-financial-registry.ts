@@ -1,27 +1,4 @@
-import {
-  type SpendingCandidatePageDto,
-  type SpendingCandidatePageRequest,
-  type SpendingPageActionRequest,
-  type SpendingPageActionResult,
-  type SpendingRecordPageDto,
-  type SpendingRecordPageRequest,
-} from "../src/lib/spending/model.ts";
-import type {
-  SpendingPairingCandidatesInput,
-  SpendingPairingCandidatesResult,
-  SpendingPurchaseCategoryRequest,
-  SpendingPurchaseCategoryResult,
-  SpendingMergeLogDto,
-  SpendingMergeLogRequest,
-  SpendingMerchantStatsDto,
-  SpendingMerchantStatsRequest,
-  SpendingMonthInsightDto,
-  SpendingMonthInsightRequest,
-  SpendingPendingOverviewDto,
-  SpendingPendingOverviewRequest,
-  SpendingStrongConfirmRequest,
-  SpendingStrongConfirmResult,
-} from "../src/lib/spending/model.ts";
+import type { SpendingPageActionResult } from "../src/lib/spending/model.ts";
 import { NO_PREVIEW_VISIBILITY, type PreviewVisibility } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   createPGliteSpendingQuery,
@@ -31,20 +8,15 @@ import {
 } from "../src/ledger/pglite/spending-command.ts";
 import {
   createPGliteCanonicalSourceStore,
-  type PGliteCanonicalFinancialCommitRequest,
-  type PGliteCanonicalSourceAdmissionRequest,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
   commitPGliteCanonicalDepositCapture,
-  type PGliteCanonicalDepositCommitRequest,
 } from "../src/ledger/pglite/deposit.ts";
 import {
   commitPGliteCanonicalMixedCapture,
-  type PGliteCanonicalMixedCommitRequest,
 } from "../src/ledger/pglite/mixed-commit.ts";
 import {
   commitPGliteCanonicalBalanceCapture,
-  type PGliteCanonicalBalanceCaptureRequest,
 } from "../src/ledger/pglite/balance.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
@@ -54,21 +26,16 @@ import {
   commitPGliteCanonicalCreditCardBalanceCapture,
   commitPGliteCanonicalCreditCardCapture,
   PGliteCanonicalCreditCardAdmissionError,
-  type PGliteCanonicalCreditCardBalanceCaptureRequest,
-  type PGliteCanonicalCreditCardCaptureRequest,
 } from "../src/ledger/pglite/credit-card.ts";
 import {
   commitPGliteCanonicalLoanCapture,
-  type PGliteCanonicalLoanCommitRequest,
 } from "../src/ledger/pglite/loan.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
   listPGliteTdccFundAccounts,
-  type PGliteCanonicalInvestmentCommitRequest,
 } from "../src/ledger/pglite/investment.ts";
 import {
   resolvePGliteAccountIdentityContinuity,
-  type AccountIdentityContinuityRequest,
 } from "../src/ledger/pglite/account-identity-continuity.ts";
 import {
   canonicalResetRequiredNamespaces,
@@ -80,8 +47,6 @@ import {
   queryPGliteCurrentLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentSettlementGroups,
   queryPGliteCurrentInvestmentFundingRelations,
-  type PGliteCanonicalLoanRelationResolutionRequest,
-  type PGliteCanonicalInvestmentRelationResolutionRequest,
 } from "../src/ledger/pglite/relations.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
@@ -105,10 +70,7 @@ import {
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
-import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
 import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
-
-
 import {
   isPGliteFinancialOperation,
   PGLITE_FINANCIAL_CONTRACTS,
@@ -120,10 +82,8 @@ import {
   type PGliteFinancialResponse,
   type PGliteFinancialPort,
   type PGliteFinancialRegistry,
-  type PGliteFinancialRpcClient,
   type PGliteFinancialRpcPort,
 } from "./pglite-financial-rpc-client.ts";
-export * from "./pglite-financial-rpc-client.ts";
 
 type RpcPort = PGliteFinancialRpcPort;
 export type PGliteFinancialPageActionEvents = Readonly<{

@@ -7,8 +7,8 @@ import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from 
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAdmission,
-  type PGliteFinancialPort,
 } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-rpc-client.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../src/ledger/pglite/workflow-client.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,
