@@ -39,7 +39,6 @@
       },
       "items": [
         {
-          "provider": "fubon",
           "product": "domestic-deposit",
           "itemKey": "fubon-financial-t+0-dpxNUBxz1737-0",
           "command": {
@@ -257,10 +256,10 @@
                 ]
               }
             }
-          ]
+          ],
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "domestic-deposit",
           "itemKey": "fubon-financial-t+2-meyVpAs7u5-A-0",
           "command": {
@@ -430,10 +429,10 @@
                 "counterpartyEvidence": []
               }
             }
-          ]
+          ],
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "current-balance",
           "itemKey": "current-balance:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
           "command": {
@@ -590,10 +589,10 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "current-balance",
           "itemKey": "current-balance:sha256:vDs0CJ-ClzKK8l2njVwmuw27nIVQhxQ2x6I-0B5YZUc",
           "command": {
@@ -750,7 +749,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "fubon"
         }
       ]
     }
