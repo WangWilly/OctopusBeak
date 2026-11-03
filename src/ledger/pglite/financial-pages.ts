@@ -97,20 +97,13 @@ function addSigned(
   }
 }
 
-/**
- * Without history, the renderer valued accounts at today's date; a date past
- * every stored rate picks the same latest rates without a clock.
- */
-const LATEST_RATES = "9999-12-31";
-
 function netPosition(
   accounts: readonly AccountRowDto[],
   net: Map<string, AggregatedAmount>,
-  history: PGliteDailyHistory,
+  valuationDate: string,
   rates: readonly ExchangeRateRecord[],
   markers: SummaryMarker,
 ): NetPositionDto {
-  const valuationDate = valuationDateFor(history.dailyHistory, accounts, LATEST_RATES);
   const current = currentNetPosition(accounts, indexExchangeRates(rates), valuationDate);
   const incomplete = markers.incomplete === true;
   return current.value === null
@@ -126,7 +119,7 @@ function netPosition(
 
 function overviewSummary(
   accounts: readonly AccountRowDto[],
-  history: PGliteDailyHistory,
+  valuationDate: string,
   rates: readonly ExchangeRateRecord[],
 ): OverviewSummaryDto {
   const liabilities = accounts.filter((account) => account.group === "liability");
@@ -142,7 +135,7 @@ function overviewSummary(
   addSigned(assetValue, investmentTotals, 1);
   const markers = summaryMarkers(accounts);
   return {
-    net: netPosition(accounts, net, history, rates, markers.net),
+    net: netPosition(accounts, net, valuationDate, rates, markers.net),
     assets: { amounts: amountLines(assetValue), ...markers.assets },
     liabilities: { amounts: amountLines(liabilityTotals), ...markers.liabilities },
   };
@@ -154,6 +147,7 @@ function mapOverview(
   history: PGliteDailyHistory,
   prices: readonly PGliteHoldingPrice[],
   outsideAccounts: readonly AccountRowDto[],
+  valuationDate: string,
 ): OverviewPageDto {
   const projection = result.projection;
   const canonicalAccounts: AccountRowDto[] = projection.accounts.map((account) => ({
@@ -181,12 +175,13 @@ function mapOverview(
     historyAvailability: history.dailyHistory.length > 0 ? "available" : "unavailable",
     sourceGaps: projection.sourceGaps.map((gap) => ({ ...gap })),
     importedAt: projection.importedAt,
-    summary: overviewSummary(accounts, history, rates),
+    summary: overviewSummary(accounts, valuationDate, rates),
     dailyHistory: history.dailyHistory.map((row) => ({ ...row })),
     dailyHistoryByAccount: history.dailyHistoryByAccount,
     accounts,
     holdingPrices: holdingPricesForPositions(projection.positions, prices),
     exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+    valuationDate,
   };
 }
 
@@ -247,14 +242,16 @@ async function readHistoryWithOutside(
   const outside = await readOutsideFinancialData(reader, scope);
   const rates = await readHeldCurrencyRates(reader, result, canonical, outside);
   const history = withBalanceSeriesHistory(canonical, outside.series, countableWithRates(rates));
-  return { canonical, history, outside, rates };
+  // Decided once here so the Net position and every renderer figure on a page use the same rates (ADR 0095).
+  const valuationDate = valuationDateFor(history.dailyHistory, rates, scope.today);
+  return { canonical, history, outside, rates, valuationDate };
 }
 
 export async function readOverviewPage(reader: PGliteReader, scope: FinancialPageScope): Promise<OverviewPageDto> {
   const result = await createPGliteCanonicalOverviewQuery(reader, { expectedSources: scope.expectedSources }).current();
-  const { history, outside, rates } = await readHistoryWithOutside(reader, result, scope);
+  const { history, outside, rates, valuationDate } = await readHistoryWithOutside(reader, result, scope);
   const prices = await readPGliteHoldingPrices(reader, result.projection.knowledgePoint);
-  return mapOverview(result, rates, history, prices, outside.accounts);
+  return mapOverview(result, rates, history, prices, outside.accounts, valuationDate);
 }
 
 async function readProductPage(
@@ -263,7 +260,7 @@ async function readProductPage(
   product: "assets" | "liabilities",
 ) {
   const result = await createPGliteCanonicalOverviewQuery(reader, { expectedSources: scope.expectedSources }).current();
-  const { canonical, history, outside, rates } = await readHistoryWithOutside(reader, result, scope);
+  const { canonical, history, outside, rates, valuationDate } = await readHistoryWithOutside(reader, result, scope);
   const projection = product === "assets"
     ? selectPGliteOverviewAssets(result.projection)
     : selectPGliteOverviewLiabilities(result.projection);
@@ -283,6 +280,7 @@ async function readProductPage(
       ...Object.fromEntries(outsideAccounts.map((account) => [account.id, history.dailyHistoryByAccount[account.id] ?? []])),
     },
     exchangeRates: rates.map(({ rateDate, currency, twdPerUnit }) => ({ rateDate, currency, twdPerUnit })),
+    valuationDate,
   };
 }
 

@@ -20,3 +20,10 @@ test("the total, side figure and chart mark manual and preview data with markers
   assert.match(source, /<PageTotalCard[\s\S]*?provenance=\{summary\.state === "ready" \? summary\.provenance : NO_PROVENANCE\}/);
   assert.match(source, /<OriginMarkers provenance=\{stackedChart\.provenance\} align="end" \/>/);
 });
+
+test("an incomplete assets total shows the incomplete copy in the card and the side value, never a figure", () => {
+  assert.match(source, /\$: incomplete = summary\.state === "ready" && summary\.incomplete/);
+  assert.match(source, /: incomplete\s*\? \$t\.preview\.incomplete/);
+  assert.match(source, /sideValueSensitive=\{!incomplete\}/);
+  assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}\s*incompleteNote=\{\$t\.overview\.incompleteRate\}/);
+});

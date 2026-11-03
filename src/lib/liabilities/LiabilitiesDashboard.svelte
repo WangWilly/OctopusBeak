@@ -21,7 +21,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   } from "$lib/shared-ledger/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { totalIncomplete } from "$lib/shared-ledger/preview-account.ts";
-  import { accountShares, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
+  import { accountShares } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
   import { currencyCount, formatAmount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
@@ -70,7 +70,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: incomplete = totalIncomplete(liabilities.accounts);
+  $: unknownAmount = totalIncomplete(liabilities.accounts);
+  $: incomplete = unknownAmount || (summary.state === "ready" && summary.incomplete);
   $: provenance = summary.state === "ready" ? summary.provenance : NO_PROVENANCE;
   $: totalProvenance = summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE;
   $: sideValue = isEmpty
@@ -89,7 +90,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     return accountShares(
       accounts,
       indexExchangeRates(liabilities.exchangeRates),
-      valuationDateFor(liabilities.dailyHistory, accounts, today),
+      liabilities.valuationDate,
     );
   }
 
@@ -145,6 +146,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
         {incomplete}
+        incompleteNote={unknownAmount ? null : $t.overview.incompleteRate}
         {provenance}
         notes={isEmpty ? [$t.liabilities.empty.totalNote] : [
           summary.state === "ready" && summary.unconvertedCurrencies.length > 0

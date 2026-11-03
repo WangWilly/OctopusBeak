@@ -12,7 +12,8 @@ test("liabilities exposes canonical coverage gaps and keeps awaiting ahead of pa
 });
 
 test("an incomplete liabilities total shows the incomplete copy in the card and the side value, never a figure", () => {
-  assert.match(source, /\$: incomplete = totalIncomplete\(liabilities\.accounts\)/);
+  assert.match(source, /\$: unknownAmount = totalIncomplete\(liabilities\.accounts\)/);
+  assert.match(source, /\$: incomplete = unknownAmount \|\| \(summary\.state === "ready" && summary\.incomplete\)/);
   assert.match(source, /: incomplete\s*\? \$t\.preview\.incomplete/);
   assert.match(source, /<PageTotalCard[\s\S]*?\{incomplete\}[\s\S]*?\{provenance\}/);
 });

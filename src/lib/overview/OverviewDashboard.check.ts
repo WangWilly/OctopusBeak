@@ -22,6 +22,7 @@ const base: OverviewPageDto = {
   accounts: [],
   holdingPrices: [],
   exchangeRates: [],
+  valuationDate: "2026-10-01",
 };
 
 test("every card reads one model built from the live overview page", () => {
@@ -64,12 +65,16 @@ test("overview does not render balance-basis notices", () => {
   assert.doesNotMatch(source, /usesAvailableBalance|usesEstimatedCredit|data-balance-basis=/);
 });
 
-test("an incomplete Net position or Liabilities metric replaces its figure with the incomplete copy", () => {
+test("an incomplete Net position or Liabilities total replaces its figure with the incomplete copy", () => {
   assert.match(source, /\bnet = overview\.summary\.net;/);
   assert.match(source, /liabilitiesMetric = overview\.summary\.liabilities;/);
   assert.match(source, /sideValue = net\.incomplete\s*\? \$t\.preview\.incomplete/);
   assert.match(source, /<NetWorthCard[\s\S]*?incomplete=\{net\.incomplete\}/);
-  assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\.incomplete === true\}/);
+  assert.match(source, /state="liabilities"[\s\S]*?incomplete=\{liabilitiesMetric\.incomplete === true \|\| model\.liabilityAllocation\.incomplete\}/);
+});
+
+test("an allocation total with a verified account and no rate shows the incomplete copy", () => {
+  assert.match(source, /state="assets"[\s\S]*?incomplete=\{model\.assetAllocation\.incomplete\}/);
 });
 
 test("each overview figure carries the provenance of what it counts", () => {

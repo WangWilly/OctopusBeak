@@ -40,12 +40,14 @@ function only(owner: AccountRowDto, history: DailyHistoryRowDto[]): Partial<Over
 }
 
 /** The current Net position the ledger publishes, from the same inputs the model reads. */
-function currentNet(dto: OverviewModelInput, today: string) {
-  return currentNetPosition(dto.accounts, indexExchangeRates(dto.exchangeRates), valuationDateFor(dto.dailyHistory, dto.accounts, today));
+function currentNet(dto: OverviewModelInput) {
+  return currentNetPosition(dto.accounts, indexExchangeRates(dto.exchangeRates), dto.valuationDate);
 }
 
+/** The page as the ledger would publish it on 2026-10-05, valuation date included. */
 function input(overrides: Partial<OverviewModelInput>): OverviewModelInput {
   return {
+    valuationDate: valuationDateFor(overrides.dailyHistory ?? [], overrides.exchangeRates ?? [], "2026-10-05"),
     importedAt: null,
     accounts: [],
     dailyHistory: [],
@@ -62,7 +64,7 @@ test("each history date converts at that date's rate, so an FX-only move shows o
     exchangeRates: [rate("2026-10-01", "USD", 30), rate("2026-10-02", "USD", 31)],
   });
   const model = readOverview(dto, { today: "2026-10-02" });
-  const current = currentNet(dto, "2026-10-02");
+  const current = currentNet(dto);
   assert.deepEqual(model.series, [{ date: "2026-10-01", value: 3000, provenance: NO_PROVENANCE }, { date: "2026-10-02", value: 3100, provenance: NO_PROVENANCE }]);
   assert.deepEqual(model.netWorth.chips[0], {
     kind: "latest", date: "2026-10-02", previousDate: "2026-10-01", isToday: true, change: 100, pct: 100 / 3000,
@@ -210,16 +212,18 @@ test("allocations group assets by kind, list each debt, and relate them", () => 
     exchangeRates: [rate("2026-10-01", "USD", 30)],
   });
   const model = readOverview(dto, { today: "2026-10-05" });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.deepEqual(model.assetAllocation.slices.map((slice) => [slice.category, slice.value]), [
     ["brokerage", 1000], ["fund", 500], ["bank", 500], ["foreign", 300],
   ]);
   assert.equal(model.assetAllocation.total, 2300);
   assert.equal(model.assetAllocation.valuationDate, "2026-10-04");
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["EUR"], "an unconvertible account is named, not silently priced");
+  assert.equal(model.assetAllocation.incomplete, true, "the verified EUR account has no rate");
   assert.deepEqual(model.liabilityAllocation.slices.map((slice) => [slice.account.id, slice.share]), [["loan", 0.8], ["card", 0.2]]);
   assert.equal(model.liabilityAllocation.total, 1000);
-  assert.equal(model.liabilityAllocation.ratio, 1000 / 2300);
+  assert.equal(model.liabilityAllocation.incomplete, false);
+  assert.equal(model.liabilityAllocation.ratio, null, "no debt ratio against an incomplete Assets total");
   assert.equal(current.value, null, "the headline is withheld while a held currency has no rate");
 });
 
@@ -281,7 +285,7 @@ test("a preview balance without a rate never blanks verified net worth", () => {
     accounts: [account("bank", "bank", twd(1000)), previewAccount("preview:usd", usd(10))],
     dailyHistory: [row("2026-10-05", twd(1000))],
   });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.equal(current.value, 1000);
   assert.deepEqual(current.provenance, NO_PROVENANCE);
   assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
@@ -293,7 +297,7 @@ test("a preview balance with a rate is converted into net worth and marked", () 
     dailyHistory: [row("2026-10-05", twd(1000))],
     exchangeRates: [rate("2026-10-01", "USD", 32)],
   });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.equal(current.value, 1320);
   assert.deepEqual(current.provenance, PREVIEW);
   assert.deepEqual(current.unconvertedCurrencies, []);
@@ -304,7 +308,7 @@ test("a counted TWD preview balance marks net worth beside a rateless preview on
     accounts: [previewAccount("preview:twd", twd(500)), previewAccount("preview:usd", usd(10))],
     dailyHistory: [row("2026-10-05", twd(500))],
   });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.equal(current.value, 500);
   assert.deepEqual(current.provenance, PREVIEW);
   assert.deepEqual(current.unconvertedCurrencies, ["USD"]);
@@ -316,10 +320,11 @@ test("a rateless or balance-less preview account leaves the allocation unmarked"
     dailyHistory: [row("2026-10-05", twd(1000))],
   });
   const model = readOverview(dto, { today: "2026-10-05" });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.equal(model.assetAllocation.total, 1000);
   assert.deepEqual(model.assetAllocation.provenance, NO_PROVENANCE);
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["USD"]);
+  assert.equal(model.assetAllocation.incomplete, false, "a preview account without a rate leaves the total complete");
   assert.equal(current.value, 1000);
   assert.deepEqual(current.provenance, NO_PROVENANCE);
 });
@@ -329,7 +334,7 @@ test("a canonical account without a rate still blanks net worth", () => {
     accounts: [account("bank", "bank", twd(1000)), account("fx", "foreign", usd(10))],
     dailyHistory: [row("2026-10-05", twd(1000))],
   });
-  const current = currentNet(dto, "2026-10-05");
+  const current = currentNet(dto);
   assert.equal(current.value, null);
 });
 
@@ -419,6 +424,7 @@ test("the liability allocation's marker follows the accounts its rate-aware tota
   assert.equal(rateless.liabilityAllocation.total, 200);
   assert.deepEqual(rateless.liabilityAllocation.unconvertedCurrencies, ["USD"]);
   assert.deepEqual(rateless.liabilityAllocation.provenance, NO_PROVENANCE, "a loan left out for lack of a rate marks nothing");
+  assert.equal(rateless.liabilityAllocation.incomplete, false, "a preview loan without a rate leaves the total complete");
 
   const counted = readOverview(input({
     accounts: [account("bank", "bank", twd(1000)), previewLoan("preview:loan", twd(300))],

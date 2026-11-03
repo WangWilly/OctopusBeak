@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, ExchangeRateDto } from "../shared-ledger/types.ts";
 import { readAssetsSummary, type AssetsSummaryInput } from "./assets-summary.ts";
+import { valuationDateFor } from "../shared-ledger/twd-valuation.ts";
 import { NO_PROVENANCE, originProvenance } from "../shared-ledger/provenance.ts";
 
 const MANUAL = originProvenance("manual");
@@ -30,12 +31,14 @@ const twd = (value: number): CurrencyAmountDto[] => [{ currency: "TWD", value }]
 const usd = (value: number): CurrencyAmountDto[] => [{ currency: "USD", value }];
 const rate = (rateDate: string, currency: string, twdPerUnit: number): ExchangeRateDto => ({ rateDate, currency, twdPerUnit });
 
+/** The page as the ledger would publish it on 2026-10-05, valuation date included. */
 function input(overrides: Partial<AssetsSummaryInput>): AssetsSummaryInput {
-  return { accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
+  const valuationDate = valuationDateFor(overrides.dailyHistory ?? [], overrides.exchangeRates ?? [], "2026-10-05");
+  return { valuationDate, accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
 }
 
 test("no asset account reads as empty, not as a zero total", () => {
-  assert.deepEqual(readAssetsSummary(input({}), { today: "2026-10-05" }), { state: "empty" });
+  assert.deepEqual(readAssetsSummary(input({})), { state: "empty" });
 });
 
 test("the total converts every account at the valuation date's rate and splits by kind", () => {
@@ -43,7 +46,7 @@ test("the total converts every account at the valuation date's rate and splits b
     accounts: [account("bank", "bank", twd(1000)), account("usd", "foreign", usd(100))],
     dailyHistory: [row("2026-10-04", twd(1000))],
     exchangeRates: [rate("2026-10-01", "USD", 30), rate("2026-10-05", "USD", 99)],
-  }), { today: "2026-10-05" });
+  }));
   assert.equal(summary.state, "ready");
   if (summary.state !== "ready") return;
   assert.equal(summary.valuationDate, "2026-10-04", "balances are valued at the newest history date");
@@ -56,12 +59,12 @@ test("the total converts every account at the valuation date's rate and splits b
   assert.equal(summary.twdValues.get("usd"), 3000, "positions read the account's value in TWD");
 });
 
-test("an account without a rate is left out of the total and named", () => {
+test("a verified account without a rate marks the total incomplete and is named", () => {
   const summary = readAssetsSummary(input({
     accounts: [account("bank", "bank", twd(1000)), account("jpy", "foreign", [{ currency: "JPY", value: 5000 }])],
     dailyHistory: [row("2026-10-04", twd(1000))],
-  }), { today: "2026-10-05" });
-  assert.equal(summary.state === "ready" && summary.total, 1000);
+  }));
+  assert.equal(summary.state === "ready" && summary.incomplete, true, "1000 TWD is not the Assets total");
   assert.deepEqual(summary.state === "ready" && summary.unconvertedCurrencies, ["JPY"]);
   assert.equal(summary.state === "ready" && summary.shares.has("jpy"), false);
 });
@@ -74,7 +77,7 @@ test("the 30-day change counts only accounts recorded on both dates, each at its
     dailyHistory: [row("2026-09-01", usd(100)), row("2026-10-05", [...usd(100), ...twd(50_000)])],
     dailyHistoryByAccount: { usd: usdHistory, bank: bankHistory },
     exchangeRates: [rate("2026-09-01", "USD", 30), rate("2026-10-05", "USD", 31)],
-  }), { today: "2026-10-05" });
+  }));
   assert.equal(summary.state, "ready");
   if (summary.state !== "ready") return;
   assert.deepEqual(summary.trailing, {
@@ -94,7 +97,7 @@ test("history shorter than 30 days has no 30-day change", () => {
     accounts: [account("bank", "bank", twd(1000))],
     dailyHistory: history,
     dailyHistoryByAccount: { bank: history },
-  }), { today: "2026-10-05" });
+  }));
   assert.equal(summary.state === "ready" && summary.trailing, null);
 });
 
@@ -112,7 +115,7 @@ test("an ended manual vehicle that drives the 30-day change marks the total manu
     accounts: [account("bank", "bank", twd(1000)), vehicle],
     dailyHistory: [row("2026-09-01", twd(301_000)), row("2026-10-01", twd(1000)), row("2026-10-05", twd(1000))],
     dailyHistoryByAccount: { bank: bankHistory, "manual:car": vehicleHistory },
-  }), { today: "2026-10-05" });
+  }));
   assert.equal(summary.state, "ready");
   if (summary.state !== "ready") return;
   assert.equal(summary.total, 1000, "the ended vehicle counts toward nothing today");
@@ -136,7 +139,7 @@ test("an account closed before the span marks no later change", () => {
     accounts: [account("bank", "bank", twd(1200)), vehicle],
     dailyHistory: [row("2026-08-01", twd(301_000)), row("2026-08-15", twd(1000)), row("2026-09-01", twd(1100)), row("2026-10-05", twd(1200))],
     dailyHistoryByAccount: { bank: bankHistory, "manual:car": vehicleHistory },
-  }), { today: "2026-10-05" });
+  }));
   assert.equal(summary.state, "ready");
   if (summary.state !== "ready") return;
   assert.equal(summary.trailing?.change, 100);

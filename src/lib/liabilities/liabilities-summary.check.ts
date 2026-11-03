@@ -9,6 +9,7 @@ import type {
 } from "../shared-ledger/types.ts";
 import { readLiabilitiesSummary, readMortgageRepaid, type LiabilitiesSummaryInput } from "./liabilities-summary.ts";
 import { NO_PROVENANCE, originProvenance } from "../shared-ledger/provenance.ts";
+import { valuationDateFor } from "../shared-ledger/twd-valuation.ts";
 
 const PREVIEW = originProvenance("preview");
 
@@ -64,11 +65,13 @@ function debtRow(date: string, owed: number): DailyHistoryRowDto {
   return { date, netAssets: twd(-owed), dailyChange: [], assets: [], liabilities: twd(owed), accountChanges: [], positionCount: 0, provenance: NO_PROVENANCE };
 }
 
-function input(overrides: Partial<LiabilitiesSummaryInput>): LiabilitiesSummaryInput {
-  return { accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
-}
-
 const TODAY = "2026-10-05";
+
+/** The page as the ledger would publish it on TODAY, valuation date included. */
+function input(overrides: Partial<LiabilitiesSummaryInput>): LiabilitiesSummaryInput {
+  const valuationDate = valuationDateFor(overrides.dailyHistory ?? [], overrides.exchangeRates ?? [], TODAY);
+  return { valuationDate, accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
+}
 
 test("no liability account reads as empty", () => {
   assert.deepEqual(readLiabilitiesSummary(input({}), { today: TODAY }), { state: "empty" });
@@ -213,4 +216,20 @@ test("with no countable mortgage the tile is empty, and an omitted one is still 
   assert.deepEqual(readMortgageRepaid([account("verified-loan", "loan", 300)]), { shares: [], omitted: false });
   assert.deepEqual(readMortgageRepaid([previewLoan("x", "TWD", 900, { category: "housing", originalAmount: null })]),
     { shares: [], omitted: true });
+});
+
+test("a verified liability without a rate marks the total incomplete, while a preview one is only named", () => {
+  const usdLoan = (id: string): AccountRowDto => ({ ...account(id, "loan", 0), amountLines: [{ currency: "USD", value: 10 }] });
+  const verified = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), usdLoan("usd")] }), { today: TODAY });
+  assert.ok(verified.state === "ready");
+  assert.equal(verified.incomplete, true, "100 TWD is not the Liabilities total");
+  assert.deepEqual(verified.unconvertedCurrencies, ["USD"]);
+  const previewed = readLiabilitiesSummary(input({
+    accounts: [account("loan", "loan", 100), {
+      ...usdLoan("preview:usd"),
+      preview: { sourceId: "synthetic", product: "loan", lastCollectedAt: "2026-10-05T03:00:00.000Z", balanceTime: null, transactions: [] },
+    }],
+  }), { today: TODAY });
+  assert.ok(previewed.state === "ready");
+  assert.deepEqual([previewed.total, previewed.incomplete, previewed.unconvertedCurrencies], [100, false, ["USD"]]);
 });

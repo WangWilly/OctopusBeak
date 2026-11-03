@@ -9,7 +9,10 @@ import {
 import { mergeProvenance, NO_PROVENANCE, type Provenance } from "../shared-ledger/provenance.ts";
 import type { AssetsPageDto } from "./types.ts";
 
-export type AssetsSummaryInput = Pick<AssetsPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates">;
+export type AssetsSummaryInput = Pick<
+  AssetsPageDto,
+  "valuationDate" | "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates"
+>;
 
 /**
  * `empty`: no asset account exists. `ready` holds the converted total; its
@@ -25,6 +28,8 @@ export type AssetsSummary =
     trailing: SpanChange | null;
     slices: AssetAllocation["slices"];
     unconvertedCurrencies: string[];
+    /** A verified account has no rate, so `total` is not a complete TWD figure. */
+    incomplete: boolean;
     /** Each account's share of the converted total, for the table. */
     shares: ReadonlyMap<string, number>;
     /** Each account's converted value, for its positions. */
@@ -34,8 +39,8 @@ export type AssetsSummary =
     totalProvenance: Provenance;
   };
 
-export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
-  const side = readSideValuation(input, "assets", options.today);
+export function readAssetsSummary(input: AssetsSummaryInput): AssetsSummary {
+  const side = readSideValuation(input, "assets");
   if (!side) return { state: "empty" };
   const { valuationDate, rates, trailing } = side;
   const allocation = readAssetAllocation(input.accounts, rates, valuationDate);
@@ -46,6 +51,7 @@ export function readAssetsSummary(input: AssetsSummaryInput, options: { today: s
     trailing,
     slices: allocation.slices,
     unconvertedCurrencies: allocation.unconvertedCurrencies,
+    incomplete: allocation.incomplete,
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
     provenance: mergeProvenance(allocation.provenance, trailing?.provenance ?? NO_PROVENANCE),

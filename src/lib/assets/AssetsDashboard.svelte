@@ -49,11 +49,16 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     currency: chartCurrency,
     mode: "asset",
   });
-  $: summary = readAssetsSummary(assets, { today });
+  $: summary = readAssetsSummary(assets);
   $: assetAccounts = assets.accounts;
   $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));
-  $: sideValue = isEmpty ? "—" : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
+  $: incomplete = summary.state === "ready" && summary.incomplete;
+  $: sideValue = isEmpty
+    ? "—"
+    : incomplete
+      ? $t.preview.incomplete
+      : summary.state === "ready" ? formatTwd(summary.total, $locale) : "--";
   $: sideSub = isEmpty ? $t.assets.empty.side : $t.assets.sideSub(
     assetAccounts.length,
     currencyCount(assetAccounts.map((account) => account.amountLines)),
@@ -81,6 +86,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   sideLabel={$t.assets.sideLabel}
   {sideValue}
   {sideSub}
+  sideValueSensitive={!incomplete}
   sideProvenance={!isEmpty && summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE}
   searchPlaceholder={$t.assets.searchPlaceholder}
   bind:search
@@ -111,6 +117,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         ariaLabel={$t.assets.metricsAria}
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
+        {incomplete}
+        incompleteNote={$t.overview.incompleteRate}
         provenance={summary.state === "ready" ? summary.provenance : NO_PROVENANCE}
         notes={isEmpty
           ? [$t.assets.empty.totalNote]
