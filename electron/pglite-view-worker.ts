@@ -23,11 +23,13 @@ import {
 } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
-  createPGliteFinancialRegistry,
-  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
   type PGliteWorkScheduler,
+} from "./pglite-financial-rpc-server.ts";
+import {
+  createPGliteFinancialRegistry,
+  createPGliteFinancialLocalPort,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";

@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  createPGliteFinancialLocalPort,
-  createPGliteFinancialRpcServer,
-} from "./pglite-financial-registry.ts";
+import type { PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
   PGliteFinancialError,
-  type PGliteFinancialRegistry,
 } from "./pglite-financial-rpc-client.ts";
+import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
+import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";
 
 type Listener = (value: unknown) => void;
 

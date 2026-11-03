@@ -13,7 +13,7 @@ import {
   type SettingsServiceForwards,
   type SpendingServiceForwards,
 } from "./ipc-channels.ts";
-import { PGLITE_FINANCIAL_CONTRACTS, type PGliteFinancialPort } from "./pglite-financial-rpc-client.ts";
+import { PGLITE_FINANCIAL_CONTRACTS, type PGliteFinancialPort } from "./pglite-financial-contracts.ts";
 
 test("the renderer can reach no canonical write", () => {
   for (const operation of RENDERER_FINANCIAL_OPERATIONS) {

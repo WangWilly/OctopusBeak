@@ -9,7 +9,7 @@ import type {
   PGliteFinancialOperation,
   PGliteFinancialPort,
   PGliteFinancialResult,
-} from "./pglite-financial-rpc-client.ts";
+} from "./pglite-financial-contracts.ts";
 
 export type InvokeChannel = {
   [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];

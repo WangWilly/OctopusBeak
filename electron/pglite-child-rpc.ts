@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
 import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
+import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAdmission,
-} from "./pglite-financial-registry.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-rpc-client.ts";
+} from "./pglite-financial-rpc-server.ts";
 import { PGLITE_WORKFLOW_REQUIRED_ENV } from "../src/ledger/pglite/workflow-client.ts";
 import {
   PGLITE_CHILD_RPC_ENDPOINT_ENV,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PGliteFinancialPort } from "../../../../electron/pglite-financial-rpc-client.ts";
+import type { PGliteFinancialPort } from "../../../../electron/pglite-financial-contracts.ts";
 import type { SpendingCandidatePageRequest } from "../model.ts";
 import { createSpendingDesktopService } from "./spending-desktop-service.ts";
 
