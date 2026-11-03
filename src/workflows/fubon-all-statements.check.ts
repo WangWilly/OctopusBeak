@@ -5,7 +5,7 @@ import { createServer } from "vite";
 const source = await readFile(new URL("./fubon-all-statements.ts", import.meta.url), "utf8");
 assert.doesNotMatch(source, /from ["']libretto["']|export default workflow\(/u);
 assert.doesNotMatch(source, /export async function runFubonAllStatements\(/u);
-assert.match(source, /export async function runFubonAllStatementsWorkflow\(/u);
+assert.match(source, /export const fubonWorkflow = fubonWorkflowWith\(\);/u);
 
 const server = await createServer({
   configFile: false,
@@ -14,11 +14,13 @@ const server = await createServer({
   appType: "custom",
   logLevel: "silent",
 });
-const module = await server
-  .ssrLoadModule("/src/workflows/fubon-all-statements.ts")
-  .finally(() => server.close());
+const [module, sources, entries] = await Promise.all([
+  server.ssrLoadModule("/src/workflows/fubon-all-statements.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/sources/fubon.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/verified-entry.ts"),
+]).finally(() => server.close());
 
-assert.equal(typeof module.runFubonAllStatementsWorkflow, "function");
+assert.equal(typeof module.fubonWorkflow.run, "function");
 assert.equal("default" in module, false, "the App provider has no Libretto workflow default export");
 
 const credentials = { fubon_user_id: "synthetic-id", fubon_account: "synthetic-account" };
@@ -70,7 +72,16 @@ const page = {
   }),
 };
 await assert.rejects(
-  module.runFubonAllStatementsWorkflow(
+  entries.runVerifiedEntry(
+    sources.FUBON_SOURCE,
+    module.fubonWorkflowWith({
+      authenticate: async () => {
+        assert.deepEqual(retainedCookies, [
+          { domain: ".ctbcbank.com", name: "unrelated-session" },
+        ], "Fubon stale cookies are cleared before authentication without touching other banks");
+        throw new Error("authentication fixture reached");
+      },
+    }),
     {
       signal: new AbortController().signal,
       browser: { withPage: async (run: (value: typeof page) => Promise<unknown>) => run(page) },
@@ -81,14 +92,6 @@ await assert.rejects(
       managedIdentitySecret: "synthetic-managed-secret",
       statementTypes: ["deposit"],
       credentials: { ...credentials, fubon_password: "synthetic-password" },
-    },
-    {
-      authenticate: async () => {
-        assert.deepEqual(retainedCookies, [
-          { domain: ".ctbcbank.com", name: "unrelated-session" },
-        ], "Fubon stale cookies are cleared before authentication without touching other banks");
-        throw new Error("authentication fixture reached");
-      },
     },
   ),
   /authentication fixture reached/u,

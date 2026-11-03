@@ -54,19 +54,20 @@ registerHooks({
   },
 });
 
-const { runCathayAllProviderWorkflow } =
+const { cathayAllWorkflow } =
   await import("../../workflows/cathay-all-statements.ts");
 const { collectCathayForeignFinancialCaptures } =
   await import("../../workflows/cathay-foreign-statements.ts");
 const { CATHAY_SOURCE } = await import("./server/sources/cathay.ts");
+const { runVerifiedEntry } = await import("./server/verified-entry.ts");
 
 /** Runs Cathay as the executor does: the Product collection run bound to CATHAY_SOURCE and this input. */
 function runCathay(
   context: WorkflowContextWith<"financialCommit", "previewWrite">,
   input: unknown,
-  dependencies?: Parameters<typeof runCathayAllProviderWorkflow>[2],
+  dependencies?: Parameters<typeof cathayAllWorkflow>[0],
 ) {
-  return runCathayAllProviderWorkflow(withBoundProducts(context, CATHAY_SOURCE, input), input, dependencies);
+  return runVerifiedEntry(CATHAY_SOURCE, cathayAllWorkflow(dependencies), withBoundProducts(context, CATHAY_SOURCE, input), input);
 }
 
 /** Cathay's UI renders twelve-digit domestic and foreign account numbers. */
@@ -772,15 +773,15 @@ test("an empty attached selection collects nothing and keeps the verified summar
   assert.equal(output.status, "financial-admitted");
 });
 
-test("a Cathay run with neither verified nor attached products is invalid input", async () => {
+test("a Cathay run refuses an empty selection and an attached product Cathay does not offer", async () => {
   const harness = attachedHarness();
   await assert.rejects(
     runCathay(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: [] }, collectionDependencies()),
-    /input are invalid/u,
+    (error: unknown) => error instanceof FailureCodeError && error.errorCode === "collection-scope-changed",
   );
   await assert.rejects(
     runCathay(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["deposit"] }, collectionDependencies()),
-    /input are invalid/u,
+    (error: unknown) => error instanceof FailureCodeError && error.errorCode === "workflow-failed",
   );
 });
 

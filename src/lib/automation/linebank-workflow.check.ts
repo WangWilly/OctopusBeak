@@ -16,11 +16,12 @@ import type {
 } from "./workflow-executor.ts";
 import { LINEBANK_SOURCE } from "./server/sources/linebank.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
-  runLineBankProviderWorkflow,
+  lineBankWorkflow,
   type LineBankAccount,
   type LineBankTransactionsResponse,
 } from "../../workflows/linebank-statements.ts";
@@ -307,7 +308,7 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
   try {
     process.chdir(directory);
     const harness = createContext();
-    const result = await runLineBankProviderWorkflow(harness.context, input);
+    const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
 
     assert.deepEqual(result, {
       status: "financial-admitted",
@@ -339,13 +340,13 @@ test("LINE Bank queries twelve months inclusive ending on the run's Taipei date 
   });
   const harness = createContext({ page });
   // 2026-09-25T12:00Z is 20:00 on 2026-09-25 in Taipei.
-  await runLineBankProviderWorkflow(harness.context, input);
+  await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
   assert.deepEqual([...new Set(queried)], ["20250926-20260925"]);
 });
 
 test("a LINE Bank run that commits a zero-record capture is financial-admitted, not source-only", async () => {
   const harness = createContext({ page: createPage({ noTransactions: true }) });
-  const result = await runLineBankProviderWorkflow(harness.context, input);
+  const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
   assert.equal(result.status, "financial-admitted", "LINE Bank stages no source assertion, so a committed run is financial (ADR 0064)");
   assert.equal(result.counts.statementRowCount, 0);
   assert.ok((result.counts.committedCount ?? 0) > 0);
@@ -354,20 +355,20 @@ test("a LINE Bank run that commits a zero-record capture is financial-admitted, 
 test("LINE Bank closes an approved alertdialog on an already signed-in page before it collects", async () => {
   const page = createPage({ notice: true });
   const harness = createContext({ page });
-  const result = await runLineBankProviderWorkflow(harness.context, input);
+  const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
   assert.equal(result.status, "financial-admitted");
   assert.equal(page.noticeOpen(), false);
 });
 
 test("LINE Bank rejects malformed and incomplete sources before any commit", async () => {
   const malformed = createContext({ page: createPage({ malformedTransactions: true }) });
-  await assert.rejects(runLineBankProviderWorkflow(malformed.context, input), (error: unknown) =>
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, malformed.context, input), (error: unknown) =>
     error instanceof ProductCollectionInterruptedError && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.commits.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ incompleteTransactions: true }) });
-  await assert.rejects(runLineBankProviderWorkflow(incomplete.context, input), (error: unknown) =>
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, incomplete.context, input), (error: unknown) =>
     error instanceof ProductCollectionInterruptedError && error.errorCode === "source-validation-failed");
   assert.equal(incomplete.commits.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
@@ -377,7 +378,7 @@ for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`LINE Bank names a ${stop} commit ${errorCode}`, async () => {
     const harness = createContext({ financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(
-      runLineBankProviderWorkflow(harness.context, input),
+      runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input),
       assertStoppedRun("deposit", 2, errorCode),
     );
   });
@@ -389,7 +390,7 @@ test("LINE Bank waits for delayed automatic sign-in without human fallback and h
     page,
     onAssistance: () => page.setSignedIn?.(true),
   });
-  const result = await runLineBankProviderWorkflow(automatic.context, input);
+  const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, automatic.context, input);
   assert.equal(result.status, "financial-admitted");
   assert.deepEqual(automatic.assistance, []);
   assert.ok(!automatic.events.some((event) => event.code === "human-assistance-requested"));
@@ -426,7 +427,7 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
     page: createPage({ signedIn: false, onPoll: () => { elapsed += 30_000; } }),
   });
   await assert.rejects(
-    runLineBankProviderWorkflow(pending.context, input),
+    runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, pending.context, input),
     /Sign-in did not settle within 120000 ms/u,
   );
   assert.equal(elapsed, 120_000);

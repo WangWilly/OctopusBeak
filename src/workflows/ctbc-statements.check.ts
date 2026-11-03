@@ -237,7 +237,7 @@ function stagingHarness(signal = new AbortController().signal) {
     stage(snapshot: CtbcDepositSourceSnapshot, accounts: readonly Readonly<{ accountId: string; balance: string }>[] | Error) {
       return stageCtbcDeposit(snapshot, { credentials: {
         ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password",
-      }, statementTypes: ["deposit"] }, context, product, async () => {
+      }, statementTypes: ["deposit"], attachedPreviewProducts: [] }, context, product, async () => {
         balanceReads += 1;
         if (accounts instanceof Error) throw accounts;
         return ctbcCurrentDepositResponse(accounts, currentRow.providerServerTime);

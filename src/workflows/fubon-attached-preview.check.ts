@@ -5,12 +5,14 @@ import { parsePreviewWrite, type PreviewDepositCollection, type PreviewWrite } f
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { collectFubonForeignCurrency, type FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
-import { runFubonAllStatementsWorkflow } from "./fubon-all-statements.ts";
+import { fubonWorkflowWith } from "./fubon-all-statements.ts";
 import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
 import {
   BALANCE_ROWS,
@@ -200,7 +202,7 @@ const foreignPort = (calls: string[], fail = false): FubonAttachedPreviewPort =>
 
 async function runWorkflow(input: ReturnType<typeof workflowInput>, port: FubonAttachedPreviewPort, calls: string[]) {
   const harness = workflowHarness();
-  const output = await runFubonAllStatementsWorkflow(withBoundProducts(harness.context, FUBON_SOURCE, input), input, {
+  const output = await runVerifiedEntry(FUBON_SOURCE, fubonWorkflowWith({
     authenticate: async () => {
       calls.push("signed-in");
       return { assertSession: async () => { calls.push("session-checked"); } } as never;
@@ -215,7 +217,7 @@ async function runWorkflow(input: ReturnType<typeof workflowInput>, port: FubonA
     collectCreditCard: async () => { throw new Error("card must not run"); },
     collectLoan: async () => { throw new Error("loan must not run"); },
     attachedPreviewPort: () => port,
-  });
+  }), withBoundProducts(harness.context, FUBON_SOURCE, input), input);
   return { ...harness, output };
 }
 
@@ -255,5 +257,9 @@ test("an attached-only selection signs in and collects only foreign currency; an
     ["deposit", "success", undefined], ["credit_card", "skipped", "not_selected"], ["loan", "skipped", "not_selected"],
   ]);
   assert.ok(!none.includes("fx-balances"), "no attached product is collected without a selection");
-  await assert.rejects(runWorkflow(workflowInput([], []), foreignPort([]), []), /missing or invalid/u, "an input with no product is refused");
+  await assert.rejects(
+    runWorkflow(workflowInput([], []), foreignPort([]), []),
+    (error: unknown) => error instanceof FailureCodeError && error.errorCode === "collection-scope-changed",
+    "an input with no product is refused",
+  );
 });

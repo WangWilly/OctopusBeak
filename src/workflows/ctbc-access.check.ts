@@ -7,7 +7,8 @@ import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
-import { runCtbcProviderWorkflow } from "./ctbc-statements.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
+import { ctbcWorkflow } from "./ctbc-statements.ts";
 
 const input = {
   credentials: { ctbc_user_id: "fixture", ctbc_account: "fixture", ctbc_password: "fixture" },
@@ -45,7 +46,7 @@ try {
   };
   let failure: unknown;
   try {
-    await runCtbcProviderWorkflow(withBoundProducts(context, CTBC_SOURCE, input), input);
+    await runVerifiedEntry(CTBC_SOURCE, ctbcWorkflow, withBoundProducts(context, CTBC_SOURCE, input), input);
   } catch (error) {
     failure = error;
   } finally {
@@ -76,7 +77,7 @@ try {
   };
   let acceptedFailure: unknown;
   try {
-    await runCtbcProviderWorkflow(withBoundProducts(acceptedContext, CTBC_SOURCE, input), input);
+    await runVerifiedEntry(CTBC_SOURCE, ctbcWorkflow, withBoundProducts(acceptedContext, CTBC_SOURCE, input), input);
   } catch (error) {
     acceptedFailure = error;
   } finally {

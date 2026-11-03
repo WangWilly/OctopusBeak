@@ -9,9 +9,10 @@ import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "../li
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import type { PreviewProductCollectors } from "../lib/preview-sources/product-collection.ts";
 import { PreviewDataRejected } from "../lib/preview-sources/source-id.ts";
-import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
+import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import {
   collectHncbCreditCards,
@@ -21,7 +22,7 @@ import {
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   readHncbDepositSource,
-  runHncbProviderWorkflow,
+  hncbWorkflow,
   runHncbStatements,
   stageHncbDeposit,
 } from "./hncb-statements.ts";
@@ -384,9 +385,12 @@ test("the input accepts a card-only selection and refuses an empty one", async (
     browser: { withPage: async () => { throw new Error("page opened"); } },
   } as unknown as WorkflowContextWith<"financialCommit">;
   const credentials = { hncb_user_id: "synthetic-user", hncb_account: "synthetic-account", hncb_password: "synthetic-password" };
-  const run = (input: unknown) => runHncbProviderWorkflow(withBoundProducts(context, HNCB_SOURCE, input), input);
+  const run = (input: unknown) => runVerifiedEntry(HNCB_SOURCE, hncbWorkflow, withBoundProducts(context, HNCB_SOURCE, input), input);
   await assert.rejects(run({ credentials, statementTypes: [], attachedPreviewProducts: ["credit_card"] }), /page opened/u);
-  await assert.rejects(run({ credentials, statementTypes: [], attachedPreviewProducts: [] }), /input or sign-in details/u);
+  await assert.rejects(
+    run({ credentials, statementTypes: [], attachedPreviewProducts: [] }),
+    (error: unknown) => error instanceof FailureCodeError && error.errorCode === "collection-scope-changed",
+  );
 });
 
 test("HNCB cancellation after verified collection keeps actual commit-item counts", async () => {

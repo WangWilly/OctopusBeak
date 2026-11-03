@@ -7,7 +7,7 @@ const [allSource, domesticSource, foreignSource] = await Promise.all([
   readFile(new URL("./cathay-foreign-statements.ts", import.meta.url), "utf8"),
 ]);
 
-assert.match(allSource, /export async function runCathayAllProviderWorkflow/);
+assert.match(allSource, /export function cathayAllWorkflow/);
 assert.match(allSource, /collectCathayDomesticFinancialRequests/);
 assert.match(allSource, /collectCathayForeignFinancialCaptures/);
 assert.doesNotMatch(

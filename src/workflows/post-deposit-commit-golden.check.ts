@@ -6,11 +6,12 @@ import { ProductCollectionInterruptedError } from "../lib/automation/product-col
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import { postCurrentDepositResponse } from "./post-current-deposit-balances.fixtures.ts";
 import {
   parsePostStatementResponse,
-  runPostProviderWorkflow,
+  postWorkflowWith,
   stagePostDeposit,
   type PostQueriedStatement,
   type PostRawStatementRow,
@@ -98,7 +99,7 @@ async function run(
   };
   let error: string | null = null;
   let errorCode: string | null = null;
-  const output = await runPostProviderWorkflow(withBoundProducts(context, POST_SOURCE, input), input, {
+  const output = await runVerifiedEntry(POST_SOURCE, postWorkflowWith({
     collectDeposit: async (_page, parsedInput, runContext, product) => await stagePostDeposit(
       { observedAt: "2026-09-25T20:00:00+08:00", statements },
       parsedInput,
@@ -109,7 +110,7 @@ async function run(
         return postCurrentDepositResponse(balances);
       },
     ),
-  }).catch((caught: unknown) => {
+  }), withBoundProducts(context, POST_SOURCE, input), input).catch((caught: unknown) => {
     // The golden keeps the collector's own rejection, which the run carries as its cause.
     const original = caught instanceof ProductCollectionInterruptedError ? caught.cause : caught;
     if (caught instanceof ProductCollectionInterruptedError) errorCode = caught.errorCode;

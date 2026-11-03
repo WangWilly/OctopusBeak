@@ -17,7 +17,7 @@ assert.doesNotMatch(
   /emitAutomationProgress|node:fs\/promises|writeFile\(|pglite-child-rpc/u,
   "the typed Yuanta parent must not own logs, output files, or a direct persistence path",
 );
-assert.match(source, /export async function runYuantaAllStatementsWorkflow\(/u);
+assert.match(source, /export const yuantaWorkflow = yuantaWorkflowWith\(\);/u);
 assert.match(
   source,
   /collectDeposit[\s\S]*collectForeignCurrency[\s\S]*collectCreditCard[\s\S]*collectLoan[\s\S]*collectFund/u,
@@ -35,4 +35,4 @@ const loaded = await server
   .ssrLoadModule("/src/workflows/yuanta-all-statements.ts")
   .finally(() => server.close());
 assert.equal(loaded.default, undefined, "the parent must not export a Libretto workflow");
-assert.equal(typeof loaded.runYuantaAllStatementsWorkflow, "function");
+assert.equal(typeof loaded.yuantaWorkflow.run, "function");

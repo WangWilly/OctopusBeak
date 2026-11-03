@@ -24,7 +24,8 @@ import {
   type LineBankCurrentDepositAcquired,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
-import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
+import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
@@ -35,15 +36,9 @@ const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
-const typedInputSchema = z.object({
-  credentials: z.object({
-    linebank_user_id: z.string().trim().min(1),
-    linebank_account: z.string().trim().min(1),
-    linebank_password: z.string().trim().min(1),
-  }),
+const lineBankInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
-  statementTypes: z.array(z.literal("deposit")).min(1),
 });
 
 type DateRange = {
@@ -51,13 +46,9 @@ type DateRange = {
   endDate: string;
 };
 
-export type LineBankProviderWorkflowInput = z.infer<typeof typedInputSchema>;
-
-type LineBankCredentials = {
-  linebank_user_id?: string;
-  linebank_account?: string;
-  linebank_password?: string;
-};
+type LineBankVerifiedInput = VerifiedRunInput<typeof LINEBANK_CREDENTIAL_FIELDS, typeof LINEBANK_PRODUCTS>;
+type LineBankCredentials = LineBankVerifiedInput["credentials"];
+export type LineBankWorkflowInput = LineBankVerifiedInput & z.infer<typeof lineBankInputSchema>;
 
 export type LineBankAccount = {
   acctNbr?: string;
@@ -794,15 +785,6 @@ export async function linebankIsSignedIn(page: Page): Promise<boolean> {
   return (await firstVisibleMatch(transactionLinkLocator(page))) !== null;
 }
 
-function requireLineBankCredential(
-  credentials: LineBankCredentials,
-  key: keyof LineBankCredentials,
-): string {
-  const value = credentials[key]?.trim();
-  if (!value) throw new Error(`${key} credential is required.`);
-  return value;
-}
-
 /** Enter the transaction stage only after authentication has completed. */
 export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<void> {
   const { page } = scope;
@@ -1061,9 +1043,7 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
   return {
     signedIn: linebankIsSignedIn,
     fill: async (page, signal) => {
-      const nationalId = requireLineBankCredential(credentials, "linebank_user_id");
-      const userId = requireLineBankCredential(credentials, "linebank_account");
-      const password = requireLineBankCredential(credentials, "linebank_password");
+      const { linebank_user_id: nationalId, linebank_account: userId, linebank_password: password } = credentials;
       if (new URL(page.url()).pathname !== "/login")
         await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
       await withAbort(page.locator("#nationalId").fill(nationalId), signal);
@@ -1138,18 +1118,27 @@ function requireCurrentBalanceCoverage(
 }
 
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
-export async function runLineBankProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit" | "products">,
-  rawInput: unknown,
-): Promise<WorkflowRunResult> {
-  const parsed = typedInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("LINE Bank workflow credentials or input are missing or invalid.");
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
+export const lineBankWorkflow: VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  LineBankWorkflowInput,
+  WorkflowRunResult,
+  never,
+  LineBankVerifiedInput
+> = {
+  parseInput(verified, raw) {
+    const parsed = lineBankInputSchema.safeParse(raw);
+    if (!parsed.success) throw new Error("LINE Bank workflow input is invalid.");
+    return { ...verified, ...parsed.data };
+  },
+  run: runLineBankWorkflow,
+};
 
+async function runLineBankWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "products">,
+  input: LineBankWorkflowInput,
+): Promise<WorkflowRunResult> {
   return context.browser.withPage(async (page) => {
-    await signIn(context, page, LINEBANK_SOURCE, linebankSignInPlan(parsed.data.credentials));
+    await signIn(context, page, LINEBANK_SOURCE, linebankSignInPlan(input.credentials));
     const scope = frameScope(page, context.signal);
     await linebankAutoDismissApprovedAlert(scope);
     await linebankEnsureTransactionPage(scope);
@@ -1169,8 +1158,8 @@ export async function runLineBankProviderWorkflow(
           accountSnapshotAt = context.now();
           accounts = filterAccounts(
             accountSnapshot.accounts,
-            parsed.data.accountFilters,
-            parsed.data.currencyFilters,
+            input.accountFilters,
+            input.currencyFilters,
           );
           if (accounts.length === 0)
             throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");

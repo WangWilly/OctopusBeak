@@ -7,10 +7,11 @@ import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../../ledger/pglite/workflow-run.ts";
 import type { WorkflowContextWith } from "./workflow-executor.ts";
 import type { ProductCollectionInterruptedError, ProductStageRequest } from "./product-collection.ts";
-import type { runFubonAllStatementsWorkflow as runFubonAllStatementsWorkflowType } from "../../workflows/fubon-all-statements.ts";
+import type { FubonAllWorkflowDependencies, fubonWorkflowWith as fubonWorkflowWithType } from "../../workflows/fubon-all-statements.ts";
 import { strictSourceText } from "./source-text.ts";
 import type { withBoundProducts as withBoundProductsType } from "./product-collection.fixtures.ts";
 import type { VerifiedSource } from "./server/sources/verified-source.ts";
+import type { runVerifiedEntry as runVerifiedEntryType } from "./server/verified-entry.ts";
 import { createServer } from "vite";
 
 const server = await createServer({
@@ -21,12 +22,14 @@ const server = await createServer({
   logLevel: "silent",
 });
 // The bound Product collection run loads in the workflow's own module graph, as the executor's does.
-const [loaded, fixtures, sources] = await Promise.all([
+const [loaded, fixtures, sources, entries] = await Promise.all([
   server.ssrLoadModule("/src/workflows/fubon-all-statements.ts"),
   server.ssrLoadModule("/src/lib/automation/product-collection.fixtures.ts"),
   server.ssrLoadModule("/src/lib/automation/server/sources/fubon.ts"),
+  server.ssrLoadModule("/src/lib/automation/server/verified-entry.ts"),
 ]).finally(() => server.close());
-const runFubonAllStatementsWorkflowUnbound = loaded.runFubonAllStatementsWorkflow as typeof runFubonAllStatementsWorkflowType;
+const fubonWorkflowWith = loaded.fubonWorkflowWith as typeof fubonWorkflowWithType;
+const runVerifiedEntry = entries.runVerifiedEntry as typeof runVerifiedEntryType;
 const withBoundProducts = fixtures.withBoundProducts as typeof withBoundProductsType;
 const FUBON_SOURCE = sources.FUBON_SOURCE as VerifiedSource;
 
@@ -34,9 +37,9 @@ const FUBON_SOURCE = sources.FUBON_SOURCE as VerifiedSource;
 function runFubonAllStatementsWorkflow(
   context: WorkflowContextWith<"financialCommit" | "accountIdentity">,
   input: unknown,
-  overrides?: Parameters<typeof runFubonAllStatementsWorkflowType>[2],
+  overrides?: FubonAllWorkflowDependencies,
 ) {
-  return runFubonAllStatementsWorkflowUnbound(withBoundProducts(context, FUBON_SOURCE, input), input, overrides);
+  return runVerifiedEntry(FUBON_SOURCE, fubonWorkflowWith(overrides), withBoundProducts(context, FUBON_SOURCE, input), input);
 }
 
 const [depositSource, cardSource, loanSource] = await Promise.all([

@@ -21,10 +21,8 @@ import {
   type SourceDeviceRegistrationService,
 } from "./source-device-registration.ts";
 
-export type CathaySignInDetails = Required<CathayCredentials>;
-
 export type CathaySecretStore = Readonly<{
-  read(): Readonly<{ details: CathaySignInDetails | null; trustedUserId: string | null }>;
+  read(): Readonly<{ details: CathayCredentials | null; trustedUserId: string | null }>;
   markTrusted(userId: string): void;
 }>;
 
@@ -32,9 +30,9 @@ export function createCathaySecretStore(credentialsPath: string, codec: Automati
   return {
     read() {
       const credentials = readAutomationCredentialsFile(credentialsPath, codec);
-      const userId = credentials.LIBRETTO_CLOUD_CATHAY_USER_ID;
-      const account = credentials.LIBRETTO_CLOUD_CATHAY_ACCOUNT;
-      const password = credentials.LIBRETTO_CLOUD_CATHAY_PASSWORD;
+      const userId = credentials.LIBRETTO_CLOUD_CATHAY_USER_ID?.trim();
+      const account = credentials.LIBRETTO_CLOUD_CATHAY_ACCOUNT?.trim();
+      const password = credentials.LIBRETTO_CLOUD_CATHAY_PASSWORD?.trim();
       return {
         details: userId && account && password
           ? { cathay_user_id: userId, cathay_account: account, cathay_password: password }

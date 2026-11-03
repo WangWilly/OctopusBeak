@@ -6,11 +6,12 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { ESUN_SOURCE } from "../lib/automation/server/sources/esun.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { PGlite } from "@electric-sql/pglite";
 import {
   buildEsunCanonicalCreditCardCapture,
-  runEsunCreditCardProviderWorkflow,
+  esunCreditCardWorkflow,
   classifyEsunPostLoginPage,
   buildEsunSettledPeriodsFromIssuerSummaries,
   attachEsunIssuerStatementPeriods,
@@ -49,7 +50,7 @@ const workflowSource = await readFile(
 );
 assert.match(workflowSource, /esun-credit-card-admission\.ts/);
 assert.match(workflowSource, /credit-card-current-balance-admission\.ts/);
-assert.match(workflowSource, /export async function runEsunCreditCardProviderWorkflow/);
+assert.match(workflowSource, /export const esunCreditCardWorkflow/);
 assert.doesNotMatch(workflowSource, /from "libretto"/);
 assert.doesNotMatch(workflowSource, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun/);
 assert.doesNotMatch(workflowSource, /node:fs\/promises|downloads\/esun-credit-card-statements|writeStatementFile/);
@@ -231,7 +232,7 @@ assert.equal(
 assert.notEqual(
   identity.sourceConnectionKey,
   deriveEsunCanonicalHumanAttestation(
-    { esun_user_id: "other-user", esun_account: "account-009" },
+    { ...credentials, esun_user_id: "other-user" },
     managedSecret,
   )?.sourceConnectionKey,
 );
@@ -242,7 +243,7 @@ assert.notEqual(
 );
 assert.equal(
   deriveEsunCanonicalHumanAttestation(
-    { esun_user_id: "user-id-001" },
+    { ...credentials, esun_account: " " },
     managedSecret,
   ),
   undefined,
@@ -889,7 +890,7 @@ for (const scenario of ["unavailable portal", "cancellation while waiting for th
       statementTypes: [],
       attachedPreviewProducts: ["deposit"],
     };
-    await assert.rejects(runEsunCreditCardProviderWorkflow(withBoundProducts(context, ESUN_SOURCE, input), input), (error: unknown) => {
+    await assert.rejects(runVerifiedEntry(ESUN_SOURCE, esunCreditCardWorkflow, withBoundProducts(context, ESUN_SOURCE, input), input), (error: unknown) => {
       if (scenario === "unavailable portal") {
         assert.ok(error instanceof PreviewSourceFailure);
         assert.equal(error.reason, "unexpected-response", "keep the sole product's existing failure classification");

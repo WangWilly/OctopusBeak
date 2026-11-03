@@ -4,10 +4,10 @@ import {
   POST_CAPTCHA_INPUT_SEMANTIC_ID,
   POST_CAPTCHA_STAGE_ID,
 } from "../lib/automation/post-captcha.ts";
-import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
+import { POST_CREDENTIAL_FIELDS, POST_PRODUCTS, POST_SOURCE } from "../lib/automation/server/sources/post.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ElementHandle, Locator, Page, Response } from "playwright";
-import { z } from "zod";
 import {
   SourceTextIntegrityError,
   strictSourceText,
@@ -51,20 +51,8 @@ const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
 const DISPATCHER_PATH = "/pst/EsoafDispatcher";
 
-const typedWorkflowInputSchema = z.object({
-  credentials: z.object({
-    post_user_id: z.string().trim().min(1),
-    post_account: z.string().trim().min(1),
-    post_password: z.string().trim().min(1),
-  }),
-  statementTypes: z.array(z.literal("deposit")).min(1),
-});
-
-export type PostCredentials = {
-  post_user_id?: string;
-  post_account?: string;
-  post_password?: string;
-};
+type PostVerifiedInput = VerifiedRunInput<typeof POST_CREDENTIAL_FIELDS, typeof POST_PRODUCTS>;
+export type PostCredentials = PostVerifiedInput["credentials"];
 
 export type PostRawStatementRow = {
   PRS_DATE?: string;
@@ -102,7 +90,7 @@ export type PostStatementResponseMetadata = Readonly<{
   requestPostData?: string | null;
 }>;
 
-export type PostWorkflowInput = z.infer<typeof typedWorkflowInputSchema>;
+export type PostWorkflowInput = PostVerifiedInput;
 
 /** Every account's terminal statement read from iPost, and when the read began (ADR 0065). */
 export type PostDepositSourceSnapshot = Readonly<{
@@ -140,17 +128,6 @@ type PostProductRunner = (
 export type PostWorkflowDependencies = Readonly<{
   collectDeposit?: PostProductRunner;
 }>;
-
-function requireCredential(
-  credentials: PostCredentials,
-  name: keyof PostCredentials,
-): string {
-  const value = credentials[name]?.trim();
-  if (!value) {
-    throw new Error(`Missing credential ${name}. Configure it in the App credential settings.`);
-  }
-  return value;
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
@@ -268,9 +245,9 @@ function sixMonthDateLabel(page: Page): Locator {
 
 export function postLoginFieldValues(credentials: PostCredentials) {
   return {
-    cifId: requireCredential(credentials, "post_user_id"),
-    userCode: requireCredential(credentials, "post_account"),
-    password: requireCredential(credentials, "post_password"),
+    cifId: credentials.post_user_id,
+    userCode: credentials.post_account,
+    password: credentials.post_password,
   };
 }
 
@@ -813,25 +790,38 @@ async function runPostDeposit(
   );
 }
 
-export async function runPostProviderWorkflow(
+export type PostWorkflowEntry = VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  PostWorkflowInput,
+  WorkflowRunResult,
+  never,
+  PostVerifiedInput
+>;
+
+/** Chunghwa Post's entry with its deposit runner replaced, for checks that run without a bank page. */
+export function postWorkflowWith(overrides: PostWorkflowDependencies): PostWorkflowEntry {
+  return {
+    parseInput: (verified) => verified,
+    run: (context, input) => runPostWorkflow(context, input, overrides),
+  };
+}
+
+export const postWorkflow = postWorkflowWith({});
+
+async function runPostWorkflow(
   context: WorkflowContextWith<"financialCommit" | "products">,
-  rawInput: unknown,
-  overrides: PostWorkflowDependencies = {},
+  input: PostWorkflowInput,
+  overrides: PostWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
-  const parsed = typedWorkflowInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("Chunghwa Post workflow sign-in details are missing or invalid.");
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
   const collectDeposit = overrides.collectDeposit ?? runPostDeposit;
 
   return await context.browser.withPage(async (page) => {
-    await signIn(context, page, POST_SOURCE, postSignInPlan(parsed.data.credentials));
+    await signIn(context, page, POST_SOURCE, postSignInPlan(input.credentials));
 
     let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
-        const collected = await collectDeposit(page, parsed.data, context, product);
+        const collected = await collectDeposit(page, input, context, product);
         // Every admitted account is one source capture.
         accountCount = collected.sourceCaptureCount;
         return collected;

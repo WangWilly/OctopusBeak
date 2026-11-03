@@ -8,7 +8,7 @@ import type { Page } from "playwright";
 import {
   parsePostStatementResponse,
   postRowsToStatementRows,
-  runPostProviderWorkflow,
+  postWorkflowWith,
   stagePostDeposit,
   type PostQueriedStatement,
   type PostReadCurrentDepositBalanceResponse,
@@ -20,6 +20,7 @@ import type { ProductCollectionHandle, ProductStageRequest } from "./product-col
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { POST_SOURCE } from "./server/sources/post.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import {
@@ -292,6 +293,14 @@ function createContext(input: {
   return { context: withBoundProducts(context, POST_SOURCE, workflowInput), events, committed };
 }
 
+function runPost(
+  context: WorkflowContextWith<"financialCommit" | "products">,
+  input: unknown,
+  overrides: PostWorkflowDependencies,
+) {
+  return runVerifiedEntry(POST_SOURCE, postWorkflowWith(overrides), context, input);
+}
+
 const workflowInput = {
   credentials: {
     post_user_id: "synthetic-user-id",
@@ -299,6 +308,7 @@ const workflowInput = {
     post_password: "synthetic-password",
   },
   statementTypes: ["deposit" as const],
+  attachedPreviewProducts: [],
 };
 
 const observedAt = "2026-09-25T20:00:00+08:00";
@@ -418,7 +428,7 @@ test("Post typed workflow gets human assistance, admits complete source, and com
   let sourceCount = 0;
   try {
     process.chdir(outputDir);
-    const result = await runPostProviderWorkflow(harness.context, workflowInput, depositReading((text) => {
+    const result = await runPost(harness.context, workflowInput, depositReading((text) => {
       assert.equal(text, strictSourceText);
       assert.equal(harness.committed.length, 0, "commit waits for full source admission");
       sourceCount += 1;
@@ -447,7 +457,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   const harness = createContext({ page });
   const malformedBytes = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28]);
   await assert.rejects(
-    runPostProviderWorkflow(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
+    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
       bytes: malformedBytes,
       response: responseMetadata,
       text,
@@ -457,7 +467,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   assert.equal(harness.committed.length, 0);
 
   await assert.rejects(
-    runPostProviderWorkflow(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
+    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
       bytes: Buffer.from(JSON.stringify([screenEnvelope]), "utf8"),
       response: responseMetadata,
       text,
@@ -467,13 +477,13 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   assert.equal(harness.committed.length, 0);
 
   await assert.rejects(
-    runPostProviderWorkflow(harness.context, workflowInput, depositReading(() => [{ ...statement, rows: [] }])),
+    runPost(harness.context, workflowInput, depositReading(() => [{ ...statement, rows: [] }])),
     assertProductFailure("source-collection-failed", /source admission blocked/u),
   );
   assert.equal(harness.committed.length, 0);
 
   await assert.rejects(
-    runPostProviderWorkflow(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
+    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
       bytes: Buffer.from(JSON.stringify([
         {
           ...screenEnvelope,
@@ -496,7 +506,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`Post names a ${stop} commit ${errorCode}`, async () => {
     const harness = createContext({ page: createPage(true), financialCommit: stoppedCommitPort(stop) });
-    await assert.rejects(runPostProviderWorkflow(harness.context, workflowInput,
+    await assert.rejects(runPost(harness.context, workflowInput,
       depositReading(() => [statement])), assertStoppedRun("deposit", 2, errorCode));
   });
 }
@@ -514,7 +524,7 @@ test("Post typed workflow cancellation during human assistance stops before coll
     },
   });
   await assert.rejects(
-    runPostProviderWorkflow(harness.context, workflowInput, depositReading(() => [statement], () => {
+    runPost(harness.context, workflowInput, depositReading(() => [statement], () => {
       sourceCount += 1;
     })),
     /Post assistance cancelled/u,

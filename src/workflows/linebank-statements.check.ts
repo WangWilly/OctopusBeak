@@ -85,7 +85,7 @@ assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
 assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
 assert.match(linebankWorkflowSource, /captureCurrentStateSnapshots\(/u);
-assert.match(linebankWorkflowSource, /runLineBankProviderWorkflow/u);
+assert.match(linebankWorkflowSource, /export const lineBankWorkflow/u);
 assert.match(linebankWorkflowSource, /text:\s*context\.text/u);
 assert.doesNotMatch(
   linebankWorkflowSource,

@@ -23,7 +23,7 @@ import {
   normalizeTradeRows,
   parseReportPage,
   readYuantaTradeSource,
-  runYuantaTradeProviderWorkflow,
+  yuantaTradeWorkflow,
   stageYuantaTrade,
   type YuantaTradeCollectionInput,
   type YuantaTradeReportPage,
@@ -45,6 +45,7 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
 import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import {
@@ -936,7 +937,7 @@ test("records how many reports were collected when one report source fails", asy
   };
 
   await assert.rejects(
-    runYuantaTradeProviderWorkflow(withBoundProducts(context, YUANTA_TRADE_SOURCE, runInput), runInput, async (_page, input, runContext, product: ProductCollectionHandle) => {
+    runVerifiedEntry(YUANTA_TRADE_SOURCE, yuantaTradeWorkflow(async (_page, input, runContext, product: ProductCollectionHandle) => {
       const snapshot = await readYuantaTradeSource({
         captureReport: async (reportType) => {
           requestedReportTypes.push(reportType);
@@ -945,7 +946,7 @@ test("records how many reports were collected when one report source fails", asy
         },
       }, input, runContext, product);
       return stageYuantaTrade(snapshot, input, runContext, product);
-    }),
+    }), withBoundProducts(context, YUANTA_TRADE_SOURCE, runInput), runInput),
     assertProductFailure("source-collection-failed", /fixture: report source rejected/),
   );
 

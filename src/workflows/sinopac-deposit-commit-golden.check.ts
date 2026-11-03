@@ -6,10 +6,11 @@ import { ProductCollectionInterruptedError } from "../lib/automation/product-col
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   readSinopacDepositSource,
-  runSinopacProviderWorkflow,
+  sinopacWorkflowWith,
   stageSinopacDeposit,
   type SinopacAccount,
   type SinopacDepositSource,
@@ -123,12 +124,12 @@ async function record(name: string, scenario: Scenario): Promise<Record<string, 
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     const recorder = recordDepositCommit();
-    const output = await runSinopacProviderWorkflow(workflowContext(recorder), input, depositFrom({
+    const output = await runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith(depositFrom({
       listAccounts: async () => scenario.accounts.map(({ response: _response, ...account }) => account),
       queryTransactions: async (account) =>
         scenario.accounts.find((candidate) => candidate.DataValue === account.DataValue)!.response,
       readCurrentBalances: async () => sinopacCurrentDepositResponse(scenario.current),
-    }));
+    })), workflowContext(recorder), input);
     const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);
     return recorded;
@@ -212,14 +213,14 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
   mock.timers.enable({ apis: ["Date"], now: NOW });
   try {
     await assert.rejects(
-      runSinopacProviderWorkflow(workflowContext(recorder), input, depositFrom({
+      runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith(depositFrom({
         listAccounts: async () => [{ DataText: "SYNTHETIC TWD", DataValue: twdAccount, DisplayText: "TWD" }],
         queryTransactions: async () => rows(
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER A"),
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER B"),
         ),
         readCurrentBalances: async () => sinopacCurrentDepositResponse([balanceRow(twdAccount, "TWD", "新台幣", "800")]),
-      })),
+      })), workflowContext(recorder), input),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
         assert.equal(error.errorCode, "source-validation-failed");

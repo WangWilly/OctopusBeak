@@ -6,6 +6,7 @@ import test from "node:test";
 import type { Page, Response } from "playwright";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { YUANTA_TRADE_SOURCE } from "./server/sources/yuanta-trade.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { strictSourceText } from "./source-text.ts";
@@ -19,7 +20,7 @@ import {
 import {
   decodeYuantaTradeReportResponse,
   readYuantaTradeSource,
-  runYuantaTradeProviderWorkflow,
+  yuantaTradeWorkflow,
   stageYuantaTrade,
   type YuantaTradeProductRunner,
   yuantaTradeCaptchaCheckboxAssistanceStage,
@@ -141,6 +142,15 @@ function readingReports(
   };
 }
 
+/** Runs Yuanta Trade as the registry does, behind the shared input checks. */
+function runYuantaTrade(
+  context: WorkflowContextWith<"financialCommit" | "products">,
+  input: unknown,
+  collectSecurities: YuantaTradeProductRunner,
+) {
+  return runVerifiedEntry(YUANTA_TRADE_SOURCE, yuantaTradeWorkflow(collectSecurities), context, input);
+}
+
 const selectedInput = {
   credentials,
   statementTypes: ["securities"],
@@ -157,7 +167,7 @@ test("Yuanta Trade typed provider admits complete in-memory sources before injec
   const originalCwd = process.cwd();
   try {
     process.chdir(temp);
-    const output = await runYuantaTradeProviderWorkflow(
+    const output = await runYuantaTrade(
       harness.context,
       selectedInput,
       readingReports(async (reportType) => {
@@ -193,7 +203,7 @@ test("Yuanta Trade queries the run's Taipei date and the 90 days before it", asy
   // 16:30Z on Sep 24 is 00:30 on Sep 25 in Taipei; the machine's local date used to decide.
   const harness = createHarness({ now: "2026-09-24T16:30:00.000Z" });
   const queried: unknown[] = [];
-  await assert.rejects(runYuantaTradeProviderWorkflow(harness.context, selectedInput, async (_page, input) => {
+  await assert.rejects(runYuantaTrade(harness.context, selectedInput, async (_page, input) => {
     queried.push(input.dateRange);
     throw new Error("stop after reading the query range");
   }));
@@ -203,7 +213,7 @@ test("Yuanta Trade queries the run's Taipei date and the 90 days before it", asy
 test("Yuanta Trade typed provider rejects incomplete selected pages before first commit", async () => {
   const harness = createHarness();
   await assert.rejects(
-    runYuantaTradeProviderWorkflow(harness.context, selectedInput, readingReports(async (reportType) =>
+    runYuantaTrade(harness.context, selectedInput, readingReports(async (reportType) =>
       reportType === "Stock" ? report("Stock") : report("OtherTrade"),
     )),
     assertProductFailure("source-validation-failed", /source is incomplete/i),
@@ -216,7 +226,7 @@ for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`Yuanta Trade names a ${stop} commit ${errorCode}`, async () => {
     const harness = createHarness({ financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(
-      runYuantaTradeProviderWorkflow(
+      runYuantaTrade(
         harness.context,
         selectedInput,
         readingReports(async (reportType) => reportType === "Stock" ? report("Stock") : report("StockTrade")),

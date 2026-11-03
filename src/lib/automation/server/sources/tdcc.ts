@@ -1,5 +1,12 @@
 import { field, link, localized, NONBROWSER, type VerifiedSource, verifiedWorkflow } from "./verified-source.ts";
 
+/** ADR 0097: the TDCC workflow types its selection from this list. */
+export const TDCC_PRODUCTS = [
+  { id: "securities", stream: "investment" },
+  { id: "fund", stream: "investment-fund" },
+  { id: "settlement", stream: "domestic-deposit" },
+] as const;
+
 export const TDCC_SOURCE: VerifiedSource = {
   id: "tdcc",
   label: "TDCC",
@@ -66,11 +73,7 @@ export const TDCC_SOURCE: VerifiedSource = {
   integrationNamespace: "tdcc",
   statementSelection: {
     key: "LIBRETTO_CLOUD_TDCC_STATEMENT_TYPES",
-    products: [
-      { id: "securities", stream: "investment" },
-      { id: "fund", stream: "investment-fund" },
-      { id: "settlement", stream: "domestic-deposit" },
-    ],
+    products: TDCC_PRODUCTS,
   },
   task: {
     id: "sync-tdcc",
@@ -84,7 +87,7 @@ export const TDCC_SOURCE: VerifiedSource = {
     runtime: NONBROWSER,
     input: { statementTypes: true },
     async load() {
-      return (await import("../../tdcc-workflow.ts")).createTdccWorkflow().run;
+      return (await import("../../tdcc-workflow.ts")).createTdccWorkflow();
     },
   }),
 };

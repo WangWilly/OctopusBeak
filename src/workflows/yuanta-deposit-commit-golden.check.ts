@@ -28,7 +28,8 @@ registerHooks({
   },
 });
 
-const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
+const { yuantaWorkflowWith } = await import("./yuanta-all-statements.ts");
+const { runVerifiedEntry } = await import("../lib/automation/server/verified-entry.ts");
 const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
 const { YUANTA_SOURCE } = await import("../lib/automation/server/sources/yuanta.ts");
 const { stageYuantaDeposit, yuantaDepositQueryRange } = await import("./yuanta-statements.ts");
@@ -135,10 +136,10 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
       yuanta_password: "synthetic-password",
     },
   };
-  const result = await runYuantaAllStatementsWorkflow(withBoundProducts(workflowContext(recorder), YUANTA_SOURCE, input), input, {
+  const result = await runVerifiedEntry(YUANTA_SOURCE, yuantaWorkflowWith({
     signOut: async () => undefined,
     collectDeposit,
-  });
+  }), withBoundProducts(workflowContext(recorder), YUANTA_SOURCE, input), input);
   await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...recorder.recorded() }));
 }
 

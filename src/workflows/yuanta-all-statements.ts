@@ -7,7 +7,8 @@ import type {
   ProductCollectionSummary,
   ProductCollector,
 } from "../lib/automation/product-collection.ts";
-import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import { YUANTA_CREDENTIAL_FIELDS, YUANTA_PRODUCTS, YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { signIn } from "./sign-in.ts";
 import {
   deriveYuantaSourceConnectionKey,
@@ -47,15 +48,8 @@ function componentInputSchema(schema: z.ZodTypeAny) {
   return schema.optional().default({});
 }
 
-
-const appInputSchema = z.object({
+const yuantaInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
-  statementTypes: z.array(z.enum(["deposit", "foreign_currency", "credit_card", "loan", "fund"])).min(1),
-  credentials: z.object({
-    yuanta_user_id: z.string().trim().min(1),
-    yuanta_account: z.string().trim().min(1),
-    yuanta_password: z.string().min(1),
-  }),
   statements: componentInputSchema(yuantaStatementsInputSchema),
   foreignCurrency: componentInputSchema(yuantaForeignCurrencyStatementsInputSchema),
   loan: componentInputSchema(yuantaLoanStatementsInputSchema),
@@ -63,7 +57,12 @@ const appInputSchema = z.object({
   fund: componentInputSchema(yuantaFundStatementsInputSchema),
 });
 
-export type YuantaAllWorkflowInput = z.infer<typeof appInputSchema>;
+type YuantaVerifiedInput = VerifiedRunInput<typeof YUANTA_CREDENTIAL_FIELDS, typeof YUANTA_PRODUCTS>;
+export type YuantaAllWorkflowInput = YuantaVerifiedInput & z.infer<typeof yuantaInputSchema> & Readonly<{
+  sourceConnectionScope: string;
+  sourceConnectionKey: string;
+  canonicalHumanAttestation: NonNullable<ReturnType<typeof deriveYuantaCanonicalHumanAttestation>>;
+}>;
 
 type YuantaProductRunner<TInput> = (
   page: Page,
@@ -82,23 +81,38 @@ export type YuantaAllWorkflowDependencies = Readonly<{
 }>;
 
 /** Collect selected Yuanta products independently and commit each complete product. */
-export async function runYuantaAllStatementsWorkflow(
-  context: WorkflowContextWith<"financialCommit" | "products">,
-  rawInput: unknown,
+export function yuantaWorkflowWith(
   overrides: YuantaAllWorkflowDependencies = {},
+): VerifiedWorkflowEntry<"financialCommit" | "products", YuantaAllWorkflowInput, WorkflowRunResult, never, YuantaVerifiedInput> {
+  return {
+    parseInput(verified, raw) {
+      const parsed = yuantaInputSchema.safeParse(raw);
+      if (!parsed.success)
+        throw new Error("Yuanta workflow credentials or input are missing or invalid.");
+      const sourceConnectionScope = yuantaSourceConnectionScope(verified.credentials);
+      const sourceConnectionKey = deriveYuantaSourceConnectionKey(verified.credentials);
+      if (!sourceConnectionKey)
+        throw new Error("Yuanta all-statements requires a stable Source Connection identity.");
+      const canonicalHumanAttestation = deriveYuantaCanonicalHumanAttestation(
+        verified.credentials,
+        parsed.data.managedIdentitySecret,
+      );
+      if (!canonicalHumanAttestation)
+        throw new Error("Yuanta canonical identity could not be established.");
+      return { ...verified, ...parsed.data, sourceConnectionScope, sourceConnectionKey, canonicalHumanAttestation };
+    },
+    run: (context, input) => runYuantaWorkflow(context, input, overrides),
+  };
+}
+
+export const yuantaWorkflow = yuantaWorkflowWith();
+
+async function runYuantaWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "products">,
+  input: YuantaAllWorkflowInput,
+  overrides: YuantaAllWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
-  const parsed = appInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("Yuanta workflow credentials or input are missing or invalid.");
-  const credentials = parsed.data.credentials;
-  const sourceConnectionScope = yuantaSourceConnectionScope(credentials);
-  const sourceConnectionKey = deriveYuantaSourceConnectionKey(credentials);
-  if (!sourceConnectionKey)
-    throw new Error("Yuanta all-statements requires a stable Source Connection identity.");
-  const secret = parsed.data.managedIdentitySecret;
-  const canonicalHumanAttestation = deriveYuantaCanonicalHumanAttestation(credentials, secret);
-  if (!canonicalHumanAttestation)
-    throw new Error("Yuanta canonical identity could not be established.");
+  const { credentials, sourceConnectionScope, sourceConnectionKey, canonicalHumanAttestation } = input;
   const collectDeposit = overrides.collectDeposit ?? runYuantaStatements;
   const collectForeign = overrides.collectForeignCurrency ?? runYuantaForeignCurrencyStatements;
   const collectCreditCard = overrides.collectCreditCard ?? runYuantaCreditCardStatements;
@@ -110,33 +124,31 @@ export async function runYuantaAllStatementsWorkflow(
   // product parses its component input again.
   const collectors = (page: Page): Readonly<Record<YuantaAllWorkflowInput["statementTypes"][number], ProductCollector>> => ({
     deposit: (product) => collectDeposit(page, {
-      ...yuantaStatementsInputSchema.parse(parsed.data.statements),
+      ...yuantaStatementsInputSchema.parse(input.statements),
       sourceConnectionScope,
       sourceConnectionKey,
     }, context, product),
     foreign_currency: (product) => collectForeign(page, {
-      ...yuantaForeignCurrencyStatementsInputSchema.parse(parsed.data.foreignCurrency),
+      ...yuantaForeignCurrencyStatementsInputSchema.parse(input.foreignCurrency),
       yuantaUserId: credentials.yuanta_user_id,
     }, context, product),
     credit_card: (product) => collectCreditCard(page, {
-      ...yuantaCreditCardStatementsInputSchema.parse(parsed.data.creditCard),
+      ...yuantaCreditCardStatementsInputSchema.parse(input.creditCard),
       canonicalHumanAttestation,
-      instrumentFingerprintSecret: secret,
+      instrumentFingerprintSecret: input.managedIdentitySecret,
     }, context, product),
     loan: (product) => collectLoan(page, {
-      ...yuantaLoanStatementsInputSchema.parse(parsed.data.loan),
+      ...yuantaLoanStatementsInputSchema.parse(input.loan),
       sourceConnectionScope,
       sourceConnectionKey,
     }, context, product),
     fund: (product) => collectFund(page, {
-      ...yuantaFundStatementsInputSchema.parse(parsed.data.fund),
+      ...yuantaFundStatementsInputSchema.parse(input.fund),
       yuantaUserId: credentials.yuanta_user_id,
       yuantaAccount: credentials.yuanta_account,
     }, context, product),
   });
 
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
   return await context.browser.withPage(async (page) => {
     try {
       const { assertSession } = await signIn(context, page, YUANTA_SOURCE, yuantaBankSignInPlan(credentials));

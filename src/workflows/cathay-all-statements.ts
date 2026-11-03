@@ -32,7 +32,8 @@ import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { ATTACHED_PREVIEW_PRODUCTS } from "../lib/preview-sources/attached-products.ts";
+import { CATHAY_CREDENTIAL_FIELDS, CATHAY_PRODUCTS } from "../lib/automation/server/sources/cathay.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import {
   cathayAttachedPreviewCollectors,
   type CathayAttachedPreviewPort,
@@ -41,29 +42,15 @@ import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-p
 import { withAbort } from "./abort.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 
-const statementTypeSchema = z.enum(["domestic", "foreign_currency"]);
-const typedCathayInputSchema = z.object({
-  credentials: z.object({
-    cathay_user_id: z.string().trim().min(1),
-    cathay_account: z.string().trim().min(1),
-    cathay_password: z.string().trim().min(1),
-  }),
-  statementTypes: z.array(statementTypeSchema).default([]),
-  attachedPreviewProducts: z
-    .array(z.enum(ATTACHED_PREVIEW_PRODUCTS.cathay.products))
-    .default([]),
+const cathayInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
   domesticAccountFilters: z.array(z.string()).optional(),
   foreignAccountFilters: z.array(z.string()).optional(),
   currencyFilters: z.array(z.string()).default([]),
-}).refine(
-  (input) =>
-    input.statementTypes.length + input.attachedPreviewProducts.length > 0,
-);
+});
 
-export type CathayAllProviderWorkflowInput = z.infer<
-  typeof typedCathayInputSchema
->;
+type CathayVerifiedInput = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS, typeof CATHAY_PRODUCTS>;
+export type CathayAllProviderWorkflowInput = CathayVerifiedInput & z.infer<typeof cathayInputSchema>;
 export type CathayAllProviderWorkflowDependencies = Readonly<{
   createSession?: (
     page: Page,
@@ -103,21 +90,30 @@ function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRa
 /** App-owned Cathay group workflow. Every selected statement and balance
  * source is collected, strictly decoded, and admitted before this single
  * injected Canonical Financial Commit call. */
-export async function runCathayAllProviderWorkflow(
-  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
-  rawInput: unknown,
+export function cathayAllWorkflow(
   dependencies: CathayAllProviderWorkflowDependencies = {},
+): VerifiedWorkflowEntry<
+  "financialCommit" | "products",
+  CathayAllProviderWorkflowInput,
+  WorkflowRunResult,
+  "previewWrite",
+  CathayVerifiedInput
+> {
+  return {
+    parseInput(verified, raw) {
+      const parsed = cathayInputSchema.safeParse(raw);
+      if (!parsed.success) throw new Error("Cathay selected workflow input is invalid.");
+      return { ...verified, ...parsed.data };
+    },
+    run: (context, input) => runCathayAllWorkflow(context, input, dependencies),
+  };
+}
+
+async function runCathayAllWorkflow(
+  context: WorkflowContextWith<"financialCommit" | "products", "previewWrite">,
+  input: CathayAllProviderWorkflowInput,
+  dependencies: CathayAllProviderWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
-  const parsed = typedCathayInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error(
-      "Cathay credentials or selected workflow input are invalid.",
-    );
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
-
-  const input = parsed.data;
-
   return await context.browser.withPage(async (page) => {
     const source: CathayStrictSourceOptions = {
       text: context.text,

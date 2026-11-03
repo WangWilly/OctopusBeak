@@ -19,38 +19,34 @@ import {
   type FubonLoanProductInput,
 } from "./fubon-loan-statements.ts";
 import {
-  type FubonCredentials,
   type FubonDepositProductInput,
   fubonStatementsInputSchema,
   runFubonStatements,
 } from "./fubon-statements.ts";
 import { fubonLogin, hasFubonDuplicateLoginTerminal } from "./fubon-auth.ts";
-import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
-import { ATTACHED_PREVIEW_PRODUCTS } from "../lib/preview-sources/attached-products.ts";
+import { FUBON_CREDENTIAL_FIELDS, FUBON_PRODUCTS, FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
+import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { fubonAttachedPreviewCollectors, type FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
 import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { signIn, type ShellPlan, type SignedIn } from "./sign-in.ts";
 import {
   deriveFubonSourceConnectionKey,
+  type FubonStableLoginCredentials,
   fubonStableLoginScope,
 } from "./fubon-source-connection.ts";
 
 export { deriveFubonSourceConnectionKey } from "./fubon-source-connection.ts";
 
-const appInputSchema = z.object({
+const fubonInputSchema = z.object({
   managedIdentitySecret: z.string().trim().min(1),
-  statementTypes: z.array(z.enum(["deposit", "credit_card", "loan"])).default([]),
-  attachedPreviewProducts: z.array(z.enum(ATTACHED_PREVIEW_PRODUCTS.fubon.products)).default([]),
-  credentials: z.object({
-    fubon_user_id: z.string().trim().min(1),
-    fubon_account: z.string().trim().min(1),
-    fubon_password: z.string().min(1),
-  }),
   statements: fubonStatementsInputSchema.default(() => fubonStatementsInputSchema.parse({})),
   creditCards: fubonCreditCardStatementsInputSchema.default(() => fubonCreditCardStatementsInputSchema.parse({})),
   loans: fubonLoanStatementsInputSchema.default(() => fubonLoanStatementsInputSchema.parse({})),
-}).refine((input) => input.statementTypes.length + input.attachedPreviewProducts.length > 0);
+});
+
+type FubonVerifiedInput = VerifiedRunInput<typeof FUBON_CREDENTIAL_FIELDS, typeof FUBON_PRODUCTS>;
+export type FubonCredentials = FubonVerifiedInput["credentials"];
 
 const FUBON_CREDIT_CARD_IDENTITY_EPOCH = FUBON_CREDIT_CARD_IDENTITY_EPOCHS.current;
 
@@ -70,7 +66,7 @@ function hmacFubonIdentity(secret: string, value: unknown): string {
  * returned, logged, or persisted.
  */
 export function deriveFubonCanonicalHumanAttestation(
-  credentials: FubonCredentials,
+  credentials: FubonStableLoginCredentials,
   managedSecret: string,
 ):
   | {
@@ -147,7 +143,11 @@ async function signOutFubon(page: Page): Promise<void> {
     .catch(() => undefined);
 }
 
-export type FubonAllWorkflowInput = z.infer<typeof appInputSchema>;
+export type FubonAllWorkflowInput = FubonVerifiedInput & Readonly<{
+  deposit: FubonDepositProductInput;
+  creditCard: FubonCreditCardProductInput;
+  loan: FubonLoanProductInput;
+}>;
 
 type FubonAllWorkflowContext = WorkflowContextWith<"financialCommit" | "products" | "accountIdentity", "previewWrite">;
 
@@ -189,17 +189,12 @@ export function fubonSignInPlan(
   credentials: FubonCredentials,
   complete: (stage: VerificationStage) => Promise<void>,
 ): ShellPlan {
-  const login = fubonLogin(fubonCredentialValues(credentials), complete);
+  const login = fubonLogin({
+    userId: credentials.fubon_user_id,
+    account: credentials.fubon_account,
+    password: credentials.fubon_password,
+  }, complete);
   return { own: login.run, dialogs: login.observe, session: fubonSessionProbe };
-}
-
-function fubonCredentialValues(credentials: FubonCredentials) {
-  const userId = credentials.fubon_user_id?.trim();
-  const account = credentials.fubon_account?.trim();
-  const password = credentials.fubon_password;
-  if (!userId || !account || !password)
-    throw new Error("Fubon workflow credentials are missing or invalid.");
-  return { userId, account, password };
 }
 
 async function authenticateFubonForApp(
@@ -216,28 +211,49 @@ async function authenticateFubonForApp(
 }
 
 /** Collect selected Fubon products independently and commit each complete product. */
-export async function runFubonAllStatementsWorkflow(
-  context: FubonAllWorkflowContext,
-  rawInput: unknown,
+export function fubonWorkflowWith(
   overrides: FubonAllWorkflowDependencies = {},
-): Promise<WorkflowRunResult> {
-  const parsed = appInputSchema.safeParse(rawInput);
-  if (!parsed.success)
-    throw new Error("Fubon workflow credentials or input are missing or invalid.");
+): VerifiedWorkflowEntry<
+  "financialCommit" | "products" | "accountIdentity",
+  FubonAllWorkflowInput,
+  WorkflowRunResult,
+  "previewWrite",
+  FubonVerifiedInput
+> {
+  return {
+    parseInput(verified, raw) {
+      const parsed = fubonInputSchema.safeParse(raw);
+      if (!parsed.success)
+        throw new Error("Fubon workflow credentials or input are missing or invalid.");
 
-  const sourceConnectionScope = fubonStableLoginScope(parsed.data.credentials);
-  const sourceConnectionKey = deriveFubonSourceConnectionKey(parsed.data.credentials);
-  if (!sourceConnectionScope || !sourceConnectionKey)
-    throw new Error("Fubon all-statements requires a stable login identity for its Source Connection.");
+      const sourceConnectionScope = fubonStableLoginScope(verified.credentials);
+      const sourceConnectionKey = deriveFubonSourceConnectionKey(verified.credentials);
+      if (!sourceConnectionScope || !sourceConnectionKey)
+        throw new Error("Fubon all-statements requires a stable login identity for its Source Connection.");
 
-  const managedSecret = parsed.data.managedIdentitySecret;
-  const depositInput = { ...parsed.data.statements, sourceConnectionScope, sourceConnectionKey };
-  const creditCardInput = {
-    ...parsed.data.creditCards,
-    canonicalHumanAttestation: deriveFubonCanonicalHumanAttestation(parsed.data.credentials, managedSecret),
-    panFingerprintKey: { secret: managedSecret },
+      const managedSecret = parsed.data.managedIdentitySecret;
+      return {
+        ...verified,
+        deposit: { ...parsed.data.statements, sourceConnectionScope, sourceConnectionKey },
+        creditCard: {
+          ...parsed.data.creditCards,
+          canonicalHumanAttestation: deriveFubonCanonicalHumanAttestation(verified.credentials, managedSecret),
+          panFingerprintKey: { secret: managedSecret },
+        },
+        loan: { ...parsed.data.loans, sourceConnectionScope, sourceConnectionKey },
+      };
+    },
+    run: (context, input) => runFubonWorkflow(context, input, overrides),
   };
-  const loanInput = { ...parsed.data.loans, sourceConnectionScope, sourceConnectionKey };
+}
+
+export const fubonWorkflow = fubonWorkflowWith();
+
+async function runFubonWorkflow(
+  context: FubonAllWorkflowContext,
+  input: FubonAllWorkflowInput,
+  overrides: FubonAllWorkflowDependencies,
+): Promise<WorkflowRunResult> {
   const authenticate = overrides.authenticate ?? authenticateFubonForApp;
   const collectDeposit = overrides.collectDeposit ?? runFubonStatements;
   const collectCreditCard = overrides.collectCreditCard ?? runFubonCreditCardStatements;
@@ -245,22 +261,20 @@ export async function runFubonAllStatementsWorkflow(
   const stopKeepAlive = overrides.startSessionKeepAlive ?? startFubonSessionKeepAlive;
   const signOut = overrides.signOut ?? signOutFubon;
 
-  context.signal.throwIfAborted();
-  await context.event("preparation", "completed", "input-validated");
   return await context.browser.withPage(async (page) => {
     context.signal.throwIfAborted();
     // A retained Fubon session cookie can route the next run straight to
     // NotAuth.jsp?type=dupLogin before credentials are entered.
     await page.context().clearCookies({ domain: /(?:^|\.)taipeifubon\.com\.tw$/u });
-    const { assertSession } = await authenticate(page, parsed.data.credentials, context);
+    const { assertSession } = await authenticate(page, input.credentials, context);
     context.signal.throwIfAborted();
     const stop = stopKeepAlive(page);
     try {
       await context.event("decoding", "started", "source-decoding-started");
       const summary = await context.products.collect({
-        deposit: (product) => collectDeposit(page, depositInput, context, product),
-        credit_card: (product) => collectCreditCard(page, creditCardInput, context, product),
-        loan: (product) => collectLoan(page, loanInput, context, product),
+        deposit: (product) => collectDeposit(page, input.deposit, context, product),
+        credit_card: (product) => collectCreditCard(page, input.creditCard, context, product),
+        loan: (product) => collectLoan(page, input.loan, context, product),
       }, {
         assertSession,
         // A person may select only attached preview products: the run then

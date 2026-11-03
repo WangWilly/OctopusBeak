@@ -23,7 +23,7 @@ import {
   recordDepositCommit,
 } from "./deposit-commit-golden.ts";
 
-// runHncbProviderWorkflow signs in to a real HNCB page before it reaches
+// hncbWorkflow signs in to a real HNCB page before it reaches
 // runHncbStatements, so the goldens enter at runHncbStatements. Its deposit
 // runner reads a fake source through the real read half, then stages through
 // the real build half: source admission, financial admission, current

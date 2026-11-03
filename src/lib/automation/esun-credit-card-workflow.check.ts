@@ -6,8 +6,9 @@ import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.t
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import type { WorkflowRunResult } from "./workflow-run-result.ts";
 import { strictSourceText } from "./source-text.ts";
-import { runEsunCreditCardProviderWorkflow } from "../../workflows/esun-credit-card-statements.ts";
+import { esunCreditCardWorkflow } from "../../workflows/esun-credit-card-statements.ts";
 import { ESUN_SOURCE } from "./server/sources/esun.ts";
+import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
 import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
@@ -163,7 +164,7 @@ function createPage(options: {
 
 /** Runs E.SUN as the executor does: the Product collection run bound to ESUN_SOURCE and this input. */
 function runEsun(context: WorkflowContextWith<"financialCommit", "previewWrite">, input: unknown) {
-  return runEsunCreditCardProviderWorkflow(withBoundProducts(context, ESUN_SOURCE, input), input);
+  return runVerifiedEntry(ESUN_SOURCE, esunCreditCardWorkflow, withBoundProducts(context, ESUN_SOURCE, input), input);
 }
 
 function createContext(page: Page) {

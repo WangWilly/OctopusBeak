@@ -13,7 +13,8 @@ import {
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import type { ForeignCurrencyDepositCaptureInput } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { runCathayAllProviderWorkflow } from "./cathay-all-statements.ts";
+import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
+import { cathayAllWorkflow } from "./cathay-all-statements.ts";
 import {
   cathayDomesticOverviewBody,
   cathayForeignOverviewBody,
@@ -122,7 +123,7 @@ test("Cathay domestic and foreign accounts commit statements beside their curren
     event: recorder.event,
     signalEvent: recorder.signalEvent,
   };
-  const output = await runCathayAllProviderWorkflow(withBoundProducts(context, CATHAY_SOURCE, input), input, {
+  const workflow = cathayAllWorkflow({
     createSession: async () => ({ jwtToken: "synthetic-token", customerId: "synthetic", idType: "synthetic" }),
     collectDomestic: async () => ({ requests, captureCount: requests.length, rowCount: 6 }),
     collectForeign: async () => ({
@@ -132,6 +133,7 @@ test("Cathay domestic and foreign accounts commit statements beside their curren
       accountKeys: [foreignA, foreignB],
     }),
   });
+  const output = await runVerifiedEntry(CATHAY_SOURCE, workflow, withBoundProducts(context, CATHAY_SOURCE, input), input);
   assert.equal(output.status, "financial-admitted");
   assert.deepEqual(
     output.products!.map((product) => [product.typeId, product.status]),

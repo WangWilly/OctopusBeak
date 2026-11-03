@@ -30,7 +30,8 @@ registerHooks({
   },
 });
 
-const { runFubonAllStatementsWorkflow } = await import("./fubon-all-statements.ts");
+const { fubonWorkflowWith } = await import("./fubon-all-statements.ts");
+const { runVerifiedEntry } = await import("../lib/automation/server/verified-entry.ts");
 const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
 const { FUBON_SOURCE } = await import("../lib/automation/server/sources/fubon.ts");
 const { deriveFubonDomesticDepositAccountNumberEvidence, stageFubonDeposit } = await import("./fubon-statements.ts");
@@ -185,12 +186,12 @@ async function runGolden(
     statements: { downloadFormat: "EXCEL" },
   };
   const context = workflowContext(recorder, accountIdentityContinuity);
-  const result = await runFubonAllStatementsWorkflow(withBoundProducts(context, FUBON_SOURCE, input), input, {
+  const result = await runVerifiedEntry(FUBON_SOURCE, fubonWorkflowWith({
     authenticate: async () => ({ usedExistingSession: false }),
     signOut: async () => undefined,
     startSessionKeepAlive: () => () => undefined,
     collectDeposit,
-  });
+  }), withBoundProducts(context, FUBON_SOURCE, input), input);
   await assertDepositCommitGolden(name, relativeCaptureClock({ result, ...recorder.recorded() }));
 }
 

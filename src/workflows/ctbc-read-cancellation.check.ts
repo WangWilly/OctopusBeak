@@ -89,6 +89,7 @@ test("cancelling the run stops a deposit read clicking the account selector", ()
     await assertStopped(page, readCtbcDepositSource(page, {
       credentials: { ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password" },
       statementTypes: ["deposit"],
+      attachedPreviewProducts: [],
     }, context, product));
     assert.deepEqual(staged, []);
   }));

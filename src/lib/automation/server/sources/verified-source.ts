@@ -9,7 +9,16 @@ import type {
 import type { InstitutionKey } from "../../../institutions/institutions.ts";
 import type { CoveredProduct } from "../../../preview-sources/visibility.ts";
 import type { CollectionPeriodDeclaration } from "../../collection-period.ts";
-import type { OptionalCapabilities, RequiredCapabilities, WorkflowDefinition, WorkflowOutput, WorkflowRun } from "../../workflow-executor.ts";
+import type {
+  OptionalCapabilities,
+  RequiredCapabilities,
+  WorkflowCapability,
+  WorkflowContextCapability,
+  WorkflowDefinition,
+  WorkflowOutput,
+  WorkflowRun,
+} from "../../workflow-executor.ts";
+import type { VerifiedWorkflowEntry } from "../verified-entry.ts";
 import type { AppWorkflowBrowserProfile } from "../app-browser-host.ts";
 import type { RejectionEvidence } from "../../sign-in-prompt.ts";
 import type { AppWorkflowHumanAssistanceRequest } from "../app-workflow-human-assistance.ts";
@@ -82,8 +91,12 @@ export type VerifiedWorkflow = Readonly<
       statementTypes?: true;
       extra?: (environment: NodeJS.ProcessEnv) => Readonly<Record<string, unknown>>;
     }>;
-    /** Imported only when a run starts, so the main process never loads workflow code. */
-    load(): Promise<WorkflowDefinition["run"]>;
+    /**
+     * Imported only when a run starts, so the main process never loads workflow
+     * code. A product-collecting workflow loads its entry, whose input the host
+     * checks before the run (ADR 0097).
+     */
+    load(): Promise<WorkflowDefinition["run"] | VerifiedWorkflowEntry<WorkflowContextCapability, unknown, WorkflowOutput, WorkflowCapability>>;
   }
 >;
 
@@ -132,20 +145,25 @@ export type VerifiedSource = SupportedSource & Readonly<{
  * flags, so a run that uses a port the flags do not require fails to compile.
  */
 export function verifiedWorkflow<const W extends Omit<VerifiedWorkflow, "load">>(
-  workflow: W & Readonly<{ load: () => Promise<WorkflowRun<RequiredCapabilities<W>, never, WorkflowOutput, OptionalCapabilities<W>>> }>,
+  workflow: W & Readonly<{
+    load: () => Promise<W extends Readonly<{ requiresProductCollection: true }>
+      ? VerifiedWorkflowEntry<RequiredCapabilities<W>, unknown, WorkflowOutput, OptionalCapabilities<W>>
+      : WorkflowRun<RequiredCapabilities<W>, never, WorkflowOutput, OptionalCapabilities<W>>>;
+  }>,
 ): VerifiedWorkflow {
   return workflow as VerifiedWorkflow;
 }
 
 export const localized = (en: string, zh: string): AutomationLocalizedText => ({ en, "zh-TW": zh });
 
-export const field = (
-  key: string,
+export const field = <const Key extends string>(
+  key: Key,
   en: string,
   zh: string,
   input: "text" | "password" | "certificate-file" = "text",
   redaction: AutomationCredentialRedaction = "none",
-): AutomationCredentialField => ({ key, label: localized(en, zh), input, redaction });
+  options: Readonly<{ trim?: false }> = {},
+): AutomationCredentialField & Readonly<{ key: Key }> => ({ key, label: localized(en, zh), input, redaction, ...options });
 
 export const link = (
   id: string,
