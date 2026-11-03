@@ -7,7 +7,6 @@
       },
       "items": [
         {
-          "provider": "post",
           "product": "domestic-deposit",
           "itemKey": "post-financial-post-source-5f04162076297bdc7b464f67-1790_3376_0000_0-0",
           "command": {
@@ -156,10 +155,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "domestic-deposit",
           "itemKey": "post-financial-post-source-dd5076b3ddec5617f4ef7f38-1790_3376_0000_0-1",
           "command": {
@@ -308,10 +307,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "current-balance",
           "itemKey": "current-balance:9999_0000_0000_01",
           "command": {
@@ -427,10 +426,10 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "current-balance",
           "itemKey": "current-balance:9999_0000_0000_02",
           "command": {
@@ -546,7 +545,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "post"
         }
       ]
     }
