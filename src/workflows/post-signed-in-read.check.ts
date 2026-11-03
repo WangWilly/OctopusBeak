@@ -59,7 +59,7 @@ const settlesWithin = async (read: Promise<unknown>) => {
 test("cancelling the run stops a pending statement query instead of letting it click once the button appears", () =>
   withSilentIpost(async (page) => {
     const controller = new AbortController();
-    const context = { now: () => Date.now(), text: strictSourceText, signal: controller.signal };
+    const context = { now: () => new Date().toISOString(), text: strictSourceText, signal: controller.signal };
     const product = { event: async () => {} };
     const reading = readPostDepositSource(page, {} as never, context as never, product as never);
     reading.catch(() => undefined);
