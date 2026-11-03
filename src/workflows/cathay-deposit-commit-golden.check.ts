@@ -49,7 +49,7 @@ const signedInHome = {
 function domesticRequests() {
   const page = (number: string) => ({
     accountNo: number,
-    currency: "TWD",
+    currency: "TWD" as const,
     scope: { startDate: "2025-08-17", endDate: "2026-08-17" },
     pageOrdinal: 0,
     requestPageToken: null,
