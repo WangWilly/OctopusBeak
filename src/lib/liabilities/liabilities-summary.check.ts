@@ -9,6 +9,7 @@ import type {
 } from "../shared-ledger/types.ts";
 import { readLiabilitiesSummary, readMortgageRepaid, type LiabilitiesSummaryInput } from "./liabilities-summary.ts";
 import { NO_PROVENANCE, originProvenance } from "../shared-ledger/provenance.ts";
+import { valuationDateFor } from "../shared-ledger/twd-valuation.ts";
 
 const PREVIEW = originProvenance("preview");
 
@@ -64,11 +65,13 @@ function debtRow(date: string, owed: number): DailyHistoryRowDto {
   return { date, netAssets: twd(-owed), dailyChange: [], assets: [], liabilities: twd(owed), accountChanges: [], positionCount: 0, provenance: NO_PROVENANCE };
 }
 
-function input(overrides: Partial<LiabilitiesSummaryInput>): LiabilitiesSummaryInput {
-  return { accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
-}
-
 const TODAY = "2026-10-05";
+
+/** The page as the ledger would publish it on TODAY, valuation date included. */
+function input(overrides: Partial<LiabilitiesSummaryInput>): LiabilitiesSummaryInput {
+  const valuationDate = valuationDateFor(overrides.dailyHistory ?? [], overrides.exchangeRates ?? [], TODAY);
+  return { valuationDate, accounts: [], dailyHistory: [], dailyHistoryByAccount: {}, exchangeRates: [], ...overrides };
+}
 
 test("no liability account reads as empty", () => {
   assert.deepEqual(readLiabilitiesSummary(input({}), { today: TODAY }), { state: "empty" });

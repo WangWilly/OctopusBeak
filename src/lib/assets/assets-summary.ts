@@ -9,7 +9,10 @@ import {
 import { mergeProvenance, NO_PROVENANCE, type Provenance } from "../shared-ledger/provenance.ts";
 import type { AssetsPageDto } from "./types.ts";
 
-export type AssetsSummaryInput = Pick<AssetsPageDto, "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates">;
+export type AssetsSummaryInput = Pick<
+  AssetsPageDto,
+  "valuationDate" | "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates"
+>;
 
 /**
  * `empty`: no asset account exists. `ready` holds the converted total; its
@@ -34,8 +37,8 @@ export type AssetsSummary =
     totalProvenance: Provenance;
   };
 
-export function readAssetsSummary(input: AssetsSummaryInput, options: { today: string }): AssetsSummary {
-  const side = readSideValuation(input, "assets", options.today);
+export function readAssetsSummary(input: AssetsSummaryInput): AssetsSummary {
+  const side = readSideValuation(input, "assets");
   if (!side) return { state: "empty" };
   const { valuationDate, rates, trailing } = side;
   const allocation = readAssetAllocation(input.accounts, rates, valuationDate);

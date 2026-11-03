@@ -1,6 +1,6 @@
 import { convertToTwd, indexExchangeRates, rateOnOrBefore, type ExchangeRateIndex } from "../shared-money/exchange-rates.ts";
 import { accountOrigin, mergeProvenance, NO_PROVENANCE, withOrigin, type Provenance } from "./provenance.ts";
-import type { AccountKind, AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto } from "./types.ts";
+import type { AccountKind, AccountRowDto, CurrencyAmountDto, DailyHistoryRowDto, ExchangeRateDto } from "./types.ts";
 
 export type Change = { change: number; pct: number | null };
 
@@ -25,7 +25,7 @@ export type AssetCategory = "brokerage" | "crypto" | "bank" | "fund" | "foreign"
 
 export type AssetAllocation = {
   total: number;
-  valuationDate: string | null;
+  valuationDate: string;
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
   provenance: Provenance;
@@ -70,14 +70,20 @@ export function daysBetween(from: string, to: string): number {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 }
 
-/** Current balances are valued at the newest history date, or today before any history exists. */
+/**
+ * Current balances are valued at the newest history date. Without history the
+ * latest stored rates value them: today, or the newest rate's date when a
+ * stored rate is dated later than today.
+ */
 export function valuationDateFor(
   history: readonly Pick<DailyHistoryRowDto, "date">[],
-  accounts: readonly AccountRowDto[],
+  rates: readonly Pick<ExchangeRateDto, "rateDate">[],
   today: string,
-): string | null {
-  const latest = history.reduce<string | null>((max, row) => (max === null || row.date > max ? row.date : max), null);
-  return latest ?? (accounts.length > 0 ? today : null);
+): string {
+  const newest = (first: string, rest: readonly string[]) => rest.reduce((max, date) => (date > max ? date : max), first);
+  return history.length > 0
+    ? newest(history[0]!.date, history.map((row) => row.date))
+    : newest(today, rates.map((rate) => rate.rateDate));
 }
 
 export function accountLedger(
@@ -148,12 +154,12 @@ export function carriedNet(rows: readonly DailyHistoryRowDto[], date: string): C
 export function readAssetAllocation(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
-  valuationDate: string | null,
+  valuationDate: string,
 ): AssetAllocation {
   const byCategory = new Map<AssetCategory, { value: number; provenance: Provenance }>();
   const unconverted = new Set<string>();
   for (const account of accounts) {
-    if (account.group === "liability" || !valuationDate) continue;
+    if (account.group === "liability") continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
     if (value === null) continue;
     const category = ASSET_CATEGORY[account.kind];
@@ -181,12 +187,12 @@ export function readAssetAllocation(
 export function readLiabilityAllocation(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
-  valuationDate: string | null,
+  valuationDate: string,
   assetTotal: number,
 ): LiabilityAllocation {
   const unconverted = new Set<string>();
   const owed = accounts.flatMap((account) => {
-    if (account.group !== "liability" || !valuationDate) return [];
+    if (account.group !== "liability") return [];
     const value = convertAccount(account, rates, valuationDate, unconverted);
     return value !== null && value > 0 ? [{ account, value }] : [];
   });
@@ -209,7 +215,7 @@ export function readLiabilityAllocation(
 export function accountShares(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
-  valuationDate: string | null,
+  valuationDate: string,
 ): ReadonlyMap<string, number> {
   const values = accountTwdValues(accounts, rates, valuationDate);
   const total = [...values.values()].reduce((sum, value) => sum + value, 0);
@@ -220,9 +226,8 @@ export function accountShares(
 export function accountTwdValues(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
-  valuationDate: string | null,
+  valuationDate: string,
 ): ReadonlyMap<string, number> {
-  if (!valuationDate) return new Map();
   return new Map(accounts.flatMap((account) => {
     if (account.valueAvailability !== "available") return [];
     const value = convertAccount(account, rates, valuationDate, new Set());
@@ -238,11 +243,11 @@ export function accountTwdValues(
 export function currentNetPosition(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
-  valuationDate: string | null,
+  valuationDate: string,
 ): { value: number | null; unconvertedCurrencies: string[]; provenance: Provenance } {
   const unconverted = new Set<string>();
   const blank = { value: null, unconvertedCurrencies: [], provenance: NO_PROVENANCE };
-  if (!valuationDate || accounts.length === 0) return blank;
+  if (accounts.length === 0) return blank;
   let total = 0;
   let provenance = NO_PROVENANCE;
   for (const account of accounts) {
@@ -275,6 +280,8 @@ export function convertAccount(
 }
 
 export type SideValuationInput = Readonly<{
+  /** The ledger's valuation date for the page (see `valuationDateFor`). */
+  valuationDate: string;
   accounts: readonly AccountRowDto[];
   dailyHistory: readonly DailyHistoryRowDto[];
   dailyHistoryByAccount: Parameters<typeof accountLedger>[0];
@@ -288,10 +295,9 @@ export type SideValuationInput = Readonly<{
 export function readSideValuation(
   input: SideValuationInput,
   side: "assets" | "liabilities",
-  today: string,
 ): Readonly<{ valuationDate: string; rates: ExchangeRateIndex; trailing: SpanChange | null }> | null {
-  const valuationDate = valuationDateFor(input.dailyHistory, input.accounts, today);
-  if (input.accounts.length === 0 || !valuationDate) return null;
+  const { valuationDate } = input;
+  if (input.accounts.length === 0) return null;
   const rates = indexExchangeRates(input.exchangeRates);
   const ownIds = new Set(input.accounts.map((account) => account.id));
   const ledger = accountLedger(

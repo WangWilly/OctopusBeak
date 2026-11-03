@@ -12,7 +12,7 @@ import type { LiabilitiesPageDto } from "./types.ts";
 
 export type LiabilitiesSummaryInput = Pick<
   LiabilitiesPageDto,
-  "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates"
+  "valuationDate" | "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates"
 >;
 
 /**
@@ -60,8 +60,9 @@ export type LiabilitiesSummary =
 
 const MAX_PAYMENTS = 3;
 
+/** `today` dates the upcoming payments only; every figure is valued at the page's `valuationDate`. */
 export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: { today: string }): LiabilitiesSummary {
-  const side = readSideValuation(input, "liabilities", options.today);
+  const side = readSideValuation(input, "liabilities");
   if (!side) return { state: "empty" };
   const { valuationDate, rates, trailing: netChange } = side;
   const allocation = readLiabilityAllocation(input.accounts, rates, valuationDate, 0);

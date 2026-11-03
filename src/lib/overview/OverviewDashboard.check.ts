@@ -22,6 +22,7 @@ const base: OverviewPageDto = {
   accounts: [],
   holdingPrices: [],
   exchangeRates: [],
+  valuationDate: "2026-10-01",
 };
 
 test("every card reads one model built from the live overview page", () => {

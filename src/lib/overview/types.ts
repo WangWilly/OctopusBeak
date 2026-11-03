@@ -35,6 +35,8 @@ export type OverviewPageDto = {
   accounts: AccountRowDto[];
   holdingPrices: OverviewHoldingPriceDto[];
   exchangeRates: ExchangeRateDto[];
+  /** The one date every current figure on the page is valued at, decided by the ledger. */
+  valuationDate: string;
 };
 
 export type OverviewSourceGapDto = {

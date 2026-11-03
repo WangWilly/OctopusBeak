@@ -49,7 +49,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     currency: chartCurrency,
     mode: "asset",
   });
-  $: summary = readAssetsSummary(assets, { today });
+  $: summary = readAssetsSummary(assets);
   $: assetAccounts = assets.accounts;
   $: isEmpty = awaitingFirstData(assets);
   $: holdsForeign = assetAccounts.some((account) => account.amountLines.some((amount) => amount.currency !== "TWD"));

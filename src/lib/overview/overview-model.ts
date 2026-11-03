@@ -17,7 +17,6 @@ import {
   readLiabilityAllocation,
   TRAILING_DAYS,
   trailingChange,
-  valuationDateFor,
   type AccountLedger,
   type AssetAllocation,
   type Change,
@@ -28,7 +27,7 @@ import type { OverviewHoldingPriceDto, OverviewPageDto } from "./types.ts";
 
 export type OverviewModelInput = Pick<
   OverviewPageDto,
-  "importedAt" | "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates" | "holdingPrices"
+  "importedAt" | "valuationDate" | "accounts" | "dailyHistory" | "dailyHistoryByAccount" | "exchangeRates" | "holdingPrices"
 >;
 
 export type TickerItem =
@@ -56,7 +55,7 @@ export type NetWorthChip =
 export type NetWorth = {
   /** When the newest observation was imported. */
   asOf: string | null;
-  valuationDate: string | null;
+  valuationDate: string;
   chips: NetWorthChip[];
   /** The origins the chips' changes count. */
   chipsProvenance: Provenance;
@@ -110,12 +109,13 @@ const DAILY_BAR_DAYS = 14;
 const FIAT_ORDER = ["USD", "JPY"];
 const MIN_CONTRIBUTION = 0.5;
 
+/** `today` places the daily bars and says whether the latest record is today's; figures use `valuationDate`. */
 export function readOverview(dto: OverviewModelInput, options: { today: string }): OverviewModel {
   const rates = indexExchangeRates(dto.exchangeRates);
   const history = [...dto.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
   const series = netWorthSeries(history, rates);
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
-  const valuationDate = valuationDateFor(history, dto.accounts, options.today);
+  const { valuationDate } = dto;
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
   const liabilityAllocation = readLiabilityAllocation(dto.accounts, rates, valuationDate, assetAllocation.total);
   const chips = netWorthChips(series, ledger, options.today);

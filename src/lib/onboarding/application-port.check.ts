@@ -31,6 +31,7 @@ function emptyOverview(): OverviewPageDto {
     accounts: [],
     holdingPrices: [],
     exchangeRates: [],
+    valuationDate: "2026-10-01",
   };
 }
 

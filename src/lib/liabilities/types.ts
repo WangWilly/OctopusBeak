@@ -14,4 +14,6 @@ export type LiabilitiesPageDto = CurrentProjectionStateDto & {
   dailyHistory: DailyHistoryRowDto[];
   /** Rates for every currency held or in history, for converted totals. */
   exchangeRates: ExchangeRateDto[];
+  /** The one date every current figure on the page is valued at, decided by the ledger. */
+  valuationDate: string;
 };

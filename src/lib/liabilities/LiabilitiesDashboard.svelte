@@ -21,7 +21,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   } from "$lib/shared-ledger/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
   import { totalIncomplete } from "$lib/shared-ledger/preview-account.ts";
-  import { accountShares, valuationDateFor } from "$lib/shared-ledger/twd-valuation.ts";
+  import { accountShares } from "$lib/shared-ledger/twd-valuation.ts";
   import { indexExchangeRates } from "$lib/shared-money/exchange-rates.ts";
   import { currencyCount, formatAmount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
@@ -89,7 +89,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     return accountShares(
       accounts,
       indexExchangeRates(liabilities.exchangeRates),
-      valuationDateFor(liabilities.dailyHistory, accounts, today),
+      liabilities.valuationDate,
     );
   }
 

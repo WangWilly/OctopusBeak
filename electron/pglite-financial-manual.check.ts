@@ -81,7 +81,7 @@ test("a manual asset counts toward assets and the Net position with a manual mar
     const assets = await registry["financial.assets.current"]([]);
     assert.ok(assets.accounts.some((account) => account.id === row!.id), "the Assets page lists it");
     assert.ok(!(await registry["financial.liabilities.current"]([])).accounts.some((account) => account.manual));
-    const summary = readAssetsSummary(assets, { today: "2026-10-31" });
+    const summary = readAssetsSummary(assets);
     assert.ok(summary.state === "ready" && summary.slices.some((slice) => slice.category === "manual"));
   });
 });
@@ -126,7 +126,7 @@ test("an asset counts through its end date, sale price included, and drops to ze
     const ledger = accountLedger(overview.dailyHistoryByAccount, indexExchangeRates(overview.exchangeRates));
     assert.equal(ledger.change("2026-10-25", "2026-10-31").change, -520000, "a change across the sale sees the car leave");
     assert.deepEqual(ledger.change("2026-10-25", "2026-10-31").provenance, { preview: false, manual: true }, "and is marked manual");
-    const assets = readAssetsSummary(await registry["financial.assets.current"]([]), { today: "2026-10-31" });
+    const assets = readAssetsSummary(await registry["financial.assets.current"]([]));
     assert.deepEqual(assets.state === "ready" && assets.trailing?.provenance, { preview: false, manual: true }, "the ended car marks the Assets 30-day change");
     assert.deepEqual(assets.state === "ready" && assets.provenance, { preview: false, manual: true });
   });

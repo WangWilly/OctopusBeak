@@ -236,7 +236,7 @@ test("visible preview balances count in overview and assets totals with exact de
     assert.equal(net.provenance.preview, true);
     assert.equal(model.assetAllocation.provenance.preview, true);
     assert.equal(model.series.at(-1)!.provenance.preview, true);
-    const summary = readAssetsSummary(assets, { today: TODAY });
+    const summary = readAssetsSummary(assets);
     assert.ok(summary.state === "ready" && summary.provenance.preview && summary.total === 1334.6);
   });
 });
@@ -291,7 +291,7 @@ test("a USD preview balance converts with a rate and is left out, listed, and un
     assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);
     assert.equal(rateless.assetAllocation.provenance.preview, false);
     assert.equal(rateless.series.some((point) => point.provenance.preview), false);
-    const ratelessAssets = readAssetsSummary(await shown["financial.assets.current"]([]), { today: TODAY });
+    const ratelessAssets = readAssetsSummary(await shown["financial.assets.current"]([]));
     assert.ok(ratelessAssets.state === "ready" && !ratelessAssets.provenance.preview);
 
     await addUsdRate();
