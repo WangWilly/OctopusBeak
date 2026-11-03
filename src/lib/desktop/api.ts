@@ -16,8 +16,6 @@ import type {
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
 } from "$lib/spending/model.ts";
-import type {
-} from "$lib/spending/contracts.ts";
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
 import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";

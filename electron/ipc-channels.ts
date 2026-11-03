@@ -12,7 +12,6 @@ import {
   type RendererFinancialOperation,
 } from "./pglite-financial-contracts.ts";
 
-
 export type InvokeChannel = {
   [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];
 }[keyof OctopusBeakInvokeChannels];
@@ -32,14 +31,15 @@ export type OctopusBeakInvokeHandlers = {
     : never;
 };
 
-/**
- * Each renderer financial operation whose preload channel is not its own
- * name under its declared group and method (ADR 0098).
- */
 type PreloadChannel<Group extends PropertyKey, Method extends PropertyKey> =
   Group extends keyof OctopusBeakInvokeChannels
     ? Method extends keyof OctopusBeakInvokeChannels[Group] ? OctopusBeakInvokeChannels[Group][Method] : never
     : never;
+
+/**
+ * Each renderer financial operation whose preload channel is missing or is
+ * not its own name under its declared group and method (ADR 0098).
+ */
 type MisroutedFinancialBridges = {
   [Op in RendererFinancialOperation]:
     [PreloadChannel<RendererFinancialGroup<Op>, RendererFinancialMethod<Op>>] extends [never] ? Op
