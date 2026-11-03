@@ -15,11 +15,7 @@ import {
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
@@ -31,23 +27,20 @@ import {
 import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import {
+  captureCurrentStateSnapshots,
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   postCurrentBalanceCaptureMatching,
   parsePostCurrentDepositBalanceSnapshot,
-  POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-  POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  POST_CURRENT_DEPOSIT_BALANCE_HOST,
-  POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
-  POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
-  POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+  readPostCurrentDepositBalanceResponse,
   type ExistingPostCurrentDepositFinancialCapture,
   type PostCurrentDepositBalanceRow,
-  type PostCurrentDepositResponseMetadata,
+  type PostCurrentDepositResponse,
 } from "./post-current-deposit-balances.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 
@@ -114,9 +107,25 @@ export type PostDepositSourceSnapshot = Readonly<{
   statements: readonly PostQueriedStatement[];
 }>;
 
-export type PostReadCurrentDepositBalances = (
-  input: Readonly<{ observedAt: string }>,
-) => Promise<readonly PostCurrentDepositBalanceRow[]>;
+/** Observe the asset-overview response; the snapshot module decodes and parses it. */
+export type PostReadCurrentDepositBalanceResponse = () => Promise<PostCurrentDepositResponse>;
+
+type PostCurrentDepositAcquired = PostCurrentDepositResponse & Readonly<{ observedAt: string }>;
+
+const postCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  PostCurrentDepositAcquired,
+  PostCurrentDepositBalanceRow,
+  ExistingPostCurrentDepositFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => parsePostCurrentDepositBalanceSnapshot({
+    payload: decoded.value,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: postCurrentBalanceCaptureMatching,
+  build: buildPostCurrentDepositBalanceCapture,
+};
 
 type PostProductRunner = (
   page: Page,
@@ -688,104 +697,6 @@ async function collectPostStatementSources(
   return statements;
 }
 
-function isPostOverviewResponse(response: Response): boolean {
-  const request = response.request();
-  if (request.method() !== "POST") return false;
-  let url: URL;
-  let body: unknown;
-  try {
-    url = new URL(response.url());
-    body = JSON.parse(request.postData() ?? "");
-  } catch {
-    return false;
-  }
-  return (
-    url.protocol === "https:" &&
-    url.hostname === POST_CURRENT_DEPOSIT_BALANCE_HOST &&
-    url.pathname === POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
-    url.search === "" &&
-    url.hash === "" &&
-    url.port === "" &&
-    isRecord(body) &&
-    isRecord(body.header) &&
-    body.header.TxnCode === POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE &&
-    body.header.BizCode === POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE &&
-    isRecord(body.body) &&
-    body.body.pageCount === POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT
-  );
-}
-
-async function readPostCurrentDepositBalancesWithText(
-  page: Page,
-  text: SourceTextPort,
-  signal: AbortSignal,
-  input: Readonly<{ observedAt?: string; timeoutMs?: number }> = {},
-) {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  signal.throwIfAborted();
-  const pageUrl = new URL(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
-  let currentUrl: URL | undefined;
-  try {
-    currentUrl = new URL(page.url());
-  } catch {
-    // Navigate to the known authenticated landing page below.
-  }
-  if (
-    currentUrl?.origin !== pageUrl.origin ||
-    currentUrl.pathname !== pageUrl.pathname
-  ) {
-    await withAbort(
-      page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-        waitUntil: "domcontentloaded",
-        timeout: timeoutMs,
-      }),
-      signal,
-    );
-  }
-  signal.throwIfAborted();
-  const overview = page.getByText("資產總覽", { exact: true }).first();
-  await withAbort(
-    overview.waitFor({ state: "visible", timeout: timeoutMs }),
-    signal,
-  );
-  const responsePromise = page.waitForResponse(isPostOverviewResponse, {
-    timeout: timeoutMs,
-  });
-  void responsePromise.catch(() => undefined);
-  signal.throwIfAborted();
-  await withAbort(overview.click(), signal);
-  const response = await withAbort(responsePromise, signal);
-  const [body, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
-  ]);
-  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-    headers["content-type"] ?? "",
-  )?.[1]?.toLowerCase();
-  if (charset && charset !== "utf-8" && charset !== "utf8")
-    throw new Error("Post current deposit response charset is not UTF-8.");
-  const decoded = text.decode(body, "utf-8");
-  text.assertIntact(decoded);
-  let payload: unknown;
-  try {
-    payload = JSON.parse(decoded);
-  } catch {
-    throw new Error("Post current deposit response is not valid JSON.");
-  }
-  const metadata: PostCurrentDepositResponseMetadata = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers,
-    requestPostData: response.request().postData(),
-  };
-  return parsePostCurrentDepositBalanceSnapshot({
-    payload,
-    response: metadata,
-    observedAt: input.observedAt,
-  });
-}
-
 function postObservedAt(date = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Taipei",
@@ -854,7 +765,7 @@ export async function stagePostDeposit(
   _input: PostWorkflowInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  readCurrentBalances: PostReadCurrentDepositBalances,
+  readCurrentBalanceResponse: PostReadCurrentDepositBalanceResponse,
 ): Promise<ProductCollectionSummary> {
   const { observedAt, statements } = snapshot;
   if (statements.length === 0)
@@ -906,31 +817,13 @@ export async function stagePostDeposit(
   }
   // The overview response is staged before opening the execution run. Each
   // row still commits only after its statement identity item has committed.
-  const currentBalanceCaptures: ReturnType<typeof admitCurrentDepositBalanceCapture>[] = [];
-  if (financialCaptures.length > 0) {
-    await product.event("collection", "started", "current-balance-collection-started");
-    let currentRows: readonly PostCurrentDepositBalanceRow[];
-    try {
-      currentRows = await readCurrentBalances({ observedAt });
-    } catch (error) {
-      await product.event("validation", "failed", "current-balance-rejected");
-      throw error;
-    }
-    context.signal.throwIfAborted();
-    const { matched } = matchCurrentBalanceCaptures(
-      currentRows,
-      financialCaptures,
-      postCurrentBalanceCaptureMatching,
-    );
-    for (const { row, capture } of matched)
-      currentBalanceCaptures.push(
-        admitCurrentDepositBalanceCapture(buildPostCurrentDepositBalanceCapture(row, capture)),
-      );
-    await product.event("validation", "completed", "current-balance-validation-completed", {
-      completed: currentBalanceCaptures.length,
-      total: currentRows.length,
-    });
-  }
+  const balances = await captureCurrentStateSnapshots(postCurrentBalanceSnapshot, {
+    captures: financialCaptures,
+    acquire: async () => ({ ...(await readCurrentBalanceResponse()), observedAt }),
+    product,
+    text: context.text,
+    signal: context.signal,
+  });
 
   context.signal.throwIfAborted();
   product.stage(
@@ -941,14 +834,7 @@ export async function stagePostDeposit(
         request: { capture: entry.financialCapture },
       },
     } as const)),
-    ...currentBalanceCaptures.map((capture) => ({
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-      command: {
-        kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-        request: currentDepositBalanceCommandRequest(capture),
-      },
-    } as const)),
+    ...balances.items,
   );
   return {
     sourceCaptureCount: statements.length,
@@ -968,7 +854,7 @@ async function runPostDeposit(
     input,
     context,
     product,
-    (options) => readPostCurrentDepositBalancesWithText(page, context.text, context.signal, options),
+    () => readPostCurrentDepositBalanceResponse(page, { signal: context.signal }),
   );
 }
 

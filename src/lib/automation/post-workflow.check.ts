@@ -11,11 +11,11 @@ import {
   runPostProviderWorkflow,
   stagePostDeposit,
   type PostQueriedStatement,
-  type PostReadCurrentDepositBalances,
+  type PostReadCurrentDepositBalanceResponse,
   type PostStatementResponseMetadata,
   type PostWorkflowDependencies,
 } from "../../workflows/post-statements.ts";
-import type { PostCurrentDepositBalanceRow } from "../../workflows/post-current-deposit-balances.ts";
+import { postCurrentDepositResponse } from "../../workflows/post-current-deposit-balances.fixtures.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "./product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
@@ -316,42 +316,19 @@ function depositReading(
         input,
         context,
         product,
-        async () => [],
+        async () => currentBalanceResponse(accountId, "900"),
       );
     },
   };
 }
 
-function currentBalance(account: string, coefficient: string): PostCurrentDepositBalanceRow {
-  return {
-    source: "post",
-    stream: "domestic-deposit",
-    accountNumber: account,
-    sourceAccountKey: account,
-    currency: "TWD",
-    ledger: { coefficient, scale: 0, sourceLexeme: coefficient },
-    effectiveAt: "2026-09-25T11:59:00.000Z",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    effectiveTimeSourceValue: "Fri, 25 Sep 2026 11:59:00 GMT",
-    providerHttpDate: "Fri, 25 Sep 2026 11:59:00 GMT",
-    observedAt,
-    sourceEvidence: {
-      endpoint: "/pst/EsoafDispatcher",
-      status: 200,
-      contentType: "application/json; charset=UTF-8",
-      cacheControl: "no-store",
-      txnCode: "EB100103",
-      bizCode: "getOverViewById",
-      pageCount: 50,
-      contractVersion: "post/current-deposit-balance-v1",
-    },
-  };
+function currentBalanceResponse(accountNumber: string, balance: string) {
+  return postCurrentDepositResponse([{ accountNumber, balance }]);
 }
 
 async function stageSnapshot(
   statements: readonly PostQueriedStatement[],
-  readCurrentBalances: PostReadCurrentDepositBalances,
+  readCurrentBalanceResponse: PostReadCurrentDepositBalanceResponse,
 ) {
   const { context } = createContext({ page: createPage(true) });
   const staged: ProductStageRequest[] = [];
@@ -367,24 +344,34 @@ async function stageSnapshot(
     workflowInput,
     context,
     product,
-    readCurrentBalances,
+    readCurrentBalanceResponse,
   ).catch((error: unknown) => error);
   return { outcome, staged, codes };
 }
 
 test("Post deposit build stages each admitted account and its matched current balance", async () => {
   let reads = 0;
-  const result = await stageSnapshot([statement], async (input) => {
+  const result = await stageSnapshot([statement], async () => {
     reads += 1;
-    assert.deepEqual(input, { observedAt });
-    return [currentBalance(accountId, "900")];
+    return currentBalanceResponse(accountId, "900");
   });
   assert.deepEqual(result.outcome, { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(reads, 1);
   assert.deepEqual(result.staged.map((item) => item.product), ["domestic-deposit", "current-balance"]);
+  const [balance] = result.staged.filter((item) => item.product === "current-balance");
+  assert.equal(balance?.itemKey, `current-balance:domestic-deposit:${accountId}`);
+  assert.equal(
+    (balance?.command.request as { capture: { observedAt: string } }).capture.observedAt,
+    observedAt,
+    "the balance carries the statement read's observedAt",
+  );
   assert.deepEqual(result.codes, [
     "source-validation-completed",
     "current-balance-collection-started",
+    "current-balance-decoding-started",
+    "current-balance-decoding-completed",
+    "current-balance-collection-completed",
+    "current-balance-validation-started",
     "current-balance-validation-completed",
   ]);
 });
@@ -401,9 +388,17 @@ test("Post deposit build stages nothing when the read or the current balances fa
   });
   assert.match(String(rejected.outcome), /overview unavailable/u);
   assert.deepEqual(rejected.staged, []);
-  assert.equal(rejected.codes.at(-1), "current-balance-rejected");
+  assert.equal(rejected.codes.at(-1), "current-balance-collection-failed");
 
-  const unknown = await stageSnapshot([statement], async () => [currentBalance("99990000000009", "1")]);
+  const malformed = await stageSnapshot([statement], async () => ({
+    ...currentBalanceResponse(accountId, "900"),
+    evidence: { kind: "json", bytes: Uint8Array.from([0x5b, 0x22, 0xc3, 0x28, 0x22, 0x5d]) },
+  }));
+  assert.ok(malformed.outcome instanceof SourceTextIntegrityError);
+  assert.deepEqual(malformed.staged, []);
+  assert.equal(malformed.codes.at(-1), "current-balance-collection-failed");
+
+  const unknown = await stageSnapshot([statement], async () => currentBalanceResponse("99990000000009", "1"));
   assert.match(String(unknown.outcome), /without an existing admitted identity/u);
   assert.deepEqual(unknown.staged, []);
 });
@@ -432,8 +427,8 @@ test("Post typed workflow gets human assistance, admits complete source, and com
 
     assert.deepEqual(result, {
       status: "financial-admitted",
-      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 1, committedCount: 1, accountCount: 1 },
-      products: [{ typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 }],
+      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2, accountCount: 1 },
+      products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
     });
     assert.equal(sourceCount, 1);
     assert.equal(harness.committed.length, 1);
@@ -502,7 +497,7 @@ for (const { stop, errorCode } of STOPPED_COMMITS) {
   test(`Post names a ${stop} commit ${errorCode}`, async () => {
     const harness = createContext({ page: createPage(true), financialCommit: stoppedCommitPort(stop) });
     await assert.rejects(runPostProviderWorkflow(harness.context, workflowInput,
-      depositReading(() => [statement])), assertStoppedRun("deposit", 1, errorCode));
+      depositReading(() => [statement])), assertStoppedRun("deposit", 2, errorCode));
   });
 }
 
