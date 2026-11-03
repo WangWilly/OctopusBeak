@@ -48,7 +48,6 @@ import {
   exactMoney,
   idString,
   jsonValue,
-  latest,
   nullableString,
   numeric,
   pairKey,
@@ -59,6 +58,7 @@ import {
   type PGliteSpendingReader,
   type Row,
 } from "./spending-sql.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
  * Canonical fact readers for PGlite Spending: transactions with their
@@ -177,7 +177,7 @@ async function transactionRows(
   request: Readonly<{ sourceConnectionKey?: string; accountIds?: readonly string[]; transactionIds?: readonly string[]; startDate?: string; endDate?: string }> = {},
 ): Promise<readonly TransactionRow[]> {
   const predicates: string[] = [COUNTED_ACCOUNT_SQL("account.account_id")];
-  const params: unknown[] = [await readPGliteCoveredAccountIds(reader, kind === "current" ? await latest(reader) : knowledgeAt)];
+  const params: unknown[] = [await readPGliteCoveredAccountIds(reader, kind === "current" ? await readKnowledgePoint(reader) : knowledgeAt)];
   if (kind !== "current") {
     predicates.push("revision_commit.commit_sequence <= ?");
     params.push(knowledgeAt);
@@ -892,7 +892,7 @@ export async function querySpendingRecognition(
   reader: PGliteSpendingReader,
   request: Readonly<{ knowledgeAt?: number; invoiceIds?: readonly string[]; transactionIds?: readonly string[] }> = {},
 ): Promise<SpendingRecognitionSnapshot> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   const cutoff = request.knowledgeAt ?? current;
   if (!Number.isSafeInteger(cutoff) || cutoff < 0 || cutoff > current) throw new Error("Spending recognition knowledge cutoff is invalid.");
   const targetedRecognition = request.invoiceIds !== undefined || request.transactionIds !== undefined;

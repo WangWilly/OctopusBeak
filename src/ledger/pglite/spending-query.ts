@@ -85,7 +85,6 @@ import {
   HEX_ID,
   idString,
   jsonValue,
-  latest,
   nullableString,
   numeric,
   optionalMoney,
@@ -99,6 +98,7 @@ import {
   type PGliteSpendingStore,
   type Row,
 } from "./spending-sql.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 export type { PGliteSpendingReader, PGliteSpendingStore } from "./spending-sql.ts";
 export { recordedAtIso, querySpendingRecognition } from "./spending-facts.ts";
@@ -254,7 +254,7 @@ export async function resolvePGliteSpendingCandidate(
   pairHint?: Readonly<{ invoiceId: string; transactionId: string }>,
 ): Promise<PGliteSpendingCandidateResolution> {
   const cleanCandidateId = candidateId.trim();
-  const knowledgeAt = await latest(reader);
+  const knowledgeAt = await readKnowledgePoint(reader);
   let durableRow: Row | undefined;
   if (UUID.test(cleanCandidateId) || HEX_ID.test(cleanCandidateId)) {
     durableRow = rows(await pgliteQuery<Row>(reader,
@@ -343,7 +343,7 @@ async function queryPairingTransactionsDirect(
                WHERE identity.transaction_id = entry.transaction_id AND NOT (${COUNTED_ACCOUNT_SQL("identity.account_id")})
             )
         ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
-    [await readPGliteCoveredAccountIds(reader, await latest(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],
+    [await readPGliteCoveredAccountIds(reader, await readKnowledgePoint(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],
   );
   const value = packed.rows[0]?.packed;
   const resultRows = (Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"))) as readonly (readonly unknown[])[];
@@ -397,7 +397,7 @@ export async function queryPGliteSpendingRecognitionPair(
   reader: PGliteSpendingReader,
   request: Readonly<{ invoiceId: string; transactionId: string; knowledgeAt?: number }>,
 ): Promise<SpendingRecognitionSnapshot> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   const cutoff = request.knowledgeAt ?? current;
   if (!Number.isSafeInteger(cutoff) || cutoff < 0 || cutoff > current) throw new Error("Spending recognition knowledge cutoff is invalid.");
   const invoiceId = bytes(request.invoiceId, "Recognition invoice");
@@ -602,7 +602,7 @@ export async function querySpendingLineage(
   if (subject.kind !== "spending-pair") throw new Error("Spending lineage subject kind is invalid.");
   const [invoiceId, transactionId, extra] = subject.id.split("/");
   if (!invoiceId || !transactionId || extra) throw new Error("Spending pair lineage id must be invoiceId/transactionId.");
-  const invoice = (await invoices(reader, await latest(reader), false, invoiceId))[0] ?? null;
+  const invoice = (await invoices(reader, await readKnowledgePoint(reader), false, invoiceId))[0] ?? null;
   if (!invoice) throw new Error("Spending lineage invoice identity does not exist.");
   const transactionExists = rows(await pgliteQuery<Row>(reader,
     "SELECT 1 FROM financial_transactions WHERE transaction_id = ?",
@@ -718,7 +718,7 @@ export async function queryCurrentSpendingCandidatePage(
   request: SpendingCandidatePageRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingCandidatePageDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("candidate", current);
   const month = request.month ?? null;
@@ -779,7 +779,7 @@ export async function queryCurrentSpendingPendingOverview(
   request: SpendingPendingOverviewRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingPendingOverviewDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("pending-overview", current);
   const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
@@ -826,7 +826,7 @@ export async function rankPGliteSpendingPaymentCandidates(
   input: SpendingPairingCandidatesInput,
   pairingIndexAt: (reader: PGliteSpendingReader, knowledgeAt: number) => Promise<PGlitePairingIndex> = queryPGlitePairingIndex,
 ): Promise<SpendingPairingCandidatesResult> {
-  const knowledgeAt = await latest(reader);
+  const knowledgeAt = await readKnowledgePoint(reader);
   if (knowledgeAt !== input.dataVersion) throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
   const invoice = (await invoices(reader, knowledgeAt, false, input.invoiceIdentityId))[0];
   if (!invoice || invoice.revision.state === "revoked") throw new Error("Spending invoice selection is stale, revoked, or missing.");
@@ -868,7 +868,7 @@ export async function queryCurrentSpendingMonthInsight(
   request: SpendingMonthInsightRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMonthInsightDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("month-insight", current);
   if (!validSpendingMonth(request.month)) throw new TypeError("Spending month insight month is invalid.");
@@ -887,7 +887,7 @@ export async function queryCurrentSpendingMerchantStats(
   request: SpendingMerchantStatsRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMerchantStatsDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("merchant-stats", current);
   if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
@@ -941,7 +941,7 @@ export async function queryCurrentSpendingMergeLog(
   reader: PGliteSpendingReader,
   request: SpendingMergeLogRequest,
 ): Promise<SpendingMergeLogDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new SpendingPageVersionError("merge-log", current);
   const cursor = mergeLogCursorFromToken(request.cursor, current);
@@ -1074,7 +1074,7 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     recordPage: (request: SpendingRecordPageRequest) =>
       store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, request)),
     candidatePage: async (request: SpendingCandidatePageRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
+      const knowledgeAt = await readKnowledgePoint(transaction);
       if (knowledgeAt !== request.knowledgeAt)
         throw new SpendingPageVersionError("candidate", knowledgeAt);
       return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
@@ -1086,7 +1086,7 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     mergeLog: (request: SpendingMergeLogRequest) =>
       store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
     pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
+      const knowledgeAt = await readKnowledgePoint(transaction);
       if (knowledgeAt !== request.knowledgeAt)
         throw new SpendingPageVersionError("pending-overview", knowledgeAt);
       return queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, knowledgeAt));
@@ -1098,7 +1098,7 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request, pairingIndexAt)),
     /** Build the pairing index for the current version so the next dialog open only ranks. */
     prewarmPairing: (dataVersion: number) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
+      const knowledgeAt = await readKnowledgePoint(transaction);
       if (knowledgeAt === dataVersion) await pairingIndexAt(transaction, knowledgeAt);
       return knowledgeAt;
     }),

@@ -10,7 +10,8 @@ import {
 } from "./spending-query.ts";
 import { querySpendingRecognition, recordedAtIso, refundFromRow } from "./spending-facts.ts";
 import { decide } from "./purchase-report.ts";
-import { bytes, idString, latest, pgliteQuery, type Row } from "./spending-sql.ts";
+import { bytes, idString, pgliteQuery, type Row } from "./spending-sql.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -191,7 +192,7 @@ async function recordDecision(
   if (requireCurrent) await requireCurrentPair(transaction, input);
   const decisionKey = required(input.decisionKey, "Decision key");
   const evidenceKnowledgeSequence = numberValue(input.evidenceKnowledgeSequence, "Decision evidence knowledge sequence");
-  const currentKnowledge = await latest(transaction);
+  const currentKnowledge = await readKnowledgePoint(transaction);
   if (evidenceKnowledgeSequence < 0 || evidenceKnowledgeSequence > currentKnowledge) throw new Error("Decision evidence knowledge sequence is outside canonical history.");
   const evidenceJson = stableJson(objectJson(input.evidence, "Decision evidence"), "Decision evidence");
   const previous = await pgliteQuery<{ event_id: unknown; event_kind: string; invoice_id: unknown; transaction_id: unknown; evidence_json: string; commit_id: unknown; evidence_knowledge_sequence: number | string; decision_origin: string; user_id: string | null; authority_route: string | null; stable_cross_source_reference: string | null }>(transaction,
@@ -294,7 +295,7 @@ export async function revokePGliteSpendingDedupLink(transaction: PGliteTransacti
   const active = await pgliteQuery(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ? AND transaction_id = ?", [pair.invoice, pair.transaction]);
   if (active.rows.length === 0) throw new Error("Cannot revoke an inactive spending deduplication link.");
   const evidenceKnowledgeSequence = numberValue(input.evidenceKnowledgeSequence, "Decision evidence knowledge sequence");
-  if (evidenceKnowledgeSequence < 0 || evidenceKnowledgeSequence > await latest(transaction)) throw new Error("Decision evidence knowledge sequence is outside canonical history.");
+  if (evidenceKnowledgeSequence < 0 || evidenceKnowledgeSequence > await readKnowledgePoint(transaction)) throw new Error("Decision evidence knowledge sequence is outside canonical history.");
   const created = await commit(transaction, "user/local");
   await pgliteQuery(
     transaction,
@@ -408,7 +409,7 @@ export async function applyPGliteSpendingPageAction(
   input: SpendingPageActionRequest,
 ): Promise<SpendingPageActionResult> {
   return writer.transaction(async (transaction) => {
-    const current = await latest(transaction);
+    const current = await readKnowledgePoint(transaction);
     if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
       throw new Error("Spending action data version is stale; reload Spending before pairing.");
     const pair = { invoiceIdentityId: input.invoiceIdentityId, transactionIdentityId: input.transactionIdentityId };
@@ -530,7 +531,7 @@ export function confirmPGliteSpendingStrongCandidates(
 ): Promise<SpendingStrongConfirmResult> {
   const shown = strongConfirmPairs(input);
   return writer.transaction(async (transaction) => {
-    const base = await latest(transaction);
+    const base = await readKnowledgePoint(transaction);
     if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
     const pending = await queryPendingSpendingCandidates(transaction, base);
     const month = input.month ?? null;

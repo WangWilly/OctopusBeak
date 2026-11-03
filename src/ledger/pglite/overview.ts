@@ -1,4 +1,5 @@
 import type { PGliteStore } from "./transaction.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import { buildAccountDisplayMap } from "../../lib/shared-ledger/account-display.ts";
 import { investmentTransactionDirection } from "../canonical/investment-financial-admission.ts";
 import { accountProduct, intermediarySource, type InstitutionKey, type InstitutionProduct } from "../../lib/institutions/institutions.ts";
@@ -677,7 +678,7 @@ async function readProjection(
   const requestedKnowledge = cutoff?.knowledgeAt;
   if (requestedKnowledge !== undefined && (!Number.isSafeInteger(requestedKnowledge) || requestedKnowledge < 0))
     throw new Error("Overview knowledgeAt must be a non-negative safe integer.");
-  const knowledgeAt = requestedKnowledge ?? Number((await store.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits")).rows[0]?.value ?? 0);
+  const knowledgeAt = requestedKnowledge ?? await readKnowledgePoint(store);
   const financialAt = cutoff?.financialAt;
   if (financialAt !== undefined && !/^\d{4}-\d{2}-\d{2}$/u.test(financialAt))
     throw new Error("Overview financialAt must be YYYY-MM-DD.");
