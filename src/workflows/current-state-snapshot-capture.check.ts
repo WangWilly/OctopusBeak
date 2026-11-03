@@ -12,6 +12,8 @@ import {
   captureCurrentStateSnapshots,
   indexCurrentBalanceCaptures,
   matchCurrentBalanceCaptures,
+  readCurrentStateSnapshot,
+  stageCurrentStateSnapshot,
   type CurrentBalanceCaptureMatching,
   type CurrentBalanceUnmatchedPolicy,
   type CurrentStateSnapshotDeclaration,
@@ -456,4 +458,56 @@ test("an unmatched row fails validation under a throw policy", async () => {
   const result = await snapshot(declaration(), [capture("a")], json([{ account: "Z", currencies: ["TWD"], amount: "1" }]));
   await assert.rejects(result.run, /^Error: unmatched$/u);
   assert.equal(result.events.at(-1), "validation failed current-balance-validation-rejected 0/1");
+});
+
+test("the read and stage halves report their own events and stage what the read returned", async () => {
+  const events: string[] = [];
+  const product = {
+    event: async (stage: string, outcome: string, code: string, counts?: Readonly<{ completed: number; total: number }>) => {
+      events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
+    },
+  };
+  const signal = new AbortController().signal;
+  const declared = declaration("domestic-deposit", { kind: "exclude" });
+  const rows = await readCurrentStateSnapshot(declared, {
+    acquire: async () => json([
+      { account: "A", currencies: ["TWD"], amount: "5" },
+      { account: "B", currencies: ["TWD"], amount: "6" },
+    ]),
+    product,
+    text: strictSourceText,
+    signal,
+  });
+  assert.deepEqual(rows.map((row) => row.account), ["A", "B"]);
+  assert.deepEqual(events.splice(0), [
+    "collection started current-balance-collection-started",
+    "decoding started current-balance-decoding-started",
+    "decoding completed current-balance-decoding-completed",
+    "collection completed current-balance-collection-completed 2/2",
+  ]);
+
+  const staged = await stageCurrentStateSnapshot(declared, rows.slice(1), {
+    captures: [capture("b", { account: "B" })],
+    product,
+    signal,
+  });
+  assert.deepEqual(staged.items.map((item) => item.itemKey), ["current-balance:domestic-deposit:B"]);
+  assert.deepEqual(staged.excluded, []);
+  assert.deepEqual(events, [
+    "validation started current-balance-validation-started 0/1",
+    "validation completed current-balance-validation-completed 1/1",
+  ]);
+});
+
+test("the stage half throws on ambiguous captures before validation starts", async () => {
+  const events: string[] = [];
+  await assert.rejects(
+    stageCurrentStateSnapshot(declaration(), [{ account: "A", currencies: ["TWD"], amount: "1" }], {
+      captures: [capture("a"), capture("b", { connection: "c2" })],
+      product: { event: async (_stage, _outcome, code) => { events.push(code); } },
+      signal: new AbortController().signal,
+    }),
+    /^Error: ambiguous$/u,
+  );
+  assert.deepEqual(events, []);
 });

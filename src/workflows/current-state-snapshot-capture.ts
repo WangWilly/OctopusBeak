@@ -28,21 +28,25 @@ export type DecodedSnapshotEvidence<Evidence extends SnapshotEvidence = Snapshot
     ? Readonly<{ kind: "json"; value: unknown }>
     : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
 
+/** How a bank stages the rows it read: matching, building, and labeling. */
+export type CurrentStateSnapshotStaging<Row, Capture> = Readonly<{
+  /** The product label each staged balance item carries. */
+  product: string;
+  matching: CurrentBalanceCaptureMatching<Row, Capture>;
+  build: (row: Row, capture: Capture) => CurrentDepositBalanceCaptureInput;
+}>;
+
 /** What a bank declares once per current-balance product. */
 export type CurrentStateSnapshotDeclaration<
   Acquired extends Readonly<{ evidence: SnapshotEvidence }>,
   Row,
   Capture,
-> = Readonly<{
-  /** The product label each staged balance item carries. */
-  product: string;
+> = CurrentStateSnapshotStaging<Row, Capture> & Readonly<{
   /**
    * Parse decoded evidence, with whatever else the acquisition returned, such
    * as response metadata, into rows. Validates host, path, Date, and headers.
    */
   parse: (decoded: DecodedSnapshotEvidence<Acquired["evidence"]>, acquired: Acquired) => readonly Row[];
-  matching: CurrentBalanceCaptureMatching<Row, Capture>;
-  build: (row: Row, capture: Capture) => CurrentDepositBalanceCaptureInput;
 }>;
 
 export type CurrentStateSnapshotCapture<Row, Capture> = Readonly<{
@@ -72,6 +76,27 @@ export async function captureCurrentStateSnapshots<
   }>,
 ): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
   if (input.captures.length === 0) return { items: [], matched: [], excluded: [] };
+  const rows = await readCurrentStateSnapshot(declaration, input);
+  return stageCurrentStateSnapshot(declaration, rows, input);
+}
+
+/**
+ * The read half: acquire, strictly decode, and parse one snapshot, reporting
+ * collection and decoding. For a bank whose captures depend on the rows, such
+ * as Fubon admitting a USD-coded account only after reconciling it.
+ */
+export async function readCurrentStateSnapshot<
+  Acquired extends Readonly<{ evidence: SnapshotEvidence }>,
+  Row,
+>(
+  declaration: Pick<CurrentStateSnapshotDeclaration<Acquired, Row, never>, "parse">,
+  input: Readonly<{
+    acquire: () => Promise<Acquired>;
+    product: Pick<ProductCollectionHandle, "event">;
+    text: SourceTextPort;
+    signal: AbortSignal;
+  }>,
+): Promise<readonly Row[]> {
   const { product, signal } = input;
   signal.throwIfAborted();
   await product.event("collection", "started", "current-balance-collection-started");
@@ -93,6 +118,25 @@ export async function captureCurrentStateSnapshots<
     completed: rows.length,
     total: rows.length,
   });
+  return rows;
+}
+
+/**
+ * The stage half: match read rows to the admitted captures, then build,
+ * admit, and key each balance, reporting validation. Ambiguous captures throw
+ * before validation starts.
+ */
+export async function stageCurrentStateSnapshot<Row, Capture>(
+  declaration: CurrentStateSnapshotStaging<Row, Capture>,
+  rows: readonly Row[],
+  input: Readonly<{
+    /** The financial captures this run admitted. */
+    captures: readonly Capture[];
+    product: Pick<ProductCollectionHandle, "event">;
+    signal: AbortSignal;
+  }>,
+): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
+  const { product, signal } = input;
   const index = indexCurrentBalanceCaptures(input.captures, declaration.matching);
   await product.event("validation", "started", "current-balance-validation-started", {
     completed: 0,
