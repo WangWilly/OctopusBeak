@@ -46,7 +46,7 @@ import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
 type EsunVerifiedInput = VerifiedRunInput<typeof ESUN_CREDENTIAL_FIELDS, typeof ESUN_PRODUCTS>;
-type EsunCredentials = EsunVerifiedInput["credentials"];
+export type EsunCredentials = EsunVerifiedInput["credentials"];
 
 type StatementKind = "unbilled" | "billed";
 export type GridState = { currentPage?: string; currentPageSize?: string };

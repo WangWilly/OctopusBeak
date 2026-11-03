@@ -1872,6 +1872,7 @@ async function runYuantaTradeWorkflow(
   });
 
   return context.browser.withPage(async (page) => {
+    context.signal.throwIfAborted();
     await authenticateYuantaTradePage(page, input.credentials, context);
     context.signal.throwIfAborted();
 

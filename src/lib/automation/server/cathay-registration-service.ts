@@ -37,7 +37,8 @@ export function createCathaySecretStore(credentialsPath: string, codec: Automati
         details: userId && account && password
           ? { cathay_user_id: userId, cathay_account: account, cathay_password: password }
           : null,
-        trustedUserId: credentials[CATHAY_TRUSTED_DEVICE_USER_ID_KEY] || null,
+        // Compared with the trimmed sign-in ID, so a device trusted before trimming still matches.
+        trustedUserId: credentials[CATHAY_TRUSTED_DEVICE_USER_ID_KEY]?.trim() || null,
       };
     },
     markTrusted(userId) {
