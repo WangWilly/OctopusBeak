@@ -1,7 +1,11 @@
 import type { Page } from "playwright";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
-import { readFubonCurrentDepositBalances } from "./fubon-current-deposit-balances.ts";
+import { readCurrentStateSnapshot } from "./current-state-snapshot-capture.ts";
+import {
+  parseFubonCurrentDepositBalanceSnapshot,
+  readFubonCurrentDepositBalanceTable,
+} from "./fubon-current-deposit-balances.ts";
 import { fubonEbankSite } from "./fubon-ebank-site.ts";
 import {
   fetchDepositStatement,
@@ -22,9 +26,20 @@ export function playwrightFubonAttachedPreviewPort(
   const site = fubonEbankSite(page, context);
   return {
     async balances() {
-      const rows = await readFubonCurrentDepositBalances(site, { observedAt: context.now() });
-      context.text.assertIntact(JSON.stringify(rows));
-      return rows;
+      const observedAt = context.now();
+      // The preview stages nothing, so it reports no current-balance events.
+      return await readCurrentStateSnapshot({
+        parse: (decoded, acquired) => parseFubonCurrentDepositBalanceSnapshot({
+          rows: decoded.rows,
+          response: acquired.response,
+          observedAt,
+        }),
+      }, {
+        acquire: () => readFubonCurrentDepositBalanceTable(site),
+        product: { event: async () => undefined },
+        text: context.text,
+        signal: context.signal,
+      });
     },
     async accountOptions() {
       await openTransactionDetailForAccountIndex(site, 0);

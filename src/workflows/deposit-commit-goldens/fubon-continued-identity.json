@@ -434,7 +434,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+          "itemKey": "current-balance:domestic-deposit:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -594,7 +594,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:synthetic-prior-fubon-account",
+          "itemKey": "current-balance:domestic-deposit:sha256:synthetic-prior-fubon-account",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -773,6 +773,48 @@
       "counts": {
         "activity": "query",
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     },
     {

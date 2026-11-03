@@ -2,11 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { WorkflowAccountIdentityPort, WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { AccountIdentityContinuity } from "../ledger/pglite/account-identity-continuity.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -59,16 +57,19 @@ import {
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
-  readFubonCurrentDepositBalances,
+  parseFubonCurrentDepositBalanceSnapshot,
+  readFubonCurrentDepositBalanceTable,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
   type FubonCurrentDepositBalanceRow,
+  type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
 import {
-  matchCurrentBalanceCaptures,
+  readCurrentStateSnapshot,
+  stageCurrentStateSnapshot,
   type CurrentBalanceCaptureMatching,
+  type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -257,16 +258,8 @@ export type FubonDepositSourceSnapshot = Readonly<{
   }>[];
 }>;
 
-export type FubonCurrentDepositBalanceRead = (
-  request: Parameters<typeof readFubonCurrentDepositBalances>[1],
-) => Promise<readonly FubonCurrentDepositBalanceRow[]>;
-
-/** A TWD current-balance row whose account has no full account-number
- * evidence among this run's financial statement captures. Only this balance
- * line stays out of the product. */
-type FubonCurrentBalanceExclusion = Readonly<{
-  reason: "account-number-evidence-missing";
-}>;
+/** Open the 我的存款 current-state table; the snapshot module decodes and parses it. */
+export type FubonCurrentDepositBalanceRead = () => Promise<FubonCurrentDepositTable>;
 
 type FubonStatementExclusion = Readonly<{
   reason: "account-currency-unproven" | "account-identity-ambiguous";
@@ -282,12 +275,6 @@ type ExistingFubonFinancialCapture = Readonly<{
     accountNumber?: Readonly<{ value: string }> | null;
   }>;
 }>;
-
-export function selectFubonDomesticCurrentDepositRows(
-  rows: readonly FubonCurrentDepositBalanceRow[],
-): readonly FubonCurrentDepositBalanceRow[] {
-  return rows.filter((row) => row.currency === "TWD");
-}
 
 /** Preserve the provider's full account-number evidence while joining the
  * current snapshot to the existing hashed canonical account identity. */
@@ -434,6 +421,25 @@ export const fubonCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
     kept.identity.subjectDigest === candidate.identity.subjectDigest,
   ambiguousMessage: "Fubon current deposit identities are ambiguous across financial captures.",
   unmatched: { kind: "exclude" },
+};
+
+/**
+ * Fubon reads every currency for the USD-coded reconciliation, then stages
+ * only TWD rows, so it calls the module's read and stage halves separately.
+ */
+const fubonCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  FubonCurrentDepositTable & Readonly<{ observedAt: string }>,
+  FubonCurrentDepositBalanceRow,
+  ExistingFubonFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => parseFubonCurrentDepositBalanceSnapshot({
+    rows: decoded.rows,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: fubonCurrentBalanceCaptureMatching,
+  build: buildFubonCurrentDepositBalanceCapture,
 };
 
 export type ParsedDepositStatementPage = {
@@ -2691,11 +2697,9 @@ export async function runFubonStatements(
   fubonDepositSourceIdentity(input);
   const site = fubonEbankSite(page, context);
   const snapshot = await readFubonDepositSourceSnapshot(site, context, product);
-  return stageFubonDeposit(snapshot, input, context, product, async (request) => {
+  return stageFubonDeposit(snapshot, input, context, product, async () => {
     await product.reportActivity("query");
-    const rows = await readFubonCurrentDepositBalances(site, request);
-    context.text.assertIntact(JSON.stringify(rows));
-    return rows;
+    return await readFubonCurrentDepositBalanceTable(site);
   });
 }
 
@@ -2757,8 +2761,6 @@ export async function stageFubonDeposit(
     sourceCapture: FubonDomesticDepositValidatedEvidence;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
   }> = [];
-  const currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
-  const currentBalanceExclusions: FubonCurrentBalanceExclusion[] = [];
   const statementExclusions: FubonStatementExclusion[] = [];
   const ambiguousAccountNumbers = new Set<string>();
   const continuityByAccountNumber = new Map<string, Promise<AccountIdentityContinuity>>();
@@ -2925,8 +2927,12 @@ export async function stageFubonDeposit(
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
     let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
-      context.signal.throwIfAborted();
-      currentRows = await readCurrentBalances({ observedAt: context.now() });
+      currentRows = await readCurrentStateSnapshot(fubonCurrentBalanceSnapshot, {
+        acquire: async () => ({ ...(await readCurrentBalances()), observedAt: context.now() }),
+        product,
+        text: context.text,
+        signal: context.signal,
+      });
       currentObservedAt = context.now();
     }
 
@@ -2943,24 +2949,17 @@ export async function stageFubonDeposit(
       );
     }
 
-    if (financialCaptures.length > 0) {
-      // An account number that continues several admitted accounts was
-      // already excluded as account-identity-ambiguous (ADR 0049).
-      const { matched, excluded } = matchCurrentBalanceCaptures(
-        selectFubonDomesticCurrentDepositRows(currentRows)
-          .filter((row) => !ambiguousAccountNumbers.has(row.accountNumber))
+    // An account number that continues several admitted accounts was
+    // already excluded as account-identity-ambiguous (ADR 0049).
+    const balances = financialCaptures.length > 0
+      ? await stageCurrentStateSnapshot(
+        fubonCurrentBalanceSnapshot,
+        currentRows
+          .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber))
           .map((row) => ({ ...row, observedAt: currentObservedAt })),
-        financialCaptures,
-        fubonCurrentBalanceCaptureMatching,
-      );
-      currentBalanceExclusions.push(
-        ...excluded.map(() => ({ reason: "account-number-evidence-missing" } as const)),
-      );
-      for (const { row, capture } of matched)
-        currentBalanceCaptures.push(
-          admitCurrentDepositBalanceCapture(buildFubonCurrentDepositBalanceCapture(row, capture)),
-        );
-    }
+        { captures: financialCaptures, product, signal: context.signal },
+      )
+      : { items: [], excluded: [] };
 
     context.signal.throwIfAborted();
     const items: ProductStageRequest[] = [];
@@ -2989,18 +2988,12 @@ export async function stageFubonDeposit(
           } : {}),
         });
     }
-    for (const capture of currentBalanceCaptures) items.push({
-        product: "current-balance",
-        itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(capture),
-        },
-    });
 
-    product.stage(...items);
-    for (const exclusion of currentBalanceExclusions)
-      await product.event("collection", "advanced", `deposit-current-balance-excluded-${exclusion.reason}`);
+    product.stage(...items, ...balances.items);
+    // A TWD row whose account has no full account-number evidence among this
+    // run's financial captures; only that balance line stays out.
+    for (const _ of balances.excluded)
+      await product.event("collection", "advanced", "deposit-current-balance-excluded-account-number-evidence-missing");
     for (const exclusion of statementExclusions)
       await product.event("collection", "advanced", `deposit-statement-excluded-${exclusion.reason}`);
     return { sourceCaptureCount: sourceCount, rowCount };

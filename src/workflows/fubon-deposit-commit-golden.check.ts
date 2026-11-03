@@ -7,9 +7,8 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { FubonAllWorkflowDependencies } from "./fubon-all-statements.ts";
 import {
-  FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  type FubonCurrentDepositBalanceRow,
+  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
 } from "./fubon-current-deposit-balances.ts";
 import type {
   FubonDepositAccountOptionEvidence,
@@ -42,7 +41,7 @@ const QUERY_RANGE = { startDate: "2026/08/26", endDate: "2026/09/25" };
 type Cells = [date: string, time: string, memo: string, outflow: string, inflow: string, balance: string, note: string];
 type DepositStubs = Readonly<{
   statements: ReadonlyMap<string, FubonParsedDepositStatement>;
-  currentRows: readonly FubonCurrentDepositBalanceRow[];
+  currentRows: readonly (readonly string[])[];
   accountIdentityContinuity?: FubonDepositProductContext["accountIdentity"]["continuity"];
 }>;
 
@@ -95,33 +94,26 @@ function statement(
   };
 }
 
+/** One visible 我的存款 row: 帳號, 暱稱, 類別, 分行, 幣別, 即時餘額, 可用餘額, and three empty cells. */
 function balance(
   accountNumber: string,
   branchName: string,
   instant: string,
   available: string,
   currency: "TWD" | "USD" = "TWD",
-): FubonCurrentDepositBalanceRow {
-  return {
-    source: "fubon",
+): readonly string[] {
+  return [
     accountNumber,
-    accountNickname: "synthetic",
-    depositType: currency === "TWD" ? "活期" : "外幣活存",
+    "synthetic",
+    currency === "TWD" ? "活期" : "外幣活存",
     branchName,
-    currency,
-    currencySourceLexeme: currency === "TWD" ? "台幣" : "美金",
-    instantBalance: { coefficient: instant, scale: 2, sourceLexeme: (Number(instant) / 100).toFixed(2) },
-    availableBalance: { coefficient: available, scale: 2, sourceLexeme: (Number(available) / 100).toFixed(2) },
-    effectiveAt: "2026-09-24T16:00:00.000Z",
-    providerHttpDate: "Thu, 24 Sep 2026 16:00:00 GMT",
-    observedAt: NOW,
-    sourceEvidence: {
-      endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-      status: 200,
-      cacheControl: "no-store, no-cache",
-      contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-    },
-  };
+    currency === "TWD" ? "台幣" : "美金",
+    (Number(instant) / 100).toFixed(2),
+    (Number(available) / 100).toFixed(2),
+    "",
+    "",
+    "",
+  ];
 }
 
 // Expand each item's relation thunk so the golden pins the relation commands
@@ -172,7 +164,14 @@ async function runGolden(
       const read: FubonParsedDepositStatement[] = [entry];
       accounts.push({ account: entry.accountOption, statements: read });
     }
-    return stageFubonDeposit({ accounts }, input, context, product, async () => currentRows);
+    return stageFubonDeposit({ accounts }, input, context, product, async () => ({
+      evidence: { kind: "cells", rows: currentRows },
+      response: {
+        url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+        status: 200,
+        headers: { date: "Thu, 24 Sep 2026 16:00:00 GMT", "cache-control": "no-store, no-cache" },
+      },
+    }));
   };
   const input = {
     managedIdentitySecret: "synthetic-fubon-golden-secret",
@@ -226,7 +225,7 @@ const secondRows: Cells[] = [
   ["2026/09/12", "12:00:00", "SYNTHETIC CARD PAYMENT", "250.00", "", "50.00", ""],
 ];
 
-function stubs(statements: ReadonlyMap<string, FubonParsedDepositStatement>, rows: FubonCurrentDepositBalanceRow[]): DepositStubs {
+function stubs(statements: ReadonlyMap<string, FubonParsedDepositStatement>, rows: (readonly string[])[]): DepositStubs {
   return { statements, currentRows: rows };
 }
 
