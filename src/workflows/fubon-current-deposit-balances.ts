@@ -414,13 +414,13 @@ export async function readFubonCurrentDepositBalanceTable(
   const { frames } = site;
   const timeoutMs = input.timeoutMs ?? 60_000;
   const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
-  await frames.race(depositMenu.click());
+  await frames.withSignal((signal) => depositMenu.click({ signal }));
   const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
   // The page's own response carries the HTTP Date and Cache-Control evidence, so it is paired with the click that requests it.
-  const [response] = await frames.race(Promise.all([
-    frames.page.waitForResponse(responseMatches, { timeout: timeoutMs }),
-    myDeposit.click(),
-  ]));
+  const [response] = await Promise.all([
+    frames.withSignal((signal) => frames.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal })),
+    frames.withSignal((signal) => myDeposit.click({ signal })),
+  ]);
   const headers = await frames.race(response.allHeaders());
   const table = await findCurrentDepositTable(frames, timeoutMs);
   return {

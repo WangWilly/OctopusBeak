@@ -1816,7 +1816,7 @@ async function countDepositRows(
   site: FubonEbankSite,
   scope: BrowserScope,
 ): Promise<number> {
-  await site.frames.race(
+  await site.frames.withSignal((signal) =>
     scope
       .locator("a.btn_sel")
       .filter({ hasText: "交易明細查詢" })
@@ -1824,6 +1824,7 @@ async function countDepositRows(
       .waitFor({
         state: "attached",
         timeout: 60_000,
+        signal,
       }),
   );
   return await site.frames.race(depositRows(scope).count());
@@ -1833,12 +1834,12 @@ async function readMaskedAccountLabel(
   site: FubonEbankSite,
   row: Locator,
 ): Promise<string> {
-  const raw = await site.frames.race(
+  const raw = await site.frames.withSignal((signal) =>
     row
       .locator("td")
       .first()
-      .innerText()
-      .catch(async () => await row.innerText()),
+      .innerText({ signal })
+      .catch(async () => await row.innerText({ signal })),
   );
   return maskAccount(raw);
 }
@@ -1864,8 +1865,8 @@ export async function readFubonDepositAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await frames.race(option.getAttribute("value")));
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = cleanText(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     if (value && label) accounts.push({ label, value });
   }
 
@@ -1899,8 +1900,8 @@ async function selectDepositAccountWithUi(
   account: FubonDepositAccountOption,
 ): Promise<void> {
   const scope = await site.frames.scopeWith(depositAccountSelectSelector);
-  await site.frames.race(
-    scope.locator(depositAccountSelectSelector).selectOption(account.value),
+  await site.frames.withSignal((signal) =>
+    scope.locator(depositAccountSelectSelector).selectOption(account.value, { signal }),
   );
 }
 
@@ -1941,8 +1942,8 @@ export async function openTransactionDetailForAccountIndex(
   const transactionDetails = accountRow
     .locator("a.btn_sel")
     .filter({ hasText: "交易明細查詢" });
-  await site.frames.race(
-    transactionDetails.waitFor({ state: "attached", timeout: 30_000 }),
+  await site.frames.withSignal((signal) =>
+    transactionDetails.waitFor({ state: "attached", timeout: 30_000, signal }),
   );
   await site.activate(transactionDetails);
 
@@ -2258,14 +2259,15 @@ async function clickAndReadFubonDepositQuery(
   site: FubonEbankSite,
   control: Locator,
 ): Promise<string> {
-  const [response] = await site.frames.race(
-    Promise.all([
+  const [response] = await Promise.all([
+    site.frames.withSignal((signal) =>
       site.frames.page.waitForResponse(isFubonDepositQueryResponse, {
         timeout: 60_000,
+        signal,
       }),
-      control.click({ timeout: 30_000 }),
-    ]),
-  );
+    ),
+    site.frames.withSignal((signal) => control.click({ timeout: 30_000, signal })),
+  ]);
   await site.frames.race(response.finished());
   return await site.readHtml(response);
 }
@@ -2309,13 +2311,13 @@ export async function fetchFubonDepositStatementViaUi(
     await selectDepositAccountWithUi(site, accountOption);
   }
   const dateRangeId = `input[id="form1:rdoDay${dateRange}"]`;
-  await frames.race(scope.locator(dateRangeId).click({ timeout: 30_000 }));
+  await frames.withSignal((signal) => scope.locator(dateRangeId).click({ timeout: 30_000, signal }));
   await frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
   const pages: ParsedDepositStatementPage[] = [];
   const visited = new Set<string>();
   const submit = scope.locator(depositSubmitSelector);
-  await frames.race(submit.waitFor({ state: "visible", timeout: 30_000 }));
+  await frames.withSignal((signal) => submit.waitFor({ state: "visible", timeout: 30_000, signal }));
   let control: Locator = submit;
   while (true) {
     const html = await clickAndReadFubonDepositQuery(site, control);

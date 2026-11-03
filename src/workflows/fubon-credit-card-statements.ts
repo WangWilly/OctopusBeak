@@ -480,25 +480,25 @@ async function readFubonCurrentUsedCredit(
   const { frames } = site;
   const readBalanceTable = async () => {
     const scope = await site.open(CURRENT_CREDIT_ROUTE);
-    return await frames.race(scope.locator("body").innerHTML());
+    return await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal }));
   };
   // The page's own GET carries the HTTP Date evidence; a page that renders without it reads as missing-response.
-  const [response, html] = await frames.race(
-    Promise.all([
-      frames.page
-        .waitForResponse(
+  const [response, html] = await Promise.all([
+    frames
+      .withSignal((signal) =>
+        frames.page.waitForResponse(
           (response) =>
             response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
             response.request().method() === "GET",
-          { timeout: 60_000 },
-        )
-        .catch((error: unknown) => {
-          if (error instanceof errors.TimeoutError) return null;
-          throw error;
-        }),
-      readBalanceTable(),
-    ]),
-  );
+          { timeout: 60_000, signal },
+        ),
+      )
+      .catch((error: unknown) => {
+        if (error instanceof errors.TimeoutError) return null;
+        throw error;
+      }),
+    readBalanceTable(),
+  ]);
   sourceText.assertIntact(html);
   let parsed: FubonCurrentUsedCreditSnapshot | undefined;
   try {
@@ -633,10 +633,11 @@ async function openStatementDetailsPage(site: FubonEbankSite): Promise<BrowserSc
     );
   }
   if (await hasFubonCreditCardStatementUnavailable(scope)) return scope;
-  await site.frames.race(
+  await site.frames.withSignal((signal) =>
     statementDetailsTable(scope).waitFor({
       state: "attached",
       timeout: 60_000,
+      signal,
     }),
   );
   return scope;
@@ -700,10 +701,11 @@ async function openUnbilledDetailsPage(
   )
     return { scope, providerNoRecord: true };
 
-  await site.frames.race(
+  await site.frames.withSignal((signal) =>
     unbilledDetailsTable(scope).waitFor({
       state: "attached",
       timeout: 60_000,
+      signal,
     }),
   );
   return { scope, providerNoRecord: false };
@@ -806,7 +808,7 @@ async function readStatementPeriodLabel(
   scope: BrowserScope,
 ): Promise<string> {
   const rows = statementSummaryTable(scope).locator("tr");
-  await site.frames.race(rows.nth(1).waitFor({ state: "attached", timeout: 60_000 }));
+  await site.frames.withSignal((signal) => rows.nth(1).waitFor({ state: "attached", timeout: 60_000, signal }));
   const cells = await readCells(rows.nth(1));
   return cells[0] ?? "";
 }
@@ -1208,8 +1210,8 @@ async function selectStatementPeriod(
   if (!period) throw new Error(`Unsupported period offset ${periodOffset}.`);
 
   const scope = await frames.scopeWith(PERIOD_SELECTOR);
-  const currentValue = await frames.race(
-    scope.locator(PERIOD_SELECTOR).getAttribute("value"),
+  const currentValue = await frames.withSignal((signal) =>
+    scope.locator(PERIOD_SELECTOR).getAttribute("value", { signal }),
   );
 
   await site.waitForMaskToClear();
@@ -1217,7 +1219,7 @@ async function selectStatementPeriod(
   if (currentValue === String(periodOffset)) return scope;
 
   const tab = scope.locator("a").filter({ hasText: period.label }).first();
-  await frames.race(tab.waitFor({ state: "attached", timeout: 60_000 }));
+  await frames.withSignal((signal) => tab.waitFor({ state: "attached", timeout: 60_000, signal }));
   await site.activate(tab);
 
   const switched = await frames.until(async () => {
