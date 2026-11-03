@@ -1,6 +1,7 @@
 import type { Frame, Locator, Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import type { FrameScope } from "./frame-scope.ts";
 
 /** HNCB's current deposit balance query is a provider snapshot. */
 export const HNCB_CURRENT_DEPOSIT_BALANCE_PATH =
@@ -672,55 +673,50 @@ export async function readHncbCurrentDepositOverviewCells(
   throw new Error("HNCB current deposit overview table headers are not recognized.");
 }
 
-async function findExactControl(
-  page: Page,
+function findExactControl(
+  scope: FrameScope,
   text: string,
   timeoutMs: number,
 ): Promise<Locator> {
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const controls = scope.locator("a, button").filter({ hasText: matcher });
+  return scope.until(async () => {
+    for (const candidate of scope.scopes()) {
+      const controls = candidate.locator("a, button").filter({ hasText: matcher });
       const count = await controls.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
         const control = controls.nth(index);
         if (await control.isVisible().catch(() => false)) return control;
       }
     }
-    await page.waitForTimeout(250);
-  }
-  throw new Error(`Could not find HNCB control "${text}".`);
+    return null;
+  }, `Could not find HNCB control "${text}".`, { timeoutMs });
 }
 
-async function findResultTable(page: Page, timeoutMs: number): Promise<{ scope: BrowserScope; table: Locator }> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const tables = scope.locator("table");
+function findResultTable(scope: FrameScope, timeoutMs: number): Promise<{ scope: BrowserScope; table: Locator }> {
+  return scope.until(async () => {
+    for (const candidate of scope.scopes()) {
+      const tables = candidate.locator("table");
       const count = await tables.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
         const table = tables.nth(index);
         if ((await table.locator("table").count().catch(() => 1)) !== 0) continue;
         const text = await table.innerText().catch(() => "");
         if (text.includes("帳號(由小到大排序)") && text.includes("帳上餘額")) {
-          return { scope, table };
+          return { scope: candidate, table };
         }
       }
     }
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Could not find HNCB current deposit result table.");
+    return null;
+  }, "Could not find HNCB current deposit result table.", { timeoutMs });
 }
 
-async function findOverviewResultTable(
-  page: Page,
+function findOverviewResultTable(
+  scope: FrameScope,
   timeoutMs: number,
 ): Promise<{ scope: BrowserScope; table: Locator }> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    for (const scope of [page, ...page.frames()]) {
-      const tables = scope.locator("table");
+  return scope.until(async () => {
+    for (const candidate of scope.scopes()) {
+      const tables = candidate.locator("table");
       const count = await tables.count().catch(() => 0);
       for (let index = 0; index < count; index += 1) {
         const table = tables.nth(index);
@@ -736,35 +732,31 @@ async function findOverviewResultTable(
             text.includes("帳上餘額") &&
             text.includes("可用餘額")
           )
-            return { scope, table };
+            return { scope: candidate, table };
         }
       }
     }
-    await page.waitForTimeout(250);
-  }
-  throw new Error("Could not find HNCB current deposit overview result table.");
+    return null;
+  }, "Could not find HNCB current deposit overview result table.", { timeoutMs });
 }
 
-async function findMenuFrameControl(
-  page: Page,
+function findMenuFrameControl(
+  scope: FrameScope,
   text: string,
   timeoutMs: number,
 ): Promise<Locator> {
   const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const menuFrame = page.frame({ name: "menu" });
-    if (menuFrame) {
-      const controls = menuFrame.locator("a").filter({ hasText: matcher });
-      const count = await controls.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const control = controls.nth(index);
-        if (await control.isVisible().catch(() => false)) return control;
-      }
+  return scope.until(async () => {
+    const menuFrame = scope.page.frame({ name: "menu" });
+    if (!menuFrame) return null;
+    const controls = menuFrame.locator("a").filter({ hasText: matcher });
+    const count = await controls.count().catch(() => 0);
+    for (let index = 0; index < count; index += 1) {
+      const control = controls.nth(index);
+      if (await control.isVisible().catch(() => false)) return control;
     }
-    await page.waitForTimeout(100);
-  }
-  throw new Error(`Could not find HNCB menu-frame control "${text}".`);
+    return null;
+  }, `Could not find HNCB menu-frame control "${text}".`, { timeoutMs });
 }
 
 function accountingNavigationResponseMatches(response: Response): boolean {
@@ -828,51 +820,57 @@ async function responseMetadata(response: Response): Promise<HncbCurrentDepositR
 
 /** Navigate 帳務查詢 → 餘額查詢 → 活期存款, then read the source table. */
 export async function readHncbCurrentDepositDetailTable(
-  page: Page,
+  scope: FrameScope,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<HncbCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const accountingMenu = await findExactControl(page, "帳務查詢", timeoutMs);
-  await accountingMenu.click();
-  const balanceMenu = await findExactControl(page, "餘額查詢", timeoutMs);
-  await balanceMenu.click();
-  const demandDeposit = await findExactControl(page, "活期存款", timeoutMs);
-  const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
-  await demandDeposit.click();
-  const response = await responseMetadata(await responsePromise);
-  const result = await findResultTable(page, timeoutMs);
+  const accountingMenu = await findExactControl(scope, "帳務查詢", timeoutMs);
+  await scope.withSignal((signal) => accountingMenu.click({ signal }));
+  const balanceMenu = await findExactControl(scope, "餘額查詢", timeoutMs);
+  await scope.withSignal((signal) => balanceMenu.click({ signal }));
+  const demandDeposit = await findExactControl(scope, "活期存款", timeoutMs);
+  const responded = scope.withSignal((signal) =>
+    scope.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
+  responded.catch(() => undefined);
+  await scope.withSignal((signal) => demandDeposit.click({ signal }));
+  const response = await scope.race(responseMetadata(await responded));
+  const result = await findResultTable(scope, timeoutMs);
   return {
     view: "detail",
-    evidence: { kind: "cells", rows: await readHncbCurrentDepositDetailCells(result.scope) },
+    evidence: { kind: "cells", rows: await scope.race(readHncbCurrentDepositDetailCells(result.scope)) },
     response,
   };
 }
 
 /** Navigate 帳務查詢 → 帳戶總覽, then read the authenticated overview table. */
 export async function readHncbCurrentDepositOverviewTable(
-  page: Page,
+  scope: FrameScope,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<HncbCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const accountingMenu = await findExactControl(page, "帳務查詢", timeoutMs);
-  const accountingResponse = page
-    .waitForResponse(accountingNavigationResponseMatches, {
+  const accountingMenu = await findExactControl(scope, "帳務查詢", timeoutMs);
+  const accountingResponse = scope.withSignal((signal) =>
+    scope.page.waitForResponse(accountingNavigationResponseMatches, {
       timeout: Math.min(timeoutMs, 10_000),
-    })
-    .catch(() => null);
-  await accountingMenu.click();
+      signal,
+    }))
+    .catch(() => scope.signal.throwIfAborted());
+  accountingResponse.catch(() => undefined);
+  await scope.withSignal((signal) => accountingMenu.click({ signal }));
   // Wait for the bank's accounting POST when it emits one. The menu-frame
   // locator below supplies the readiness barrier for shells that do not emit
   // that response or finish rendering it before the response event.
   await accountingResponse;
-  const overviewMenu = await findMenuFrameControl(page, "帳戶總覽", timeoutMs);
-  const responsePromise = page.waitForResponse(overviewResponseMatches, { timeout: timeoutMs });
-  await overviewMenu.click();
-  const response = await responseMetadata(await responsePromise);
-  const result = await findOverviewResultTable(page, timeoutMs);
+  const overviewMenu = await findMenuFrameControl(scope, "帳戶總覽", timeoutMs);
+  const responded = scope.withSignal((signal) =>
+    scope.page.waitForResponse(overviewResponseMatches, { timeout: timeoutMs, signal }));
+  responded.catch(() => undefined);
+  await scope.withSignal((signal) => overviewMenu.click({ signal }));
+  const response = await scope.race(responseMetadata(await responded));
+  const result = await findOverviewResultTable(scope, timeoutMs);
   return {
     view: "overview",
-    evidence: { kind: "cells", rows: await readHncbCurrentDepositOverviewCells(result.scope) },
+    evidence: { kind: "cells", rows: await scope.race(readHncbCurrentDepositOverviewCells(result.scope)) },
     response,
   };
 }
