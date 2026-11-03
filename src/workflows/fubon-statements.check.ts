@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";

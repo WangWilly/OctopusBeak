@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { indexCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";

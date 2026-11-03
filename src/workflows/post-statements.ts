@@ -34,7 +34,7 @@ import {
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
   postCurrentBalanceCaptureMatching,

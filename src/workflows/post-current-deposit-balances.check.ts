@@ -14,7 +14,7 @@ import {
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00.123+08:00";

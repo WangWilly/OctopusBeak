@@ -51,7 +51,7 @@ import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   indexCurrentBalanceCaptures,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+} from "./current-state-snapshot-capture.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =

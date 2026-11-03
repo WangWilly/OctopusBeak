@@ -20,7 +20,7 @@ import {
   buildLinebankCurrentDepositBalanceCapture,
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import {
   parseLinebankApiJson,
   parseLinebankCurrentDepositBalanceSnapshot,

@@ -51,7 +51,7 @@ const {
   yuantaForeignCurrentBalanceCaptureMatching,
   yuantaForeignQueryRange,
 } = await import("./yuanta-foreign-currency-statements.ts");
-const { matchCurrentBalanceCaptures } = await import("./current-balance-capture-match.ts");
+const { matchCurrentBalanceCaptures } = await import("./current-state-snapshot-capture.ts");
 
 {
   const admittedAccount = {

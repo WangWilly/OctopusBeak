@@ -3,7 +3,7 @@ import { registerHooks } from "node:module";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import {
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   parseCathayCurrentDepositBalanceSnapshot,

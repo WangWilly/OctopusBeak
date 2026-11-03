@@ -17,7 +17,7 @@ import {
   stageHncbDeposit,
   type HncbReadCurrentDepositBalances,
 } from "./hncb-statements.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {

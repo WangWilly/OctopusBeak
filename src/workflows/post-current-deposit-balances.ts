@@ -9,7 +9,7 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { CurrentBalanceCaptureMatching } from "./current-balance-capture-match.ts";
+import type { CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler

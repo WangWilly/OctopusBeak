@@ -15,7 +15,7 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
-import type { CurrentBalanceCaptureMatching } from "./current-balance-capture-match.ts";
+import type { CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
 
 export const LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "linebank/domestic-deposit/current-balance-v1" as const;

@@ -39,7 +39,7 @@ import {
 import {
   matchCurrentBalanceCaptures,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+} from "./current-state-snapshot-capture.ts";
 import {
   admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,

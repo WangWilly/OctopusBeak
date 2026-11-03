@@ -10,7 +10,7 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 

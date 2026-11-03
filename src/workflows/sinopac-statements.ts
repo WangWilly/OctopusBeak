@@ -76,7 +76,7 @@ import {
 import {
   matchCurrentBalanceCaptures,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+} from "./current-state-snapshot-capture.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import {
   collectSinopacCreditCards,

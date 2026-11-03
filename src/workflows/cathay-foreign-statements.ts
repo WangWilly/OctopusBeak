@@ -16,7 +16,7 @@ import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-ba
 import {
   matchCurrentBalanceCaptures,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+} from "./current-state-snapshot-capture.ts";
 import {
   type CurrentDepositBalanceCaptureInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
