@@ -5,9 +5,10 @@ import type {
   SpendingMergeLogEntry,
   SpendingMerchantStatsDto,
   SpendingMonthInsightDto,
+  SpendingPageReadResult,
   SpendingPendingOverviewDto,
 } from "./model.ts";
-import { createSpendingPageReader, type SpendingPageReadResult } from "./page-reader.ts";
+import { createSpendingPageReader } from "./page-reader.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
 
 type SpendingApi = OctopusBeakApi["spending"];

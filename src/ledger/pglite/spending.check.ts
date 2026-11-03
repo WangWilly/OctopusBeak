@@ -13,6 +13,8 @@ import {
   queryCurrentSpendingSummary,
 } from "./purchase-report.ts";
 import type { PurchaseReport } from "../canonical/spending-purchase-contracts.ts";
+import { freshPage } from "./spending-test-fixture.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import {
   commitPGliteSpendingRefundRevision,
   applyPGliteSpendingPageAction,
@@ -408,12 +410,12 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
       limit: 2,
     }));
     assert.deepEqual(secondRecordPage.records.map((record) => record.purchaseId), expectedMonthRecords.slice(2, 4).map((record) => record.purchaseId));
-    const firstCandidatePage = await query.candidatePage({ knowledgeAt: 1, month: "2026-09", limit: 1 });
+    const firstCandidatePage = freshPage(await query.candidatePage({ knowledgeAt: 1, month: "2026-09", limit: 1 }));
     assert.equal(firstCandidatePage.totalCandidateCount, 2);
     assert.equal(firstCandidatePage.items.length, 1);
     assert.ok(firstCandidatePage.nextOffset !== null);
     assert.ok(firstCandidatePage.items[0]?.invoiceRecord?.candidateIds.includes(firstCandidatePage.items[0]!.candidate.candidateId));
-    const secondCandidatePage = await query.candidatePage({ knowledgeAt: 1, month: "2026-09", offset: firstCandidatePage.nextOffset!, limit: 1 });
+    const secondCandidatePage = freshPage(await query.candidatePage({ knowledgeAt: 1, month: "2026-09", offset: firstCandidatePage.nextOffset!, limit: 1 }));
     assert.equal(secondCandidatePage.items.length, 1);
     assert.notEqual(firstCandidatePage.items[0]?.candidate.candidateId, secondCandidatePage.items[0]?.candidate.candidateId);
     assert.equal(before.purchaseReport.records.some((record) => record.occurrence.value.startsWith("2026-10-")), false);
@@ -422,10 +424,10 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
       month: "2026-10",
     }));
     assert.deepEqual([emptyMonthRecords.records, emptyMonthRecords.nextCursor], [[], null], "a month without purchases pages as empty");
-    const emptyMonthCandidates = await query.candidatePage({ knowledgeAt: 1, month: "2026-10" });
+    const emptyMonthCandidates = freshPage(await query.candidatePage({ knowledgeAt: 1, month: "2026-10" }));
     assert.deepEqual([emptyMonthCandidates.items, emptyMonthCandidates.totalCandidateCount, emptyMonthCandidates.nextOffset], [[], 0, null]);
-    await assert.rejects(query.candidatePage({ knowledgeAt: 0, month: "2026-09" }), /data version is stale/u);
-    await assert.rejects(query.recordPage({ knowledgeAt: 0, month: "2026-09" }), /data version is stale/u);
+    assert.deepEqual(await query.candidatePage({ knowledgeAt: 0, month: "2026-09" }), { stale: true, knowledgeAt: 1 });
+    assert.deepEqual(await query.recordPage({ knowledgeAt: 0, month: "2026-09" }), { stale: true, knowledgeAt: 1 });
     assert.deepEqual(before.purchaseReport.records.map((record) => record.basis), ["invoice", "invoice", "bank-transaction", "bank-transaction"]);
     assert.equal(before.purchaseReport.candidates.length, 2);
     assert.deepEqual(before.purchaseReport.totalsByCurrency, [{ currency: "TWD", coefficient: "7158", scale: 2, count: 4 }]);
@@ -596,8 +598,8 @@ test("PGlite month candidate pages include invoice-or-payment month and reject a
       candidate.invoiceId === fixture.invoiceOne && candidate.transactionId === fixture.transactionOne);
     assert.ok(crossMonthCandidate);
 
-    const september = await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-09", limit: 20 });
-    const october = await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10", limit: 20 });
+    const september = freshPage(await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-09", limit: 20 }));
+    const october = freshPage(await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10", limit: 20 }));
     assert.equal(september.totalCandidateCount, 2);
     assert.equal(october.totalCandidateCount, 1);
     const septemberPair = september.items.find((item) => item.candidate.candidateId === crossMonthCandidate.candidateId);
@@ -626,7 +628,7 @@ test("PGlite month candidate pages include invoice-or-payment month and reject a
       dataVersion: before.purchaseReport.knowledgeAt,
       limit: 1,
     })), /data version is stale/u, "an open Pairing page must be invalidated by a newer commit");
-    await assert.rejects(query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10" }), /data version is stale/u);
+    assert.deepEqual(await query.candidatePage({ knowledgeAt: before.purchaseReport.knowledgeAt, month: "2026-10" }), { stale: true, knowledgeAt: await readKnowledgePoint(fixture.store) });
   } finally {
     await fixture.store.close();
   }

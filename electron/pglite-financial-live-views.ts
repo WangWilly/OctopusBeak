@@ -1,8 +1,8 @@
 import type {
   PGliteFinancialExpectedSources,
-  PGliteFinancialHandlerResult,
   PGliteFinancialOperation,
   PGliteFinancialRegistry,
+  PGliteFinancialResult,
 } from "./pglite-financial-rpc-client.ts";
 import type { PGliteFinancialPageActionEvents, PGliteWorkScheduler } from "./pglite-financial-registry.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
@@ -51,7 +51,7 @@ export type PGliteFinancialLiveView = keyof typeof FINANCIAL_LIVE_VIEWS;
 
 /** The DTO each live view publishes: the result of the operation it loads. */
 export type FinancialLiveViewDtos = {
-  readonly [View in PGliteFinancialLiveView]: PGliteFinancialHandlerResult<View>;
+  readonly [View in PGliteFinancialLiveView]: PGliteFinancialResult<View>;
 };
 
 function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {

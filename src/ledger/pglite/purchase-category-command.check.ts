@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import {
   parsePurchaseIdentity,
@@ -191,7 +191,7 @@ test("the record page reads an invoice-only purchase's user category after the c
     const purchaseId = `invoice:${invoiceId}`;
     const query = createPGliteSpendingQuery(fixture.store as never);
     const read = async (knowledgeAt: number) =>
-      (await query.recordPage({ knowledgeAt, month: "2026-09", limit: 50 })).records.find((record) => record.purchaseId === purchaseId)?.category;
+      (freshPage(await query.recordPage({ knowledgeAt, month: "2026-09", limit: 50 }))).records.find((record) => record.purchaseId === purchaseId)?.category;
     const base = await fixture.knowledgeAt();
     assert.deepEqual(pickCategory(await read(base)), { mode: "single", origin: "derived", categoryCode: "food_and_groceries" });
     const set = await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId, knowledgeAt: base, categoryCode: "gifts_and_donations" });

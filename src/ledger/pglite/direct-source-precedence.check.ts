@@ -18,7 +18,7 @@ import { commitPGliteCanonicalEInvoiceCapture } from "./einvoice.ts";
 import { createPGliteCanonicalOverviewQuery, selectPGliteOverviewAssets } from "./overview.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { commitPGliteSpendingRefundRevision } from "./spending-command.ts";
-import { fixtureInvoice } from "./spending-test-fixture.ts";
+import { fixtureInvoice, freshPage } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
 import { mapCanonicalProduct } from "../../lib/shared-ledger/server/canonical-product.ts";
 import type { CanonicalOverviewProjection } from "../canonical/canonical-overview-query.ts";
@@ -261,7 +261,7 @@ async function purchaseSpending(store: PGliteStore) {
   const knowledgeAt = summary.knowledgeAt;
   return {
     totals: summary.purchaseReport.totalsByCurrency.map(({ currency, coefficient, scale, count }) => `${count} × ${coefficient}e-${scale} ${currency}`),
-    pendingPairs: (await spending.pendingOverview({ knowledgeAt })).pendingCount,
+    pendingPairs: (freshPage(await spending.pendingOverview({ knowledgeAt }))).pendingCount,
   };
 }
 

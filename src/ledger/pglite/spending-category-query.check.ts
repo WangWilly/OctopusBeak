@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR } from "../../lib/spending/model.ts";
@@ -52,7 +52,7 @@ test("record pages carry each purchase's category and the summary totals per mon
   try {
     const query = createPGliteSpendingQuery(fixture.store);
     const knowledgeAt = await fixture.knowledgeAt();
-    const page = await query.recordPage({ knowledgeAt, month: "2026-09" });
+    const page = freshPage(await query.recordPage({ knowledgeAt, month: "2026-09" }));
     const byId = new Map(page.records.map((record) => [record.purchaseId, record]));
     assert.deepEqual(byId.get(`transaction:${seeded.uncategorizedBank}`)?.category, { mode: "absent" });
     const user = byId.get(`transaction:${seeded.userBank}`)?.category;
@@ -86,16 +86,16 @@ test("record pages filter by code lists, with an Unclassified selector, and reje
     const query = createPGliteSpendingQuery(fixture.store);
     const knowledgeAt = await fixture.knowledgeAt();
     const ids = async (categoryCodes: readonly string[]) =>
-      (await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes })).records.map((record) => record.purchaseId).sort();
+      (freshPage(await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes }))).records.map((record) => record.purchaseId).sort();
     assert.deepEqual(await ids(["dining"]), [`invoice:${seeded.agreedInvoice}`, `invoice:${seeded.splitInvoice}`, `link:${seeded.linkEventId}`].sort());
     assert.deepEqual(await ids([SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR]), [`transaction:${seeded.uncategorizedBank}`]);
     assert.deepEqual(await ids(["household_goods_and_services", SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR]), [`invoice:${seeded.splitInvoice}`, `transaction:${seeded.uncategorizedBank}`].sort());
     assert.deepEqual(await ids(["travel"]), []);
-    const filtered = await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes: ["dining"], limit: 1 });
+    const filtered = freshPage(await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes: ["dining"], limit: 1 }));
     assert.equal(filtered.records.length, 1);
     assert.deepEqual(filtered.categoryCodes, ["dining"]);
     assert.ok(filtered.nextCursor, "a filtered page keeps paging within the filter");
-    const next = await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes: ["dining"], cursor: filtered.nextCursor, limit: 5 });
+    const next = freshPage(await query.recordPage({ knowledgeAt, month: "2026-09", categoryCodes: ["dining"], cursor: filtered.nextCursor, limit: 5 }));
     assert.equal(next.records.length, 2);
     await assert.rejects(
       query.recordPage({ knowledgeAt, month: "2026-09", cursor: filtered.nextCursor }),

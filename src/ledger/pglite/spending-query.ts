@@ -1,4 +1,3 @@
-import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import { createHash } from "node:crypto";
 import type {
@@ -30,6 +29,7 @@ import type {
   SpendingMerchantStatsRequest,
   SpendingMonthInsightDto,
   SpendingMonthInsightRequest,
+  SpendingPageReadResult,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
   SpendingRecordPageRequest,
@@ -1069,12 +1069,11 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
   // Every page read checks the caller's knowledge point once, inside the
   // transaction the page is read in, so the query functions trust it.
   const pageRead = <Request extends Readonly<{ knowledgeAt: number }>, Page>(
-    page: ConstructorParameters<typeof SpendingPageVersionError>[0],
     read: (transaction: PGliteSpendingReader, request: Request) => Promise<Page>,
-  ) => (request: Request): Promise<Page> => store.transaction(async (transaction) => {
+  ) => (request: Request): Promise<SpendingPageReadResult<Page>> => store.transaction(async (transaction) => {
     const knowledgeAt = await readKnowledgePoint(transaction);
     if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== knowledgeAt)
-      throw new SpendingPageVersionError(page, knowledgeAt);
+      return Object.freeze({ stale: true as const, knowledgeAt });
     return read(transaction, request);
   });
   return Object.freeze({
@@ -1088,17 +1087,17 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       store.transaction((transaction) => queryCurrentSpendingSummary(transaction, request)),
     summaryPage: (request?: Parameters<typeof queryCurrentSpendingSummaryPage>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummaryPage(transaction, request)),
-    recordPage: pageRead("record", (transaction, request: SpendingRecordPageRequest) =>
+    recordPage: pageRead((transaction, request: SpendingRecordPageRequest) =>
       queryCurrentSpendingRecordPage(transaction, request)),
-    candidatePage: pageRead("candidate", async (transaction, request: SpendingCandidatePageRequest) =>
+    candidatePage: pageRead(async (transaction, request: SpendingCandidatePageRequest) =>
       queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
-    monthInsight: pageRead("month-insight", (transaction, request: SpendingMonthInsightRequest) =>
+    monthInsight: pageRead((transaction, request: SpendingMonthInsightRequest) =>
       queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
-    merchantStats: pageRead("merchant-stats", (transaction, request: SpendingMerchantStatsRequest) =>
+    merchantStats: pageRead((transaction, request: SpendingMerchantStatsRequest) =>
       queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
-    mergeLog: pageRead("merge-log", (transaction, request: SpendingMergeLogRequest) =>
+    mergeLog: pageRead((transaction, request: SpendingMergeLogRequest) =>
       queryCurrentSpendingMergeLog(transaction, request)),
-    pendingOverview: pageRead("pending-overview", async (transaction, request: SpendingPendingOverviewRequest) =>
+    pendingOverview: pageRead(async (transaction, request: SpendingPendingOverviewRequest) =>
       queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
     recognition: (request?: Readonly<{ knowledgeAt?: number }>) => store.transaction((transaction) => querySpendingRecognition(transaction, request)),

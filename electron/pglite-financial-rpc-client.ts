@@ -8,6 +8,7 @@ import type {
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
   SpendingPageDto,
+  SpendingPageReadResult,
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
   SpendingCandidatePageDto,
@@ -25,7 +26,6 @@ import type {
   SpendingRecordPageDto,
   SpendingRecordPageRequest,
 } from "../src/lib/spending/model.ts";
-import type { SpendingPageReadResult } from "../src/lib/spending/page-reader.ts";
 import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
 import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
 import type {
@@ -91,8 +91,6 @@ type FinancialOperationFlags = Readonly<{
 
 type FinancialOperationContract<Args extends readonly unknown[], Result> = FinancialOperationFlags & Readonly<{
   accepts(args: readonly unknown[]): boolean;
-  /** A version-checked Spending page read; see pageRead. */
-  pageRead?: true;
   /** Type-only: the argument tuple a caller sends and the result it receives. */
   contract?: (args: Args) => Result;
 }>;
@@ -102,22 +100,6 @@ function operation<Args extends readonly unknown[], Result>(
   flags: FinancialOperationFlags,
 ): FinancialOperationContract<Args, Result> {
   return Object.freeze({ accepts, ...flags });
-}
-
-/**
- * A Spending page read checked against the caller's knowledge version. Its
- * registry handler returns the page and throws SpendingPageVersionError when
- * the version moved; dispatch answers that with { stale } instead.
- */
-function pageRead<Args extends readonly unknown[], Page>(
-  accepts: (args: readonly unknown[]) => boolean,
-  flags: Readonly<{ lane: PGliteFinancialLane }>,
-): FinancialOperationContract<Args, SpendingPageReadResult<Page>> & Readonly<{
-  pageRead: true;
-  /** Type-only: what the registry handler returns. */
-  page?: (args: Args) => Page;
-}> {
-  return Object.freeze({ accepts, ...flags, pageRead: true });
 }
 
 function nonNegativeSafeInteger(value: unknown): boolean {
@@ -190,27 +172,27 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
     { lane: "background" },
   ),
-  "financial.spending.recordPage": pageRead<[request: SpendingRecordPageRequest], SpendingRecordPageDto>(
+  "financial.spending.recordPage": operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
   ),
-  "financial.spending.candidatePage": pageRead<[request: SpendingCandidatePageRequest], SpendingCandidatePageDto>(
+  "financial.spending.candidatePage": operation<[request: SpendingCandidatePageRequest], SpendingPageReadResult<SpendingCandidatePageDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "background" },
   ),
-  "financial.spending.pendingOverview": pageRead<[request: SpendingPendingOverviewRequest], SpendingPendingOverviewDto>(
+  "financial.spending.pendingOverview": operation<[request: SpendingPendingOverviewRequest], SpendingPageReadResult<SpendingPendingOverviewDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
   ),
-  "financial.spending.mergeLog": pageRead<[request: SpendingMergeLogRequest], SpendingMergeLogDto>(
+  "financial.spending.mergeLog": operation<[request: SpendingMergeLogRequest], SpendingPageReadResult<SpendingMergeLogDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "background" },
   ),
-  "financial.spending.monthInsight": pageRead<[request: SpendingMonthInsightRequest], SpendingMonthInsightDto>(
+  "financial.spending.monthInsight": operation<[request: SpendingMonthInsightRequest], SpendingPageReadResult<SpendingMonthInsightDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
   ),
-  "financial.spending.merchantStats": pageRead<[request: SpendingMerchantStatsRequest], SpendingMerchantStatsDto>(
+  "financial.spending.merchantStats": operation<[request: SpendingMerchantStatsRequest], SpendingPageReadResult<SpendingMerchantStatsDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
   ),
@@ -433,18 +415,12 @@ export type PGliteFinancialFailureCategory =
   | "refused"
   | "fatal";
 
-/** A page read's handler returns its page; every other handler returns the operation's result. */
-export type PGliteFinancialHandlerResult<Op extends PGliteFinancialOperation> =
-  (typeof PGLITE_FINANCIAL_CONTRACTS)[Op] extends Readonly<{ pageRead: true; page?: (args: never) => infer Page }>
-    ? Page
-    : PGliteFinancialResult<Op>;
-
 /** The worker-owned implementation of every financial operation. */
 export type PGliteFinancialRegistry = Readonly<{
   [Op in PGliteFinancialOperation]: (
     args: PGliteFinancialArgs<Op>,
     options?: PGliteCanonicalCommitOptions,
-  ) => Promise<PGliteFinancialHandlerResult<Op>>;
+  ) => Promise<PGliteFinancialResult<Op>>;
 }>;
 
 /** Named financial operations, served in-process or across a worker port. */

@@ -1,4 +1,3 @@
-import { SpendingPageVersionError, type SpendingPageReadResult } from "../src/lib/spending/page-reader.ts";
 import {
   type SpendingCandidatePageDto,
   type SpendingCandidatePageRequest,
@@ -395,30 +394,13 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
-async function staleWhenVersionMoved<T>(read: Promise<T>): Promise<SpendingPageReadResult<T>> {
-  try {
-    return await read;
-  } catch (error) {
-    if (!(error instanceof SpendingPageVersionError)) throw error;
-    return { stale: true, knowledgeAt: error.knowledgeAt };
-  }
-}
-
-/**
- * Serve a worker-owned registry through the same port interface the RPC
- * client offers. A page read's stale version is answered here, once.
- */
+/** Serve a worker-owned registry through the same port interface the RPC client offers. */
 export function createPGliteFinancialLocalPort(registry: PGliteFinancialRegistry): PGliteFinancialPort {
   return Object.freeze({
-    request: (operation, args, options) => {
-      const result = (registry[operation] as (
-        args: unknown,
-        options?: PGliteCanonicalCommitOptions,
-      ) => Promise<never>)(args, options);
-      return PGLITE_FINANCIAL_CONTRACTS[operation].pageRead
-        ? staleWhenVersionMoved(result) as Promise<never>
-        : result;
-    },
+    request: (operation, args, options) => (registry[operation] as (
+      args: unknown,
+      options?: PGliteCanonicalCommitOptions,
+    ) => Promise<never>)(args, options),
   });
 }
 
