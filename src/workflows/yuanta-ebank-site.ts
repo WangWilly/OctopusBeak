@@ -76,7 +76,7 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
     for (const scope of frames.scopes()) {
       const field = scope.locator('input[name="cid"]').first();
       if ((await frames.race(field.count().catch(() => 0))) === 0) continue;
-      const value = (await frames.race(field.inputValue().catch(() => ""))).trim();
+      const value = (await frames.withSignal((signal) => field.inputValue({ signal }).catch(() => ""))).trim();
       if (value) return value;
     }
     for (const frame of page.frames()) {
@@ -124,7 +124,8 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
       const content = await fmain();
       const sessionCid = await cid();
       if (sessionCid || route.cid === "optional") {
-        await frames.race(content.goto(yuantaRouteUrl(route.path, sessionCid), { waitUntil: "domcontentloaded" }));
+        const url = yuantaRouteUrl(route.path, sessionCid);
+        await frames.withSignal((signal) => content.goto(url, { waitUntil: "domcontentloaded", signal }));
         await frames.settle(content);
         if (!route.menuId) return await showing(route);
         const rendered = await ifFound(showing(route, ROUTE_RENDER_TIMEOUT_MS));
@@ -144,10 +145,10 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         `YuanTa date range link "${label}"`,
         { in: scope },
       );
-      await frames.race(link.click({ force: true }));
+      await frames.withSignal((signal) => link.click({ force: true, signal }));
       if ("customLabel" in duration) {
-        await frames.race(scope.locator("#sdate").fill(duration.startDate));
-        await frames.race(scope.locator("#edate").fill(duration.endDate));
+        await frames.withSignal((signal) => scope.locator("#sdate").fill(duration.startDate, { signal }));
+        await frames.withSignal((signal) => scope.locator("#edate").fill(duration.endDate, { signal }));
       }
       if (scope !== page) await frames.settle(scope as Frame);
     },

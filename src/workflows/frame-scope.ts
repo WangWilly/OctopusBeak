@@ -123,7 +123,7 @@ export function frameScope(page: Page, signal: AbortSignal): FrameScope {
 
   const settleScope = async (scope: BrowserScope) => {
     try {
-      await race(scope.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS }));
+      await withSignal((signal) => scope.waitForLoadState("networkidle", { timeout: NETWORK_IDLE_TIMEOUT_MS, signal }));
     } catch (error) {
       // Bank pages keep timers and polling alive; the element wait that follows confirms readiness.
       if (signal.aborted) throw error;
