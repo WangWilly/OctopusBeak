@@ -4,9 +4,7 @@ import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -32,16 +30,18 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {
-  readYuantaCurrentDepositBalances,
+  parseYuantaCurrentDepositBalanceSnapshot,
+  readYuantaCurrentDepositBalanceTable,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
+  type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
 import {
-  matchCurrentBalanceCaptures,
+  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
+  type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -293,6 +293,22 @@ export const yuantaForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMa
     message:
       "Yuanta foreign current deposit snapshot contains an account without an existing financial identity.",
   },
+};
+
+const yuantaForeignCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  YuantaCurrentDepositTable & Readonly<{ observedAt: string }>,
+  YuantaCurrentDepositBalanceRow,
+  ExistingYuantaForeignFinancialCapture
+> = {
+  product: "current-deposit-balance",
+  parse: (decoded, acquired) => parseYuantaCurrentDepositBalanceSnapshot({
+    kind: "foreign",
+    rows: decoded.rows,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: yuantaForeignCurrentBalanceCaptureMatching,
+  build: buildYuantaForeignCurrentDepositBalanceCapture,
 };
 
 const channelTypeValues: Record<z.infer<typeof channelTypeSchema>, string> = {
@@ -2359,7 +2375,8 @@ export type YuantaForeignCurrencyDownload = Readonly<{
 export type YuantaForeignCurrencySourceSnapshot = Readonly<{
   accounts: readonly AccountOption[];
   downloads: readonly YuantaForeignCurrencyDownload[];
-  currentBalances: readonly YuantaCurrentDepositBalanceRow[];
+  /** Read only when there are accounts, so only when the build admits financial captures. */
+  currentBalances: YuantaCurrentDepositTable | null;
 }>;
 
 /** Read every account and currency's CSV rows and the current FX balances (ADR 0065). */
@@ -2404,9 +2421,8 @@ export async function readYuantaForeignCurrencySource(
   // Every account is admitted or the build throws, so a non-empty account
   // list is exactly when the build has financial captures to join balances to.
   const currentBalances = accounts.length > 0
-    ? await readYuantaCurrentDepositBalances(site, "foreign", { observedAt: context.now() })
-    : [];
-  sourceText.assertIntact(JSON.stringify(currentBalances));
+    ? await readYuantaCurrentDepositBalanceTable(site, "foreign")
+    : null;
   return { accounts, downloads, currentBalances };
 }
 
@@ -2470,33 +2486,19 @@ export async function stageYuantaForeignCurrency(
 
   // Current balances are source inputs too. Admit all of them before the
   // parent opens the one Canonical Financial Commit boundary.
-  const balanceItems: ProductStageRequest[] = [];
-  if (admitted.length > 0) {
-    const { matched } = matchCurrentBalanceCaptures(
-      snapshot.currentBalances,
-      admitted,
-      yuantaForeignCurrentBalanceCaptureMatching,
-    );
-    for (const { row: unadjustedRow, capture: matching } of matched) {
-      checkCancelled();
-      const row = { ...unadjustedRow, observedAt: now() };
-      const capture = admitCurrentDepositBalanceCapture(
-        buildYuantaForeignCurrentDepositBalanceCapture(row, matching),
-      );
-      balanceItems.push({
-        product: "current-deposit-balance",
-        // One account can hold multiple currencies; each balance capture needs
-        // a distinct receipt identity within the product's staged items.
-        itemKey: JSON.stringify([capture.identity.sourceAccountKey, row.currency]),
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(capture),
-        },
-      });
-    }
-  }
+  const balances = await captureCurrentStateSnapshots(yuantaForeignCurrentBalanceSnapshot, {
+    captures: admitted,
+    acquire: async () => {
+      if (!snapshot.currentBalances)
+        throw new Error("Yuanta foreign current balances were not read for the admitted accounts.");
+      return { ...snapshot.currentBalances, observedAt: now() };
+    },
+    product,
+    text: sourceText,
+    signal,
+  });
   checkCancelled();
-  product.stage(...statementItems, ...balanceItems);
+  product.stage(...statementItems, ...balances.items);
   return {
     sourceCaptureCount: snapshot.downloads.length,
     rowCount: rows.length,

@@ -1,7 +1,6 @@
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import type { Page } from "playwright";
-import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -10,10 +9,10 @@ import type { YuantaAllWorkflowDependencies } from "./yuanta-all-statements.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import type {
   YuantaDepositAccountRead,
-  YuantaReadCurrentDepositBalances,
+  YuantaReadCurrentDepositBalanceTable,
   YuantaStatementDownload,
 } from "./yuanta-statements.ts";
-import type { YuantaCurrentDepositBalanceRow } from "./yuanta-current-deposit-balances.ts";
+import { yuantaCurrentDepositTable } from "./yuanta-current-deposit-balances.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -39,7 +38,7 @@ type Account = { label: string; value: string };
 type Row = readonly [date: string, time: string, memo: string, outflow: string, inflow: string, balance: string];
 type DepositSource = Readonly<{
   accounts: readonly YuantaDepositAccountRead[];
-  readCurrentBalances: YuantaReadCurrentDepositBalances;
+  readCurrentBalanceTable: YuantaReadCurrentDepositBalanceTable;
 }>;
 
 const COLUMN_NAMES = ["帳戶名稱", "帳號", "帳務日期", "交易日期", "交易時間", "交易說明", "支出金額", "存入金額", "帳面餘額", "票據號碼", "備註"];
@@ -62,27 +61,9 @@ function download(account: Account, rows: readonly Row[], extra: Partial<YuantaS
   } as YuantaStatementDownload;
 }
 
-function balance(account: Account, ledger: string, available: string): YuantaCurrentDepositBalanceRow {
-  return {
-    source: "yuanta",
-    kind: "domestic",
-    stream: "domestic-deposit",
-    accountNumber: account.value,
-    sourceAccountKey: deriveYuantaDomesticDepositAccountKey(account.value),
-    currency: "TWD",
-    ledger: { coefficient: ledger === "0" ? "0" : `${ledger}00`, scale: 2, sourceLexeme: `${ledger}.00` },
-    available: { coefficient: available === "0" ? "0" : `${available}00`, scale: 2, sourceLexeme: `${available}.00` },
-    effectiveAt: "2026-09-24T16:00:00.000Z",
-    providerHttpDate: "Thu, 24 Sep 2026 16:00:00 GMT",
-    observedAt: "2026-09-25T00:00:00+08:00",
-    sourceEvidence: {
-      endpoint: "/nib/tx/finance_overview_for_summary",
-      method: "POST",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "yuanta/current-deposit-balance-v1",
-    },
-  };
+/** One domestic table row: 產品名稱, 分行名稱, 帳號, 利率, 可用餘額, 帳面餘額. */
+function balance(account: Account, ledger: string, available: string): readonly string[] {
+  return ["臺幣活期存款", "臺北分行", account.value, "0.1%", `${available}.00`, `${ledger}.00`];
 }
 
 // Expand each item's relation thunk so the golden pins the relation commands
@@ -141,7 +122,7 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
       input,
       context,
       product,
-      source.readCurrentBalances,
+      source.readCurrentBalanceTable,
     );
   };
   const input = {
@@ -194,34 +175,34 @@ const downloads = new Map<string, YuantaStatementDownload>([
 
 function depositSource(
   accounts: readonly Account[],
-  readCurrentBalances: YuantaReadCurrentDepositBalances,
+  readCurrentBalanceTable: YuantaReadCurrentDepositBalanceTable,
   noData: ReadonlySet<string> = new Set(),
 ): DepositSource {
   return {
     accounts: accounts.map((account) => noData.has(account.value)
       ? { account, query: "provider-explicit-no-data" }
       : { account, query: "download-ready", download: downloads.get(account.value)! }),
-    readCurrentBalances,
+    readCurrentBalanceTable,
   };
 }
 
 test("two accounts with inflow and outflow rows and matched current balances", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
   await runGolden("yuanta-two-accounts", depositSource([checking, savings],
-    async () => [balance(checking, "750", "700"), balance(savings, "180", "180")]));
+    async () => yuantaCurrentDepositTable([balance(checking, "750", "700"), balance(savings, "180", "180")])));
 });
 
 test("an account the provider reports as no data commits a zero-row capture", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
   await runGolden("yuanta-no-data-account", depositSource([savings, checking],
-    async () => [balance(savings, "0", "0"), balance(checking, "750", "750")],
+    async () => yuantaCurrentDepositTable([balance(savings, "0", "0"), balance(checking, "750", "750")]),
     new Set([savings.value])));
 });
 
 test("a shared-authority account falls back to source-only evidence beside an admitted account", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
   await runGolden("yuanta-source-only-shared-account", depositSource([joint, savings],
-    async () => [balance(savings, "180", "150")]));
+    async () => yuantaCurrentDepositTable([balance(savings, "180", "150")])));
 });
 
 test("only source-only accounts reach the commit without a current-balance read", async (t) => {

@@ -52,6 +52,7 @@ const {
   yuantaForeignQueryRange,
 } = await import("./yuanta-foreign-currency-statements.ts");
 const { matchCurrentBalanceCaptures } = await import("./current-state-snapshot-capture.ts");
+const { yuantaCurrentDepositTable } = await import("./yuanta-current-deposit-balances.fixtures.ts");
 
 {
   const admittedAccount = {
@@ -1641,6 +1642,9 @@ try {
   };
   const typedForeignAccount = { value: "00123456789012", label: "外幣綜合存款" };
   const allCurrencies = { value: "ALL", label: "全部幣別" };
+  /** 分行名稱, 產品名稱, 幣別, 帳號, 可用餘額, 帳面餘額, 參考匯率, 臺幣市值. */
+  const foreignBalanceCells = (account: string, currency: string): readonly string[] =>
+    ["營業部", "外幣綜合存款", currency, account, "0.90", "1.00", "31.50", "31"];
   const typedForeignSource = (values: string[]) => ({
     accounts: [typedForeignAccount],
     downloads: [{
@@ -1655,7 +1659,10 @@ try {
         sortTime: null,
       }],
     }],
-    currentBalances: [],
+    currentBalances: yuantaCurrentDepositTable(
+      [foreignBalanceCells(typedForeignAccount.value, "USD")],
+      "Mon, 24 Aug 2026 04:00:00 GMT",
+    ),
   });
   const deferred: PGliteWorkflowRunItem[] = [];
   const result = await stageYuantaForeignCurrency(
@@ -1665,8 +1672,13 @@ try {
     yuantaStagingHandle(deferred),
   );
   assert.deepEqual(result, { sourceCaptureCount: 1, rowCount: 1 });
-  assert.equal(deferred.length, 1);
-  assert.equal(deferred[0]?.product, "foreign-currency-deposit");
+  assert.deepEqual(
+    deferred.map((item) => [item.product, item.itemKey]),
+    [
+      ["foreign-currency-deposit", typedForeignAccount.value],
+      ["current-deposit-balance", `current-balance:foreign-currency-deposit:${typedForeignAccount.value}:USD`],
+    ],
+  );
 
   // Exercise the real FX collector through the parent coordinator: a single
   // account can have several currency balances, each requiring its own receipt.
@@ -1708,19 +1720,10 @@ try {
               sortTime: null,
             }],
           }],
-          currentBalances: ["USD", "JPY"].map((currency) => ({
-            source: "yuanta", kind: "foreign", stream: "foreign-currency-deposit",
-            accountNumber: yuantaForeignMultiCurrencyAccount, sourceAccountKey: yuantaForeignMultiCurrencyAccount, currency,
-            available: { coefficient: "90", scale: 2, sourceLexeme: "0.90" },
-            ledger: { coefficient: "100", scale: 2, sourceLexeme: "1.00" },
-            effectiveAt: "2026-08-24T04:00:00.000Z",
-            providerHttpDate: "Mon, 24 Aug 2026 04:00:00 GMT",
-            observedAt: "2026-08-24T04:00:00.000Z",
-            sourceEvidence: {
-              endpoint: "/nib/tx/finance_overview_for_summary", method: "POST", status: 200,
-              cacheControl: "no-store", contractVersion: "yuanta/current-deposit-balance-v1",
-            },
-          })),
+          currentBalances: yuantaCurrentDepositTable(
+            ["USD", "JPY"].map((currency) => foreignBalanceCells(yuantaForeignMultiCurrencyAccount, currency)),
+            "Mon, 24 Aug 2026 04:00:00 GMT",
+          ),
         },
         typedForeignInput,
         yuantaCollectionContext({ now: "2026-08-24T04:00:00.000Z" }),
@@ -2044,8 +2047,9 @@ function yuantaForeignWindowCapture(
       "the Big5 export decodes to the provider's columns",
     );
     assert.deepEqual(
-      shellRead.snapshot.currentBalances.map((row) => [row.accountNumber, row.currency, row.ledger.sourceLexeme]),
-      [["00123456789012", "USD", "110.00"]],
+      shellRead.snapshot.currentBalances?.evidence.rows,
+      [["營業部", "外幣綜合存款", "美元", "00123456789012", "90.00", "110.00", "31.50", "3,465"]],
+      "the read half keeps the current-balance table cells for the stage to decode",
     );
     assert.deepEqual(shellRead.items, [], "the read half stages nothing");
 

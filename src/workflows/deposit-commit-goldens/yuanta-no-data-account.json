@@ -330,7 +330,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
+          "itemKey": "current-balance:domestic-deposit:sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -488,7 +488,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:czZ7APIRlN9R_ig487Wj_RGjlJ3ShP2krvm_WEqTitk",
+          "itemKey": "current-balance:domestic-deposit:sha256:czZ7APIRlN9R_ig487Wj_RGjlJ3ShP2krvm_WEqTitk",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -675,6 +675,48 @@
       "counts": {
         "activity": "query",
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     },
     {
