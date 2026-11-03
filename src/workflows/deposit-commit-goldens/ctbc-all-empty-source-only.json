@@ -7,7 +7,6 @@
       },
       "items": [
         {
-          "provider": "ctbc",
           "product": "domestic-deposit",
           "itemKey": "ctbc-uuid-1",
           "command": {
@@ -21,10 +20,10 @@
               "recordKind": "ctbc-domestic-deposit-row-v2",
               "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
               "contractVersion": "capture-evidence-v2",
-              "subjectDigest": "sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8",
+              "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
               "observedAt": "2026-09-25T20:00:00.000+08:00",
               "accountNumber": {
-                "value": "9999_0000_0001",
+                "value": "9999_0000_0000_0001",
                 "kind": "depository-account",
                 "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                 "sourceField": "accountInfoList.accountId"
@@ -86,10 +85,10 @@
               ],
               "records": []
             }
-          }
+          },
+          "provider": "ctbc"
         },
         {
-          "provider": "ctbc",
           "product": "domestic-deposit",
           "itemKey": "ctbc-uuid-2",
           "command": {
@@ -103,10 +102,10 @@
               "recordKind": "ctbc-domestic-deposit-row-v2",
               "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
               "contractVersion": "capture-evidence-v2",
-              "subjectDigest": "sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ",
+              "subjectDigest": "sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0",
               "observedAt": "2026-09-25T20:00:00.000+08:00",
               "accountNumber": {
-                "value": "9999_0000_0002",
+                "value": "9999_0000_0000_0002",
                 "kind": "depository-account",
                 "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                 "sourceField": "accountInfoList.accountId"
@@ -169,7 +168,8 @@
               ],
               "records": []
             }
-          }
+          },
+          "provider": "ctbc"
         }
       ]
     }

@@ -17,8 +17,8 @@ import {
 } from "./ctbc-statements.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 
-const accountA = "999900000001";
-const accountB = "999900000002";
+const accountA = "9999000000000001";
+const accountB = "9999000000000002";
 const ranges = [
   { startDate: "2026/07/01", endDate: "2026/07/31" },
   { startDate: "2026/08/01", endDate: "2026/08/31" },

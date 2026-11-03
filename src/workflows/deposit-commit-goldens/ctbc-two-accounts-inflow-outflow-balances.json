@@ -7,7 +7,6 @@
       },
       "items": [
         {
-          "provider": "ctbc",
           "product": "domestic-deposit",
           "itemKey": "ctbc-uuid-1",
           "command": {
@@ -25,10 +24,10 @@
                     "recordKind": "ctbc-domestic-deposit-row-v2",
                     "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
                     "contractVersion": "capture-evidence-v2",
-                    "subjectDigest": "sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8",
+                    "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
                     "observedAt": "2026-09-25T20:00:00.000+08:00",
                     "accountNumber": {
-                      "value": "9999_0000_0001",
+                      "value": "9999_0000_0000_0001",
                       "kind": "depository-account",
                       "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                       "sourceField": "accountInfoList.accountId"
@@ -90,8 +89,8 @@
                     ],
                     "records": [
                       {
-                        "occurrenceKey": "sha256:lOWYFBhCtNP52pqks07GmzfCaIlHLLFmotHmgLmyhs8",
-                        "collisionKey": "sha256:yzpbyI9nX6cylVs-TM08vlgXvRwTy2IKyHxVP_LqMXA",
+                        "occurrenceKey": "sha256:qhZVVIGS9aR8UUVPXXKVYPilFUNpus-WC4xHo1TYRao",
+                        "collisionKey": "sha256:Vl269sQMz0bxOGBRXkpKNMaJvuUiC482qvLs5YWtwqM",
                         "providerKey": "sha256:gEwG_e9bnxXn0Gciabo3RzbJvn30TMpH0V7Z7YqyWXU",
                         "contentHash": "sha256:in8lcb9y3loMUSzjU0Ix8ijqXnvN0adnHtRU0PixIT0",
                         "compact": {
@@ -111,8 +110,8 @@
                         }
                       },
                       {
-                        "occurrenceKey": "sha256:R02FRHdBfz4h64g2rbQDmcyKLaRPZ64kiX-PrfK0cRo",
-                        "collisionKey": "sha256:9Yp4jzauShFKn-l0k6M0cPKw_mTY42Duy25IdSYZAAU",
+                        "occurrenceKey": "sha256:7YjySI-IXDBWXtK1R_x28sDDbpMH294hapn5qP6LLRg",
+                        "collisionKey": "sha256:RejSoeAIj_PuRXYfw7YPRQWUCksMISRi93M49Oy_TuE",
                         "providerKey": "sha256:zC8THxi-p1s2WGs_0p9tbaBxzpd0ZR_ZeJ_qFcudYKU",
                         "contentHash": "sha256:pVIFhK5XLE9P4jkCtlAX-5o2CX2KPDumQ-Fc326_6Zc",
                         "compact": {
@@ -132,8 +131,8 @@
                         }
                       },
                       {
-                        "occurrenceKey": "sha256:V5y3oHpqBrQux1eS684MxAFR8zGqNcvUfr4stsD0qmk",
-                        "collisionKey": "sha256:NpLmogI1dF2N_IM_s4CGtcgzwiTEb4hRSeitYrx_-7U",
+                        "occurrenceKey": "sha256:mNRd6D5roTChNQjE9-rq8WdVlXiAgfcSne39navu04c",
+                        "collisionKey": "sha256:ED5OqAbcYhu47yS3gXTkaGjFcrGDfoOZvzHdKfmB0xU",
                         "providerKey": "sha256:LDEVs6DGWYo0wl2mksyErhKFNlbxGI5P3gm_gYJbljE",
                         "contentHash": "sha256:DgwQFRcyghHm3kb3IlrWGcrbv7MyiCypnHZS2R32EOw",
                         "compact": {
@@ -168,10 +167,10 @@
                         "identityEpochKey": "sha256:Y3RiYy1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBjdGJjLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjExMWJhMDU4MTViYzBhYzgyMTU2NjE3Yzk2ZTM1MzhmODEyMjZjNTRmZGJiZTRmNWIyMzI1MjMwNjkwZTk3Nzg",
                         "stream": "domestic-deposit",
                         "recordKind": "ctbc-domestic-deposit",
-                        "subjectDigest": "sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8",
-                        "accountNo": "9999_0000_0001",
+                        "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
+                        "accountNo": "9999_0000_0000_0001",
                         "accountNumber": {
-                          "value": "9999_0000_0001",
+                          "value": "9999_0000_0000_0001",
                           "kind": "depository-account",
                           "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                           "sourceField": "accountInfoList.accountId"
@@ -189,7 +188,7 @@
                         "completenessRuleVersion": "ctbc/domestic-deposit/human-attested-v1",
                         "absenceAuthority": null,
                         "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                        "preflightFingerprint": "sha256:fvxdCuayfOGQWui8Yj5kWGJAUE63XA2utruer2Yfl5A",
+                        "preflightFingerprint": "sha256:oVoR9FUHbAyo8eG6MXa8Aq6wYQt3NYKNSkXPNWyhPsk",
                         "pageCount": 2,
                         "withdrawalPolicy": "never-infer"
                       },
@@ -219,7 +218,7 @@
                           "responseDigest": "sha256:U5HxUnAfxSaoZ5nD5_0bORzFUqusk7CyXF7Kn3PGtd0",
                           "proofKind": "all-visible-ranges-terminal-next-key-empty",
                           "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                          "preflightFingerprint": "sha256:fvxdCuayfOGQWui8Yj5kWGJAUE63XA2utruer2Yfl5A",
+                          "preflightFingerprint": "sha256:oVoR9FUHbAyo8eG6MXa8Aq6wYQt3NYKNSkXPNWyhPsk",
                           "metadataJson": "{\"rangeStart\":\"2026/07/01\",\"rangeEnd\":\"2026/07/31\",\"nextKeyState\":\"empty\",\"providerCode\":\"0000\",\"providerTerminal\":true,\"providerExplicitNoData\":false}"
                         },
                         {
@@ -230,18 +229,18 @@
                           "responseDigest": "sha256:wVgVQO4BH1vWRbrB4zEVoOYWFDAAmxgDtpbMGwdSOXg",
                           "proofKind": "all-visible-ranges-terminal-next-key-empty",
                           "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                          "preflightFingerprint": "sha256:fvxdCuayfOGQWui8Yj5kWGJAUE63XA2utruer2Yfl5A",
+                          "preflightFingerprint": "sha256:oVoR9FUHbAyo8eG6MXa8Aq6wYQt3NYKNSkXPNWyhPsk",
                           "metadataJson": "{\"rangeStart\":\"2026/08/01\",\"rangeEnd\":\"2026/08/31\",\"nextKeyState\":\"empty\",\"providerCode\":\"0000\",\"providerTerminal\":true,\"providerExplicitNoData\":false}"
                         }
                       ],
                       "records": [
                         {
-                          "occurrenceKey": "sha256:yBR2pwuNzSoPCLM8WapJ0uDhVJAwixOD_wcpzqNW3Rw",
-                          "collisionKey": "sha256:HXAUb2CQRlWuqOi30yVnDLoBrpDHFn3fGB0iqcY6F2o",
-                          "providerKey": "sha256:T8NTzVM4HbGTXP9QzJkdQWqdICVrQ9ZqANzbG_JjFLw",
+                          "occurrenceKey": "sha256:-4r-WrpXr5vdRFZLLA1_E3y_SG4DE5_9g9kdemGB-PU",
+                          "collisionKey": "sha256:TRwV2PkSqhjTu6MnMFL3oJaMX_sEHFOZ4Sx7CyDTJOg",
+                          "providerKey": "sha256:fZ8dONmVUkSntoTO4_2DCxLjvFfnnKnj9HPlahoQgME",
                           "contentHash": "sha256:EeVxVVjarwvjx43ONUIkiazsnI-e7WcJDcZeKyST40c",
                           "sequenceLexeme": "0:0",
-                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8\",\"accountingDate\":\"2026-07-03\",\"transactionDate\":\"2026-07-03\",\"transactionTime\":\"09:08:07\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"1234\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"5678\",\"scale\":0},\"descriptionDigest\":\"sha256:nq7ABCtpOEBUFR042szJSV5NMBLl1BXNx5aaMuCrYZA\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
+                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA\",\"accountingDate\":\"2026-07-03\",\"transactionDate\":\"2026-07-03\",\"transactionTime\":\"09:08:07\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"1234\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"5678\",\"scale\":0},\"descriptionDigest\":\"sha256:nq7ABCtpOEBUFR042szJSV5NMBLl1BXNx5aaMuCrYZA\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
                           "amount": {
                             "coefficient": "1234",
                             "scale": 0
@@ -262,19 +261,19 @@
                           "effectiveOn": "2026-07-03",
                           "transactionDateTimeLocal": "2026-07-03T09:08:07",
                           "occurrenceGroup": {
-                            "scopeKey": "sha256:hKW-T9IWFs1VZFWMtLLdXfVSK8eMa0qBMxET4Qylm0E",
-                            "fingerprint": "sha256:oCF7SyzRreR9F8oNVGpfOiA8qIFDzVTTc1HqOuZyiI4",
+                            "scopeKey": "sha256:6oykwApKI7_L5sV_z-lYUjSN570gisL1IHLYOJogEU8",
+                            "fingerprint": "sha256:uBez3LAqPq7jPYvLJz6Lta62sb6cL7Dzw1QTwrj7lXg",
                             "partitionDate": "2026-07-03",
                             "ordinal": 1
                           }
                         },
                         {
-                          "occurrenceKey": "sha256:n2aIfdFn_9_9m8josAdMMVyaVjuaHhYEeYWUqLnsfDY",
-                          "collisionKey": "sha256:m_ZOClPEYMJYYVqhy3TKJLlfQzwp344nMUF0vMrj1Hg",
-                          "providerKey": "sha256:EEq_eIMgCsVpgs34EMhjGYwKWmmo9ASUfOSOkTmIrNs",
+                          "occurrenceKey": "sha256:nCejGhRBSrlFs_RwZC4Jx4cSHV7tEcFjuKQCGfPSuL0",
+                          "collisionKey": "sha256:iUcQ8tr2T7MQbIr3aHlXoMOEmVFLIZ6SoKU6KEHZklA",
+                          "providerKey": "sha256:_JzA_XPBNq05m68S_mUg5xOD0e9HggnnI5ISsbe_7fU",
                           "contentHash": "sha256:BmF4HKInhiRn9-xf0Rlf0R5Iuz3YJQ1Yw8hnauuu7hM",
                           "sequenceLexeme": "0:1",
-                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8\",\"accountingDate\":\"2026-07-15\",\"transactionDate\":\"2026-07-15\",\"transactionTime\":\"13:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"800\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"4878\",\"scale\":0},\"descriptionDigest\":\"sha256:bwsCIXnAgpMvShGvsm6Jz0S-D3ukTwYgtV6WIGnJ7i4\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
+                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA\",\"accountingDate\":\"2026-07-15\",\"transactionDate\":\"2026-07-15\",\"transactionTime\":\"13:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"800\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"4878\",\"scale\":0},\"descriptionDigest\":\"sha256:bwsCIXnAgpMvShGvsm6Jz0S-D3ukTwYgtV6WIGnJ7i4\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
                           "amount": {
                             "coefficient": "800",
                             "scale": 0
@@ -295,19 +294,19 @@
                           "effectiveOn": "2026-07-15",
                           "transactionDateTimeLocal": "2026-07-15T13:00:00",
                           "occurrenceGroup": {
-                            "scopeKey": "sha256:hKW-T9IWFs1VZFWMtLLdXfVSK8eMa0qBMxET4Qylm0E",
-                            "fingerprint": "sha256:sR4_gpCbuz5-JkDswN7ugRSmgH4c4lkCsLB4dzE9IA8",
+                            "scopeKey": "sha256:6oykwApKI7_L5sV_z-lYUjSN570gisL1IHLYOJogEU8",
+                            "fingerprint": "sha256:CmQZf0sHgZDls_kW5HywnEU-kGDDBhJad8U-7yOXChg",
                             "partitionDate": "2026-07-15",
                             "ordinal": 1
                           }
                         },
                         {
-                          "occurrenceKey": "sha256:poivbp87GwUo6PT4D_XCLd-eSLJQ7D8_8_nBl8YE9dQ",
-                          "collisionKey": "sha256:YW3z5UsifHHbGHr8IRZ8zaCIVnAQQdYB4Ejv22_Yzmo",
-                          "providerKey": "sha256:YmNdmhYCWN-ygBFo5LrKjPZU6WTniv0WyhACw9GO5BA",
+                          "occurrenceKey": "sha256:crRPnV6BBTT4bq-LZls9Tk-kKTvZ8rnMJZ7yqF2AiXo",
+                          "collisionKey": "sha256:0q1CVrCs_QjEcDlCNW-wG4NoCZebHWOKK7l_M78vkAc",
+                          "providerKey": "sha256:5dXTGkWLxdwW7p4x8Uj-WCGoRfUoqELb8ImbhUQb2EQ",
                           "contentHash": "sha256:A3K_yXp9J1qADvj2teVJvGsYnN87Rv5bGxM7YC1cev0",
                           "sequenceLexeme": "1:0",
-                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8\",\"accountingDate\":\"2026-08-02\",\"transactionDate\":\"2026-08-02\",\"transactionTime\":\"10:11:12\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"122\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"5000\",\"scale\":0},\"descriptionDigest\":\"sha256:qizUin3whE4dHU0Y7z5c_TBq4ez3oPKE6xy6M6v81ps\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
+                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA\",\"accountingDate\":\"2026-08-02\",\"transactionDate\":\"2026-08-02\",\"transactionTime\":\"10:11:12\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"122\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"5000\",\"scale\":0},\"descriptionDigest\":\"sha256:qizUin3whE4dHU0Y7z5c_TBq4ez3oPKE6xy6M6v81ps\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
                           "amount": {
                             "coefficient": "122",
                             "scale": 0
@@ -328,8 +327,8 @@
                           "effectiveOn": "2026-08-02",
                           "transactionDateTimeLocal": "2026-08-02T10:11:12",
                           "occurrenceGroup": {
-                            "scopeKey": "sha256:hKW-T9IWFs1VZFWMtLLdXfVSK8eMa0qBMxET4Qylm0E",
-                            "fingerprint": "sha256:ad-ZVQ2-tUjjZyK2_RTYtRoqbgu8SmQ-9s3popbwi3Q",
+                            "scopeKey": "sha256:6oykwApKI7_L5sV_z-lYUjSN570gisL1IHLYOJogEU8",
+                            "fingerprint": "sha256:RKrCIj4ZZM3yWjkVdUUQLiKJ7elVeV2P1ySDpWPVlk0",
                             "partitionDate": "2026-08-02",
                             "ordinal": 1
                           }
@@ -337,7 +336,7 @@
                       ],
                       "occurrenceGroupCoverage": [
                         {
-                          "scopeKey": "sha256:hKW-T9IWFs1VZFWMtLLdXfVSK8eMa0qBMxET4Qylm0E",
+                          "scopeKey": "sha256:6oykwApKI7_L5sV_z-lYUjSN570gisL1IHLYOJogEU8",
                           "startDate": "2026-07-01",
                           "endDate": "2026-08-31",
                           "contractVersion": "human-attested-v1"
@@ -348,10 +347,10 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "ctbc"
         },
         {
-          "provider": "ctbc",
           "product": "domestic-deposit",
           "itemKey": "ctbc-uuid-2",
           "command": {
@@ -369,10 +368,10 @@
                     "recordKind": "ctbc-domestic-deposit-row-v2",
                     "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
                     "contractVersion": "capture-evidence-v2",
-                    "subjectDigest": "sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ",
+                    "subjectDigest": "sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0",
                     "observedAt": "2026-09-25T20:00:00.000+08:00",
                     "accountNumber": {
-                      "value": "9999_0000_0002",
+                      "value": "9999_0000_0000_0002",
                       "kind": "depository-account",
                       "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                       "sourceField": "accountInfoList.accountId"
@@ -434,8 +433,8 @@
                     ],
                     "records": [
                       {
-                        "occurrenceKey": "sha256:0uhyFjbFE5RToGYhXO9MB_vKBgJUNZzjeBQ73-OLrrw",
-                        "collisionKey": "sha256:ltQkmNuUIDHn-miumk8SOtrmr3p9qPSSazVrtlt2_h0",
+                        "occurrenceKey": "sha256:kbkKjZ5pKC2-di3649jET2Zb3f1AIdysqEBluKSF6DY",
+                        "collisionKey": "sha256:BIurp8hc9-x1-vgSH7KbMQy7biBSWhX_bHNlJIS21dU",
                         "providerKey": "sha256:Zv20q5k5FgxfTi5eaH9Cc4cRkKf8wQPhcx2dDciQ7_g",
                         "contentHash": "sha256:ICOR_l4JC6GPM8B4BTmi5ogSuUy0LLuXsr99QV-c4g0",
                         "compact": {
@@ -455,8 +454,8 @@
                         }
                       },
                       {
-                        "occurrenceKey": "sha256:HQdZIkQYTjsIGUW61X9PK2BhyLLlJzoHdBpAH3sbt88",
-                        "collisionKey": "sha256:tjBKLxUca0cHHjaE6U2PnSQjZIyHVEkiGjNNEysUpMM",
+                        "occurrenceKey": "sha256:D-bYfW095UVQiXRFVuK5knGc5016r3TQNFZAHJItIv0",
+                        "collisionKey": "sha256:B3ZtLmRMTJ4UuatZu51JKXmBj4c8jEQWjfSe6sytzOU",
                         "providerKey": "sha256:wW0cH91jBnC2k773WK-9yY19E4MhFfnRe53AZv-P9oA",
                         "contentHash": "sha256:j9WVOjNvRsqQz9mx5_0_QnSc8DsAQaKd7uubbwVMHIY",
                         "compact": {
@@ -491,10 +490,10 @@
                         "identityEpochKey": "sha256:Y3RiYy1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBjdGJjLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjExMWJhMDU4MTViYzBhYzgyMTU2NjE3Yzk2ZTM1MzhmODEyMjZjNTRmZGJiZTRmNWIyMzI1MjMwNjkwZTk3Nzg",
                         "stream": "domestic-deposit",
                         "recordKind": "ctbc-domestic-deposit",
-                        "subjectDigest": "sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ",
-                        "accountNo": "9999_0000_0002",
+                        "subjectDigest": "sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0",
+                        "accountNo": "9999_0000_0000_0002",
                         "accountNumber": {
-                          "value": "9999_0000_0002",
+                          "value": "9999_0000_0000_0002",
                           "kind": "depository-account",
                           "evidenceVersion": "ctbc/domestic-deposit/account-number-v1",
                           "sourceField": "accountInfoList.accountId"
@@ -512,7 +511,7 @@
                         "completenessRuleVersion": "ctbc/domestic-deposit/human-attested-v1",
                         "absenceAuthority": null,
                         "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                        "preflightFingerprint": "sha256:vPLYXL7lN57TWeZpu--5JbztgdmSVgjIh-HMExM2i98",
+                        "preflightFingerprint": "sha256:ugzX1D5lCHIIz9CNaFOuETmBhMsV_ocegh5kch_N8vw",
                         "pageCount": 2,
                         "withdrawalPolicy": "never-infer"
                       },
@@ -542,7 +541,7 @@
                           "responseDigest": "sha256:Xf50jFomX5lv7-jWr8q3Kj0tA48AA7rx2aedewo0paE",
                           "proofKind": "all-visible-ranges-terminal-next-key-empty",
                           "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                          "preflightFingerprint": "sha256:vPLYXL7lN57TWeZpu--5JbztgdmSVgjIh-HMExM2i98",
+                          "preflightFingerprint": "sha256:ugzX1D5lCHIIz9CNaFOuETmBhMsV_ocegh5kch_N8vw",
                           "metadataJson": "{\"rangeStart\":\"2026/07/01\",\"rangeEnd\":\"2026/07/31\",\"nextKeyState\":\"empty\",\"providerCode\":\"0000\",\"providerTerminal\":true,\"providerExplicitNoData\":false}"
                         },
                         {
@@ -553,18 +552,18 @@
                           "responseDigest": "sha256:0NouEkht6JkF6_441RGeMmdBi_cxVubrNvqeG3-m17U",
                           "proofKind": "all-visible-ranges-terminal-next-key-empty",
                           "contractFingerprint": "sha256:zbGPinR-dt6TMB18_FRW1ao1njf06bo8kZVVJWnKkvw",
-                          "preflightFingerprint": "sha256:vPLYXL7lN57TWeZpu--5JbztgdmSVgjIh-HMExM2i98",
+                          "preflightFingerprint": "sha256:ugzX1D5lCHIIz9CNaFOuETmBhMsV_ocegh5kch_N8vw",
                           "metadataJson": "{\"rangeStart\":\"2026/08/01\",\"rangeEnd\":\"2026/08/31\",\"nextKeyState\":\"empty\",\"providerCode\":\"0000\",\"providerTerminal\":true,\"providerExplicitNoData\":false}"
                         }
                       ],
                       "records": [
                         {
-                          "occurrenceKey": "sha256:awC_lxwV_clsnWswHB9J-uZ2uimuaeQGMMCXq_t9WAw",
-                          "collisionKey": "sha256:_xOu2KlCKDHqQvDvR3dLNfwgjluOyE49pZeNmgH7Vfw",
-                          "providerKey": "sha256:ekkZwwgLO3SxsdkyFp48Xj1XyyOgMIFQfl7KUkdS9l4",
+                          "occurrenceKey": "sha256:6lt8sRh_hISeaqc4IlUfIFx8fh7NiPn2NSlgK6xnkh0",
+                          "collisionKey": "sha256:AFuxviu-lEoggFRrfvhEwtdvVYJJph5s2pzQ2s_9NsM",
+                          "providerKey": "sha256:ptEYVS1R5sRMs0zUvWzEo-xAyRO0VoucqxMXxgURkgs",
                           "contentHash": "sha256:rpG_YwNwBhAMCNZiDEWOb-QF_QhB_rdvKat976ThNV8",
                           "sequenceLexeme": "0:0",
-                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ\",\"accountingDate\":\"2026-07-20\",\"transactionDate\":\"2026-07-20\",\"transactionTime\":\"08:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"300\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"700\",\"scale\":0},\"descriptionDigest\":\"sha256:DMl9H13om1VzLnTV8VD0pu-Bl8LMZD5ZxiKv1Lpt_Q4\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
+                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0\",\"accountingDate\":\"2026-07-20\",\"transactionDate\":\"2026-07-20\",\"transactionTime\":\"08:00:00\",\"direction\":\"outflow\",\"amount\":{\"coefficient\":\"300\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"700\",\"scale\":0},\"descriptionDigest\":\"sha256:DMl9H13om1VzLnTV8VD0pu-Bl8LMZD5ZxiKv1Lpt_Q4\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
                           "amount": {
                             "coefficient": "300",
                             "scale": 0
@@ -585,19 +584,19 @@
                           "effectiveOn": "2026-07-20",
                           "transactionDateTimeLocal": "2026-07-20T08:00:00",
                           "occurrenceGroup": {
-                            "scopeKey": "sha256:BePa84SRHqui9aNB5bHYmnYFqDrmzGKthhUGE1dh2z4",
-                            "fingerprint": "sha256:wfqPtVIPRlRh6zPRLOo2A2y0kB-8s3Bq8SQGGLq9ljA",
+                            "scopeKey": "sha256:gcCv6JlpuBqIjZE26GqV_jF1vzhDOoY0Np0t64CcOnE",
+                            "fingerprint": "sha256:1QQudNURPKflpGcNhkEh9k_KOjXovk-4vi1sjRfMik0",
                             "partitionDate": "2026-07-20",
                             "ordinal": 1
                           }
                         },
                         {
-                          "occurrenceKey": "sha256:jsdKL9PFUjLtHDFs3suyZOiGv58Tse7bcStN9Zc_9lA",
-                          "collisionKey": "sha256:E-U0-uQTHNZnd-ortW6i72Cz0YfGMgee8x-RTRI4A9A",
-                          "providerKey": "sha256:egKf9q8u2tzjsNlP26PFZDNQwnY8eZb0jTX3Bu7qKIE",
+                          "occurrenceKey": "sha256:6Yt6MPLL7kKmFqqiywupUjuJbvL5X1c2kaJlgaTxmL4",
+                          "collisionKey": "sha256:6-CuD99TKgaXaylU76z-jBhE1ZP8ZoPZBTk_tKUlNk8",
+                          "providerKey": "sha256:_nNzDa9DRNM63dN-H9MOO9uQ8OQr6-czohnr36_dTMk",
                           "contentHash": "sha256:4RmNt7QoS70bew_-0yPWxVW-YTQnG_5Kkhj4p1qrvGQ",
                           "sequenceLexeme": "1:0",
-                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ\",\"accountingDate\":\"2026-08-21\",\"transactionDate\":\"2026-08-21\",\"transactionTime\":\"18:30:45\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"50\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"750\",\"scale\":0},\"descriptionDigest\":\"sha256:fQPoMPaBf5DNtRCKK5g8LiwfRxpOGo298gkZY5h0QjI\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
+                          "compactJson": "{\"evidenceVersion\":\"human-attested-v1\",\"subjectDigest\":\"sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0\",\"accountingDate\":\"2026-08-21\",\"transactionDate\":\"2026-08-21\",\"transactionTime\":\"18:30:45\",\"direction\":\"inflow\",\"amount\":{\"coefficient\":\"50\",\"scale\":0},\"balanceAfter\":{\"coefficient\":\"750\",\"scale\":0},\"descriptionDigest\":\"sha256:fQPoMPaBf5DNtRCKK5g8LiwfRxpOGo298gkZY5h0QjI\",\"noteDigest\":\"sha256:j_-USeKJVZ1NpgTMJWsLYO9eMbUq4wbmI99SFqH7TYo\",\"providerGuaranteed\":false}",
                           "amount": {
                             "coefficient": "50",
                             "scale": 0
@@ -618,8 +617,8 @@
                           "effectiveOn": "2026-08-21",
                           "transactionDateTimeLocal": "2026-08-21T18:30:45",
                           "occurrenceGroup": {
-                            "scopeKey": "sha256:BePa84SRHqui9aNB5bHYmnYFqDrmzGKthhUGE1dh2z4",
-                            "fingerprint": "sha256:QL_3WBzGW96oWalLeogcpScT_qQa0SZ9b7qmA_ZGe8g",
+                            "scopeKey": "sha256:gcCv6JlpuBqIjZE26GqV_jF1vzhDOoY0Np0t64CcOnE",
+                            "fingerprint": "sha256:8np5mpzHs6W5KfBJxq55hjOu-CZ-gjDAXGFaJfuBjqQ",
                             "partitionDate": "2026-08-21",
                             "ordinal": 1
                           }
@@ -627,7 +626,7 @@
                       ],
                       "occurrenceGroupCoverage": [
                         {
-                          "scopeKey": "sha256:BePa84SRHqui9aNB5bHYmnYFqDrmzGKthhUGE1dh2z4",
+                          "scopeKey": "sha256:gcCv6JlpuBqIjZE26GqV_jF1vzhDOoY0Np0t64CcOnE",
                           "startDate": "2026-07-01",
                           "endDate": "2026-08-31",
                           "contractVersion": "human-attested-v1"
@@ -638,12 +637,12 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "ctbc"
         },
         {
-          "provider": "ctbc",
           "product": "current-balance",
-          "itemKey": "current-balance:domestic-deposit:9999_0000_0001",
+          "itemKey": "current-balance:domestic-deposit:9999_0000_0000_0001",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -656,7 +655,7 @@
                 "recordKind": "current-deposit-balance",
                 "routeKey": "ctbc/domestic-deposit/current-balance-v1",
                 "contractVersion": "ctbc/current-deposit-balance-v1",
-                "subjectDigest": "sha256:Xe4UDxy1QFdTxFS1vVafR5eRfREyNnZEq59H46I-yD8",
+                "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
                 "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
@@ -667,8 +666,8 @@
                   "ruleVersion": "ctbc/current-deposit-balance-v1",
                   "completenessBasis": "provider-current-balance-snapshot",
                   "contractFingerprint": "sha256:7u1jb6qQu8XmzZvyyefncCm8weFf7ZuXVo-TSZ8mUeM",
-                  "preflightFingerprint": "sha256:lHtHzk5oER--gCPhlZEArCsj9eb7vPl6uG1SFRLiugE",
-                  "sourceAccountKey": "9999_0000_0001"
+                  "preflightFingerprint": "sha256:JHrKFGfzJI0hnKyvFja_VbzkTX7Thghzwe28maWhM9M",
+                  "sourceAccountKey": "9999_0000_0000_0001"
                 },
                 "pages": [
                   {
@@ -680,7 +679,7 @@
                       "source": "ctbc-current-deposit-summary",
                       "endpoint": "/IB/api/adapters/IB_Adapter/resource/ebmwResource",
                       "resource": "/twrbc-deposit/qu001/010",
-                      "accountId": "9999_0000_0001",
+                      "accountId": "9999_0000_0000_0001",
                       "providerServerTime": 1790337540000,
                       "providerDataTime": "2026/09/25 19:59:00",
                       "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT"
@@ -689,18 +688,18 @@
                 ],
                 "records": [
                   {
-                    "occurrenceKey": "sha256:fevEgu9QW2tY-uEaLNKoE5rJIVP5Zz0Tk472pr_6sl8",
-                    "collisionKey": "sha256:fevEgu9QW2tY-uEaLNKoE5rJIVP5Zz0Tk472pr_6sl8",
-                    "providerKey": "sha256:XHexZq5e_EgvV73pj7nh2FkzJNIjbdx1k7oXx22WTlE",
-                    "contentHash": "sha256:wZ5sVgbMq2hCZY37aiysfeqVBJEBSJe6vdvInq_QkMk",
+                    "occurrenceKey": "sha256:Oo11IFL8feoGSN4R52i2k-vr2QvrslnrNqItYw6XQD8",
+                    "collisionKey": "sha256:Oo11IFL8feoGSN4R52i2k-vr2QvrslnrNqItYw6XQD8",
+                    "providerKey": "sha256:8exI5bqdMs55h3KjJRf0yVjGNO_2mEnO5ULdaddoEcQ",
+                    "contentHash": "sha256:mbbQYIQnLU87wkBzlCr6ZDpGKHZTEgAbgisk4P7zHRw",
                     "compact": {
                       "source": "ctbc",
-                      "accountId": "9999_0000_0001",
-                      "sourceAccountKey": "9999_0000_0001",
+                      "accountId": "9999_0000_0000_0001",
+                      "sourceAccountKey": "9999_0000_0000_0001",
                       "currency": "TWD",
                       "sourceLexeme": "5,000",
                       "providerFields": {
-                        "accountId": "9999_0000_0001",
+                        "accountId": "9999_0000_0000_0001",
                         "digiSvType": "",
                         "acctType": "01",
                         "accountNickName": "",
@@ -728,19 +727,19 @@
                       "effectiveTimeSourceField": "serverTime",
                       "effectiveTimeSourceValue": "1790_3375_4000_0"
                     },
-                    "sequenceLexeme": "sha256:fevEgu9QW2tY-uEaLNKoE5rJIVP5Zz0Tk472pr_6sl8",
+                    "sequenceLexeme": "sha256:Oo11IFL8feoGSN4R52i2k-vr2QvrslnrNqItYw6XQD8",
                     "description": null
                   }
                 ]
               },
               "account": {
-                "sourceAccountKey": "9999_0000_0001",
+                "sourceAccountKey": "9999_0000_0000_0001",
                 "accountType": "depository",
                 "currency": "TWD"
               },
               "observations": [
                 {
-                  "observationKey": "sha256:PW2god6dqRr0ZP7ThgeK9CwYCp9UCqC5UcLUbFpqsnI",
+                  "observationKey": "sha256:HvLHqAvNwgAAQEPhB7kR57tq3BGgTE5_7dYuC5Oo1wg",
                   "balanceKind": "ledger",
                   "balance": {
                     "coefficient": "5000",
@@ -750,23 +749,23 @@
                   "effectiveAt": "2026-09-25T11:59:00.000Z",
                   "effectiveTimeBasis": "provider-system-time",
                   "effectiveTimeRuleVersion": "ctbc/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:fevEgu9QW2tY-uEaLNKoE5rJIVP5Zz0Tk472pr_6sl8",
+                  "evidenceSourceRecordKey": "sha256:Oo11IFL8feoGSN4R52i2k-vr2QvrslnrNqItYw6XQD8",
                   "evidenceSourceField": "serverTime",
                   "evidenceSourceValue": "1790_3375_4000_0",
                   "evidenceContractVersion": "ctbc/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:fevEgu9QW2tY-uEaLNKoE5rJIVP5Zz0Tk472pr_6sl8",
+                  "sourceOccurrenceKey": "sha256:Oo11IFL8feoGSN4R52i2k-vr2QvrslnrNqItYw6XQD8",
                   "evidenceEndpoint": "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-cache, no-store, must-revalidate"
                 }
               ]
             }
-          }
+          },
+          "provider": "ctbc"
         },
         {
-          "provider": "ctbc",
           "product": "current-balance",
-          "itemKey": "current-balance:domestic-deposit:9999_0000_0002",
+          "itemKey": "current-balance:domestic-deposit:9999_0000_0000_0002",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -779,7 +778,7 @@
                 "recordKind": "current-deposit-balance",
                 "routeKey": "ctbc/domestic-deposit/current-balance-v1",
                 "contractVersion": "ctbc/current-deposit-balance-v1",
-                "subjectDigest": "sha256:kjpFRHkf9sveGF6ULDki4mrH58NUBv-t0X-qg2eY1WQ",
+                "subjectDigest": "sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0",
                 "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
@@ -790,8 +789,8 @@
                   "ruleVersion": "ctbc/current-deposit-balance-v1",
                   "completenessBasis": "provider-current-balance-snapshot",
                   "contractFingerprint": "sha256:7u1jb6qQu8XmzZvyyefncCm8weFf7ZuXVo-TSZ8mUeM",
-                  "preflightFingerprint": "sha256:jfMKmuDdivqmxw5llQ0G8Vb8-VlTv0JC7Kh32X0YhBk",
-                  "sourceAccountKey": "9999_0000_0002"
+                  "preflightFingerprint": "sha256:dWFwaD_40Z3Otx7qB_IotElRfHVuWmJhTiZAS5vxhFk",
+                  "sourceAccountKey": "9999_0000_0000_0002"
                 },
                 "pages": [
                   {
@@ -803,7 +802,7 @@
                       "source": "ctbc-current-deposit-summary",
                       "endpoint": "/IB/api/adapters/IB_Adapter/resource/ebmwResource",
                       "resource": "/twrbc-deposit/qu001/010",
-                      "accountId": "9999_0000_0002",
+                      "accountId": "9999_0000_0000_0002",
                       "providerServerTime": 1790337540000,
                       "providerDataTime": "2026/09/25 19:59:00",
                       "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT"
@@ -812,18 +811,18 @@
                 ],
                 "records": [
                   {
-                    "occurrenceKey": "sha256:pNnOnR8u7jLIW6FKUoDGK9czy7qMSH2Wq4_tfrC6m94",
-                    "collisionKey": "sha256:pNnOnR8u7jLIW6FKUoDGK9czy7qMSH2Wq4_tfrC6m94",
-                    "providerKey": "sha256:x0yy1KwapTt8nOTMm7C7IpO6YXfW1hY68-j9gHpmCzA",
-                    "contentHash": "sha256:A0fTn7ju9_jTZS8SJOvognCoVirOiL0a2gDpCX5a14A",
+                    "occurrenceKey": "sha256:_KEOcKIdMm-MvMvCQLpvFYKc-0DHa-JPwPjnuSDrkPE",
+                    "collisionKey": "sha256:_KEOcKIdMm-MvMvCQLpvFYKc-0DHa-JPwPjnuSDrkPE",
+                    "providerKey": "sha256:6FR5Y9Xvl0k4ZdZ7L6-PzGCRVjST8fDI61ZXGgsTvG0",
+                    "contentHash": "sha256:IkP57muhOnfKbBwUwPdk7B-jWVqf7V_gRuexethzIGs",
                     "compact": {
                       "source": "ctbc",
-                      "accountId": "9999_0000_0002",
-                      "sourceAccountKey": "9999_0000_0002",
+                      "accountId": "9999_0000_0000_0002",
+                      "sourceAccountKey": "9999_0000_0000_0002",
                       "currency": "TWD",
                       "sourceLexeme": "750",
                       "providerFields": {
-                        "accountId": "9999_0000_0002",
+                        "accountId": "9999_0000_0000_0002",
                         "digiSvType": "",
                         "acctType": "01",
                         "accountNickName": "",
@@ -851,19 +850,19 @@
                       "effectiveTimeSourceField": "serverTime",
                       "effectiveTimeSourceValue": "1790_3375_4000_0"
                     },
-                    "sequenceLexeme": "sha256:pNnOnR8u7jLIW6FKUoDGK9czy7qMSH2Wq4_tfrC6m94",
+                    "sequenceLexeme": "sha256:_KEOcKIdMm-MvMvCQLpvFYKc-0DHa-JPwPjnuSDrkPE",
                     "description": null
                   }
                 ]
               },
               "account": {
-                "sourceAccountKey": "9999_0000_0002",
+                "sourceAccountKey": "9999_0000_0000_0002",
                 "accountType": "depository",
                 "currency": "TWD"
               },
               "observations": [
                 {
-                  "observationKey": "sha256:Cm8WYUd0eH7dxBURY9zvJo1Akqvq7kyfpwM155lB7z8",
+                  "observationKey": "sha256:xwZV4RU6HOVyvwkNBxcGQ800mGQHv2Luy_-46krJ-qY",
                   "balanceKind": "ledger",
                   "balance": {
                     "coefficient": "750",
@@ -873,18 +872,19 @@
                   "effectiveAt": "2026-09-25T11:59:00.000Z",
                   "effectiveTimeBasis": "provider-system-time",
                   "effectiveTimeRuleVersion": "ctbc/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:pNnOnR8u7jLIW6FKUoDGK9czy7qMSH2Wq4_tfrC6m94",
+                  "evidenceSourceRecordKey": "sha256:_KEOcKIdMm-MvMvCQLpvFYKc-0DHa-JPwPjnuSDrkPE",
                   "evidenceSourceField": "serverTime",
                   "evidenceSourceValue": "1790_3375_4000_0",
                   "evidenceContractVersion": "ctbc/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:pNnOnR8u7jLIW6FKUoDGK9czy7qMSH2Wq4_tfrC6m94",
+                  "sourceOccurrenceKey": "sha256:_KEOcKIdMm-MvMvCQLpvFYKc-0DHa-JPwPjnuSDrkPE",
                   "evidenceEndpoint": "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-cache, no-store, must-revalidate"
                 }
               ]
             }
-          }
+          },
+          "provider": "ctbc"
         }
       ]
     }
