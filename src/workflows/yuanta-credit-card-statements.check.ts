@@ -294,7 +294,10 @@ const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
   fakeYuantaSite(responseBodyFixture),
   responseBodyLinkFixture as never,
 );
-assert.deepEqual(summaryClickArguments, []);
+assert.equal(summaryClickArguments?.length, 1);
+const [summaryClickOptions] = summaryClickArguments as [Record<string, unknown>];
+assert.deepEqual(Object.keys(summaryClickOptions), ["signal"]);
+assert.ok(summaryClickOptions.signal instanceof AbortSignal);
 assert.equal(renderedDomRead, false);
 assert.equal(responseBodyLoaded.currentUsedCredit?.usedCredit, "3741");
 

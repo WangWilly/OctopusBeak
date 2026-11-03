@@ -562,8 +562,8 @@ export async function readYuantaDepositAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await frames.race(option.getAttribute("value"))) ?? "";
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     const account = { label, value };
     if (isYuantaDomesticAccountPlaceholder(account)) continue;
     availableAccounts.push(account);
@@ -607,8 +607,8 @@ async function queryAccount(
 ): Promise<YuantaDepositQueryResult> {
   const { frames } = site;
   const scope = await frames.scopeWith("#acctno");
-  await frames.race(scope.locator("#acctno").selectOption(account.value));
-  await frames.race(scope.locator("#submitbutton").click());
+  await frames.withSignal((signal) => scope.locator("#acctno").selectOption(account.value, { signal }));
+  await frames.withSignal((signal) => scope.locator("#submitbutton").click({ signal }));
   await frames.settle();
   await frames.pause(QUERY_SUBMIT_PAUSE_MS);
   return await waitForYuantaDepositQueryResult(site);
@@ -639,7 +639,7 @@ export async function downloadYuantaStatementRows(
 ): Promise<YuantaStatementDownload> {
   const scope = await site.frames.scopeWith(csvDownloadLink, "YuanTa CSV download link");
   const exportLink = csvDownloadLink(scope).first();
-  await site.frames.race(exportLink.waitFor({ state: "attached", timeout: 60_000 }));
+  await site.frames.withSignal((signal) => exportLink.waitFor({ state: "attached", timeout: 60_000, signal }));
   const downloaded = await site.readCsv(exportLink);
   const filename = filenameFromCsvResponse(
     downloaded.contentDisposition,

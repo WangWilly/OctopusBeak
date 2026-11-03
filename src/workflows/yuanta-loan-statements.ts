@@ -5,10 +5,7 @@ import {
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
-import {
-  clickAndWaitForNavigation,
-  hasAttachedLocator,
-} from "./browser-interaction.ts";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -601,8 +598,8 @@ export async function readYuantaLoanAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = (await frames.race(option.getAttribute("value"))) ?? "";
-    const label = cleanText(await frames.race(option.textContent()));
+    const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
+    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableAccountOption(value, label)) continue;
 
     const account = { label, value };
@@ -672,9 +669,14 @@ async function queryLoanAccount(
 ): Promise<void> {
   const { frames } = site;
   const scope = await findLoanStatementForm(site);
-  await frames.race(scope.locator("#acctno").selectOption(account.value));
+  await frames.withSignal((signal) => scope.locator("#acctno").selectOption(account.value, { signal }));
   await chooseDateRange(site, range);
-  await frames.race(clickAndWaitForNavigation(scope, "#submitbutton"));
+  await Promise.all([
+    frames.withSignal((signal) =>
+      scope.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60_000, signal }),
+    ),
+    frames.withSignal((signal) => scope.locator("#submitbutton").click({ signal })),
+  ]);
   await frames.scopeWith("#resultdiv");
 }
 
@@ -696,7 +698,7 @@ async function parseLoanStatementRows(
     throw new Error("Yuanta loan result is missing the source table.");
 
   const resultTable = tables.nth(tableCount - 1);
-  await frames.race(resultTable.locator("th").first().waitFor({ state: "attached" }));
+  await frames.withSignal((signal) => resultTable.locator("th").first().waitFor({ state: "attached", signal }));
   const headerCellCount = await frames.race(resultTable.locator("th").count());
 
   const rows = resultTable.locator("tr");
@@ -709,13 +711,13 @@ async function parseLoanStatementRows(
 
     const values: string[] = [];
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
-      values.push(cleanText(await frames.race(cells.nth(cellIndex).innerText())));
+      values.push(cleanText(await frames.withSignal((signal) => cells.nth(cellIndex).innerText({ signal }))));
     }
     sourceRows.push(values);
   }
 
   const parsedRows = parseYuantaLoanStatementRows(accountLabel, sourceRows);
-  const renderedHtml = await frames.race(scope.locator("body").innerHTML());
+  const renderedHtml = await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal }));
   options.sourceText.assertIntact(renderedHtml);
   return {
     rows: parsedRows,
@@ -898,7 +900,7 @@ async function traverseYuantaLoanStatementPages(
         "Yuanta loan pagination control disappeared before traversal.",
       );
     const previousResult = await frames.race(readYuantaLoanResultMarkup(scope));
-    await frames.race(nextControl.click({ force: true }));
+    await frames.withSignal((signal) => nextControl.click({ force: true, signal }));
     await frames.settle();
     await frames.until(async () => {
       for (const candidate of frames.scopes()) {
