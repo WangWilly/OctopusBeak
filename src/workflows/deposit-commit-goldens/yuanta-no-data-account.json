@@ -53,14 +53,13 @@
       },
       "items": [
         {
-          "provider": "yuanta",
           "product": "domestic-deposit",
-          "itemKey": "yuanta-financial-t+0-4a7O2PULoleD",
+          "itemKey": "yuanta-financial-t+0-q23ucKpnzBdy",
           "command": {
             "kind": "financial.deposit.commit",
             "request": {
               "capture": {
-                "captureId": "yuanta-financial-t+0-4a7O2PULoleD",
+                "captureId": "yuanta-financial-t+0-q23ucKpnzBdy",
                 "authorityRoute": "yuanta/domestic-deposit/human-attested-v2",
                 "contractVersion": "human-attested-v2",
                 "identity": {
@@ -69,9 +68,15 @@
                   "identityEpochKey": "sha256:eXVhbnRhLWh1bWFuLWF0dGVzdGVkLWlkZW50aXR5LWVwb2NoLXYyAHl1YW50YS1kb21lc3RpYy1kZXBvc2l0LWh1bWFuLWF0dGVzdGVkLXYyAGh1bWFuLWF0dGVzdGVkLXYyAHNoYTI1Njo5Y2RlNmYxYzRmMzVlNGY0ZDJlZjYzNGNmNmJjMWU3YjQ4NjliMWEwYzFlNWU3YzJmMWE0YTllMWJkNWQ0YzYz",
                   "stream": "domestic-deposit",
                   "recordKind": "yuanta-domestic-deposit",
-                  "subjectDigest": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
-                  "sourceAccountKey": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
-                  "accountNo": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+                  "subjectDigest": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
+                  "sourceAccountKey": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
+                  "accountNo": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
+                  "accountNumber": {
+                    "value": "9990_0000_0000_0202",
+                    "kind": "depository-account",
+                    "evidenceVersion": "yuanta/domestic-deposit/account-number-v1",
+                    "sourceField": "#acctno option.value"
+                  },
                   "accountType": "depository",
                   "currency": "TWD"
                 },
@@ -85,7 +90,7 @@
                   "completenessRuleVersion": "yuanta/domestic-deposit/human-attested-v2",
                   "absenceAuthority": "provider-explicit-no-data",
                   "contractFingerprint": "sha256:n-SSEtNAYm0XGRCsMxN75LDZzYi-rB6uL4p3nqOD0dk",
-                  "preflightFingerprint": "sha256:6YUlAul7Qq9Ex4qj3unhzvygsYyE4M2LGQ99vzIfJmI",
+                  "preflightFingerprint": "sha256:eGcDzC64OJdNgp0xpulgc5E8IIS1uHh8PbktrWuOa4c",
                   "pageCount": 1,
                   "withdrawalPolicy": "never-infer"
                 },
@@ -115,14 +120,14 @@
                     "responseDigest": "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
                     "proofKind": "exact-ui-range-terminal-download",
                     "contractFingerprint": "sha256:n-SSEtNAYm0XGRCsMxN75LDZzYi-rB6uL4p3nqOD0dk",
-                    "preflightFingerprint": "sha256:6YUlAul7Qq9Ex4qj3unhzvygsYyE4M2LGQ99vzIfJmI",
+                    "preflightFingerprint": "sha256:eGcDzC64OJdNgp0xpulgc5E8IIS1uHh8PbktrWuOa4c",
                     "metadataJson": "{\"pageOrdinal\":0,\"filenameDigest\":\"sha256:9wgVWBQFJbFM491xEPDsNhgTMAlUt1T7rOdmCYbdcig\",\"contentDigest\":\"sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU\",\"rowCount\":0,\"zeroResultAuthority\":\"provider-explicit-no-data\",\"providerGuaranteed\":false}"
                   }
                 ],
                 "records": [],
                 "occurrenceGroupCoverage": [
                   {
-                    "scopeKey": "sha256:o2q_Fl9n8UVuKD2sqekG1NJ_f4nvCKqLwep74Iv3l6U",
+                    "scopeKey": "sha256:LFwxGasr91HHJyij7TNM7UlTpKAcYMCC2BApbpg9Ve0",
                     "startDate": "2026-06-25",
                     "endDate": "2026-09-25",
                     "contractVersion": "human-attested-v2"
@@ -141,10 +146,10 @@
                 "counterpartyEvidence": []
               }
             }
-          ]
+          ],
+          "provider": "yuanta"
         },
         {
-          "provider": "yuanta",
           "product": "domestic-deposit",
           "itemKey": "yuanta-financial-t+2-VIOQuYKDDvzg",
           "command": {
@@ -320,12 +325,12 @@
                 ]
               }
             }
-          ]
+          ],
+          "provider": "yuanta"
         },
         {
-          "provider": "yuanta",
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+          "itemKey": "current-balance:sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -338,7 +343,7 @@
                 "recordKind": "current-deposit-balance",
                 "routeKey": "yuanta/domestic-deposit/current-balance-v1",
                 "contractVersion": "yuanta/current-deposit-balance-v1",
-                "subjectDigest": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+                "subjectDigest": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
                 "observedAt": "2026-09-25T08:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-24",
@@ -348,7 +353,7 @@
                   "completeness": "single-page",
                   "ruleVersion": "yuanta/current-deposit-balance-v1",
                   "completenessBasis": "provider-current-balance-snapshot",
-                  "sourceAccountKey": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4"
+                  "sourceAccountKey": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4"
                 },
                 "pages": [
                   {
@@ -365,13 +370,13 @@
                 ],
                 "records": [
                   {
-                    "occurrenceKey": "sha256:l8H1EbY0a0CJ_MbjLs-LC0GC34nWis_MXjPCvhypQ4s",
-                    "collisionKey": "sha256:l8H1EbY0a0CJ_MbjLs-LC0GC34nWis_MXjPCvhypQ4s",
-                    "providerKey": "sha256:WyrighXJwabYZ74hvIlzfOEErgkeHmBUsvrpqkXvl2Y",
-                    "contentHash": "sha256:HfFzCSMyPIn4QOPcWTt4uo7id1wlOYMCImuzZKBecSI",
+                    "occurrenceKey": "sha256:oPrY92OZGNInRRYElPHs7_8ghMhgbWDNVPFAI9g65-0",
+                    "collisionKey": "sha256:oPrY92OZGNInRRYElPHs7_8ghMhgbWDNVPFAI9g65-0",
+                    "providerKey": "sha256:q5N0ddmwquMYt85WfxohUuI4JMcU0u1RjMBreGcIPf8",
+                    "contentHash": "sha256:Mgo7KGerxw7oucIOZZYNzc7EfXd2BaHQmNmAFFLElmA",
                     "compact": {
-                      "accountNumber": "SYNTHETIC-YUANTA-SAVINGS",
-                      "sourceAccountKey": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+                      "accountNumber": "9990_0000_0000_0202",
+                      "sourceAccountKey": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
                       "currencySourceLexeme": "TWD",
                       "effectiveAt": "2026-09-24T16:00:00.000Z",
                       "effectiveTimeSourceField": "HTTP Date",
@@ -388,21 +393,21 @@
                       "currency": "TWD",
                       "value": {
                         "coefficient": "0",
-                        "scale": 0,
+                        "scale": 2,
                         "sourceLexeme": "0.00"
                       }
                     },
-                    "sequenceLexeme": "sha256:l8H1EbY0a0CJ_MbjLs-LC0GC34nWis_MXjPCvhypQ4s",
+                    "sequenceLexeme": "sha256:oPrY92OZGNInRRYElPHs7_8ghMhgbWDNVPFAI9g65-0",
                     "description": null
                   },
                   {
-                    "occurrenceKey": "sha256:Mvf_BnkY5E4rBaXLmylaojcm5FBx8TOY5ucQukg4wRE",
-                    "collisionKey": "sha256:Mvf_BnkY5E4rBaXLmylaojcm5FBx8TOY5ucQukg4wRE",
-                    "providerKey": "sha256:oU_5Jx_w8yTVBx2tQIxDiC8hFBTdv4E_XPLQofTMzuc",
-                    "contentHash": "sha256:Wqwgataa3UULOj7Pcs7SyBEhOzMjguPv7-F1YBhbLIE",
+                    "occurrenceKey": "sha256:7PfeXtFjQRFAVaVATsvEtEHCHrmRTAiL3r_PYpvm684",
+                    "collisionKey": "sha256:7PfeXtFjQRFAVaVATsvEtEHCHrmRTAiL3r_PYpvm684",
+                    "providerKey": "sha256:1xo6JhwX6zjTlWnqFJna2JQTOvm7wX0ltpgk3t7mmx4",
+                    "contentHash": "sha256:xoMoVxb_wbpu_juEAQdmAH9Of52Gd1s4kbYuk3Kjkac",
                     "compact": {
-                      "accountNumber": "SYNTHETIC-YUANTA-SAVINGS",
-                      "sourceAccountKey": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+                      "accountNumber": "9990_0000_0000_0202",
+                      "sourceAccountKey": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
                       "currencySourceLexeme": "TWD",
                       "effectiveAt": "2026-09-24T16:00:00.000Z",
                       "effectiveTimeSourceField": "HTTP Date",
@@ -419,69 +424,69 @@
                       "currency": "TWD",
                       "value": {
                         "coefficient": "0",
-                        "scale": 0,
+                        "scale": 2,
                         "sourceLexeme": "0.00"
                       }
                     },
-                    "sequenceLexeme": "sha256:Mvf_BnkY5E4rBaXLmylaojcm5FBx8TOY5ucQukg4wRE",
+                    "sequenceLexeme": "sha256:7PfeXtFjQRFAVaVATsvEtEHCHrmRTAiL3r_PYpvm684",
                     "description": null
                   }
                 ]
               },
               "account": {
-                "sourceAccountKey": "sha256:P897NdAew9Lto_QXxtv1csID4kKsh7yd5oPyCvtCWa4",
+                "sourceAccountKey": "sha256:uERGJRf_1mO2lUxWIn30x0FLdBIqXNGWfhaq7pVm2e4",
                 "accountType": "depository",
                 "currency": "TWD"
               },
               "observations": [
                 {
-                  "observationKey": "sha256:nwagxKn9qEnDsWGtc_BlVd79Nz9td_Vs7zhKAKId7d4",
+                  "observationKey": "sha256:Aqp4W_II6ZM6QyXm52-WVgRzSHErwIvpl9MCuxO-ee8",
                   "balanceKind": "ledger",
                   "balance": {
                     "coefficient": "0",
-                    "scale": 0,
+                    "scale": 2,
                     "sourceLexeme": "0.00"
                   },
                   "currency": "TWD",
                   "effectiveAt": "2026-09-24T16:00:00.000Z",
                   "effectiveTimeBasis": "provider-http-date",
                   "effectiveTimeRuleVersion": "yuanta/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:l8H1EbY0a0CJ_MbjLs-LC0GC34nWis_MXjPCvhypQ4s",
+                  "evidenceSourceRecordKey": "sha256:oPrY92OZGNInRRYElPHs7_8ghMhgbWDNVPFAI9g65-0",
                   "evidenceSourceField": "HTTP Date",
                   "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
                   "evidenceContractVersion": "yuanta/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:l8H1EbY0a0CJ_MbjLs-LC0GC34nWis_MXjPCvhypQ4s",
+                  "sourceOccurrenceKey": "sha256:oPrY92OZGNInRRYElPHs7_8ghMhgbWDNVPFAI9g65-0",
                   "evidenceEndpoint": "https://ebank.yuantabank.com.tw/nib/tx/finance_overview_for_summary",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-store"
                 },
                 {
-                  "observationKey": "sha256:nwagxKn9qEnDsWGtc_BlVd79Nz9td_Vs7zhKAKId7d4",
+                  "observationKey": "sha256:Aqp4W_II6ZM6QyXm52-WVgRzSHErwIvpl9MCuxO-ee8",
                   "balanceKind": "available",
                   "balance": {
                     "coefficient": "0",
-                    "scale": 0,
+                    "scale": 2,
                     "sourceLexeme": "0.00"
                   },
                   "currency": "TWD",
                   "effectiveAt": "2026-09-24T16:00:00.000Z",
                   "effectiveTimeBasis": "provider-http-date",
                   "effectiveTimeRuleVersion": "yuanta/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:Mvf_BnkY5E4rBaXLmylaojcm5FBx8TOY5ucQukg4wRE",
+                  "evidenceSourceRecordKey": "sha256:7PfeXtFjQRFAVaVATsvEtEHCHrmRTAiL3r_PYpvm684",
                   "evidenceSourceField": "HTTP Date",
                   "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
                   "evidenceContractVersion": "yuanta/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:Mvf_BnkY5E4rBaXLmylaojcm5FBx8TOY5ucQukg4wRE",
+                  "sourceOccurrenceKey": "sha256:7PfeXtFjQRFAVaVATsvEtEHCHrmRTAiL3r_PYpvm684",
                   "evidenceEndpoint": "https://ebank.yuantabank.com.tw/nib/tx/finance_overview_for_summary",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-store"
                 }
               ]
             }
-          }
+          },
+          "provider": "yuanta"
         },
         {
-          "provider": "yuanta",
           "product": "current-balance",
           "itemKey": "current-balance:sha256:czZ7APIRlN9R_ig487Wj_RGjlJ3ShP2krvm_WEqTitk",
           "command": {
@@ -523,10 +528,10 @@
                 ],
                 "records": [
                   {
-                    "occurrenceKey": "sha256:b0ywo9PXPFwyjfH3FXFzsBfjnKW3G71Sop0gIhGLV7k",
-                    "collisionKey": "sha256:b0ywo9PXPFwyjfH3FXFzsBfjnKW3G71Sop0gIhGLV7k",
+                    "occurrenceKey": "sha256:iZOTaQAbW7J12qyPbwi3hcHbOrg89tCiaXVM29LZdxg",
+                    "collisionKey": "sha256:iZOTaQAbW7J12qyPbwi3hcHbOrg89tCiaXVM29LZdxg",
                     "providerKey": "sha256:_IyLX8kfwj1-0i10WrPgfV6eKRkhmel-4nwEvdtKhbg",
-                    "contentHash": "sha256:A8Gjjqr9TOc8imDUOMA7Bg6sIqec_CCD17365he_Mys",
+                    "contentHash": "sha256:-Z9wedKDVY7FtGl11k5f2PlHUNPbjbVaE00ueZBOv28",
                     "compact": {
                       "accountNumber": "9990_0000_0000_0101",
                       "sourceAccountKey": "sha256:czZ7APIRlN9R_ig487Wj_RGjlJ3ShP2krvm_WEqTitk",
@@ -545,19 +550,19 @@
                       "balanceKind": "ledger",
                       "currency": "TWD",
                       "value": {
-                        "coefficient": "750",
-                        "scale": 0,
+                        "coefficient": "75000",
+                        "scale": 2,
                         "sourceLexeme": "750.00"
                       }
                     },
-                    "sequenceLexeme": "sha256:b0ywo9PXPFwyjfH3FXFzsBfjnKW3G71Sop0gIhGLV7k",
+                    "sequenceLexeme": "sha256:iZOTaQAbW7J12qyPbwi3hcHbOrg89tCiaXVM29LZdxg",
                     "description": null
                   },
                   {
-                    "occurrenceKey": "sha256:ccSPRvLe62ciGPW0_pPgxnvq8AGS3pcdcnO-2yHZd1A",
-                    "collisionKey": "sha256:ccSPRvLe62ciGPW0_pPgxnvq8AGS3pcdcnO-2yHZd1A",
+                    "occurrenceKey": "sha256:3EAtnmLeWN8I25LnI9TYiuKV7voIc3QJNfTg8UgjRao",
+                    "collisionKey": "sha256:3EAtnmLeWN8I25LnI9TYiuKV7voIc3QJNfTg8UgjRao",
                     "providerKey": "sha256:SjiPwnPCane1NE1kh52aXxW4C0ZbiQPiUBI8naUoAsk",
-                    "contentHash": "sha256:LRL9i1QLdNFIxpot5qAagQKrUNZ4DhphKok-0bv2HME",
+                    "contentHash": "sha256:V5lL7OqkIc--aWAQ8Ku10pIQmozr-nhM1IF7gfFbSHU",
                     "compact": {
                       "accountNumber": "9990_0000_0000_0101",
                       "sourceAccountKey": "sha256:czZ7APIRlN9R_ig487Wj_RGjlJ3ShP2krvm_WEqTitk",
@@ -576,12 +581,12 @@
                       "balanceKind": "available",
                       "currency": "TWD",
                       "value": {
-                        "coefficient": "750",
-                        "scale": 0,
+                        "coefficient": "75000",
+                        "scale": 2,
                         "sourceLexeme": "750.00"
                       }
                     },
-                    "sequenceLexeme": "sha256:ccSPRvLe62ciGPW0_pPgxnvq8AGS3pcdcnO-2yHZd1A",
+                    "sequenceLexeme": "sha256:3EAtnmLeWN8I25LnI9TYiuKV7voIc3QJNfTg8UgjRao",
                     "description": null
                   }
                 ]
@@ -596,19 +601,19 @@
                   "observationKey": "sha256:AAYnHtZXMgAv0dNYj-GHzxzKbeGa6qe2_bgM-UrGfzU",
                   "balanceKind": "ledger",
                   "balance": {
-                    "coefficient": "750",
-                    "scale": 0,
+                    "coefficient": "75000",
+                    "scale": 2,
                     "sourceLexeme": "750.00"
                   },
                   "currency": "TWD",
                   "effectiveAt": "2026-09-24T16:00:00.000Z",
                   "effectiveTimeBasis": "provider-http-date",
                   "effectiveTimeRuleVersion": "yuanta/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:b0ywo9PXPFwyjfH3FXFzsBfjnKW3G71Sop0gIhGLV7k",
+                  "evidenceSourceRecordKey": "sha256:iZOTaQAbW7J12qyPbwi3hcHbOrg89tCiaXVM29LZdxg",
                   "evidenceSourceField": "HTTP Date",
                   "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
                   "evidenceContractVersion": "yuanta/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:b0ywo9PXPFwyjfH3FXFzsBfjnKW3G71Sop0gIhGLV7k",
+                  "sourceOccurrenceKey": "sha256:iZOTaQAbW7J12qyPbwi3hcHbOrg89tCiaXVM29LZdxg",
                   "evidenceEndpoint": "https://ebank.yuantabank.com.tw/nib/tx/finance_overview_for_summary",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-store"
@@ -617,26 +622,27 @@
                   "observationKey": "sha256:AAYnHtZXMgAv0dNYj-GHzxzKbeGa6qe2_bgM-UrGfzU",
                   "balanceKind": "available",
                   "balance": {
-                    "coefficient": "750",
-                    "scale": 0,
+                    "coefficient": "75000",
+                    "scale": 2,
                     "sourceLexeme": "750.00"
                   },
                   "currency": "TWD",
                   "effectiveAt": "2026-09-24T16:00:00.000Z",
                   "effectiveTimeBasis": "provider-http-date",
                   "effectiveTimeRuleVersion": "yuanta/current-deposit-balance-v1",
-                  "evidenceSourceRecordKey": "sha256:ccSPRvLe62ciGPW0_pPgxnvq8AGS3pcdcnO-2yHZd1A",
+                  "evidenceSourceRecordKey": "sha256:3EAtnmLeWN8I25LnI9TYiuKV7voIc3QJNfTg8UgjRao",
                   "evidenceSourceField": "HTTP Date",
                   "evidenceSourceValue": "Thu, 24 Sep 2026 16:00:00 GMT",
                   "evidenceContractVersion": "yuanta/current-deposit-balance-v1",
-                  "sourceOccurrenceKey": "sha256:ccSPRvLe62ciGPW0_pPgxnvq8AGS3pcdcnO-2yHZd1A",
+                  "sourceOccurrenceKey": "sha256:3EAtnmLeWN8I25LnI9TYiuKV7voIc3QJNfTg8UgjRao",
                   "evidenceEndpoint": "https://ebank.yuantabank.com.tw/nib/tx/finance_overview_for_summary",
                   "evidenceResponseStatus": 200,
                   "evidenceCachePolicy": "no-store"
                 }
               ]
             }
-          }
+          },
+          "provider": "yuanta"
         }
       ]
     }

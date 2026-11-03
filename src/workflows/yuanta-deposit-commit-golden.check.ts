@@ -70,8 +70,8 @@ function balance(account: Account, ledger: string, available: string): YuantaCur
     accountNumber: account.value,
     sourceAccountKey: deriveYuantaDomesticDepositAccountKey(account.value),
     currency: "TWD",
-    ledger: { coefficient: ledger, scale: 0, sourceLexeme: `${ledger}.00` },
-    available: { coefficient: available, scale: 0, sourceLexeme: `${available}.00` },
+    ledger: { coefficient: ledger === "0" ? "0" : `${ledger}00`, scale: 2, sourceLexeme: `${ledger}.00` },
+    available: { coefficient: available === "0" ? "0" : `${available}00`, scale: 2, sourceLexeme: `${available}.00` },
     effectiveAt: "2026-09-24T16:00:00.000Z",
     providerHttpDate: "Thu, 24 Sep 2026 16:00:00 GMT",
     observedAt: "2026-09-25T00:00:00+08:00",
@@ -173,8 +173,10 @@ function relativeCaptureClock(value: unknown): unknown {
 
 const checkingNumber = ["9990", "0000", "0000", "0101"].join("");
 const checking: Account = { value: checkingNumber, label: `臺幣活期存款 ${checkingNumber}` };
-const savings: Account = { value: "SYNTHETIC-YUANTA-SAVINGS", label: "臺幣活期儲蓄存款 SYNTHETIC-YUANTA-SAVINGS" };
-const joint: Account = { value: "SYNTHETIC-YUANTA-JOINT", label: "臺幣聯名活期存款 SYNTHETIC-YUANTA-JOINT" };
+const savingsNumber = ["9990", "0000", "0000", "0202"].join("");
+const savings: Account = { value: savingsNumber, label: `臺幣活期儲蓄存款 ${savingsNumber}` };
+const jointNumber = ["9990", "0000", "0000", "0303"].join("");
+const joint: Account = { value: jointNumber, label: `臺幣聯名活期存款 ${jointNumber}` };
 
 const downloads = new Map<string, YuantaStatementDownload>([
   [checking.value, download(checking, [
