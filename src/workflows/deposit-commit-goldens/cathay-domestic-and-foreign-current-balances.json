@@ -1,0 +1,1602 @@
+{
+  "executions": [
+    {
+      "options": {
+        "provider": "cathay",
+        "product": "domestic"
+      },
+      "items": [
+        {
+          "product": "domestic-statements",
+          "itemKey": "statements:run-cathay-golden:domestic",
+          "command": {
+            "kind": "financial.mixed.commit",
+            "request": {
+              "steps": [
+                {
+                  "kind": "financial",
+                  "request": {
+                    "capture": {
+                      "captureId": "uuid-1",
+                      "integrationNamespace": "cathay",
+                      "sourceConnectionKey": "sha256:ZsTq6654iNEvdByCY1ZxMz09HXbdW_f_r_P-mwzY9wQ",
+                      "identityEpoch": "sha256:zoM-EYGFtqxcGwe6-WjQlD9wr7pkXr1e0OFzbzFxb24",
+                      "stream": "domestic-deposit",
+                      "recordKind": "cathay-domestic-deposit",
+                      "routeKey": "cathay/domestic-deposit/v1",
+                      "contractVersion": "v1",
+                      "subjectDigest": "sha256:Pm-iO7hHwD-rAepE3ZiW2eKmHll5pNuo4MFpaaBhLgk",
+                      "observedAt": "2026-08-17T12:00:00+08:00",
+                      "accountNumber": null,
+                      "scope": {
+                        "startDate": "2025-08-17",
+                        "endDate": "2026-08-17",
+                        "dateFormat": "YYYY-MM-DD",
+                        "kind": "bounded-range",
+                        "completeness": "complete-range",
+                        "ruleVersion": "cathay/domestic-deposit/v1",
+                        "completenessBasis": "success-status-scope-count-details",
+                        "absenceAuthority": "comparable-complete-range",
+                        "sourceAccountKey": "9990_0000_0001",
+                        "accountNo": "9990_0000_0001"
+                      },
+                      "pages": [
+                        {
+                          "pageOrdinal": 0,
+                          "responseCode": "200",
+                          "rowCount": 3,
+                          "terminal": true,
+                          "metadata": {
+                            "source": "cathay",
+                            "accountNo": "9990_0000_0001",
+                            "scopeStart": "2025-08-17",
+                            "scopeEnd": "2026-08-17",
+                            "pageOrdinal": 0,
+                            "responseDigest": "77953337b02b4d5c4a42560795758951737835e039d02e44185c3954e5dacc51"
+                          },
+                          "responseDigest": "77953337b02b4d5c4a42560795758951737835e039d02e44185c3954e5dacc51",
+                          "proofKind": "success-status-scope-count-details",
+                          "contractFingerprint": "sha256:M65_sNrOOpqkYrK0eTeh61n2wlbegsOV0dHJXqa0_o4",
+                          "preflightFingerprint": "sha256:5yfIynwvvljfr3PBqEFY60uljwujPfhgiLf2FhL6vo4"
+                        }
+                      ],
+                      "records": [
+                        {
+                          "occurrenceKey": "sha256:xHihf0WTN6nSgB-kXmu5cDAYX5P0tP8E4sxhcMJdgDg",
+                          "collisionKey": "sha256:io-Ch4OgKEA3A5zVuKDgAegoMUYJiUO9jy5rsYKQAEg",
+                          "providerKey": "sha256:OyaK_lhHd4oXxkCDFkE04Pz7KZUy7fsPWouygXdUI-M",
+                          "contentHash": "sha256:bq-M5PMQUcQ_i5_OT3qOTZ82-dUsvel4lmSZ5Ys8bSo",
+                          "compact": {
+                            "sequenceNumber": "1",
+                            "accountDate": "2026-07-01",
+                            "txnDateTime": "2026-07-01T09:00:00",
+                            "amount": "12500",
+                            "amountDirection": "inflow",
+                            "balance": "12500",
+                            "description": "Synthetic Cathay deposit description"
+                          },
+                          "sequenceLexeme": "1",
+                          "description": "Synthetic Cathay deposit description"
+                        },
+                        {
+                          "occurrenceKey": "sha256:kMV7eBWIiEZqOdKcO3_uik1-8OJn8gQeroMIlFGJ2ZM",
+                          "collisionKey": "sha256:w9k5ASBsFb5kacv5-9KsgGYkUllbG0kyVlcvMSVIoRE",
+                          "providerKey": "sha256:zEcVoOlTpWku3qsNXIEW7VR9a2LhDeRg32xr0pKP-5I",
+                          "contentHash": "sha256:7lQdPg_XzwDwwQ3rNi7OUxeOdp3jvUMe2wCnf7GWwnU",
+                          "compact": {
+                            "sequenceNumber": "2",
+                            "accountDate": "2026-07-02",
+                            "txnDateTime": "2026-07-02T10:15:30",
+                            "amount": "300",
+                            "amountDirection": "outflow",
+                            "balance": "12200",
+                            "description": "Synthetic Cathay transfer description"
+                          },
+                          "sequenceLexeme": "2",
+                          "description": "Synthetic Cathay transfer description"
+                        },
+                        {
+                          "occurrenceKey": "sha256:mwnUU4j2_kDFV8f_cQxDinIv27vkkUwzvZLbtS0YD6I",
+                          "collisionKey": "sha256:9Vq6C9GGNvCuchZGtOD0GIqSNFbPeJhW9_9SpACMmTE",
+                          "providerKey": "sha256:0C_3-jIn33ckXyp7HMlepbh_XZNQIH5rcylfmuU4skA",
+                          "contentHash": "sha256:Di6D6ehgvpktPRuxkhHUg0vroUPA45ZkWvvRUESmJ1c",
+                          "compact": {
+                            "sequenceNumber": "3",
+                            "accountDate": "2026-07-03",
+                            "txnDateTime": "2026-07-03T11:45:00",
+                            "amount": "800",
+                            "amountDirection": "inflow",
+                            "balance": "13000",
+                            "description": "Synthetic Cathay credit description"
+                          },
+                          "sequenceLexeme": "3",
+                          "description": "Synthetic Cathay credit description"
+                        }
+                      ]
+                    },
+                    "account": {
+                      "sourceAccountKey": "9990_0000_0001",
+                      "accountNo": null,
+                      "accountType": "depository",
+                      "currency": "TWD"
+                    },
+                    "accountIdentifier": null,
+                    "transactions": [
+                      {
+                        "sourceOccurrenceKey": "sha256:xHihf0WTN6nSgB-kXmu5cDAYX5P0tP8E4sxhcMJdgDg",
+                        "sourceSequence": "1",
+                        "amount": {
+                          "coefficient": "12500",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "12500",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "inflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay deposit description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-01",
+                        "transactionDateTimeLocal": "2026-07-01T09:00:00",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1782867600000000
+                      },
+                      {
+                        "sourceOccurrenceKey": "sha256:kMV7eBWIiEZqOdKcO3_uik1-8OJn8gQeroMIlFGJ2ZM",
+                        "sourceSequence": "2",
+                        "amount": {
+                          "coefficient": "300",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "12200",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "outflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay transfer description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-02",
+                        "transactionDateTimeLocal": "2026-07-02T10:15:30",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1782958530000000
+                      },
+                      {
+                        "sourceOccurrenceKey": "sha256:mwnUU4j2_kDFV8f_cQxDinIv27vkkUwzvZLbtS0YD6I",
+                        "sourceSequence": "3",
+                        "amount": {
+                          "coefficient": "800",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "13000",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "inflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay credit description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-03",
+                        "transactionDateTimeLocal": "2026-07-03T11:45:00",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1783050300000000
+                      }
+                    ],
+                    "withdrawalPolicy": "allow-inference"
+                  }
+                },
+                {
+                  "kind": "financial",
+                  "request": {
+                    "capture": {
+                      "captureId": "uuid-2",
+                      "integrationNamespace": "cathay",
+                      "sourceConnectionKey": "sha256:ZsTq6654iNEvdByCY1ZxMz09HXbdW_f_r_P-mwzY9wQ",
+                      "identityEpoch": "sha256:zoM-EYGFtqxcGwe6-WjQlD9wr7pkXr1e0OFzbzFxb24",
+                      "stream": "domestic-deposit",
+                      "recordKind": "cathay-domestic-deposit",
+                      "routeKey": "cathay/domestic-deposit/v1",
+                      "contractVersion": "v1",
+                      "subjectDigest": "sha256:CK1da1yxF24B3lFEg5vuCEYxrs8s5VPYWX9_C-A3z2A",
+                      "observedAt": "2026-08-17T12:00:00+08:00",
+                      "accountNumber": null,
+                      "scope": {
+                        "startDate": "2025-08-17",
+                        "endDate": "2026-08-17",
+                        "dateFormat": "YYYY-MM-DD",
+                        "kind": "bounded-range",
+                        "completeness": "complete-range",
+                        "ruleVersion": "cathay/domestic-deposit/v1",
+                        "completenessBasis": "success-status-scope-count-details",
+                        "absenceAuthority": "comparable-complete-range",
+                        "sourceAccountKey": "9990_0000_0002",
+                        "accountNo": "9990_0000_0002"
+                      },
+                      "pages": [
+                        {
+                          "pageOrdinal": 0,
+                          "responseCode": "200",
+                          "rowCount": 3,
+                          "terminal": true,
+                          "metadata": {
+                            "source": "cathay",
+                            "accountNo": "9990_0000_0002",
+                            "scopeStart": "2025-08-17",
+                            "scopeEnd": "2026-08-17",
+                            "pageOrdinal": 0,
+                            "responseDigest": "bcaf7250ff7f3209f1bd01372ad4cbb2f8d122de71d1aef3eb31cb7bb0cc7b9d"
+                          },
+                          "responseDigest": "bcaf7250ff7f3209f1bd01372ad4cbb2f8d122de71d1aef3eb31cb7bb0cc7b9d",
+                          "proofKind": "success-status-scope-count-details",
+                          "contractFingerprint": "sha256:M65_sNrOOpqkYrK0eTeh61n2wlbegsOV0dHJXqa0_o4",
+                          "preflightFingerprint": "sha256:5yfIynwvvljfr3PBqEFY60uljwujPfhgiLf2FhL6vo4"
+                        }
+                      ],
+                      "records": [
+                        {
+                          "occurrenceKey": "sha256:Xe4epfzlUK4K6AuC44hMF4MV5K6Uif7Zsxsewkauk68",
+                          "collisionKey": "sha256:gWYPyt802K10zlMCTH5uET67xH7PAinc2-DuBMxEWRk",
+                          "providerKey": "sha256:uTUbdj5YIYSH6XZqLI7-4KREc0LYVLcIKYk0UiX-ewA",
+                          "contentHash": "sha256:i_dIBLLc1HKpAhxmM1Gh_teZwPa09uQJrMfbGVnWrbM",
+                          "compact": {
+                            "sequenceNumber": "1",
+                            "accountDate": "2026-07-01",
+                            "txnDateTime": "2026-07-01T09:00:00",
+                            "amount": "12500",
+                            "amountDirection": "inflow",
+                            "balance": "12500",
+                            "description": "Synthetic Cathay deposit description"
+                          },
+                          "sequenceLexeme": "1",
+                          "description": "Synthetic Cathay deposit description"
+                        },
+                        {
+                          "occurrenceKey": "sha256:nj74m5ZvWHGmS6cdUkvnz_EfaIx3CGBZC4XRjLC1n00",
+                          "collisionKey": "sha256:40vXcp0qJ4O67B9Ri1anJfrkX1ogjRtusi6vSy6StN8",
+                          "providerKey": "sha256:TZo6HD_bYg0L5BzsE9Gp5vVqg9uYu3USfYGbQ5zxaLc",
+                          "contentHash": "sha256:lCT6AiqIHd4neVeVbJXPGrQ1Sc_5g_mrb1GBFhry6Pw",
+                          "compact": {
+                            "sequenceNumber": "2",
+                            "accountDate": "2026-07-02",
+                            "txnDateTime": "2026-07-02T10:15:30",
+                            "amount": "300",
+                            "amountDirection": "outflow",
+                            "balance": "12200",
+                            "description": "Synthetic Cathay transfer description"
+                          },
+                          "sequenceLexeme": "2",
+                          "description": "Synthetic Cathay transfer description"
+                        },
+                        {
+                          "occurrenceKey": "sha256:V9i1W1i4easfa-E-PfJH_7UvopieF-n3d7oQYbHitpo",
+                          "collisionKey": "sha256:bgOMiq3Y5Hd3t6aUSOFKCAnvAmoW8pCwMghdHtSIbUw",
+                          "providerKey": "sha256:QlZDIHTDeqFcaVtLWeu4pWJ4ASScR7waAHyhVnFFm3o",
+                          "contentHash": "sha256:GVY6Je-g09x16KpPWwjYsbLf7RfDni21NiPYF-Q9R0Y",
+                          "compact": {
+                            "sequenceNumber": "3",
+                            "accountDate": "2026-07-03",
+                            "txnDateTime": "2026-07-03T11:45:00",
+                            "amount": "800",
+                            "amountDirection": "inflow",
+                            "balance": "13000",
+                            "description": "Synthetic Cathay credit description"
+                          },
+                          "sequenceLexeme": "3",
+                          "description": "Synthetic Cathay credit description"
+                        }
+                      ]
+                    },
+                    "account": {
+                      "sourceAccountKey": "9990_0000_0002",
+                      "accountNo": null,
+                      "accountType": "depository",
+                      "currency": "TWD"
+                    },
+                    "accountIdentifier": null,
+                    "transactions": [
+                      {
+                        "sourceOccurrenceKey": "sha256:Xe4epfzlUK4K6AuC44hMF4MV5K6Uif7Zsxsewkauk68",
+                        "sourceSequence": "1",
+                        "amount": {
+                          "coefficient": "12500",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "12500",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "inflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay deposit description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-01",
+                        "transactionDateTimeLocal": "2026-07-01T09:00:00",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1782867600000000
+                      },
+                      {
+                        "sourceOccurrenceKey": "sha256:nj74m5ZvWHGmS6cdUkvnz_EfaIx3CGBZC4XRjLC1n00",
+                        "sourceSequence": "2",
+                        "amount": {
+                          "coefficient": "300",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "12200",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "outflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay transfer description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-02",
+                        "transactionDateTimeLocal": "2026-07-02T10:15:30",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1782958530000000
+                      },
+                      {
+                        "sourceOccurrenceKey": "sha256:V9i1W1i4easfa-E-PfJH_7UvopieF-n3d7oQYbHitpo",
+                        "sourceSequence": "3",
+                        "amount": {
+                          "coefficient": "800",
+                          "scale": 0
+                        },
+                        "balanceAfter": {
+                          "coefficient": "13000",
+                          "scale": 0
+                        },
+                        "currency": "TWD",
+                        "direction": "inflow",
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "query-status-success-with-accounting-date",
+                        "postingRuleVersion": "cathay/domestic-deposit/v1",
+                        "description": "Synthetic Cathay credit description",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "cathay/domestic-deposit/v1",
+                        "effectiveOn": "2026-07-03",
+                        "transactionDateTimeLocal": "2026-07-03T11:45:00",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "second",
+                        "timeOrigin": "source_reported",
+                        "effectiveTimeBasis": "accounting",
+                        "effectiveTimeRuleVersion": "cathay/domestic-deposit/v1",
+                        "utcInstantUtcUs": 1783050300000000
+                      }
+                    ],
+                    "withdrawalPolicy": "allow-inference"
+                  }
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        },
+        {
+          "product": "domestic-current-balance",
+          "itemKey": "current-balance:0",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-3",
+                "integrationNamespace": "cathay",
+                "sourceConnectionKey": "sha256:ZsTq6654iNEvdByCY1ZxMz09HXbdW_f_r_P-mwzY9wQ",
+                "identityEpoch": "sha256:zoM-EYGFtqxcGwe6-WjQlD9wr7pkXr1e0OFzbzFxb24",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "cathay/domestic-deposit/current-balance-v1",
+                "contractVersion": "cathay/current-deposit-balance-v1",
+                "subjectDigest": "sha256:8Erk8uIFHc9H3NO_r-6Q8KrD9yYSPILMAp8tmriVjmE",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "cathay/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9990_0000_0001"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 2,
+                    "terminal": true,
+                    "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                    "proofKind": "cathay-current-deposit-provider-snapshot",
+                    "contractFingerprint": "cathay/domestic-deposit/current-balance-v1",
+                    "preflightFingerprint": "cathay/domestic-deposit/current-balance-v1/source-page-v1",
+                    "metadata": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "uiPath": "/OnlineBanking/AcctInq/B0101_DepInq",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "scopeDate": "2026-09-25"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:Ce0B_XGVKxSJ0rkz5-4M0sm2buHFmtKpB9VgBnf8Pbw",
+                    "collisionKey": "sha256:Ce0B_XGVKxSJ0rkz5-4M0sm2buHFmtKpB9VgBnf8Pbw",
+                    "providerKey": "sha256:qzWXyQx8w2OP-iOzS90SCjuQ75jY-bIqu0g0yAJQOC4",
+                    "contentHash": "sha256:IMWaQZ1UUMB_-z4NXQcKKb2S3WH8jEwxp9nb2cbqUKw",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "12500.00",
+                      "uiAccountNumber": "9990_0000_0001",
+                      "providerAccountNumber": "0000_9990_0000_0001",
+                      "sourceField": "accountBalance",
+                      "balanceKind": "ledger",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "1250000",
+                        "scale": 2
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:Ce0B_XGVKxSJ0rkz5-4M0sm2buHFmtKpB9VgBnf8Pbw",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:hynVr68DCXsYwQCAimfx4JK5Div7TGlfhBl7M-78VWQ",
+                    "collisionKey": "sha256:hynVr68DCXsYwQCAimfx4JK5Div7TGlfhBl7M-78VWQ",
+                    "providerKey": "sha256:HZVN-M3j-eDxaOMeasgTx9gPoDuYKVajQzwVGZf17Eo",
+                    "contentHash": "sha256:7-Z4ZbXUNT_DdKrZomXzbkZ9tVkqEdQELc89RurUAq8",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "12000.50",
+                      "uiAccountNumber": "9990_0000_0001",
+                      "providerAccountNumber": "0000_9990_0000_0001",
+                      "sourceField": "avaliableBalance",
+                      "balanceKind": "available",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "1200050",
+                        "scale": 2
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:hynVr68DCXsYwQCAimfx4JK5Div7TGlfhBl7M-78VWQ",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9990_0000_0001",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:Wr58yX4r-t8RWAfM_m9dIOm7VaP7RElH1eo5MkWAb90",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "1250000",
+                    "scale": 2
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:Ce0B_XGVKxSJ0rkz5-4M0sm2buHFmtKpB9VgBnf8Pbw",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:Ce0B_XGVKxSJ0rkz5-4M0sm2buHFmtKpB9VgBnf8Pbw",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                },
+                {
+                  "observationKey": "sha256:kywi3RyTW_sjiCsKzEYDnZCNWCSKUit2uqFbrcSX640",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "1200050",
+                    "scale": 2
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:hynVr68DCXsYwQCAimfx4JK5Div7TGlfhBl7M-78VWQ",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:hynVr68DCXsYwQCAimfx4JK5Div7TGlfhBl7M-78VWQ",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        },
+        {
+          "product": "domestic-current-balance",
+          "itemKey": "current-balance:1",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-4",
+                "integrationNamespace": "cathay",
+                "sourceConnectionKey": "sha256:ZsTq6654iNEvdByCY1ZxMz09HXbdW_f_r_P-mwzY9wQ",
+                "identityEpoch": "sha256:zoM-EYGFtqxcGwe6-WjQlD9wr7pkXr1e0OFzbzFxb24",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "cathay/domestic-deposit/current-balance-v1",
+                "contractVersion": "cathay/current-deposit-balance-v1",
+                "subjectDigest": "sha256:8Erk8uIFHc9H3NO_r-6Q8KrD9yYSPILMAp8tmriVjmE",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "cathay/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9990_0000_0002"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 2,
+                    "terminal": true,
+                    "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                    "proofKind": "cathay-current-deposit-provider-snapshot",
+                    "contractFingerprint": "cathay/domestic-deposit/current-balance-v1",
+                    "preflightFingerprint": "cathay/domestic-deposit/current-balance-v1/source-page-v1",
+                    "metadata": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "uiPath": "/OnlineBanking/AcctInq/B0101_DepInq",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "scopeDate": "2026-09-25"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:i-hbFMdmFqjW0KIXY5EWMvTipAVtxaxm0jIuKsIGIIU",
+                    "collisionKey": "sha256:i-hbFMdmFqjW0KIXY5EWMvTipAVtxaxm0jIuKsIGIIU",
+                    "providerKey": "sha256:whmwLFh09OKQztPPY88daJ-TvvXGnPzxGjMFwZJCT1E",
+                    "contentHash": "sha256:UC97Nzu1Sz3hj2nSUrx7oAHzOVSnh3JFFtxtQOsRIfU",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "300",
+                      "uiAccountNumber": "9990_0000_0002",
+                      "providerAccountNumber": "0000_9990_0000_0002",
+                      "sourceField": "accountBalance",
+                      "balanceKind": "ledger",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "300",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:i-hbFMdmFqjW0KIXY5EWMvTipAVtxaxm0jIuKsIGIIU",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:WV4f6ABL_DbtuJMuLtNRiFHGIe1TnzgurKMgGoXJ4zI",
+                    "collisionKey": "sha256:WV4f6ABL_DbtuJMuLtNRiFHGIe1TnzgurKMgGoXJ4zI",
+                    "providerKey": "sha256:_D4yZtMylixua2G1XJQlwbe1HLMkrTYMTyMcYyTre0A",
+                    "contentHash": "sha256:BpyqpMe2sPrKik2g29P16wv177gVzb-SldhCu11mH1g",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                      "responseDigest": "sha256:1ljYzxnk_-OnWh0FofVJLXZ3gEu-98Y-ax_RUFgxZBE",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "0",
+                      "uiAccountNumber": "9990_0000_0002",
+                      "providerAccountNumber": "0000_9990_0000_0002",
+                      "sourceField": "avaliableBalance",
+                      "balanceKind": "available",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "0",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:WV4f6ABL_DbtuJMuLtNRiFHGIe1TnzgurKMgGoXJ4zI",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9990_0000_0002",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:WeVBED9j5_hCBpMzPMJOCwtJoM5AsMoJZwCZbfuJkLo",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "300",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:i-hbFMdmFqjW0KIXY5EWMvTipAVtxaxm0jIuKsIGIIU",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:i-hbFMdmFqjW0KIXY5EWMvTipAVtxaxm0jIuKsIGIIU",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                },
+                {
+                  "observationKey": "sha256:6_tgSQGHqMaYRy3GatDjI_EYRPDUKAqh5l0VWXT7eTY",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "0",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:WV4f6ABL_DbtuJMuLtNRiFHGIe1TnzgurKMgGoXJ4zI",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:WV4f6ABL_DbtuJMuLtNRiFHGIe1TnzgurKMgGoXJ4zI",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        }
+      ]
+    },
+    {
+      "options": {
+        "provider": "cathay",
+        "product": "foreign_currency"
+      },
+      "items": [
+        {
+          "product": "foreign-currency-statements",
+          "itemKey": "statements:run-cathay-golden:foreign-currency",
+          "command": {
+            "kind": "financial.mixed.commit",
+            "request": {
+              "steps": [
+                {
+                  "kind": "deposit",
+                  "request": {
+                    "capture": {
+                      "captureId": "foreign-cathay-7kKFBrmFuHy8pnK6Fq6kXHCjse219JYCtoe_pMggxHQ",
+                      "authorityRoute": "cathay/foreign-currency/deposit/v1",
+                      "contractVersion": "foreign-currency/cathay/v1",
+                      "identity": {
+                        "integrationNamespace": "cathay",
+                        "sourceConnectionKey": "sha256:k2Sr3DZJqiz1taAcuC0kcdhxXRu2hIEKIp20kqQMT9Y",
+                        "identityEpochKey": "sha256:hoXAF7OlbfNO0fsd5jkgAhCsvFBz05QM8K6EgFV8HqY",
+                        "stream": "foreign-currency-deposit",
+                        "recordKind": "cathay-foreign-currency-deposit",
+                        "subjectDigest": "sha256:2N-K9tKiInHHDljwoNZiluSp0VVBmBdOnEh9o-alsJ4",
+                        "accountNo": "9991_0000_0001",
+                        "sourceAccountKey": "9991_0000_0001",
+                        "accountNumber": null,
+                        "accountType": "depository",
+                        "currency": null
+                      },
+                      "observedAt": "2026-08-24T12:00:00+08:00",
+                      "scope": {
+                        "startDate": "2026-08-01",
+                        "endDate": "2026-08-24",
+                        "scopeKind": "bounded-range",
+                        "completeness": "complete-range",
+                        "completenessBasis": "foreign-currency-terminal-complete-range",
+                        "completenessRuleVersion": "foreign-currency/cathay/v1",
+                        "absenceAuthority": "provider-explicit-no-data",
+                        "contractFingerprint": "sha256:hEPFBUWE77IT9XmAqG5MWZGC1bWnnmUTp4-vE8EjuRw",
+                        "preflightFingerprint": "sha256:TxZa7gGtP_P0tdmQHGoEORDopiGAt4yMYknOgAM-nqE",
+                        "pageCount": 1,
+                        "withdrawalPolicy": "never-infer"
+                      },
+                      "semantics": {
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "statement-posted-history",
+                        "postingRuleVersion": "foreign-currency/cathay/v1",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "foreign-currency/cathay/v1",
+                        "effectiveTimeBasis": "transaction-time",
+                        "effectiveTimeRuleVersion": "foreign-currency/cathay/v1",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "minute",
+                        "timeOrigin": "source_reported",
+                        "requireBalance": true,
+                        "providerGuaranteed": false,
+                        "occurrenceProviderGuaranteed": false
+                      },
+                      "pages": [
+                        {
+                          "pageOrdinal": 0,
+                          "responseCode": "200",
+                          "terminal": true,
+                          "rowCount": 1,
+                          "responseDigest": "sha256:mEY2FATx_sy6sEqouSxS6XbNHC9S0lALrxnxyZZSlns",
+                          "proofKind": "foreign-currency-terminal-statement",
+                          "contractFingerprint": "sha256:hEPFBUWE77IT9XmAqG5MWZGC1bWnnmUTp4-vE8EjuRw",
+                          "preflightFingerprint": "sha256:TxZa7gGtP_P0tdmQHGoEORDopiGAt4yMYknOgAM-nqE",
+                          "metadataJson": "{\"source\":\"cathay\",\"accountNo\":\"9991_0000_0001\",\"startDate\":\"2026-08-01\",\"endDate\":\"2026-08-24\",\"captureCurrencyScope\":{\"kind\":\"currency\",\"currency\":\"USD\"},\"currencyScope\":\"row-or-typed-scope\",\"completeness\":\"complete-range\"}"
+                        }
+                      ],
+                      "records": [
+                        {
+                          "occurrenceKey": "sha256:NMlQjuxvsfNHisEqu8dsmcgFX8Yguuzko3oDSsAX1Nw",
+                          "collisionKey": "sha256:_ZIyxAHPpEZgp_PkNhezQLAHxNv9MVKfdU4aYXjn4M8",
+                          "providerKey": "sha256:cPSLtFNqjNnNJtuCwdhTspgTpgUHrXURundxVwiFGdU",
+                          "contentHash": "sha256:ScPjMN5PT9tgSZiQEOEu2GP1Qnub_aBfTDt1i2FyYUU",
+                          "sequenceLexeme": "1",
+                          "compactJson": "{\"sourceKey\":\"cathay-fixture-1\",\"sequence\":\"1\",\"amount\":{\"coefficient\":\"1025\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"10025\",\"scale\":2},\"currency\":\"USD\",\"direction\":\"inflow\",\"currencyEvidence\":{\"kind\":\"row\",\"currency\":\"USD\"},\"sourceTime\":{\"sourceTime\":{\"localDate\":\"2026-08-02\",\"localTime\":\"09:10:00\",\"timeZone\":\"Asia/Taipei\",\"epochMilliseconds\":1785_6330_0000_0,\"precision\":\"minute\",\"timeOrigin\":\"source_reported\"},\"transactionDateTimeLocal\":\"2026-08-02T09:10:00\"},\"originalAmount\":{\"amount\":\"10.25\",\"currency\":\"USD\"},\"sourceReportedRate\":null,\"feeAmount\":null,\"description\":\"cathay foreign fixture\",\"sourcePayload\":null}",
+                          "amount": {
+                            "coefficient": "1025",
+                            "scale": 2
+                          },
+                          "balanceAfter": {
+                            "coefficient": "10025",
+                            "scale": 2
+                          },
+                          "currency": "USD",
+                          "direction": "inflow",
+                          "sourceTime": {
+                            "localDate": "2026-08-02",
+                            "localTime": "09:10:00",
+                            "timeZone": "Asia/Taipei",
+                            "epochMilliseconds": 1785633000000,
+                            "precision": "minute",
+                            "timeOrigin": "source_reported"
+                          },
+                          "effectiveOn": "2026-08-02",
+                          "transactionDateTimeLocal": "2026-08-02T09:10:00",
+                          "description": "cathay foreign fixture",
+                          "conversionEvidence": {
+                            "originalAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "originalCurrency": "USD",
+                            "bookedAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "bookedCurrency": "USD",
+                            "sourceReportedRate": null,
+                            "impliedRate": null,
+                            "comparison": "not-comparable",
+                            "feeAmount": null,
+                            "feeCurrency": null,
+                            "evidenceOrigin": "source-row-conversion-evidence-v1"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "kind": "deposit",
+                  "request": {
+                    "capture": {
+                      "captureId": "foreign-cathay-suJHIRwYutNRSC_rf5txnN6P09d2DrB2EqGl_h40JuM",
+                      "authorityRoute": "cathay/foreign-currency/deposit/v1",
+                      "contractVersion": "foreign-currency/cathay/v1",
+                      "identity": {
+                        "integrationNamespace": "cathay",
+                        "sourceConnectionKey": "sha256:k2Sr3DZJqiz1taAcuC0kcdhxXRu2hIEKIp20kqQMT9Y",
+                        "identityEpochKey": "sha256:hoXAF7OlbfNO0fsd5jkgAhCsvFBz05QM8K6EgFV8HqY",
+                        "stream": "foreign-currency-deposit",
+                        "recordKind": "cathay-foreign-currency-deposit",
+                        "subjectDigest": "sha256:2N-K9tKiInHHDljwoNZiluSp0VVBmBdOnEh9o-alsJ4",
+                        "accountNo": "9991_0000_0001",
+                        "sourceAccountKey": "9991_0000_0001",
+                        "accountNumber": null,
+                        "accountType": "depository",
+                        "currency": null
+                      },
+                      "observedAt": "2026-08-24T12:00:00+08:00",
+                      "scope": {
+                        "startDate": "2026-08-01",
+                        "endDate": "2026-08-24",
+                        "scopeKind": "bounded-range",
+                        "completeness": "complete-range",
+                        "completenessBasis": "foreign-currency-terminal-complete-range",
+                        "completenessRuleVersion": "foreign-currency/cathay/v1",
+                        "absenceAuthority": "provider-explicit-no-data",
+                        "contractFingerprint": "sha256:d0AjafPTXqmJieNK_2-OwNud8ekAXj-kzLbAXt8weM0",
+                        "preflightFingerprint": "sha256:gvoqNLkZmZL04iOB1fc95iwcQ21I2Ko60MS62mH_JAM",
+                        "pageCount": 1,
+                        "withdrawalPolicy": "never-infer"
+                      },
+                      "semantics": {
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "statement-posted-history",
+                        "postingRuleVersion": "foreign-currency/cathay/v1",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "foreign-currency/cathay/v1",
+                        "effectiveTimeBasis": "transaction-time",
+                        "effectiveTimeRuleVersion": "foreign-currency/cathay/v1",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "minute",
+                        "timeOrigin": "source_reported",
+                        "requireBalance": true,
+                        "providerGuaranteed": false,
+                        "occurrenceProviderGuaranteed": false
+                      },
+                      "pages": [
+                        {
+                          "pageOrdinal": 0,
+                          "responseCode": "200",
+                          "terminal": true,
+                          "rowCount": 1,
+                          "responseDigest": "sha256:je2Qov-kIow_09fb-0Mv1ifWJ6l4x-ucC0GwnNLoEyU",
+                          "proofKind": "foreign-currency-terminal-statement",
+                          "contractFingerprint": "sha256:d0AjafPTXqmJieNK_2-OwNud8ekAXj-kzLbAXt8weM0",
+                          "preflightFingerprint": "sha256:gvoqNLkZmZL04iOB1fc95iwcQ21I2Ko60MS62mH_JAM",
+                          "metadataJson": "{\"source\":\"cathay\",\"accountNo\":\"9991_0000_0001\",\"startDate\":\"2026-08-01\",\"endDate\":\"2026-08-24\",\"captureCurrencyScope\":{\"kind\":\"currency\",\"currency\":\"JPY\"},\"currencyScope\":\"row-or-typed-scope\",\"completeness\":\"complete-range\"}"
+                        }
+                      ],
+                      "records": [
+                        {
+                          "occurrenceKey": "sha256:NMlQjuxvsfNHisEqu8dsmcgFX8Yguuzko3oDSsAX1Nw",
+                          "collisionKey": "sha256:_ZIyxAHPpEZgp_PkNhezQLAHxNv9MVKfdU4aYXjn4M8",
+                          "providerKey": "sha256:cPSLtFNqjNnNJtuCwdhTspgTpgUHrXURundxVwiFGdU",
+                          "contentHash": "sha256:FZrzcK4wev1uQUe2slvSZu_l2WMs5UyZqqC-GuJ_at0",
+                          "sequenceLexeme": "1",
+                          "compactJson": "{\"sourceKey\":\"cathay-fixture-1\",\"sequence\":\"1\",\"amount\":{\"coefficient\":\"1025\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"10025\",\"scale\":2},\"currency\":\"JPY\",\"direction\":\"inflow\",\"currencyEvidence\":{\"kind\":\"row\",\"currency\":\"JPY\"},\"sourceTime\":{\"sourceTime\":{\"localDate\":\"2026-08-02\",\"localTime\":\"09:10:00\",\"timeZone\":\"Asia/Taipei\",\"epochMilliseconds\":1785_6330_0000_0,\"precision\":\"minute\",\"timeOrigin\":\"source_reported\"},\"transactionDateTimeLocal\":\"2026-08-02T09:10:00\"},\"originalAmount\":{\"amount\":\"10.25\",\"currency\":\"JPY\"},\"sourceReportedRate\":null,\"feeAmount\":null,\"description\":\"cathay foreign fixture\",\"sourcePayload\":null}",
+                          "amount": {
+                            "coefficient": "1025",
+                            "scale": 2
+                          },
+                          "balanceAfter": {
+                            "coefficient": "10025",
+                            "scale": 2
+                          },
+                          "currency": "JPY",
+                          "direction": "inflow",
+                          "sourceTime": {
+                            "localDate": "2026-08-02",
+                            "localTime": "09:10:00",
+                            "timeZone": "Asia/Taipei",
+                            "epochMilliseconds": 1785633000000,
+                            "precision": "minute",
+                            "timeOrigin": "source_reported"
+                          },
+                          "effectiveOn": "2026-08-02",
+                          "transactionDateTimeLocal": "2026-08-02T09:10:00",
+                          "description": "cathay foreign fixture",
+                          "conversionEvidence": {
+                            "originalAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "originalCurrency": "JPY",
+                            "bookedAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "bookedCurrency": "JPY",
+                            "sourceReportedRate": null,
+                            "impliedRate": null,
+                            "comparison": "not-comparable",
+                            "feeAmount": null,
+                            "feeCurrency": null,
+                            "evidenceOrigin": "source-row-conversion-evidence-v1"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "kind": "deposit",
+                  "request": {
+                    "capture": {
+                      "captureId": "foreign-cathay-ePtfGXOFOgMvJFtrG1nx7JRmtY1V9u8Ud_Y1xz9kwAw",
+                      "authorityRoute": "cathay/foreign-currency/deposit/v1",
+                      "contractVersion": "foreign-currency/cathay/v1",
+                      "identity": {
+                        "integrationNamespace": "cathay",
+                        "sourceConnectionKey": "sha256:k2Sr3DZJqiz1taAcuC0kcdhxXRu2hIEKIp20kqQMT9Y",
+                        "identityEpochKey": "sha256:hoXAF7OlbfNO0fsd5jkgAhCsvFBz05QM8K6EgFV8HqY",
+                        "stream": "foreign-currency-deposit",
+                        "recordKind": "cathay-foreign-currency-deposit",
+                        "subjectDigest": "sha256:RauQRwxYhkqOyvJTRsPj0j5kWYli2XWtHfUQZVMjkew",
+                        "accountNo": "9991_0000_0002",
+                        "sourceAccountKey": "9991_0000_0002",
+                        "accountNumber": null,
+                        "accountType": "depository",
+                        "currency": null
+                      },
+                      "observedAt": "2026-08-24T12:00:00+08:00",
+                      "scope": {
+                        "startDate": "2026-08-01",
+                        "endDate": "2026-08-24",
+                        "scopeKind": "bounded-range",
+                        "completeness": "complete-range",
+                        "completenessBasis": "foreign-currency-terminal-complete-range",
+                        "completenessRuleVersion": "foreign-currency/cathay/v1",
+                        "absenceAuthority": "provider-explicit-no-data",
+                        "contractFingerprint": "sha256:CPp1H-fXMmF8amCpgNUwJZXkXRQplwINfgLz5KIp9mY",
+                        "preflightFingerprint": "sha256:maeur-S8EnMBV47eVLx6YnN_5f9ITKmLupy_960wW_4",
+                        "pageCount": 1,
+                        "withdrawalPolicy": "never-infer"
+                      },
+                      "semantics": {
+                        "postingStatus": "posted",
+                        "postingOrigin": "provider_booked_history",
+                        "postingBasis": "statement-posted-history",
+                        "postingRuleVersion": "foreign-currency/cathay/v1",
+                        "economicStatus": "normal",
+                        "administrativeState": "active",
+                        "semanticRuleVersion": "foreign-currency/cathay/v1",
+                        "effectiveTimeBasis": "transaction-time",
+                        "effectiveTimeRuleVersion": "foreign-currency/cathay/v1",
+                        "timeZone": "Asia/Taipei",
+                        "timePrecision": "minute",
+                        "timeOrigin": "source_reported",
+                        "requireBalance": true,
+                        "providerGuaranteed": false,
+                        "occurrenceProviderGuaranteed": false
+                      },
+                      "pages": [
+                        {
+                          "pageOrdinal": 0,
+                          "responseCode": "200",
+                          "terminal": true,
+                          "rowCount": 1,
+                          "responseDigest": "sha256:PZ7mGPde_1jnO-OmnG3GKoPKO7orJdOYHMOAtPP6V_g",
+                          "proofKind": "foreign-currency-terminal-statement",
+                          "contractFingerprint": "sha256:CPp1H-fXMmF8amCpgNUwJZXkXRQplwINfgLz5KIp9mY",
+                          "preflightFingerprint": "sha256:maeur-S8EnMBV47eVLx6YnN_5f9ITKmLupy_960wW_4",
+                          "metadataJson": "{\"source\":\"cathay\",\"accountNo\":\"9991_0000_0002\",\"startDate\":\"2026-08-01\",\"endDate\":\"2026-08-24\",\"captureCurrencyScope\":{\"kind\":\"currency\",\"currency\":\"EUR\"},\"currencyScope\":\"row-or-typed-scope\",\"completeness\":\"complete-range\"}"
+                        }
+                      ],
+                      "records": [
+                        {
+                          "occurrenceKey": "sha256:NMlQjuxvsfNHisEqu8dsmcgFX8Yguuzko3oDSsAX1Nw",
+                          "collisionKey": "sha256:_ZIyxAHPpEZgp_PkNhezQLAHxNv9MVKfdU4aYXjn4M8",
+                          "providerKey": "sha256:cPSLtFNqjNnNJtuCwdhTspgTpgUHrXURundxVwiFGdU",
+                          "contentHash": "sha256:Em9eWh33-fAXS6aOhj9uhz0KlmSBORVTN1YsKHKB64w",
+                          "sequenceLexeme": "1",
+                          "compactJson": "{\"sourceKey\":\"cathay-fixture-1\",\"sequence\":\"1\",\"amount\":{\"coefficient\":\"1025\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"10025\",\"scale\":2},\"currency\":\"EUR\",\"direction\":\"inflow\",\"currencyEvidence\":{\"kind\":\"row\",\"currency\":\"EUR\"},\"sourceTime\":{\"sourceTime\":{\"localDate\":\"2026-08-02\",\"localTime\":\"09:10:00\",\"timeZone\":\"Asia/Taipei\",\"epochMilliseconds\":1785_6330_0000_0,\"precision\":\"minute\",\"timeOrigin\":\"source_reported\"},\"transactionDateTimeLocal\":\"2026-08-02T09:10:00\"},\"originalAmount\":{\"amount\":\"10.25\",\"currency\":\"EUR\"},\"sourceReportedRate\":null,\"feeAmount\":null,\"description\":\"cathay foreign fixture\",\"sourcePayload\":null}",
+                          "amount": {
+                            "coefficient": "1025",
+                            "scale": 2
+                          },
+                          "balanceAfter": {
+                            "coefficient": "10025",
+                            "scale": 2
+                          },
+                          "currency": "EUR",
+                          "direction": "inflow",
+                          "sourceTime": {
+                            "localDate": "2026-08-02",
+                            "localTime": "09:10:00",
+                            "timeZone": "Asia/Taipei",
+                            "epochMilliseconds": 1785633000000,
+                            "precision": "minute",
+                            "timeOrigin": "source_reported"
+                          },
+                          "effectiveOn": "2026-08-02",
+                          "transactionDateTimeLocal": "2026-08-02T09:10:00",
+                          "description": "cathay foreign fixture",
+                          "conversionEvidence": {
+                            "originalAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "originalCurrency": "EUR",
+                            "bookedAmount": {
+                              "coefficient": "1025",
+                              "scale": 2
+                            },
+                            "bookedCurrency": "EUR",
+                            "sourceReportedRate": null,
+                            "impliedRate": null,
+                            "comparison": "not-comparable",
+                            "feeAmount": null,
+                            "feeCurrency": null,
+                            "evidenceOrigin": "source-row-conversion-evidence-v1"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        },
+        {
+          "product": "foreign-current-balance",
+          "itemKey": "current-balance:0",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-5",
+                "integrationNamespace": "cathay",
+                "sourceConnectionKey": "sha256:k2Sr3DZJqiz1taAcuC0kcdhxXRu2hIEKIp20kqQMT9Y",
+                "identityEpoch": "sha256:hoXAF7OlbfNO0fsd5jkgAhCsvFBz05QM8K6EgFV8HqY",
+                "stream": "foreign-currency-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "cathay/foreign-currency/current-balance-v1",
+                "contractVersion": "cathay/current-deposit-balance-v1",
+                "subjectDigest": "sha256:2N-K9tKiInHHDljwoNZiluSp0VVBmBdOnEh9o-alsJ4",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "cathay/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9991_0000_0001"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 2,
+                    "terminal": true,
+                    "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                    "proofKind": "cathay-current-deposit-provider-snapshot",
+                    "contractFingerprint": "cathay/foreign-currency/current-balance-v1",
+                    "preflightFingerprint": "cathay/foreign-currency/current-balance-v1/source-page-v1",
+                    "metadata": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                      "uiPath": "/OnlineBanking/FAcctInq/R0101_FDepInq",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                      "scopeDate": "2026-09-25"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:U4hggd_Tv9DpMQtwMjcWo9xfNomDq6HKkK7BHnU4VuM",
+                    "collisionKey": "sha256:U4hggd_Tv9DpMQtwMjcWo9xfNomDq6HKkK7BHnU4VuM",
+                    "providerKey": "sha256:FSZDnQQ5WwRcziBgKzF7gKFxuyjpebzl5knkGnBg5aA",
+                    "contentHash": "sha256:naO8dkmWC3CwKHcyf9LPnFWijF64E1ugPn3PdNMHG_g",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                      "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "100.25",
+                      "providerAccountNumber": "9991_0000_0001",
+                      "currencySourceCode": "USD",
+                      "sourceField": "balance",
+                      "balanceKind": "ledger",
+                      "currency": "USD",
+                      "value": {
+                        "coefficient": "10025",
+                        "scale": 2
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:U4hggd_Tv9DpMQtwMjcWo9xfNomDq6HKkK7BHnU4VuM",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:Re5E4pWaeM2H-3gXfkmdKOP34_H0cWdCT6AZELGsTdw",
+                    "collisionKey": "sha256:Re5E4pWaeM2H-3gXfkmdKOP34_H0cWdCT6AZELGsTdw",
+                    "providerKey": "sha256:8V-G4ZtHoXvHe9cRrV8mpZ4QPdavBQa0npScHq_PSBw",
+                    "contentHash": "sha256:gaZB2W_5KvWrJYBVikcMmj5u70QxDmaLXirTzNGKa_E",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                      "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "5000",
+                      "providerAccountNumber": "9991_0000_0001",
+                      "currencySourceCode": "JPY",
+                      "sourceField": "balance",
+                      "balanceKind": "ledger",
+                      "currency": "JPY",
+                      "value": {
+                        "coefficient": "5000",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:Re5E4pWaeM2H-3gXfkmdKOP34_H0cWdCT6AZELGsTdw",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9991_0000_0001",
+                "accountType": "depository",
+                "currency": null
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:k72Vlnr7UUWgU6WMVLBtrgthf6ISdNkBEdCxGdwcQNA",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "10025",
+                    "scale": 2
+                  },
+                  "currency": "USD",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:U4hggd_Tv9DpMQtwMjcWo9xfNomDq6HKkK7BHnU4VuM",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:U4hggd_Tv9DpMQtwMjcWo9xfNomDq6HKkK7BHnU4VuM",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                },
+                {
+                  "observationKey": "sha256:lUFrueVNMJYnA2PhoWLBpqLrHGx3hqQudc7AZ01PoYw",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "5000",
+                    "scale": 0
+                  },
+                  "currency": "JPY",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:Re5E4pWaeM2H-3gXfkmdKOP34_H0cWdCT6AZELGsTdw",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:Re5E4pWaeM2H-3gXfkmdKOP34_H0cWdCT6AZELGsTdw",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        },
+        {
+          "product": "foreign-current-balance",
+          "itemKey": "current-balance:1",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-6",
+                "integrationNamespace": "cathay",
+                "sourceConnectionKey": "sha256:k2Sr3DZJqiz1taAcuC0kcdhxXRu2hIEKIp20kqQMT9Y",
+                "identityEpoch": "sha256:hoXAF7OlbfNO0fsd5jkgAhCsvFBz05QM8K6EgFV8HqY",
+                "stream": "foreign-currency-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "cathay/foreign-currency/current-balance-v1",
+                "contractVersion": "cathay/current-deposit-balance-v1",
+                "subjectDigest": "sha256:RauQRwxYhkqOyvJTRsPj0j5kWYli2XWtHfUQZVMjkew",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "cathay/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9991_0000_0002"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                    "proofKind": "cathay-current-deposit-provider-snapshot",
+                    "contractFingerprint": "cathay/foreign-currency/current-balance-v1",
+                    "preflightFingerprint": "cathay/foreign-currency/current-balance-v1/source-page-v1",
+                    "metadata": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                      "uiPath": "/OnlineBanking/FAcctInq/R0101_FDepInq",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                      "scopeDate": "2026-09-25"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:pRt1IdtWUpmyFv9J5L7GM1A8x7SBlezUBxY8VLDLzC8",
+                    "collisionKey": "sha256:pRt1IdtWUpmyFv9J5L7GM1A8x7SBlezUBxY8VLDLzC8",
+                    "providerKey": "sha256:i-crpJddqSMIVQUEr9JojOwe26iq2H-mwVOZgF53B-Y",
+                    "contentHash": "sha256:5iLn1iq8aAq4JFj17P-5E6zmaPUWXF_RxzXqicz59Dc",
+                    "compact": {
+                      "source": "cathay",
+                      "endpoint": "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                      "responseDigest": "sha256:RhVQaGT4QSmeXxe_EL8T84I2g4BpjxhE21uOaFvx9R0",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:30 GMT",
+                      "providerSystemTime": "2026-09-25T20:00:00.0000000+08:00",
+                      "sourceLexeme": "0.10",
+                      "providerAccountNumber": "9991_0000_0002",
+                      "currencySourceCode": "EUR",
+                      "sourceField": "balance",
+                      "balanceKind": "ledger",
+                      "currency": "EUR",
+                      "value": {
+                        "coefficient": "10",
+                        "scale": 2
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000000000Z",
+                      "effectiveTimeSourceField": "systemTime",
+                      "effectiveTimeSourceValue": "2026-09-25T20:00:00.0000000+08:00"
+                    },
+                    "sequenceLexeme": "sha256:pRt1IdtWUpmyFv9J5L7GM1A8x7SBlezUBxY8VLDLzC8",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9991_0000_0002",
+                "accountType": "depository",
+                "currency": null
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:Lb3tUuPgpwizKY0TJKWpe7mMr4nz0VOmDa_GEoyNkI8",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "10",
+                    "scale": 2
+                  },
+                  "currency": "EUR",
+                  "effectiveAt": "2026-09-25T20:00:00.0000000+08:00",
+                  "effectiveTimeBasis": "provider-system-time",
+                  "effectiveTimeRuleVersion": "cathay/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:pRt1IdtWUpmyFv9J5L7GM1A8x7SBlezUBxY8VLDLzC8",
+                  "evidenceSourceField": "systemTime",
+                  "evidenceSourceValue": "2026-09-25T20:00:00.0000000+08:00",
+                  "evidenceContractVersion": "cathay/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:pRt1IdtWUpmyFv9J5L7GM1A8x7SBlezUBxY8VLDLzC8",
+                  "evidenceEndpoint": "https://www.cathaybk.com.tw/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                }
+              ]
+            }
+          },
+          "provider": "cathay"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "started",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "completed",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "domestic-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "domestic-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "domestic-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "domestic-admission-started",
+      "counts": {
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "domestic-admission-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "domestic-current-balance-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "domestic-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "domestic-current-balance-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "domestic-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "domestic-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "domestic-source-validation-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "domestic"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "foreign-currency-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "foreign-currency-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "foreign-collection-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "foreign-admission-started",
+      "counts": {
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "foreign-admission-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "foreign-current-balance-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "foreign-currency-collection-query-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "foreign-current-balance-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "foreign-currency-collection-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "foreign-currency-source-decoding-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "foreign-currency-source-validation-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3,
+        "statementType": "foreign_currency"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 5,
+        "total": 5
+      }
+    }
+  ]
+}
