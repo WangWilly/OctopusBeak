@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
+import { frameScope } from "./frame-scope.ts";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
@@ -204,9 +205,10 @@ function currencyCodeOf(currency: CathayForeignCurrency): string | undefined {
   return currency.currency ?? currency.currencyCode;
 }
 
-async function openForeignStatementsPage(page: Page): Promise<void> {
-  await page.goto(FOREIGN_STATEMENTS_URL, { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("domcontentloaded");
+async function openForeignStatementsPage(page: Page, signal: AbortSignal): Promise<void> {
+  const scope = frameScope(page, signal);
+  await scope.withSignal((signal) => page.goto(FOREIGN_STATEMENTS_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) => page.waitForLoadState("domcontentloaded", { signal }));
 }
 
 function functionSeqNo(): string {
@@ -551,15 +553,16 @@ export async function collectCathayForeignFinancialCaptures(
   currencyFilters: string[],
   cathaySession: CathaySession,
   options: Readonly<{
-    source?: CathayStrictSourceOptions;
+    source: CathayStrictSourceOptions;
     observedAt?: () => string;
     captureOccurrenceId?: string;
     client?: CathayForeignStatementsClient;
     preparePage?: (page: Page) => Promise<void>;
   }>,
 ): Promise<CathayForeignFinancialCollection> {
-  options.source?.signal?.throwIfAborted();
-  await (options.preparePage ?? openForeignStatementsPage)(page);
+  const { signal } = options.source;
+  signal.throwIfAborted();
+  await (options.preparePage ?? ((page) => openForeignStatementsPage(page, signal)))(page);
   const apiClient =
     options.client ?? new CathayForeignApiClient(page, options.source);
   const accounts = await apiClient.fetchForeignAccounts(
@@ -575,7 +578,7 @@ export async function collectCathayForeignFinancialCaptures(
   let selectedStatementCount = 0;
   let rowCount = 0;
   for (const account of accounts) {
-    options.source?.signal?.throwIfAborted();
+    signal.throwIfAborted();
     const currencies = (account.currencyList ?? [])
       .map(currencyCodeOf)
       .filter((currency): currency is string => Boolean(currency));
@@ -610,7 +613,7 @@ export async function collectCathayForeignFinancialCaptures(
       );
     }
     for (const currency of currencies) {
-      options.source?.signal?.throwIfAborted();
+      signal.throwIfAborted();
       const statement = statementsByCurrency.get(cleanText(currency));
       if (!statement) {
         throw new Error(

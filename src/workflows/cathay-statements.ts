@@ -18,6 +18,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope } from "./frame-scope.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
@@ -27,9 +28,10 @@ export type CathayCredentials = {
   cathay_password?: string;
 };
 
+/** A run's source options; every signed-in read yields to its signal. */
 export type CathayStrictSourceOptions = Readonly<{
   text: SourceTextPort;
-  signal?: AbortSignal;
+  signal: AbortSignal;
 }>;
 
 const dateRangeSchema = z.enum([
@@ -1056,9 +1058,10 @@ export async function fetchCathayApiSourceText(
   body: unknown,
   strictSource: CathayStrictSourceOptions,
 ): Promise<string> {
-  strictSource.signal?.throwIfAborted();
+  strictSource.signal.throwIfAborted();
+  const scope = frameScope(page, strictSource.signal);
   const expectedPostData = JSON.stringify(body);
-  const responsePromise = page.waitForResponse(
+  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
     (response) => {
       const request = response.request();
       try {
@@ -1073,8 +1076,8 @@ export async function fetchCathayApiSourceText(
         return false;
       }
     },
-    { timeout: 60_000 },
-  );
+    { timeout: 60_000, signal },
+  ));
   const statusPromise = page.evaluate(
     async ({ path, token, body }) => {
       const response = await fetch(path, {
@@ -1092,17 +1095,16 @@ export async function fetchCathayApiSourceText(
     { path, token, body },
   );
   const [browserStatus, response] = await Promise.all([
-    withAbort(statusPromise, strictSource.signal),
-    withAbort(responsePromise, strictSource.signal),
+    scope.race(statusPromise),
+    responsePromise,
   ]);
-  strictSource.signal?.throwIfAborted();
   if (browserStatus !== response.status()) {
     throw new Error(
       "Cathay browser and captured response status did not match.",
     );
   }
-  const metadata = await cathayResponseMetadata(response);
-  const bytes = await withAbort(response.body(), strictSource.signal);
+  const metadata = await scope.race(cathayResponseMetadata(response));
+  const bytes = await scope.race(response.body());
   return decodeCathayApiSourceResponse(
     metadata,
     path,
@@ -1116,8 +1118,9 @@ async function fetchCathaySessionSourceText(
   strictSource: CathayStrictSourceOptions,
 ): Promise<string> {
   const path = "/MyBank/Customized/GetJWT";
-  strictSource.signal?.throwIfAborted();
-  const responsePromise = page.waitForResponse(
+  strictSource.signal.throwIfAborted();
+  const scope = frameScope(page, strictSource.signal);
+  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
     (response) => {
       try {
         const url = new URL(response.url());
@@ -1130,8 +1133,8 @@ async function fetchCathaySessionSourceText(
         return false;
       }
     },
-    { timeout: 60_000 },
-  );
+    { timeout: 60_000, signal },
+  ));
   const statusPromise = page.evaluate(async () => {
     const response = await fetch("/MyBank/Customized/GetJWT", {
       method: "POST",
@@ -1141,15 +1144,14 @@ async function fetchCathaySessionSourceText(
     return response.status;
   });
   const [browserStatus, response] = await Promise.all([
-    withAbort(statusPromise, strictSource.signal),
-    withAbort(responsePromise, strictSource.signal),
+    scope.race(statusPromise),
+    responsePromise,
   ]);
-  strictSource.signal?.throwIfAborted();
   if (browserStatus !== response.status()) {
     throw new Error("Cathay session response status did not match.");
   }
-  const metadata = await cathayResponseMetadata(response);
-  const bytes = await withAbort(response.body(), strictSource.signal);
+  const metadata = await scope.race(cathayResponseMetadata(response));
+  const bytes = await scope.race(response.body());
   return decodeCathayApiSourceResponse(
     metadata,
     path,
@@ -1206,7 +1208,7 @@ export async function collectCathayDomesticFinancialRequests(
     client?: CathayDomesticStatementsClient;
   }>,
 ): Promise<CathayDomesticFinancialCollection> {
-  options.source?.signal?.throwIfAborted();
+  options.source?.signal.throwIfAborted();
   const client = options.client ?? new CathayApiClient(page, options.source);
   const accounts = await withAbort(
     client.fetchDomesticAccounts(cathaySession, accountFilters),
@@ -1226,7 +1228,7 @@ export async function collectCathayDomesticFinancialRequests(
   const stagedPages: CathayStagedCapturePage[] = [];
   const stagedStatements: CathayTransferResult[] = [];
   for (const account of accounts) {
-    options.source?.signal?.throwIfAborted();
+    options.source?.signal.throwIfAborted();
     const rawResponse = await withAbort(
       client.fetchTransferDetailsRaw(
         cathaySession,

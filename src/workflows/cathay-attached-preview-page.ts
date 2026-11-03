@@ -133,9 +133,6 @@ async function captured(
   return { endpoint, status: metadata.status, text, date };
 }
 
-/** The Cathay source options of a run, whose signal every attached read yields to. */
-export type CathayRunSource = CathayStrictSourceOptions & Readonly<{ signal: AbortSignal }>;
-
 /**
  * The attached collectors' view of the signed-in Cathay page. Card bills go
  * through the same JWT POST and strict response check as the verified
@@ -145,7 +142,7 @@ export type CathayRunSource = CathayStrictSourceOptions & Readonly<{ signal: Abo
 export function playwrightCathayAttachedPreviewPort(
   page: Page,
   session: () => CathaySession,
-  source: CathayRunSource,
+  source: CathayStrictSourceOptions,
 ): CathayAttachedPreviewPort {
   const scope = frameScope(page, source.signal);
   // An optional wait that times out or fails leaves the read to decide; a cancellation still stops it.

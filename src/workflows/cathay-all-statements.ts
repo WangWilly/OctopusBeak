@@ -37,7 +37,7 @@ import {
   cathayAttachedPreviewCollectors,
   type CathayAttachedPreviewPort,
 } from "./cathay-attached-preview.ts";
-import { playwrightCathayAttachedPreviewPort, type CathayRunSource } from "./cathay-attached-preview-page.ts";
+import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 import { withAbort } from "./abort.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 
@@ -88,7 +88,7 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
   attachedPreviewPort?: (
     page: Page,
     session: () => CathaySession,
-    source: CathayRunSource,
+    source: CathayStrictSourceOptions,
   ) => CathayAttachedPreviewPort;
 }>;
 
@@ -119,7 +119,7 @@ export async function runCathayAllProviderWorkflow(
   const input = parsed.data;
 
   return await context.browser.withPage(async (page) => {
-    const source: CathayRunSource = {
+    const source: CathayStrictSourceOptions = {
       text: context.text,
       signal: context.signal,
     };
@@ -137,10 +137,7 @@ export async function runCathayAllProviderWorkflow(
     let statementCaptureCount = 0;
     const acquireCurrentBalances = (kind: "domestic" | "foreign") => async () => {
       const capturedAt = context.now();
-      const response = await withAbort(
-        readCathayCurrentDepositBalanceResponse(page, kind),
-        context.signal,
-      );
+      const response = await readCathayCurrentDepositBalanceResponse(page, kind, context.signal);
       return { ...response, observedAt: capturedAt };
     };
 
