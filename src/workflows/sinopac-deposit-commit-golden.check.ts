@@ -230,8 +230,12 @@ test("SinoPac golden: identical rows receive distinct occurrence slots and stay 
         txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER"),
       ),
     }],
+    current: [balanceRow(twdAccount, "TWD", "新台幣", "800")],
   });
-  assert.deepEqual(commands(recorded), ["domestic-deposit:financial.mixed.commit"]);
+  assert.deepEqual(commands(recorded), [
+    "domestic-deposit:financial.mixed.commit",
+    "current-balance:financial.balance.capture",
+  ]);
 });
 
 test("SinoPac: rows sharing a collision fence with distinct descriptions are rejected before commit", async () => {
