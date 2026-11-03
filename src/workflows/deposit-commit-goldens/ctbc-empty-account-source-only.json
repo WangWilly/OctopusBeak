@@ -394,7 +394,7 @@
                 "routeKey": "ctbc/domestic-deposit/current-balance-v1",
                 "contractVersion": "ctbc/current-deposit-balance-v1",
                 "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
-                "observedAt": "2026-09-25T20:00:00+08:00",
+                "observedAt": "2026-09-25T20:00:00.000+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",

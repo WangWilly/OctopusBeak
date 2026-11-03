@@ -27,11 +27,12 @@ import {
   runCtbcProviderWorkflow,
   stageCtbcDeposit,
   type CtbcDepositRunner,
-  type CtbcReadCurrentDepositBalances,
+  type CtbcReadCurrentDepositBalanceResponse,
 } from "../../workflows/ctbc-statements.ts";
+import { ctbcCurrentDepositResponse } from "../../workflows/ctbc-current-deposit-balances.fixtures.ts";
 
 /** The real deposit runner over the synthetic page, with current balances replaced. */
-function withCurrentBalances(readCurrentBalances: CtbcReadCurrentDepositBalances): { collectDeposit: CtbcDepositRunner } {
+function withCurrentBalances(readCurrentBalances: CtbcReadCurrentDepositBalanceResponse): { collectDeposit: CtbcDepositRunner } {
   return {
     collectDeposit: async (page, input, context, product) =>
       await stageCtbcDeposit(
@@ -44,35 +45,10 @@ function withCurrentBalances(readCurrentBalances: CtbcReadCurrentDepositBalances
   };
 }
 
-function currentBalanceRow() {
-  return {
-    source: "ctbc",
-    stream: "domestic-deposit",
-    accountNumber: accountId,
-    sourceAccountKey: accountId,
-    currency: "TWD",
-    ledger: { coefficient: "13155", scale: 0, sourceLexeme: "13,155" },
-    providerFields: {
-      accountId,
-      digiSvType: "",
-      acctType: "01",
-      accountNickName: "",
-      openDt: "20200101",
-      isRelaC: "N",
-    },
-    effectiveAt: "2026-09-09T02:09:43.601Z",
-    providerServerTime: 1788919783601,
-    providerDataTime: "2026/09/09 10:09:43",
-    providerHttpDate: "Wed, 09 Sep 2026 02:09:43 GMT",
-    observedAt: "2026-09-25T12:00:00.000Z",
-    sourceEvidence: {
-      endpoint: "/IB/api/adapters/IB_Adapter/resource/ebmwResource",
-      requestResource: "/twrbc-deposit/qu001/010",
-      status: 200,
-      cacheControl: "no-cache, no-store, must-revalidate",
-      contractVersion: "ctbc/current-deposit-balance-v1",
-    },
-  } as const;
+const serverTime = Date.parse("2026-09-09T02:09:43.601Z");
+
+function currentBalanceResponse(account = accountId) {
+  return ctbcCurrentDepositResponse([{ accountId: account, balance: "13,155" }], serverTime);
 }
 
 const accountId = ["0000", "3145", "4055", "4100"].join("");
@@ -284,13 +260,13 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
       const harness = createContext({ page: createPage({ precedingEmptyRange: index === 2, detailResponse: response(detailsResource, {
         code: "0000", rsData: { detailList: rows, nextKey: "" },
       }) }), financialCommit: commit });
-      const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => [currentBalanceRow()]));
+      const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => currentBalanceResponse()));
       assert.equal(result.status, "financial-admitted");
     }
     const conflicting = createContext({ page: createPage({ detailResponse: response(detailsResource, {
       code: "0000", rsData: { detailList: [{ ...original, memo1: "Changed provider claim" }], nextKey: "" },
     }) }), financialCommit: commit });
-    const conflicted = await runCtbcProviderWorkflow(conflicting.context, input, withCurrentBalances(async () => [currentBalanceRow()]));
+    const conflicted = await runCtbcProviderWorkflow(conflicting.context, input, withCurrentBalances(async () => currentBalanceResponse()));
     assert.equal(conflicted.status, "partial");
     assert.deepEqual(conflicted.products, [
       { typeId: "deposit", status: "failed", itemCount: 2, committedCount: 1, errorCode: "canonical-commit-failed" },
@@ -316,7 +292,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
     const harness = createContext();
     const result = await runCtbcProviderWorkflow(harness.context, input, withCurrentBalances(async () => {
       assert.equal(harness.committed.length, 0, "all sources are collected before commit");
-      return [currentBalanceRow()];
+      return currentBalanceResponse();
     }));
 
     assert.deepEqual(result, {
@@ -379,14 +355,14 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
       body: async () => Buffer.from([0xc3, 0x28]),
     } as Response }),
   });
-  await assert.rejects(runCtbcProviderWorkflow(malformed.context, input, withCurrentBalances(async () => [])),
+  await assert.rejects(runCtbcProviderWorkflow(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
     (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.committed.length, 0);
   assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ expectedRanges: 2 }) });
-  await assert.rejects(runCtbcProviderWorkflow(incomplete.context, input, withCurrentBalances(async () => [])),
+  await assert.rejects(runCtbcProviderWorkflow(incomplete.context, input, withCurrentBalances(async () => currentBalanceResponse())),
     (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-validation-failed"
     && /source admission blocked/u.test(String((error as { cause?: unknown }).cause)));
@@ -399,7 +375,7 @@ test("CTBC current-balance failures keep their thrown error and its failure code
   const otherAccountId = ["0000", "3145", "4055", "4200"].join("");
   const cases: readonly Readonly<{
     name: string;
-    read: CtbcReadCurrentDepositBalances;
+    read: CtbcReadCurrentDepositBalanceResponse;
     errorCode: string;
     /** A failure that ends the run carries no cause, so only its code is checked. */
     cause?: (cause: unknown) => boolean;
@@ -417,12 +393,7 @@ test("CTBC current-balance failures keep their thrown error and its failure code
     },
     {
       name: "a balance row with no admitted account",
-      read: async () => [{
-        ...currentBalanceRow(),
-        accountNumber: otherAccountId,
-        sourceAccountKey: otherAccountId,
-        providerFields: { ...currentBalanceRow().providerFields, accountId: otherAccountId },
-      }],
+      read: async () => currentBalanceResponse(otherAccountId),
       errorCode: "source-validation-failed",
       cause: (cause) => /no admitted account identity/u.test(String(cause)),
     },
@@ -477,7 +448,7 @@ for (const { stop, errorCode } of STOPPED_COMMITS) {
     await assert.rejects(runCtbcProviderWorkflow(
       harness.context,
       input,
-      withCurrentBalances(async () => [currentBalanceRow()]),
+      withCurrentBalances(async () => currentBalanceResponse()),
     ), assertStoppedRun("deposit", 2, errorCode));
   });
 }

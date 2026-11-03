@@ -2,9 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -22,13 +20,12 @@ import {
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
-  readCtbcCurrentDepositBalances,
+  parseCtbcCurrentDepositBalanceSnapshot,
+  readCtbcCurrentDepositBalanceResponse,
   type CtbcCurrentDepositBalanceRow,
+  type CtbcCurrentDepositResponse,
 } from "./ctbc-current-deposit-balances.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -49,8 +46,9 @@ import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
-  indexCurrentBalanceCaptures,
+  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
+  type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
@@ -89,7 +87,10 @@ export type CtbcDepositRunner = (
   product: ProductCollectionHandle,
 ) => Promise<ProductCollectionSummary>;
 
-export type CtbcReadCurrentDepositBalances = () => Promise<readonly CtbcCurrentDepositBalanceRow[]>;
+/** Observe the current-summary response; the snapshot module decodes and parses it. */
+export type CtbcReadCurrentDepositBalanceResponse = () => Promise<CtbcCurrentDepositResponse>;
+
+type CtbcCurrentDepositAcquired = CtbcCurrentDepositResponse & Readonly<{ observedAt: string }>;
 
 type CtbcResourceResponse<T> = {
   code?: string;
@@ -1063,39 +1064,20 @@ export const ctbcCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
   },
 };
 
-async function readCtbcCurrentDepositBalancesFromPage(
-  page: Page,
-  context: WorkflowContext,
-): Promise<readonly CtbcCurrentDepositBalanceRow[]> {
-  const responses: Response[] = [];
-  const listener = (candidate: Response) => {
-    const request = candidate.request();
-    if (request.method() !== "POST" || !candidate.url().startsWith(
-      `https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
-    )) return;
-    try {
-      const body = JSON.parse(request.postData() ?? "") as { resource?: unknown };
-      if (body.resource === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE)
-        responses.push(candidate);
-    } catch {
-      // The established reader validates the request and reports a safe error.
-    }
-  };
-
-  page.on("response", listener);
-  try {
-    const rows = await withAbort(readCtbcCurrentDepositBalances(page, {
-      observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
-      decode: (bytes) => decodeCtbcSourceJson(bytes, context.text),
-    }), context.signal);
-    context.signal.throwIfAborted();
-    if (responses.length !== 1)
-      throw new Error("CTBC current balance source response was missing or ambiguous.");
-    return rows;
-  } finally {
-    page.off("response", listener);
-  }
-}
+const ctbcCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  CtbcCurrentDepositAcquired,
+  CtbcCurrentDepositBalanceRow,
+  ExistingCtbcFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => parseCtbcCurrentDepositBalanceSnapshot({
+    payload: decoded.value,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: ctbcCurrentBalanceCaptureMatching,
+  build: buildCtbcCurrentDepositBalanceCapture,
+};
 
 /**
  * Build and stage domestic-deposit items from a read snapshot. Source admission
@@ -1107,7 +1089,7 @@ export async function stageCtbcDeposit(
   _input: CtbcStatementsInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  readCurrentBalances: CtbcReadCurrentDepositBalances,
+  readCurrentBalanceResponse: CtbcReadCurrentDepositBalanceResponse,
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
   if (snapshot.captures.length === 0 ||
@@ -1192,60 +1174,18 @@ export async function stageCtbcDeposit(
     total: validatedCaptures.length,
   });
   context.signal.throwIfAborted();
-  const balances: ProductStageRequest[] = [];
-  if (financialCaptures.length > 0) {
-    await product.event("collection", "started", "current-balance-collection-started");
-    await product.event("decoding", "started", "current-balance-decoding-started");
-    let currentRows: readonly CtbcCurrentDepositBalanceRow[];
-    try {
-      currentRows = await readCurrentBalances();
-    } catch (error) {
-      await product.event("decoding", "failed", "current-balance-decoding-failed");
-      await product.event("collection", "failed", "current-balance-collection-failed");
-      throw error;
-    }
-    await product.event("decoding", "completed", "current-balance-decoding-completed");
-    await product.event("collection", "completed", "current-balance-collection-completed", {
-      completed: currentRows.length,
-      total: currentRows.length,
-    });
-    const admittedCaptures = indexCurrentBalanceCaptures(
-      financialCaptures,
-      ctbcCurrentBalanceCaptureMatching,
-    );
-    await product.event("validation", "started", "current-balance-validation-started", {
-      completed: 0,
-      total: currentRows.length,
-    });
-    try {
-      const { matched } = admittedCaptures.match(currentRows);
-      for (const { row, capture: matching } of matched) {
-        context.signal.throwIfAborted();
-        balances.push({
-          product: "current-balance",
-          itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(
-              buildCtbcCurrentDepositBalanceCapture(row, matching),
-            )),
-          },
-        });
-      }
-    } catch (error) {
-      await product.event("validation", "failed", "current-balance-validation-rejected", {
-        completed: 0,
-        total: currentRows.length,
-      });
-      throw error;
-    }
-    await product.event("validation", "completed", "current-balance-validation-completed", {
-      completed: balances.length,
-      total: currentRows.length,
-    });
-  }
+  const balances = await captureCurrentStateSnapshots(ctbcCurrentBalanceSnapshot, {
+    captures: financialCaptures,
+    acquire: async () => ({
+      ...(await readCurrentBalanceResponse()),
+      observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
+    }),
+    product,
+    text: context.text,
+    signal: context.signal,
+  });
 
-  product.stage(...items, ...balances);
+  product.stage(...items, ...balances.items);
   return {
     sourceCaptureCount: validatedCaptures.length,
     rowCount: snapshot.output.rowCount,
@@ -1260,7 +1200,7 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
     input,
     context,
     product,
-    () => readCtbcCurrentDepositBalancesFromPage(page, context),
+    () => withAbort(readCtbcCurrentDepositBalanceResponse(page), context.signal),
   );
 };
 

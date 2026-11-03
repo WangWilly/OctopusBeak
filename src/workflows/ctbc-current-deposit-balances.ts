@@ -1,4 +1,6 @@
 import type { Page, Response } from "playwright";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /**
  * CTBC renders the summary shell first and fills it with this authenticated
@@ -213,22 +215,20 @@ function requireResponse(
   };
 }
 
+const CTBC_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "reject",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
 function parseExactDecimal(value: unknown, label: string): CtbcCurrentDepositExactDecimal {
   if (typeof value !== "string")
     throw new Error(`CTBC current deposit ${label} must be a string.`);
   const sourceLexeme = cleanText(value);
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(sourceLexeme);
-  if (!match)
+  const amount = parseProviderDecimal(sourceLexeme, CTBC_AMOUNT);
+  if (!amount)
     throw new Error(`CTBC current deposit ${label} is not an exact decimal.`);
-  const sign = match[1] === "-" ? "-" : "";
-  const whole = (match[2] ?? "").replaceAll(",", "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${sign}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  return { ...amount, sourceLexeme };
 }
 
 function validCalendarDate(value: string): boolean {
@@ -492,6 +492,16 @@ function responseMatches(response: Response): boolean {
   }
 }
 
+/** Any summary POST to the endpoint, whatever its query: more than one is ambiguous. */
+function summaryResponseCandidate(response: Response): boolean {
+  const request = response.request();
+  return (
+    request.method() === CTBC_CURRENT_DEPOSIT_BALANCE_METHOD &&
+    response.url().startsWith(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`) &&
+    requestResource(response) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
+  );
+}
+
 function formatResponseDiagnostics(
   diagnostics: readonly CtbcResponseDiagnostic[],
 ): string {
@@ -512,58 +522,59 @@ async function clickExactText(page: Page, text: string, timeoutMs: number): Prom
   await control.click();
 }
 
+/** The summary response CTBC's page triggers, before decoding. */
+export type CtbcCurrentDepositResponse = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  response: CtbcCurrentDepositResponseMetadata;
+}>;
+
 /**
  * Enter CTBC's current-summary page through the normal authenticated menu and
- * passively parse the POST it triggers. The request body is used only for the
- * resource discriminant and is never returned or retained.
+ * passively observe the one POST it triggers. The request body is used only
+ * for the resource discriminant and is never returned beyond the metadata the
+ * parser validates.
  */
-export async function readCtbcCurrentDepositBalances(
+export async function readCtbcCurrentDepositBalanceResponse(
   page: Page,
-  input: Readonly<{
-    observedAt: string;
-    /** Strictly decode the response body; a malformed byte must not reach a row. */
-    decode: (bytes: Uint8Array) => unknown;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly CtbcCurrentDepositBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<CtbcCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
+  const diagnostics: CtbcResponseDiagnostic[] = [];
+  let matching = 0;
+  const listener = (candidate: Response) => {
+    const diagnostic = responseDiagnostic(candidate);
+    if (diagnostic) diagnostics.push(diagnostic);
+    if (summaryResponseCandidate(candidate)) matching += 1;
+  };
+  page.on("response", listener);
   try {
-    const diagnostics: CtbcResponseDiagnostic[] = [];
-    const diagnosticListener = (candidate: Response) => {
-      const diagnostic = responseDiagnostic(candidate);
-      if (diagnostic) diagnostics.push(diagnostic);
+    const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
+    await clickExactText(page, "臺幣/轉帳", timeoutMs);
+    await clickExactText(page, "臺幣存款概要", timeoutMs);
+    await page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs });
+    const response = await responsePromise;
+    const bytes = await response.body();
+    const headers = await response.allHeaders();
+    if (matching !== 1)
+      throw new Error("CTBC current balance source response was missing or ambiguous.");
+    return {
+      evidence: { kind: "json", bytes },
+      response: {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        headers,
+        requestPostData: response.request().postData(),
+      },
     };
-    page.on("response", diagnosticListener);
-    try {
-      const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
-      await clickExactText(page, "臺幣/轉帳", timeoutMs);
-      await clickExactText(page, "臺幣存款概要", timeoutMs);
-      await page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs });
-      const response = await responsePromise;
-      const payload = input.decode(await response.body());
-      const headers = await response.allHeaders();
-      return parseCtbcCurrentDepositBalanceSnapshot({
-        payload,
-        response: {
-          url: response.url(),
-          status: response.status(),
-          method: response.request().method(),
-          headers,
-          requestPostData: response.request().postData(),
-        },
-        observedAt: input.observedAt,
-      });
-    } catch (error) {
-      if (diagnostics.length === 0) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `${message} CTBC balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,
-        { cause: error },
-      );
-    } finally {
-      page.off("response", diagnosticListener);
-    }
   } catch (error) {
-    throw error;
+    if (diagnostics.length === 0) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${message} CTBC balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,
+      { cause: error },
+    );
+  } finally {
+    page.off("response", listener);
   }
 }
