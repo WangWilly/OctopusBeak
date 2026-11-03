@@ -1111,14 +1111,20 @@ function sourceValidationError(error: unknown): boolean {
 function selectedCurrentBalanceRows(
   rows: readonly LineBankCurrentDepositBalanceRow[],
   accounts: readonly LineBankAccount[],
-  domesticCaptures: readonly LineBankHumanAttestedV13ValidatedCapture[],
 ): readonly LineBankCurrentDepositBalanceRow[] {
   const selectedAccountKeys = new Set(
     accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
   );
-  const selectedRows = rows.filter((row) =>
+  return rows.filter((row) =>
     selectedAccountKeys.has(linebankAccountKey(row.account)),
   );
+}
+
+function requireCurrentBalanceCoverage(
+  selectedRows: readonly LineBankCurrentDepositBalanceRow[],
+  accounts: readonly LineBankAccount[],
+  domesticCaptures: readonly LineBankHumanAttestedV13ValidatedCapture[],
+): void {
   const selectedTwdAccountKeys = new Set(
     accounts
       .filter((account) => linebankAccountCurrency(account) === "TWD")
@@ -1133,7 +1139,6 @@ function selectedCurrentBalanceRows(
     selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
     [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key)))
     throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
-  return selectedRows;
 }
 
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
@@ -1297,7 +1302,7 @@ export async function runLineBankProviderWorkflow(
         });
         // Admission failures surface as one generic message; decoding and
         // coverage failures keep their own.
-        let balanceRowsParsed = false;
+        let balanceAdmitting = false;
         let balanceItems: readonly ProductStageRequest[];
         try {
           ({ items: balanceItems } = await captureCurrentStateSnapshots({
@@ -1312,13 +1317,16 @@ export async function runLineBankProviderWorkflow(
                   observedAt: acquired.observedAt,
                 }),
                 accounts,
-                domesticCaptures,
               );
-              balanceRowsParsed = true;
+              balanceAdmitting = true;
               return rows;
             },
             matching: linebankCurrentBalanceCaptureMatching,
             build: buildLinebankCurrentDepositBalanceCapture,
+            validate: ({ rows }) => {
+              balanceAdmitting = false;
+              requireCurrentBalanceCoverage(rows, accounts, domesticCaptures);
+            },
           }, {
             captures: domesticCaptures.map((capture) => ({
               accountKey: capture.accountKey,
@@ -1332,7 +1340,7 @@ export async function runLineBankProviderWorkflow(
             signal: context.signal,
           }));
         } catch (error) {
-          if (!balanceRowsParsed) throw error;
+          if (!balanceAdmitting) throw error;
           throw new Error("LINE Bank current balance source admission was rejected.");
         }
         product.stage(...statementItems, ...balanceItems);

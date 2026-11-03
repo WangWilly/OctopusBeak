@@ -17,7 +17,7 @@ import {
   stageHncbDeposit,
   type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
@@ -296,7 +296,7 @@ assert.throws(
     ),
   /cannot resolve blank currency/u,
 );
-const indexed = matchCurrentBalanceCaptures([{ accountNumber: overviewAccountB }], [
+const indexed = indexCurrentBalanceCaptures([
   {
     identity: {
       sourceConnectionKey: "same-connection",
@@ -307,7 +307,7 @@ const indexed = matchCurrentBalanceCaptures([{ accountNumber: overviewAccountB }
       currency: "TWD",
     },
   },
-], hncbCurrentBalanceCaptureMatching);
+], hncbCurrentBalanceCaptureMatching).match([{ accountNumber: overviewAccountB }]);
 assert.equal(indexed.matched[0]?.capture.identity.currency, "TWD");
 assert.throws(
   () => parseStatementExport("x".repeat(16 * 1024 * 1024 + 1), "fallback"),

@@ -14,7 +14,7 @@ import {
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00.123+08:00";
@@ -452,19 +452,17 @@ test("Post current balances fail closed when captures span more than one connect
     { identityEpochKey: "post-user-other-epoch" },
   ])
     assert.throws(
-      () => matchCurrentBalanceCaptures(
-        [row],
+      () => indexCurrentBalanceCaptures(
         [financialCapture, { identity: { ...financialCapture.identity, ...otherScope, ...otherAccount } }],
         postCurrentBalanceCaptureMatching,
-      ),
+      ).match([row]),
       /^Error: Post current deposit captures span more than one source connection or identity epoch\.$/u,
     );
   assert.deepEqual(
-    matchCurrentBalanceCaptures(
-      [row],
+    indexCurrentBalanceCaptures(
       [financialCapture, { identity: { ...financialCapture.identity, ...otherAccount } }],
       postCurrentBalanceCaptureMatching,
-    ).matched.map(({ capture }) => capture.identity.sourceAccountKey),
+    ).match([row]).matched.map(({ capture }) => capture.identity.sourceAccountKey),
     ["post-other-account"],
     "captures in the run's one scope still match by their own key",
   );

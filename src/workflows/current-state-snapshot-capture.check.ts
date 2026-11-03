@@ -11,9 +11,9 @@ import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/so
 import {
   captureCurrentStateSnapshots,
   indexCurrentBalanceCaptures,
-  matchCurrentBalanceCaptures,
   readCurrentStateSnapshot,
   stageCurrentStateSnapshot,
+  type CurrentBalanceCaptureMatch,
   type CurrentBalanceCaptureMatching,
   type CurrentBalanceUnmatchedPolicy,
   type CurrentStateSnapshotDeclaration,
@@ -51,7 +51,7 @@ function matching(
   };
 }
 
-function ids(result: ReturnType<typeof matchCurrentBalanceCaptures<Row, Capture>>) {
+function ids(result: CurrentBalanceCaptureMatch<Row, Capture>) {
   return result.matched.map(({ row, capture }) => [row.account, row.currency, capture.id]);
 }
 
@@ -80,13 +80,12 @@ test("each key kind matches rows to the capture with that key, in row order", ()
     ],
   ];
   for (const [name, declaration, rows, expected] of keys)
-    assert.deepEqual(ids(matchCurrentBalanceCaptures(rows, captures, declaration)), expected, name);
+    assert.deepEqual(ids(indexCurrentBalanceCaptures(captures, declaration).match(rows)), expected, name);
   assert.throws(
-    () => matchCurrentBalanceCaptures(
-      [{ account: "B", currency: "USD" }],
+    () => indexCurrentBalanceCaptures(
       captures,
       matching({ captureKey: (entry) => entry.accountNumber }),
-    ),
+    ).match([{ account: "B", currency: "USD" }]),
     /^Error: unmatched$/u,
     "a capture without the key field is never matched",
   );
@@ -105,7 +104,7 @@ test("each unmatched policy decides what happens to a row with no admitted captu
     [{ kind: "throw", message: "no admitted identity" }, /^Error: no admitted identity$/u],
   ];
   for (const [policy, expected] of policies) {
-    const run = () => matchCurrentBalanceCaptures(rows, captures, matching({ unmatched: policy }));
+    const run = () => indexCurrentBalanceCaptures(captures, matching({ unmatched: policy })).match(rows);
     if (expected instanceof RegExp) {
       assert.throws(run, expected, policy.kind);
       continue;
@@ -131,12 +130,12 @@ test("a skip policy can throw when the row's account was admitted under another 
   });
   const captures = [capture("a", { account: "A", currency: "TWD" })];
   assert.deepEqual(
-    ids(matchCurrentBalanceCaptures([{ account: "B", currency: "USD" }], captures, declaration)),
+    ids(indexCurrentBalanceCaptures(captures, declaration).match([{ account: "B", currency: "USD" }])),
     [],
     "an account the run never admitted is skipped",
   );
   assert.throws(
-    () => matchCurrentBalanceCaptures([{ account: "A", currency: "USD" }], captures, declaration),
+    () => indexCurrentBalanceCaptures(captures, declaration).match([{ account: "A", currency: "USD" }]),
     /^Error: currency mismatch$/u,
   );
 });
@@ -144,9 +143,9 @@ test("a skip policy can throw when the row's account was admitted under another 
 test("duplicates keep the first or the last capture under one key", () => {
   const captures = [capture("first"), capture("last")];
   const row: Row = { account: "A", currency: "TWD" };
-  assert.deepEqual(ids(matchCurrentBalanceCaptures([row], captures, matching())), [["A", "TWD", "first"]]);
+  assert.deepEqual(ids(indexCurrentBalanceCaptures(captures, matching()).match([row])), [["A", "TWD", "first"]]);
   assert.deepEqual(
-    ids(matchCurrentBalanceCaptures([row], captures, matching({ duplicates: "last-wins" }))),
+    ids(indexCurrentBalanceCaptures(captures, matching({ duplicates: "last-wins" })).match([row])),
     [["A", "TWD", "last"]],
   );
 });
@@ -154,16 +153,15 @@ test("duplicates keep the first or the last capture under one key", () => {
 test("captures sharing a key with differing identity are ambiguous before any row matches", () => {
   for (const duplicates of ["first-wins", "last-wins"] as const)
     assert.throws(
-      () => matchCurrentBalanceCaptures([], [capture("a"), capture("b", { epoch: "e2" })], matching({ duplicates })),
+      () => indexCurrentBalanceCaptures([capture("a"), capture("b", { epoch: "e2" })], matching({ duplicates })).match([]),
       /^Error: ambiguous$/u,
       duplicates,
     );
   assert.throws(
-    () => matchCurrentBalanceCaptures(
-      [],
+    () => indexCurrentBalanceCaptures(
       [capture("a"), capture("b", { account: "B" }), capture("c", { epoch: "e2" })],
       matching({ duplicates: "last-wins" }),
-    ),
+    ).match([]),
     /^Error: ambiguous$/u,
     "last-wins compares with the capture it kept",
   );
@@ -192,16 +190,15 @@ test("two connections in one run", () => {
     "two identity epochs are also more than one scope",
   );
   assert.deepEqual(
-    ids(matchCurrentBalanceCaptures(rows, captures, matching())),
+    ids(indexCurrentBalanceCaptures(captures, matching()).match(rows)),
     [["B", "TWD", "two"]],
     "a bank whose key is its own identity matches each capture by that key",
   );
   assert.throws(
-    () => matchCurrentBalanceCaptures(
-      [],
+    () => indexCurrentBalanceCaptures(
       [capture("one", { connection: "c1" }), capture("two", { connection: "c2" })],
       matching(),
-    ),
+    ).match([]),
     /^Error: ambiguous$/u,
     "one key across two connections is ambiguous",
   );
@@ -210,11 +207,10 @@ test("two connections in one run", () => {
     rowKey: (row) => `c2\u0000${row.account}`,
   });
   assert.deepEqual(
-    ids(matchCurrentBalanceCaptures(
-      [{ account: "A", currency: "TWD" }],
+    ids(indexCurrentBalanceCaptures(
       [capture("one", { connection: "c1" }), capture("two", { connection: "c2" })],
       scoped,
-    )),
+    ).match([{ account: "A", currency: "TWD" }])),
     [["A", "TWD", "two"]],
     "a key that names the connection keeps two connections apart",
   );
@@ -473,6 +469,31 @@ test("an unmatched row fails validation under a throw policy", async () => {
   const result = await snapshot(declaration(), [capture("a")], json([{ account: "Z", currencies: ["TWD"], amount: "1" }]));
   await assert.rejects(result.run, /^Error: unmatched$/u);
   assert.equal(result.events.at(-1), "validation failed current-balance-validation-rejected 0/1");
+});
+
+test("a validate throw rejects validation after matching and stages nothing", async () => {
+  const seen: unknown[] = [];
+  const result = await snapshot(
+    {
+      ...declaration("domestic-deposit", { kind: "exclude" }),
+      validate: ({ rows, matched, excluded }) => {
+        seen.push([rows.length, matched.map(({ capture }) => capture.id), excluded.map((row) => row.account)]);
+        throw new Error("incomplete");
+      },
+    },
+    [capture("a", { account: "A" })],
+    json([
+      { account: "A", currencies: ["TWD"], amount: "1" },
+      { account: "Z", currencies: ["TWD"], amount: "2" },
+    ]),
+  );
+  await assert.rejects(result.run, /^Error: incomplete$/u);
+  assert.deepEqual(seen, [[2, ["a"], ["Z"]]]);
+  assert.deepEqual(result.events.slice(-2), [
+    "validation started current-balance-validation-started 0/2",
+    "validation failed current-balance-validation-rejected 0/2",
+  ]);
+  assert.ok(!result.events.some((event) => event.includes("validation-completed")));
 });
 
 test("the read and stage halves report their own events and stage what the read returned", async () => {

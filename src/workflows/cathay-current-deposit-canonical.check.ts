@@ -25,7 +25,7 @@ import {
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import {
   cathayDomesticOverviewBody,
   cathayForeignOverviewBody,
@@ -238,10 +238,15 @@ type StagedBalance = Readonly<{
   );
   assert.equal(events.at(-1), "current-balance-validation-completed completed");
 }
-await assert.rejects(
-  domesticBalances([admittedStatement]),
-  /^Error: Cathay domestic current balance source omitted a selected account\.$/u,
-);
+{
+  const events: string[] = [];
+  await assert.rejects(
+    domesticBalances([admittedStatement], domesticOverview, events),
+    /^Error: Cathay domestic current balance source omitted a selected account\.$/u,
+  );
+  assert.equal(events.at(-1), "current-balance-validation-rejected failed", "an incomplete overview rejects validation");
+  assert.ok(!events.includes("current-balance-validation-completed completed"));
+}
 await assert.rejects(
   domesticBalances([
     admittedForRows,
@@ -315,11 +320,10 @@ await assert.rejects(
   };
   const lastIdentity = { ...identity, subjectDigest: "sha256:cathay-subject-last" };
   assert.deepEqual(
-    matchCurrentBalanceCaptures(
-      [{ sourceAccountKey: foreignAccount }],
+    indexCurrentBalanceCaptures(
       [identity, lastIdentity],
       cathayForeignCurrentBalanceCaptureMatching,
-    ).matched.map(({ capture }) => capture),
+    ).match([{ sourceAccountKey: foreignAccount }]).matched.map(({ capture }) => capture),
     [lastIdentity],
     "the last admitted identity for an account wins without an ambiguity check",
   );

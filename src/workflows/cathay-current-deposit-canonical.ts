@@ -354,19 +354,19 @@ function buildDomesticCapture(
 export async function captureCathayDomesticCurrentBalances(
   input: CathayCurrentDepositSnapshotInput<CathayDomesticAdmittedRequest>,
 ): Promise<readonly ProductStageRequest[]> {
-  const { items, matched } = await captureCurrentStateSnapshots(
+  const { items } = await captureCurrentStateSnapshots(
     {
       product: "domestic-current-balance",
       parse: (decoded, acquired) => parseOverview("domestic", decoded, acquired),
       matching: cathayDomesticCurrentBalanceCaptureMatching,
       build: buildDomesticCapture,
+      validate: ({ matched }) => requireEveryAdmittedAccount(
+        input.admitted.map((request) => request.account.sourceAccountKey),
+        matched,
+        "Cathay domestic current balance source omitted a selected account.",
+      ),
     },
     { ...input, captures: input.admitted },
-  );
-  requireEveryAdmittedAccount(
-    input.admitted.map((request) => request.account.sourceAccountKey),
-    matched,
-    "Cathay domestic current balance source omitted a selected account.",
   );
   return items;
 }
@@ -426,7 +426,7 @@ export async function captureCathayForeignCurrentBalances(
       subjectDigest: identity.subjectDigest,
     };
   });
-  const { items, matched } = await captureCurrentStateSnapshots(
+  const { items } = await captureCurrentStateSnapshots(
     {
       product: "foreign-current-balance",
       parse: (decoded, acquired) => groupForeignAccounts(parseOverview("foreign", decoded, acquired)),
@@ -438,16 +438,18 @@ export async function captureCathayForeignCurrentBalances(
         observedAt: account.rows[0]!.observedAt,
         scopeDate: account.rows[0]!.observedAt.slice(0, 10),
       })),
+      validate: ({ matched }) => {
+        if (matched.length === 0) {
+          throw new Error("Cathay current foreign balance response did not contain an admitted account.");
+        }
+        requireEveryAdmittedAccount(
+          identities.map(({ accountNo }) => accountNo),
+          matched,
+          "Cathay current foreign balance response omitted an admitted account.",
+        );
+      },
     },
     { ...input, captures: identities },
-  );
-  if (matched.length === 0) {
-    throw new Error("Cathay current foreign balance response did not contain an admitted account.");
-  }
-  requireEveryAdmittedAccount(
-    identities.map(({ accountNo }) => accountNo),
-    matched,
-    "Cathay current foreign balance response omitted an admitted account.",
   );
   return items;
 }

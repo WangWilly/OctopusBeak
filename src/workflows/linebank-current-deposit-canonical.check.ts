@@ -10,7 +10,7 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 
@@ -77,11 +77,10 @@ assert.equal(capture.records[0]?.compact.balanceKind, "available");
 assert.equal(capture.pages[0]?.metadata?.featureTypeCode, "01");
 
 const laterCapture = { ...financialCapture, observedAt: "2026-09-09T10:05:05.000Z" };
-const batch = matchCurrentBalanceCaptures(
-  [row],
+const batch = indexCurrentBalanceCaptures(
   [financialCapture, laterCapture],
   linebankCurrentBalanceCaptureMatching,
-);
+).match([row]);
 assert.deepEqual(
   batch.matched.map(({ capture }) => capture),
   [laterCapture],
@@ -92,11 +91,10 @@ assert.equal(
   row.sourceAccountKey,
 );
 assert.throws(
-  () => matchCurrentBalanceCaptures(
-    [row],
+  () => indexCurrentBalanceCaptures(
     [financialCapture, { ...financialCapture, identityEpoch: financialCapture.identityEpoch + 1 }],
     linebankCurrentBalanceCaptureMatching,
-  ),
+  ).match([row]),
   /^Error: LINE Bank current deposit identities are ambiguous\.$/u,
 );
 
@@ -108,7 +106,7 @@ assert.throws(
   /does not match an existing account/u,
 );
 assert.throws(
-  () => matchCurrentBalanceCaptures([row], [], linebankCurrentBalanceCaptureMatching),
+  () => indexCurrentBalanceCaptures([], linebankCurrentBalanceCaptureMatching).match([row]),
   /^Error: LINE Bank current deposit has no admitted financial identity\.$/u,
 );
 

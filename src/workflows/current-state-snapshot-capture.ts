@@ -39,6 +39,11 @@ export type CurrentStateSnapshotStaging<Row, Capture> = Readonly<{
   product: string;
   matching: CurrentBalanceCaptureMatching<Row, Capture>;
   build: (row: Row, capture: Capture) => CurrentDepositBalanceCaptureInput;
+  /**
+   * Check the matched snapshot as a whole, such as that it covers every
+   * admitted account. A throw rejects validation and stages nothing.
+   */
+  validate?: (result: Readonly<{ rows: readonly Row[] }> & CurrentBalanceCaptureMatch<Row, Capture>) => void;
 }>;
 
 /** What a bank declares once per current-balance product. */
@@ -128,8 +133,9 @@ export async function readCurrentStateSnapshot<
 
 /**
  * The stage half: match read rows to the admitted captures, then build,
- * admit, and key each balance, reporting validation. Ambiguous captures throw
- * before validation starts.
+ * admit, and key each balance, and run the declaration's whole-snapshot
+ * check, reporting validation. Ambiguous captures throw before validation
+ * starts.
  */
 export async function stageCurrentStateSnapshot<Row, Capture>(
   declaration: CurrentStateSnapshotStaging<Row, Capture>,
@@ -168,6 +174,7 @@ export async function stageCurrentStateSnapshot<Row, Capture>(
         },
       });
     }
+    declaration.validate?.({ rows, ...match });
   } catch (error) {
     await product.event("validation", "failed", "current-balance-validation-rejected", {
       completed: 0,
@@ -296,15 +303,6 @@ export function indexCurrentBalanceCaptures<Row, Capture>(
       index.set(key, candidate);
   }
   return { match: (rows) => matchIndexedRows(rows, index, matching) };
-}
-
-/** Index the admitted captures and match every row, checking ambiguity first. */
-export function matchCurrentBalanceCaptures<Row, Capture>(
-  rows: readonly Row[],
-  captures: readonly Capture[],
-  matching: CurrentBalanceCaptureMatching<Row, Capture>,
-): CurrentBalanceCaptureMatch<Row, Capture> {
-  return indexCurrentBalanceCaptures(captures, matching).match(rows);
 }
 
 function matchIndexedRows<Row, Matched extends Row, Capture>(
