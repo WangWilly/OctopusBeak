@@ -417,6 +417,21 @@ test("strict decoding rejects malformed bytes, escaped replacement characters, a
   assert.deepEqual((await cells.run).items.map((item) => item.itemKey), ["current-balance:domestic-deposit:A"]);
 });
 
+test("JSON evidence hands the parser the decoded body text with its numeric lexemes", async () => {
+  const body = '[{"account":"A","currencies":["TWD"],"amount":1000.00,"note":"\\u53f0\\u5e63 臺"}]';
+  let seen: string | undefined;
+  const declared = declaration();
+  const result = await snapshot({
+    ...declared,
+    parse: (decoded, raw) => {
+      if (decoded.kind === "json") seen = decoded.text;
+      return declared.parse(decoded, raw).map((row) => ({ ...row, amount: "100000" }));
+    },
+  }, [capture("a")], { evidence: { kind: "json", bytes: new TextEncoder().encode(body) } });
+  await result.run;
+  assert.equal(seen, body);
+});
+
 test("an acquisition or parse failure reports decoding and collection failure", async () => {
   const failing = await snapshot({ ...declaration(), parse: () => { throw new Error("bad row"); } }, [capture("a")], json([]));
   await assert.rejects(failing.run, /^Error: bad row$/u);

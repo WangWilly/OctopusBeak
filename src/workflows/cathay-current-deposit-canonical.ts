@@ -11,10 +11,12 @@ import {
   type CathayCurrentDepositObservation,
   type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
-import { decodeCathayApiSourceResponse } from "./cathay-statements.ts";
+import { requireCathayApiSourceResponse } from "./cathay-statements.ts";
 import {
   captureCurrentStateSnapshots,
+  declaresUtf8,
   type CurrentBalanceCaptureMatching,
+  type DecodedSnapshotEvidence,
 } from "./current-state-snapshot-capture.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -270,25 +272,23 @@ type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
 }>;
 
 /**
- * The module decodes the evidence strictly, but its parsed value has lost the
- * provider's numeric lexemes, which carry each balance's scale. Re-read the
- * same bytes as the Cathay source text and parse that, as statements do.
+ * The module's parsed value has lost the provider's numeric lexemes, which
+ * carry each balance's scale, so the row parser reads its decoded text.
  */
 function parseOverview(
   kind: CathayCurrentDepositKind,
+  decoded: DecodedSnapshotEvidence<CathayCurrentDepositAcquired["evidence"]>,
   acquired: CathayCurrentDepositAcquired,
-  text: SourceTextPort,
 ): readonly CathayCurrentDepositBalanceRow[] {
-  const rawBody = decodeCathayApiSourceResponse(
+  const charset = requireCathayApiSourceResponse(
     acquired.response,
     kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
-    acquired.evidence.bytes,
-    text,
   );
+  if (!declaresUtf8(charset)) throw new Error("Cathay source response charset is not UTF-8.");
   return parseCathayCurrentDepositBalanceSnapshot({
     kind,
     response: acquired.response,
-    rawBody,
+    rawBody: decoded.text,
     observedAt: acquired.observedAt,
     ...(acquired.uiAccountNumbers ? { uiAccountNumbers: acquired.uiAccountNumbers } : {}),
   });
@@ -357,7 +357,7 @@ export async function captureCathayDomesticCurrentBalances(
   const { items, matched } = await captureCurrentStateSnapshots(
     {
       product: "domestic-current-balance",
-      parse: (_decoded, acquired) => parseOverview("domestic", acquired, input.text),
+      parse: (decoded, acquired) => parseOverview("domestic", decoded, acquired),
       matching: cathayDomesticCurrentBalanceCaptureMatching,
       build: buildDomesticCapture,
     },
@@ -429,7 +429,7 @@ export async function captureCathayForeignCurrentBalances(
   const { items, matched } = await captureCurrentStateSnapshots(
     {
       product: "foreign-current-balance",
-      parse: (_decoded, acquired) => groupForeignAccounts(parseOverview("foreign", acquired, input.text)),
+      parse: (decoded, acquired) => groupForeignAccounts(parseOverview("foreign", decoded, acquired)),
       matching: cathayForeignCurrentBalanceCaptureMatching,
       build: (account, identity) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
         sourceConnectionKey: identity.sourceConnectionKey,

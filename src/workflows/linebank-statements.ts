@@ -16,7 +16,7 @@ import {
   buildLinebankCurrentDepositBalanceCapture,
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
-import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { captureCurrentStateSnapshots, declaresUtf8 } from "./current-state-snapshot-capture.ts";
 import {
   parseLinebankApiJson,
   parseLinebankCurrentDepositBalanceSnapshot,
@@ -950,7 +950,6 @@ export class LineBankApiClient {
           method: response.method,
           headers: response.headers,
         },
-        rawBody: response.body,
         observedAt: now(),
       },
     };
@@ -1303,9 +1302,15 @@ export async function runLineBankProviderWorkflow(
         try {
           ({ items: balanceItems } = await captureCurrentStateSnapshots({
             product: "current-balance",
-            parse: (_decoded, acquired) => {
+            parse: (decoded, acquired) => {
+              if (!declaresUtf8(responseCharset(acquired.response.headers)))
+                throw new Error("LINE Bank current deposit response charset is not UTF-8.");
               const rows = selectedCurrentBalanceRows(
-                parseLinebankCurrentDepositBalanceSnapshot(acquired),
+                parseLinebankCurrentDepositBalanceSnapshot({
+                  response: acquired.response,
+                  rawBody: decoded.text,
+                  observedAt: acquired.observedAt,
+                }),
                 accounts,
                 domesticCaptures,
               );

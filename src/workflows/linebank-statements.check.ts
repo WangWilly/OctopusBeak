@@ -124,7 +124,7 @@ const earlySnapshot = await new LineBankApiClient(delayedAccountSnapshotPage as 
   text: strictSourceText,
 }).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z");
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot(earlySnapshot.currentBalance),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ ...earlySnapshot.currentBalance, rawBody: accountSnapshotBody }),
   /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
 );
 

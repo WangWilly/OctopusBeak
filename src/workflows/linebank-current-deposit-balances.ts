@@ -65,12 +65,11 @@ export type LineBankCurrentDepositSnapshotInput = Readonly<{
 }>;
 
 /**
- * The account-list response as the snapshot module receives it. The module
- * strictly decodes `evidence`, but its plain JSON parse rounds numeric
- * `wdrwAvblAmt` tokens, so the row parser reads lexemes from `rawBody`, the
- * same bytes as the statement side decoded them.
+ * The account-list response as the snapshot module receives it. The row
+ * parser reads the module's decoded text, since its plain JSON parse rounds
+ * numeric `wdrwAvblAmt` tokens.
  */
-export type LineBankCurrentDepositAcquired = LineBankCurrentDepositSnapshotInput &
+export type LineBankCurrentDepositAcquired = Omit<LineBankCurrentDepositSnapshotInput, "rawBody"> &
   Readonly<{ evidence: Readonly<{ kind: "json"; bytes: Uint8Array }> }>;
 
 type JsonRecord = Record<string, unknown>;

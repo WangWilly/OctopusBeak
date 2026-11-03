@@ -25,7 +25,12 @@ export type SnapshotEvidence =
 /** The evidence after strict decoding, narrowed to the kind the bank acquires. */
 export type DecodedSnapshotEvidence<Evidence extends SnapshotEvidence = SnapshotEvidence> =
   Evidence extends Readonly<{ kind: "json" }>
-    ? Readonly<{ kind: "json"; value: unknown }>
+    ? Readonly<{
+        kind: "json";
+        value: unknown;
+        /** The strictly decoded UTF-8 body, for parsers that must keep numeric lexemes. */
+        text: string;
+      }>
     : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
 
 /** How a bank stages the rows it read: matching, building, and labeling. */
@@ -191,7 +196,16 @@ function decodeEvidence(evidence: SnapshotEvidence, text: SourceTextPort): Decod
   }
   // JSON may encode U+FFFD as an escape, so check the parsed fields too.
   text.assertIntact(JSON.stringify(value));
-  return { kind: "json", value };
+  return { kind: "json", value, text: decoded };
+}
+
+/** Whether a declared charset label names UTF-8, the charset json evidence decodes as. */
+export function declaresUtf8(charset: string): boolean {
+  try {
+    return new TextDecoder(charset).encoding === "utf-8";
+  } catch {
+    return false;
+  }
 }
 
 /**
