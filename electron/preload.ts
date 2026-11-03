@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   DataViewErrorEvent,
-  DataViewRowsEvent,
+  DataViewValueEvent,
   DataViewSubscribeResult,
   DataViewUnsubscribeResult,
   OctopusBeakApi,
@@ -25,7 +25,7 @@ const DATA_VIEW_CHANNELS = {
   enabled: "data-views:enabled",
   subscribe: "data-views:subscribe",
   unsubscribe: "data-views:unsubscribe",
-  rows: "data-views:rows",
+  value: "data-views:value",
   error: "data-views:error",
 } as const;
 
@@ -54,15 +54,15 @@ function dataViewError(result: { code: string; message: string }): Error {
 
 const dataViews = {
   enabled: () => ipcRenderer.invoke(DATA_VIEW_CHANNELS.enabled),
-  subscribe(view: string, params: object, onRows: (rows: unknown[]) => void, onError?: (error: DataViewErrorEvent) => void) {
+  subscribe(view: string, params: object, onValue: (value: unknown) => void, onError?: (error: DataViewErrorEvent) => void) {
     const requestId = `renderer-view-${nextDataViewRequestId++}`;
     const removeListeners = () => {
-      ipcRenderer.removeListener(DATA_VIEW_CHANNELS.rows, rowsHandler);
+      ipcRenderer.removeListener(DATA_VIEW_CHANNELS.value, valueHandler);
       ipcRenderer.removeListener(DATA_VIEW_CHANNELS.error, errorHandler);
     };
-    const rowsHandler = (_event: Electron.IpcRendererEvent, event: DataViewRowsEvent) => {
+    const valueHandler = (_event: Electron.IpcRendererEvent, event: DataViewValueEvent) => {
       if (event.requestId === requestId) {
-        onRows(event.rows);
+        onValue(event.value);
       }
     };
     const errorHandler = (_event: Electron.IpcRendererEvent, event: DataViewErrorEvent) => {
@@ -71,7 +71,7 @@ const dataViews = {
         onError?.(event);
       }
     };
-    ipcRenderer.on(DATA_VIEW_CHANNELS.rows, rowsHandler);
+    ipcRenderer.on(DATA_VIEW_CHANNELS.value, valueHandler);
     ipcRenderer.on(DATA_VIEW_CHANNELS.error, errorHandler);
     return ipcRenderer.invoke(DATA_VIEW_CHANNELS.subscribe, { requestId, view, params })
       .then((result: DataViewSubscribeResult) => {

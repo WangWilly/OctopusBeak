@@ -15,12 +15,12 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 /** A one-view source over a PGlite live query, standing in for the worker's views. */
 function monthlyTotalSource(db: PGliteWithLive) {
   return {
-    async subscribe(view: string, params: object, onRows: (rows: unknown[]) => void) {
+    async subscribe(view: string, params: object, onValue: (value: unknown) => void) {
       assert.equal(view, "spending.summary");
       const query = await db.live.query<{ amount: number }>(
         "SELECT amount FROM monthly_totals WHERE month = $1",
         [(params as { month: string }).month],
-        (result) => onRows(result.rows),
+        (result) => onValue(result.rows[0]),
       );
       return () => query.unsubscribe();
     },
@@ -35,9 +35,9 @@ try {
   const server = createViewPortServer(channel.port1, monthlyTotalSource(db));
   const client = createViewPortClient(channel.port2);
   const received: number[] = [];
-  const stop = await client.subscribe<{ amount: number }>(
+  const stop = await client.subscribe(
     "spending.summary", { month: "2026-09" },
-    (rows) => received.push(rows[0]?.amount ?? -1),
+    (value) => received.push((value as { amount: number }).amount),
   );
   await waitFor(() => received.at(-1) === 10);
   await db.transaction(async (transaction) => {
@@ -51,7 +51,7 @@ try {
     }),
     /rollback this update/u,
   );
-  assert.equal(received.at(-1), 20, "rolled-back transactions must not publish view rows");
+  assert.equal(received.at(-1), 20, "rolled-back transactions must not publish a view value");
   await stop();
   await db.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [30, "2026-09"]);
   assert.equal(received.at(-1), 20);
@@ -164,8 +164,8 @@ try {
 const stopFailureChannel = new MessageChannel();
 try {
   const server = createViewPortServer(stopFailureChannel.port1, {
-    subscribe: async (_view, _params, onRows) => {
-      onRows([{ ready: true }]);
+    subscribe: async (_view, _params, onValue) => {
+      onValue({ ready: true });
       return async () => { throw new Error("stop failed"); };
     },
   });

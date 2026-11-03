@@ -208,10 +208,10 @@ export type DataViewUnsubscribeResult =
   | { ok: true }
   | { ok: false; code: DataViewErrorCode; message: string };
 
-export type DataViewRowsEvent = {
+export type DataViewValueEvent = {
   requestId: string;
   subscriptionId: string;
-  rows: unknown[];
+  value: unknown;
 };
 
 export type DataViewErrorEvent = {
@@ -227,7 +227,7 @@ export type DataViewsApi = {
   subscribe(
     view: string,
     params: object,
-    onRows: (rows: unknown[]) => void,
+    onValue: (value: unknown) => void,
     onError?: (error: DataViewErrorEvent) => void,
   ): Promise<() => Promise<void>>;
 };

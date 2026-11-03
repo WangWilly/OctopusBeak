@@ -15,7 +15,7 @@ type FinancialViewTransport = {
   subscribe(
     view: string,
     params: object,
-    onRows: (rows: unknown[]) => void,
+    onValue: (value: unknown) => void,
     onError?: (error: unknown) => void,
   ): Promise<() => void | Promise<void>>;
 };
@@ -36,31 +36,11 @@ export type FinancialPageLiveStores = Readonly<{
   }>;
 }>;
 
-/**
- * Adapt named data-view rows into typed page stores.  Each financial live
- * view publishes exactly one complete DTO, so a malformed empty/multi-row
- * response is surfaced as a subscription failure instead of being rendered
- * as a partial page.
- */
+/** Adapt named financial data views into typed page stores. */
 export function createFinancialPageLiveStores(
   transport: FinancialViewTransport,
 ): FinancialPageLiveStores {
-  const views = createViewStores({
-    subscribe(view, params, onValue, onError) {
-      return transport.subscribe(
-        view,
-        params,
-        (rows) => {
-          if (rows.length !== 1) {
-            onError?.(new Error("The financial data view did not return one complete page."));
-            return;
-          }
-          onValue(rows[0]);
-        },
-        onError,
-      );
-    },
-  });
+  const views = createViewStores(transport);
   // The view name decides the DTO type, so a misnamed view or a page type
   // that drifts from its operation's result fails to compile.
   const view = <View extends PGliteFinancialLiveView>(name: View, params: object) =>

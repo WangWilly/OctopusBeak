@@ -4,7 +4,7 @@ import test from "node:test";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   DATA_VIEWS_ERROR_CHANNEL,
-  DATA_VIEWS_ROWS_CHANNEL,
+  DATA_VIEWS_VALUE_CHANNEL,
   DATA_VIEWS_SUBSCRIBE_CHANNEL,
   DATA_VIEWS_UNSUBSCRIBE_CHANNEL,
   registerPGliteViewIpc,
@@ -40,15 +40,15 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
     removeHandler(channel: string) { removed.push(channel); handlers.delete(channel); },
   };
   const stops = new Map<string, number>();
-  const rowListeners = new Map<string, (rows: unknown[]) => void>();
+  const valueListeners = new Map<string, (value: unknown) => void>();
   let workerFailure: ((error: Error) => void) | undefined;
   let workerClosed = false;
   const worker = {
-    async subscribe<Row>(view: string, _params: object, onRows: (rows: Row[]) => void) {
+    async subscribe(view: string, _params: object, onValue: (value: unknown) => void) {
       if (view === "broken") throw new Error("/private/raw/database/path");
       assert.equal(view, "fake.value");
-      const key = `${rowListeners.size + 1}`;
-      rowListeners.set(key, onRows as (rows: unknown[]) => void);
+      const key = `${valueListeners.size + 1}`;
+      valueListeners.set(key, onValue);
       return async () => { stops.set(key, (stops.get(key) ?? 0) + 1); };
     },
     onError(listener: (error: Error) => void) {
@@ -83,8 +83,11 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
     requestId: "request-1",
     subscriptionId: result.subscriptionId,
   })).code, "invalid-request");
-  rowListeners.get("1")?.([{ ready: true }]);
-  assert.equal(first.sent[0]?.channel, DATA_VIEWS_ROWS_CHANNEL);
+  valueListeners.get("1")?.({ ready: true });
+  assert.deepEqual(first.sent[0], {
+    channel: DATA_VIEWS_VALUE_CHANNEL,
+    value: { requestId: "request-1", subscriptionId: result.subscriptionId, value: { ready: true } },
+  });
   assert.equal((await unsubscribe({ sender: first }, {
     requestId: "request-1",
     subscriptionId: result.subscriptionId,

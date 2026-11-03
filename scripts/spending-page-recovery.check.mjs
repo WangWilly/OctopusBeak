@@ -41,14 +41,14 @@ function installReads({ model, scenario }) {
   const original = window.octopusBeak.dataViews.subscribe;
   window.__publish = (version) => {
     publication = { ...model, purchaseReport: { ...model.purchaseReport, knowledgeAt: version } };
-    listener([publication]);
+    listener(publication);
   };
-  window.octopusBeak.dataViews.subscribe = async (name, params, onRows, onError) => {
-    if (name !== "financial.spending.current") return original(name, params, onRows, onError);
-    listener = onRows;
+  window.octopusBeak.dataViews.subscribe = async (name, params, onValue, onError) => {
+    if (name !== "financial.spending.current") return original(name, params, onValue, onError);
+    listener = onValue;
     window.__refreshes += 1;
     if ((scenario === "stale" || scenario === "candidate-stale") && window.__refreshes > 1) publication = { ...model, purchaseReport: { ...model.purchaseReport, knowledgeAt: 2 } };
-    queueMicrotask(() => onRows([publication]));
+    queueMicrotask(() => onValue(publication));
     return () => {};
   };
   window.octopusBeak.spending.cancelCandidatePage = async () => true;

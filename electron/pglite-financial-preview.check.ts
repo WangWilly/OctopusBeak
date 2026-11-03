@@ -473,7 +473,7 @@ test("live overview republishes on a preview collection and on a visibility chan
     const shown = registry(() => visibility);
     const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: OverviewPageDto[] = [];
-    const stop = await views.subscribe("financial.overview.current", {}, (rows) => published.push(rows[0] as OverviewPageDto));
+    const stop = await views.subscribe("financial.overview.current", {}, (value) => published.push(value as OverviewPageDto));
     const until = async (predicate: () => boolean) => {
       const deadline = Date.now() + 5_000;
       while (!predicate()) {
@@ -504,7 +504,7 @@ test("live liabilities republish on a preview credit collection and on a visibil
     const shown = registry(() => visibility);
     const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: LiabilitiesPageDto[] = [];
-    const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
+    const stop = await views.subscribe("financial.liabilities.current", {}, (value) => published.push(value as LiabilitiesPageDto));
     const until = async (predicate: () => boolean) => {
       const deadline = Date.now() + 5_000;
       while (!predicate()) {
@@ -549,7 +549,7 @@ test("live liabilities republish on a preview loan collection, including one tha
     const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
     const views = createPGliteFinancialLiveViews(shown, createPGliteLiveViewDependencies(database, shown, createLocalDateClock(() => TODAY)));
     const published: LiabilitiesPageDto[] = [];
-    const stop = await views.subscribe("financial.liabilities.current", {}, (rows) => published.push(rows[0] as LiabilitiesPageDto));
+    const stop = await views.subscribe("financial.liabilities.current", {}, (value) => published.push(value as LiabilitiesPageDto));
     const until = async (predicate: () => boolean) => {
       const deadline = Date.now() + 5_000;
       while (!predicate()) {

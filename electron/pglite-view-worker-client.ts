@@ -129,10 +129,10 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
   return {
     operationalProvider: operational.provider,
     financial,
-    subscribe: async (view, params, onRows, onError) => {
+    subscribe: async (view, params, onValue, onError) => {
       if (closed) throw new Error("PGlite view worker is closed.");
       await ready;
-      return views.subscribe(view, params, onRows, onError);
+      return views.subscribe(view, params, onValue, onError);
     },
     onError(listener) {
       errorListeners.add(listener);

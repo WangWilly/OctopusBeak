@@ -224,8 +224,8 @@ test("every live page republishes on each kind of manual write", async () => {
     try {
       for (const view of live) {
         counts.set(view, 0);
-        stops.push(await views.subscribe(view, {}, (rows) => {
-          latest.set(view, rows[0]);
+        stops.push(await views.subscribe(view, {}, (value) => {
+          latest.set(view, value);
           counts.set(view, counts.get(view)! + 1);
         }));
       }
@@ -279,7 +279,7 @@ test("a live page republishes when the date moves past an asset's end date, with
     await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
     const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, clock));
     const published: OverviewPageDto[] = [];
-    const stop = await views.subscribe("financial.overview.current", {}, (rows) => published.push(rows[0] as OverviewPageDto));
+    const stop = await views.subscribe("financial.overview.current", {}, (value) => published.push(value as OverviewPageDto));
     const watchLines = () => published.at(-1)!.accounts.find((account) => account.manual)!.amountLines.length;
     try {
       assert.equal(watchLines(), 1, "on its end date the watch counts");
@@ -315,7 +315,7 @@ test("a manual write during a Spending page action is published once the action 
     } as typeof registry;
     const views = createPGliteFinancialLiveViews(racing, createPGliteLiveViewDependencies(database, racing, createLocalDateClock(CLOCK.today)));
     const pages: SpendingPageDto[] = [];
-    const stop = await views.subscribe("financial.spending.current", {}, (rows) => pages.push(rows[0] as SpendingPageDto));
+    const stop = await views.subscribe("financial.spending.current", {}, (value) => pages.push(value as SpendingPageDto));
     const purchases = () => pages.at(-1)?.manual?.purchases.length ?? 0;
     try {
       const { assetId } = await apply(create("cash", "Wallet", "TWD", "2026-10-01", "500", "counted"));

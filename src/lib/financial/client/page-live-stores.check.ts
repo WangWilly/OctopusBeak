@@ -3,11 +3,11 @@ import { get } from "svelte/store";
 import { createFinancialPageLiveStores } from "./page-live-stores.ts";
 
 let stopCount = 0;
-let emit!: (rows: unknown[]) => void;
+let emit!: (value: unknown) => void;
 const stores = createFinancialPageLiveStores({
-  async subscribe(_view, _params, onRows) {
-    emit = onRows;
-    onRows([{ availability: "empty", accounts: [] }]);
+  async subscribe(_view, _params, onValue) {
+    emit = onValue;
+    onValue({ availability: "empty", accounts: [] });
     return async () => { stopCount += 1; };
   },
 });
@@ -19,7 +19,7 @@ assert.deepEqual(get(store), {
   status: "ready",
   data: { availability: "empty", accounts: [] },
 });
-emit([{ availability: "available", accounts: [{ id: "account-1" }] }]);
+emit({ availability: "available", accounts: [{ id: "account-1" }] });
 assert.deepEqual(get(store), {
   status: "ready",
   data: { availability: "available", accounts: [{ id: "account-1" }] },
@@ -28,23 +28,11 @@ stop();
 await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(stopCount, 1);
 
-const malformed = createFinancialPageLiveStores({
-  async subscribe(_view, _params, onRows) {
-    onRows([]);
-    return async () => {};
-  },
-});
-const malformedValues: unknown[] = [];
-const stopMalformed = malformed.spending().subscribe((value) => malformedValues.push(value));
-await new Promise((resolve) => setTimeout(resolve, 0));
-assert.deepEqual(malformedValues.at(-1), { status: "error", code: "subscription-failed" });
-stopMalformed();
-
 let restartReads = 0;
 const restartable = createFinancialPageLiveStores({
-  async subscribe(_view, _params, onRows) {
+  async subscribe(_view, _params, onValue) {
     restartReads += 1;
-    onRows([{ availability: "available", read: restartReads }]);
+    onValue({ availability: "available", read: restartReads });
     return async () => {};
   },
 });

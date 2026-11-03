@@ -214,8 +214,8 @@ test("one worker exposes named financial reads/writes and complete live snapshot
     assert.deepEqual(await client.financial.request("financial.loanRelations.current", []), []);
     assert.deepEqual(await client.financial.request("financial.loanSettlementGroups.current", []), []);
     assert.deepEqual(await client.financial.request("financial.investmentRelations.current", []), []);
-    stop = await client.subscribe("financial.overview.current", {}, (rows) => {
-      snapshots.push(rows[0]);
+    stop = await client.subscribe("financial.overview.current", {}, (value) => {
+      snapshots.push(value);
     });
     await waitFor(() => snapshots.length >= 1);
 
@@ -305,7 +305,7 @@ test("an exchange-rate update republishes the Assets and Liabilities pages, whic
   try {
     for (const view of ["financial.assets.current", "financial.liabilities.current"] as const) {
       const snapshots: unknown[] = [];
-      stops.push(await client.subscribe(view, {}, (rows) => { snapshots.push(rows[0]); }));
+      stops.push(await client.subscribe(view, {}, (value) => { snapshots.push(value); }));
       await waitFor(() => snapshots.length >= 1);
       const before = snapshots.length;
       await client.operationalProvider.exchangeRates.upsertExchangeRates([{
@@ -374,8 +374,8 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
   const stops: Array<() => Promise<void>> = [];
   try {
     for (const view of ["overview", "assets", "spending"] as const) {
-      stops.push(await client.subscribe(`financial.${view}.current`, {}, (rows) => {
-        snapshots[view]!.push(rows[0]);
+      stops.push(await client.subscribe(`financial.${view}.current`, {}, (value) => {
+        snapshots[view]!.push(value);
       }));
     }
     await waitFor(() => Object.values(snapshots).every((rows) => rows.length >= 1));
@@ -609,32 +609,32 @@ test("financial live views recover after a transient read failure and stop durin
     },
   } as unknown as PGliteFinancialRegistry;
   const views = createPGliteFinancialLiveViews(registry, dependencies);
-  const rows: unknown[] = [];
+  const values: unknown[] = [];
   const errors: unknown[] = [];
   const stop = await views.subscribe(
     "financial.overview.current",
     {},
-    (next) => rows.push(next[0]),
+    (value) => values.push(value),
     (error) => errors.push(error),
   );
-  assert.equal(rows.length, 1);
+  assert.equal(values.length, 1);
   assert.equal(watchers.length, 5, "the overview watches canonical commits and the four dependencies it names");
   failNext = true;
   watchers[0]!.changed();
   await waitFor(() => errors.length === 1);
   watchers[0]!.changed();
-  await waitFor(() => rows.length === 2);
+  await waitFor(() => values.length === 2);
   assert.ok(readCount >= 3, "a later dependency event must retry after a failed read");
 
   let resolveBlocked!: (value: typeof page) => void;
   blocked = new Promise((resolve) => { resolveBlocked = resolve; });
-  const rowCountBeforeStop = rows.length;
+  const valueCountBeforeStop = values.length;
   watchers[0]!.changed();
   await waitFor(() => readCount >= 4);
   await stop();
   resolveBlocked(page);
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(rows.length, rowCountBeforeStop, "unsubscribe during a read must suppress its eventual result");
+  assert.equal(values.length, valueCountBeforeStop, "unsubscribe during a read must suppress its eventual result");
   assert.equal(active(), 0, "all overview dependencies must drain on stop");
 });
 
@@ -707,8 +707,8 @@ test("a purchase category change publishes a new Spending version that reads the
   const snapshots: Array<{ purchaseReport: { knowledgeAt: number; summary?: { monthTotals: readonly { month: string }[] } } }> = [];
   let stop: (() => Promise<void>) | null = null;
   try {
-    stop = await client.subscribe("financial.spending.current", {}, (rows) => {
-      snapshots.push(rows[0] as (typeof snapshots)[number]);
+    stop = await client.subscribe("financial.spending.current", {}, (value) => {
+      snapshots.push(value as (typeof snapshots)[number]);
     });
     await waitFor(() => snapshots.length >= 1);
     await client.financial.request("financial.einvoice.commit", [{

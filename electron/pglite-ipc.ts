@@ -4,7 +4,7 @@ import { Worker } from "node:worker_threads";
 import {
   type DataViewErrorCode,
   type DataViewErrorEvent,
-  type DataViewRowsEvent,
+  type DataViewValueEvent,
   type DataViewSubscribeRequest,
   type DataViewSubscribeResult,
   type DataViewUnsubscribeRequest,
@@ -18,7 +18,7 @@ import type { OctopusBeakDataViewChannels } from "./preload.ts";
 
 export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const satisfies OctopusBeakDataViewChannels["subscribe"];
 export const DATA_VIEWS_UNSUBSCRIBE_CHANNEL = "data-views:unsubscribe" as const satisfies OctopusBeakDataViewChannels["unsubscribe"];
-export const DATA_VIEWS_ROWS_CHANNEL = "data-views:rows" as const satisfies OctopusBeakDataViewChannels["rows"];
+export const DATA_VIEWS_VALUE_CHANNEL = "data-views:value" as const satisfies OctopusBeakDataViewChannels["value"];
 export const DATA_VIEWS_ERROR_CHANNEL = "data-views:error" as const satisfies OctopusBeakDataViewChannels["error"];
 
 export type PGliteViewIpcOptions = {
@@ -61,7 +61,7 @@ function invalidResult<T extends { ok: false; code: DataViewErrorCode; message: 
   return { ok: false, code, message } as T;
 }
 
-function safeSend(sender: WebContents, channel: string, value: DataViewRowsEvent | DataViewErrorEvent): void {
+function safeSend(sender: WebContents, channel: string, value: DataViewValueEvent | DataViewErrorEvent): void {
   if (sender.isDestroyed()) return;
   try {
     sender.send(channel, value);
@@ -195,12 +195,12 @@ export function registerPGliteViewIpc(
       const stop = await worker.subscribe(
         request.view,
         request.params,
-        (rows) => {
+        (value) => {
           if (!subscription.cancelled) {
-            safeSend(owner.sender, DATA_VIEWS_ROWS_CHANNEL, {
+            safeSend(owner.sender, DATA_VIEWS_VALUE_CHANNEL, {
               requestId: subscription.requestId,
               subscriptionId: subscription.subscriptionId,
-              rows,
+              value,
             });
           }
         },

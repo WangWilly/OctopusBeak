@@ -64,21 +64,21 @@ test("bundled worker reopens its explicit data directory after durable close", a
 test("the worker serves its injected view source, closes subscriptions, and removes owned data", async () => {
   let stops = 0;
   const source = {
-    async subscribe(view: string, _params: object, onRows: (rows: unknown[]) => void) {
+    async subscribe(view: string, _params: object, onValue: (value: unknown) => void) {
       if (view !== "fake.value") throw new Error(`Unknown view: ${view}`);
-      onRows([{ ready: true }]);
+      onValue({ ready: true });
       return async () => { stops += 1; };
     },
   };
   const channel = new MessageChannel();
   const runtime = await startPGliteViewWorker(channel.port1, () => source);
   const client = createViewPortClient(channel.port2);
-  const rows: unknown[][] = [];
+  const values: unknown[] = [];
   try {
     assert.ok(existsSync(runtime.dataDir));
-    const stop = await client.subscribe("fake.value", {}, (value) => rows.push(value));
-    await waitFor(() => rows.length === 1);
-    assert.deepEqual(rows[0], [{ ready: true }]);
+    const stop = await client.subscribe("fake.value", {}, (value) => values.push(value));
+    await waitFor(() => values.length === 1);
+    assert.deepEqual(values, [{ ready: true }]);
     await stop();
     assert.equal(stops, 1);
     await assert.rejects(client.subscribe("SELECT 1", {}, () => {}), /subscription-failed/u);
@@ -123,8 +123,8 @@ test("closing the client gives a slow worker shutdown its full bound before term
 test("a financial view's error after its first value reaches the port as a failed subscription", async () => {
   let fail: (error: unknown) => void = () => {};
   const financial = {
-    async subscribe(_view: string, _params: object, onRows: (rows: unknown[]) => void, onError?: (error: unknown) => void) {
-      onRows([{ page: 1 }]);
+    async subscribe(_view: string, _params: object, onValue: (value: unknown) => void, onError?: (error: unknown) => void) {
+      onValue({ page: 1 });
       fail = (error) => onError?.(error);
       return async () => {};
     },
@@ -135,7 +135,7 @@ test("a financial view's error after its first value reaches the port as a faile
   channel.port2.on("message", (message) => responses.push(message));
   try {
     channel.port2.postMessage({ kind: "subscribe", id: 1, view: "financial.overview.current", params: {} });
-    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "rows"));
+    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "value"));
     fail(new Error("recompute failed"));
     await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "error"));
     assert.deepEqual(responses.at(-1), { kind: "error", id: 1, code: "subscription-failed" });

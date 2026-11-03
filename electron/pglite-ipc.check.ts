@@ -6,7 +6,7 @@ const source = readFileSync(new URL("./pglite-ipc.ts", import.meta.url), "utf8")
 for (const channel of [
   "data-views:subscribe",
   "data-views:unsubscribe",
-  "data-views:rows",
+  "data-views:value",
   "data-views:error",
 ]) {
   assert.match(source, new RegExp(channel.replace(/[-:]/gu, "[-:]")));
