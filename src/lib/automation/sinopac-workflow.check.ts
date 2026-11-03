@@ -16,7 +16,7 @@ import {
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
-import { parseSinopacCurrentDepositBalanceSnapshot } from "../../workflows/sinopac-current-deposit-balances.ts";
+import { sinopacCurrentDepositResponse } from "../../workflows/sinopac-current-deposit-balances.fixtures.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import {
   applyCommitAttemptReport,
@@ -175,7 +175,7 @@ function fakeSource(overrides: Partial<SinopacDepositSource> = {}): SinopacDepos
       window.startDate <= "20260903" && "20260903" <= window.endDate
         ? { Header: "SUCCESS", SubInfo: [salaryRow] }
         : { Header: "FAIL", Message: "查無資料", SubInfo: [] },
-    readCurrentBalances: async () => [],
+    readCurrentBalances: async () => currentBalanceResponse(),
     ...overrides,
   };
 }
@@ -228,39 +228,8 @@ function productHandle(staged: ProductStageRequest[], codes: string[]): ProductC
   };
 }
 
-function currentBalanceRow(observedAt: string) {
-  return parseSinopacCurrentDepositBalanceSnapshot({
-    payload: [{
-      SubInfo: [{
-        AcctText: "Synthetic TWD account",
-        AcctValue: accountId,
-        AcctValueFormat: "###-###-#######-#",
-        Curr: "TWD",
-        CurText: "新台幣",
-        AvailBalance: "900",
-        AvailBalInt: null,
-        MaxAvail: "900",
-        OutStdLmt: "0",
-        FixBalance: "0",
-        NonTrxferFlg: "False",
-        Category: "1001",
-        DigiTalFg: "",
-      }],
-      Header: "SUCCESS",
-      Message: "",
-    }],
-    response: {
-      url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
-      status: 200,
-      method: "POST",
-      headers: {
-        "content-type": "application/json;charset=UTF-8",
-        "cache-control": "no-cache,no-store",
-        date: "Thu, 24 Sep 2026 03:59:00 GMT",
-      },
-    },
-    observedAt,
-  });
+function currentBalanceResponse() {
+  return sinopacCurrentDepositResponse([{ account: accountId, balance: "900" }], "Thu, 24 Sep 2026 03:59:00 GMT");
 }
 
 test("the SinoPac read half lists accounts, then reads and admits each account's windows", async () => {
@@ -341,7 +310,7 @@ test("a SinoPac snapshot of provider no-data stages source only and never reads 
   let balanceReads = 0;
   const counts = await stageSinopacDeposit(snapshot, input, context, product, async () => {
     balanceReads += 1;
-    return [];
+    return currentBalanceResponse();
   });
   assert.equal(balanceReads, 0);
   assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
@@ -358,18 +327,30 @@ test("a financial SinoPac snapshot reads current balances once and stages the ma
   const product = productHandle(staged, codes);
   const snapshot = await readSinopacDepositSource(fakeSource(), input, context, product);
   codes.length = 0;
-  const balanceReads: string[] = [];
-  const counts = await stageSinopacDeposit(snapshot, input, context, product, async ({ observedAt }) => {
-    balanceReads.push(observedAt);
-    return currentBalanceRow(observedAt);
+  let balanceReads = 0;
+  const counts = await stageSinopacDeposit(snapshot, input, context, product, async () => {
+    balanceReads += 1;
+    return currentBalanceResponse();
   });
-  assert.deepEqual(balanceReads, [snapshot.observedAt]);
+  assert.equal(balanceReads, 1);
   assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
     "domestic-deposit:financial.mixed.commit",
     `current-balance:${PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND}`,
   ]);
+  assert.equal(staged[1]?.itemKey, `current-balance:domestic-deposit:${accountId}`);
+  assert.equal(
+    (staged[1]?.command.request as { capture: { observedAt: string } }).capture.observedAt,
+    snapshot.observedAt,
+  );
   assert.deepEqual(counts, { accountCount: 1, rowCount: 1, skippedAccountCount: 0, sourceCaptureCount: 1 });
-  assert.deepEqual(codes, ["current-balance-collection-started", "current-balance-validation-completed"]);
+  assert.deepEqual(codes, [
+    "current-balance-collection-started",
+    "current-balance-decoding-started",
+    "current-balance-decoding-completed",
+    "current-balance-collection-completed",
+    "current-balance-validation-started",
+    "current-balance-validation-completed",
+  ]);
 });
 
 test("a failed SinoPac current-balance read fails the build before anything is staged", async () => {
@@ -383,7 +364,7 @@ test("a failed SinoPac current-balance read fails the build before anything is s
     /synthetic balance page failure/u,
   );
   assert.deepEqual(staged, []);
-  assert.equal(codes.at(-1), "current-balance-source-rejected");
+  assert.equal(codes.at(-1), "current-balance-collection-failed");
 });
 
 test("SinoPac source JSON is decoded strictly after terminal response checks", () => {
@@ -440,13 +421,13 @@ test("typed SinoPac workflow admits all source before one injected commit and cr
     assert.deepEqual(output.counts, {
       sourceCaptureCount: 1,
       rowCount: 1,
-      itemCount: 1,
-      committedCount: 1,
+      itemCount: 2,
+      committedCount: 2,
       accountCount: 1,
       skippedAccountCount: 0,
     });
     assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.length, 1);
+    assert.equal(calls[0]?.length, 2);
     assert.equal(events.some((event) => event.code === "source-validation-completed"), true);
     assert.deepEqual(await readdir(outputDir, { recursive: true }), []);
   } finally {

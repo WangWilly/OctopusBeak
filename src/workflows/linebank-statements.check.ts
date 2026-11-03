@@ -5,6 +5,7 @@ import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { parseLinebankCurrentDepositBalanceSnapshot } from "./linebank-current-deposit-balances.ts";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
@@ -96,7 +97,7 @@ try {
   const snapshot = await new LineBankApiClient(delayedAccountSnapshotPage as never, {
     text: strictSourceText,
   }).fetchAccountSnapshot();
-  assert.equal(snapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
+  assert.equal(snapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
 } finally {
   globalThis.Date = OriginalDate;
 }
@@ -112,13 +113,18 @@ const workflowClockPage = {
 const workflowSnapshot = await new LineBankApiClient(workflowClockPage, {
   text: strictSourceText,
 }).fetchAccountSnapshot(() => snapshotClock);
-assert.equal(workflowSnapshot.currentBalances[0]?.observedAt, "1970-01-01T10:00:02.000Z");
+assert.equal(workflowSnapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
+assert.deepEqual(
+  workflowSnapshot.currentBalance.evidence.bytes,
+  new TextEncoder().encode(accountSnapshotBody),
+  "the snapshot module receives the account-list bytes the statements read",
+);
 
-await assert.rejects(
-  () =>
-    new LineBankApiClient(delayedAccountSnapshotPage as never, {
-      text: strictSourceText,
-    }).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z"),
+const earlySnapshot = await new LineBankApiClient(delayedAccountSnapshotPage as never, {
+  text: strictSourceText,
+}).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z");
+assert.throws(
+  () => parseLinebankCurrentDepositBalanceSnapshot({ ...earlySnapshot.currentBalance, rawBody: accountSnapshotBody }),
   /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
 );
 
@@ -129,7 +135,7 @@ const linebankWorkflowSource = await readFile(
 assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
 assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
-assert.match(linebankWorkflowSource, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/u);
+assert.match(linebankWorkflowSource, /captureCurrentStateSnapshots\(/u);
 assert.match(linebankWorkflowSource, /runLineBankProviderWorkflow/u);
 assert.match(linebankWorkflowSource, /text:\s*context\.text/u);
 assert.doesNotMatch(

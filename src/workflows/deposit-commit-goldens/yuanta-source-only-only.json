@@ -53,13 +53,12 @@
       },
       "items": [
         {
-          "provider": "yuanta",
           "product": "domestic-deposit",
-          "itemKey": "yuanta-source-t+0-RqlfmcUYQW0S",
+          "itemKey": "yuanta-source-t+0-valbSZ_ZD_Uz",
           "command": {
             "kind": "financial.source.admit",
             "request": {
-              "captureId": "yuanta-source-t+0-RqlfmcUYQW0S",
+              "captureId": "yuanta-source-t+0-valbSZ_ZD_Uz",
               "integrationNamespace": "yuanta",
               "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
               "identityEpoch": "sha256:eXVhbnRhLWh1bWFuLWF0dGVzdGVkLWlkZW50aXR5LWVwb2NoLXYyAHl1YW50YS1kb21lc3RpYy1kZXBvc2l0LWh1bWFuLWF0dGVzdGVkLXYyAGh1bWFuLWF0dGVzdGVkLXYyAHNoYTI1Njo5Y2RlNmYxYzRmMzVlNGY0ZDJlZjYzNGNmNmJjMWU3YjQ4NjliMWEwYzFlNWU3YzJmMWE0YTllMWJkNWQ0YzYz",
@@ -67,7 +66,7 @@
               "recordKind": "yuanta-domestic-deposit-capture-evidence-v2",
               "routeKey": "yuanta/domestic-deposit/capture-evidence-v2",
               "contractVersion": "capture-evidence-v2",
-              "subjectDigest": "sha256:wSHhE5sj7ACRVSy6vLeptF79X2MrQOG2oKbyRDmrdXc",
+              "subjectDigest": "sha256:sXV1T2IgxWw8uSkgZgl8IS0JeEkPY2zvJQx84vDnvak",
               "observedAt": "2026-09-25T08:00:00+08:00",
               "scope": {
                 "startDate": "20260625",
@@ -83,27 +82,27 @@
                   "rowCount": 1,
                   "terminal": true,
                   "metadata": {
-                    "filenameDigest": "sha256:xdrHOY68-YFQVWmyWQypvUSWQloV78wyt3Ynm0C1NVw",
-                    "contentDigest": "sha256:synthetic-SYNTHETIC-YUANTA-JOINT",
+                    "filenameDigest": "sha256:TTAoGv-OURnCZCNQYW8yifGqz5F3-_VDmGImsTf9RnE",
+                    "contentDigest": "sha256:synthetic-9990_0000_0000_0303",
                     "byteLength": 128,
                     "columnCount": 11,
-                    "accountValueDigest": "sha256:cLnKPw1p_6XmNR9GldepJzgwol7QjhQV9vnTK36p6_0",
-                    "accountLabelDigest": "sha256:V8Yv6mr7KzEsnQu5knvY1f5UoKMfKQeHOWrEGRNHDMY",
+                    "accountValueDigest": "sha256:fRx41Xd7qANMD1LZ4IfKSr4QEYy4imJvAGFbapvGhi8",
+                    "accountLabelDigest": "sha256:qOqU23LIieJtpE0EacnTZ6ddsxaaGSofpK1BA2X2A4g",
                     "zeroResultAuthority": null
                   }
                 }
               ],
               "records": [
                 {
-                  "occurrenceKey": "sha256:Uw_91FsmI6xNXsduYI4WQn1dAoDR3hahYHSrYdvumIY",
-                  "collisionKey": "sha256:41Asy9keWdznB9aE8XtxvgXB-JNpsaGuiDUJwqyCiio",
-                  "providerKey": "sha256:gSS7VLIQSdv3j0bdkINf6e3eruazG5biARuv3esN2yo",
-                  "contentHash": "sha256:BdvAuha09Li-1B56Tf43wvHryf8o7q8zBuBlEnxmQOY",
+                  "occurrenceKey": "sha256:oJ66YF6QEGD7C60dQ9kD0aNn19mLKksoDs-j6Z6Exj4",
+                  "collisionKey": "sha256:RmB1-ZexV_16jgDWbhByALZo4lNvCP9Fm5c-YgRgtnE",
+                  "providerKey": "sha256:lLEt9FpMIkRSY9-n4DqJapyadRcEEN1JqPf-QdAQKDw",
+                  "contentHash": "sha256:OOOdJqjaItlpp00O9egbftfNtLWQ4xxhXIRtRkeLDOE",
                   "compact": {
                     "evidenceVersion": "capture-evidence-v2",
                     "pageOrdinal": 0,
                     "rowOrdinal": 0,
-                    "rowDigest": "sha256:gSS7VLIQSdv3j0bdkINf6e3eruazG5biARuv3esN2yo",
+                    "rowDigest": "sha256:lLEt9FpMIkRSY9-n4DqJapyadRcEEN1JqPf-QdAQKDw",
                     "cellCount": 11,
                     "amountShape": "inflow",
                     "semanticStatus": "observed-structural-only"
@@ -111,7 +110,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "yuanta"
         }
       ]
     }

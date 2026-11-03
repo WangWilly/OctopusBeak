@@ -17,6 +17,7 @@ import {
   type HncbStatementDownload,
   type HncbStatementsContext,
 } from "../../workflows/hncb-statements.ts";
+import { hncbCurrentDepositDetailTable, hncbCurrentDepositUnavailableRow } from "../../workflows/hncb-current-deposit-balances.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
@@ -44,7 +45,7 @@ function oneAccount(download: () => Promise<HncbStatementDownload>): HncbDeposit
     await readHncbDepositSource(source, input, context, product),
     context,
     product,
-    async () => [],
+    async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(account)]),
   );
 }
 
@@ -93,7 +94,7 @@ test("HNCB queries two years and one day ending on the run's Taipei date", async
       await readHncbDepositSource(source, input, context, product),
       context,
       product,
-      async () => [],
+      async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(account)]),
     ),
   });
   assert.deepEqual(queried, [{ startDate: "2026/02/28", endDate: "2028/02/29" }]);

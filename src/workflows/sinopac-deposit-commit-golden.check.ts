@@ -19,9 +19,9 @@ import {
   type SinopacWorkflowInput,
 } from "./sinopac-statements.ts";
 import {
-  parseSinopacCurrentDepositBalanceSnapshot,
-  type SinopacCurrentDepositBalanceRow,
-} from "./sinopac-current-deposit-balances.ts";
+  sinopacCurrentDepositResponse,
+  type SinopacCurrentDepositFixtureRow,
+} from "./sinopac-current-deposit-balances.fixtures.ts";
 import {
   assertDepositCommitGolden,
   recordDepositCommit,
@@ -73,44 +73,13 @@ function rows(...subInfo: SinopacRawTransactionRow[]): SinopacTransactionRespons
   return { Header: "SUCCESS", Message: "", SubInfo: subInfo };
 }
 
-function balanceRow(account: string, curr: string, curText: string, balance: string): SinopacCurrentDepositBalanceRow {
-  return parseSinopacCurrentDepositBalanceSnapshot({
-    payload: [{
-      SubInfo: [{
-        AcctText: "SYNTHETIC ACCOUNT",
-        AcctValue: account,
-        AcctValueFormat: "###-###-#######-#",
-        Curr: curr,
-        CurText: curText,
-        AvailBalance: balance,
-        AvailBalInt: null,
-        MaxAvail: balance,
-        OutStdLmt: "0",
-        FixBalance: "0",
-        NonTrxferFlg: "False",
-        Category: "1001",
-        DigiTalFg: "",
-      }],
-      Header: "SUCCESS",
-      Message: "",
-    }],
-    response: {
-      url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
-      status: 200,
-      method: "POST",
-      headers: {
-        "content-type": "application/json;charset=UTF-8",
-        "cache-control": "no-cache,no-store",
-        date: "Thu, 01 Oct 2026 03:59:00 GMT",
-      },
-    },
-    observedAt: "2026-10-01T12:00:00.000+08:00",
-  })[0]!;
+function balanceRow(account: string, currency: string, currencyText: string, balance: string): SinopacCurrentDepositFixtureRow {
+  return { account, currency, currencyText, balance };
 }
 
 type Scenario = Readonly<{
   accounts: readonly (SinopacAccount & { response: SinopacTransactionResponse })[];
-  current?: readonly SinopacCurrentDepositBalanceRow[];
+  current: readonly SinopacCurrentDepositFixtureRow[];
 }>;
 
 /** The goldens record one September window, which a period ending on the run's date cannot express. */
@@ -158,7 +127,7 @@ async function record(name: string, scenario: Scenario): Promise<Record<string, 
       listAccounts: async () => scenario.accounts.map(({ response: _response, ...account }) => account),
       queryTransactions: async (account) =>
         scenario.accounts.find((candidate) => candidate.DataValue === account.DataValue)!.response,
-      readCurrentBalances: async () => scenario.current ?? [],
+      readCurrentBalances: async () => sinopacCurrentDepositResponse(scenario.current),
     }));
     const recorded = { output, ...recorder.recorded() };
     await assertDepositCommitGolden(name, recorded);
@@ -230,8 +199,12 @@ test("SinoPac golden: identical rows receive distinct occurrence slots and stay 
         txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER"),
       ),
     }],
+    current: [balanceRow(twdAccount, "TWD", "新台幣", "800")],
   });
-  assert.deepEqual(commands(recorded), ["domestic-deposit:financial.mixed.commit"]);
+  assert.deepEqual(commands(recorded), [
+    "domestic-deposit:financial.mixed.commit",
+    "current-balance:financial.balance.capture",
+  ]);
 });
 
 test("SinoPac: rows sharing a collision fence with distinct descriptions are rejected before commit", async () => {
@@ -245,7 +218,7 @@ test("SinoPac: rows sharing a collision fence with distinct descriptions are rej
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER A"),
           txn("2026/09/03 09:21", "-100", "900", "SYNTHETIC TRANSFER B"),
         ),
-        readCurrentBalances: async () => [],
+        readCurrentBalances: async () => sinopacCurrentDepositResponse([balanceRow(twdAccount, "TWD", "新台幣", "800")]),
       })),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);

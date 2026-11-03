@@ -15,10 +15,11 @@ import {
   type CtbcObservedAccountCapture,
   type CtbcObservedRangeResponse,
 } from "./ctbc-statements.ts";
+import { ctbcCurrentDepositResponse } from "./ctbc-current-deposit-balances.fixtures.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 
-const accountA = "999900000001";
-const accountB = "999900000002";
+const accountA = "9999000000000001";
+const accountB = "9999000000000002";
 const ranges = [
   { startDate: "2026/07/01", endDate: "2026/07/31" },
   { startDate: "2026/08/01", endDate: "2026/08/31" },
@@ -97,34 +98,7 @@ function snapshot(captures: CtbcObservedAccountCapture[]): CtbcDepositSourceSnap
 }
 
 function currentBalance(accountId: string, coefficient: string) {
-  return {
-    source: "ctbc",
-    stream: "domestic-deposit",
-    accountNumber: accountId,
-    sourceAccountKey: accountId,
-    currency: "TWD",
-    ledger: { coefficient, scale: 0, sourceLexeme: Number(coefficient).toLocaleString("en-US") },
-    providerFields: {
-      accountId,
-      digiSvType: "",
-      acctType: "01",
-      accountNickName: "",
-      openDt: "20200101",
-      isRelaC: "N",
-    },
-    effectiveAt: "2026-09-25T11:59:00.000Z",
-    providerServerTime: Date.parse("2026-09-25T11:59:00.000Z"),
-    providerDataTime: "2026/09/25 19:59:00",
-    providerHttpDate: "Fri, 25 Sep 2026 11:59:00 GMT",
-    observedAt: "2026-09-25T20:00:00+08:00",
-    sourceEvidence: {
-      endpoint: "/IB/api/adapters/IB_Adapter/resource/ebmwResource",
-      requestResource: "/twrbc-deposit/qu001/010",
-      status: 200,
-      cacheControl: "no-cache, no-store, must-revalidate",
-      contractVersion: "ctbc/current-deposit-balance-v1",
-    },
-  } as const;
+  return { accountId, balance: Number(coefficient).toLocaleString("en-US") };
 }
 
 async function run(
@@ -156,7 +130,7 @@ async function run(
       product,
       async () => {
         balanceReads += 1;
-        return balances;
+        return ctbcCurrentDepositResponse(balances);
       },
     ),
   });

@@ -49,6 +49,37 @@ export function parseExactMoney(value: unknown, label = "Exact money"): ExactMon
   return { ...amount, currency };
 }
 
+/**
+ * How a provider writes an amount. Each bank declares its own policy; the
+ * caller keeps its own surrounding-text cleanup and source lexeme.
+ */
+export type ProviderDecimalPolicy = Readonly<{
+  /** Whether whitespace inside the lexeme is display spacing to drop, or invalid. */
+  internalWhitespace: "strip" | "reject";
+  /** `thousands` also accepts comma groups of three, such as `1,234,567`. */
+  grouping: "thousands" | "none";
+  /** `integer` rejects a decimal point. */
+  digits: "decimal" | "integer";
+}>;
+
+/**
+ * Parse a provider amount lexeme into an exact amount at the scale the
+ * provider wrote, or null when the lexeme is not an amount under the policy.
+ */
+export function parseProviderDecimal(lexeme: string, policy: ProviderDecimalPolicy): ExactAmount | null {
+  const text = policy.internalWhitespace === "strip" ? lexeme.replace(/\s/gu, "") : lexeme;
+  const whole = policy.grouping === "thousands" ? String.raw`\d+|\d{1,3}(?:,\d{3})*` : String.raw`\d+`;
+  const fraction = policy.digits === "decimal" ? String.raw`(?:\.(\d+))?` : "";
+  const match = new RegExp(`^(-?)(${whole})${fraction}$`, "u").exec(text);
+  if (!match) return null;
+  const decimals = match[3] ?? "";
+  const digits = `${match[2]!.replaceAll(",", "")}${decimals}`.replace(/^0+(?=\d)/u, "");
+  return {
+    coefficient: digits === "0" || match[1] !== "-" ? digits : `-${digits}`,
+    scale: decimals.length,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Amounts
 

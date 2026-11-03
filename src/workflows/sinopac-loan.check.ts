@@ -22,6 +22,7 @@ import {
   stageSinopacDeposit,
   type SinopacDepositSource,
 } from "./sinopac-statements.ts";
+import { sinopacCurrentDepositResponse } from "./sinopac-current-deposit-balances.fixtures.ts";
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
@@ -156,7 +157,8 @@ const depositSource: SinopacDepositSource = {
       SubInfo: [{ DataText1: "2026/09/03 09:21", DataText2: "2026/09/03", DataText3: "Synthetic salary", DataText4: "-100", DataText5: "900", DataText7: "", DataText8: "" }],
     }
     : { Header: "FAIL", Message: "查無資料", SubInfo: [] },
-  readCurrentBalances: async () => [],
+  // A balance for an account the run never admitted stages nothing, so the deposit commits its statement alone.
+  readCurrentBalances: async () => sinopacCurrentDepositResponse([{ account: ["1410", "1800", "0822", "99"].join(""), balance: "900" }]),
 };
 
 function workflowContext(writes: PreviewWrite[], commits: unknown[][]): WorkflowContextWith<"financialCommit", "previewWrite"> {

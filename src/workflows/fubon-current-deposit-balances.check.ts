@@ -10,8 +10,8 @@ import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   FUBON_CURRENT_DEPOSIT_HEADERS,
   parseFubonCurrentDepositBalanceSnapshot,
-  parseFubonCurrentDepositBalanceTable,
-  readFubonCurrentDepositBalances,
+  readFubonCurrentDepositBalanceTable,
+  readFubonCurrentDepositTableCells,
   type FubonCurrentDepositResponseMetadata,
 } from "./fubon-current-deposit-balances.ts";
 
@@ -206,24 +206,20 @@ const currentTable = tableLocator([
     cells: [{ kind: "cell", tag: "th", text: "總計" }],
   },
 ]);
-const parsedTable = await parseFubonCurrentDepositBalanceTable(
-  currentTable as never,
-  { response: response(), observedAt },
+assert.deepEqual(
+  await readFubonCurrentDepositTableCells(currentTable as never),
+  visibleRows,
+  "only the ten visible cells of each data row are read; hidden cells and the total row are left out",
 );
-assert.equal(parsedTable.length, 2);
-assert.equal(parsedTable[0]?.accountNumber, visibleRows[0]![0]);
-assert.equal(parsedTable[1]?.availableBalance.coefficient, "195025");
 
 const headerWithHiddenCellsTable = tableLocator([
   headerWithHiddenCells(FUBON_CURRENT_DEPOSIT_HEADERS),
   data(visibleRows[0], hiddenRows[0]),
 ]);
-const parsedHeaderWithHiddenCells = await parseFubonCurrentDepositBalanceTable(
-  headerWithHiddenCellsTable as never,
-  { response: response(), observedAt },
+assert.deepEqual(
+  await readFubonCurrentDepositTableCells(headerWithHiddenCellsTable as never),
+  [visibleRows[0]],
 );
-assert.equal(parsedHeaderWithHiddenCells.length, 1);
-assert.equal(parsedHeaderWithHiddenCells[0]?.accountNumber, visibleRows[0]![0]);
 
 const malformedHeaderTable = tableLocator([
   header(["帳號", "錯誤標題", ...FUBON_CURRENT_DEPOSIT_HEADERS.slice(2)]),
@@ -231,10 +227,7 @@ const malformedHeaderTable = tableLocator([
 ]);
 await assert.rejects(
   () =>
-    parseFubonCurrentDepositBalanceTable(malformedHeaderTable as never, {
-      response: response(),
-      observedAt,
-    }),
+    readFubonCurrentDepositTableCells(malformedHeaderTable as never),
   /headers are not recognized/u,
 );
 
@@ -243,7 +236,7 @@ const wrongVisibleWidth = tableLocator([
   data([...visibleRows[0], "overlong-visible"], hiddenRows[0]),
 ]);
 await assert.rejects(
-  () => parseFubonCurrentDepositBalanceTable(wrongVisibleWidth as never, { response: response(), observedAt }),
+  () => readFubonCurrentDepositTableCells(wrongVisibleWidth as never),
   /12 TD cells/u,
 );
 
@@ -252,7 +245,7 @@ const wrongHiddenWidth = tableLocator([
   data(visibleRows[0], ["only-one-hidden"]),
 ]);
 await assert.rejects(
-  () => parseFubonCurrentDepositBalanceTable(wrongHiddenWidth as never, { response: response(), observedAt }),
+  () => readFubonCurrentDepositTableCells(wrongHiddenWidth as never),
   /12 TD cells/u,
 );
 
@@ -469,7 +462,8 @@ const siteFor = (page: Page, signal = new AbortController().signal) =>
 
 test("the balance page is reached through 存款交易查詢 and 我的存款, and its response is the evidence", () =>
   withDepositShell({}, async (page, requested) => {
-    const rows = await readFubonCurrentDepositBalances(siteFor(page), { observedAt, timeoutMs: 10_000 });
+    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), { timeoutMs: 10_000 });
+    const rows = parseFubonCurrentDepositBalanceSnapshot({ rows: table.evidence.rows, response: table.response, observedAt });
     assert.deepEqual(rows.map((row) => [row.accountNumber, row.currency, row.instantBalance.sourceLexeme]), [
       ["00123456789012", "TWD", "0"],
       ["98765432109876", "USD", "2,000.00"],
@@ -481,15 +475,15 @@ test("the balance page is reached through 存款交易查詢 and 我的存款, a
 
 test("a header row that renders after the table is waited for before the table is parsed", () =>
   withDepositShell({ headerRowDelayMs: 600 }, async (page) => {
-    const rows = await readFubonCurrentDepositBalances(siteFor(page), { observedAt, timeoutMs: 10_000 });
-    assert.equal(rows.length, 2);
+    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), { timeoutMs: 10_000 });
+    assert.equal(table.evidence.rows.length, 2);
   }));
 
 test("a run cancelled while the bank holds the balance response rejects with its reason", () =>
   withDepositShell({ balanceHangs: true }, async (page, requested) => {
     const controller = new AbortController();
     const cancelled = new Error("synthetic cancellation");
-    const read = readFubonCurrentDepositBalances(siteFor(page, controller.signal), { observedAt });
+    const read = readFubonCurrentDepositBalanceTable(siteFor(page, controller.signal));
     const startedAt = Date.now();
     while (!requested.includes(FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH)) {
       assert.ok(Date.now() - startedAt < 10_000, "the balance page was never requested");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";
@@ -16,6 +16,7 @@ import {
   runFubonStatements,
   stageFubonDeposit,
   type FubonDepositAccountOption,
+  type FubonCurrentDepositBalanceRead,
   type FubonDepositProductContext,
   type FubonStatementsInput,
   type FubonDepositStatementEvidence,
@@ -28,7 +29,9 @@ import {
 import {
   FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
   type FubonCurrentDepositBalanceRow,
+  type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError, type ProductStageRequest } from "../lib/automation/product-collection.ts";
@@ -57,7 +60,6 @@ assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWor
 assert.match(source, /PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND/);
 assert.match(source, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/);
-assert.match(source, /PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND/);
 assert.doesNotMatch(source, /pgliteWorkflowEnabled/);
 assert.doesNotMatch(source, /executeCanonicalFinancialCommitRun/);
 
@@ -145,11 +147,10 @@ const fubonExistingIdentity = {
   },
 };
 {
-  const match = matchCurrentBalanceCaptures(
-    [{ accountNumber }, { accountNumber: "synthetic-unadmitted-number" }],
+  const match = indexCurrentBalanceCaptures(
     [fubonExistingIdentity, fubonExistingIdentity],
     fubonCurrentBalanceCaptureMatching,
-  );
+  ).match([{ accountNumber }, { accountNumber: "synthetic-unadmitted-number" }]);
   assert.deepEqual(
     match.matched.map(({ capture }) => capture),
     [fubonExistingIdentity],
@@ -163,7 +164,7 @@ const fubonExistingIdentity = {
 }
 assert.throws(
   () =>
-    matchCurrentBalanceCaptures([], [
+    indexCurrentBalanceCaptures([
       fubonExistingIdentity,
       {
         identity: {
@@ -171,7 +172,7 @@ assert.throws(
           sourceAccountKey: "sha256:other-account",
         },
       },
-    ], fubonCurrentBalanceCaptureMatching),
+    ], fubonCurrentBalanceCaptureMatching).match([]),
   /ambiguous across financial captures/u,
 );
 
@@ -307,8 +308,34 @@ type DepositSource = Readonly<{
   statementFor: DepositStatementFor;
   currentRows: readonly FubonCurrentDepositBalanceRow[];
   signal?: AbortSignal;
-  readCurrentBalances?: () => Promise<readonly FubonCurrentDepositBalanceRow[]>;
+  readCurrentBalances?: FubonCurrentDepositBalanceRead;
 }>;
+
+/** The 我的存款 table whose visible cells and response the parser reads back as `rows`. */
+function currentTable(rows: readonly FubonCurrentDepositBalanceRow[]): FubonCurrentDepositTable {
+  return {
+    evidence: {
+      kind: "cells",
+      rows: rows.map((row) => [
+        row.accountNumber,
+        row.accountNickname,
+        row.depositType,
+        row.branchName,
+        row.currencySourceLexeme,
+        row.instantBalance.sourceLexeme,
+        row.availableBalance.sourceLexeme,
+        "",
+        "",
+        "",
+      ]),
+    },
+    response: {
+      url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+      status: 200,
+      headers: { date: currentBalanceRow.providerHttpDate, "cache-control": "no-store, no-cache" },
+    },
+  };
+}
 
 async function collectDeposit(
   { ranges, ...input }: DepositCollectionInput,
@@ -340,7 +367,7 @@ async function collectDeposit(
       event: async (_stage, _outcome, code) => { events.push(code); },
       collectionPeriod: () => assert.fail("the staging half reads no collection period"),
     },
-    readCurrentBalances ?? (async () => currentRows),
+    readCurrentBalances ?? (async () => currentTable(currentRows)),
   );
   return { ...summary, events };
 }
@@ -356,6 +383,8 @@ async function collectDeposit(
   ]);
 }
 
+/** Every exclusion a run reports, leaving out the snapshot module's progress events. */
+const exclusions = (events: readonly string[]) => events.filter((code) => code.startsWith("deposit-"));
 const exclusionEvents = (events: readonly string[], kind: "current-balance" | "statement") =>
   events.filter((code) => code.startsWith(`deposit-${kind}-excluded-`));
 
@@ -498,7 +527,7 @@ try {
     unlinkableDeposits.flatMap(([number, key]) => (number === accountNumber ? [key] : [])),
     "only the unlinkable account's balance is excluded",
   );
-  assert.deepEqual(unlinkableResult.events, [
+  assert.deepEqual(exclusions(unlinkableResult.events), [
     "deposit-current-balance-excluded-account-number-evidence-missing",
   ]);
 
@@ -608,7 +637,7 @@ try {
     "both accounts' TWD balances are captured",
   );
   assertNoUsdSnapshotLeak(usdCodedItems);
-  assert.deepEqual(usdCodedResult.events, []);
+  assert.deepEqual(exclusions(usdCodedResult.events), []);
   assert.deepEqual(
     [...new Set(depositIdentityFor(usdCodedItems, accountNumber).map((identity) => JSON.stringify(identity)))],
     depositIdentityFor(deferredItems, accountNumber).map((identity) => JSON.stringify(identity)),
@@ -724,8 +753,8 @@ try {
   );
   assert.ok(balanceAccountKeys(continuedRun.items).includes(continuedKey), "the current balance links to the continued account");
   assert.doesNotThrow(() =>
-    matchCurrentBalanceCaptures([], financialCapturesOf(continuedRun.items), fubonCurrentBalanceCaptureMatching));
-  assert.deepEqual(continuedRun.result.events, []);
+    indexCurrentBalanceCaptures(financialCapturesOf(continuedRun.items), fubonCurrentBalanceCaptureMatching).match([]));
+  assert.deepEqual(exclusions(continuedRun.result.events), []);
   assert.deepEqual(
     continuedRun.requests.map((request) => request.identifier.value).sort(),
     [accountNumber, secondAccountNumber].sort(),
@@ -740,7 +769,7 @@ try {
 
   const ambiguousRun = await runWithContinuity(new Map([[secondAccountNumber, { status: "ambiguous", accountCount: 2 }]]));
   assert.deepEqual(
-    ambiguousRun.result.events,
+    exclusions(ambiguousRun.result.events),
     ["deposit-statement-excluded-account-identity-ambiguous"],
     "an ambiguous account is excluded once",
   );
@@ -845,7 +874,7 @@ try {
     jpyCodedDeposits.map(([, key]) => key),
     "only the TWD-coded account's balance is captured",
   );
-  assert.deepEqual(jpyCodedResult.events, [
+  assert.deepEqual(exclusions(jpyCodedResult.events), [
     "deposit-current-balance-excluded-account-number-evidence-missing",
     "deposit-statement-excluded-account-currency-unproven",
   ]);

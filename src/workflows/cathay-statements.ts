@@ -999,6 +999,16 @@ export function decodeCathayApiSourceResponse(
   bytes: Uint8Array,
   text: SourceTextPort,
 ): string {
+  const decoded = text.decode(bytes, requireCathayApiSourceResponse(metadata, expectedPath));
+  text.assertIntact(decoded);
+  return decoded;
+}
+
+/** Check a Cathay source response's endpoint, status, and content type; return its declared charset. */
+export function requireCathayApiSourceResponse(
+  metadata: CathayApiResponseMetadata,
+  expectedPath: string,
+): string {
   let url: URL;
   try {
     url = new URL(metadata.url);
@@ -1032,12 +1042,10 @@ export function decodeCathayApiSourceResponse(
     Object.entries(metadata.headers).find(
       ([name]) => name.toLowerCase() === "content-type",
     )?.[1] ?? "";
-  const charset =
+  return (
     /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(rawContentType)?.[1] ??
-    "utf-8";
-  const decoded = text.decode(bytes, charset);
-  text.assertIntact(decoded);
-  return decoded;
+    "utf-8"
+  );
 }
 
 

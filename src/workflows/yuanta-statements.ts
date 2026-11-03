@@ -2,9 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -47,16 +45,18 @@ import {
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import {
-  readYuantaCurrentDepositBalances,
+  parseYuantaCurrentDepositBalanceSnapshot,
+  readYuantaCurrentDepositBalanceTable,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
+  type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
 import {
-  matchCurrentBalanceCaptures,
+  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -782,11 +782,24 @@ export type YuantaDepositSourceSnapshot = Readonly<{
   accounts: readonly YuantaDepositAccountRead[];
 }>;
 
-export type YuantaReadCurrentDepositBalances = (
-  input: Readonly<{
-    observedAt: string;
-  }>,
-) => Promise<readonly YuantaCurrentDepositBalanceRow[]>;
+/** Open the domestic current-state table; the snapshot module decodes and parses it. */
+export type YuantaReadCurrentDepositBalanceTable = () => Promise<YuantaCurrentDepositTable>;
+
+const yuantaCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  YuantaCurrentDepositTable & Readonly<{ observedAt: string }>,
+  YuantaCurrentDepositBalanceRow,
+  ExistingYuantaFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => parseYuantaCurrentDepositBalanceSnapshot({
+    kind: "domestic",
+    rows: decoded.rows,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: yuantaCurrentBalanceCaptureMatching,
+  build: buildYuantaCurrentDepositBalanceCapture,
+};
 
 /** Read every visible account's query result from the transaction-details page (ADR 0065). */
 export async function readYuantaDepositSource(
@@ -827,7 +840,7 @@ export async function stageYuantaDeposit(
   input: YuantaStatementsCollectionInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  readCurrentBalances: YuantaReadCurrentDepositBalances,
+  readCurrentBalanceTable: YuantaReadCurrentDepositBalanceTable,
 ): Promise<ProductCollectionSummary> {
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta deposit", input);
@@ -848,7 +861,6 @@ export async function stageYuantaDeposit(
     captureId: string;
     evidence: TransactionCounterpartyAccountEvidenceInput[];
   }> = [];
-  let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
   for (const read of snapshot.accounts) {
     const { account } = read;
@@ -917,22 +929,16 @@ export async function stageYuantaDeposit(
 
   // Read and validate the point-in-time page before returning any items. A
   // failure here must not leave statement captures from this run behind.
-  if (financialDepositCaptures.length > 0) {
-    context.signal.throwIfAborted();
-    const currentRows = await readCurrentBalances({
+  const balances = await captureCurrentStateSnapshots(yuantaCurrentBalanceSnapshot, {
+    captures: financialDepositCaptures,
+    acquire: async () => ({
+      ...(await readCurrentBalanceTable()),
       observedAt: yuantaObservedAt(new Date(context.now())),
-    });
-    context.text.assertIntact(JSON.stringify(currentRows));
-    const currentObservedAt = yuantaObservedAt(new Date(context.now()));
-    const { matched } = matchCurrentBalanceCaptures(
-      currentRows.map((row) => ({ ...row, observedAt: currentObservedAt })),
-      financialDepositCaptures,
-      yuantaCurrentBalanceCaptureMatching,
-    );
-    currentBalanceCaptures = matched.map(({ row, capture }) =>
-      admitCurrentDepositBalanceCapture(buildYuantaCurrentDepositBalanceCapture(row, capture)),
-    );
-  }
+    }),
+    product,
+    text: context.text,
+    signal: context.signal,
+  });
 
   context.signal.throwIfAborted();
   const items: ProductStageRequest[] = [];
@@ -967,15 +973,7 @@ export async function stageYuantaDeposit(
       } : {}),
     });
   }
-  for (const capture of currentBalanceCaptures) items.push({
-    product: "current-balance",
-    itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-    command: {
-      kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-      request: currentDepositBalanceCommandRequest(capture),
-    },
-  });
-  product.stage(...items);
+  product.stage(...items, ...balances.items);
 
   return { sourceCaptureCount, rowCount };
 }
@@ -994,6 +992,6 @@ export async function runYuantaStatements(
     input,
     context,
     product,
-    (options) => readYuantaCurrentDepositBalances(yuantaEbankSite(page, context), "domestic", options),
+    () => readYuantaCurrentDepositBalanceTable(yuantaEbankSite(page, context), "domestic"),
   );
 }

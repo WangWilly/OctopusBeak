@@ -26,9 +26,7 @@ import {
   type ProductCollectionSummary,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -45,13 +43,11 @@ import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/
 import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-provider-admission.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
+  readSinopacCurrentDepositBalanceResponse,
   type SinopacCurrentDepositBalanceRow,
-  type SinopacCurrentDepositResponseMetadata,
+  type SinopacCurrentDepositResponse,
 } from "./sinopac-current-deposit-balances.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -74,9 +70,10 @@ import {
   type SinopacIdentitySiteAssessment,
 } from "./sinopac-identity-evidence.ts";
 import {
-  matchCurrentBalanceCaptures,
+  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 import { PREVIEW_PRODUCTS } from "../ledger/pglite/preview-financial-data.ts";
 import {
   collectSinopacCreditCards,
@@ -374,6 +371,23 @@ export const sinopacCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching
       message: "SinoPac current deposit currency does not match the existing statement scope.",
     },
   },
+};
+
+type SinopacCurrentDepositAcquired = SinopacCurrentDepositResponse & Readonly<{ observedAt: string }>;
+
+const sinopacCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  SinopacCurrentDepositAcquired,
+  SinopacCurrentDepositBalanceRow,
+  ExistingSinopacFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => parseSinopacCurrentDepositBalanceSnapshot({
+    payload: decoded.value,
+    response: acquired.response,
+    observedAt: acquired.observedAt,
+  }),
+  matching: sinopacCurrentBalanceCaptureMatching,
+  build: buildSinopacCurrentDepositBalanceCapture,
 };
 
 export const SINOPAC_LOGIN_URL = LOGIN_URL;
@@ -1254,62 +1268,6 @@ export function buildSinopacCapture(
   };
 }
 
-async function readSinopacCurrentDepositBalancesWithText(
-  page: Page,
-  text: SourceTextPort,
-  signal: AbortSignal,
-  input: Readonly<{ observedAt: string; timeoutMs?: number }>,
-): Promise<readonly SinopacCurrentDepositBalanceRow[]> {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  signal.throwIfAborted();
-  const responsePromise = page.waitForResponse((response) => {
-    if (!isSinopacEndpointResponse(response, SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH))
-      return false;
-    try {
-      const url = new URL(response.url());
-      const keys = [...url.searchParams.keys()];
-      return keys.length === 0 || (keys.length === 1 && /^\d{13}$/u.test(keys[0]!));
-    } catch {
-      return false;
-    }
-  }, { timeout: timeoutMs });
-  void responsePromise.catch(() => undefined);
-  await withAbort(
-    page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: timeoutMs,
-    }),
-    signal,
-  );
-  const response = await withAbort(responsePromise, signal);
-  const [bytes, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
-  ]);
-  const payload = decodeSinopacJsonSource({
-    bytes,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      contentType: headers["content-type"] ?? "",
-    },
-    expectedPath: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-    text,
-  });
-  const metadata: SinopacCurrentDepositResponseMetadata = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers,
-  };
-  return parseSinopacCurrentDepositBalanceSnapshot({
-    payload,
-    response: metadata,
-    observedAt: input.observedAt,
-  });
-}
-
 function sinopacCaptureId(observedAt: string): string {
   return `sinopac-source-${createHash("sha256")
     .update(`sinopac-source-capture-v1\0${observedAt}`)
@@ -1324,9 +1282,8 @@ type SinopacDepositCollection = Readonly<{
   skippedAccountCount: number;
 }>;
 
-export type SinopacReadCurrentDepositBalances = (
-  input: Readonly<{ observedAt: string }>,
-) => Promise<readonly SinopacCurrentDepositBalanceRow[]>;
+/** Observe the balance page's response; the snapshot module decodes and parses it. */
+export type SinopacReadCurrentDepositBalanceResponse = () => Promise<SinopacCurrentDepositResponse>;
 
 /** SinoPac's signed-in deposit pages, read as the verbs the deposit runner needs (ADR 0065). */
 export type SinopacDepositSource = Readonly<{
@@ -1337,7 +1294,7 @@ export type SinopacDepositSource = Readonly<{
     window: DateRange,
     businessDate: string,
   ) => Promise<SinopacTransactionResponse>;
-  readCurrentBalances: SinopacReadCurrentDepositBalances;
+  readCurrentBalances: SinopacReadCurrentDepositBalanceResponse;
 }>;
 
 export function sinopacDepositSource(
@@ -1350,8 +1307,7 @@ export function sinopacDepositSource(
     listAccounts: () => openTransactionPage(page, context.text, context.signal, product.event),
     queryTransactions: (account, window, businessDate) =>
       apiClient.fetchTransactions(account, window, businessDate),
-    readCurrentBalances: (input) =>
-      readSinopacCurrentDepositBalancesWithText(page, context.text, context.signal, input),
+    readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(page, context.signal),
   };
 }
 
@@ -1506,7 +1462,7 @@ export async function stageSinopacDeposit(
   _input: SinopacWorkflowInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-  readCurrentBalances: SinopacReadCurrentDepositBalances,
+  readCurrentBalances: SinopacReadCurrentDepositBalanceResponse,
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
   const { signal } = context;
   const { event } = product;
@@ -1559,46 +1515,14 @@ export async function stageSinopacDeposit(
     });
   }
 
-  const balanceItems: ProductStageRequest[] = [];
-  if (financialCapturesForCurrent.length > 0) {
-    await event("collection", "started", "current-balance-collection-started");
-    let currentRows: readonly SinopacCurrentDepositBalanceRow[];
-    try {
-      currentRows = await withAbort(readCurrentBalances({ observedAt }), signal);
-    } catch (error) {
-      await event("validation", "failed", "current-balance-source-rejected");
-      throw error;
-    }
-    signal.throwIfAborted();
-    const { matched } = matchCurrentBalanceCaptures(
-      currentRows,
-      financialCapturesForCurrent,
-      sinopacCurrentBalanceCaptureMatching,
-    );
-    for (const { row, capture: matching } of matched) {
-      try {
-        const balanceCapture = buildSinopacCurrentDepositBalanceCapture(row, matching);
-        balanceItems.push({
-          product: "current-balance",
-          itemKey: `current-balance:${row.stream}:${row.sourceAccountKey}`,
-          command: {
-            kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-            request: currentDepositBalanceCommandRequest(
-              admitCurrentDepositBalanceCapture(balanceCapture),
-            ),
-          },
-        });
-      } catch (error) {
-        await event("validation", "failed", "current-balance-admission-rejected");
-        throw error;
-      }
-    }
-    await event("validation", "completed", "current-balance-validation-completed", {
-      completed: balanceItems.length,
-      total: currentRows.length,
-    });
-  }
-  product.stage(...items, ...balanceItems);
+  const balances = await captureCurrentStateSnapshots(sinopacCurrentBalanceSnapshot, {
+    captures: financialCapturesForCurrent,
+    acquire: async () => ({ ...(await readCurrentBalances()), observedAt }),
+    product,
+    text: context.text,
+    signal,
+  });
+  product.stage(...items, ...balances.items);
   return {
     accountCount: snapshot.accounts.length,
     rowCount: snapshot.accounts.reduce((count, read) => count + read.rowCount, 0),

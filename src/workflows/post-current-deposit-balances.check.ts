@@ -10,11 +10,11 @@ import {
   buildPostCurrentDepositBalanceCapture,
   parsePostCurrentDepositBalanceSnapshot,
   postCurrentBalanceCaptureMatching,
-  readPostCurrentDepositBalances,
+  readPostCurrentDepositBalanceResponse,
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import { matchCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00.123+08:00";
@@ -172,13 +172,16 @@ test("Post parser requires the exact request discriminants and generic endpoint"
 class FakePostResponse {
   private readonly bodyText: string;
   private readonly requestBody: string;
+  private readonly headers: Record<string, string>;
 
   constructor(
     bodyText: string,
     requestBody: string,
+    headers: Record<string, string> = {},
   ) {
     this.bodyText = bodyText;
     this.requestBody = requestBody;
+    this.headers = headers;
   }
 
   url(): string {
@@ -197,7 +200,7 @@ class FakePostResponse {
   }
 
   async allHeaders(): Promise<Record<string, string>> {
-    return { ...response.headers };
+    return { ...response.headers, ...this.headers };
   }
 
   async body(): Promise<Buffer> {
@@ -207,6 +210,12 @@ class FakePostResponse {
 
 class SequencedPostPage extends EventEmitter {
   selectedRequestBody: string | undefined;
+  private readonly headers: Record<string, string>;
+
+  constructor(headers: Record<string, string> = {}) {
+    super();
+    this.headers = headers;
+  }
   private responsePredicate:
     | ((candidate: FakePostResponse) => boolean)
     | undefined;
@@ -241,8 +250,8 @@ class SequencedPostPage extends EventEmitter {
             body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
           });
           for (const candidate of [
-            new FakePostResponse(JSON.stringify(payload), wrongRequest),
-            new FakePostResponse(JSON.stringify(payload), correctRequest),
+            new FakePostResponse(JSON.stringify(payload), wrongRequest, this.headers),
+            new FakePostResponse(JSON.stringify(payload), correctRequest, this.headers),
           ]) {
             if (!this.responsePredicate?.(candidate)) continue;
             this.selectedRequestBody = candidate.request().postData();
@@ -266,20 +275,32 @@ class SequencedPostPage extends EventEmitter {
 
 test("Post reader ignores earlier dispatcher responses until exact overview request", async () => {
   const page = new SequencedPostPage();
-  const rows = await readPostCurrentDepositBalances(page as never, {
-    observedAt,
+  const read = await readPostCurrentDepositBalanceResponse(page as never, {
+    signal: new AbortController().signal,
     timeoutMs: 100,
   });
+  const selected = JSON.parse(page.selectedRequestBody ?? "{}");
+  assert.equal(selected.header.TxnCode, POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE);
+  assert.equal(selected.header.BizCode, POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE);
+  assert.equal(read.evidence.kind, "json");
+  const rows = parsePostCurrentDepositBalanceSnapshot({
+    payload: JSON.parse(new TextDecoder().decode(read.evidence.bytes)),
+    response: read.response,
+    observedAt,
+  });
   assert.equal(rows.length, 1);
-  assert.equal(
-    JSON.parse(page.selectedRequestBody ?? "{}").header.TxnCode,
-    POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-  );
-  assert.equal(
-    JSON.parse(page.selectedRequestBody ?? "{}").header.BizCode,
-    POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-  );
   assert.doesNotMatch(JSON.stringify(rows), /AUTH-MUST-NOT-BE-RETAINED/u);
+});
+
+test("Post reader refuses a response that declares a charset other than UTF-8", async () => {
+  const page = new SequencedPostPage({ "content-type": "application/json; charset=Big5" });
+  await assert.rejects(
+    readPostCurrentDepositBalanceResponse(page as never, {
+      signal: new AbortController().signal,
+      timeoutMs: 100,
+    }),
+    /^Error: Post current deposit response charset is not UTF-8\.$/u,
+  );
 });
 
 test("Post parser rejects malformed or incomplete response envelopes and rows", () => {
@@ -431,20 +452,33 @@ test("Post current balances fail closed when captures span more than one connect
     { identityEpochKey: "post-user-other-epoch" },
   ])
     assert.throws(
-      () => matchCurrentBalanceCaptures(
-        [row],
+      () => indexCurrentBalanceCaptures(
         [financialCapture, { identity: { ...financialCapture.identity, ...otherScope, ...otherAccount } }],
         postCurrentBalanceCaptureMatching,
-      ),
+      ).match([row]),
       /^Error: Post current deposit captures span more than one source connection or identity epoch\.$/u,
     );
   assert.deepEqual(
-    matchCurrentBalanceCaptures(
-      [row],
+    indexCurrentBalanceCaptures(
       [financialCapture, { identity: { ...financialCapture.identity, ...otherAccount } }],
       postCurrentBalanceCaptureMatching,
-    ).matched.map(({ capture }) => capture.identity.sourceAccountKey),
+    ).match([row]).matched.map(({ capture }) => capture.identity.sourceAccountKey),
     ["post-other-account"],
     "captures in the run's one scope still match by their own key",
   );
+});
+
+test("Post BAL accepts only an ungrouped integer lexeme", () => {
+  const withBal = (BAL: string) => [
+    { ...payload[0], body: { itemList: [{ ...psRow, BAL }] } },
+    payload[1],
+  ];
+  assert.deepEqual(parse(withBal("-000")).map((row) => row.ledger), [
+    { coefficient: "0", scale: 0, sourceLexeme: "-000" },
+  ]);
+  assert.deepEqual(parse(withBal(" -0120 ")).map((row) => row.ledger), [
+    { coefficient: "-120", scale: 0, sourceLexeme: "-0120" },
+  ]);
+  for (const BAL of ["1,234", "12 34", "12.0", "+12", ""])
+    assert.throws(() => parse(withBal(BAL)), /BAL (must be an exact integer string|is blank)/u, BAL);
 });

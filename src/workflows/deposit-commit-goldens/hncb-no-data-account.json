@@ -4,16 +4,16 @@
     "counts": {
       "sourceCaptureCount": 2,
       "rowCount": 2,
-      "itemCount": 2,
-      "committedCount": 2,
+      "itemCount": 3,
+      "committedCount": 3,
       "accountCount": 2
     },
     "products": [
       {
         "typeId": "deposit",
         "status": "success",
-        "itemCount": 2,
-        "committedCount": 2
+        "itemCount": 3,
+        "committedCount": 3
       }
     ]
   },
@@ -25,7 +25,6 @@
       },
       "items": [
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-0",
           "command": {
@@ -174,10 +173,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
         },
         {
-          "provider": "hncb",
           "product": "domestic-deposit",
           "itemKey": "hncb-financial-hncb-source-50f4b950cbaf3f792c3dde41-1788_2352_0000_0-1",
           "command": {
@@ -259,7 +258,171 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "hncb"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "current-balance:domestic-deposit:9000_0000_0011",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1",
+                "integrationNamespace": "hncb",
+                "sourceConnectionKey": "sha256:4lVg-KsX6hGGgyoEdIiv256jPbESasqYN8HyiDJ2QzI",
+                "identityEpoch": "sha256:aG5jYi1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBobmNiLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OjdhNGZkN2EwZjIyZjRjNWQ5MzNkNWYzYjViNWJmOWFjNTJmMWRkMGU5ZDZiNGQ0ZDBkOWFkNGExZmNiNWUzYjE",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "hncb/domestic-deposit/current-balance-v1",
+                "contractVersion": "hncb/current-deposit-balance-v1",
+                "subjectDigest": "sha256:q_VM3n_H4FmZUBTs5OqiKW6Fqp3vwKh9Ws9YX3BarsQ",
+                "observedAt": "2026-09-01T12:00:00+08:00",
+                "scope": {
+                  "startDate": "2026-09-01",
+                  "endDate": "2026-09-01",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "hncb/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9000_0000_0011"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 2,
+                    "terminal": true,
+                    "metadata": {
+                      "source": "hncb-current-deposit-summary",
+                      "sourceRowCount": 1,
+                      "balanceFieldCount": 2,
+                      "currencyResolution": "provider"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
+                    "collisionKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
+                    "providerKey": "sha256:i9K7DPlo97QdENVJVgKLpzxTPI-yMkEMdd1fSjCW3gU",
+                    "contentHash": "sha256:uhRcs7JpX5911MxmVqRIAXGXBnYblzF92P1szF1g878",
+                    "compact": {
+                      "accountNumber": "9000_0000_0011",
+                      "currencySourceLexeme": "TWD",
+                      "currencyResolution": "provider",
+                      "canonicalCurrency": "TWD",
+                      "effectiveAt": "2026-09-01T03:59:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Tue, 01 Sep 2026 03:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/netbank/servlet/TrxDispatcher",
+                        "transaction": "com.lb.wibc.trx.EAccDDSummary",
+                        "status": 200,
+                        "cacheControl": "no-store",
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
+                      },
+                      "sourceField": "帳上餘額",
+                      "balanceKind": "ledger",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "1380000",
+                        "scale": 2,
+                        "sourceLexeme": "13800.00"
+                      }
+                    },
+                    "sequenceLexeme": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
+                    "collisionKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
+                    "providerKey": "sha256:URHtZl-eZaMZDGGgmKUIoMgnS95y56B8-ECaaluI1Us",
+                    "contentHash": "sha256:KSnrjVwKM7jzIfSFKf4KnSSxyFfPAIdGlbi7pz6wFFk",
+                    "compact": {
+                      "accountNumber": "9000_0000_0011",
+                      "currencySourceLexeme": "TWD",
+                      "currencyResolution": "provider",
+                      "canonicalCurrency": "TWD",
+                      "effectiveAt": "2026-09-01T03:59:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Tue, 01 Sep 2026 03:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/netbank/servlet/TrxDispatcher",
+                        "transaction": "com.lb.wibc.trx.EAccDDSummary",
+                        "status": 200,
+                        "cacheControl": "no-store",
+                        "contractVersion": "hncb/current-deposit-balance-v1",
+                        "url": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary"
+                      },
+                      "sourceField": "可用餘額",
+                      "balanceKind": "available",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "1380000",
+                        "scale": 2,
+                        "sourceLexeme": "13800.00"
+                      }
+                    },
+                    "sequenceLexeme": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9000_0000_0011",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:HqviqluefuVptAswXOwE9347nrb_5843VytZdEIT7Ds",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "1380000",
+                    "scale": 2,
+                    "sourceLexeme": "13800.00"
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-01T03:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "hncb/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Tue, 01 Sep 2026 03:59:00 GMT",
+                  "evidenceContractVersion": "hncb/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:caDGwaNZpEhVCGD7URfAMbOkpBIOcY63ZQEB4f4V2vM",
+                  "evidenceEndpoint": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store"
+                },
+                {
+                  "observationKey": "sha256:HqviqluefuVptAswXOwE9347nrb_5843VytZdEIT7Ds",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "1380000",
+                    "scale": 2,
+                    "sourceLexeme": "13800.00"
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-01T03:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "hncb/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Tue, 01 Sep 2026 03:59:00 GMT",
+                  "evidenceContractVersion": "hncb/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:WuIE-J1RmaGS2UNBet-jJXSPM7Yj9vQzPk5qK-HsZco",
+                  "evidenceEndpoint": "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store"
+                }
+              ]
+            }
+          },
+          "provider": "hncb"
         }
       ]
     }
@@ -330,6 +493,48 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 1
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    },
+    {
+      "stage": "collection",
       "outcome": "completed",
       "code": "deposit-collection-completed",
       "counts": {
@@ -353,8 +558,8 @@
       "outcome": "completed",
       "code": "deposit-source-validation-completed",
       "counts": {
-        "completed": 2,
-        "total": 2,
+        "completed": 3,
+        "total": 3,
         "statementType": "deposit"
       }
     },

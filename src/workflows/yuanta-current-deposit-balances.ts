@@ -1,6 +1,8 @@
 import type { Locator, Response } from "playwright";
 
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
 
@@ -202,24 +204,22 @@ function validateResponse(
   return { providerDate: requireProviderDate(response.headers), cacheControl };
 }
 
+const YUANTA_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "strip",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
 function parseExactDecimal(
   value: string,
   label: string,
 ): YuantaCurrentDepositExactDecimal {
   const sourceLexeme = cleanText(value);
-  const normalized = sourceLexeme.replace(/\s/gu, "");
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(
-    normalized,
-  );
-  if (!match) {
+  const amount = parseProviderDecimal(sourceLexeme, YUANTA_AMOUNT);
+  if (!amount) {
     throw new Error(`Yuanta current deposit ${label} is not an exact decimal.`);
   }
-  const sign = match[1] === "-" ? "-" : "";
-  const whole = (match[2] ?? "").replace(/,/g, "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  const coefficient = digits === "0" ? "0" : `${sign}${digits}`;
-  return { coefficient, scale: fraction.length, sourceLexeme };
+  return { ...amount, sourceLexeme };
 }
 
 function parseCurrency(value: string, label: string): string {
@@ -355,20 +355,23 @@ async function tableClass(table: Locator): Promise<Set<string>> {
   return new Set(cleanText(await table.getAttribute("class")).split(/\s+/u).filter(Boolean));
 }
 
-/** Parse one live DOM table through Locator APIs, without replaying its POST. */
-export async function parseYuantaCurrentDepositBalanceTable(
+/**
+ * Read one live DOM table's balance rows through Locator APIs, without
+ * replaying its POST. Footer totals are left out.
+ */
+export async function readYuantaCurrentDepositTableCells(
   table: Locator,
-  input: Omit<YuantaCurrentDepositSnapshotInput, "rows">,
-): Promise<readonly YuantaCurrentDepositBalanceRow[]> {
+  kind: YuantaCurrentDepositKind,
+): Promise<readonly (readonly string[])[]> {
   const classes = await tableClass(table);
   if (!classes.has("normalTable")) {
     throw new Error("Yuanta current deposit table is missing normalTable.");
   }
-  if (input.kind === "domestic" && !classes.has("botM2")) {
+  if (kind === "domestic" && !classes.has("botM2")) {
     throw new Error("Yuanta domestic current deposit table is missing botM2.");
   }
 
-  const expected = expectedHeaders(input.kind);
+  const expected = expectedHeaders(kind);
   const rows = table.locator("tr");
   const rowCount = await rows.count();
   let headerFound = false;
@@ -405,7 +408,7 @@ export async function parseYuantaCurrentDepositBalanceTable(
   if (!headerFound) {
     throw new Error("Yuanta current deposit table headers are not recognized.");
   }
-  return parseYuantaCurrentDepositBalanceSnapshot({ ...input, rows: dataRows });
+  return dataRows;
 }
 
 const FOREIGN_SUMMARY_TAB = "#submenuAreaFX";
@@ -506,19 +509,22 @@ function responseMatches(
   }
 }
 
+/** The current-state table the summary card opens, before decoding. */
+export type YuantaCurrentDepositTable = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  response: YuantaCurrentDepositResponseMetadata;
+}>;
+
 /**
  * Open the authenticated summary page, follow the kind's summary card and
- * parse the resulting current-state table. The response is observed through
+ * read the resulting current-state table. The response is observed through
  * Playwright only; this function never fetches or replays the provider request.
  */
-export async function readYuantaCurrentDepositBalances(
+export async function readYuantaCurrentDepositBalanceTable(
   site: YuantaEbankSite,
   kind: YuantaCurrentDepositKind,
-  input: Readonly<{
-    observedAt: string;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly YuantaCurrentDepositBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<YuantaCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
   const { frames } = site;
   // The run leaves fmain on the last product page; the summary route brings back the cards.
@@ -544,14 +550,13 @@ export async function readYuantaCurrentDepositBalances(
   ]);
   const headers = await frames.race(response.allHeaders());
   const table = await findCurrentDepositTable(frames, kind, timeoutMs);
-  return await frames.race(parseYuantaCurrentDepositBalanceTable(table, {
-    kind,
-    observedAt: input.observedAt,
+  return {
+    evidence: { kind: "cells", rows: await frames.race(readYuantaCurrentDepositTableCells(table, kind)) },
     response: {
       url: response.url(),
       status: response.status(),
       method: response.request().method(),
       headers,
     },
-  }));
+  };
 }

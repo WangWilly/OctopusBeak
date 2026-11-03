@@ -22,9 +22,11 @@ import {
   normalizeMoney,
   parseExactAmount,
   parseExactMoney,
+  parseProviderDecimal,
   readTotals,
   subtractMoney,
   type ExactMoney,
+  type ProviderDecimalPolicy,
   type MoneyTotalsAccumulator,
 } from "./exact-money.ts";
 
@@ -192,4 +194,36 @@ test("a totals key that leaves out the currency refuses to add two currencies to
   assert.deepEqual(readTotals(totals).map(({ coefficient, currency, count }) => ({ coefficient, currency, count })), [
     { coefficient: "3", currency: "TWD", count: 2 },
   ]);
+});
+
+test("parseProviderDecimal reads a provider lexeme under its declared policy", () => {
+  const grouped: ProviderDecimalPolicy = { internalWhitespace: "reject", grouping: "thousands", digits: "decimal" };
+  const spaced: ProviderDecimalPolicy = { ...grouped, internalWhitespace: "strip" };
+  const integer: ProviderDecimalPolicy = { internalWhitespace: "reject", grouping: "none", digits: "integer" };
+  const cases: readonly (readonly [string, ProviderDecimalPolicy, { coefficient: string; scale: number } | null])[] = [
+    ["1,234.50", grouped, { coefficient: "123450", scale: 2 }],
+    ["1234.50", grouped, { coefficient: "123450", scale: 2 }],
+    ["-1,234", grouped, { coefficient: "-1234", scale: 0 }],
+    ["0001", grouped, { coefficient: "1", scale: 0 }],
+    ["0.00", grouped, { coefficient: "0", scale: 2 }],
+    ["-0.00", grouped, { coefficient: "0", scale: 2 }],
+    ["-0", integer, { coefficient: "0", scale: 0 }],
+    ["12,34", grouped, null],
+    ["1,2345", grouped, null],
+    [",123", grouped, null],
+    ["1.", grouped, null],
+    [".5", grouped, null],
+    ["+1", grouped, null],
+    ["1e3", grouped, null],
+    ["", grouped, null],
+    ["-", grouped, null],
+    ["1 234", grouped, null],
+    ["1 234", spaced, { coefficient: "1234", scale: 0 }],
+    ["- 1,234 .5", spaced, { coefficient: "-12345", scale: 1 }],
+    ["1,234", integer, null],
+    ["12.5", integer, null],
+    ["-0012", integer, { coefficient: "-12", scale: 0 }],
+  ];
+  for (const [lexeme, policy, expected] of cases)
+    assert.deepEqual(parseProviderDecimal(lexeme, policy), expected, JSON.stringify({ lexeme, policy }));
 });

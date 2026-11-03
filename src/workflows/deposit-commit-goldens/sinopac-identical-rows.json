@@ -4,8 +4,8 @@
     "counts": {
       "sourceCaptureCount": 1,
       "rowCount": 2,
-      "itemCount": 1,
-      "committedCount": 1,
+      "itemCount": 2,
+      "committedCount": 2,
       "accountCount": 1,
       "skippedAccountCount": 0
     },
@@ -13,8 +13,8 @@
       {
         "typeId": "deposit",
         "status": "success",
-        "itemCount": 1,
-        "committedCount": 1
+        "itemCount": 2,
+        "committedCount": 2
       }
     ]
   },
@@ -278,6 +278,125 @@
               ]
             }
           }
+        },
+        {
+          "provider": "sinopac",
+          "product": "current-balance",
+          "itemKey": "current-balance:domestic-deposit:9100_0000_0000_11",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "sinopac-current-7gsXblwN3UGAhHmR0zcG3ZA6PTtn_rBV1b3iUP_qZdE-1790_8272_0000_0",
+                "integrationNamespace": "sinopac",
+                "sourceConnectionKey": "sha256:RlwjruyG81yMys-eZFmE-Uv98hzwt6LHTlcNVdNSRuI",
+                "identityEpoch": "sha256:c2lub3BhYy1odW1hbi1hdHRlc3RlZC1pZGVudGl0eS1lcG9jaC12MQBzaW5vcGFjLWRvbWVzdGljLWRlcG9zaXQtaHVtYW4tYXR0ZXN0ZWQtdjEAaHVtYW4tYXR0ZXN0ZWQtdjEAc2hhMjU2OmVjMDExMzc1MDE0ZDUyNWUwNzRkOTkyOGNiNzhlZDcyMzU1MDQ4NjUyYTY1NTU0ODkwNGZmOWFlM2M0ZDkwYTE",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "sinopac/domestic-deposit/current-balance-v1",
+                "contractVersion": "sinopac/current-deposit-balance-v1",
+                "subjectDigest": "sha256:FKrXhy3tcroviepBqlqbXOwebdsjgBbEOGnzAmmI9-o",
+                "observedAt": "2026-10-01T12:00:00.000+08:00",
+                "scope": {
+                  "startDate": "2026-10-01",
+                  "endDate": "2026-10-01",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "sinopac/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "sourceAccountKey": "9100_0000_0000_11"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "source": "sinopac-current-deposit-summary",
+                      "sourceRowCount": 1,
+                      "balanceField": "AvailBalance",
+                      "contentType": "application/json;charset=UTF-8",
+                      "providerHttpDate": "Thu, 01 Oct 2026 03:59:00 GMT"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:m9l5Py_kUpmTmvvs9ELwTGhgmjZpINzTJmjNzbznicI",
+                    "collisionKey": "sha256:m9l5Py_kUpmTmvvs9ELwTGhgmjZpINzTJmjNzbznicI",
+                    "providerKey": "sha256:57VWe0FI9pDCOw7NYOCGQ8lvHG607d63LNaUxBJ3RTk",
+                    "contentHash": "sha256:kI0N94BYcGKu76FlkXKuj0ATQiEQru4tCj9-OdxrV5Y",
+                    "compact": {
+                      "source": "sinopac",
+                      "accountNumber": "9100_0000_0000_11",
+                      "sourceAccountKey": "9100_0000_0000_11",
+                      "accountText": "SYNTHETIC ACCOUNT",
+                      "accountValueFormat": "###-###-#######-#",
+                      "currencyText": "新台幣",
+                      "effectiveAt": "2026-10-01T03:59:00.000000000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Thu, 01 Oct 2026 03:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/ws/bank/bankbal/ws_bankbal.ashx",
+                        "status": 200,
+                        "contentType": "application/json;charset=UTF-8",
+                        "cacheControl": "no-cache,no-store",
+                        "contractVersion": "sinopac/current-deposit-balance-v1"
+                      },
+                      "providerFields": {
+                        "availBalance": "800",
+                        "availBalanceInteger": null,
+                        "maxAvail": "800",
+                        "outStdLmt": "0",
+                        "fixBalance": "0",
+                        "nonTrxferFlg": "False",
+                        "category": "1001",
+                        "digiTalFg": ""
+                      },
+                      "sourceField": "AvailBalance",
+                      "balanceKind": "ledger",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "800",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:m9l5Py_kUpmTmvvs9ELwTGhgmjZpINzTJmjNzbznicI",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "9100_0000_0000_11",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:gOE5QGxpjfSvYuUUlgN4cdYVe-QLqLh5xPvcl7bYtUM",
+                  "balanceKind": "ledger",
+                  "balance": {
+                    "coefficient": "800",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-10-01T03:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "sinopac/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:m9l5Py_kUpmTmvvs9ELwTGhgmjZpINzTJmjNzbznicI",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Thu, 01 Oct 2026 03:59:00 GMT",
+                  "evidenceContractVersion": "sinopac/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:m9l5Py_kUpmTmvvs9ELwTGhgmjZpINzTJmjNzbznicI",
+                  "evidenceEndpoint": "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-cache,no-store"
+                }
+              ]
+            }
+          }
         }
       ]
     }
@@ -381,12 +500,40 @@
       "code": "current-balance-collection-started"
     },
     {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 1
+      }
+    },
+    {
       "stage": "validation",
       "outcome": "completed",
       "code": "current-balance-validation-completed",
       "counts": {
-        "completed": 0,
-        "total": 0
+        "completed": 1,
+        "total": 1
       }
     },
     {
@@ -414,8 +561,8 @@
       "outcome": "completed",
       "code": "deposit-source-validation-completed",
       "counts": {
-        "completed": 1,
-        "total": 1,
+        "completed": 2,
+        "total": 2,
         "statementType": "deposit"
       }
     },

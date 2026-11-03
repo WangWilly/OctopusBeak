@@ -6,9 +6,7 @@ import {
 } from "../lib/automation/source-text.ts";
 import type { Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -32,16 +30,18 @@ import type { VerificationStage } from "../lib/automation/verification-stage.ts"
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
-  readHncbCurrentDepositBalances,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
+  parseHncbCurrentDepositBalanceSnapshot,
+  parseHncbCurrentDepositOverviewSnapshot,
+  readHncbCurrentDepositDetailTable,
+  readHncbCurrentDepositOverviewTable,
   type HncbCurrentDepositOverviewBalanceRow,
   type HncbCurrentDepositBalanceRow,
-  readHncbCurrentDepositOverviewBalances,
+  type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
 import {
-  admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -61,9 +61,10 @@ import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
-  matchCurrentBalanceCaptures,
+  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
-} from "./current-balance-capture-match.ts";
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
@@ -1046,11 +1047,24 @@ export type HncbDepositSourceSnapshot = Readonly<{
   captures: readonly HncbDomesticDepositValidatedEvidence[];
 }>;
 
-export type HncbReadCurrentDepositBalances = (
-  input: Readonly<{
-    observedAt: string;
-  }>,
-) => Promise<readonly HncbCurrentDepositRow[]>;
+/** Open one current-state table; the snapshot module decodes and parses it. */
+export type HncbReadCurrentDepositBalanceTable = () => Promise<HncbCurrentDepositTable>;
+
+const hncbCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  HncbCurrentDepositTable & Readonly<{ observedAt: string }>,
+  HncbCurrentDepositRow,
+  ExistingHncbFinancialCapture
+> = {
+  product: "current-balance",
+  parse: (decoded, acquired) => {
+    const snapshot = { rows: decoded.rows, response: acquired.response, observedAt: acquired.observedAt };
+    return acquired.view === "overview"
+      ? parseHncbCurrentDepositOverviewSnapshot(snapshot)
+      : parseHncbCurrentDepositBalanceSnapshot(snapshot);
+  },
+  matching: hncbCurrentBalanceCaptureMatching,
+  build: buildHncbCurrentDepositBalanceCapture,
+};
 
 type HncbDepositContext = Pick<WorkflowContext, "signal" | "text">;
 
@@ -1087,13 +1101,13 @@ function hncbDepositSource(page: Page, context: HncbDepositContext): HncbDeposit
  * The current-balance page is the fallback for older sessions and for an
  * overview without rows.
  */
-export function hncbCurrentDepositBalances(
-  readOverview: HncbReadCurrentDepositBalances,
-  readDetail: HncbReadCurrentDepositBalances,
-): HncbReadCurrentDepositBalances {
-  return async (input) => {
-    const overviewRows = await readOverview(input);
-    return overviewRows.length > 0 ? overviewRows : await readDetail(input);
+export function hncbCurrentDepositBalanceTable(
+  readOverview: HncbReadCurrentDepositBalanceTable,
+  readDetail: HncbReadCurrentDepositBalanceTable,
+): HncbReadCurrentDepositBalanceTable {
+  return async () => {
+    const overview = await readOverview();
+    return overview.evidence.rows.length > 0 ? overview : await readDetail();
   };
 }
 
@@ -1180,9 +1194,9 @@ export async function readHncbDepositSource(
  */
 export async function stageHncbDeposit(
   snapshot: HncbDepositSourceSnapshot,
-  context: Pick<WorkflowContext, "signal">,
+  context: Pick<WorkflowContext, "signal" | "text">,
   product: ProductCollectionHandle,
-  readCurrentBalances: HncbReadCurrentDepositBalances,
+  readCurrentBalanceTable: HncbReadCurrentDepositBalanceTable,
 ): Promise<HncbDepositSummary> {
   const { captures } = snapshot;
   if (captures.length === 0)
@@ -1196,7 +1210,6 @@ export async function stageHncbDeposit(
     captureId: string;
     financialCapture: NonNullable<ReturnType<typeof admitHncbDomesticDepositFinancialCapture>["capture"]>;
   }> = [];
-  let currentBalanceCaptures: Awaited<ReturnType<typeof admitCurrentDepositBalanceCapture>>[] = [];
 
   const captureId = hncbCaptureId(snapshot.observedAt);
   const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
@@ -1231,19 +1244,13 @@ export async function stageHncbDeposit(
   // Read and validate the point-in-time page before opening the financial
   // commit boundary. A failure here must not leave statement captures from
   // this run behind.
-  if (financialCaptures.length > 0) {
-    context.signal.throwIfAborted();
-    const currentRows = await readCurrentBalances({ observedAt: hncbObservedAt() });
-    const currentObservedAt = hncbObservedAt();
-    const { matched } = matchCurrentBalanceCaptures(
-      currentRows.map((row) => ({ ...row, observedAt: currentObservedAt })),
-      financialCaptures,
-      hncbCurrentBalanceCaptureMatching,
-    );
-    currentBalanceCaptures = matched.map(({ row, capture }) =>
-      admitCurrentDepositBalanceCapture(buildHncbCurrentDepositBalanceCapture(row, capture)),
-    );
-  }
+  const balances = await captureCurrentStateSnapshots(hncbCurrentBalanceSnapshot, {
+    captures: financialCaptures,
+    acquire: async () => ({ ...(await readCurrentBalanceTable()), observedAt: hncbObservedAt() }),
+    product,
+    text: context.text,
+    signal: context.signal,
+  });
 
   product.stage(
     ...sourceOnlyEntries.map((entry) => ({
@@ -1260,14 +1267,7 @@ export async function stageHncbDeposit(
         request: { capture: entry.financialCapture },
       },
     } as const)),
-    ...currentBalanceCaptures.map((capture) => ({
-      product: "current-balance",
-      itemKey: `current-balance:${capture.identity.sourceAccountKey}`,
-      command: {
-        kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-        request: currentDepositBalanceCommandRequest(capture),
-      },
-    } as const)),
+    ...balances.items,
   );
   return {
     accountCount: captures.length,
@@ -1281,9 +1281,9 @@ const collectHncbDeposit: HncbDepositRunner = async (page, input, context, produ
     await readHncbDepositSource(hncbDepositSource(page, context), input, context, product),
     context,
     product,
-    hncbCurrentDepositBalances(
-      (options) => withAbort(readHncbCurrentDepositOverviewBalances(page, options), context.signal),
-      (options) => withAbort(readHncbCurrentDepositBalances(page, options), context.signal),
+    hncbCurrentDepositBalanceTable(
+      () => withAbort(readHncbCurrentDepositOverviewTable(page), context.signal),
+      () => withAbort(readHncbCurrentDepositDetailTable(page), context.signal),
     ),
   );
 

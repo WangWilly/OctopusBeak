@@ -25,6 +25,7 @@ import {
   runHncbStatements,
   stageHncbDeposit,
 } from "./hncb-statements.ts";
+import { hncbCurrentDepositDetailTable, hncbCurrentDepositUnavailableRow } from "./hncb-current-deposit-balances.fixtures.ts";
 
 const NOW = "2026-10-15T02:00:00.000Z";
 const DATE = "Thu, 15 Oct 2026 02:00:00 GMT";
@@ -292,7 +293,7 @@ function depositRun(options: Readonly<{
       }, input, context, product),
       context,
       product,
-      async () => [],
+      async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(depositAccount)]),
     ),
   });
 }

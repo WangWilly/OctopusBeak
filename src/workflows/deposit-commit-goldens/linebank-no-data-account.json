@@ -1,0 +1,599 @@
+{
+  "executions": [
+    {
+      "options": {
+        "provider": "linebank",
+        "product": "deposit"
+      },
+      "items": [
+        {
+          "product": "domestic-deposit",
+          "itemKey": "linebank-uuid-1",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "linebank-uuid-1",
+                "authorityRoute": "linebank/domestic-deposit/human-attested-v13",
+                "contractVersion": "human-attested-v13",
+                "identity": {
+                  "integrationNamespace": "linebank",
+                  "sourceConnectionKey": "sha256:fd3b8987ea30e0835e86211ea29bbb512ce41507e3d05cc63b6332feeec667aa",
+                  "identityEpochKey": "sha256:1ab128cfb27e58361b7b53796ac1687376e69e3ca66dee64660827b58f008b2e",
+                  "stream": "domestic-deposit",
+                  "recordKind": "linebank-domestic-deposit-financial-v13",
+                  "subjectDigest": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                  "accountNo": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                  "sourceAccountKey": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                  "accountNumber": {
+                    "value": "9990_0000_0001",
+                    "kind": "depository-account",
+                    "evidenceVersion": "linebank/domestic-deposit/account-number-v1",
+                    "sourceField": "transactions.content.acctNbr"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2025-09-26",
+                  "endDate": "2026-09-25",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "human-attested-requested-scope-all-pages-stable-totals",
+                  "completenessRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "absenceAuthority": "comparable-complete-range",
+                  "contractFingerprint": "sha256:bed3a69e30409009f66a7f9baf671f842a30e27a55275696987d9d3e52cdc79a",
+                  "preflightFingerprint": "sha256:eb790d7976fb1e808ba04c77cf5416a2523f388dafd9f0ff171ad96c3a705604",
+                  "pageCount": 1
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human_attested_history",
+                  "postingBasis": "human-attested-formally-posted",
+                  "postingRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:2549a7b0ed8f500ac5a35386027170b9564a4ae03855f8552fbe8f130942d621",
+                    "proofKind": "human-attested-requested-scope-all-pages-stable-totals",
+                    "contractFingerprint": "sha256:bed3a69e30409009f66a7f9baf671f842a30e27a55275696987d9d3e52cdc79a",
+                    "preflightFingerprint": "sha256:eb790d7976fb1e808ba04c77cf5416a2523f388dafd9f0ff171ad96c3a705604",
+                    "metadataJson": "{\"pageNbr\":1,\"pageCapacity\":1000,\"totalCount\":1,\"rowCount\":1}"
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:fd6eed7f614dcb38627ded722756acb6771a11a8521f38e4de5c1ec7887f1353",
+                    "collisionKey": "sha256:b0a84eb3624de9875f37fc83ebe01335585420f4974598e7ed59260dbb3b228c",
+                    "providerKey": "sha256:fd6eed7f614dcb38627ded722756acb6771a11a8521f38e4de5c1ec7887f1353",
+                    "contentHash": "sha256:80217e47cfc078269af7fc1447ccc6a2060014c0af6992c6ef1c77f78ba7e812",
+                    "sequenceLexeme": "sha256:fd6eed7f614dcb38627ded722756acb6771a11a8521f38e4de5c1ec7887f1353",
+                    "compactJson": "{\"sourceOccurrenceKey\":\"sha256:fd6eed7f614dcb38627ded722756acb6771a11a8521f38e4de5c1ec7887f1353\",\"baseOccurrenceKey\":\"sha256:b0a84eb3624de9875f37fc83ebe01335585420f4974598e7ed59260dbb3b228c\",\"sourceChangeFingerprint\":\"sha256:80217e47cfc078269af7fc1447ccc6a2060014c0af6992c6ef1c77f78ba7e812\",\"accountKey\":\"sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd\",\"sourceConnection\":\"accessibility.linebank.com.tw\",\"stream\":\"domestic-deposit\",\"contractVersion\":\"preflight-v4\",\"identityEpoch\":1700_0000_0000_0,\"sourceSequence\":\"101\",\"occurrenceCounter\":1,\"sourceSequenceKey\":\"sha256:fd6eed7f614dcb38627ded722756acb6771a11a8521f38e4de5c1ec7887f1353\",\"sourceTime\":{\"localDate\":\"20260809\",\"localTime\":\"112233\",\"timeZone\":\"Asia/Taipei\",\"epochMilliseconds\":1786_2457_5300_0,\"basis\":\"source_observed\"},\"direction\":\"inflow\",\"sourceDirectionCode\":\"1\",\"amount\":{\"coefficient\":\"7800\",\"scale\":2},\"balanceAfter\":{\"coefficient\":\"560000\",\"scale\":2},\"currency\":\"TWD\",\"description\":\"Synthetic transfer\",\"cancellation\":\"N\",\"cancellationFlags\":{\"cncdTxYn\":\"N\",\"cnclTxYn\":\"N\"},\"provenance\":{\"matchingRuleVersion\":\"occurrence-v1\"}}",
+                    "amount": {
+                      "coefficient": "7800",
+                      "scale": 2
+                    },
+                    "balanceAfter": {
+                      "coefficient": "560000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "Synthetic transfer",
+                    "direction": "inflow",
+                    "sourceTime": {
+                      "localDate": "2026-08-09",
+                      "localTime": "11:22:33",
+                      "timeZone": "Asia/Taipei",
+                      "epochMilliseconds": 1786245753000
+                    },
+                    "effectiveOn": "2026-08-09",
+                    "transactionDateTimeLocal": "2026-08-09T11:22:33"
+                  }
+                ]
+              }
+            }
+          },
+          "provider": "linebank"
+        },
+        {
+          "product": "domestic-deposit",
+          "itemKey": "linebank-uuid-2",
+          "command": {
+            "kind": "financial.deposit.commit",
+            "request": {
+              "capture": {
+                "captureId": "linebank-uuid-2",
+                "authorityRoute": "linebank/domestic-deposit/human-attested-v13",
+                "contractVersion": "human-attested-v13",
+                "identity": {
+                  "integrationNamespace": "linebank",
+                  "sourceConnectionKey": "sha256:fd3b8987ea30e0835e86211ea29bbb512ce41507e3d05cc63b6332feeec667aa",
+                  "identityEpochKey": "sha256:a4a0397efa67fd4f675bab5e8be66553a42fc5702bdde8c0db1e0bc2903f67cd",
+                  "stream": "domestic-deposit",
+                  "recordKind": "linebank-domestic-deposit-financial-v13",
+                  "subjectDigest": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                  "accountNo": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                  "sourceAccountKey": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                  "accountNumber": {
+                    "value": "9990_0000_0002",
+                    "kind": "depository-account",
+                    "evidenceVersion": "linebank/domestic-deposit/account-number-v1",
+                    "sourceField": "transactions.content.acctNbr"
+                  },
+                  "accountType": "depository",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2025-09-26",
+                  "endDate": "2026-09-25",
+                  "scopeKind": "bounded-range",
+                  "completeness": "complete-range",
+                  "completenessBasis": "human-attested-requested-scope-all-pages-stable-totals",
+                  "completenessRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "absenceAuthority": "comparable-complete-range",
+                  "contractFingerprint": "sha256:bed3a69e30409009f66a7f9baf671f842a30e27a55275696987d9d3e52cdc79a",
+                  "preflightFingerprint": "sha256:eb790d7976fb1e808ba04c77cf5416a2523f388dafd9f0ff171ad96c3a705604",
+                  "pageCount": 1
+                },
+                "semantics": {
+                  "postingStatus": "posted",
+                  "postingOrigin": "human_attested_history",
+                  "postingBasis": "human-attested-formally-posted",
+                  "postingRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "linebank/domestic-deposit/human-attested-v13",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "second",
+                  "timeOrigin": "source_reported",
+                  "requireBalance": true
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:594199326c8c013d90d26ee94a9c02da5db8f685fb7d3319426234b9aa77cf97",
+                    "proofKind": "human-attested-requested-scope-all-pages-stable-totals",
+                    "contractFingerprint": "sha256:bed3a69e30409009f66a7f9baf671f842a30e27a55275696987d9d3e52cdc79a",
+                    "preflightFingerprint": "sha256:eb790d7976fb1e808ba04c77cf5416a2523f388dafd9f0ff171ad96c3a705604",
+                    "metadataJson": "{\"pageNbr\":1,\"pageCapacity\":1000,\"totalCount\":0,\"rowCount\":0}"
+                  }
+                ],
+                "records": []
+              }
+            }
+          },
+          "provider": "linebank"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "current-balance:domestic-deposit:sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "linebank-current-uuid-3",
+                "integrationNamespace": "linebank",
+                "sourceConnectionKey": "sha256:fd3b8987ea30e0835e86211ea29bbb512ce41507e3d05cc63b6332feeec667aa",
+                "identityEpoch": "sha256:1ab128cfb27e58361b7b53796ac1687376e69e3ca66dee64660827b58f008b2e",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "linebank/domestic-deposit/current-balance-v1",
+                "contractVersion": "linebank/current-deposit-balance-v1",
+                "subjectDigest": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "linebank/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "contractFingerprint": "sha256:ee77340ae56c3d2f01e854953f8e20f4576b688cade6d64d29634ef8ce612202",
+                  "preflightFingerprint": "sha256:25b0e987090da53da8b3091996da5849c6831226fb1268254dcd1240e0e1749f",
+                  "sourceAccountKey": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc",
+                    "proofKind": "linebank-current-deposit-payables-snapshot",
+                    "contractFingerprint": "sha256:ee77340ae56c3d2f01e854953f8e20f4576b688cade6d64d29634ef8ce612202",
+                    "preflightFingerprint": "sha256:25b0e987090da53da8b3091996da5849c6831226fb1268254dcd1240e0e1749f",
+                    "metadata": {
+                      "source": "linebank-current-deposit-payables",
+                      "endpoint": "/v1/account/common/payables",
+                      "featureTypeCode": "01",
+                      "accountNumber": "9990_0000_0001",
+                      "arrangementId": "arr-golden-a",
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:b1552ae5866ec4836349014b6826547030265715a7a9623ccddafb5da81ca9f6",
+                    "collisionKey": "sha256:b1552ae5866ec4836349014b6826547030265715a7a9623ccddafb5da81ca9f6",
+                    "providerKey": "sha256:098d42274fee56e2b8599760ea09a42cadc23d8164fd59bf1744170c05ea50c2",
+                    "contentHash": "sha256:4DkDNzGbdiXpiAgLoeF5ON73Cc22JIh6JptvfZtOX9o",
+                    "compact": {
+                      "source": "linebank",
+                      "accountNumber": "9990_0000_0001",
+                      "arrangementId": "arr-golden-a",
+                      "sourceAccountKey": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                      "currency": "TWD",
+                      "sourceLexeme": "5600",
+                      "effectiveAt": "2026-09-25T11:59:00.000000000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/v1/account/common/payables",
+                        "featureTypeCode": "01",
+                        "status": 200,
+                        "cacheControl": "no-cache, no-store, max-age=0, must-revalidate",
+                        "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc",
+                        "contractVersion": "linebank/current-deposit-balance-v1"
+                      },
+                      "sourceField": "wdrwAvblAmt",
+                      "balanceKind": "available",
+                      "value": {
+                        "coefficient": "5600",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:b1552ae5866ec4836349014b6826547030265715a7a9623ccddafb5da81ca9f6",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:d54d20a2f4f08d46cf9724fb9f5c73b1c40293aec8c342a25fd7a7023e8f2423",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "5600",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T11:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "linebank/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:b1552ae5866ec4836349014b6826547030265715a7a9623ccddafb5da81ca9f6",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                  "evidenceContractVersion": "linebank/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:b1552ae5866ec4836349014b6826547030265715a7a9623ccddafb5da81ca9f6",
+                  "evidenceEndpoint": "https://accessibility.linebank.com.tw/v1/account/common/payables?featureTypeCode=01",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-cache, no-store, max-age=0, must-revalidate"
+                }
+              ]
+            }
+          },
+          "provider": "linebank"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "current-balance:domestic-deposit:sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+          "command": {
+            "kind": "financial.balance.capture",
+            "request": {
+              "capture": {
+                "captureId": "linebank-current-uuid-4",
+                "integrationNamespace": "linebank",
+                "sourceConnectionKey": "sha256:fd3b8987ea30e0835e86211ea29bbb512ce41507e3d05cc63b6332feeec667aa",
+                "identityEpoch": "sha256:a4a0397efa67fd4f675bab5e8be66553a42fc5702bdde8c0db1e0bc2903f67cd",
+                "stream": "domestic-deposit",
+                "recordKind": "current-deposit-balance",
+                "routeKey": "linebank/domestic-deposit/current-balance-v1",
+                "contractVersion": "linebank/current-deposit-balance-v1",
+                "subjectDigest": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "linebank/current-deposit-balance-v1",
+                  "completenessBasis": "provider-current-balance-snapshot",
+                  "contractFingerprint": "sha256:ee77340ae56c3d2f01e854953f8e20f4576b688cade6d64d29634ef8ce612202",
+                  "preflightFingerprint": "sha256:25b0e987090da53da8b3091996da5849c6831226fb1268254dcd1240e0e1749f",
+                  "sourceAccountKey": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc",
+                    "proofKind": "linebank-current-deposit-payables-snapshot",
+                    "contractFingerprint": "sha256:ee77340ae56c3d2f01e854953f8e20f4576b688cade6d64d29634ef8ce612202",
+                    "preflightFingerprint": "sha256:25b0e987090da53da8b3091996da5849c6831226fb1268254dcd1240e0e1749f",
+                    "metadata": {
+                      "source": "linebank-current-deposit-payables",
+                      "endpoint": "/v1/account/common/payables",
+                      "featureTypeCode": "01",
+                      "accountNumber": "9990_0000_0002",
+                      "arrangementId": "arr-golden-b",
+                      "providerHttpDate": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:929eecddbddac5b978a2138e4fb5b38ac153314ccb5caebc220ad28900da82e7",
+                    "collisionKey": "sha256:929eecddbddac5b978a2138e4fb5b38ac153314ccb5caebc220ad28900da82e7",
+                    "providerKey": "sha256:9f9b3c35e55739a2e1eb3a71e52af08090a5332a22262c94d80e755e6ddca7d3",
+                    "contentHash": "sha256:IoH3w8xkutpxjwQdeCGSpgekhNeUTZ4cfUbG7KO7PUQ",
+                    "compact": {
+                      "source": "linebank",
+                      "accountNumber": "9990_0000_0002",
+                      "arrangementId": "arr-golden-b",
+                      "sourceAccountKey": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                      "currency": "TWD",
+                      "sourceLexeme": "0",
+                      "effectiveAt": "2026-09-25T11:59:00.000000000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                      "sourceEvidence": {
+                        "endpoint": "/v1/account/common/payables",
+                        "featureTypeCode": "01",
+                        "status": 200,
+                        "cacheControl": "no-cache, no-store, max-age=0, must-revalidate",
+                        "responseDigest": "sha256:pZsL3uMRD9DWzPWqlwelHhGEq7Q5w8m8ls8DII4N_nc",
+                        "contractVersion": "linebank/current-deposit-balance-v1"
+                      },
+                      "sourceField": "wdrwAvblAmt",
+                      "balanceKind": "available",
+                      "value": {
+                        "coefficient": "0",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:929eecddbddac5b978a2138e4fb5b38ac153314ccb5caebc220ad28900da82e7",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
+                "accountType": "depository",
+                "currency": "TWD"
+              },
+              "observations": [
+                {
+                  "observationKey": "sha256:f3c8d60ee8648c65c77978bd889c61251c181459623b467c26ea6dcc89f3413f",
+                  "balanceKind": "available",
+                  "balance": {
+                    "coefficient": "0",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T11:59:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "linebank/current-deposit-balance-v1",
+                  "evidenceSourceRecordKey": "sha256:929eecddbddac5b978a2138e4fb5b38ac153314ccb5caebc220ad28900da82e7",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Fri, 25 Sep 2026 11:59:00 GMT",
+                  "evidenceContractVersion": "linebank/current-deposit-balance-v1",
+                  "sourceOccurrenceKey": "sha256:929eecddbddac5b978a2138e4fb5b38ac153314ccb5caebc220ad28900da82e7",
+                  "evidenceEndpoint": "https://accessibility.linebank.com.tw/v1/account/common/payables?featureTypeCode=01",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-cache, no-store, max-age=0, must-revalidate"
+                }
+              ]
+            }
+          },
+          "provider": "linebank"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "started",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "completed",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "deposit-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "account-collected",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "account-collected",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "source-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "canonical-admission-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "advanced",
+      "code": "account-source-admitted",
+      "counts": {
+        "completed": 1,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "advanced",
+      "code": "account-source-admitted",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "canonical-admission-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "deposit-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "deposit-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "deposit-source-validation-completed",
+      "counts": {
+        "completed": 4,
+        "total": 4,
+        "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}

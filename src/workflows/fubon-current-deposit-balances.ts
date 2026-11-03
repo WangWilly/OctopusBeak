@@ -1,5 +1,7 @@
 import type { Locator, Response } from "playwright";
 
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
@@ -170,27 +172,19 @@ function validateResponse(
   return { providerDate: requireProviderDate(response.headers), cacheControl };
 }
 
-function parseExactDecimal(
-  value: string,
-  label: string,
-): FubonCurrentDepositExactDecimal {
+const FUBON_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "strip",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
+function parseBalance(value: string, label: string): FubonCurrentDepositExactDecimal {
   const sourceLexeme = cleanText(value);
-  const normalized = sourceLexeme.replace(/\s/gu, "");
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(
-    normalized,
-  );
-  if (!match) {
+  const amount = parseProviderDecimal(sourceLexeme, FUBON_AMOUNT);
+  if (!amount) {
     throw new Error(`Fubon current deposit ${label} is not an exact decimal.`);
   }
-  const sign = match[1] === "-" ? "-" : "";
-  const whole = (match[2] ?? "").replace(/,/g, "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${sign}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  return { ...amount, sourceLexeme };
 }
 
 function parseAccount(value: string): string {
@@ -247,8 +241,8 @@ export function parseFubonCurrentDepositBalanceSnapshot(
       branchName: cleanText(values[3]),
       currency: parsedCurrency.value,
       currencySourceLexeme: parsedCurrency.sourceLexeme,
-      instantBalance: parseExactDecimal(values[5] ?? "", `row ${rowIndex} instant balance`),
-      availableBalance: parseExactDecimal(values[6] ?? "", `row ${rowIndex} available balance`),
+      instantBalance: parseBalance(values[5] ?? "", `row ${rowIndex} instant balance`),
+      availableBalance: parseBalance(values[6] ?? "", `row ${rowIndex} available balance`),
       effectiveAt: providerDate.effectiveAt,
       providerHttpDate: providerDate.raw,
       observedAt,
@@ -302,15 +296,15 @@ async function tableHasCurrentDepositHeader(table: Locator): Promise<boolean> {
 }
 
 /**
- * Parse the observed table through Locator APIs. The table must contain
- * exactly twelve TD cells per data row: ten visible contract cells followed
- * by two cells marked `.hide`. This explicit shape prevents hidden internals
- * and unrelated aggregate tables from entering the typed result.
+ * Read the observed table's visible data cells through Locator APIs. The
+ * table must contain exactly twelve TD cells per data row: ten visible
+ * contract cells followed by two cells marked `.hide`. This explicit shape
+ * prevents hidden internals and unrelated aggregate tables from entering the
+ * evidence.
  */
-export async function parseFubonCurrentDepositBalanceTable(
+export async function readFubonCurrentDepositTableCells(
   table: Locator,
-  input: Omit<FubonCurrentDepositSnapshotInput, "rows">,
-): Promise<readonly FubonCurrentDepositBalanceRow[]> {
+): Promise<readonly (readonly string[])[]> {
   if ((await table.getAttribute("id")) !== FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID) {
     throw new Error("Fubon current deposit table id is unexpected.");
   }
@@ -360,7 +354,7 @@ export async function parseFubonCurrentDepositBalanceTable(
   if (!headerFound) {
     throw new Error("Fubon current deposit table headers are not recognized.");
   }
-  return parseFubonCurrentDepositBalanceSnapshot({ ...input, rows: dataRows });
+  return dataRows;
 }
 
 function findExactControl(
@@ -406,14 +400,17 @@ function responseMatches(response: Response): boolean {
   }
 }
 
-/** Navigate through 存款交易查詢 → 我的存款 and parse the current table. */
-export async function readFubonCurrentDepositBalances(
+/** The current-state table 我的存款 renders, before decoding. */
+export type FubonCurrentDepositTable = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  response: FubonCurrentDepositResponseMetadata;
+}>;
+
+/** Navigate through 存款交易查詢 → 我的存款 and read the current table. */
+export async function readFubonCurrentDepositBalanceTable(
   site: FubonEbankSite,
-  input: Readonly<{
-    observedAt: string;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly FubonCurrentDepositBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<FubonCurrentDepositTable> {
   const { frames } = site;
   const timeoutMs = input.timeoutMs ?? 60_000;
   const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
@@ -426,13 +423,13 @@ export async function readFubonCurrentDepositBalances(
   ]));
   const headers = await frames.race(response.allHeaders());
   const table = await findCurrentDepositTable(frames, timeoutMs);
-  return parseFubonCurrentDepositBalanceTable(table, {
-    observedAt: input.observedAt,
+  return {
+    evidence: { kind: "cells", rows: await readFubonCurrentDepositTableCells(table) },
     response: {
       url: response.url(),
       status: response.status(),
       method: response.request().method(),
       headers,
     },
-  });
+  };
 }

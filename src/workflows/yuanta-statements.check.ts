@@ -21,6 +21,7 @@ import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-brows
 import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
+import { yuantaCurrentDepositTable } from "./yuanta-current-deposit-balances.fixtures.ts";
 import { collectionPeriod, taipeiToday, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
@@ -401,8 +402,8 @@ assert.equal(parsedRows[0]?.accountLabel, "********3456");
 assert.match(JSON.stringify(parsedRows), /PRIVATE DESCRIPTION|PRIVATE NOTE/);
 
 const workflowAccount = {
-  value: "YUANTA-ACCOUNT-001",
-  label: "臺幣活期存款 YUANTA-ACCOUNT-001",
+  value: "900000001",
+  label: "臺幣活期存款 900000001",
 };
 const workflowValues = [
   "臺幣活期存款",
@@ -479,7 +480,7 @@ const nextDayAccountingWorkflowDownload = {
     {
       ...workflowDownload.rows[0]!,
       values: [
-        "YUANTA-ACCOUNT-001",
+        "900000001",
         "20260622",
         "20260619",
         "09:10:11",
@@ -500,7 +501,7 @@ const nextDayAccountingWorkflowDownload = {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
-          "YUANTA-ACCOUNT-001",
+          "900000001",
           "20260622",
           "20260619",
           "09:10:11",
@@ -521,7 +522,7 @@ const transactionOutsideWorkflowDownload = {
     {
       ...nextDayAccountingWorkflowDownload.rows[0]!,
       values: [
-        "YUANTA-ACCOUNT-001",
+        "900000001",
         "20260619",
         "20260622",
         "09:10:11",
@@ -542,7 +543,7 @@ const transactionOutsideWorkflowDownload = {
         rowOrdinal: 0,
         values: [
           "臺幣活期存款",
-          "YUANTA-ACCOUNT-001",
+          "900000001",
           "20260619",
           "20260622",
           "09:10:11",
@@ -567,9 +568,13 @@ const maskedWorkflowDownload = {
     YUANTA_RELATION_EVIDENCE_FIXTURES_V1.maskedCounterpartyAccount,
   ],
 };
+function workflowCurrentBalanceCells(account: Readonly<{ value: string }>): readonly string[] {
+  return ["臺幣活期存款", "臺北分行", account.value, "0.1%", "800.00", "900.00"];
+}
+
 const secondWorkflowAccount = {
-  value: "YUANTA-ACCOUNT-002",
-  label: "臺幣活期存款 YUANTA-ACCOUNT-002",
+  value: "900000002",
+  label: "臺幣活期存款 900000002",
 };
 const secondWorkflowValues = [...workflowValues];
 secondWorkflowValues[0] = secondWorkflowAccount.label;
@@ -605,7 +610,7 @@ try {
     typedInput,
     checkContext(),
     yuantaStagingHandle(deferredItems),
-    async () => [workflowCurrentBalanceRow],
+    async () => yuantaCurrentDepositTable([workflowCurrentBalanceCells(workflowAccount)], workflowCurrentBalanceRow.providerHttpDate),
   );
   assert.equal(typedResult.sourceCaptureCount, 1);
   assert.equal(typedResult.rowCount, 1);
@@ -629,14 +634,10 @@ try {
     { accountFilters: [], ...stableConnectionIdentity },
     checkContext(),
     yuantaStagingHandle(noDataItems),
-    async () => [
-      workflowCurrentBalanceRow,
-      {
-        ...workflowCurrentBalanceRow,
-        accountNumber: secondWorkflowAccount.value,
-        sourceAccountKey: deriveYuantaDomesticDepositAccountKey(secondWorkflowAccount.value),
-      },
-    ],
+    async () => yuantaCurrentDepositTable([
+      workflowCurrentBalanceCells(workflowAccount),
+      workflowCurrentBalanceCells(secondWorkflowAccount),
+    ], workflowCurrentBalanceRow.providerHttpDate),
   );
   assert.equal(noDataResult.sourceCaptureCount, 2);
   assert.equal(noDataResult.rowCount, 1);
@@ -923,7 +924,7 @@ try {
         <input type="hidden" name="cid" value="${SHELL_CID}">
         <select id="acctno" name="acctno">
           <option value="">請選擇帳戶</option>
-          ${[workflowAccount, { value: "YUANTA-ACCOUNT-002", label: "臺幣綜合存款 YUANTA-ACCOUNT-002" }]
+          ${[workflowAccount, { value: "900000002", label: "臺幣綜合存款 900000002" }]
             .map((account) => `<option value="${account.value}"${account.value === selected ? " selected" : ""}>${account.label}</option>`)
             .join("")}
         </select>
@@ -981,12 +982,12 @@ try {
       "the deposit page opens through the transaction-details route with the session's cid",
     );
     assert.deepEqual(shellRead.picked, ["一個月"], "the requested range is picked once on the opened page");
-    assert.deepEqual(shellRead.queried, [workflowAccount.value, "YUANTA-ACCOUNT-002"], "every visible account is queried in order");
+    assert.deepEqual(shellRead.queried, [workflowAccount.value, "900000002"], "every visible account is queried in order");
     assert.deepEqual(shellRead.activities, ["query", "download", "query"]);
     assert.equal(shellRead.snapshot.observedAt, "2026-08-21T11:04:05+08:00");
     assert.deepEqual(
       shellRead.snapshot.accounts.map((read) => [read.account.value, read.query]),
-      [[workflowAccount.value, "download-ready"], ["YUANTA-ACCOUNT-002", "provider-explicit-no-data"]],
+      [[workflowAccount.value, "download-ready"], ["900000002", "provider-explicit-no-data"]],
       "a CSV result and the bank's 查無資料 result are told apart per account",
     );
     const shellDownload = shellRead.snapshot.accounts[0];
@@ -1037,7 +1038,10 @@ try {
           { accountFilters: [], ...stableConnectionIdentity },
           context,
           yuantaStagingHandle(items),
-          async () => [],
+          async () => yuantaCurrentDepositTable(
+            [workflowCurrentBalanceCells(workflowAccount)],
+            workflowCurrentBalanceRow.providerHttpDate,
+          ),
         );
       });
       return { result, items };

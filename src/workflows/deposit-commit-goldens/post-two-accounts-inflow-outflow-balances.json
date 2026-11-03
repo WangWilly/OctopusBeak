@@ -7,7 +7,6 @@
       },
       "items": [
         {
-          "provider": "post",
           "product": "domestic-deposit",
           "itemKey": "post-financial-post-source-5f04162076297bdc7b464f67-1790_3376_0000_0-0",
           "command": {
@@ -156,10 +155,10 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "domestic-deposit",
           "itemKey": "post-financial-post-source-dd5076b3ddec5617f4ef7f38-1790_3376_0000_0-1",
           "command": {
@@ -308,12 +307,12 @@
                 ]
               }
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "current-balance",
-          "itemKey": "current-balance:9999_0000_0000_01",
+          "itemKey": "current-balance:domestic-deposit:9999_0000_0000_01",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -427,12 +426,12 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "post"
         },
         {
-          "provider": "post",
           "product": "current-balance",
-          "itemKey": "current-balance:9999_0000_0000_02",
+          "itemKey": "current-balance:domestic-deposit:9999_0000_0000_02",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -546,7 +545,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "post"
         }
       ]
     }
@@ -598,6 +598,34 @@
       "stage": "collection",
       "outcome": "started",
       "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
     },
     {
       "stage": "validation",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { indexCurrentBalanceCaptures } from "./current-balance-capture-match.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
@@ -16,6 +16,7 @@ import {
   type CtbcDepositSourceSnapshot,
   type CtbcObservedAccountCapture,
 } from "./ctbc-statements.ts";
+import { ctbcCurrentDepositResponse } from "./ctbc-current-deposit-balances.fixtures.ts";
 
 const providerSource = readFileSync(new URL("./ctbc-statements.ts", import.meta.url), "utf8");
 assert.doesNotMatch(providerSource, /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|\bpause\(|npx libretto/u);
@@ -207,6 +208,8 @@ assert.throws(
   /not an admitted TWD CTBC account/u,
 );
 
+const currentBalance = { accountId: syntheticCtbcAccountNumber, balance: currentRow.ledger.sourceLexeme };
+
 function stagingHarness(signal = new AbortController().signal) {
   const events: string[] = [];
   const staged: ProductStageRequest[] = [];
@@ -231,13 +234,13 @@ function stagingHarness(signal = new AbortController().signal) {
     events,
     staged,
     get balanceReads() { return balanceReads; },
-    stage(snapshot: CtbcDepositSourceSnapshot, rows: readonly (typeof currentRow)[] | Error) {
+    stage(snapshot: CtbcDepositSourceSnapshot, accounts: readonly Readonly<{ accountId: string; balance: string }>[] | Error) {
       return stageCtbcDeposit(snapshot, { credentials: {
         ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password",
       }, statementTypes: ["deposit"] }, context, product, async () => {
         balanceReads += 1;
-        if (rows instanceof Error) throw rows;
-        return rows;
+        if (accounts instanceof Error) throw accounts;
+        return ctbcCurrentDepositResponse(accounts, currentRow.providerServerTime);
       });
     },
   };
@@ -275,7 +278,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
 {
   // A financial capture stages its statement and the matched current balance together.
   const harness = stagingHarness();
-  assert.deepEqual(await harness.stage(financialSnapshot, [currentRow]), { sourceCaptureCount: 1, rowCount: 1 });
+  assert.deepEqual(await harness.stage(financialSnapshot, [currentBalance]), { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(harness.balanceReads, 1);
   assert.deepEqual(harness.staged.map((item) => [item.product, item.command.kind]), [
     ["domestic-deposit", "financial.mixed.commit"],
@@ -287,7 +290,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
   // A source with fewer captures than selected accounts stages nothing and never reads balances.
   const harness = stagingHarness();
   await assert.rejects(
-    harness.stage({ output: { count: 2, rowCount: 1 }, captures: financialSnapshot.captures }, [currentRow]),
+    harness.stage({ output: { count: 2, rowCount: 1 }, captures: financialSnapshot.captures }, [currentBalance]),
     /no complete selected account capture/u,
   );
   assert.deepEqual(harness.events, ["source-validation-rejected"]);
@@ -300,7 +303,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
   const harness = stagingHarness();
   const incomplete = { ...financialSnapshot.captures[0]!, expectedRangeCount: 2 };
   await assert.rejects(
-    harness.stage({ output: { count: 1, rowCount: 1 }, captures: [incomplete] }, [currentRow]),
+    harness.stage({ output: { count: 1, rowCount: 1 }, captures: [incomplete] }, [currentBalance]),
     /source admission blocked/u,
   );
   assert.deepEqual(harness.events, ["source-validation-started", "source-validation-rejected"]);
@@ -312,11 +315,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
   // A current-balance row without an admitted statement identity rejects the whole product.
   const harness = stagingHarness();
   await assert.rejects(
-    harness.stage(financialSnapshot, [{
-      ...currentRow,
-      accountNumber: conflictingCtbcAccountNumber,
-      sourceAccountKey: conflictingCtbcAccountNumber,
-    }]),
+    harness.stage(financialSnapshot, [{ ...currentBalance, accountId: conflictingCtbcAccountNumber }]),
     /no admitted account identity/u,
   );
   assert.ok(harness.events.includes("current-balance-validation-rejected"));
@@ -339,7 +338,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
   const cancellation = new AbortController();
   cancellation.abort();
   const harness = stagingHarness(cancellation.signal);
-  await assert.rejects(harness.stage(financialSnapshot, [currentRow]), /abort/iu);
+  await assert.rejects(harness.stage(financialSnapshot, [currentBalance]), /abort/iu);
   assert.deepEqual(harness.events, []);
   assert.deepEqual(harness.staged, []);
   assert.equal(harness.balanceReads, 0);

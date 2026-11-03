@@ -39,7 +39,6 @@
       },
       "items": [
         {
-          "provider": "fubon",
           "product": "domestic-deposit",
           "itemKey": "fubon-financial-t+0-dpxNUBxz1737-0",
           "command": {
@@ -257,10 +256,10 @@
                 ]
               }
             }
-          ]
+          ],
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "domestic-deposit",
           "itemKey": "fubon-financial-t+2-ssRPGeGHnmG7-0",
           "command": {
@@ -430,12 +429,12 @@
                 "counterpartyEvidence": []
               }
             }
-          ]
+          ],
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
+          "itemKey": "current-balance:domestic-deposit:sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -590,12 +589,12 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "fubon"
         },
         {
-          "provider": "fubon",
           "product": "current-balance",
-          "itemKey": "current-balance:sha256:BU_q4arDG2mZw_eceljnAbRTIyUnmdjvqopHr5cZZPw",
+          "itemKey": "current-balance:domestic-deposit:sha256:BU_q4arDG2mZw_eceljnAbRTIyUnmdjvqopHr5cZZPw",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -750,7 +749,8 @@
                 }
               ]
             }
-          }
+          },
+          "provider": "fubon"
         }
       ]
     }
@@ -773,6 +773,48 @@
       "counts": {
         "activity": "query",
         "statementType": "deposit"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 2
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
       }
     },
     {

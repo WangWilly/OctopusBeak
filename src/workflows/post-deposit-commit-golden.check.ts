@@ -7,7 +7,7 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
-import type { PostCurrentDepositBalanceRow } from "./post-current-deposit-balances.ts";
+import { postCurrentDepositResponse } from "./post-current-deposit-balances.fixtures.ts";
 import {
   parsePostStatementResponse,
   runPostProviderWorkflow,
@@ -68,37 +68,14 @@ function statement(accountId: string, items: PostRawStatementRow[] | undefined):
   });
 }
 
-function currentBalance(accountId: string, coefficient: string): PostCurrentDepositBalanceRow {
-  return {
-    source: "post",
-    stream: "domestic-deposit",
-    accountNumber: accountId,
-    sourceAccountKey: accountId,
-    currency: "TWD",
-    ledger: { coefficient, scale: 0, sourceLexeme: coefficient },
-    effectiveAt: "2026-09-25T11:59:00.000Z",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    effectiveTimeSourceValue: "Fri, 25 Sep 2026 11:59:00 GMT",
-    providerHttpDate: "Fri, 25 Sep 2026 11:59:00 GMT",
-    observedAt: "2026-09-25T20:00:00+08:00",
-    sourceEvidence: {
-      endpoint: "/pst/EsoafDispatcher",
-      status: 200,
-      contentType: "application/json; charset=UTF-8",
-      cacheControl: "no-store",
-      txnCode: "EB100103",
-      bizCode: "getOverViewById",
-      pageCount: 50,
-      contractVersion: "post/current-deposit-balance-v1",
-    },
-  };
+function currentBalance(accountNumber: string, balance: string) {
+  return { accountNumber, balance };
 }
 
 async function run(
   t: test.TestContext,
   statements: PostQueriedStatement[],
-  balances: readonly PostCurrentDepositBalanceRow[],
+  balances: readonly ReturnType<typeof currentBalance>[],
 ) {
   // The Post capture ID embeds Date.now(); pin it so the golden is stable.
   t.mock.method(Date, "now", () => Date.parse(fixedNow));
@@ -129,7 +106,7 @@ async function run(
       product,
       async () => {
         balanceReads += 1;
-        return balances;
+        return postCurrentDepositResponse(balances);
       },
     ),
   }).catch((caught: unknown) => {

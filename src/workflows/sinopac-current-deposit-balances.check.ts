@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
 import test from "node:test";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
-  readSinopacCurrentDepositBalances,
-  sinopacCurrentDepositResponseDiagnostic,
+  readSinopacCurrentDepositBalanceResponse,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   type SinopacCurrentDepositResponseMetadata,
@@ -106,6 +104,8 @@ test("SinoPac balance parser preserves AvailBalance and provider evidence exactl
     scale: 2,
     sourceLexeme: "1,234.50",
   });
+  const negative = parseSinopacCurrentDepositBalanceSnapshot({ payload: [{ ...payload[0], SubInfo: [row({ AvailBalance: "-1,000.5" })] }], response, observedAt: "2026-09-09T10:01:02.123+08:00" });
+  assert.deepEqual(negative[0]?.ledger, { coefficient: "-10005", scale: 1, sourceLexeme: "-1,000.5" });
   const formattedAccountRows = parseSinopacCurrentDepositBalanceSnapshot({
     payload: [{ ...payload[0], SubInfo: [row({ AcctValueFormat: "141-018-1234562-1" })] }],
     response,
@@ -227,79 +227,11 @@ test("SinoPac parser does not fabricate a missing currency", () => {
   assert.equal(rows[0]?.currency, "TWD");
 });
 
-class FakeResponse {
-  private readonly bodyText: string;
-  private readonly responseUrl: string;
-  private readonly responseMethod: string;
-
-  constructor(
-    bodyText: string,
-    options: Readonly<{ url?: string; method?: string }> = {},
-  ) {
-    this.bodyText = bodyText;
-    this.responseUrl = options.url ?? response.url;
-    this.responseMethod = options.method ?? "POST";
-  }
-
-  url(): string {
-    return this.responseUrl;
-  }
-
-  status(): number {
-    return response.status;
-  }
-
-  request(): { method(): string } {
-    return { method: () => this.responseMethod };
-  }
-
-  async allHeaders(): Promise<Record<string, string>> {
-    return { ...response.headers };
-  }
-
-  async body(): Promise<Buffer> {
-    return Buffer.from(this.bodyText, "utf8");
-  }
-}
-
-class FakePage extends EventEmitter {
-  listenerWasInstalledBeforeNavigation = false;
-  private readonly responseUrl: string;
-
-  constructor(responseUrl = response.url) {
-    super();
-    this.responseUrl = responseUrl;
-  }
-
-  async goto(url: string): Promise<void> {
-    this.listenerWasInstalledBeforeNavigation =
-      this.listenerCount("response") > 0;
-    assert.equal(url, SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
-    queueMicrotask(() =>
-      this.emit(
-        "response",
-        new FakeResponse(JSON.stringify(payload), { url: this.responseUrl }),
-      ),
-    );
-  }
-}
-
-test("SinoPac reader installs a passive listener before navigation and awaits the body", async () => {
-  const page = new FakePage();
-  const rows = await readSinopacCurrentDepositBalances(page as never, {
-    observedAt: "2026-09-09T10:01:02.123+08:00",
-  });
-  assert.equal(page.listenerWasInstalledBeforeNavigation, true);
-  assert.equal(rows.length, 3);
-  assert.equal(page.listenerCount("response"), 0);
-});
-
-test("SinoPac admits the live numeric transport query and keeps canonical evidence query-free", async () => {
+test("SinoPac admits the live numeric transport query and keeps canonical evidence query-free", () => {
   const transportValue = "TRANSPORT-VALUE-MUST-NOT-ESCAPE";
-  const page = new FakePage(
-    `${response.url}?1788926105087=${transportValue}`,
-  );
-  const rows = await readSinopacCurrentDepositBalances(page as never, {
+  const rows = parseSinopacCurrentDepositBalanceSnapshot({
+    payload,
+    response: { ...response, url: `${response.url}?1788926105087=${transportValue}` },
     observedAt: "2026-09-09T10:01:02.123+08:00",
   });
   assert.equal(rows.length, 3);
@@ -324,39 +256,37 @@ test("SinoPac rejects unknown and multiple transport query keys", () => {
   );
 });
 
-test("SinoPac timeout diagnostics expose only matching-path host and query keys", async () => {
-  const candidate = new FakeResponse("{}", {
-    url: "https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx?session=SECRET&account=123",
-  });
-  assert.deepEqual(sinopacCurrentDepositResponseDiagnostic(candidate as never), {
-    hostname: "alt.sinopac.example",
-    pathname: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-    queryKeys: ["account", "session"],
-  });
+function fakeResponse(url: string, method = "POST") {
+  return {
+    url: () => url,
+    status: () => response.status,
+    request: () => ({ method: () => method }),
+    allHeaders: async () => ({ ...response.headers }),
+    body: async () => Buffer.from(JSON.stringify(payload), "utf8"),
+  };
+}
 
-  class NavigationTimeoutPage extends EventEmitter {
-    async goto(): Promise<void> {
-      queueMicrotask(() => this.emit("response", candidate));
-      await new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("navigation timed out")), 20),
-      );
-    }
-  }
-
-  await assert.rejects(
-    () =>
-      readSinopacCurrentDepositBalances(new NavigationTimeoutPage() as never, {
-        observedAt: "2026-09-09T10:01:02.123+08:00",
-        timeoutMs: 5,
-      }),
-    (error: unknown) => {
-      assert(error instanceof Error);
-      assert.match(
-        error.message,
-        /hostname=alt\.sinopac\.example, path=\/ws\/bank\/bankbal\/ws_bankbal\.ashx, queryKeys=account,session/u,
-      );
-      assert.doesNotMatch(error.message, /SECRET|123/u);
-      return true;
+test("SinoPac reader waits for the balance POST before navigating and returns its raw body", async () => {
+  const steps: string[] = [];
+  let accepts: ((candidate: never) => boolean) | undefined;
+  const page = {
+    waitForResponse: async (predicate: (candidate: never) => boolean) => {
+      steps.push("wait");
+      accepts = predicate;
+      return fakeResponse(`${response.url}?1788926105087=1`);
     },
-  );
+    goto: async (url: string) => {
+      steps.push("goto");
+      assert.equal(url, SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
+    },
+  };
+  const read = await readSinopacCurrentDepositBalanceResponse(page as never, new AbortController().signal);
+  assert.deepEqual(steps, ["wait", "goto"]);
+  assert.equal(new TextDecoder().decode(read.evidence.bytes), JSON.stringify(payload));
+  assert.equal(read.response.method, "POST");
+  assert.equal(read.response.headers.date, response.headers.date);
+  assert.equal(accepts!(fakeResponse(response.url) as never), true);
+  assert.equal(accepts!(fakeResponse(response.url, "GET") as never), false);
+  assert.equal(accepts!(fakeResponse(`${response.url}?session=unexpected`) as never), false);
+  assert.equal(accepts!(fakeResponse("https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx") as never), false);
 });

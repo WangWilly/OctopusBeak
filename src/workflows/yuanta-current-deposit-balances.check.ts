@@ -9,8 +9,8 @@ import {
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,
   YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS,
   parseYuantaCurrentDepositBalanceSnapshot,
-  parseYuantaCurrentDepositBalanceTable,
-  readYuantaCurrentDepositBalances,
+  readYuantaCurrentDepositBalanceTable,
+  readYuantaCurrentDepositTableCells,
   type YuantaCurrentDepositResponseMetadata,
 } from "./yuanta-current-deposit-balances.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
@@ -168,10 +168,12 @@ const domesticTable = tableLocator("normalTable botM2", [
     ],
   },
 ]);
-const parsedDomesticTable = await parseYuantaCurrentDepositBalanceTable(
-  domesticTable as never,
-  { kind: "domestic", response: response(), observedAt },
-);
+const parsedDomesticTable = parseYuantaCurrentDepositBalanceSnapshot({
+  kind: "domestic",
+  rows: await readYuantaCurrentDepositTableCells(domesticTable as never, "domestic"),
+  response: response(),
+  observedAt,
+});
 assert.equal(parsedDomesticTable.length, 2);
 assert.equal(parsedDomesticTable[0]?.available.coefficient, "102550");
 
@@ -202,19 +204,17 @@ const foreignTable = tableLocator("normalTable", [
   data(foreignRows[0]),
   data(foreignRows[1]),
 ]);
-const foreign = await parseYuantaCurrentDepositBalanceTable(
-  foreignTable as never,
-  {
-    kind: "foreign",
-    response: response({
-      headers: {
-        date: "Tue, 08 Sep 2026 13:24:22 GMT",
-        "cache-control": "private, no-store",
-      },
-    }),
-    observedAt,
-  },
-);
+const foreign = parseYuantaCurrentDepositBalanceSnapshot({
+  kind: "foreign",
+  rows: await readYuantaCurrentDepositTableCells(foreignTable as never, "foreign"),
+  response: response({
+    headers: {
+      date: "Tue, 08 Sep 2026 13:24:22 GMT",
+      "cache-control": "private, no-store",
+    },
+  }),
+  observedAt,
+});
 assert.deepEqual(
   foreign.map((row) => ({
     accountNumber: row.accountNumber,
@@ -452,7 +452,13 @@ async function readThroughShell(
       signal: options.signal ?? new AbortController().signal,
       text: strictSourceText,
     });
-    const rows = await readYuantaCurrentDepositBalances(site, kind, { observedAt, timeoutMs: 5_000 });
+    const table = await readYuantaCurrentDepositBalanceTable(site, kind, { timeoutMs: 5_000 });
+    const rows = parseYuantaCurrentDepositBalanceSnapshot({
+      kind,
+      rows: table.evidence.rows,
+      response: table.response,
+      observedAt,
+    });
     const clicks = await page.evaluate(() => ({
       tab: (window as { tabClicks?: number }).tabClicks ?? 0,
       hidden: (window as { hiddenClicked?: boolean }).hiddenClicked ?? false,

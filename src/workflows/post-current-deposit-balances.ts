@@ -9,7 +9,9 @@ import {
   type CurrentDepositExactAmount,
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
-import type { CurrentBalanceCaptureMatching } from "./current-balance-capture-match.ts";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import { withAbort } from "./abort.ts";
+import type { CurrentBalanceCaptureMatching, SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
@@ -293,21 +295,21 @@ function requireResponse(
   };
 }
 
+const POST_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "reject",
+  grouping: "none",
+  digits: "integer",
+};
+
 function parseExactInteger(
   value: unknown,
   label: string,
 ): PostCurrentDepositExactInteger {
   const sourceLexeme = requiredString(value, label);
-  if (!/^-?\d+$/u.test(sourceLexeme))
+  const amount = parseProviderDecimal(sourceLexeme, POST_AMOUNT);
+  if (!amount)
     throw new Error(`Post current deposit ${label} must be an exact integer string.`);
-  const negative = sourceLexeme.startsWith("-");
-  const unsigned = negative ? sourceLexeme.slice(1) : sourceLexeme;
-  const digits = unsigned.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : negative ? `-${digits}` : digits,
-    scale: 0,
-    sourceLexeme,
-  };
+  return { coefficient: amount.coefficient, scale: 0, sourceLexeme };
 }
 
 function parseScreenAndEndBracket(
@@ -472,35 +474,57 @@ function isPostIndexUrl(href: string): boolean {
   }
 }
 
-/** Enter the authenticated asset-overview page and passively capture its POST. */
-export async function readPostCurrentDepositBalances(
+/** The asset-overview response iPost's page triggers, before decoding. */
+export type PostCurrentDepositResponse = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  response: PostCurrentDepositResponseMetadata;
+}>;
+
+/**
+ * Enter the authenticated asset-overview page and passively observe its POST.
+ * The snapshot module decodes the body as UTF-8, so a response declaring any
+ * other charset is refused here, before its bytes are decoded.
+ */
+export async function readPostCurrentDepositBalanceResponse(
   page: Page,
-  input: Readonly<{ observedAt?: string; timeoutMs?: number }> = {},
-): Promise<readonly PostCurrentDepositBalanceRow[]> {
+  input: Readonly<{ signal: AbortSignal; timeoutMs?: number }>,
+): Promise<PostCurrentDepositResponse> {
+  const { signal } = input;
   const timeoutMs = input.timeoutMs ?? 60_000;
+  signal.throwIfAborted();
   if (!isPostIndexUrl(page.url())) {
-    await page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: timeoutMs,
-    });
+    await withAbort(
+      page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: timeoutMs,
+      }),
+      signal,
+    );
   }
+  signal.throwIfAborted();
   const overview = page.getByText("資產總覽", { exact: true }).first();
-  await overview.waitFor({ state: "visible", timeout: timeoutMs });
+  await withAbort(
+    overview.waitFor({ state: "visible", timeout: timeoutMs }),
+    signal,
+  );
   const responsePromise = page.waitForResponse(responseMatches, {
     timeout: timeoutMs,
   });
-  await overview.click();
-  const response = await responsePromise;
-  const headers = await response.allHeaders();
-  const body = await response.body();
-  let payload: unknown;
-  try {
-    payload = JSON.parse(Buffer.from(body).toString("utf8"));
-  } catch {
-    throw new Error("Post current deposit balance response is not valid JSON.");
-  }
-  return parsePostCurrentDepositBalanceSnapshot({
-    payload,
+  void responsePromise.catch(() => undefined);
+  signal.throwIfAborted();
+  await withAbort(overview.click(), signal);
+  const response = await withAbort(responsePromise, signal);
+  const [bytes, headers] = await Promise.all([
+    withAbort(response.body(), signal),
+    response.allHeaders(),
+  ]);
+  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
+    responseHeader(headers, "content-type"),
+  )?.[1]?.toLowerCase();
+  if (charset && charset !== "utf-8" && charset !== "utf8")
+    throw new Error("Post current deposit response charset is not UTF-8.");
+  return {
+    evidence: { kind: "json", bytes },
     response: {
       url: response.url(),
       status: response.status(),
@@ -508,8 +532,7 @@ export async function readPostCurrentDepositBalances(
       headers,
       requestPostData: response.request().postData(),
     },
-    observedAt: input.observedAt,
-  });
+  };
 }
 
 /**

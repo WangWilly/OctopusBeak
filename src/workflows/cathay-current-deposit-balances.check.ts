@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { cathayDomesticOverviewBody, cathayOverviewPage } from "./cathay-current-deposit-balances.fixtures.ts";
 import { registerHooks } from "node:module";
 
 registerHooks({
@@ -298,16 +298,25 @@ assert.throws(
   /not an exact decimal/u,
 );
 
-const source = await readFile(
-  new URL("./cathay-current-deposit-balances.ts", import.meta.url),
-  "utf8",
-);
-assert.match(source, /waitForResponse/u);
-assert.match(source, /臺幣帳戶總覽/u);
-assert.match(source, /外幣帳戶總覽/u);
-assert.match(source, /R0101_FDepInq/u);
-assert.match(source, /response\.text\(\)/u);
-assert.doesNotMatch(source, /\bfetch\s*\(/u);
-assert.doesNotMatch(source, /click\(\{\s*force:/u);
+{
+  const { readCathayCurrentDepositBalanceResponse } = await import("./cathay-current-deposit-balances.ts");
+  const ui = ["9990", "0000", "0001"].join("");
+  const body = cathayDomesticOverviewBody(systemTime, [{ ui, ledger: "1000.00", available: "900.25" }]);
+  const overview = { body, date: httpDate, uiAccounts: [ui] };
+  const read = await readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: overview }), "domestic");
+  assert.equal(new TextDecoder().decode(read.evidence.bytes), body, "the reader hands over the response bytes undecoded");
+  assert.deepEqual(read.uiAccountNumbers, [ui]);
+  assert.equal(read.response.url, `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`);
+  assert.equal(read.response.method, "POST");
+  const foreignRead = await readCathayCurrentDepositBalanceResponse(
+    cathayOverviewPage({}, { foreign: { body: foreignBody, date: httpDate } }),
+    "foreign",
+  );
+  assert.equal(foreignRead.uiAccountNumbers, undefined);
+  await assert.rejects(
+    readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: { ...overview, posts: 2 } }), "domestic"),
+    /^Error: Cathay current balance source response was missing or ambiguous\.$/u,
+  );
+}
 
 console.log("cathay-current-deposit-balances.check passed");
