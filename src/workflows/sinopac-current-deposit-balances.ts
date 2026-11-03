@@ -1,6 +1,6 @@
 import type { Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import { withAbort } from "./abort.ts";
+import { frameScope } from "./frame-scope.ts";
 import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /**
@@ -402,20 +402,19 @@ export async function readSinopacCurrentDepositBalanceResponse(
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<SinopacCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  signal.throwIfAborted();
-  const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
+  const scope = frameScope(page, signal);
+  const responsePromise = scope.withSignal((signal) =>
+    page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
   void responsePromise.catch(() => undefined);
-  await withAbort(
-    page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: timeoutMs,
-    }),
+  await scope.withSignal((signal) => page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: timeoutMs,
     signal,
-  );
-  const response = await withAbort(responsePromise, signal);
+  }));
+  const response = await responsePromise;
   const [bytes, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
+    scope.race(response.body()),
+    scope.race(response.allHeaders()),
   ]);
   return {
     evidence: { kind: "json", bytes },

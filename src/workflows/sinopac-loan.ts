@@ -13,6 +13,7 @@ import {
   text,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
+import { frameScope } from "./frame-scope.ts";
 
 /*
  * SinoPac loans, after all-set-tw's `sinopac/loan-protocol.ts` (MIT, commit 156e2eb), which calls
@@ -33,11 +34,12 @@ export type SinopacLoanTransport = Readonly<{
 }>;
 
 export function sinopacLoanPageTransport(page: Page, signal: AbortSignal): SinopacLoanTransport {
+  const scope = frameScope(page, signal);
   return {
     async post(path, form) {
       signal.throwIfAborted();
       if (new URL(page.url()).origin !== MMA_ORIGIN) fail("unexpected-response", "the signed-in page is not on the MMA origin");
-      const response = await page.evaluate(async ({ url, body }) => {
+      const response = await scope.race(page.evaluate(async ({ url, body }) => {
         const reply = await fetch(url, {
           method: "POST",
           credentials: "same-origin",
@@ -49,7 +51,7 @@ export function sinopacLoanPageTransport(page: Page, signal: AbortSignal): Sinop
           body,
         });
         return { status: reply.status, date: reply.headers.get("date"), text: await reply.text() };
-      }, { url: `${MMA_ORIGIN}${path}`, body: new URLSearchParams(form).toString() });
+      }, { url: `${MMA_ORIGIN}${path}`, body: new URLSearchParams(form).toString() }));
       signal.throwIfAborted();
       return { endpoint: path, ...response };
     },

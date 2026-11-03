@@ -8,6 +8,7 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import { SINOPAC_MAX_WINDOW, SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import {
@@ -869,27 +870,26 @@ async function openTransactionPage(
   signal: AbortSignal,
   event: ProductCollectionHandle["event"],
 ): Promise<SinopacAccount[]> {
-  const responsePromise = page.waitForResponse(
+  const scope = frameScope(page, signal);
+  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
     (response) => isSinopacEndpointResponse(response, ACCOUNT_ENDPOINT),
-    { timeout: 60_000 },
-  );
+    { timeout: 60_000, signal },
+  ));
   void responsePromise.catch(() => undefined);
   const detailLink = page
     .locator('a[title="往來明細"], a[href*="mma_transdetail"]')
     .first();
-  if (await withAbort(detailLink.isVisible().catch(() => false), signal)) {
-    await withAbort(detailLink.click(), signal);
+  if (await scope.race(detailLink.isVisible().catch(() => false))) {
+    await scope.withSignal((signal) => detailLink.click({ signal }));
   } else {
-    await withAbort(page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" }), signal);
+    await scope.withSignal((signal) => page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded", signal }));
   }
-  await withAbort(
-    page.locator("#StartDate").waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
-  const response = await withAbort(responsePromise, signal);
+  await scope.withSignal((signal) =>
+    page.locator("#StartDate").waitFor({ state: "visible", timeout: 60_000, signal }));
+  const response = await responsePromise;
   const [body, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
+    scope.race(response.body()),
+    scope.race(response.allHeaders()),
   ]);
   let payload: unknown;
   try {
