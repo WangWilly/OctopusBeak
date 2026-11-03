@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { parseProviderDecimal } from "../lib/shared-money/exact-money.ts";
 import type { LineBankAccount } from "./linebank-statements.ts";
 
 /**
@@ -62,6 +63,15 @@ export type LineBankCurrentDepositSnapshotInput = Readonly<{
   rawBody: string;
   observedAt: string;
 }>;
+
+/**
+ * The account-list response as the snapshot module receives it. The module
+ * strictly decodes `evidence`, but its plain JSON parse rounds numeric
+ * `wdrwAvblAmt` tokens, so the row parser reads lexemes from `rawBody`, the
+ * same bytes as the statement side decoded them.
+ */
+export type LineBankCurrentDepositAcquired = LineBankCurrentDepositSnapshotInput &
+  Readonly<{ evidence: Readonly<{ kind: "json"; bytes: Uint8Array }> }>;
 
 type JsonRecord = Record<string, unknown>;
 type LineBankPayablesResponse = {
@@ -233,9 +243,6 @@ export function parseLinebankApiJson<T>(source: string): T {
   }
 }
 
-/** Alias with the provider name capitalized for callers that use that style. */
-export const parseLineBankApiJson = parseLinebankApiJson;
-
 function parseExactDecimal(
   value: unknown,
   label: string,
@@ -243,17 +250,14 @@ function parseExactDecimal(
   if (typeof value !== "string")
     throw new Error(`LINE Bank current deposit ${label} must preserve a string token.`);
   const sourceLexeme = cleanText(value);
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(sourceLexeme);
-  if (!match)
+  const amount = parseProviderDecimal(sourceLexeme, {
+    internalWhitespace: "reject",
+    grouping: "thousands",
+    digits: "decimal",
+  });
+  if (!amount)
     throw new Error(`LINE Bank current deposit ${label} is not an exact decimal.`);
-  const whole = (match[2] ?? "").replaceAll(",", "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${match[1] === "-" ? "-" : ""}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  return { ...amount, sourceLexeme };
 }
 
 function currencyOf(account: LineBankPayablesAccount): string {
@@ -363,7 +367,3 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
     throw new Error("LINE Bank current deposit has no TWD account in dpstAcctList.");
   return rows;
 }
-
-/** Spelling alias kept for callers that use a capitalized provider name. */
-export const parseLineBankCurrentDepositBalanceSnapshot =
-  parseLinebankCurrentDepositBalanceSnapshot;

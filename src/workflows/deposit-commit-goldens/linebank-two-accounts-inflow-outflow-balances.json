@@ -241,7 +241,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:0",
+          "itemKey": "current-balance:domestic-deposit:sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -358,7 +358,7 @@
         },
         {
           "product": "current-balance",
-          "itemKey": "current-balance:1",
+          "itemKey": "current-balance:domestic-deposit:sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -508,30 +508,6 @@
     },
     {
       "stage": "collection",
-      "outcome": "started",
-      "code": "current-balance-collection-started"
-    },
-    {
-      "stage": "decoding",
-      "outcome": "started",
-      "code": "current-balance-decoding-started"
-    },
-    {
-      "stage": "decoding",
-      "outcome": "completed",
-      "code": "current-balance-decoding-completed"
-    },
-    {
-      "stage": "collection",
-      "outcome": "completed",
-      "code": "current-balance-collection-completed",
-      "counts": {
-        "completed": 2,
-        "total": 2
-      }
-    },
-    {
-      "stage": "collection",
       "outcome": "advanced",
       "code": "account-collected",
       "counts": {
@@ -588,6 +564,30 @@
       "stage": "validation",
       "outcome": "completed",
       "code": "canonical-admission-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
       "counts": {
         "completed": 2,
         "total": 2

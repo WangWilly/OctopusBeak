@@ -6,11 +6,7 @@ import type { ProductCollectionSummary, ProductStageRequest } from "../lib/autom
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -20,14 +16,13 @@ import {
   buildLinebankCurrentDepositBalanceCapture,
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
 import {
   parseLinebankApiJson,
   parseLinebankCurrentDepositBalanceSnapshot,
+  type LineBankCurrentDepositAcquired,
   type LineBankCurrentDepositBalanceRow,
-  type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import { withAbort } from "./abort.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
@@ -858,13 +853,14 @@ export class LineBankApiClient {
     path: string,
     options?: { body?: unknown },
   ): Promise<{
+    bytes: Uint8Array;
     body: string;
     url: string;
     status: number;
     method: string;
     headers: Record<string, string>;
   }> {
-    const response = await withAbort(this.page.evaluate<{
+    const { bodyBytes, ...response } = await withAbort(this.page.evaluate<{
       bodyBytes?: number[];
       url: string;
       status: number;
@@ -904,14 +900,12 @@ export class LineBankApiClient {
       },
       { path, body: options?.body },
     ), this.signal);
-    if (!Array.isArray(response.bodyBytes))
+    if (!Array.isArray(bodyBytes))
       throw new Error("LINE Bank source response bytes are unavailable.");
-    const body = this.text.decode(
-      Uint8Array.from(response.bodyBytes),
-      responseCharset(response.headers),
-    );
+    const bytes = Uint8Array.from(bodyBytes);
+    const body = this.text.decode(bytes, responseCharset(response.headers));
     this.text.assertIntact(body);
-    return { ...response, body };
+    return { ...response, bytes, body };
   }
 
   private async apiJson<T>(
@@ -926,10 +920,13 @@ export class LineBankApiClient {
     return value;
   }
 
-  private async accountResponse(): Promise<{
+  /**
+   * One account-list read drives both the statements and the current
+   * balances; `observedAt` is sampled once the response has arrived.
+   */
+  async fetchAccountSnapshot(now: () => string = () => new Date().toISOString()): Promise<{
     accounts: LineBankAccount[];
-    response: LineBankCurrentDepositResponseMetadata;
-    rawBody: string;
+    currentBalance: LineBankCurrentDepositAcquired;
   }> {
     const response = await this.apiResponse(ACCOUNTS_ENDPOINT);
     if (response.status < 200 || response.status >= 300)
@@ -945,41 +942,18 @@ export class LineBankApiClient {
       throw new Error("LINE Bank account list is incomplete.");
     return {
       accounts: payload.content.dpstAcctList,
-      response: {
-        url: response.url,
-        status: response.status,
-        method: response.method,
-        headers: response.headers,
+      currentBalance: {
+        evidence: { kind: "json", bytes: response.bytes },
+        response: {
+          url: response.url,
+          status: response.status,
+          method: response.method,
+          headers: response.headers,
+        },
+        rawBody: response.body,
+        observedAt: now(),
       },
-      rawBody: response.body,
     };
-  }
-
-  async fetchAccounts(): Promise<LineBankAccount[]> {
-    const snapshot = await this.accountResponse();
-    // Parse the same response through the bounded current-balance contract so
-    // every account's available field is present and exact, even when a
-    // non-TWD account is excluded from this domestic route.
-    parseLinebankCurrentDepositBalanceSnapshot({
-      response: snapshot.response,
-      rawBody: snapshot.rawBody,
-      observedAt: new Date().toISOString(),
-    });
-    return snapshot.accounts;
-  }
-
-  async fetchAccountSnapshot(now: () => string = () => new Date().toISOString()): Promise<{
-    accounts: LineBankAccount[];
-    currentBalances: readonly LineBankCurrentDepositBalanceRow[];
-  }> {
-    const snapshot = await this.accountResponse();
-    const effectiveObservedAt = now();
-    const currentBalances = parseLinebankCurrentDepositBalanceSnapshot({
-      response: snapshot.response,
-      rawBody: snapshot.rawBody,
-      observedAt: effectiveObservedAt,
-    });
-    return { accounts: snapshot.accounts, currentBalances };
   }
 
   async fetchTransactionPages(
@@ -1131,6 +1105,38 @@ function sourceValidationError(error: unknown): boolean {
   return error instanceof Error && /pagination|page metadata|pageCnt|totTxCnt|transaction page|source account identity|total row count|transaction source/u.test(error.message);
 }
 
+/**
+ * Keep the balance rows of the selected accounts, and require exactly one
+ * for each selected TWD account, each of which this run admitted.
+ */
+function selectedCurrentBalanceRows(
+  rows: readonly LineBankCurrentDepositBalanceRow[],
+  accounts: readonly LineBankAccount[],
+  domesticCaptures: readonly LineBankHumanAttestedV13ValidatedCapture[],
+): readonly LineBankCurrentDepositBalanceRow[] {
+  const selectedAccountKeys = new Set(
+    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+  );
+  const selectedRows = rows.filter((row) =>
+    selectedAccountKeys.has(linebankAccountKey(row.account)),
+  );
+  const selectedTwdAccountKeys = new Set(
+    accounts
+      .filter((account) => linebankAccountCurrency(account) === "TWD")
+      .map((account) => linebankAccountKey(account)),
+  );
+  const admittedTwdAccountKeys = new Set(
+    domesticCaptures.map((capture) => capture.accountKey),
+  );
+  const selectedTwdSourceKeys = new Set(selectedRows.map((row) => row.sourceAccountKey));
+  if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
+    selectedRows.length !== selectedTwdAccountKeys.size ||
+    selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
+    [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key)))
+    throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
+  return selectedRows;
+}
+
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
 export async function runLineBankProviderWorkflow(
   context: WorkflowContextWith<"financialCommit" | "products">,
@@ -1157,11 +1163,8 @@ export async function runLineBankProviderWorkflow(
         const windows = linebankQueryWindows(product.collectionPeriod());
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
-        await productContext.event("collection", "started", "current-balance-collection-started");
-        await productContext.event("decoding", "started", "current-balance-decoding-started");
         let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
         let accounts: LineBankAccount[];
-        let currentBalanceRows: LineBankCurrentDepositBalanceRow[];
         try {
           accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
           accounts = filterAccounts(
@@ -1171,24 +1174,11 @@ export async function runLineBankProviderWorkflow(
           );
           if (accounts.length === 0)
             throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
-          const selectedAccountKeys = new Set(
-            accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
-          );
-          currentBalanceRows = accountSnapshot.currentBalances.filter((row) =>
-            selectedAccountKeys.has(linebankAccountKey(row.account)),
-          );
         } catch (error) {
           if (sourceDecodeError(error))
             await productContext.event("decoding", "failed", "source-decoding-failed");
-          else
-            await productContext.event("collection", "failed", "current-balance-collection-failed");
           throw error;
         }
-        await productContext.event("decoding", "completed", "current-balance-decoding-completed");
-        await productContext.event("collection", "completed", "current-balance-collection-completed", {
-          completed: currentBalanceRows.length,
-          total: currentBalanceRows.length,
-        });
 
         const selectedSources: Array<{
           account: LineBankAccount;
@@ -1306,71 +1296,39 @@ export async function runLineBankProviderWorkflow(
           completed: statementItems.length,
           total: selectedSources.length,
         });
-        const balanceItems: ProductStageRequest[] = [];
-        if (domesticCaptures.length > 0) {
-          const selectedTwdAccountKeys = new Set(
-            accounts
-              .filter((account) => linebankAccountCurrency(account) === "TWD")
-              .map((account) => linebankAccountKey(account)),
-          );
-          const admittedTwdAccountKeys = new Set(
-            domesticCaptures.map((capture) => capture.accountKey),
-          );
-          const selectedTwdSourceKeys = new Set(
-            currentBalanceRows.map((row) => row.sourceAccountKey),
-          );
-          if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
-            currentBalanceRows.length !== selectedTwdAccountKeys.size ||
-            selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
-            [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key))) {
-            await productContext.event("validation", "failed", "current-balance-validation-rejected", {
-              completed: currentBalanceRows.length,
-              total: selectedTwdAccountKeys.size,
-            });
-            throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
-          }
-          await productContext.event("validation", "started", "current-balance-validation-started", {
-            completed: 0,
-            total: currentBalanceRows.length,
-          });
-          try {
-            const { matched } = matchCurrentBalanceCaptures(
-              currentBalanceRows,
-              domesticCaptures.map((capture) => ({
-                accountKey: capture.accountKey,
-                sourceConnection: capture.sourceConnection,
-                identityEpoch: capture.identityEpoch,
-                observedAt: capture.observedAt,
-              })),
-              linebankCurrentBalanceCaptureMatching,
-            );
-            const currentBalanceCaptures = matched.map(({ row, capture }) =>
-              buildLinebankCurrentDepositBalanceCapture(row, capture),
-            );
-            for (const [index, capture] of currentBalanceCaptures.entries()) {
-              context.signal.throwIfAborted();
-              balanceItems.push({
-                product: "current-balance",
-                itemKey: `current-balance:${index}`,
-                command: {
-                  kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-                  request: currentDepositBalanceCommandRequest(
-                    admitCurrentDepositBalanceCapture(capture),
-                  ),
-                },
-              });
-            }
-          } catch {
-            await productContext.event("validation", "failed", "current-balance-validation-rejected", {
-              completed: 0,
-              total: currentBalanceRows.length,
-            });
-            throw new Error("LINE Bank current balance source admission was rejected.");
-          }
-          await productContext.event("validation", "completed", "current-balance-validation-completed", {
-            completed: balanceItems.length,
-            total: currentBalanceRows.length,
-          });
+        // Admission failures surface as one generic message; decoding and
+        // coverage failures keep their own.
+        let balanceRowsParsed = false;
+        let balanceItems: readonly ProductStageRequest[];
+        try {
+          ({ items: balanceItems } = await captureCurrentStateSnapshots({
+            product: "current-balance",
+            parse: (_decoded, acquired) => {
+              const rows = selectedCurrentBalanceRows(
+                parseLinebankCurrentDepositBalanceSnapshot(acquired),
+                accounts,
+                domesticCaptures,
+              );
+              balanceRowsParsed = true;
+              return rows;
+            },
+            matching: linebankCurrentBalanceCaptureMatching,
+            build: buildLinebankCurrentDepositBalanceCapture,
+          }, {
+            captures: domesticCaptures.map((capture) => ({
+              accountKey: capture.accountKey,
+              sourceConnection: capture.sourceConnection,
+              identityEpoch: capture.identityEpoch,
+              observedAt: capture.observedAt,
+            })),
+            acquire: async () => accountSnapshot.currentBalance,
+            product,
+            text: context.text,
+            signal: context.signal,
+          }));
+        } catch (error) {
+          if (!balanceRowsParsed) throw error;
+          throw new Error("LINE Bank current balance source admission was rejected.");
         }
         product.stage(...statementItems, ...balanceItems);
         accountCount = accounts.length;
