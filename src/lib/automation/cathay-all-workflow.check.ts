@@ -781,7 +781,7 @@ test("a Cathay run refuses an empty selection and an attached product Cathay doe
   );
   await assert.rejects(
     runCathay(harness.context, { ...bothProductsInput, statementTypes: [], attachedPreviewProducts: ["deposit"] }, collectionDependencies()),
-    (error: unknown) => error instanceof FailureCodeError && error.errorCode === "workflow-failed",
+    /^Error: Cathay selects an attached preview product it does not offer\.$/u,
   );
 });
 
