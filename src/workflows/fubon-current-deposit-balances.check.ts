@@ -4,6 +4,7 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { frameScope } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 
 import {
@@ -197,6 +198,7 @@ assert.equal(parsed[0]?.providerHttpDate, "Tue, 08 Sep 2026 13:40:10 GMT");
 assert.equal(parsed[0]?.effectiveAt, "2026-09-08T13:40:10.000Z");
 assert.equal(parsed[0]?.observedAt, observedAt);
 
+const fixtureFrames = frameScope({} as never, new AbortController().signal);
 const currentTable = tableLocator([
   header(FUBON_CURRENT_DEPOSIT_HEADERS),
   data(visibleRows[0], hiddenRows[0]),
@@ -207,7 +209,7 @@ const currentTable = tableLocator([
   },
 ]);
 assert.deepEqual(
-  await readFubonCurrentDepositTableCells(currentTable as never),
+  await readFubonCurrentDepositTableCells(fixtureFrames, currentTable as never),
   visibleRows,
   "only the ten visible cells of each data row are read; hidden cells and the total row are left out",
 );
@@ -217,7 +219,7 @@ const headerWithHiddenCellsTable = tableLocator([
   data(visibleRows[0], hiddenRows[0]),
 ]);
 assert.deepEqual(
-  await readFubonCurrentDepositTableCells(headerWithHiddenCellsTable as never),
+  await readFubonCurrentDepositTableCells(fixtureFrames, headerWithHiddenCellsTable as never),
   [visibleRows[0]],
 );
 
@@ -227,7 +229,7 @@ const malformedHeaderTable = tableLocator([
 ]);
 await assert.rejects(
   () =>
-    readFubonCurrentDepositTableCells(malformedHeaderTable as never),
+    readFubonCurrentDepositTableCells(fixtureFrames, malformedHeaderTable as never),
   /headers are not recognized/u,
 );
 
@@ -236,7 +238,7 @@ const wrongVisibleWidth = tableLocator([
   data([...visibleRows[0], "overlong-visible"], hiddenRows[0]),
 ]);
 await assert.rejects(
-  () => readFubonCurrentDepositTableCells(wrongVisibleWidth as never),
+  () => readFubonCurrentDepositTableCells(fixtureFrames, wrongVisibleWidth as never),
   /12 TD cells/u,
 );
 
@@ -245,7 +247,7 @@ const wrongHiddenWidth = tableLocator([
   data(visibleRows[0], ["only-one-hidden"]),
 ]);
 await assert.rejects(
-  () => readFubonCurrentDepositTableCells(wrongHiddenWidth as never),
+  () => readFubonCurrentDepositTableCells(fixtureFrames, wrongHiddenWidth as never),
   /12 TD cells/u,
 );
 
@@ -491,6 +493,22 @@ test("a run cancelled while the bank holds the balance response rejects with its
     }
     controller.abort(cancelled);
     await assert.rejects(read, (error) => error === cancelled);
+  }));
+
+test("a run cancelled while a table read waits on a replaced table rejects with its reason", () =>
+  withDepositShell({}, async (page) => {
+    const controller = new AbortController();
+    const cancelled = new Error("synthetic cancellation");
+    const frames = frameScope(page, controller.signal);
+    await page.evaluate(() => {
+      document.body.innerHTML = "<p>replaced</p>";
+    });
+    const read = readFubonCurrentDepositTableCells(frames, page.locator("table"));
+    read.catch(() => undefined);
+    const startedAt = Date.now();
+    setTimeout(() => controller.abort(cancelled), 300);
+    await assert.rejects(read, (error) => error === cancelled);
+    assert.ok(Date.now() - startedAt < 2_000, "the read stopped on the run signal");
   }));
 
 console.log("fubon-current-deposit-balances.check passed");

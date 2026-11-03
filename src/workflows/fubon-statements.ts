@@ -2393,13 +2393,17 @@ async function readFubonDepositFormMetadata(site: FubonEbankSite): Promise<{
   const fields = new Map<string, { name: string; type: string }>();
   for (let index = 0; index < count; index += 1) {
     const control = controls.nth(index);
-    const rawName =
-      (await control.getAttribute("name").catch(() => null)) ??
-      (await control.getAttribute("id").catch(() => null));
+    const attribute = (attributeName: string) =>
+      site.frames
+        .withSignal((signal) => control.getAttribute(attributeName, { signal }))
+        .catch(() => {
+          site.frames.signal.throwIfAborted();
+          return null;
+        });
+    const rawName = (await attribute("name")) ?? (await attribute("id"));
     const name = rawName ? safeTelemetryFieldName(rawName) : null;
     if (!name) continue;
-    const type =
-      (await control.getAttribute("type").catch(() => null)) ?? "control";
+    const type = (await attribute("type")) ?? "control";
     fields.set(name, { name, type: cleanText(type).toLowerCase() });
   }
   return {

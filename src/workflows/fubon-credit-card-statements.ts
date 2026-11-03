@@ -50,7 +50,7 @@ import {
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
-import type { BrowserScope } from "./frame-scope.ts";
+import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 
@@ -764,17 +764,17 @@ function unbilledDetailsTable(scope: BrowserScope): Locator {
     .first();
 }
 
-async function readCells(row: Locator): Promise<string[]> {
+async function readCells(frames: FrameScope, row: Locator): Promise<string[]> {
   const cells = row.locator("th,td");
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await cells.nth(index).textContent()));
+    values.push(cleanText(await frames.withSignal((signal) => cells.nth(index).textContent({ signal }))));
   }
   return values;
 }
 
-async function gridState(scope: BrowserScope): Promise<GridState> {
+async function gridState(frames: FrameScope, scope: BrowserScope): Promise<GridState> {
   const fields = scope.locator("input, select");
   let currentPage: string | undefined;
   let currentPageSize: string | undefined;
@@ -782,16 +782,15 @@ async function gridState(scope: BrowserScope): Promise<GridState> {
   const count = await fields.count();
   for (let index = 0; index < count; index += 1) {
     const field = fields.nth(index);
-    const key =
-      (await field.getAttribute("name")) ??
-      (await field.getAttribute("id")) ??
-      "";
+    const attribute = (name: string) => frames.withSignal((signal) => field.getAttribute(name, { signal }));
+    const value = () => frames.withSignal((signal) => field.inputValue({ signal }));
+    const key = (await attribute("name")) ?? (await attribute("id")) ?? "";
     if (/currentpagesize/i.test(key)) {
-      currentPageSize ??= await field.inputValue();
+      currentPageSize ??= await value();
     } else if (/currentpage/i.test(key)) {
-      currentPage ??= await field.inputValue();
+      currentPage ??= await value();
     } else if (/total(?:record|row)|recordcount/i.test(key)) {
-      const candidate = Number(toAsciiDigits(await field.inputValue()).replace(/\D/gu, ""));
+      const candidate = Number(toAsciiDigits(await value()).replace(/\D/gu, ""));
       if (Number.isSafeInteger(candidate) && candidate >= 0)
         sourceDeclaredRowCount ??= candidate;
     }
@@ -809,7 +808,7 @@ async function readStatementPeriodLabel(
 ): Promise<string> {
   const rows = statementSummaryTable(scope).locator("tr");
   await site.frames.withSignal((signal) => rows.nth(1).waitFor({ state: "attached", timeout: 60_000, signal }));
-  const cells = await readCells(rows.nth(1));
+  const cells = await readCells(site.frames, rows.nth(1));
   return cells[0] ?? "";
 }
 
@@ -1116,6 +1115,7 @@ export function parseFubonSettledStatementSummary(
 }
 
 async function readSettledStatementSummaries(
+  frames: FrameScope,
   scope: BrowserScope,
 ): Promise<IssuerStatementSummary[]> {
   const rows = statementSummaryTable(scope).locator("tr");
@@ -1124,10 +1124,10 @@ async function readSettledStatementSummaries(
   const paymentCount = await paymentRows.count();
   if (count !== 2 || paymentCount !== 2)
     throw new Error("Fubon settled portfolio summary tables are incomplete or ambiguous.");
-  const headers = await readCells(rows.nth(0));
-  const cells = await readCells(rows.nth(1));
-  const paymentHeaders = await readCells(paymentRows.nth(0));
-  const paymentCells = await readCells(paymentRows.nth(1));
+  const headers = await readCells(frames, rows.nth(0));
+  const cells = await readCells(frames, rows.nth(1));
+  const paymentHeaders = await readCells(frames, paymentRows.nth(0));
+  const paymentCells = await readCells(frames, paymentRows.nth(1));
   if (!cells.some(Boolean) || !paymentCells.some(Boolean))
     throw new Error("Fubon settled portfolio summary contains no issuer values.");
   return [
@@ -1224,7 +1224,9 @@ async function selectStatementPeriod(
 
   const switched = await frames.until(async () => {
     const candidate = await frames.scopeWith(PERIOD_SELECTOR, undefined, { timeoutMs: 5_000 });
-    const value = await candidate.locator(PERIOD_SELECTOR).getAttribute("value");
+    const value = await frames.withSignal((signal) =>
+      candidate.locator(PERIOD_SELECTOR).getAttribute("value", { signal }),
+    );
     return value === String(periodOffset) ? candidate : null;
   }, `Timed out switching to period tab "${period.label}".`, { timeoutMs: 60_000 });
   await site.waitForMaskToClear();
@@ -1232,13 +1234,14 @@ async function selectStatementPeriod(
 }
 
 async function readStatementRows(
+  frames: FrameScope,
   scope: BrowserScope,
   periodLabel: string,
   cardFilters: string[],
   requireCanonicalSummary: boolean,
 ): Promise<StatementRowsResult> {
   const summaries = requireCanonicalSummary
-    ? await readSettledStatementSummaries(scope)
+    ? await readSettledStatementSummaries(frames, scope)
     : [];
   const rows = statementDetailsTable(scope).locator("tr");
   const count = await rows.count();
@@ -1248,7 +1251,7 @@ async function readStatementRows(
   let paymentCells: string[] | null = null;
 
   for (let index = 0; index < count; index += 1) {
-    const cells = await readCells(rows.nth(index));
+    const cells = await readCells(frames, rows.nth(index));
     if (!hasUsefulData(cells) || isHeaderRow(cells)) continue;
 
     if (isStatementCardLabelRow(cells)) {
@@ -1299,6 +1302,7 @@ async function readStatementRows(
 }
 
 async function readUnbilledRows(
+  frames: FrameScope,
   scope: BrowserScope,
   cardFilters: string[],
 ): Promise<CsvRow[]> {
@@ -1309,7 +1313,7 @@ async function readUnbilledRows(
   let fullPan: string | undefined;
 
   for (let index = 0; index < count; index += 1) {
-    const cells = await readCells(rows.nth(index));
+    const cells = await readCells(frames, rows.nth(index));
     if (!hasUsefulData(cells) || isHeaderRow(cells)) continue;
 
     if (isUnbilledCardLabelRow(cells)) {
@@ -2255,6 +2259,7 @@ export async function readFubonCreditCardSourceSnapshot(
     statementPeriods.push(periodLabel);
     await product.reportActivity("query");
     const statementResult = await readStatementRows(
+      site.frames,
       scope,
       periodLabel,
       input.statementCardLabels,
@@ -2262,19 +2267,20 @@ export async function readFubonCreditCardSourceSnapshot(
     );
     statementRows.push(...statementResult.rows);
     summaries.push(...statementResult.summaries);
-    gridStates.push(await gridState(scope));
+    gridStates.push(await gridState(site.frames, scope));
   }
 
   await product.reportActivity("query");
   const unbilled = await openUnbilledDetailsPage(site);
   const unbilledRows = await readUnbilledRows(
+    site.frames,
     unbilled.scope,
     input.unbilledCardNumbers,
   );
   gridStates.push(
     unbilled.providerNoRecord
       ? { providerNoRecord: true }
-      : await gridState(unbilled.scope),
+      : await gridState(site.frames, unbilled.scope),
   );
   const sourceSnapshot: FubonCreditCardSourceSnapshot = {
     ...(currentUsedCredit ? { currentUsedCredit } : {}),
