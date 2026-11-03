@@ -76,6 +76,26 @@ test("showing a route subscribes its view and stops the previous one", async () 
   financial.dispose();
 });
 
+test("each published page replaces the route's page, including an empty ledger", async () => {
+  const { fake, financial, state } = await openPage();
+  financial.show("overview");
+  await settle();
+  const subscription = fake.latest("overview");
+  subscription.publish({ availability: "empty", accounts: [] });
+  assert.deepEqual(state().routes.overview.load, {
+    status: "ready",
+    data: { availability: "empty", accounts: [] },
+  });
+  subscription.publish({ availability: "available", accounts: [{ id: "account-1" }] });
+  assert.deepEqual(state().routes.overview.load, {
+    status: "ready",
+    data: { availability: "available", accounts: [{ id: "account-1" }] },
+  });
+  financial.dispose();
+  await settle();
+  assert.ok(subscription.stopped, "the transport subscription stops with the page");
+});
+
 test("reload re-reads the shown route and settles on the fresh page", async () => {
   const { fake, financial, state } = await openPage();
   financial.show("spending");

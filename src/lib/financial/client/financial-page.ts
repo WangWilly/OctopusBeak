@@ -1,28 +1,26 @@
 import { writable, type Readable } from "svelte/store";
-import type { AssetsPageDto } from "../../assets/types.ts";
+import type { FinancialLiveViewDtos, PGliteFinancialLiveView } from "../../../../electron/pglite-financial-live-views.ts";
 import type { DataViewsApi } from "../../desktop/api.ts";
-import type { LiabilitiesPageDto } from "../../liabilities/types.ts";
-import type { OverviewPageDto } from "../../overview/types.ts";
-import type { SpendingPageDto } from "../../spending/model.ts";
-import type { ViewState } from "../../data-views/client/view-stores.ts";
+import { createViewStores, type ViewState } from "../../data-views/client/view-stores.ts";
 import {
   beginViewLoad,
   failViewLoad,
   finishViewLoad,
   type ViewLoadState,
 } from "../../shared-shell/view-load-state.ts";
-import {
-  createFinancialPageLiveStores,
-  type FinancialPageLiveStores,
-} from "./page-live-stores.ts";
 
-export type FinancialRoute = "overview" | "assets" | "liabilities" | "spending";
+const ROUTE_VIEWS = {
+  overview: "financial.overview.current",
+  assets: "financial.assets.current",
+  liabilities: "financial.liabilities.current",
+  spending: "financial.spending.current",
+} as const satisfies Record<string, PGliteFinancialLiveView>;
 
+export type FinancialRoute = keyof typeof ROUTE_VIEWS;
+
+/** Each route's page is the DTO its live view publishes. */
 export type FinancialPageValues = {
-  overview: OverviewPageDto;
-  assets: AssetsPageDto;
-  liabilities: LiabilitiesPageDto;
-  spending: SpendingPageDto;
+  [Route in FinancialRoute]: FinancialLiveViewDtos[(typeof ROUTE_VIEWS)[Route]];
 };
 
 export type FinancialRouteState<Route extends FinancialRoute> = Readonly<{
@@ -49,6 +47,8 @@ export class FinancialPageSuperseded extends Error {
 
 export type FinancialDataViews = Pick<DataViewsApi, "enabled" | "subscribe">;
 
+type ViewStores = ReturnType<typeof createViewStores>;
+
 export interface FinancialPage {
   readonly state: Readable<FinancialPageState>;
   /** Resolves once with whether live views are enabled; never rejects. */
@@ -57,7 +57,7 @@ export interface FinancialPage {
   show(route: FinancialRoute | null): void;
   /** Show the route and re-read it; settles on its next delivered page. */
   reload(route: FinancialRoute): Promise<void>;
-  overviewStore(): Readable<ViewState<OverviewPageDto>> | null;
+  overviewStore(): Readable<ViewState<FinancialPageValues["overview"]>> | null;
   dispose(): void;
 }
 
@@ -65,7 +65,7 @@ const subscriptionFailed = "Financial page subscription failed.";
 const unavailable = "PGlite financial page views are unavailable.";
 
 export function isFinancialRoute(route: string): route is FinancialRoute {
-  return route === "overview" || route === "assets" || route === "liabilities" || route === "spending";
+  return Object.hasOwn(ROUTE_VIEWS, route);
 }
 
 /**
@@ -82,7 +82,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     routes: { overview: loading, assets: loading, liabilities: loading, spending: loading },
   };
   const store = writable(value);
-  let stores: FinancialPageLiveStores | null = null;
+  let stores: ViewStores | null = null;
   let stopShown: (() => void) | null = null;
   let waiter: {
     route: FinancialRoute;
@@ -139,10 +139,10 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
   }
 
   function storeFor<Route extends FinancialRoute>(
-    live: FinancialPageLiveStores,
+    live: ViewStores,
     route: Route,
   ): Readable<ViewState<FinancialPageValues[Route]>> {
-    return live[route]() as Readable<ViewState<FinancialPageValues[Route]>>;
+    return live.get<FinancialPageValues[Route]>(ROUTE_VIEWS[route], {});
   }
 
   function stop() {
@@ -151,7 +151,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     if (value.shown) commit({ shown: null });
   }
 
-  function subscribe(live: FinancialPageLiveStores, route: FinancialRoute) {
+  function subscribe(live: ViewStores, route: FinancialRoute) {
     stop();
     beginLoad(route);
     commit({ shown: route });
@@ -159,9 +159,9 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     stopShown = storeFor(live, route).subscribe((state) => apply(route, state));
   }
 
-  function restart(live: FinancialPageLiveStores, route: FinancialRoute) {
+  function restart(live: ViewStores, route: FinancialRoute) {
     beginLoad(route);
-    live.restart[route]();
+    live.restart(ROUTE_VIEWS[route], {});
   }
 
   const capability = Promise.resolve()
@@ -169,7 +169,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     .catch(() => false)
     .then((enabled) => {
       if (disposed) return false;
-      if (enabled && options.dataViews) stores = createFinancialPageLiveStores(options.dataViews);
+      if (enabled && options.dataViews) stores = createViewStores(options.dataViews);
       commit({ capabilityResolved: true, enabled: Boolean(stores) });
       return Boolean(stores);
     });
@@ -214,7 +214,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     },
 
     overviewStore() {
-      return stores?.overview() ?? null;
+      return stores ? storeFor(stores, "overview") : null;
     },
 
     dispose() {
