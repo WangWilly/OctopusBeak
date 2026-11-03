@@ -463,7 +463,7 @@ test("an unmatched row fails validation under a throw policy", async () => {
 test("the read and stage halves report their own events and stage what the read returned", async () => {
   const events: string[] = [];
   const product = {
-    event: async (stage: string, outcome: string, code: string, counts?: Readonly<{ completed: number; total: number }>) => {
+    event: async (stage: string, outcome: string, code: string, counts?: Readonly<{ completed?: number; total?: number }>) => {
       events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
     },
   };
