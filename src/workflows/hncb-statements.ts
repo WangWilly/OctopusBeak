@@ -914,7 +914,7 @@ export async function downloadCurrentStatementInMemory(
     const collection = (async () => {
       await popup
         .waitForLoadState("domcontentloaded", { timeout: 10_000, signal })
-        .catch(() => undefined);
+        .catch(() => signal.throwIfAborted());
       await popup.route("**/*", handleRoute);
       await popup.evaluate(() => {
         const popupWindow = window as typeof window & { doSubmit?: () => void };

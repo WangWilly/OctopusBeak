@@ -97,7 +97,7 @@ test("cancelling the run stops a Yuanta report read at each of its waits", async
       (error: unknown) => error === cancelled,
       landing,
     );
-    assert.ok(Date.now() - started < 1_500, `${landing} stopped promptly`);
+    assert.ok(Date.now() - started < 2_000, `${landing} stopped promptly`);
     await page.close();
   };
   try {

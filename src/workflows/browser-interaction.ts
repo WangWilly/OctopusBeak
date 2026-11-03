@@ -18,24 +18,6 @@ export async function hasAttachedLocator(
   }
 }
 
-type NavigationScope = {
-  locator(selector: string): Pick<Locator, "click">;
-  waitForNavigation(options: {
-    waitUntil: "domcontentloaded";
-    timeout: number;
-  }): Promise<unknown>;
-};
-
-export async function clickAndWaitForNavigation(
-  scope: NavigationScope,
-  selector: string,
-): Promise<void> {
-  await Promise.all([
-    scope.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60_000 }),
-    scope.locator(selector).click(),
-  ]);
-}
-
 export async function activateControlWithoutPointer(
   locator: Locator,
   options: {
