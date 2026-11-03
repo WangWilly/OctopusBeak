@@ -25,6 +25,7 @@ import {
 } from "./linebank-current-deposit-balances.ts";
 import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 
 const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
@@ -745,10 +746,10 @@ async function firstVisibleMatch(locator: Locator): Promise<Locator | null> {
  * force a click; anything ambiguous remains a hard pre-query blocker.
  */
 export async function linebankAutoDismissApprovedAlert(
-  page: Page,
+  scope: FrameScope,
 ): Promise<boolean> {
-  const dialogs = page.getByRole("alertdialog");
-  const visibleDialogs = await visibleMatches(dialogs);
+  const dialogs = scope.page.getByRole("alertdialog");
+  const visibleDialogs = await scope.race(visibleMatches(dialogs));
   if (visibleDialogs.length === 0) return false;
   if (visibleDialogs.length !== 1) {
     throw new Error(
@@ -760,21 +761,22 @@ export async function linebankAutoDismissApprovedAlert(
   const approvedButtons = dialog.getByRole("button", {
     name: /^(?:確定|關閉|知道了)$/,
   });
-  if ((await approvedButtons.count()) !== 1) {
+  if ((await scope.race(approvedButtons.count())) !== 1) {
     throw new Error(
       "LINE Bank alert dialog requires exactly one approved dismissal button.",
     );
   }
   const button = approvedButtons.nth(0);
-  if (!(await button.isVisible().catch(() => false))) {
+  if (!(await scope.race(button.isVisible().catch(() => false)))) {
     throw new Error("LINE Bank approved dismissal button is not visible.");
   }
-  await button.click();
-  await dialog.waitFor({
+  await scope.withSignal((signal) => button.click({ signal }));
+  await scope.withSignal((signal) => dialog.waitFor({
     state: "hidden",
     timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-  });
-  if ((await visibleMatches(dialogs)).length !== 0) {
+    signal,
+  }));
+  if ((await scope.race(visibleMatches(dialogs))).length !== 0) {
     throw new Error("LINE Bank alert dialog remained visible after dismissal.");
   }
   return true;
@@ -801,30 +803,32 @@ function requireLineBankCredential(
 }
 
 /** Enter the transaction stage only after authentication has completed. */
-export async function linebankEnsureTransactionPage(page: Page): Promise<void> {
-  if (new URL(page.url()).pathname === "/transaction") {
-    await page.locator("#account-dropdown").waitFor({
+export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<void> {
+  const { page } = scope;
+  const accountDropdownVisible = () => scope.withSignal((signal) =>
+    page.locator("#account-dropdown").waitFor({
       state: "visible",
       timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-    });
+      signal,
+    }));
+  if (new URL(page.url()).pathname === "/transaction") {
+    await accountDropdownVisible();
     return;
   }
 
-  const transactionLink = await firstVisibleMatch(transactionLinkLocator(page));
+  const transactionLink = await scope.race(firstVisibleMatch(transactionLinkLocator(page)));
   if (transactionLink) {
     await Promise.all([
-      page.waitForURL((url) => url.pathname === "/transaction", {
+      scope.withSignal((signal) => page.waitForURL((url) => url.pathname === "/transaction", {
         timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-      }),
-      transactionLink.click(),
+        signal,
+      })),
+      scope.withSignal((signal) => transactionLink.click({ signal })),
     ]);
   } else {
-    await page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded" });
+    await scope.withSignal((signal) => page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded", signal }));
   }
-  await page.locator("#account-dropdown").waitFor({
-    state: "visible",
-    timeout: LINEBANK_LOGIN_TIMEOUT_MS,
-  });
+  await accountDropdownVisible();
 }
 
 function responseCharset(headers: Readonly<Record<string, string>>): string {
@@ -836,17 +840,12 @@ function responseCharset(headers: Readonly<Record<string, string>>): string {
 }
 
 export class LineBankApiClient {
-  private page: Page;
+  private scope: FrameScope;
   private text: SourceTextPort;
-  private signal?: AbortSignal;
 
-  constructor(
-    page: Page,
-    options: { text: SourceTextPort; signal?: AbortSignal },
-  ) {
-    this.page = page;
+  constructor(scope: FrameScope, options: { text: SourceTextPort }) {
+    this.scope = scope;
     this.text = options.text;
-    this.signal = options.signal;
   }
 
   private async apiResponse(
@@ -860,7 +859,7 @@ export class LineBankApiClient {
     method: string;
     headers: Record<string, string>;
   }> {
-    const { bodyBytes, ...response } = await withAbort(this.page.evaluate<{
+    const { bodyBytes, ...response } = await this.scope.race(this.scope.page.evaluate<{
       bodyBytes?: number[];
       url: string;
       status: number;
@@ -899,7 +898,7 @@ export class LineBankApiClient {
         };
       },
       { path, body: options?.body },
-    ), this.signal);
+    ));
     if (!Array.isArray(bodyBytes))
       throw new Error("LINE Bank source response bytes are unavailable.");
     const bytes = Uint8Array.from(bodyBytes);
@@ -1086,7 +1085,7 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
         throw new Error("LINE Bank login submit button is not visible.");
       await withAbort(loginButton.click(), signal);
     },
-    prompts: (page, signal) => withAbort(linebankAutoDismissApprovedAlert(page), signal),
+    prompts: (page, signal) => linebankAutoDismissApprovedAlert(frameScope(page, signal)),
     dialogs: "dismiss",
     session: { none: "needs live verification" },
     timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS,
@@ -1154,13 +1153,11 @@ export async function runLineBankProviderWorkflow(
 
   return context.browser.withPage(async (page) => {
     await signIn(context, page, LINEBANK_SOURCE, linebankSignInPlan(parsed.data.credentials));
-    await withAbort(linebankAutoDismissApprovedAlert(page), context.signal);
-    await withAbort(linebankEnsureTransactionPage(page), context.signal);
+    const scope = frameScope(page, context.signal);
+    await linebankAutoDismissApprovedAlert(scope);
+    await linebankEnsureTransactionPage(scope);
 
-    const client = new LineBankApiClient(page, {
-      text: context.text,
-      signal: context.signal,
-    });
+    const client = new LineBankApiClient(scope, { text: context.text });
     let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {

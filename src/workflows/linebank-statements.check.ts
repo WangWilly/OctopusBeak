@@ -23,8 +23,11 @@ import {
   linebankAutoDismissApprovedAlert,
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
+import { frameScope } from "./frame-scope.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
 import { normalizeLineBankFinancialCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
+
+const readScope = (page: never) => frameScope(page, new AbortController().signal);
 
 const accountSnapshotEndpoint =
   "https://accessibility.linebank.com.tw/v1/account/common/payables?featureTypeCode=01";
@@ -94,7 +97,7 @@ SequencedDate.noArgumentValues = [
 ];
 globalThis.Date = SequencedDate as unknown as DateConstructor;
 try {
-  const snapshot = await new LineBankApiClient(delayedAccountSnapshotPage as never, {
+  const snapshot = await new LineBankApiClient(readScope(delayedAccountSnapshotPage as never), {
     text: strictSourceText,
   }).fetchAccountSnapshot();
   assert.equal(snapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
@@ -110,7 +113,7 @@ const workflowClockPage = {
     return response;
   },
 } as never;
-const workflowSnapshot = await new LineBankApiClient(workflowClockPage, {
+const workflowSnapshot = await new LineBankApiClient(readScope(workflowClockPage), {
   text: strictSourceText,
 }).fetchAccountSnapshot(() => snapshotClock);
 assert.equal(workflowSnapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
@@ -120,7 +123,7 @@ assert.deepEqual(
   "the snapshot module receives the account-list bytes the statements read",
 );
 
-const earlySnapshot = await new LineBankApiClient(delayedAccountSnapshotPage as never, {
+const earlySnapshot = await new LineBankApiClient(readScope(delayedAccountSnapshotPage as never), {
   text: strictSourceText,
 }).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z");
 assert.throws(
@@ -154,7 +157,7 @@ assert.doesNotMatch(
 await assert.rejects(
   () =>
     new LineBankApiClient(
-      {
+      readScope({
         async evaluate() {
           return {
             bodyBytes: [0xff],
@@ -164,7 +167,7 @@ await assert.rejects(
             headers: accountSnapshotHeaders,
           };
         },
-      } as never,
+      } as never),
       { text: strictSourceText },
     ).fetchAccountSnapshot(),
   /Source text integrity failed: invalid-encoding/u,
@@ -358,7 +361,7 @@ const noAlertLocator = {
 const noAlertPage = {
   getByRole: () => noAlertLocator,
 } as never;
-await linebankAutoDismissApprovedAlert(noAlertPage);
+await linebankAutoDismissApprovedAlert(readScope(noAlertPage));
 
 let dialogVisible = true;
 let approvedButtonClicks = 0;
@@ -433,13 +436,13 @@ const approvedAlertPage = {
     assert.equal(predicate(new URL(approvedNavigationUrl)), true);
   },
 } as never;
-await linebankAutoDismissApprovedAlert(approvedAlertPage);
-await linebankEnsureTransactionPage(approvedAlertPage);
+await linebankAutoDismissApprovedAlert(readScope(approvedAlertPage));
+await linebankEnsureTransactionPage(readScope(approvedAlertPage));
 assert.equal(approvedButtonClicks, 1);
 assert.equal(approvedNavigationUrl.endsWith("/transaction"), true);
 
 dialogVisible = false;
-await linebankAutoDismissApprovedAlert(approvedAlertPage);
+await linebankAutoDismissApprovedAlert(readScope(approvedAlertPage));
 assert.equal(approvedButtonClicks, 1);
 
 const unknownButtonPage = {
@@ -461,7 +464,7 @@ dialogButtonLocator = {
   },
 };
 await assert.rejects(
-  () => linebankAutoDismissApprovedAlert(unknownButtonPage),
+  () => linebankAutoDismissApprovedAlert(readScope(unknownButtonPage)),
   /exactly one approved dismissal button/,
 );
 assert.equal(approvedButtonClicks, 1);
@@ -484,7 +487,7 @@ dialogButtonLocator = {
   },
 };
 await assert.rejects(
-  () => linebankAutoDismissApprovedAlert(multipleButtonPage),
+  () => linebankAutoDismissApprovedAlert(readScope(multipleButtonPage)),
   /exactly one approved dismissal button/,
 );
 assert.equal(approvedButtonClicks, 1);
@@ -508,7 +511,7 @@ const multipleDialogPage = {
 } as never;
 dialogButtonLocator = approvedButton;
 await assert.rejects(
-  () => linebankAutoDismissApprovedAlert(multipleDialogPage),
+  () => linebankAutoDismissApprovedAlert(readScope(multipleDialogPage)),
   /exactly one visible alert dialog/,
 );
 
@@ -550,8 +553,8 @@ const persistentAlertPage = {
     role === "alertdialog" ? persistentDialog : persistentNavigationLink,
 } as never;
 await assert.rejects(async () => {
-  await linebankAutoDismissApprovedAlert(persistentAlertPage);
-  await linebankEnsureTransactionPage(persistentAlertPage);
+  await linebankAutoDismissApprovedAlert(readScope(persistentAlertPage));
+  await linebankEnsureTransactionPage(readScope(persistentAlertPage));
 }, /Timeout 120000ms exceeded/);
 assert.equal(approvedButtonClicks, 2);
 assert.equal(persistentNavigationClicks, 0);
@@ -593,7 +596,7 @@ const navigationPage = {
     navigationUrl = url;
   },
 } as never;
-await linebankEnsureTransactionPage(navigationPage);
+await linebankEnsureTransactionPage(readScope(navigationPage));
 assert.deepEqual(navigationEvents, [
   "click-transaction-link",
   "wait-dropdown:120000",
@@ -601,7 +604,7 @@ assert.deepEqual(navigationEvents, [
 
 navigationEvents.length = 0;
 navigationUrl = "https://accessibility.linebank.com.tw/transaction";
-await linebankEnsureTransactionPage(navigationPage);
+await linebankEnsureTransactionPage(readScope(navigationPage));
 assert.deepEqual(navigationEvents, ["wait-dropdown:120000"]);
 
 navigationEvents.length = 0;
@@ -627,7 +630,7 @@ const fallbackPage = {
     navigationUrl = url;
   },
 } as never;
-await linebankEnsureTransactionPage(fallbackPage);
+await linebankEnsureTransactionPage(readScope(fallbackPage));
 assert.deepEqual(navigationEvents, [
   "goto:https://accessibility.linebank.com.tw/transaction",
   "wait-dropdown:120000",
