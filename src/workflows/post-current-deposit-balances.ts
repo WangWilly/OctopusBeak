@@ -10,7 +10,7 @@ import {
   type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import { withAbort } from "./abort.ts";
+import { frameScope } from "./frame-scope.ts";
 import type { CurrentBalanceCaptureMatching, SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /**
@@ -489,35 +489,24 @@ export async function readPostCurrentDepositBalanceResponse(
   page: Page,
   input: Readonly<{ signal: AbortSignal; timeoutMs?: number }>,
 ): Promise<PostCurrentDepositResponse> {
-  const { signal } = input;
+  const scope = frameScope(page, input.signal);
   const timeoutMs = input.timeoutMs ?? 60_000;
-  signal.throwIfAborted();
   if (!isPostIndexUrl(page.url())) {
-    await withAbort(
+    await scope.withSignal((signal) =>
       page.goto(POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
         waitUntil: "domcontentloaded",
         timeout: timeoutMs,
-      }),
-      signal,
-    );
+        signal,
+      }));
   }
-  signal.throwIfAborted();
   const overview = page.getByText("資產總覽", { exact: true }).first();
-  await withAbort(
-    overview.waitFor({ state: "visible", timeout: timeoutMs }),
-    signal,
-  );
-  const responsePromise = page.waitForResponse(responseMatches, {
-    timeout: timeoutMs,
-  });
+  await scope.withSignal((signal) => overview.waitFor({ state: "visible", timeout: timeoutMs, signal }));
+  const responsePromise = scope.withSignal((signal) =>
+    page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
   void responsePromise.catch(() => undefined);
-  signal.throwIfAborted();
-  await withAbort(overview.click(), signal);
-  const response = await withAbort(responsePromise, signal);
-  const [bytes, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
-  ]);
+  await scope.withSignal((signal) => overview.click({ signal }));
+  const response = await responsePromise;
+  const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
   const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
     responseHeader(headers, "content-type"),
   )?.[1]?.toLowerCase();

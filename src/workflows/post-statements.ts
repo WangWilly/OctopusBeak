@@ -28,6 +28,7 @@ import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   captureCurrentStateSnapshots,
@@ -435,23 +436,14 @@ export function postCaptchaGenerationUnchanged(
   return beforeUrl === afterUrl && sameElement;
 }
 
-async function openDetailPageWithSignal(
-  page: Page,
-  index: number,
-  signal: AbortSignal,
-): Promise<void> {
-  await withAbort(page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }), signal);
-  await withAbort(
-    visibleDetailLinks(page)
-      .first()
-      .waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
-  await withAbort(visibleDetailLinks(page).nth(index).click(), signal);
-  await withAbort(
-    sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
+async function openDetailPage(scope: FrameScope, index: number): Promise<void> {
+  const { page } = scope;
+  await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) =>
+    visibleDetailLinks(page).first().waitFor({ state: "visible", timeout: 60_000, signal }));
+  await scope.withSignal((signal) => visibleDetailLinks(page).nth(index).click({ signal }));
+  await scope.withSignal((signal) =>
+    sixMonthDateLabel(page).waitFor({ state: "visible", timeout: 60_000, signal }));
 }
 
 function requireCompletePostStatementRows(
@@ -583,34 +575,18 @@ export function parsePostStatementResponse(input: Readonly<{
   };
 }
 
-async function queryCurrentStatement(
-  page: Page,
-  text: SourceTextPort,
-  signal: AbortSignal,
-) {
-  if (!(await withAbort(sixMonthDateInput(page).isChecked(), signal))) {
-    await withAbort(sixMonthDateLabel(page).click(), signal);
+async function queryCurrentStatement(scope: FrameScope, text: SourceTextPort) {
+  const { page } = scope;
+  if (!(await scope.withSignal((signal) => sixMonthDateInput(page).isChecked({ signal })))) {
+    await scope.withSignal((signal) => sixMonthDateLabel(page).click({ signal }));
   }
-  const responsePromise = page.waitForResponse(
-    isEsoafResponse("EB100200", "inquire"),
-    { timeout: 60_000 },
-  );
+  const responsePromise = scope.withSignal((signal) =>
+    page.waitForResponse(isEsoafResponse("EB100200", "inquire"), { timeout: 60_000, signal }));
   void responsePromise.catch(() => undefined);
-  signal.throwIfAborted();
-  await withAbort(
-    page
-      .locator("a.css_btn_class:visible")
-      .filter({ hasText: "查詢" })
-      .first()
-      .click(),
-    signal,
-  );
-  const response = await withAbort(responsePromise, signal);
-  signal.throwIfAborted();
-  const [body, headers] = await Promise.all([
-    withAbort(response.body(), signal),
-    response.allHeaders(),
-  ]);
+  await scope.withSignal((signal) =>
+    page.locator("a.css_btn_class:visible").filter({ hasText: "查詢" }).first().click({ signal }));
+  const response = await responsePromise;
+  const [body, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
   return parsePostStatementResponse({
     bytes: body,
     response: {
@@ -632,28 +608,24 @@ export async function readPostDepositSource(
   product: ProductCollectionHandle,
 ): Promise<PostDepositSourceSnapshot> {
   const observedAt = postObservedAt(new Date(context.now()));
-  const statements = await collectPostStatementSources(page, context.text, context.signal, product.event);
+  const statements = await collectPostStatementSources(
+    frameScope(page, context.signal),
+    context.text,
+    product.event,
+  );
   return { observedAt, statements };
 }
 
 async function collectPostStatementSources(
-  page: Page,
+  scope: FrameScope,
   text: SourceTextPort,
-  signal: AbortSignal,
   event: ProductCollectionHandle["event"],
 ): Promise<PostQueriedStatement[]> {
-  signal.throwIfAborted();
-  await withAbort(
-    page.goto(INDEX_URL, { waitUntil: "domcontentloaded" }),
-    signal,
-  );
-  await withAbort(
-    visibleDetailLinks(page)
-      .first()
-      .waitFor({ state: "visible", timeout: 60_000 }),
-    signal,
-  );
-  const accountCount = await withAbort(visibleDetailLinks(page).count(), signal);
+  const { page, signal } = scope;
+  await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) =>
+    visibleDetailLinks(page).first().waitFor({ state: "visible", timeout: 60_000, signal }));
+  const accountCount = await scope.race(visibleDetailLinks(page).count());
   if (accountCount === 0)
     throw new Error("No Post accounts are visible in the authenticated session.");
   await event("collection", "started", "collection-started", {
@@ -663,15 +635,14 @@ async function collectPostStatementSources(
 
   const statements: PostQueriedStatement[] = [];
   for (let index = 0; index < accountCount; index += 1) {
-    signal.throwIfAborted();
-    await openDetailPageWithSignal(page, index, signal);
+    await openDetailPage(scope, index);
     await event("decoding", "started", "source-decoding-started", {
       completed: index,
       total: accountCount,
     });
     let statement: PostQueriedStatement;
     try {
-      statement = await queryCurrentStatement(page, text, signal);
+      statement = await queryCurrentStatement(scope, text);
     } catch (error) {
       await event(
         error instanceof SourceTextIntegrityError ? "decoding" : "validation",
