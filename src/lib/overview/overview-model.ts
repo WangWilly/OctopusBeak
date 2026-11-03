@@ -117,7 +117,12 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
   const { valuationDate } = dto;
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
-  const liabilityAllocation = readLiabilityAllocation(dto.accounts, rates, valuationDate, assetAllocation.total);
+  const liabilityAllocation = readLiabilityAllocation(
+    dto.accounts,
+    rates,
+    valuationDate,
+    assetAllocation.incomplete ? null : assetAllocation.total,
+  );
   const chips = netWorthChips(series, ledger, options.today);
   return {
     ticker: readTicker(dto.accounts, rates, dto.holdingPrices),

@@ -152,6 +152,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           title={$t.overview.assetAllocation}
           total={model.assetAllocation.slices.length > 0 ? model.assetAllocation.total : null}
           rateNote={rateNote(model, holdsForeign, $t)}
+          incomplete={model.assetAllocation.incomplete}
           note={unconvertedNote(model.assetAllocation.unconvertedCurrencies)}
           provenance={model.assetAllocation.provenance}
           href="#/assets"
@@ -165,7 +166,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
           title={$t.overview.liabilityAllocation}
           total={model.liabilityAllocation.slices.length > 0 ? model.liabilityAllocation.total : null}
           ratio={model.liabilityAllocation.ratio}
-          incomplete={liabilitiesMetric.incomplete === true}
+          incomplete={liabilitiesMetric.incomplete === true || model.liabilityAllocation.incomplete}
           provenance={model.liabilityAllocation.provenance}
           note={unconvertedNote(model.liabilityAllocation.unconvertedCurrencies)}
           href="#/liabilities"

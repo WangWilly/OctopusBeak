@@ -70,7 +70,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
       amount.traces?.some((trace) => trace.estimateKind === "estimate"),
     ),
   );
-  $: incomplete = totalIncomplete(liabilities.accounts);
+  $: unknownAmount = totalIncomplete(liabilities.accounts);
+  $: incomplete = unknownAmount || (summary.state === "ready" && summary.incomplete);
   $: provenance = summary.state === "ready" ? summary.provenance : NO_PROVENANCE;
   $: totalProvenance = summary.state === "ready" ? summary.totalProvenance : NO_PROVENANCE;
   $: sideValue = isEmpty
@@ -145,6 +146,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
         total={summary.state === "ready" ? summary.total : null}
         trailing={summary.state === "ready" ? summary.trailing : null}
         {incomplete}
+        incompleteNote={unknownAmount ? null : $t.overview.incompleteRate}
         {provenance}
         notes={isEmpty ? [$t.liabilities.empty.totalNote] : [
           summary.state === "ready" && summary.unconvertedCurrencies.length > 0

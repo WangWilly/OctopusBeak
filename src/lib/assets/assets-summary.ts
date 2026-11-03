@@ -28,6 +28,8 @@ export type AssetsSummary =
     trailing: SpanChange | null;
     slices: AssetAllocation["slices"];
     unconvertedCurrencies: string[];
+    /** A verified account has no rate, so `total` is not a complete TWD figure. */
+    incomplete: boolean;
     /** Each account's share of the converted total, for the table. */
     shares: ReadonlyMap<string, number>;
     /** Each account's converted value, for its positions. */
@@ -49,6 +51,7 @@ export function readAssetsSummary(input: AssetsSummaryInput): AssetsSummary {
     trailing,
     slices: allocation.slices,
     unconvertedCurrencies: allocation.unconvertedCurrencies,
+    incomplete: allocation.incomplete,
     shares: accountShares(input.accounts, rates, valuationDate),
     twdValues: accountTwdValues(input.accounts, rates, valuationDate),
     provenance: mergeProvenance(allocation.provenance, trailing?.provenance ?? NO_PROVENANCE),

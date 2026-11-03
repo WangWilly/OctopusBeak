@@ -63,14 +63,29 @@ test("a verified account without a rate withholds the Net position, while a prev
   assert.deepEqual(previewed.unconvertedCurrencies, ["USD"]);
 });
 
-test("the side allocations leave a verified account without a rate out and name its currency", () => {
+test("a verified account without a rate marks its side total incomplete, as it withholds the Net position", () => {
   const rates = indexExchangeRates([]);
   const assets = readAssetAllocation([account("bank", "bank", twd(1000)), account("usd", "foreign", usd(10))], rates, "2026-10-05");
-  assert.equal(assets.total, 1000);
-  assert.deepEqual(assets.unconvertedCurrencies, ["USD"]);
+  assert.equal(assets.incomplete, true);
+  assert.deepEqual(assets.unconvertedCurrencies, ["USD"], "the currency is still named");
   const liabilities = readLiabilityAllocation([account("loan", "loan", twd(500)), account("usd-loan", "loan", usd(10))], rates, "2026-10-05", 1000);
-  assert.equal(liabilities.total, 500);
+  assert.equal(liabilities.incomplete, true);
   assert.deepEqual(liabilities.unconvertedCurrencies, ["USD"]);
+  const otherSide = readLiabilityAllocation([account("loan", "loan", twd(500)), account("usd", "foreign", usd(10))], rates, "2026-10-05", 1000);
+  assert.equal(otherSide.incomplete, false, "an asset without a rate does not mark the Liabilities total");
+});
+
+test("a preview account without a rate is only named, and its side total stays complete", () => {
+  const rates = indexExchangeRates([]);
+  const assets = readAssetAllocation([account("bank", "bank", twd(1000)), account("usd", "foreign", usd(10), preview("deposit"))], rates, "2026-10-05");
+  assert.deepEqual([assets.total, assets.incomplete, assets.unconvertedCurrencies], [1000, false, ["USD"]]);
+  const liabilities = readLiabilityAllocation([account("loan", "loan", twd(500)), account("usd-loan", "loan", usd(10), preview("loan"))], rates, "2026-10-05", 1000);
+  assert.deepEqual([liabilities.total, liabilities.incomplete, liabilities.unconvertedCurrencies], [500, false, ["USD"]]);
+});
+
+test("an incomplete Assets total gives the Liabilities share of it no ratio", () => {
+  const liabilities = readLiabilityAllocation([account("loan", "loan", twd(500))], indexExchangeRates([]), "2026-10-05", null);
+  assert.deepEqual([liabilities.total, liabilities.ratio], [500, null]);
 });
 
 test("allocations value each account at the valuation date's rate, not a later one", () => {

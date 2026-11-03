@@ -52,6 +52,8 @@ export type LiabilitiesSummary =
     payments: UpcomingPayment[];
     utilization: CardUtilization | null;
     unconvertedCurrencies: string[];
+    /** A verified account has no rate, so `total` is not a complete TWD figure. */
+    incomplete: boolean;
     shares: ReadonlyMap<string, number>;
     /** The origins the total and its trailing change count. */
     provenance: Provenance;
@@ -65,7 +67,7 @@ export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: 
   const side = readSideValuation(input, "liabilities");
   if (!side) return { state: "empty" };
   const { valuationDate, rates, trailing: netChange } = side;
-  const allocation = readLiabilityAllocation(input.accounts, rates, valuationDate, 0);
+  const allocation = readLiabilityAllocation(input.accounts, rates, valuationDate, null);
   return {
     state: "ready",
     total: allocation.total,
@@ -79,6 +81,7 @@ export function readLiabilitiesSummary(input: LiabilitiesSummaryInput, options: 
     payments: upcomingPayments(input.accounts, rates, valuationDate, options.today),
     utilization: cardUtilization(input.accounts, rates, valuationDate),
     unconvertedCurrencies: allocation.unconvertedCurrencies,
+    incomplete: allocation.incomplete,
     shares: accountShares(input.accounts, rates, valuationDate),
     provenance: mergeProvenance(allocation.provenance, netChange?.provenance ?? NO_PROVENANCE),
     /** The total alone, for a figure that shows no change. */

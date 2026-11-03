@@ -131,6 +131,7 @@ const en = {
     allocationRateDate: (date: string) => `at ${date} rates`,
     debtRatio: "Debt ratio",
     unconverted: (currencies: string) => `Excludes ${currencies}: no rate yet`,
+    incompleteRate: "A verified account has no exchange rate yet, so this total is not shown.",
     assetCategories: {
       brokerage: "Securities",
       crypto: "Crypto",
@@ -1660,6 +1661,7 @@ const zh: typeof en = {
     allocationRateDate: (date) => `依 ${date} 匯率換算`,
     debtRatio: "負債比",
     unconverted: (currencies) => `未含 ${currencies}：尚無匯率`,
+    incompleteRate: "有已驗證帳戶尚無匯率，因此不顯示這個總額。",
     assetCategories: {
       brokerage: "證券",
       crypto: "加密資產",

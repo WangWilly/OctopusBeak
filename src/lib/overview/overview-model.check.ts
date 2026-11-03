@@ -219,9 +219,11 @@ test("allocations group assets by kind, list each debt, and relate them", () => 
   assert.equal(model.assetAllocation.total, 2300);
   assert.equal(model.assetAllocation.valuationDate, "2026-10-04");
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["EUR"], "an unconvertible account is named, not silently priced");
+  assert.equal(model.assetAllocation.incomplete, true, "the verified EUR account has no rate");
   assert.deepEqual(model.liabilityAllocation.slices.map((slice) => [slice.account.id, slice.share]), [["loan", 0.8], ["card", 0.2]]);
   assert.equal(model.liabilityAllocation.total, 1000);
-  assert.equal(model.liabilityAllocation.ratio, 1000 / 2300);
+  assert.equal(model.liabilityAllocation.incomplete, false);
+  assert.equal(model.liabilityAllocation.ratio, null, "no debt ratio against an incomplete Assets total");
   assert.equal(current.value, null, "the headline is withheld while a held currency has no rate");
 });
 
@@ -322,6 +324,7 @@ test("a rateless or balance-less preview account leaves the allocation unmarked"
   assert.equal(model.assetAllocation.total, 1000);
   assert.deepEqual(model.assetAllocation.provenance, NO_PROVENANCE);
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["USD"]);
+  assert.equal(model.assetAllocation.incomplete, false, "a preview account without a rate leaves the total complete");
   assert.equal(current.value, 1000);
   assert.deepEqual(current.provenance, NO_PROVENANCE);
 });
@@ -421,6 +424,7 @@ test("the liability allocation's marker follows the accounts its rate-aware tota
   assert.equal(rateless.liabilityAllocation.total, 200);
   assert.deepEqual(rateless.liabilityAllocation.unconvertedCurrencies, ["USD"]);
   assert.deepEqual(rateless.liabilityAllocation.provenance, NO_PROVENANCE, "a loan left out for lack of a rate marks nothing");
+  assert.equal(rateless.liabilityAllocation.incomplete, false, "a preview loan without a rate leaves the total complete");
 
   const counted = readOverview(input({
     accounts: [account("bank", "bank", twd(1000)), previewLoan("preview:loan", twd(300))],

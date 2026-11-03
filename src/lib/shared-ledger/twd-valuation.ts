@@ -28,6 +28,8 @@ export type AssetAllocation = {
   valuationDate: string;
   slices: { category: AssetCategory; value: number; share: number }[];
   unconvertedCurrencies: string[];
+  /** A verified account has an amount but no rate, so `total` is not a complete TWD figure. */
+  incomplete: boolean;
   provenance: Provenance;
 };
 
@@ -37,6 +39,8 @@ export type LiabilityAllocation = {
   ratio: number | null;
   slices: { account: AccountRowDto; value: number; share: number }[];
   unconvertedCurrencies: string[];
+  /** A verified account has an amount but no rate, so `total` is not a complete TWD figure. */
+  incomplete: boolean;
   provenance: Provenance;
 };
 
@@ -158,10 +162,14 @@ export function readAssetAllocation(
 ): AssetAllocation {
   const byCategory = new Map<AssetCategory, { value: number; provenance: Provenance }>();
   const unconverted = new Set<string>();
+  let incomplete = false;
   for (const account of accounts) {
     if (account.group === "liability") continue;
     const value = convertAccount(account, rates, valuationDate, unconverted);
-    if (value === null) continue;
+    if (value === null) {
+      incomplete ||= accountOrigin(account) === null;
+      continue;
+    }
     const category = ASSET_CATEGORY[account.kind];
     const current = byCategory.get(category) ?? { value: 0, provenance: NO_PROVENANCE };
     byCategory.set(category, {
@@ -180,6 +188,7 @@ export function readAssetAllocation(
       .map(([category, value]) => ({ category, value, share: value / total }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
+    incomplete,
     provenance: mergeProvenance(...counted.map(([, sum]) => sum.provenance)),
   };
 }
@@ -188,22 +197,26 @@ export function readLiabilityAllocation(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string,
-  assetTotal: number,
+  /** The Assets total, or null when it is not a complete figure. */
+  assetTotal: number | null,
 ): LiabilityAllocation {
   const unconverted = new Set<string>();
+  let incomplete = false;
   const owed = accounts.flatMap((account) => {
     if (account.group !== "liability") return [];
     const value = convertAccount(account, rates, valuationDate, unconverted);
+    if (value === null) incomplete ||= accountOrigin(account) === null;
     return value !== null && value > 0 ? [{ account, value }] : [];
   });
   const total = owed.reduce((sum, row) => sum + row.value, 0);
   return {
     total,
-    ratio: total > 0 && assetTotal > 0 ? total / assetTotal : null,
+    ratio: total > 0 && assetTotal !== null && assetTotal > 0 ? total / assetTotal : null,
     slices: owed
       .map((row) => ({ ...row, share: row.value / total }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
+    incomplete,
     provenance: owed.reduce((provenance, row) => withOrigin(provenance, accountOrigin(row.account)), NO_PROVENANCE),
   };
 }

@@ -15,8 +15,10 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   export let ariaLabel = label;
   /** The origins the total and its 30-day change count. */
   export let provenance: Provenance = NO_PROVENANCE;
-  /** An account in the total owes an unknown amount, so no figure is shown. */
+  /** An amount in the total is unknown or has no rate, so no figure is shown. */
   export let incomplete = false;
+  /** Why the total is incomplete; defaults to a preview card's unknown amount due. */
+  export let incompleteNote: string | null = null;
 
   $: tone = trailing === null || Math.round(trailing.change) === 0
     ? "flat"
@@ -31,7 +33,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
     </p>
     {#if incomplete}
       <p class="figure incomplete" data-total-incomplete>{$t.preview.incomplete}</p>
-      <p class="note">{$t.preview.incompleteNote}</p>
+      <p class="note">{incompleteNote ?? $t.preview.incompleteNote}</p>
     {:else if total === null}
       <p class="figure empty">—</p>
     {:else}

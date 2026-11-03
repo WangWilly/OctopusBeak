@@ -217,3 +217,19 @@ test("with no countable mortgage the tile is empty, and an omitted one is still 
   assert.deepEqual(readMortgageRepaid([previewLoan("x", "TWD", 900, { category: "housing", originalAmount: null })]),
     { shares: [], omitted: true });
 });
+
+test("a verified liability without a rate marks the total incomplete, while a preview one is only named", () => {
+  const usdLoan = (id: string): AccountRowDto => ({ ...account(id, "loan", 0), amountLines: [{ currency: "USD", value: 10 }] });
+  const verified = readLiabilitiesSummary(input({ accounts: [account("loan", "loan", 100), usdLoan("usd")] }), { today: TODAY });
+  assert.ok(verified.state === "ready");
+  assert.equal(verified.incomplete, true, "100 TWD is not the Liabilities total");
+  assert.deepEqual(verified.unconvertedCurrencies, ["USD"]);
+  const previewed = readLiabilitiesSummary(input({
+    accounts: [account("loan", "loan", 100), {
+      ...usdLoan("preview:usd"),
+      preview: { sourceId: "synthetic", product: "loan", lastCollectedAt: "2026-10-05T03:00:00.000Z", balanceTime: null, transactions: [] },
+    }],
+  }), { today: TODAY });
+  assert.ok(previewed.state === "ready");
+  assert.deepEqual([previewed.total, previewed.incomplete, previewed.unconvertedCurrencies], [100, false, ["USD"]]);
+});

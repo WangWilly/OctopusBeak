@@ -59,12 +59,12 @@ test("the total converts every account at the valuation date's rate and splits b
   assert.equal(summary.twdValues.get("usd"), 3000, "positions read the account's value in TWD");
 });
 
-test("an account without a rate is left out of the total and named", () => {
+test("a verified account without a rate marks the total incomplete and is named", () => {
   const summary = readAssetsSummary(input({
     accounts: [account("bank", "bank", twd(1000)), account("jpy", "foreign", [{ currency: "JPY", value: 5000 }])],
     dailyHistory: [row("2026-10-04", twd(1000))],
   }));
-  assert.equal(summary.state === "ready" && summary.total, 1000);
+  assert.equal(summary.state === "ready" && summary.incomplete, true, "1000 TWD is not the Assets total");
   assert.deepEqual(summary.state === "ready" && summary.unconvertedCurrencies, ["JPY"]);
   assert.equal(summary.state === "ready" && summary.shares.has("jpy"), false);
 });
