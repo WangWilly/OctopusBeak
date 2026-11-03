@@ -451,6 +451,10 @@ _Avoid_: Current account field, transaction amount, assumed live balance
 A Balance or Holding Observation returned by a provider endpoint whose verified response semantics describe an instantaneous account state at the provider's response time. That provider-origin time may establish the observation's financial effective time, but this meaning does not extend to historical statements, delayed settlement data, or an endpoint without verified current-state semantics.
 _Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
 
+**Current-state snapshot capture**:
+The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence and how to build its admission input.
+_Avoid_: Current balance reader, per-bank balance staging, index-keyed balance item
+
 **Measurement history**:
 The append-only sequence of Balance or Holding Observations created for distinct source-side measurement evidence with a contract-established effective time. Reprocessing the same Source Capture does not create another observation, while a measurement whose effective time cannot be established fails integration admission rather than entering history.
 _Avoid_: Mutable current measurement, inferred effective date, transaction history
