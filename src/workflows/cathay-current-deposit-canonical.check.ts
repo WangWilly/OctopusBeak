@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 
 import {
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
+  CATHAY_CURRENT_DOMESTIC_RESPONSE,
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+  CATHAY_CURRENT_FOREIGN_RESPONSE,
   parseCathayCurrentDepositBalanceSnapshot,
 } from "./cathay-current-deposit-balances.ts";
 import {
@@ -25,7 +27,7 @@ import {
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import {
   cathayDomesticOverviewBody,
   cathayForeignOverviewBody,
@@ -33,21 +35,20 @@ import {
 } from "./cathay-current-deposit-balances.fixtures.ts";
 
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
-const observedAt = "2026-09-08T21:20:10.000+08:00";
+const observedAt = "2026-09-08T21:20:10+08:00";
 const date = "Tue, 08 Sep 2026 13:20:04 GMT";
 const domesticAccountNumber = ["0000", "1234", "5678", "9012"].join("");
 const foreignAccountNumber = ["1234", "5678", "9012"].join("");
 
 const domesticRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "domestic",
-  response: {
+  response: verifyProviderResponse(CATHAY_CURRENT_DOMESTIC_RESPONSE, {
     url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`,
     status: 200,
     method: "POST",
-    headers: { date },
-  },
+    headers: { "content-type": "application/json; charset=utf-8", date },
+  }, observedAt),
   rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"${domesticAccountNumber}","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
-  observedAt,
   uiAccountNumbers: ["123456789012"],
 });
 
@@ -110,14 +111,13 @@ assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(domesticCapture));
 
 const foreignRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "foreign",
-  response: {
+  response: verifyProviderResponse(CATHAY_CURRENT_FOREIGN_RESPONSE, {
     url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH}`,
     status: 200,
     method: "POST",
-    headers: { date },
-  },
+    headers: { "content-type": "application/json; charset=utf-8", date },
+  }, observedAt),
   rawBody: `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${foreignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00},{"currencyCode":"JPY","balance":2000,"equalTwdBalance":450.00}]}]}}`,
-  observedAt,
 });
 const foreignCaptures = buildCathayCurrentDepositBalanceCaptures(
   foreignRows,
@@ -196,6 +196,7 @@ function snapshotHarness(events: string[] = []) {
     product: { event: async (_stage: string, outcome: string, code: string) => void events.push(`${code} ${outcome}`) },
     text: strictSourceText,
     signal: new AbortController().signal,
+    now: () => observedAt,
   };
 }
 
@@ -207,7 +208,7 @@ function domesticBalances(
   return captureCathayDomesticCurrentBalances({
     ...snapshotHarness(events),
     admitted,
-    acquire: async () => cathayOverviewAcquired("domestic", overview, observedAt),
+    acquire: async () => cathayOverviewAcquired("domestic", overview),
   });
 }
 
@@ -289,7 +290,7 @@ await assert.rejects(
   ) => captureCathayForeignCurrentBalances({
     ...snapshotHarness(),
     admitted,
-    acquire: async () => cathayOverviewAcquired("foreign", overview, observedAt),
+    acquire: async () => cathayOverviewAcquired("foreign", overview),
   });
 
   const items = await foreignBalances([foreignCapture(foreignAccount, "USD"), foreignCapture(foreignAccount, "JPY")]) as readonly StagedBalance[];

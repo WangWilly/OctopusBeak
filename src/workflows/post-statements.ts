@@ -5,6 +5,7 @@ import {
   POST_CAPTCHA_STAGE_ID,
 } from "../lib/automation/post-captcha.ts";
 import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ElementHandle, Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
@@ -38,6 +39,7 @@ import {
   buildPostCurrentDepositBalanceCapture,
   postCurrentBalanceCaptureMatching,
   parsePostCurrentDepositBalanceSnapshot,
+  POST_CURRENT_DEPOSIT_RESPONSE,
   readPostCurrentDepositBalanceResponse,
   type ExistingPostCurrentDepositFinancialCapture,
   type PostCurrentDepositBalanceRow,
@@ -111,18 +113,18 @@ export type PostDepositSourceSnapshot = Readonly<{
 /** Observe the asset-overview response; the snapshot module decodes and parses it. */
 export type PostReadCurrentDepositBalanceResponse = () => Promise<PostCurrentDepositResponse>;
 
-type PostCurrentDepositAcquired = PostCurrentDepositResponse & Readonly<{ observedAt: string }>;
-
 const postCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  PostCurrentDepositAcquired,
+  PostCurrentDepositResponse,
   PostCurrentDepositBalanceRow,
-  ExistingPostCurrentDepositFinancialCapture
+  ExistingPostCurrentDepositFinancialCapture,
+  "optional"
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => parsePostCurrentDepositBalanceSnapshot({
+  response: POST_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response, acquired) => parsePostCurrentDepositBalanceSnapshot({
     payload: decoded.value,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
+    response,
+    requestPostData: acquired.requestPostData,
   }),
   matching: postCurrentBalanceCaptureMatching,
   build: buildPostCurrentDepositBalanceCapture,
@@ -607,7 +609,7 @@ export async function readPostDepositSource(
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<PostDepositSourceSnapshot> {
-  const observedAt = postObservedAt(new Date(context.now()));
+  const observedAt = taipeiInstant(context.now());
   const statements = await collectPostStatementSources(
     frameScope(page, context.signal),
     context.text,
@@ -666,25 +668,6 @@ async function collectPostStatementSources(
     });
   }
   return statements;
-}
-
-function postObservedAt(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Taipei",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  })
-    .formatToParts(date)
-    .reduce<Record<string, string>>((result, part) => {
-      if (part.type !== "literal") result[part.type] = part.value;
-      return result;
-    }, {});
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
 }
 
 export function buildPostDomesticDepositCapture(
@@ -790,7 +773,8 @@ export async function stagePostDeposit(
   // row still commits only after its statement identity item has committed.
   const balances = await captureCurrentStateSnapshots(postCurrentBalanceSnapshot, {
     captures: financialCaptures,
-    acquire: async () => ({ ...(await readCurrentBalanceResponse()), observedAt }),
+    acquire: readCurrentBalanceResponse,
+    now: () => context.now(),
     product,
     text: context.text,
     signal: context.signal,

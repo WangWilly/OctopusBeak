@@ -332,6 +332,7 @@ function currentTable(rows: readonly FubonCurrentDepositBalanceRow[]): FubonCurr
     response: {
       url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
       status: 200,
+      method: "GET",
       headers: { date: currentBalanceRow.providerHttpDate, "cache-control": "no-store, no-cache" },
     },
   };

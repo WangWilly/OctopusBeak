@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { registerHooks } from "node:module";
 
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
@@ -61,7 +62,6 @@ const {
   statementRowsFromDownloadedCsv,
   yuantaLoanAccountEvidenceFromTransactionNote,
   yuantaDepositQueryRange,
-  yuantaObservedAt,
 } = await import("./yuanta-statements.ts");
 
 const ONE_WEEK = { days: 7 };
@@ -347,7 +347,7 @@ const absentNotice = new LateNotice();
 assert.equal(await dismissYuantaBankNotice(noticeFrame(absentNotice), 10), false);
 assert.equal(absentNotice.clicked, false);
 
-const observedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
+const observedAt = taipeiInstant("2026-08-21T03:04:05.000Z");
 assert.equal(observedAt, "2026-08-21T11:04:05+08:00");
 const boundedRange = depositRange(ONE_WEEK, observedAt);
 assert.deepEqual(boundedRange, {
@@ -599,7 +599,7 @@ const originalCwd = process.cwd();
 process.chdir(typedOutputDir);
 try {
   const typedInput = { accountFilters: [], ...stableConnectionIdentity };
-  const typedObservedAt = yuantaObservedAt(new Date("2026-08-21T03:04:05.000Z"));
+  const typedObservedAt = taipeiInstant("2026-08-21T03:04:05.000Z");
   const deferredItems: PGliteWorkflowRunItem[] = [];
   const typedResult = await stageYuantaDeposit(
     {
@@ -1031,7 +1031,7 @@ try {
         );
         return await stageYuantaDeposit(
           {
-            observedAt: yuantaObservedAt(new Date(context.now())),
+            observedAt: taipeiInstant(context.now()),
             queryRange: depositRange(ONE_MONTH, context.now()),
             accounts: [{ account: workflowAccount, query: "download-ready", download }],
           },

@@ -11,7 +11,14 @@ import {
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
-import type { CurrentBalanceCaptureMatching, SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type CurrentBalanceCaptureMatching,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
@@ -39,14 +46,21 @@ export type PostCurrentDepositExactInteger = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type PostCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method?: string;
-  headers: Readonly<Record<string, string>>;
-  /** The request body is parsed for its discriminants and never returned. */
-  requestPostData?: string | null;
-}>;
+/**
+ * The EsoafDispatcher POST. HTTP Date is optional because the EndBracket's
+ * SERVER_TIMESTAMP may carry the provider time instead.
+ */
+export const POST_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Post current deposit",
+  host: POST_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: "POST",
+    contentType: /^application\/json(?:\s*;|$)/iu,
+  }],
+  cacheControl: ["no-store"],
+  providerDate: "optional",
+};
 
 export type PostCurrentDepositBalanceRow = Readonly<{
   source: "post";
@@ -90,11 +104,6 @@ export type ExistingPostCurrentDepositFinancialCapture = Readonly<{
   }>;
 }>;
 
-const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u;
-const HTTP_DATE =
-  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
-
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -110,56 +119,6 @@ function requiredString(value: unknown, label: string): string {
   if (text === "")
     throw new Error(`Post current deposit ${label} is blank.`);
   return text;
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function requireObservedAt(value: string): string {
-  if (
-    !RFC3339.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    !/^\d{4}-\d{2}-\d{2}T/.test(value)
-  )
-    throw new Error("Post current deposit observedAt must be RFC3339.");
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/u.exec(
-    value,
-  );
-  if (!match || (match[2]?.length ?? 0) > 9)
-    throw new Error("Post current deposit observedAt has invalid precision.");
-  const civil = new Date(`${match[1]}Z`);
-  if (
-    Number.isNaN(civil.getTime()) ||
-    civil.toISOString().slice(0, 19) !== match[1]
-  )
-    throw new Error("Post current deposit observedAt has an invalid calendar date.");
-  if (match[3] !== "Z") {
-    const [hours, minutes] = match[3].slice(1).split(":").map(Number);
-    if (hours > 23 || minutes > 59)
-      throw new Error("Post current deposit observedAt has an invalid offset.");
-  }
-  return value;
-}
-
-function parseHttpDate(
-  headers: Readonly<Record<string, string>>,
-): { raw: string; effectiveAt: string } | null {
-  const raw = responseHeader(headers, "date");
-  if (raw === "") return null;
-  if (!HTTP_DATE.test(raw))
-    throw new Error("Post current deposit response HTTP Date is invalid.");
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw)
-    throw new Error("Post current deposit response HTTP Date is invalid.");
-  return { raw, effectiveAt: new Date(timestamp).toISOString() };
 }
 
 function parseServerTimestamp(value: unknown): {
@@ -182,7 +141,7 @@ function parseServerTimestamp(value: unknown): {
 }
 
 function providerTime(
-  headers: Readonly<Record<string, string>>,
+  httpDate: VerifiedProviderResponse<"optional">["providerDate"],
   serverTimestamp: unknown,
 ): {
   effectiveAt: string;
@@ -192,7 +151,6 @@ function providerTime(
   providerHttpDate?: string;
   providerServerTimestamp?: string;
 } {
-  const httpDate = parseHttpDate(headers);
   const serverTime = parseServerTimestamp(serverTimestamp);
   if (!httpDate && !serverTime)
     throw new Error(
@@ -225,52 +183,17 @@ function providerTime(
   };
 }
 
-function requireResponse(
-  response: PostCurrentDepositResponseMetadata,
-): {
-  contentType: string;
-  cacheControl: string;
-  request: {
-    txnCode: typeof POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE;
-    bizCode: typeof POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE;
-    pageCount: typeof POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT;
-  };
+/** The request body is parsed for its discriminants and never returned. */
+function requireRequest(requestPostData: string | null): {
+  txnCode: typeof POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE;
+  bizCode: typeof POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE;
+  pageCount: typeof POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT;
 } {
-  let parsed: URL;
-  try {
-    parsed = new URL(response.url);
-  } catch {
-    throw new Error("Post current deposit response URL is invalid.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== POST_CURRENT_DEPOSIT_BALANCE_HOST ||
-    parsed.pathname !== POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
-    parsed.search !== "" ||
-    parsed.hash !== "" ||
-    parsed.port !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== ""
-  )
-    throw new Error("Post current deposit response endpoint is unexpected.");
-  if (response.method?.toUpperCase() !== "POST")
-    throw new Error("Post current deposit response method is not POST.");
-  if (response.status !== 200)
-    throw new Error("Post current deposit response status is not 200.");
-  const contentType = responseHeader(response.headers, "content-type");
-  if (!/^application\/json(?:\s*;|$)/iu.test(contentType))
-    throw new Error("Post current deposit response content type is not JSON.");
-  const cacheControl = responseHeader(response.headers, "cache-control");
-  if (!/\bno-store\b/iu.test(cacheControl))
-    throw new Error("Post current deposit response must carry Cache-Control: no-store.");
-  if (
-    typeof response.requestPostData !== "string" ||
-    response.requestPostData.trim() === ""
-  )
+  if (typeof requestPostData !== "string" || requestPostData.trim() === "")
     throw new Error("Post current deposit request body is missing.");
   let request: unknown;
   try {
-    request = JSON.parse(response.requestPostData);
+    request = JSON.parse(requestPostData);
   } catch {
     throw new Error("Post current deposit request body is not valid JSON.");
   }
@@ -285,13 +208,9 @@ function requireResponse(
   if (!isRecord(request.body) || request.body.pageCount !== POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT)
     throw new Error("Post current deposit request pageCount is unexpected.");
   return {
-    contentType,
-    cacheControl,
-    request: {
-      txnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-      bizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-      pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
-    },
+    txnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+    bizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+    pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
   };
 }
 
@@ -361,13 +280,12 @@ function parseScreenAndEndBracket(
  */
 export function parsePostCurrentDepositBalanceSnapshot(input: Readonly<{
   payload: unknown;
-  response: PostCurrentDepositResponseMetadata;
-  observedAt?: string;
+  response: VerifiedProviderResponse<"optional">;
+  requestPostData: string | null;
 }>): readonly PostCurrentDepositBalanceRow[] {
-  const response = requireResponse(input.response);
+  const request = requireRequest(input.requestPostData);
   const { itemList, serverTimestamp } = parseScreenAndEndBracket(input.payload);
-  const time = providerTime(input.response.headers, serverTimestamp);
-  const observedAt = requireObservedAt(input.observedAt ?? new Date().toISOString());
+  const time = providerTime(input.response.providerDate, serverTimestamp);
   if (itemList.length === 0)
     throw new Error("Post current deposit response itemList is empty.");
   const rows: PostCurrentDepositBalanceRow[] = [];
@@ -405,15 +323,15 @@ export function parsePostCurrentDepositBalanceSnapshot(input: Readonly<{
       ...(time.providerServerTimestamp
         ? { providerServerTimestamp: time.providerServerTimestamp }
         : {}),
-      observedAt,
+      observedAt: input.response.observedAt,
       sourceEvidence: {
         endpoint: POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
         status: 200,
-        contentType: response.contentType,
-        cacheControl: response.cacheControl,
-        txnCode: response.request.txnCode,
-        bizCode: response.request.bizCode,
-        pageCount: response.request.pageCount,
+        contentType: input.response.contentType,
+        cacheControl: input.response.cacheControl,
+        txnCode: request.txnCode,
+        bizCode: request.bizCode,
+        pageCount: request.pageCount,
         contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       },
     });
@@ -441,26 +359,6 @@ function requestMatchesCurrentBalanceDiscriminants(response: Response): boolean 
   }
 }
 
-function responseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.protocol === "https:" &&
-      url.hostname === POST_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
-      url.search === "" &&
-      url.hash === "" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      response.request().method().toUpperCase() === "POST" &&
-      requestMatchesCurrentBalanceDiscriminants(response)
-    );
-  } catch {
-    return false;
-  }
-}
-
 function isPostIndexUrl(href: string): boolean {
   try {
     const current = new URL(href);
@@ -477,7 +375,9 @@ function isPostIndexUrl(href: string): boolean {
 /** The asset-overview response iPost's page triggers, before decoding. */
 export type PostCurrentDepositResponse = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "json" }>;
-  response: PostCurrentDepositResponseMetadata;
+  response: ProviderResponse;
+  /** The request body is parsed for its discriminants and never returned. */
+  requestPostData: string | null;
 }>;
 
 /**
@@ -502,13 +402,15 @@ export async function readPostCurrentDepositBalanceResponse(
   const overview = page.getByText("資產總覽", { exact: true }).first();
   await scope.withSignal((signal) => overview.waitFor({ state: "visible", timeout: timeoutMs, signal }));
   const responsePromise = scope.withSignal((signal) =>
-    page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
+    page.waitForResponse((response) =>
+      isDeclaredProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, response.url(), response.request().method()) &&
+      requestMatchesCurrentBalanceDiscriminants(response), { timeout: timeoutMs, signal }));
   void responsePromise.catch(() => undefined);
   await scope.withSignal((signal) => overview.click({ signal }));
   const response = await responsePromise;
   const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
   const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-    responseHeader(headers, "content-type"),
+    headers["content-type"] ?? "",
   )?.[1]?.toLowerCase();
   if (charset && charset !== "utf-8" && charset !== "utf8")
     throw new Error("Post current deposit response charset is not UTF-8.");
@@ -519,8 +421,8 @@ export async function readPostCurrentDepositBalanceResponse(
       status: response.status(),
       method: response.request().method(),
       headers,
-      requestPostData: response.request().postData(),
     },
+    requestPostData: response.request().postData(),
   };
 }
 

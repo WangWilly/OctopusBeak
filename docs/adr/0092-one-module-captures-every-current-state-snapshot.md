@@ -1,6 +1,6 @@
 # One module captures every Current-state provider snapshot
 
-Status: accepted
+Status: accepted; amended by [ADR 0096](0096-the-snapshot-module-verifies-the-provider-response.md), which moves the endpoint and header checks and observed time into the module
 
 Builds on [ADR 0054](0054-domestic-deposit-admission.md), [ADR 0063](0063-product-collection-run-stages-every-item.md), [ADR 0065](0065-product-runners-read-the-source-before-they-stage.md), [ADR 0066](0066-source-site-owns-signed-in-navigation.md) and [ADR 0080](0080-one-exact-money-module.md).
 

@@ -13,7 +13,11 @@ import {
   postProviderDateShape,
   postRowsToStatementRows,
 } from "./post-statements.ts";
-import { parsePostCurrentDepositBalanceSnapshot } from "./post-current-deposit-balances.ts";
+import { verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import {
+  parsePostCurrentDepositBalanceSnapshot,
+  POST_CURRENT_DEPOSIT_RESPONSE,
+} from "./post-current-deposit-balances.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
@@ -468,7 +472,7 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
       body: { result: "success" },
     },
   ],
-  response: {
+  response: verifyProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, {
     url: "https://ipost.post.gov.tw/pst/EsoafDispatcher",
     status: 200,
     method: "POST",
@@ -477,11 +481,10 @@ const postCurrentBalanceRow = parsePostCurrentDepositBalanceSnapshot({
       "cache-control": "no-store,private,max-age=900",
       "content-type": "application/json; charset=UTF-8",
     },
-    requestPostData: JSON.stringify({
-      header: { TxnCode: "EB100103", BizCode: "getOverViewById" },
-      body: { pageCount: 50 },
-    }),
-  },
-  observedAt: "2026-08-24T10:12:13+08:00",
+  }, "2026-08-24T10:12:13+08:00"),
+  requestPostData: JSON.stringify({
+    header: { TxnCode: "EB100103", BizCode: "getOverViewById" },
+    body: { pageCount: 50 },
+  }),
 });
 assert.equal(postCurrentBalanceRow.length, 1);

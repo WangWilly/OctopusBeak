@@ -340,7 +340,8 @@ test("a financial SinoPac snapshot reads current balances once and stages the ma
   assert.equal(staged[1]?.itemKey, `current-balance:domestic-deposit:${accountId}`);
   assert.equal(
     (staged[1]?.command.request as { capture: { observedAt: string } }).capture.observedAt,
-    snapshot.observedAt,
+    "2026-09-24T12:00:00+08:00",
+    "the balance carries the run clock's Taipei second",
   );
   assert.deepEqual(counts, { accountCount: 1, rowCount: 1, skippedAccountCount: 0, sourceCaptureCount: 1 });
   assert.deepEqual(codes, [

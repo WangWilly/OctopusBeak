@@ -440,7 +440,7 @@
                 "routeKey": "cathay/domestic-deposit/current-balance-v1",
                 "contractVersion": "cathay/current-deposit-balance-v1",
                 "subjectDigest": "sha256:8Erk8uIFHc9H3NO_r-6Q8KrD9yYSPILMAp8tmriVjmE",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",
@@ -598,7 +598,7 @@
                 "routeKey": "cathay/domestic-deposit/current-balance-v1",
                 "contractVersion": "cathay/current-deposit-balance-v1",
                 "subjectDigest": "sha256:8Erk8uIFHc9H3NO_r-6Q8KrD9yYSPILMAp8tmriVjmE",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",
@@ -1124,7 +1124,7 @@
                 "routeKey": "cathay/foreign-currency/current-balance-v1",
                 "contractVersion": "cathay/current-deposit-balance-v1",
                 "subjectDigest": "sha256:2N-K9tKiInHHDljwoNZiluSp0VVBmBdOnEh9o-alsJ4",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",
@@ -1282,7 +1282,7 @@
                 "routeKey": "cathay/foreign-currency/current-balance-v1",
                 "contractVersion": "cathay/current-deposit-balance-v1",
                 "subjectDigest": "sha256:RauQRwxYhkqOyvJTRsPj0j5kWYli2XWtHfUQZVMjkew",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",

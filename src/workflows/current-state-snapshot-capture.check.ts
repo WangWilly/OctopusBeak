@@ -17,7 +17,10 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentBalanceUnmatchedPolicy,
   type CurrentStateSnapshotDeclaration,
-  type SnapshotEvidence,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotAcquisition,
+  verifyProviderResponse,
 } from "./current-state-snapshot-capture.ts";
 
 type Capture = Readonly<{
@@ -228,9 +231,28 @@ test("indexing checks ambiguity before any row is matched", () => {
 
 type SnapshotRow = Readonly<{ account: string; currencies: readonly string[]; amount: string }>;
 type Stream = "domestic-deposit" | "foreign-currency-deposit";
-type Acquired = Readonly<{ evidence: SnapshotEvidence }>;
+type Acquired = SnapshotAcquisition;
 
 const HTTP_DATE = "Fri, 25 Sep 2026 11:59:00 GMT";
+const RUN_CLOCK = "2026-09-25T12:00:01.234Z";
+
+const RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "Check bank current deposit",
+  host: "bank.example",
+  endpoints: [
+    { path: "/balances", method: "POST", contentType: /^application\/json\b/iu, search: /^(?:\?t=\d+)?$/u },
+    { path: "/fallback", method: "GET" },
+  ],
+  cacheControl: ["no-store", "no-cache"],
+  providerDate: "required",
+};
+
+const PROVIDER_RESPONSE: ProviderResponse = {
+  url: "https://bank.example/balances",
+  status: 200,
+  method: "POST",
+  headers: { "Content-Type": "application/json; charset=utf-8", "cache-control": "private, no-cache, no-store", date: HTTP_DATE },
+};
 const CONTRACT_VERSION = "yuanta/current-deposit-balance-v1";
 
 /** A capture on a real Yuanta route, so admission and the command request run unchanged. */
@@ -302,6 +324,7 @@ function declaration(
 ): CurrentStateSnapshotDeclaration<Acquired, SnapshotRow, Capture> {
   return {
     product: "current-balance",
+    response: RESPONSE,
     parse: (decoded) => decoded.kind === "json"
       ? snapshotRows(decoded.value)
       : decoded.rows.map(([account = "", currency = "", amount = ""]) => ({ account, currencies: [currency], amount })),
@@ -318,7 +341,7 @@ function declaration(
 }
 
 function json(value: unknown): Acquired {
-  return { evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(value)) } };
+  return { evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(value)) }, response: PROVIDER_RESPONSE };
 }
 
 async function snapshot(
@@ -334,6 +357,7 @@ async function snapshot(
       reads += 1;
       return acquired;
     },
+    now: () => RUN_CLOCK,
     product: {
       event: async (stage, outcome, code, counts) => {
         events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
@@ -390,26 +414,26 @@ test("a JSON snapshot stages one keyed balance per matched row and reports each 
 test("strict decoding rejects malformed bytes, escaped replacement characters, and broken cells", async () => {
   const captures = [capture("a")];
   const rejected: readonly [string, Acquired, RegExp | typeof SourceTextIntegrityError][] = [
-    ["invalid UTF-8", { evidence: { kind: "json", bytes: Uint8Array.of(0x5b, 0xff, 0x5d) } }, SourceTextIntegrityError],
-    ["escaped U+FFFD", { evidence: { kind: "json", bytes: new TextEncoder().encode('[{"account":"A\\uFFFD"}]') } }, SourceTextIntegrityError],
-    ["not JSON", { evidence: { kind: "json", bytes: new TextEncoder().encode("[") } }, /not valid JSON/u],
-    ["cell with U+FFFD", { evidence: { kind: "cells", rows: [["A", "TWD", "1\uFFFD"]] } }, SourceTextIntegrityError],
+    ["invalid UTF-8", { evidence: { kind: "json", bytes: Uint8Array.of(0x5b, 0xff, 0x5d) }, response: PROVIDER_RESPONSE }, SourceTextIntegrityError],
+    ["escaped U+FFFD", { evidence: { kind: "json", bytes: new TextEncoder().encode('[{"account":"A\\uFFFD"}]') }, response: PROVIDER_RESPONSE }, SourceTextIntegrityError],
+    ["not JSON", { evidence: { kind: "json", bytes: new TextEncoder().encode("[") }, response: PROVIDER_RESPONSE }, /not valid JSON/u],
+    ["cell with U+FFFD", { evidence: { kind: "cells", rows: [["A", "TWD", "1\uFFFD"]] }, response: PROVIDER_RESPONSE }, SourceTextIntegrityError],
   ];
   for (const [name, acquired, expected] of rejected) {
     let parsed = false;
     const declared = declaration();
     const result = await snapshot({
       ...declared,
-      parse: (decoded, raw) => {
+      parse: (decoded, response, raw) => {
         parsed = true;
-        return declared.parse(decoded, raw);
+        return declared.parse(decoded, response, raw);
       },
     }, captures, acquired);
     await assert.rejects(result.run, expected, name);
     assert.equal(parsed, false, `${name} never reaches the row parser`);
     assert.deepEqual(result.events, decodeFailure, name);
   }
-  const cells = await snapshot(declaration(), captures, { evidence: { kind: "cells", rows: [["A", "TWD", "12"]] } });
+  const cells = await snapshot(declaration(), captures, { evidence: { kind: "cells", rows: [["A", "TWD", "12"]] }, response: PROVIDER_RESPONSE });
   assert.deepEqual((await cells.run).items.map((item) => item.itemKey), ["current-balance:domestic-deposit:A"]);
 });
 
@@ -419,11 +443,11 @@ test("JSON evidence hands the parser the decoded body text with its numeric lexe
   const declared = declaration();
   const result = await snapshot({
     ...declared,
-    parse: (decoded, raw) => {
+    parse: (decoded, response, raw) => {
       if (decoded.kind === "json") seen = decoded.text;
-      return declared.parse(decoded, raw).map((row) => ({ ...row, amount: "100000" }));
+      return declared.parse(decoded, response, raw).map((row) => ({ ...row, amount: "100000" }));
     },
-  }, [capture("a")], { evidence: { kind: "json", bytes: new TextEncoder().encode(body) } });
+  }, [capture("a")], { evidence: { kind: "json", bytes: new TextEncoder().encode(body) }, response: PROVIDER_RESPONSE });
   await result.run;
   assert.equal(seen, body);
 });
@@ -510,6 +534,7 @@ test("the read and stage halves report their own events and stage what the read 
       { account: "A", currencies: ["TWD"], amount: "5" },
       { account: "B", currencies: ["TWD"], amount: "6" },
     ]),
+    now: () => RUN_CLOCK,
     product,
     text: strictSourceText,
     signal,
@@ -546,4 +571,78 @@ test("the stage half throws on ambiguous captures before validation starts", asy
     /^Error: ambiguous$/u,
   );
   assert.deepEqual(events, []);
+});
+
+test("a declared response verifies to its transport facts and the run clock's Taipei second", () => {
+  const verified = verifyProviderResponse(RESPONSE, { ...PROVIDER_RESPONSE, url: "https://bank.example/balances?t=1" }, "2026-09-25T20:00:01+08:00");
+  assert.equal(verified.endpoint.path, "/balances");
+  assert.equal(verified.contentType, "application/json; charset=utf-8");
+  assert.equal(verified.cacheControl, "private, no-cache, no-store");
+  assert.deepEqual(verified.providerDate, { raw: HTTP_DATE, effectiveAt: "2026-09-25T11:59:00.000Z" });
+  assert.equal(verified.observedAt, "2026-09-25T20:00:01+08:00");
+  const fallback = verifyProviderResponse(RESPONSE, { ...PROVIDER_RESPONSE, url: "https://bank.example/fallback", method: "get", headers: { ...PROVIDER_RESPONSE.headers, "content-type": "text/html" } }, "x");
+  assert.equal(fallback.endpoint.path, "/fallback");
+  const anyMethod: ProviderResponseDeclaration = { ...RESPONSE, endpoints: [{ path: "/balances" }] };
+  assert.equal(verifyProviderResponse(anyMethod, { ...PROVIDER_RESPONSE, method: "PUT" }, "x").endpoint.path, "/balances");
+});
+
+test("every undeclared transport fact rejects the response with the source's label", () => {
+  const rejected: readonly [string, ProviderResponse, RegExp][] = [
+    ["unparseable URL", { ...PROVIDER_RESPONSE, url: "not a url" }, /^Error: Check bank current deposit response URL is invalid\.$/u],
+    ["plain http", { ...PROVIDER_RESPONSE, url: "http://bank.example/balances" }, /endpoint is unexpected/u],
+    ["other host", { ...PROVIDER_RESPONSE, url: "https://evil.example/balances" }, /endpoint is unexpected/u],
+    ["explicit port", { ...PROVIDER_RESPONSE, url: "https://bank.example:8443/balances" }, /endpoint is unexpected/u],
+    ["credentials", { ...PROVIDER_RESPONSE, url: "https://u:p@bank.example/balances" }, /endpoint is unexpected/u],
+    ["fragment", { ...PROVIDER_RESPONSE, url: "https://bank.example/balances#x" }, /endpoint is unexpected/u],
+    ["other path", { ...PROVIDER_RESPONSE, url: "https://bank.example/other" }, /endpoint is unexpected/u],
+    ["undeclared query", { ...PROVIDER_RESPONSE, url: "https://bank.example/balances?session=1" }, /endpoint is unexpected/u],
+    ["query on a query-free endpoint", { ...PROVIDER_RESPONSE, url: "https://bank.example/fallback?t=1", method: "GET" }, /endpoint is unexpected/u],
+    ["method", { ...PROVIDER_RESPONSE, method: "GET" }, /response method is not POST/u],
+    ["status", { ...PROVIDER_RESPONSE, status: 302 }, /response status is 302, expected 200/u],
+    ["content type", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "Content-Type": "text/html" } }, /content type is unexpected/u],
+    ["one cache directive", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "cache-control": "no-store" } }, /must carry Cache-Control: no-store, no-cache/u],
+    ["cache directive as a value", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "cache-control": "no-store, x=no-cache" } }, /must carry Cache-Control/u],
+    ["missing Date", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "" } }, /response is missing HTTP Date/u],
+    ["Date without GMT", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Fri, 25 Sep 2026 11:59:00" } }, /HTTP Date is invalid/u],
+    ["impossible Date", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Thu, 31 Sep 2026 11:59:00 GMT" } }, /HTTP Date is invalid/u],
+    ["wrong weekday", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Mon, 25 Sep 2026 11:59:00 GMT" } }, /HTTP Date is invalid/u],
+  ];
+  for (const [name, response, expected] of rejected)
+    assert.throws(() => verifyProviderResponse(RESPONSE, response, "x"), expected, name);
+});
+
+test("an optional provider date may be absent but must be valid when present", () => {
+  const optional: ProviderResponseDeclaration<"optional"> = { ...RESPONSE, providerDate: "optional" };
+  const { date: _date, ...headers } = PROVIDER_RESPONSE.headers;
+  assert.equal(verifyProviderResponse(optional, { ...PROVIDER_RESPONSE, headers }, "x").providerDate, null);
+  assert.throws(
+    () => verifyProviderResponse(optional, { ...PROVIDER_RESPONSE, headers: { ...headers, date: "yesterday" } }, "x"),
+    /HTTP Date is invalid/u,
+  );
+});
+
+test("the read stamps observedAt from the run clock and rejects an undeclared response before parsing", async () => {
+  let observedAt: string | undefined;
+  const declared = declaration();
+  const stamped = await snapshot({
+    ...declared,
+    parse: (decoded, response, raw) => {
+      observedAt = response.observedAt;
+      return declared.parse(decoded, response, raw);
+    },
+  }, [capture("a")], json([{ account: "A", currencies: ["TWD"], amount: "1" }]));
+  await stamped.run;
+  assert.equal(observedAt, "2026-09-25T20:00:01+08:00");
+
+  let parsed = false;
+  const undeclared = await snapshot({
+    ...declared,
+    parse: () => {
+      parsed = true;
+      return [];
+    },
+  }, [capture("a")], { ...json([]), response: { ...PROVIDER_RESPONSE, status: 500 } });
+  await assert.rejects(undeclared.run, /status is 500/u);
+  assert.equal(parsed, false);
+  assert.deepEqual(undeclared.events, decodeFailure);
 });

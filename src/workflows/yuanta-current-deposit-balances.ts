@@ -1,8 +1,14 @@
-import type { Locator, Response } from "playwright";
+import type { Locator } from "playwright";
 
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
 
@@ -52,17 +58,18 @@ export type YuantaCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-/**
- * The workflow resolves these values from the existing authenticated run.
- * The parser carries them through unchanged and never invents an epoch or
- * account identity.
- */
-export type YuantaCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  headers: Readonly<Record<string, string>>;
-  method?: string;
-}>;
+/** The summary card's POST, for both the domestic and the foreign table; Yuanta never constrained its query. */
+export const YUANTA_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "Yuanta current deposit",
+  host: YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
+    search: /^(?:\?.*)?$/u,
+  }],
+  cacheControl: ["no-store"],
+  providerDate: "required",
+};
 
 export type YuantaCurrentDepositBalanceRow = Readonly<{
   source: "yuanta";
@@ -79,7 +86,7 @@ export type YuantaCurrentDepositBalanceRow = Readonly<{
   effectiveAt: string;
   /** Raw provider HTTP Date retained for source-lineage evidence. */
   providerHttpDate: string;
-  /** Local capture/knowledge time supplied by the caller. */
+  /** The run's time of observing the response. */
   observedAt: string;
   sourceEvidence: Readonly<{
     endpoint: typeof YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
@@ -93,8 +100,7 @@ export type YuantaCurrentDepositBalanceRow = Readonly<{
 export type YuantaCurrentDepositSnapshotInput = Readonly<{
   kind: YuantaCurrentDepositKind;
   rows: readonly (readonly string[])[];
-  response: YuantaCurrentDepositResponseMetadata;
-  observedAt: string;
+  response: VerifiedProviderResponse<"required">;
 }>;
 
 const SUMMARY_HEADING: Record<YuantaCurrentDepositKind, string> = {
@@ -107,101 +113,6 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/gu, " ")
     .trim();
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function requireObservedAt(value: string): string {
-  const match =
-    /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u.exec(
-      value,
-    );
-  if (
-    typeof value !== "string" ||
-    !match ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    throw new Error("Yuanta current deposit observedAt must be RFC3339.");
-  }
-  const calendarDate = new Date(`${match[1]}T00:00:00.000Z`);
-  if (
-    Number.isNaN(calendarDate.getTime()) ||
-    calendarDate.toISOString().slice(0, 10) !== match[1]
-  ) {
-    throw new Error("Yuanta current deposit observedAt has an invalid calendar date.");
-  }
-  return value;
-}
-
-function requireProviderDate(headers: Readonly<Record<string, string>>): {
-  raw: string;
-  effectiveAt: string;
-} {
-  const raw = responseHeader(headers, "date");
-  if (!raw) {
-    throw new Error("Yuanta current deposit response is missing HTTP Date.");
-  }
-  if (
-    !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u.test(
-      raw,
-    )
-  ) {
-    throw new Error("Yuanta current deposit HTTP Date is invalid.");
-  }
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw) {
-    throw new Error("Yuanta current deposit HTTP Date is invalid.");
-  }
-  return { raw, effectiveAt: new Date(timestamp).toISOString() };
-}
-
-function validateResponse(
-  response: YuantaCurrentDepositResponseMetadata,
-): {
-  providerDate: { raw: string; effectiveAt: string };
-  cacheControl: string;
-} {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(response.url);
-  } catch {
-    throw new Error("Yuanta current deposit response URL is invalid.");
-  }
-  if (parsedUrl.hostname !== YUANTA_CURRENT_DEPOSIT_BALANCE_HOST) {
-    throw new Error("Yuanta current deposit response host is unexpected.");
-  }
-  if (parsedUrl.pathname !== YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH) {
-    throw new Error(
-      `Yuanta current deposit response endpoint is unexpected: ${parsedUrl.pathname}`,
-    );
-  }
-  if (response.status !== 200) {
-    throw new Error(
-      `Yuanta current deposit response status is ${response.status}, expected 200.`,
-    );
-  }
-  if (
-    response.method !== undefined &&
-    response.method.toUpperCase() !== YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD
-  ) {
-    throw new Error("Yuanta current deposit response method is not POST.");
-  }
-  const cacheControl = responseHeader(response.headers, "cache-control");
-  if (!/\bno-store\b/iu.test(cacheControl)) {
-    throw new Error(
-      "Yuanta current deposit response must carry Cache-Control: no-store.",
-    );
-  }
-  return { providerDate: requireProviderDate(response.headers), cacheControl };
 }
 
 const YUANTA_AMOUNT: ProviderDecimalPolicy = {
@@ -270,8 +181,7 @@ function expectedStream(
 export function parseYuantaCurrentDepositBalanceSnapshot(
   input: YuantaCurrentDepositSnapshotInput,
 ): readonly YuantaCurrentDepositBalanceRow[] {
-  const { providerDate, cacheControl } = validateResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
+  const { response } = input;
   const headers = expectedHeaders(input.kind);
   const rows: YuantaCurrentDepositBalanceRow[] = [];
   const seen = new Set<string>();
@@ -325,14 +235,14 @@ export function parseYuantaCurrentDepositBalanceSnapshot(
       currency,
       available,
       ledger,
-      effectiveAt: providerDate.effectiveAt,
-      providerHttpDate: providerDate.raw,
-      observedAt,
+      effectiveAt: response.providerDate.effectiveAt,
+      providerHttpDate: response.providerDate.raw,
+      observedAt: response.observedAt,
       sourceEvidence: {
         endpoint: YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
         method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
         status: 200,
-        cacheControl,
+        cacheControl: response.cacheControl,
         contractVersion: YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       },
     });
@@ -493,26 +403,10 @@ function findCurrentDepositTable(
   }, `Could not find Yuanta ${kind} current deposit table.`, { timeoutMs });
 }
 
-function responseMatches(
-  response: Response,
-): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.hostname === YUANTA_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
-      response.request().method().toUpperCase() ===
-        YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD
-    );
-  } catch {
-    return false;
-  }
-}
-
 /** The current-state table the summary card opens, before decoding. */
 export type YuantaCurrentDepositTable = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
-  response: YuantaCurrentDepositResponseMetadata;
+  response: ProviderResponse;
 }>;
 
 /**
@@ -545,7 +439,11 @@ export async function readYuantaCurrentDepositBalanceTable(
     return null;
   }, `Could not find Yuanta ${kind} current deposit details link.`, { timeoutMs });
   const [response] = await Promise.all([
-    frames.withSignal((signal) => frames.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal })),
+    frames.withSignal((signal) => frames.page.waitForResponse((response) => isDeclaredProviderResponse(
+      YUANTA_CURRENT_DEPOSIT_RESPONSE,
+      response.url(),
+      response.request().method(),
+    ), { timeout: timeoutMs, signal })),
     frames.withSignal((signal) => link.click({ signal })),
   ]);
   const headers = await frames.race(response.allHeaders());

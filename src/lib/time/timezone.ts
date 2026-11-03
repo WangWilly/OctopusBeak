@@ -118,3 +118,16 @@ export function formatUtcDate(
     day: "2-digit",
   }).format(date);
 }
+
+const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1_000;
+
+/**
+ * An instant as RFC3339 in Taipei's offset, to the second, the form every
+ * source admission accepts for observedAt. Taipei has kept +08:00 since 1979.
+ */
+export function taipeiInstant(instant: string): string {
+  const time = Date.parse(instant);
+  if (!Number.isFinite(time) || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(instant))
+    throw new RangeError(`Instant requires an explicit offset: ${instant}`);
+  return `${new Date(time + TAIPEI_OFFSET_MS).toISOString().slice(0, 19)}+08:00`;
+}

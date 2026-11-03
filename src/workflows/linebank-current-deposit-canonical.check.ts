@@ -8,9 +8,10 @@ import {
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
+  LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 
@@ -43,9 +44,8 @@ const response = {
 };
 const rawBody = `{"code":"200","message":"success","content":{"dpstAcctList":[{"acctNbr":"012345678901","arrId":"arr-main","currCd":"TWD","acctBal":999,"wdrwAvblAmt":1234.50}]}}`;
 const row = parseLinebankCurrentDepositBalanceSnapshot({
-  response,
+  response: verifyProviderResponse(LINEBANK_CURRENT_DEPOSIT_RESPONSE, response, "2026-09-09T10:05:09+08:00"),
   rawBody,
-  observedAt: "2026-09-09T10:05:09+08:00",
 })[0]!;
 const financialCapture = {
   accountKey: row.sourceAccountKey,

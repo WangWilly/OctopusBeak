@@ -4,14 +4,15 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser } from "playwright";
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import {
   YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,
   YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS,
+  YUANTA_CURRENT_DEPOSIT_RESPONSE,
   parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
   readYuantaCurrentDepositTableCells,
-  type YuantaCurrentDepositResponseMetadata,
 } from "./yuanta-current-deposit-balances.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 
@@ -109,9 +110,9 @@ function data(values: readonly string[], hidden: readonly string[] = []): Row {
   };
 }
 
-const response = (
-  overrides: Partial<YuantaCurrentDepositResponseMetadata> = {},
-): YuantaCurrentDepositResponseMetadata => ({
+const rawResponse = (
+  overrides: Partial<ProviderResponse> = {},
+): ProviderResponse => ({
   url: `https://ebank.yuantabank.com.tw${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
   status: 200,
   method: "POST",
@@ -123,6 +124,9 @@ const response = (
 });
 
 const observedAt = "2026-09-08T21:20:10+08:00";
+const verified = (candidate: ProviderResponse) =>
+  verifyProviderResponse(YUANTA_CURRENT_DEPOSIT_RESPONSE, candidate, observedAt);
+const response = (overrides: Partial<ProviderResponse> = {}) => verified(rawResponse(overrides));
 
 const domesticRows = [
   ["活期存款", "臺北分行", "0012345678901234", "0.8%", "1,025.50", "1,125.75"],
@@ -133,7 +137,6 @@ const domestic = parseYuantaCurrentDepositBalanceSnapshot({
   kind: "domestic",
   rows: domesticRows,
   response: response(),
-  observedAt,
 });
 
 assert.equal(domestic.length, 2);
@@ -172,7 +175,6 @@ const parsedDomesticTable = parseYuantaCurrentDepositBalanceSnapshot({
   kind: "domestic",
   rows: await readYuantaCurrentDepositTableCells(domesticTable as never, "domestic"),
   response: response(),
-  observedAt,
 });
 assert.equal(parsedDomesticTable.length, 2);
 assert.equal(parsedDomesticTable[0]?.available.coefficient, "102550");
@@ -213,7 +215,6 @@ const foreign = parseYuantaCurrentDepositBalanceSnapshot({
       "cache-control": "private, no-store",
     },
   }),
-  observedAt,
 });
 assert.deepEqual(
   foreign.map((row) => ({
@@ -255,7 +256,6 @@ const alternateForeignAliases = parseYuantaCurrentDepositBalanceSnapshot({
     ],
   ],
   response: response(),
-  observedAt,
 });
 assert.deepEqual(
   alternateForeignAliases.map((row) => row.currency),
@@ -277,7 +277,6 @@ assert.throws(
         "31,200",
       ]],
       response: response(),
-      observedAt,
     }),
   /currency is invalid/u,
 );
@@ -285,80 +284,29 @@ assert.throws(
 const snapshotInput = {
   kind: "domestic" as const,
   rows: domesticRows,
-  observedAt,
 };
 assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: "https://ebank.yuantabank.com.tw/wrong",
-      }),
-    }),
+  () => verified(rawResponse({ url: "https://ebank.yuantabank.com.tw/wrong" })),
   /endpoint is unexpected/u,
 );
 assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: "https://example.test/nib/tx/finance_overview_for_summary",
-      }),
-    }),
-  /host is unexpected/u,
+  () => verified(rawResponse({ method: "GET" })),
+  /method is not POST/u,
+);
+assert.equal(
+  verified(rawResponse({ url: `https://ebank.yuantabank.com.tw${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?cid=x` })).url.search,
+  "?cid=x",
+  "Yuanta admits any query on the summary POST",
 );
 assert.throws(
   () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({ status: 503 }),
-    }),
-  /status is 503/u,
-);
-assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: { "cache-control": "no-store" },
-      }),
-    }),
-  /missing HTTP Date/u,
-);
-assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: {
-          date: "Tue, 08 Sep 2026 13:20:04 GMT",
-          "cache-control": "private, max-age=0",
-        },
-      }),
-    }),
+    verified(rawResponse({
+      headers: {
+        date: "Tue, 08 Sep 2026 13:20:04 GMT",
+        "cache-control": "private, max-age=0",
+      },
+    })),
   /Cache-Control: no-store/u,
-);
-assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: {
-          date: "Tue, 08 Sep 2026 13:20:04 +0000",
-          "cache-control": "no-store",
-        },
-      }),
-    }),
-  /HTTP Date is invalid/u,
-);
-assert.throws(
-  () =>
-    parseYuantaCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response(),
-      observedAt: "2026-02-30T21:20:10+08:00",
-    }),
-  /invalid calendar date/u,
 );
 assert.throws(
   () =>
@@ -456,8 +404,7 @@ async function readThroughShell(
     const rows = parseYuantaCurrentDepositBalanceSnapshot({
       kind,
       rows: table.evidence.rows,
-      response: table.response,
-      observedAt,
+      response: verified(table.response),
     });
     const clicks = await page.evaluate(() => ({
       tab: (window as { tabClicks?: number }).tabClicks ?? 0,

@@ -4,8 +4,8 @@ import {
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   type CathayCurrentDepositKind,
+  type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
-import type { CathayCurrentDepositAcquired } from "./cathay-current-deposit-canonical.ts";
 
 /** A recorded Cathay overview response: the body as the provider sent it. */
 export type CathayRecordedOverview = Readonly<{
@@ -43,12 +43,11 @@ export function cathayForeignOverviewBody(
   return `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[${demand.join(",")}],"depositAccounts":[]}}`;
 }
 
-/** What the page reader returns for a recorded overview, sampled at `observedAt`. */
+/** What the page reader returns for a recorded overview. */
 export function cathayOverviewAcquired(
   kind: CathayCurrentDepositKind,
   overview: CathayRecordedOverview,
-  observedAt: string,
-): CathayCurrentDepositAcquired {
+): CathayCurrentDepositResponse {
   const path = kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
   return {
     evidence: { kind: "json", bytes: new TextEncoder().encode(overview.body) },
@@ -59,7 +58,6 @@ export function cathayOverviewAcquired(
       headers: { "content-type": "application/json; charset=utf-8", date: overview.date },
     },
     ...(overview.uiAccounts ? { uiAccountNumbers: overview.uiAccounts } : {}),
-    observedAt,
   };
 }
 

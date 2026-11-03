@@ -1040,14 +1040,16 @@ export function requireCathayApiSourceResponse(
   if (contentType !== "application/json" && contentType !== "text/plain") {
     throw new Error("Cathay source response content type was rejected.");
   }
-  const rawContentType =
+  return cathayResponseCharset(
     Object.entries(metadata.headers).find(
       ([name]) => name.toLowerCase() === "content-type",
-    )?.[1] ?? "";
-  return (
-    /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(rawContentType)?.[1] ??
-    "utf-8"
+    )?.[1] ?? "",
   );
+}
+
+/** The charset a Cathay Content-Type declares, UTF-8 when it names none. */
+export function cathayResponseCharset(contentType: string): string {
+  return /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType)?.[1] ?? "utf-8";
 }
 
 

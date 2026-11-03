@@ -255,7 +255,7 @@
                 "routeKey": "linebank/domestic-deposit/current-balance-v1",
                 "contractVersion": "linebank/current-deposit-balance-v1",
                 "subjectDigest": "sha256:d90b0102774d11470514f5c8081f8fa77ae6534bde6a1d066895923528d800dd",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",
@@ -372,7 +372,7 @@
                 "routeKey": "linebank/domestic-deposit/current-balance-v1",
                 "contractVersion": "linebank/current-deposit-balance-v1",
                 "subjectDigest": "sha256:5de4eb59b5c53acf33a560639e4ca23f7c8808231a0ef2b0491887f0bc5140db",
-                "observedAt": "2026-09-25T12:00:00.000Z",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",

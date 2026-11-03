@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   readSinopacCurrentDepositBalanceResponse,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
-  type SinopacCurrentDepositResponseMetadata,
+  SINOPAC_CURRENT_DEPOSIT_RESPONSE,
 } from "./sinopac-current-deposit-balances.ts";
 
-const response: SinopacCurrentDepositResponseMetadata = {
+const response: ProviderResponse = {
   // Keep the proof URL independent from the implementation constant so a
   // stale constant cannot make this fixture pass.
   url: "https://mma.sinopac.com/ws/bank/bankbal/ws_bankbal.ashx",
@@ -25,6 +26,9 @@ assert.equal(
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   "/ws/bank/bankbal/ws_bankbal.ashx",
 );
+
+const verified = (candidate: ProviderResponse = response) =>
+  verifyProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, candidate, "2026-09-09T10:01:02+08:00");
 
 const row = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   AcctText: "新店分行活期儲蓄存款",
@@ -70,8 +74,7 @@ const payload = [
 test("SinoPac balance parser preserves AvailBalance and provider evidence exactly", () => {
   const rows = parseSinopacCurrentDepositBalanceSnapshot({
     payload,
-    response,
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    response: verified(),
   });
   assert.equal(rows.length, 3);
   assert.deepEqual(rows.map((item) => item.stream), [
@@ -96,20 +99,18 @@ test("SinoPac balance parser preserves AvailBalance and provider evidence exactl
   assert.equal(rows[0]?.sourceEvidence.endpoint, SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH);
   const commaRows = parseSinopacCurrentDepositBalanceSnapshot({
     payload: [{ ...payload[0], SubInfo: [row({ AvailBalance: " 1,234.50 " })] }],
-    response,
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    response: verified(),
   });
   assert.deepEqual(commaRows[0]?.ledger, {
     coefficient: "123450",
     scale: 2,
     sourceLexeme: "1,234.50",
   });
-  const negative = parseSinopacCurrentDepositBalanceSnapshot({ payload: [{ ...payload[0], SubInfo: [row({ AvailBalance: "-1,000.5" })] }], response, observedAt: "2026-09-09T10:01:02.123+08:00" });
+  const negative = parseSinopacCurrentDepositBalanceSnapshot({ payload: [{ ...payload[0], SubInfo: [row({ AvailBalance: "-1,000.5" })] }], response: verified() });
   assert.deepEqual(negative[0]?.ledger, { coefficient: "-10005", scale: 1, sourceLexeme: "-1,000.5" });
   const formattedAccountRows = parseSinopacCurrentDepositBalanceSnapshot({
     payload: [{ ...payload[0], SubInfo: [row({ AcctValueFormat: "141-018-1234562-1" })] }],
-    response,
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    response: verified(),
   });
   assert.equal(formattedAccountRows[0]?.accountNumber, "14101812345621");
   assert.equal(formattedAccountRows[0]?.accountValueFormat, "141-018-1234562-1");
@@ -117,19 +118,17 @@ test("SinoPac balance parser preserves AvailBalance and provider evidence exactl
     () =>
       parseSinopacCurrentDepositBalanceSnapshot({
         payload: [{ ...payload[0], SubInfo: [row({ AcctValueFormat: "141-018-1234562-9" })] }],
-        response,
-        observedAt: "2026-09-09T10:01:02.123+08:00",
+        response: verified(),
       }),
     /account format is invalid/u,
   );
 });
 
-test("SinoPac parser rejects malformed, partial, duplicate, and invalid response evidence", () => {
+test("SinoPac parser and declaration reject malformed, partial, duplicate, and undeclared evidence", () => {
   const parse = (candidate: unknown, candidateResponse = response) =>
     parseSinopacCurrentDepositBalanceSnapshot({
       payload: candidate,
-      response: candidateResponse,
-      observedAt: "2026-09-09T10:01:02.123+08:00",
+      response: verified(candidateResponse),
     });
 
   assert.throws(
@@ -160,22 +159,6 @@ test("SinoPac parser rejects malformed, partial, duplicate, and invalid response
     () =>
       parse(payload, {
         ...response,
-        headers: { ...response.headers, date: "Wed, 09 Sep 2026 02:00:45" },
-      }),
-    /HTTP Date/i,
-  );
-  assert.throws(
-    () =>
-      parse(payload, {
-        ...response,
-        headers: { ...response.headers, "content-type": "text/html" },
-      }),
-    /content type/i,
-  );
-  assert.throws(
-    () =>
-      parse(payload, {
-        ...response,
         headers: {
           ...response.headers,
           "content-type": "application/json; charset=UTF-16",
@@ -191,28 +174,18 @@ test("SinoPac parser rejects malformed, partial, duplicate, and invalid response
       }),
     /method/i,
   );
-  assert.throws(
-    () =>
-      parseSinopacCurrentDepositBalanceSnapshot({
-        payload,
-        response,
-        observedAt: "2026-02-31T10:01:02.123+08:00",
-      }),
-    /calendar date/i,
-  );
 });
 
 test("SinoPac accepts provider JSON content type spacing and case", () => {
   const rows = parseSinopacCurrentDepositBalanceSnapshot({
     payload,
-    response: {
+    response: verified({
       ...response,
       headers: {
         ...response.headers,
         "content-type": "Application/JSON ; Charset = utf-8",
       },
-    },
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    }),
   });
   assert.equal(rows[0]?.sourceEvidence.contentType, "application/json;charset=UTF-8");
 });
@@ -220,8 +193,7 @@ test("SinoPac accepts provider JSON content type spacing and case", () => {
 test("SinoPac parser does not fabricate a missing currency", () => {
   const rows = parseSinopacCurrentDepositBalanceSnapshot({
     payload: [{ ...payload[0], SubInfo: [row()] }],
-    response,
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    response: verified(),
   });
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.currency, "TWD");
@@ -231,8 +203,7 @@ test("SinoPac admits the live numeric transport query and keeps canonical eviden
   const transportValue = "TRANSPORT-VALUE-MUST-NOT-ESCAPE";
   const rows = parseSinopacCurrentDepositBalanceSnapshot({
     payload,
-    response: { ...response, url: `${response.url}?1788926105087=${transportValue}` },
-    observedAt: "2026-09-09T10:01:02.123+08:00",
+    response: verified({ ...response, url: `${response.url}?1788926105087=${transportValue}` }),
   });
   assert.equal(rows.length, 3);
   assert.equal(rows[0]?.sourceEvidence.endpoint, SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH);
@@ -243,8 +214,7 @@ test("SinoPac rejects unknown and multiple transport query keys", () => {
   const parseWithUrl = (url: string) =>
     parseSinopacCurrentDepositBalanceSnapshot({
       payload,
-      response: { ...response, url },
-      observedAt: "2026-09-09T10:01:02.123+08:00",
+      response: verified({ ...response, url }),
     });
   assert.throws(
     () => parseWithUrl(`${response.url}?session=unexpected`),

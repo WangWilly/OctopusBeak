@@ -169,6 +169,7 @@ async function runGolden(
       response: {
         url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
         status: 200,
+        method: "GET",
         headers: { date: "Thu, 24 Sep 2026 16:00:00 GMT", "cache-control": "no-store, no-cache" },
       },
     }));

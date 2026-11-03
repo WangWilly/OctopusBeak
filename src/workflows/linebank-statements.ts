@@ -19,6 +19,7 @@ import {
 import { captureCurrentStateSnapshots, declaresUtf8 } from "./current-state-snapshot-capture.ts";
 import {
   parseLinebankApiJson,
+  LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
   type LineBankCurrentDepositAcquired,
   type LineBankCurrentDepositBalanceRow,
@@ -831,10 +832,7 @@ export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<
   await accountDropdownVisible();
 }
 
-function responseCharset(headers: Readonly<Record<string, string>>): string {
-  const contentType = Object.entries(headers).find(
-    ([name]) => name.toLowerCase() === "content-type",
-  )?.[1] ?? "";
+function responseCharset(contentType: string): string {
   const match = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType);
   return match?.[1] ?? "utf-8";
 }
@@ -902,7 +900,10 @@ export class LineBankApiClient {
     if (!Array.isArray(bodyBytes))
       throw new Error("LINE Bank source response bytes are unavailable.");
     const bytes = Uint8Array.from(bodyBytes);
-    const body = this.text.decode(bytes, responseCharset(response.headers));
+    const contentType = Object.entries(response.headers).find(
+      ([name]) => name.toLowerCase() === "content-type",
+    )?.[1] ?? "";
+    const body = this.text.decode(bytes, responseCharset(contentType));
     this.text.assertIntact(body);
     return { ...response, bytes, body };
   }
@@ -919,11 +920,8 @@ export class LineBankApiClient {
     return value;
   }
 
-  /**
-   * One account-list read drives both the statements and the current
-   * balances; `observedAt` is sampled once the response has arrived.
-   */
-  async fetchAccountSnapshot(now: () => string = () => new Date().toISOString()): Promise<{
+  /** One account-list read drives both the statements and the current balances. */
+  async fetchAccountSnapshot(): Promise<{
     accounts: LineBankAccount[];
     currentBalance: LineBankCurrentDepositAcquired;
   }> {
@@ -949,7 +947,6 @@ export class LineBankApiClient {
           method: response.method,
           headers: response.headers,
         },
-        observedAt: now(),
       },
     };
   }
@@ -1165,9 +1162,11 @@ export async function runLineBankProviderWorkflow(
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
+        let accountSnapshotAt: string;
         let accounts: LineBankAccount[];
         try {
-          accountSnapshot = await client.fetchAccountSnapshot(() => context.now());
+          accountSnapshot = await client.fetchAccountSnapshot();
+          accountSnapshotAt = context.now();
           accounts = filterAccounts(
             accountSnapshot.accounts,
             parsed.data.accountFilters,
@@ -1304,15 +1303,12 @@ export async function runLineBankProviderWorkflow(
         try {
           ({ items: balanceItems } = await captureCurrentStateSnapshots({
             product: "current-balance",
-            parse: (decoded, acquired) => {
-              if (!declaresUtf8(responseCharset(acquired.response.headers)))
+            response: LINEBANK_CURRENT_DEPOSIT_RESPONSE,
+            parse: (decoded, response) => {
+              if (!declaresUtf8(responseCharset(response.contentType)))
                 throw new Error("LINE Bank current deposit response charset is not UTF-8.");
               const rows = selectedCurrentBalanceRows(
-                parseLinebankCurrentDepositBalanceSnapshot({
-                  response: acquired.response,
-                  rawBody: decoded.text,
-                  observedAt: acquired.observedAt,
-                }),
+                parseLinebankCurrentDepositBalanceSnapshot({ response, rawBody: decoded.text }),
                 accounts,
               );
               balanceAdmitting = true;
@@ -1332,6 +1328,8 @@ export async function runLineBankProviderWorkflow(
               observedAt: capture.observedAt,
             })),
             acquire: async () => accountSnapshot.currentBalance,
+            // The balances ride on the account list read before the statements, so they were observed then.
+            now: () => accountSnapshotAt,
             product,
             text: context.text,
             signal: context.signal,

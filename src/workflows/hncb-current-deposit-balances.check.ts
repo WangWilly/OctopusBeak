@@ -7,12 +7,13 @@ import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_HEADERS,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
+  HNCB_CURRENT_DEPOSIT_RESPONSE,
   parseHncbCurrentDepositBalanceSnapshot,
   parseHncbCurrentDepositOverviewSnapshot,
   readHncbCurrentDepositDetailCells,
   readHncbCurrentDepositOverviewCells,
-  type HncbCurrentDepositResponseMetadata,
 } from "./hncb-current-deposit-balances.ts";
+import { verifyProviderResponse, type ProviderResponse } from "./current-state-snapshot-capture.ts";
 
 type Cell = {
   kind: "cell";
@@ -125,9 +126,9 @@ function fixtureTable(rows: Row[], nested: Table[] = []): FixtureLocator {
   return new FixtureLocator([{ kind: "table", rows, nested }]);
 }
 
-const response = (
-  overrides: Partial<HncbCurrentDepositResponseMetadata> = {},
-): HncbCurrentDepositResponseMetadata => ({
+const rawResponse = (
+  overrides: Partial<ProviderResponse> = {},
+): ProviderResponse => ({
   url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
   status: 200,
   method: "GET",
@@ -138,9 +139,9 @@ const response = (
   ...overrides,
 });
 
-const overviewResponse = (
-  overrides: Partial<HncbCurrentDepositResponseMetadata> = {},
-): HncbCurrentDepositResponseMetadata => ({
+const rawOverviewResponse = (
+  overrides: Partial<ProviderResponse> = {},
+): ProviderResponse => ({
   url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
   status: 200,
   method: "GET",
@@ -153,6 +154,11 @@ const overviewResponse = (
 });
 
 const observedAt = "2026-09-08T21:43:20+08:00";
+const verify = (raw: ProviderResponse) =>
+  verifyProviderResponse(HNCB_CURRENT_DEPOSIT_RESPONSE, raw, observedAt);
+const response = (overrides: Partial<ProviderResponse> = {}) => verify(rawResponse(overrides));
+const overviewResponse = (overrides: Partial<ProviderResponse> = {}) =>
+  verify(rawOverviewResponse(overrides));
 const rowA = [
   "PII-SHOULD-NOT-ESCAPE",
   "00123456789012",
@@ -202,7 +208,6 @@ const unavailableBalanceRow = [
 const parsed = parseHncbCurrentDepositBalanceSnapshot({
   rows: [rowA, rowB],
   response: response(),
-  observedAt,
 });
 assert.equal(parsed.length, 2);
 assert.equal(parsed[0]?.accountNumber, "00123456789012");
@@ -227,7 +232,6 @@ assert.doesNotMatch(JSON.stringify(parsed), /HOLD-1/u);
 const parsedFormattedAndUnavailable = parseHncbCurrentDepositBalanceSnapshot({
   rows: [formattedAccountRow, unavailableBalanceRow],
   response: response(),
-  observedAt,
 });
 assert.equal(parsedFormattedAndUnavailable.length, 1);
 assert.equal(parsedFormattedAndUnavailable[0]?.accountNumber, "001234567890");
@@ -241,7 +245,6 @@ assert.throws(
     parseHncbCurrentDepositBalanceSnapshot({
       rows: [partiallyUnavailable],
       response: response(),
-      observedAt,
     }),
   /currency is invalid/u,
 );
@@ -264,7 +267,7 @@ const currentTable = fixtureTable([
 ]);
 const parsedTable = parseHncbCurrentDepositBalanceSnapshot({
   rows: await readHncbCurrentDepositDetailCells(currentTable as never),
-  response: response(), observedAt,
+  response: response(),
 });
 assert.equal(parsedTable.length, 2);
 assert.equal(parsedTable[1]?.ledger.coefficient, "2450");
@@ -348,7 +351,7 @@ const overviewTable = fixtureTable([
 ]);
 const parsedOverview = parseHncbCurrentDepositOverviewSnapshot({
   rows: await readHncbCurrentDepositOverviewCells(overviewTable as never),
-  response: overviewResponse(), observedAt,
+  response: overviewResponse(),
 });
 assert.equal(parsedOverview.length, 2);
 assert.equal(parsedOverview[0]?.currency, "TWD");
@@ -358,7 +361,7 @@ assert.equal(parsedOverview[1]?.currency, "");
 assert.equal(parsedOverview[1]?.currencyResolution, "missing");
 assert.equal(parsedOverview[1]?.ledger.coefficient, "0");
 assert.equal(parsedOverview[1]?.available.coefficient, "0");
-assert.equal(parsedOverview[1]?.sourceEvidence.url, overviewResponse().url);
+assert.equal(parsedOverview[1]?.sourceEvidence.url, rawOverviewResponse().url);
 
 const malformedOverviewHeader = overviewParentHeader();
 malformedOverviewHeader.cells[4]!.attributes = { colspan: "1" };
@@ -407,87 +410,70 @@ await assert.rejects(
   /12 TD cells/u,
 );
 
-const snapshotInput = { rows: [rowA, rowB], observedAt } as const;
+const snapshotInput = { rows: [rowA, rowB] } as const;
 assert.throws(
   () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: `https://netbank.hncb.com.tw/wrong?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
-      }),
+    response({
+      url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=other`,
     }),
   /endpoint is unexpected/u,
 );
 assert.throws(
   () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: `https://example.test${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
-      }),
+    response({
+      url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=other&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
     }),
-  /host is unexpected/u,
+  /endpoint is unexpected/u,
+  "only the first trx parameter names the transaction",
 );
+assert.equal(
+  response({
+    url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?state=prompt&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+  }).url.searchParams.get("state"),
+  "prompt",
+);
+assert.throws(() => response({ method: "POST" }), /method is not GET/u);
 assert.throws(
   () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({ status: 502 }),
-    }),
-  /status is 502/u,
-);
-assert.throws(
-  () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=other`,
-      }),
-    }),
-  /transaction is unexpected/u,
-);
-assert.throws(
-  () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({ headers: { "cache-control": "no-store" } }),
-    }),
-  /missing HTTP Date/u,
-);
-assert.throws(
-  () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: {
-          date: "Tue, 08 Sep 2026 13:43:07 GMT",
-          "cache-control": "private",
-        },
-      }),
+    response({
+      headers: {
+        date: "Tue, 08 Sep 2026 13:43:07 GMT",
+        "cache-control": "private",
+      },
     }),
   /Cache-Control: no-store/u,
 );
 assert.throws(
   () =>
-    parseHncbCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: {
-          date: "Tue, 08 Sep 2026 13:43:07 +0000",
-          "cache-control": "no-store",
-        },
-      }),
+    overviewResponse({
+      headers: {
+        date: "Wed, 09 Sep 2026 05:57:04 GMT",
+        "cache-control": "no-store",
+        "content-type": "application/json",
+      },
     }),
-  /HTTP Date is invalid/u,
+  /content type is unexpected/u,
+);
+assert.equal(
+  response().contentType,
+  "",
+  "the 活期存款 page carries no Content-Type requirement",
 );
 assert.throws(
   () =>
     parseHncbCurrentDepositBalanceSnapshot({
       ...snapshotInput,
-      response: response(),
-      observedAt: "2026-02-30T21:43:20+08:00",
+      response: overviewResponse(),
     }),
-  /invalid calendar date/u,
+  /transaction is unexpected/u,
+);
+assert.throws(
+  () =>
+    parseHncbCurrentDepositOverviewSnapshot({
+      rows: [],
+      response: response(),
+    }),
+  /transaction is unexpected/u,
 );
 assert.throws(
   () =>

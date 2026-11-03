@@ -591,7 +591,7 @@
                 "routeKey": "sinopac/domestic-deposit/current-balance-v1",
                 "contractVersion": "sinopac/current-deposit-balance-v1",
                 "subjectDigest": "sha256:FKrXhy3tcroviepBqlqbXOwebdsjgBbEOGnzAmmI9-o",
-                "observedAt": "2026-10-01T12:00:00.000+08:00",
+                "observedAt": "2026-10-01T12:00:00+08:00",
                 "scope": {
                   "startDate": "2026-10-01",
                   "endDate": "2026-10-01",
@@ -710,7 +710,7 @@
                 "routeKey": "sinopac/foreign-currency/current-balance-v1",
                 "contractVersion": "sinopac/current-deposit-balance-v1",
                 "subjectDigest": "sha256:4V8OtCTqWedLVUJGP0WLB31eDchAc8YqnTtNxgEBuP0",
-                "observedAt": "2026-10-01T12:00:00.000+08:00",
+                "observedAt": "2026-10-01T12:00:00+08:00",
                 "scope": {
                   "startDate": "2026-10-01",
                   "endDate": "2026-10-01",

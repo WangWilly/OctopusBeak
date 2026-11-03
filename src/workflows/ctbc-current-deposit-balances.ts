@@ -1,6 +1,12 @@
 import type { Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 /**
@@ -28,14 +34,19 @@ export type CtbcCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type CtbcCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method?: string;
-  headers: Readonly<Record<string, string>>;
-  /** Only the request discriminator is retained after parsing. */
-  requestPostData?: string | null;
-}>;
+/** The ebmwResource POST; the named transport key is its only allowed query. */
+export const CTBC_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "CTBC current deposit",
+  host: CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: CTBC_CURRENT_DEPOSIT_BALANCE_METHOD,
+    contentType: /^application\/json(?:\s*;|$)/iu,
+    search: new RegExp(`^(?:\\?${CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY}(?:=[^&]*)?)?$`, "u"),
+  }],
+  cacheControl: ["no-cache", "no-store", "must-revalidate"],
+  providerDate: "required",
+};
 
 export type CtbcCurrentDepositBalanceRow = Readonly<{
   source: "ctbc";
@@ -70,10 +81,6 @@ export type CtbcCurrentDepositBalanceRow = Readonly<{
 
 type JsonRecord = Record<string, unknown>;
 
-const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u;
-const HTTP_DATE =
-  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
 const DATA_TIME = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/u;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -110,86 +117,8 @@ function requiredString(
   return text;
 }
 
-function requireObservedAt(value: string): string {
-  if (
-    typeof value !== "string" ||
-    !RFC3339.test(value) ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    throw new Error("CTBC current deposit observedAt must be RFC3339.");
-  }
-  return value;
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function requireProviderDate(headers: Readonly<Record<string, string>>): string {
-  const raw = responseHeader(headers, "date");
-  if (!HTTP_DATE.test(raw))
-    throw new Error("CTBC current deposit response is missing a valid HTTP Date.");
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw)
-    throw new Error("CTBC current deposit HTTP Date is invalid.");
-  return raw;
-}
-
-function requireCacheControl(headers: Readonly<Record<string, string>>): string {
-  const cacheControl = responseHeader(headers, "cache-control");
-  for (const token of ["no-cache", "no-store", "must-revalidate"])
-    if (!new RegExp(`\\b${token}\\b`, "iu").test(cacheControl))
-      throw new Error(
-        `CTBC current deposit response must carry Cache-Control: ${token}.`,
-      );
-  return cacheControl;
-}
-
-function hasApprovedTransportQuery(url: URL): boolean {
-  const keys = [...url.searchParams.keys()];
-  return (
-    keys.length === 0 ||
-    (keys.length === 1 &&
-      keys[0] === CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY)
-  );
-}
-
-function requireResponse(
-  response: CtbcCurrentDepositResponseMetadata,
-): { providerHttpDate: string; cacheControl: string; requestResource: string } {
-  let parsed: URL;
-  try {
-    parsed = new URL(response.url);
-  } catch {
-    throw new Error("CTBC current deposit response URL is invalid.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== CTBC_CURRENT_DEPOSIT_BALANCE_HOST ||
-    parsed.pathname !== CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
-    !hasApprovedTransportQuery(parsed) ||
-    parsed.hash !== "" ||
-    parsed.port !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== ""
-  ) {
-    throw new Error("CTBC current deposit response endpoint is unexpected.");
-  }
-  if (response.method?.toUpperCase() !== CTBC_CURRENT_DEPOSIT_BALANCE_METHOD)
-    throw new Error("CTBC current deposit response method is not POST.");
-  if (response.status !== 200)
-    throw new Error("CTBC current deposit response status is not 200.");
-  const contentType = responseHeader(response.headers, "content-type");
-  if (!/^application\/json(?:\s*;|$)/iu.test(contentType))
-    throw new Error("CTBC current deposit response content type is not JSON.");
-  const requestPostData = response.requestPostData;
+/** The request body is parsed only for its resource discriminant. */
+function requireRequest(requestPostData: string | null): void {
   if (typeof requestPostData !== "string" || requestPostData.trim() === "")
     throw new Error("CTBC current deposit request body is missing.");
   let request: unknown;
@@ -209,11 +138,6 @@ function requireResponse(
   const rqData = requiredField(request.rqData, "request rqData");
   if (!isRecord(rqData))
     throw new Error("CTBC current deposit request rqData is not an object.");
-  return {
-    providerHttpDate: requireProviderDate(response.headers),
-    cacheControl: requireCacheControl(response.headers),
-    requestResource: resource,
-  };
 }
 
 const CTBC_AMOUNT: ProviderDecimalPolicy = {
@@ -289,8 +213,7 @@ function parseRow(
   effectiveAt: string,
   serverTime: number,
   dataTime: string,
-  providerHttpDate: string,
-  cacheControl: string,
+  response: VerifiedProviderResponse<"required">,
 ): CtbcCurrentDepositBalanceRow {
   if (!isRecord(value))
     throw new Error(`CTBC current deposit row ${rowIndex} is not an object.`);
@@ -357,13 +280,13 @@ function parseRow(
     effectiveAt,
     providerServerTime: serverTime,
     providerDataTime: dataTime,
-    providerHttpDate,
-    observedAt: "",
+    providerHttpDate: response.providerDate.raw,
+    observedAt: response.observedAt,
     sourceEvidence: {
       endpoint: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
       requestResource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
       status: 200,
-      cacheControl,
+      cacheControl: response.cacheControl,
       contractVersion: CTBC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
     },
   };
@@ -372,11 +295,10 @@ function parseRow(
 /** Parse one complete CTBC current-deposit summary response. */
 export function parseCtbcCurrentDepositBalanceSnapshot(input: Readonly<{
   payload: unknown;
-  response: CtbcCurrentDepositResponseMetadata;
-  observedAt: string;
+  response: VerifiedProviderResponse<"required">;
+  requestPostData: string | null;
 }>): readonly CtbcCurrentDepositBalanceRow[] {
-  const { providerHttpDate, cacheControl } = requireResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
+  requireRequest(input.requestPostData);
   if (!isRecord(input.payload))
     throw new Error("CTBC current deposit response envelope is invalid.");
   if (input.payload.code !== "0000")
@@ -411,15 +333,7 @@ export function parseCtbcCurrentDepositBalanceSnapshot(input: Readonly<{
   );
   const effectiveAt = new Date(serverTime).toISOString();
   const rows = demand.infoList.map((row, rowIndex) =>
-    parseRow(
-      row,
-      rowIndex,
-      effectiveAt,
-      serverTime,
-      dataTime,
-      providerHttpDate,
-      cacheControl,
-    ),
+    parseRow(row, rowIndex, effectiveAt, serverTime, dataTime, input.response),
   );
   const seen = new Set<string>();
   for (const row of rows) {
@@ -427,7 +341,7 @@ export function parseCtbcCurrentDepositBalanceSnapshot(input: Readonly<{
       throw new Error("CTBC current deposit response has a duplicate accountId.");
     seen.add(row.accountNumber);
   }
-  return rows.map((row) => ({ ...row, observedAt }));
+  return rows;
 }
 
 type CtbcResponseDiagnostic = Readonly<{
@@ -477,20 +391,10 @@ function responseDiagnostic(response: Response): CtbcResponseDiagnostic | null {
 }
 
 function responseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.protocol === "https:" &&
-      url.hostname === CTBC_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
-      hasApprovedTransportQuery(url) &&
-      url.hash === "" &&
-      response.request().method().toUpperCase() === CTBC_CURRENT_DEPOSIT_BALANCE_METHOD &&
-      requestResource(response) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
-    );
-  } catch {
-    return false;
-  }
+  return (
+    isDeclaredProviderResponse(CTBC_CURRENT_DEPOSIT_RESPONSE, response.url(), response.request().method()) &&
+    requestResource(response) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
+  );
 }
 
 /** Any summary POST to the endpoint, whatever its query: more than one is ambiguous. */
@@ -526,7 +430,9 @@ async function clickExactText(scope: FrameScope, text: string, timeoutMs: number
 /** The summary response CTBC's page triggers, before decoding. */
 export type CtbcCurrentDepositResponse = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "json" }>;
-  response: CtbcCurrentDepositResponseMetadata;
+  response: ProviderResponse;
+  /** Only the request discriminator is retained after parsing. */
+  requestPostData: string | null;
 }>;
 
 /**
@@ -570,8 +476,8 @@ export async function readCtbcCurrentDepositBalanceResponse(
         status: response.status(),
         method: response.request().method(),
         headers,
-        requestPostData: response.request().postData(),
       },
+      requestPostData: response.request().postData(),
     };
   } catch (error) {
     if (signal.aborted || diagnostics.length === 0) throw error;

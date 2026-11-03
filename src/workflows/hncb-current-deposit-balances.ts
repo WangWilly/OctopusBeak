@@ -1,6 +1,13 @@
 import type { Frame, Locator, Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderEndpoint,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import type { FrameScope } from "./frame-scope.ts";
 
 /** HNCB's current deposit balance query is a provider snapshot. */
@@ -57,12 +64,50 @@ export type HncbCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type HncbCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  headers: Readonly<Record<string, string>>;
-  method?: string;
-}>;
+/** A TrxDispatcher query whose first trx parameter names the transaction; the page adds others. */
+function transactionQuery(transaction: string): RegExp {
+  return new RegExp(`^\\?(?:(?!trx(?:[=&]|$))[^&]*&)*trx=${transaction.replaceAll(".", "\\.")}(?:&|$)`, "u");
+}
+
+/** The 帳戶總覽 GET, which must render HTML. */
+export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
+  path: HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
+  method: "GET",
+  contentType: /^text\/html(?:\s*;|$)/iu,
+  search: transactionQuery(HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION),
+};
+
+/** The 活期存款 balance-page GET. */
+export const HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT: ProviderEndpoint = {
+  path: HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
+  method: "GET",
+  search: transactionQuery(HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION),
+};
+
+/** Either page may carry the snapshot; each parser accepts only its own endpoint. */
+export const HNCB_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "HNCB current deposit",
+  host: HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT],
+  cacheControl: ["no-store"],
+  providerDate: "required",
+};
+
+function requireEndpoint(
+  response: VerifiedProviderResponse<"required">,
+  endpoint: ProviderEndpoint,
+): void {
+  if (response.endpoint !== endpoint)
+    throw new Error("HNCB current deposit response transaction is unexpected.");
+}
+
+function isEndpointResponse(endpoint: ProviderEndpoint, response: Response): boolean {
+  return isDeclaredProviderResponse(
+    { ...HNCB_CURRENT_DEPOSIT_RESPONSE, endpoints: [endpoint] },
+    response.url(),
+    response.request().method(),
+  );
+}
 
 export type HncbCurrentDepositBalanceRow = Readonly<{
   source: "hncb";
@@ -113,14 +158,7 @@ export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
 
 export type HncbCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
-  response: HncbCurrentDepositResponseMetadata;
-  observedAt: string;
-}>;
-
-export type HncbCurrentDepositOverviewSnapshotInput = Readonly<{
-  rows: readonly (readonly string[])[];
-  response: HncbCurrentDepositResponseMetadata;
-  observedAt: string;
+  response: VerifiedProviderResponse<"required">;
 }>;
 
 type BrowserScope = Page | Frame;
@@ -134,122 +172,6 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/gu, " ")
     .trim();
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function requireObservedAt(value: string): string {
-  const match =
-    /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u.exec(
-      value,
-    );
-  if (
-    typeof value !== "string" ||
-    !match ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    throw new Error("HNCB current deposit observedAt must be RFC3339.");
-  }
-  const calendarDate = new Date(`${match[1]}T00:00:00.000Z`);
-  if (
-    Number.isNaN(calendarDate.getTime()) ||
-    calendarDate.toISOString().slice(0, 10) !== match[1]
-  ) {
-    throw new Error("HNCB current deposit observedAt has an invalid calendar date.");
-  }
-  return value;
-}
-
-function requireProviderDate(headers: Readonly<Record<string, string>>): {
-  raw: string;
-  effectiveAt: string;
-} {
-  const raw = responseHeader(headers, "date");
-  if (!raw) throw new Error("HNCB current deposit response is missing HTTP Date.");
-  if (
-    !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u.test(
-      raw,
-    )
-  ) {
-    throw new Error("HNCB current deposit HTTP Date is invalid.");
-  }
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw) {
-    throw new Error("HNCB current deposit HTTP Date is invalid.");
-  }
-  return { raw, effectiveAt: new Date(timestamp).toISOString() };
-}
-
-function validateResponseForTransaction(
-  response: HncbCurrentDepositResponseMetadata,
-  transaction: string,
-  options: Readonly<{ requireHtml?: boolean }> = {},
-): {
-  providerDate: { raw: string; effectiveAt: string };
-  cacheControl: string;
-} {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(response.url);
-  } catch {
-    throw new Error("HNCB current deposit response URL is invalid.");
-  }
-  if (parsedUrl.hostname !== HNCB_CURRENT_DEPOSIT_BALANCE_HOST) {
-    throw new Error("HNCB current deposit response host is unexpected.");
-  }
-  if (parsedUrl.pathname !== HNCB_CURRENT_DEPOSIT_BALANCE_PATH) {
-    throw new Error(
-      `HNCB current deposit response endpoint is unexpected: ${parsedUrl.pathname}`,
-    );
-  }
-  if (parsedUrl.searchParams.get("trx") !== transaction) {
-    throw new Error("HNCB current deposit response transaction is unexpected.");
-  }
-  if (response.status !== 200) {
-    throw new Error(
-      `HNCB current deposit response status is ${response.status}, expected 200.`,
-    );
-  }
-  if (
-    response.method !== undefined &&
-    response.method.toUpperCase() !== "GET"
-  ) {
-    throw new Error("HNCB current deposit response method is not GET.");
-  }
-  const cacheControl = responseHeader(response.headers, "cache-control");
-  if (!/\bno-store\b/iu.test(cacheControl)) {
-    throw new Error(
-      "HNCB current deposit response must carry Cache-Control: no-store.",
-    );
-  }
-  if (options.requireHtml) {
-    const contentType = responseHeader(response.headers, "content-type");
-    if (!/^text\/html(?:\s*;|$)/iu.test(contentType)) {
-      throw new Error("HNCB current deposit overview response must be HTML.");
-    }
-  }
-  return { providerDate: requireProviderDate(response.headers), cacheControl };
-}
-
-function validateResponse(
-  response: HncbCurrentDepositResponseMetadata,
-): {
-  providerDate: { raw: string; effectiveAt: string };
-  cacheControl: string;
-} {
-  return validateResponseForTransaction(
-    response,
-    HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
-  );
 }
 
 const HNCB_AMOUNT: ProviderDecimalPolicy = {
@@ -320,8 +242,7 @@ function normalizedHeader(value: string): string {
 export function parseHncbCurrentDepositBalanceSnapshot(
   input: HncbCurrentDepositSnapshotInput,
 ): readonly HncbCurrentDepositBalanceRow[] {
-  const { providerDate, cacheControl } = validateResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
+  requireEndpoint(input.response, HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT);
   if (input.rows.length === 0) throw new Error("HNCB current deposit table has no account rows.");
 
   const seen = new Set<string>();
@@ -346,16 +267,16 @@ export function parseHncbCurrentDepositBalanceSnapshot(
       currencySourceLexeme: parsedCurrency.sourceLexeme,
       available: parseExactDecimal(values[3] ?? "", `row ${rowIndex} available balance`),
       ledger: parseExactDecimal(values[10] ?? "", `row ${rowIndex} ledger balance`),
-      effectiveAt: providerDate.effectiveAt,
-      providerHttpDate: providerDate.raw,
-      observedAt,
+      effectiveAt: input.response.providerDate.effectiveAt,
+      providerHttpDate: input.response.providerDate.raw,
+      observedAt: input.response.observedAt,
       sourceEvidence: {
         endpoint: HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
         transaction: HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
         status: 200,
-        cacheControl,
+        cacheControl: input.response.cacheControl,
         contractVersion: HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-        url: input.response.url,
+        url: input.response.url.href,
       },
     });
   }
@@ -549,14 +470,9 @@ async function readSpannedTableRows(table: Locator): Promise<SpannedTableRow[]> 
 
 /** Parse the authenticated 帳務查詢 → 帳戶總覽 table. */
 export function parseHncbCurrentDepositOverviewSnapshot(
-  input: HncbCurrentDepositOverviewSnapshotInput,
+  input: HncbCurrentDepositSnapshotInput,
 ): readonly HncbCurrentDepositOverviewBalanceRow[] {
-  const { providerDate, cacheControl } = validateResponseForTransaction(
-    input.response,
-    HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
-    { requireHtml: true },
-  );
-  const observedAt = requireObservedAt(input.observedAt);
+  requireEndpoint(input.response, HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT);
   if (input.rows.length === 0)
     throw new Error("HNCB current deposit overview table has no account rows.");
   const seen = new Set<string>();
@@ -582,16 +498,16 @@ export function parseHncbCurrentDepositOverviewSnapshot(
       currencyResolution: parsedCurrency.value ? "provider" : "missing",
       ledger: parseExactDecimal(values[3] ?? "", `overview row ${rowIndex} ledger balance`),
       available: parseExactDecimal(values[4] ?? "", `overview row ${rowIndex} available balance`),
-      effectiveAt: providerDate.effectiveAt,
-      providerHttpDate: providerDate.raw,
-      observedAt,
+      effectiveAt: input.response.providerDate.effectiveAt,
+      providerHttpDate: input.response.providerDate.raw,
+      observedAt: input.response.observedAt,
       sourceEvidence: {
         endpoint: HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
         transaction: HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
         status: 200,
-        cacheControl,
+        cacheControl: input.response.cacheControl,
         contractVersion: HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
-        url: input.response.url,
+        url: input.response.url.href,
       },
     });
   }
@@ -772,33 +688,6 @@ function accountingNavigationResponseMatches(response: Response): boolean {
   }
 }
 
-function responseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.hostname === HNCB_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === HNCB_CURRENT_DEPOSIT_BALANCE_PATH &&
-      url.searchParams.get("trx") === HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION
-    );
-  } catch {
-    return false;
-  }
-}
-
-function overviewResponseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.hostname === HNCB_CURRENT_DEPOSIT_OVERVIEW_HOST &&
-      url.pathname === HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH &&
-      url.searchParams.get("trx") === HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION &&
-      response.request().method().toUpperCase() === "GET"
-    );
-  } catch {
-    return false;
-  }
-}
-
 /**
  * One current-state table before decoding: the account overview or the
  * 活期存款 balance page, which carry different columns and transactions.
@@ -806,10 +695,10 @@ function overviewResponseMatches(response: Response): boolean {
 export type HncbCurrentDepositTable = Readonly<{
   view: "overview" | "detail";
   evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
-  response: HncbCurrentDepositResponseMetadata;
+  response: ProviderResponse;
 }>;
 
-async function responseMetadata(response: Response): Promise<HncbCurrentDepositResponseMetadata> {
+async function responseMetadata(response: Response): Promise<ProviderResponse> {
   return {
     url: response.url(),
     status: response.status(),
@@ -830,7 +719,9 @@ export async function readHncbCurrentDepositDetailTable(
   await scope.withSignal((signal) => balanceMenu.click({ signal }));
   const demandDeposit = await findExactControl(scope, "活期存款", timeoutMs);
   const responded = scope.withSignal((signal) =>
-    scope.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
+    scope.page.waitForResponse(
+      (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT, response),
+      { timeout: timeoutMs, signal }));
   responded.catch(() => undefined);
   await scope.withSignal((signal) => demandDeposit.click({ signal }));
   const response = await scope.race(responseMetadata(await responded));
@@ -863,7 +754,9 @@ export async function readHncbCurrentDepositOverviewTable(
   await accountingResponse;
   const overviewMenu = await findMenuFrameControl(scope, "帳戶總覽", timeoutMs);
   const responded = scope.withSignal((signal) =>
-    scope.page.waitForResponse(overviewResponseMatches, { timeout: timeoutMs, signal }));
+    scope.page.waitForResponse(
+      (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, response),
+      { timeout: timeoutMs, signal }));
   responded.catch(() => undefined);
   await scope.withSignal((signal) => overviewMenu.click({ signal }));
   const response = await scope.race(responseMetadata(await responded));

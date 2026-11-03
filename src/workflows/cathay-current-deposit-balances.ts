@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
@@ -29,12 +35,33 @@ export type CathayCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type CathayCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  headers: Readonly<Record<string, string>>;
-  method?: string;
-}>;
+function cathayCurrentDepositResponse(path: string): ProviderResponseDeclaration<"required"> {
+  return {
+    label: "Cathay current deposit",
+    host: CATHAY_CURRENT_DEPOSIT_HOST,
+    endpoints: [{
+      path,
+      method: "POST",
+      // Cathay's JSON APIs have labeled their bodies both ways.
+      contentType: /^(?:application\/json|text\/plain)\s*(?:;.*)?$/isu,
+      // Cathay has never constrained the overview's query string.
+      search: /^.*$/su,
+    }],
+    cacheControl: [],
+    providerDate: "required",
+  };
+}
+
+/** The 臺幣帳戶總覽 overview POST. */
+export const CATHAY_CURRENT_DOMESTIC_RESPONSE = cathayCurrentDepositResponse(CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH);
+/** The 外幣帳戶總覽 overview POST. */
+export const CATHAY_CURRENT_FOREIGN_RESPONSE = cathayCurrentDepositResponse(CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH);
+
+export function cathayCurrentDepositResponseDeclaration(
+  kind: CathayCurrentDepositKind,
+): ProviderResponseDeclaration<"required"> {
+  return kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_RESPONSE : CATHAY_CURRENT_FOREIGN_RESPONSE;
+}
 
 export type CathayCurrentDepositObservation = Readonly<{
   kind: CathayCurrentDepositObservationKind;
@@ -107,9 +134,8 @@ export type CathayCurrentDepositBalanceRow =
 
 export type CathayCurrentDepositSnapshotInput = Readonly<{
   kind: CathayCurrentDepositKind;
-  response: CathayCurrentDepositResponseMetadata;
+  response: VerifiedProviderResponse<"required">;
   rawBody: string;
-  observedAt: string;
   /** Required for domestic rows to bind API accountNo to the UI account key. */
   uiAccountNumbers?: readonly string[];
 }>;
@@ -195,17 +221,6 @@ function cleanText(value: string | null | undefined): string {
     .trim();
 }
 
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
 function validateCalendarDate(date: string, label: string): void {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   if (
@@ -214,18 +229,6 @@ function validateCalendarDate(date: string, label: string): void {
   ) {
     throw new Error(`${label} has an invalid calendar date.`);
   }
-}
-
-function validateObservedAt(value: string): string {
-  const match =
-    /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})$/u.exec(
-      value,
-    );
-  if (!match || !Number.isFinite(Date.parse(value))) {
-    throw new Error("Cathay current deposit observedAt must be RFC3339.");
-  }
-  validateCalendarDate(match[1]!, "Cathay current deposit observedAt");
-  return value;
 }
 
 function validateSystemTime(value: unknown): string {
@@ -243,53 +246,8 @@ function validateSystemTime(value: unknown): string {
   return value;
 }
 
-function validateHttpDate(headers: Readonly<Record<string, string>>): string {
-  const value = responseHeader(headers, "date");
-  if (
-    !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u.test(
-      value,
-    )
-  ) {
-    throw new Error("Cathay current deposit response HTTP Date is invalid.");
-  }
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== value) {
-    throw new Error("Cathay current deposit response HTTP Date is invalid.");
-  }
-  return value;
-}
-
-function validateResponse(
-  response: CathayCurrentDepositResponseMetadata,
-  kind: CathayCurrentDepositKind,
-): string {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(response.url);
-  } catch {
-    throw new Error("Cathay current deposit response URL is invalid.");
-  }
-  if (parsedUrl.hostname !== CATHAY_CURRENT_DEPOSIT_HOST) {
-    throw new Error("Cathay current deposit response host is unexpected.");
-  }
-  const expectedPath =
-    kind === "domestic"
-      ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
-      : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
-  if (parsedUrl.pathname !== expectedPath) {
-    throw new Error(`Cathay current deposit response endpoint is unexpected: ${parsedUrl.pathname}`);
-  }
-  if (response.status !== 200) {
-    throw new Error(`Cathay current deposit response status is ${response.status}, expected 200.`);
-  }
-  if (response.method?.toUpperCase() !== "POST") {
-    throw new Error("Cathay current deposit response method is not POST.");
-  }
-  return validateHttpDate(response.headers);
-}
-
-function compareProviderTimes(systemTime: string, httpDate: string): void {
-  const delta = Math.abs(Date.parse(systemTime) - Date.parse(httpDate));
+function compareProviderTimes(systemTime: string, httpEffectiveAt: string): void {
+  const delta = Math.abs(Date.parse(systemTime) - Date.parse(httpEffectiveAt));
   if (!Number.isFinite(delta) || delta > CATHAY_CURRENT_DEPOSIT_TIME_BOUND_MS) {
     throw new Error("Cathay current deposit systemTime is inconsistent with HTTP Date.");
   }
@@ -358,16 +316,16 @@ function observation(
 }
 
 function domesticRows(
-  response: CathayCurrentDepositResponseMetadata,
+  response: VerifiedProviderResponse<"required">,
   rawBody: string,
-  observedAt: string,
   uiAccountNumbers: readonly string[] | undefined,
-  httpDate: string,
 ): readonly CathayCurrentDomesticDepositBalanceRow[] {
+  const { observedAt } = response;
+  const httpDate = response.providerDate.raw;
   const parsed = parseCathayCurrentApiJson<CathayDomesticApiResponse>(rawBody);
   requireSuccess(parsed.success);
   const systemTime = validateSystemTime(parsed.systemTime);
-  compareProviderTimes(systemTime, httpDate);
+  compareProviderTimes(systemTime, response.providerDate.effectiveAt);
   const digest = responseDigest(rawBody);
   const content = requireObject(parsed.content, "domestic content");
   const depositData = requireObject(content.depositData, "domestic depositData");
@@ -429,14 +387,15 @@ function domesticRows(
 }
 
 function foreignRows(
+  response: VerifiedProviderResponse<"required">,
   rawBody: string,
-  observedAt: string,
-  httpDate: string,
 ): readonly CathayCurrentForeignDepositBalanceRow[] {
+  const { observedAt } = response;
+  const httpDate = response.providerDate.raw;
   const parsed = parseCathayCurrentApiJson<CathayForeignApiResponse>(rawBody);
   requireSuccess(parsed.success);
   const systemTime = validateSystemTime(parsed.systemTime);
-  compareProviderTimes(systemTime, httpDate);
+  compareProviderTimes(systemTime, response.providerDate.effectiveAt);
   const digest = responseDigest(rawBody);
   const content = requireObject(parsed.content, "foreign content");
   if (content.isGetDemandAccountSuccess !== true) {
@@ -494,18 +453,8 @@ function foreignRows(
 export function parseCathayCurrentDepositBalanceSnapshot(
   input: CathayCurrentDepositSnapshotInput,
 ): readonly CathayCurrentDepositBalanceRow[] {
-  const httpDate = validateResponse(input.response, input.kind);
-  const observedAt = validateObservedAt(input.observedAt);
-  if (input.kind === "domestic") {
-    return domesticRows(
-      input.response,
-      input.rawBody,
-      observedAt,
-      input.uiAccountNumbers,
-      httpDate,
-    );
-  }
-  return foreignRows(input.rawBody, observedAt, httpDate);
+  if (input.kind === "domestic") return domesticRows(input.response, input.rawBody, input.uiAccountNumbers);
+  return foreignRows(input.response, input.rawBody);
 }
 
 async function findExactControl(
@@ -553,26 +502,17 @@ function responseMatches(
   kind: CathayCurrentDepositKind,
   response: Response,
 ): boolean {
-  try {
-    const url = new URL(response.url());
-    const expectedPath =
-      kind === "domestic"
-        ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
-        : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
-    return (
-      url.hostname === CATHAY_CURRENT_DEPOSIT_HOST &&
-      url.pathname === expectedPath &&
-      response.request().method().toUpperCase() === "POST"
-    );
-  } catch {
-    return false;
-  }
+  return isDeclaredProviderResponse(
+    cathayCurrentDepositResponseDeclaration(kind),
+    response.url(),
+    response.request().method(),
+  );
 }
 
 /** The overview response Cathay's page triggers, before decoding. */
 export type CathayCurrentDepositResponse = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "json" }>;
-  response: CathayCurrentDepositResponseMetadata & Readonly<{ method: string }>;
+  response: ProviderResponse;
   /** Domestic only: the account buttons the overview renders, which bind each row to its UI account. */
   uiAccountNumbers?: readonly string[];
 }>;

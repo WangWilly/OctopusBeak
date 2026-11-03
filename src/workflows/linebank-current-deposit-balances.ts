@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 import { parseProviderDecimal } from "../lib/shared-money/exact-money.ts";
+import type {
+  ProviderResponse,
+  ProviderResponseDeclaration,
+  SnapshotEvidence,
+  VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import type { LineBankAccount } from "./linebank-statements.ts";
 
 /**
@@ -27,12 +33,19 @@ export type LineBankCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type LineBankCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method?: string;
-  headers: Readonly<Record<string, string>>;
-}>;
+/** The payables GET; featureTypeCode=01 is its only allowed query. */
+export const LINEBANK_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "LINE Bank current deposit",
+  host: LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: LINEBANK_CURRENT_DEPOSIT_BALANCE_METHOD,
+    contentType: /^application\/json(?:\s*;|$)/iu,
+    search: /^\?featureTypeCode=01$/u,
+  }],
+  cacheControl: ["no-cache", "no-store"],
+  providerDate: "required",
+};
 
 export type LineBankCurrentDepositBalanceRow = Readonly<{
   source: "linebank";
@@ -59,9 +72,8 @@ export type LineBankCurrentDepositBalanceRow = Readonly<{
 }>;
 
 export type LineBankCurrentDepositSnapshotInput = Readonly<{
-  response: LineBankCurrentDepositResponseMetadata;
+  response: VerifiedProviderResponse<"required">;
   rawBody: string;
-  observedAt: string;
 }>;
 
 /**
@@ -69,8 +81,10 @@ export type LineBankCurrentDepositSnapshotInput = Readonly<{
  * parser reads the module's decoded text, since its plain JSON parse rounds
  * numeric `wdrwAvblAmt` tokens.
  */
-export type LineBankCurrentDepositAcquired = Omit<LineBankCurrentDepositSnapshotInput, "rawBody"> &
-  Readonly<{ evidence: Readonly<{ kind: "json"; bytes: Uint8Array }> }>;
+export type LineBankCurrentDepositAcquired = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  response: ProviderResponse;
+}>;
 
 type JsonRecord = Record<string, unknown>;
 type LineBankPayablesResponse = {
@@ -90,11 +104,6 @@ type LineBankPayablesAccount = JsonRecord & {
   wdrwAvblAmt?: unknown;
 };
 type JsonParseContext = { source: string };
-
-const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u;
-const HTTP_DATE =
-  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -121,96 +130,8 @@ function requiredStringish(value: unknown, label: string): string {
   throw new Error(`LINE Bank current deposit ${label} must be a string.`);
 }
 
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return cleanText(value);
-  }
-  return "";
-}
-
-function requireObservedAt(value: string): string {
-  if (!RFC3339.test(value) || !Number.isFinite(Date.parse(value)))
-    throw new Error("LINE Bank current deposit observedAt must be RFC3339.");
-  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})$/u.exec(value);
-  if (!match) throw new Error("LINE Bank current deposit observedAt must be RFC3339.");
-  const civil = new Date(`${match[1]}Z`);
-  if (Number.isNaN(civil.getTime()) || civil.toISOString().slice(0, 19) !== match[1])
-    throw new Error("LINE Bank current deposit observedAt has an invalid calendar instant.");
-  if (match[2] !== "Z") {
-    const offset = match[2].slice(1).replace(":", "");
-    const hours = Number(offset.slice(0, 2));
-    const minutes = Number(offset.slice(2));
-    if (hours > 23 || minutes > 59)
-      throw new Error("LINE Bank current deposit observedAt has an invalid offset.");
-  }
-  return value;
-}
-
-function requireHttpDate(headers: Readonly<Record<string, string>>): string {
-  const value = responseHeader(headers, "date");
-  if (!HTTP_DATE.test(value))
-    throw new Error("LINE Bank current deposit response is missing a valid HTTP Date.");
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== value)
-    throw new Error("LINE Bank current deposit HTTP Date is invalid.");
-  return value;
-}
-
-function requireCacheControl(headers: Readonly<Record<string, string>>): string {
-  const value = responseHeader(headers, "cache-control");
-  for (const token of ["no-cache", "no-store"])
-    if (!new RegExp(`\\b${token}\\b`, "iu").test(value))
-      throw new Error(
-        `LINE Bank current deposit response must carry Cache-Control: ${token}.`,
-      );
-  return value;
-}
-
 function responseDigest(rawBody: string): string {
   return `sha256:${createHash("sha256").update(rawBody, "utf8").digest("base64url")}`;
-}
-
-function requireResponse(
-  response: LineBankCurrentDepositResponseMetadata,
-): { providerHttpDate: string; cacheControl: string } {
-  let parsed: URL;
-  try {
-    parsed = new URL(response.url);
-  } catch {
-    throw new Error("LINE Bank current deposit response URL is invalid.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST ||
-    parsed.pathname !== LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
-    parsed.hash !== "" ||
-    parsed.port !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== ""
-  )
-    throw new Error("LINE Bank current deposit response endpoint is unexpected.");
-  const featureValues = parsed.searchParams.getAll("featureTypeCode");
-  if (
-    featureValues.length !== 1 ||
-    featureValues[0] !== LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE ||
-    [...parsed.searchParams.keys()].some((key) => key !== "featureTypeCode")
-  )
-    throw new Error("LINE Bank current deposit featureTypeCode is not 01.");
-  if (response.method?.toUpperCase() !== LINEBANK_CURRENT_DEPOSIT_BALANCE_METHOD)
-    throw new Error("LINE Bank current deposit response method is not GET.");
-  if (response.status !== 200)
-    throw new Error(`LINE Bank current deposit response status is ${response.status}.`);
-  const contentType = responseHeader(response.headers, "content-type");
-  if (!/^application\/json(?:\s*;|$)/iu.test(contentType))
-    throw new Error("LINE Bank current deposit response content type is not JSON.");
-  return {
-    providerHttpDate: requireHttpDate(response.headers),
-    cacheControl: requireCacheControl(response.headers),
-  };
 }
 
 /**
@@ -302,11 +223,7 @@ function accountFromPayload(account: LineBankPayablesAccount): Readonly<LineBank
 export function parseLinebankCurrentDepositBalanceSnapshot(
   input: LineBankCurrentDepositSnapshotInput,
 ): readonly LineBankCurrentDepositBalanceRow[] {
-  const { providerHttpDate, cacheControl } = requireResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
-  if (Date.parse(observedAt) < Date.parse(providerHttpDate))
-    throw new Error("LINE Bank current deposit observedAt precedes provider HTTP Date.");
-
+  const { providerDate, cacheControl, observedAt } = input.response;
   const payload = parseLinebankApiJson<LineBankPayablesResponse>(input.rawBody);
   if (!isRecord(payload) || payload.code !== "200")
     throw new Error(
@@ -349,8 +266,8 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
       currency: "TWD",
       account: accountFromPayload(account),
       available,
-      effectiveAt: new Date(Date.parse(providerHttpDate)).toISOString(),
-      providerHttpDate,
+      effectiveAt: providerDate.effectiveAt,
+      providerHttpDate: providerDate.raw,
       observedAt,
       sourceEvidence: {
         endpoint: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,

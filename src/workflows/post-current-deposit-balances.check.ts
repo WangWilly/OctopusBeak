@@ -10,17 +10,21 @@ import {
   buildPostCurrentDepositBalanceCapture,
   parsePostCurrentDepositBalanceSnapshot,
   postCurrentBalanceCaptureMatching,
+  POST_CURRENT_DEPOSIT_RESPONSE,
   readPostCurrentDepositBalanceResponse,
   type PostCurrentDepositBalanceRow,
-  type PostCurrentDepositResponseMetadata,
 } from "./post-current-deposit-balances.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import {
+  indexCurrentBalanceCaptures,
+  type ProviderResponse,
+  verifyProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
-const observedAt = "2026-09-09T10:14:00.123+08:00";
+const observedAt = "2026-09-09T10:14:00+08:00";
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 const conflictingPostAccountNumber = ["0311", "5240", "5293", "96"].join("");
-const response: PostCurrentDepositResponseMetadata = {
+const response: ProviderResponse = {
   url: `https://ipost.post.gov.tw${POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
   status: 200,
   method: "POST",
@@ -29,15 +33,15 @@ const response: PostCurrentDepositResponseMetadata = {
     "cache-control": "no-store,private,max-age=900",
     date: "Wed, 09 Sep 2026 02:13:03 GMT",
   },
-  requestPostData: JSON.stringify({
-    header: {
-      TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-      BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-      Authorization: "must-not-be-retained",
-    },
-    body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
-  }),
 };
+const requestPostData = JSON.stringify({
+  header: {
+    TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+    BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+    Authorization: "must-not-be-retained",
+  },
+  body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+});
 
 const psRow = {
   ACT_TYPE: "PS",
@@ -79,9 +83,10 @@ function clone<T>(value: T): T {
 
 function parse(
   candidate = payload,
-  responseOverrides: Partial<PostCurrentDepositResponseMetadata> = {},
+  responseOverrides: Partial<ProviderResponse> = {},
+  requestBody: string | null = requestPostData,
 ): readonly PostCurrentDepositBalanceRow[] {
-  const mergedResponse: PostCurrentDepositResponseMetadata = {
+  const mergedResponse: ProviderResponse = {
     ...response,
     ...responseOverrides,
     headers: {
@@ -91,8 +96,8 @@ function parse(
   };
   return parsePostCurrentDepositBalanceSnapshot({
     payload: candidate,
-    response: mergedResponse,
-    observedAt,
+    response: verifyProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, mergedResponse, observedAt),
+    requestPostData: requestBody,
   });
 }
 
@@ -136,28 +141,24 @@ test("Post parser keeps the PS BAL integer exact and preserves account zeroes", 
 test("Post parser requires the exact request discriminants and generic endpoint", () => {
   assert.throws(
     () =>
-      parse(payload, {
-        requestPostData: JSON.stringify({
-          header: {
-            TxnCode: "EB100104",
-            BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-          },
-          body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
-        }),
-      }),
+      parse(payload, {}, JSON.stringify({
+        header: {
+          TxnCode: "EB100104",
+          BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+        },
+        body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+      })),
     /TxnCode/i,
   );
   assert.throws(
     () =>
-      parse(payload, {
-        requestPostData: JSON.stringify({
-          header: {
-            TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-            BizCode: "otherOperation",
-          },
-          body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
-        }),
-      }),
+      parse(payload, {}, JSON.stringify({
+        header: {
+          TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+          BizCode: "otherOperation",
+        },
+        body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+      })),
     /BizCode/i,
   );
   assert.throws(
@@ -285,8 +286,8 @@ test("Post reader ignores earlier dispatcher responses until exact overview requ
   assert.equal(read.evidence.kind, "json");
   const rows = parsePostCurrentDepositBalanceSnapshot({
     payload: JSON.parse(new TextDecoder().decode(read.evidence.bytes)),
-    response: read.response,
-    observedAt,
+    response: verifyProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, read.response, observedAt),
+    requestPostData: read.requestPostData,
   });
   assert.equal(rows.length, 1);
   assert.doesNotMatch(JSON.stringify(rows), /AUTH-MUST-NOT-BE-RETAINED/u);

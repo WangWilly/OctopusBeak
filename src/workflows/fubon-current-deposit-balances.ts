@@ -1,7 +1,13 @@
-import type { Locator, Response } from "playwright";
+import type { Locator } from "playwright";
 
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
@@ -42,12 +48,17 @@ export type FubonCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type FubonCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  headers: Readonly<Record<string, string>>;
-  method?: string;
-}>;
+/** The 我的存款 page navigation; Fubon never constrained its method, query or content type. */
+export const FUBON_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "Fubon current deposit",
+  host: FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    search: /^(?:\?.*)?$/u,
+  }],
+  cacheControl: ["no-store", "no-cache"],
+  providerDate: "required",
+};
 
 export type FubonCurrentDepositBalanceRow = Readonly<{
   source: "fubon";
@@ -74,8 +85,7 @@ export type FubonCurrentDepositBalanceRow = Readonly<{
 
 export type FubonCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
-  response: FubonCurrentDepositResponseMetadata;
-  observedAt: string;
+  response: VerifiedProviderResponse<"required">;
 }>;
 
 function cleanText(value: string | null | undefined): string {
@@ -83,93 +93,6 @@ function cleanText(value: string | null | undefined): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/gu, " ")
     .trim();
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function requireObservedAt(value: string): string {
-  const match =
-    /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u.exec(
-      value,
-    );
-  if (
-    typeof value !== "string" ||
-    !match ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    throw new Error("Fubon current deposit observedAt must be RFC3339.");
-  }
-  const calendarDate = new Date(`${match[1]}T00:00:00.000Z`);
-  if (
-    Number.isNaN(calendarDate.getTime()) ||
-    calendarDate.toISOString().slice(0, 10) !== match[1]
-  ) {
-    throw new Error("Fubon current deposit observedAt has an invalid calendar date.");
-  }
-  return value;
-}
-
-function requireProviderDate(headers: Readonly<Record<string, string>>): {
-  raw: string;
-  effectiveAt: string;
-} {
-  const raw = responseHeader(headers, "date");
-  if (!raw) throw new Error("Fubon current deposit response is missing HTTP Date.");
-  if (
-    !/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u.test(
-      raw,
-    )
-  ) {
-    throw new Error("Fubon current deposit HTTP Date is invalid.");
-  }
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw) {
-    throw new Error("Fubon current deposit HTTP Date is invalid.");
-  }
-  return { raw, effectiveAt: new Date(timestamp).toISOString() };
-}
-
-function validateResponse(
-  response: FubonCurrentDepositResponseMetadata,
-): {
-  providerDate: { raw: string; effectiveAt: string };
-  cacheControl: string;
-} {
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(response.url);
-  } catch {
-    throw new Error("Fubon current deposit response URL is invalid.");
-  }
-  if (parsedUrl.hostname !== FUBON_CURRENT_DEPOSIT_BALANCE_HOST) {
-    throw new Error("Fubon current deposit response host is unexpected.");
-  }
-  if (parsedUrl.pathname !== FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH) {
-    throw new Error(
-      `Fubon current deposit response endpoint is unexpected: ${parsedUrl.pathname}`,
-    );
-  }
-  if (response.status !== 200) {
-    throw new Error(
-      `Fubon current deposit response status is ${response.status}, expected 200.`,
-    );
-  }
-  const cacheControl = responseHeader(response.headers, "cache-control");
-  if (!/\bno-store\b/iu.test(cacheControl) || !/\bno-cache\b/iu.test(cacheControl)) {
-    throw new Error(
-      "Fubon current deposit response must carry Cache-Control: no-store, no-cache.",
-    );
-  }
-  return { providerDate: requireProviderDate(response.headers), cacheControl };
 }
 
 const FUBON_AMOUNT: ProviderDecimalPolicy = {
@@ -211,8 +134,7 @@ function parseCurrency(value: string, rowIndex: number): {
 export function parseFubonCurrentDepositBalanceSnapshot(
   input: FubonCurrentDepositSnapshotInput,
 ): readonly FubonCurrentDepositBalanceRow[] {
-  const { providerDate, cacheControl } = validateResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
+  const { response } = input;
   if (input.rows.length === 0) {
     throw new Error("Fubon current deposit table has no account rows.");
   }
@@ -243,13 +165,13 @@ export function parseFubonCurrentDepositBalanceSnapshot(
       currencySourceLexeme: parsedCurrency.sourceLexeme,
       instantBalance: parseBalance(values[5] ?? "", `row ${rowIndex} instant balance`),
       availableBalance: parseBalance(values[6] ?? "", `row ${rowIndex} available balance`),
-      effectiveAt: providerDate.effectiveAt,
-      providerHttpDate: providerDate.raw,
-      observedAt,
+      effectiveAt: response.providerDate.effectiveAt,
+      providerHttpDate: response.providerDate.raw,
+      observedAt: response.observedAt,
       sourceEvidence: {
         endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
         status: 200,
-        cacheControl,
+        cacheControl: response.cacheControl,
         contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
       },
     });
@@ -390,22 +312,10 @@ async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): P
   return table;
 }
 
-function responseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.hostname === FUBON_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH
-    );
-  } catch {
-    return false;
-  }
-}
-
 /** The current-state table 我的存款 renders, before decoding. */
 export type FubonCurrentDepositTable = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
-  response: FubonCurrentDepositResponseMetadata;
+  response: ProviderResponse;
 }>;
 
 /** Navigate through 存款交易查詢 → 我的存款 and read the current table. */
@@ -420,7 +330,11 @@ export async function readFubonCurrentDepositBalanceTable(
   const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
   // The page's own response carries the HTTP Date and Cache-Control evidence, so it is paired with the click that requests it.
   const [response] = await Promise.all([
-    frames.withSignal((signal) => frames.page.waitForResponse(responseMatches, { timeout: timeoutMs, signal })),
+    frames.withSignal((signal) => frames.page.waitForResponse((response) => isDeclaredProviderResponse(
+      FUBON_CURRENT_DEPOSIT_RESPONSE,
+      response.url(),
+      response.request().method(),
+    ), { timeout: timeoutMs, signal })),
     frames.withSignal((signal) => myDeposit.click({ signal })),
   ]);
   const headers = await frames.race(response.allHeaders());

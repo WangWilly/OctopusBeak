@@ -4,16 +4,17 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import { frameScope } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 
 import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   FUBON_CURRENT_DEPOSIT_HEADERS,
+  FUBON_CURRENT_DEPOSIT_RESPONSE,
   parseFubonCurrentDepositBalanceSnapshot,
   readFubonCurrentDepositBalanceTable,
   readFubonCurrentDepositTableCells,
-  type FubonCurrentDepositResponseMetadata,
 } from "./fubon-current-deposit-balances.ts";
 
 type Cell = {
@@ -130,11 +131,11 @@ function tableLocator(rows: Row[]): FixtureLocator {
 }
 
 const response = (
-  overrides: Partial<FubonCurrentDepositResponseMetadata> = {},
-): FubonCurrentDepositResponseMetadata => ({
+  overrides: Partial<ProviderResponse> = {},
+): ProviderResponse => ({
   url: `https://ebank.taipeifubon.com.tw${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
   status: 200,
-  method: "POST",
+  method: "GET",
   headers: {
     date: "Tue, 08 Sep 2026 13:40:10 GMT",
     "cache-control": "no-store, no-cache",
@@ -143,6 +144,8 @@ const response = (
 });
 
 const observedAt = "2026-09-08T21:40:20+08:00";
+const verified = (candidate: ProviderResponse = response()) =>
+  verifyProviderResponse(FUBON_CURRENT_DEPOSIT_RESPONSE, candidate, observedAt);
 const visibleRows = [
   [
     "00123456789012",
@@ -176,8 +179,7 @@ const hiddenRows = [
 
 const parsed = parseFubonCurrentDepositBalanceSnapshot({
   rows: visibleRows,
-  response: response(),
-  observedAt,
+  response: verified(),
 });
 assert.equal(parsed.length, 2);
 assert.equal(parsed[0]?.accountNumber, visibleRows[0]![0]);
@@ -251,80 +253,33 @@ await assert.rejects(
   /12 TD cells/u,
 );
 
-const snapshotInput = { rows: visibleRows, observedAt } as const;
+const snapshotInput = { rows: visibleRows } as const;
 assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: "https://ebank.taipeifubon.com.tw/wrong",
-      }),
-    }),
+  () => verified(response({ url: "https://ebank.taipeifubon.com.tw/wrong" })),
   /endpoint is unexpected/u,
 );
-assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        url: "https://example.test/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
-      }),
-    }),
-  /host is unexpected/u,
+assert.equal(
+  verified(response({ method: "POST" })).endpoint.path,
+  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  "Fubon never established its page's method, so the declaration admits any",
+);
+assert.equal(
+  verified(response({ url: `https://ebank.taipeifubon.com.tw${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?menu=CDS0102` })).url.search,
+  "?menu=CDS0102",
+  "Fubon admits any query on the page navigation",
 );
 assert.throws(
   () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({ status: 502 }),
-    }),
-  /status is 502/u,
-);
-assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({ headers: { "cache-control": "no-store, no-cache" } }),
-    }),
-  /missing HTTP Date/u,
-);
-assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response({
-        headers: { date: "Tue, 08 Sep 2026 13:40:10 GMT", "cache-control": "no-store" },
-      }),
-    }),
+    verified(response({
+      headers: { date: "Tue, 08 Sep 2026 13:40:10 GMT", "cache-control": "no-store" },
+    })),
   /no-store, no-cache/u,
 );
 assert.throws(
   () =>
     parseFubonCurrentDepositBalanceSnapshot({
       ...snapshotInput,
-      response: response({
-        headers: {
-          date: "Tue, 08 Sep 2026 13:40:10 +0000",
-          "cache-control": "no-store, no-cache",
-        },
-      }),
-    }),
-  /HTTP Date is invalid/u,
-);
-assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response(),
-      observedAt: "2026-02-30T21:40:20+08:00",
-    }),
-  /invalid calendar date/u,
-);
-assert.throws(
-  () =>
-    parseFubonCurrentDepositBalanceSnapshot({
-      ...snapshotInput,
-      response: response(),
+      response: verified(),
       rows: [[
         visibleRows[0]![0]!,
         visibleRows[0]![1]!,
@@ -347,7 +302,7 @@ const usdHoldingRow = [
 ] as const;
 const multiCurrencyRows = parseFubonCurrentDepositBalanceSnapshot({
   ...snapshotInput,
-  response: response(),
+  response: verified(),
   rows: [twdRow, usdHoldingRow],
 });
 assert.deepEqual(
@@ -362,7 +317,7 @@ assert.throws(
   () =>
     parseFubonCurrentDepositBalanceSnapshot({
       ...snapshotInput,
-      response: response(),
+      response: verified(),
       rows: [twdRow, [...twdRow]],
     }),
   /duplicate account/u,
@@ -372,7 +327,7 @@ assert.throws(
   () =>
     parseFubonCurrentDepositBalanceSnapshot({
       ...snapshotInput,
-      response: response(),
+      response: verified(),
       rows: [[...twdRow.slice(0, 4), "火星幣", ...twdRow.slice(5)]],
     }),
   /currency is invalid/u,
@@ -465,7 +420,7 @@ const siteFor = (page: Page, signal = new AbortController().signal) =>
 test("the balance page is reached through 存款交易查詢 and 我的存款, and its response is the evidence", () =>
   withDepositShell({}, async (page, requested) => {
     const table = await readFubonCurrentDepositBalanceTable(siteFor(page), { timeoutMs: 10_000 });
-    const rows = parseFubonCurrentDepositBalanceSnapshot({ rows: table.evidence.rows, response: table.response, observedAt });
+    const rows = parseFubonCurrentDepositBalanceSnapshot({ rows: table.evidence.rows, response: verified(table.response) });
     assert.deepEqual(rows.map((row) => [row.accountNumber, row.currency, row.instantBalance.sourceLexeme]), [
       ["00123456789012", "TWD", "0"],
       ["98765432109876", "USD", "2,000.00"],

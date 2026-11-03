@@ -1,5 +1,6 @@
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Page } from "playwright";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -30,7 +31,7 @@ registerHooks({
 const { runYuantaAllStatementsWorkflow } = await import("./yuanta-all-statements.ts");
 const { withBoundProducts } = await import("../lib/automation/product-collection.fixtures.ts");
 const { YUANTA_SOURCE } = await import("../lib/automation/server/sources/yuanta.ts");
-const { stageYuantaDeposit, yuantaDepositQueryRange, yuantaObservedAt } = await import("./yuanta-statements.ts");
+const { stageYuantaDeposit, yuantaDepositQueryRange } = await import("./yuanta-statements.ts");
 
 const NOW = "2026-09-25T00:00:00.000Z";
 
@@ -115,7 +116,7 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
   ) => {
     return await stageYuantaDeposit(
       {
-        observedAt: yuantaObservedAt(new Date(context.now())),
+        observedAt: taipeiInstant(context.now()),
         queryRange: yuantaDepositQueryRange(product.collectionPeriod()),
         accounts: source.accounts,
       },

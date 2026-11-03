@@ -16,7 +16,7 @@ import {
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
-import { yuantaObservedAt, yuantaQuickRange } from "./yuanta-statements.ts";
+import { yuantaQuickRange } from "./yuanta-statements.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   StatementComponentAbsentError,
@@ -32,6 +32,7 @@ import {
 import {
   parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
+  YUANTA_CURRENT_DEPOSIT_RESPONSE,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
   type YuantaCurrentDepositTable,
@@ -296,17 +297,13 @@ export const yuantaForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMa
 };
 
 const yuantaForeignCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  YuantaCurrentDepositTable & Readonly<{ observedAt: string }>,
+  YuantaCurrentDepositTable,
   YuantaCurrentDepositBalanceRow,
   ExistingYuantaForeignFinancialCapture
 > = {
   product: "current-deposit-balance",
-  parse: (decoded, acquired) => parseYuantaCurrentDepositBalanceSnapshot({
-    kind: "foreign",
-    rows: decoded.rows,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
-  }),
+  response: YUANTA_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response) => parseYuantaCurrentDepositBalanceSnapshot({ kind: "foreign", rows: decoded.rows, response }),
   matching: yuantaForeignCurrentBalanceCaptureMatching,
   build: buildYuantaForeignCurrentDepositBalanceCapture,
 };
@@ -2491,8 +2488,9 @@ export async function stageYuantaForeignCurrency(
     acquire: async () => {
       if (!snapshot.currentBalances)
         throw new Error("Yuanta foreign current balances were not read for the admitted accounts.");
-      return { ...snapshot.currentBalances, observedAt: now() };
+      return snapshot.currentBalances;
     },
+    now,
     product,
     text: sourceText,
     signal,

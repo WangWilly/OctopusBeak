@@ -17,7 +17,7 @@ import {
   stageHncbDeposit,
   type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
@@ -33,6 +33,7 @@ import { HNCB_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/hncb-human-
 import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
+  HNCB_CURRENT_DEPOSIT_RESPONSE,
   parseHncbCurrentDepositOverviewSnapshot,
   readHncbCurrentDepositOverviewCells,
   type HncbCurrentDepositTable,
@@ -358,8 +359,7 @@ try {
   `);
   const overview = parseHncbCurrentDepositOverviewSnapshot({
     rows: await readHncbCurrentDepositOverviewCells(overviewPage),
-    observedAt: "2026-09-09T13:57:10+08:00",
-    response: {
+    response: verifyProviderResponse(HNCB_CURRENT_DEPOSIT_RESPONSE, {
       url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
       status: 200,
       method: "GET",
@@ -368,7 +368,7 @@ try {
         "cache-control": "no-store",
         "content-type": "text/html; charset=big5",
       },
-    },
+    }, "2026-09-09T13:57:10+08:00"),
   });
   assert.equal(overview.length, 2);
   assert.equal(overview[0]?.accountNumber, overviewAccountA);
@@ -563,7 +563,8 @@ function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
     collectionPeriod: () => assert.fail("the build half reads no collection period"),
   };
 }
-const live = { signal: new AbortController().signal, text: strictSourceText };
+const now = () => "2026-08-31T04:00:00.000Z";
+const live = { signal: new AbortController().signal, text: strictSourceText, now };
 function readCapture(account: string, label: string) {
   const structural = admitHncbDomesticDepositCaptureEvidence(buildHncbCapture(
     { value: account, label },
@@ -621,7 +622,7 @@ cancelledRun.abort(cancellation);
 await assert.rejects(
   stageHncbDeposit(
     { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted] },
-    { signal: cancelledRun.signal, text: strictSourceText },
+    { signal: cancelledRun.signal, text: strictSourceText, now },
     productHandle([]),
     countingReads,
   ),
