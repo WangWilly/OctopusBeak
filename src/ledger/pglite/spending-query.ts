@@ -712,15 +712,16 @@ export function pendingPairRef(pair: PendingSpendingCandidate): SpendingCandidat
   });
 }
 
-/** Read one pending-pairing slice: one month, or every month when month is null. */
+/**
+ * Read one pending-pairing slice: one month, or every month when month is null.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingCandidatePage(
   reader: PGliteSpendingReader,
   request: SpendingCandidatePageRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingCandidatePageDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("candidate", current);
+  const current = request.knowledgeAt;
   const month = request.month ?? null;
   if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending candidate page month is invalid.");
   const offset = Number.isSafeInteger(request.offset) && (request.offset ?? 0) >= 0 ? request.offset ?? 0 : 0;
@@ -773,15 +774,16 @@ export async function queryCurrentSpendingCandidatePage(
   });
 }
 
-/** The pending count, strong set, and invoice amounts at stake, for one month or all of them. */
+/**
+ * The pending count, strong set, and invoice amounts at stake, for one month or all of them.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingPendingOverview(
   reader: PGliteSpendingReader,
   request: SpendingPendingOverviewRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingPendingOverviewDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("pending-overview", current);
+  const current = request.knowledgeAt;
   const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
   const month = request.month ?? null;
   const pairs = month === null ? pending.pairs : pending.pairs.filter((pair) => pendingPairInMonth(pair, month));
@@ -862,15 +864,16 @@ export async function rankPGliteSpendingPaymentCandidates(
   };
 }
 
-/** 最高消費: the month's largest single purchase per currency. */
+/**
+ * 最高消費: the month's largest single purchase per currency.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMonthInsight(
   reader: PGliteSpendingReader,
   request: SpendingMonthInsightRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMonthInsightDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("month-insight", current);
+  const current = request.knowledgeAt;
   if (!validSpendingMonth(request.month)) throw new TypeError("Spending month insight month is invalid.");
   const facts = await readFacts(reader, current, { month: request.month });
   return Object.freeze({
@@ -881,15 +884,16 @@ export async function queryCurrentSpendingMonthInsight(
   });
 }
 
-/** 本月同商家: the count and total of the purchase's month with its exact merchant identity. */
+/**
+ * 本月同商家: the count and total of the purchase's month with its exact merchant identity.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMerchantStats(
   reader: PGliteSpendingReader,
   request: SpendingMerchantStatsRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMerchantStatsDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("merchant-stats", current);
+  const current = request.knowledgeAt;
   if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
     throw new TypeError("Spending merchant stats purchase id is required.");
   const purchaseId = request.purchaseId.trim();
@@ -936,14 +940,15 @@ function mergeLogCursorFromToken(token: string | null | undefined, knowledgeAt: 
   }
 }
 
-/** 合併紀錄: every confirmed, denied, and revoked decision, newest first, keyset paged. */
+/**
+ * 合併紀錄: every confirmed, denied, and revoked decision, newest first, keyset paged.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMergeLog(
   reader: PGliteSpendingReader,
   request: SpendingMergeLogRequest,
 ): Promise<SpendingMergeLogDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("merge-log", current);
+  const current = request.knowledgeAt;
   const cursor = mergeLogCursorFromToken(request.cursor, current);
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0 ? Math.min(request.limit ?? 50, 100) : 50;
   const params: unknown[] = [current];
@@ -1061,36 +1066,40 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     if (month) byMonth.set(month, facts);
     return facts;
   };
+  // Every page read checks the caller's knowledge point once, inside the
+  // transaction the page is read in, so the query functions trust it.
+  const pageRead = <Request extends Readonly<{ knowledgeAt: number }>, Page>(
+    page: ConstructorParameters<typeof SpendingPageVersionError>[0],
+    read: (transaction: PGliteSpendingReader, request: Request) => Promise<Page>,
+  ) => (request: Request): Promise<Page> => store.transaction(async (transaction) => {
+    const knowledgeAt = await readKnowledgePoint(transaction);
+    if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== knowledgeAt)
+      throw new SpendingPageVersionError(page, knowledgeAt);
+    return read(transaction, request);
+  });
   return Object.freeze({
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
-    // query functions above directly with its PGliteTransaction capability.
+    // query functions above directly with its PGliteTransaction capability;
+    // a page query then trusts the caller's knowledgeAt as that reader's.
     current: (request?: Parameters<typeof queryCurrentSpending>[1]) =>
       store.transaction((transaction) => queryCurrentSpending(transaction, request)),
     summary: (request?: Parameters<typeof queryCurrentSpendingSummary>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummary(transaction, request)),
     summaryPage: (request?: Parameters<typeof queryCurrentSpendingSummaryPage>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummaryPage(transaction, request)),
-    recordPage: (request: SpendingRecordPageRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, request)),
-    candidatePage: async (request: SpendingCandidatePageRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await readKnowledgePoint(transaction);
-      if (knowledgeAt !== request.knowledgeAt)
-        throw new SpendingPageVersionError("candidate", knowledgeAt);
-      return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
-    }),
-    monthInsight: (request: SpendingMonthInsightRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
-    merchantStats: (request: SpendingMerchantStatsRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
-    mergeLog: (request: SpendingMergeLogRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
-    pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await readKnowledgePoint(transaction);
-      if (knowledgeAt !== request.knowledgeAt)
-        throw new SpendingPageVersionError("pending-overview", knowledgeAt);
-      return queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, knowledgeAt));
-    }),
+    recordPage: pageRead("record", (transaction, request: SpendingRecordPageRequest) =>
+      queryCurrentSpendingRecordPage(transaction, request)),
+    candidatePage: pageRead("candidate", async (transaction, request: SpendingCandidatePageRequest) =>
+      queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
+    monthInsight: pageRead("month-insight", (transaction, request: SpendingMonthInsightRequest) =>
+      queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
+    merchantStats: pageRead("merchant-stats", (transaction, request: SpendingMerchantStatsRequest) =>
+      queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
+    mergeLog: pageRead("merge-log", (transaction, request: SpendingMergeLogRequest) =>
+      queryCurrentSpendingMergeLog(transaction, request)),
+    pendingOverview: pageRead("pending-overview", async (transaction, request: SpendingPendingOverviewRequest) =>
+      queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
     recognition: (request?: Readonly<{ knowledgeAt?: number }>) => store.transaction((transaction) => querySpendingRecognition(transaction, request)),
     lineage: (request: PGliteSpendingLineageRequest) => store.transaction((transaction) => querySpendingLineage(transaction, request)),

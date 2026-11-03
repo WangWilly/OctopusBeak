@@ -425,10 +425,7 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     const emptyMonthCandidates = await query.candidatePage({ knowledgeAt: 1, month: "2026-10" });
     assert.deepEqual([emptyMonthCandidates.items, emptyMonthCandidates.totalCandidateCount, emptyMonthCandidates.nextOffset], [[], 0, null]);
     await assert.rejects(query.candidatePage({ knowledgeAt: 0, month: "2026-09" }), /data version is stale/u);
-    await assert.rejects(fixture.store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, {
-      knowledgeAt: 0,
-      month: "2026-09",
-    })), /data version is stale/u);
+    await assert.rejects(query.recordPage({ knowledgeAt: 0, month: "2026-09" }), /data version is stale/u);
     assert.deepEqual(before.purchaseReport.records.map((record) => record.basis), ["invoice", "invoice", "bank-transaction", "bank-transaction"]);
     assert.equal(before.purchaseReport.candidates.length, 2);
     assert.deepEqual(before.purchaseReport.totalsByCurrency, [{ currency: "TWD", coefficient: "7158", scale: 2, count: 4 }]);

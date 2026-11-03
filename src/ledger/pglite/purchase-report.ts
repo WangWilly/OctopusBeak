@@ -1,4 +1,3 @@
-import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import type { PGliteTransaction } from "./transaction.ts";
 import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
@@ -615,14 +614,15 @@ function categoryTotalsByMonth(purchases: readonly PurchaseCategoryRow[]): reado
   })));
 }
 
-/** Read one version-bound, keyset-paged slice of current Spending records. */
+/**
+ * Read one version-bound, keyset-paged slice of current Spending records.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingRecordPage(
   reader: PGliteSpendingReader,
   request: SpendingRecordPageRequest,
 ): Promise<SpendingRecordPageDto> {
-  const current = await readKnowledgePoint(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("record", current);
+  const current = request.knowledgeAt;
   const month = request.month ?? null;
   const day = request.day ?? null;
   if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending record page month is invalid.");
