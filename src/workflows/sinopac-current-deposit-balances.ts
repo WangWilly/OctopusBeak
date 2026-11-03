@@ -1,4 +1,7 @@
 import type { Page, Response } from "playwright";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import { withAbort } from "./abort.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /**
  * SinoPac renders the account-summary HTML shell first and fills its balance
@@ -212,25 +215,21 @@ function requireResponse(
   return { providerDate: providerDate(response.headers), contentType: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE, cacheControl };
 }
 
+const SINOPAC_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "reject",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
 function parseExactDecimal(
   value: unknown,
   label: string,
 ): SinopacCurrentDepositExactDecimal {
   const sourceLexeme = requiredString(value, label);
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(
-    sourceLexeme,
-  );
-  if (!match)
+  const amount = parseProviderDecimal(sourceLexeme, SINOPAC_AMOUNT);
+  if (!amount)
     throw new Error(`SinoPac current deposit ${label} is not an exact decimal.`);
-  const sign = match[1] === "-" ? "-" : "";
-  const whole = (match[2] ?? "").replaceAll(",", "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${sign}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  return { ...amount, sourceLexeme };
 }
 
 function parseCurrency(value: unknown, rowIndex: number): string {
@@ -368,53 +367,6 @@ export function parseSinopacCurrentDepositBalanceSnapshot(input: Readonly<{
   return rows;
 }
 
-export type SinopacCurrentDepositResponseDiagnostic = Readonly<{
-  hostname: string;
-  pathname: string;
-  queryKeys: readonly string[];
-}>;
-
-/**
- * Keep timeout evidence useful without retaining response URLs, query values,
- * credentials, or response bodies.  The path filter keeps unrelated POSTs out
- * of the bounded candidate list while still exposing host/query mismatches.
- */
-export function sinopacCurrentDepositResponseDiagnostic(
-  response: Response,
-): SinopacCurrentDepositResponseDiagnostic | null {
-  try {
-    const url = new URL(response.url());
-    if (
-      url.pathname !== SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
-      response.request().method().toUpperCase() !== "POST"
-    )
-      return null;
-    return {
-      hostname: url.hostname,
-      pathname: url.pathname,
-      queryKeys: [...new Set(
-        [...url.searchParams.keys()].filter((key) => /^[A-Za-z0-9_.-]+$/u.test(key)),
-      )].sort(),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function formatResponseDiagnostics(
-  diagnostics: readonly SinopacCurrentDepositResponseDiagnostic[],
-): string {
-  return diagnostics
-    .slice(0, 8)
-    .map(
-      (entry) =>
-        `hostname=${entry.hostname || "<empty>"}, path=${entry.pathname}, queryKeys=${
-          entry.queryKeys.join(",") || "<none>"
-        }`,
-    )
-    .join("; ");
-}
-
 function responseMatches(response: Response): boolean {
   try {
     const url = new URL(response.url());
@@ -423,6 +375,10 @@ function responseMatches(response: Response): boolean {
       url.hostname === SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST &&
       url.pathname === SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
       hasApprovedTransportQuery(url) &&
+      url.hash === "" &&
+      url.port === "" &&
+      url.username === "" &&
+      url.password === "" &&
       response.request().method().toUpperCase() === "POST"
     );
   } catch {
@@ -430,84 +386,44 @@ function responseMatches(response: Response): boolean {
   }
 }
 
+/** The ws_bankbal response SinoPac's balance page triggers, before decoding. */
+export type SinopacCurrentDepositResponse = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  response: SinopacCurrentDepositResponseMetadata;
+}>;
+
 /**
- * Navigate to the authenticated balance page and passively capture the POST
- * it triggers.  The response body is awaited to completion before parsing;
- * the HTML shell is never treated as a balance table or time source.
+ * Navigate to the authenticated balance page and observe the POST it
+ * triggers. The HTML shell is never treated as a balance table or time source.
  */
-export async function readSinopacCurrentDepositBalances(
+export async function readSinopacCurrentDepositBalanceResponse(
   page: Page,
-  input: Readonly<{ observedAt: string; timeoutMs?: number }>,
-): Promise<readonly SinopacCurrentDepositBalanceRow[]> {
+  signal: AbortSignal,
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<SinopacCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const diagnostics: SinopacCurrentDepositResponseDiagnostic[] = [];
-  const diagnosticListener = (candidate: Response) => {
-    const diagnostic = sinopacCurrentDepositResponseDiagnostic(candidate);
-    if (diagnostic) diagnostics.push(diagnostic);
+  signal.throwIfAborted();
+  const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
+  void responsePromise.catch(() => undefined);
+  await withAbort(
+    page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: timeoutMs,
+    }),
+    signal,
+  );
+  const response = await withAbort(responsePromise, signal);
+  const [bytes, headers] = await Promise.all([
+    withAbort(response.body(), signal),
+    response.allHeaders(),
+  ]);
+  return {
+    evidence: { kind: "json", bytes },
+    response: {
+      url: response.url(),
+      status: response.status(),
+      method: response.request().method(),
+      headers,
+    },
   };
-  page.on("response", diagnosticListener);
-  try {
-    let listener: ((response: Response) => void) | undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const responsePromise = new Promise<Response>((resolve, reject) => {
-      listener = (response) => {
-        if (!responseMatches(response)) return;
-        if (timeout) clearTimeout(timeout);
-        resolve(response);
-      };
-      page.on("response", listener);
-      timeout = setTimeout(() => {
-        reject(
-          new Error(
-            `Timed out waiting for SinoPac ${SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}.`,
-          ),
-        );
-      }, timeoutMs);
-    });
-    // Consume rejection immediately so a response timeout cannot become an
-    // unhandled rejection while page.goto is still waiting on navigation.
-    const responseOutcome = responsePromise.then(
-      (response) => ({ response } as const),
-      (error) => ({ error } as const),
-    );
-    try {
-      await page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-        waitUntil: "domcontentloaded",
-        timeout: timeoutMs,
-      });
-      const settled = await responseOutcome;
-      if ("error" in settled) throw settled.error;
-      const response = settled.response;
-      const headers = await response.allHeaders();
-      const body = await response.body();
-      let payload: unknown;
-      try {
-        payload = JSON.parse(Buffer.from(body).toString("utf8"));
-      } catch {
-        throw new Error("SinoPac current deposit balance response is not valid JSON.");
-      }
-      return parseSinopacCurrentDepositBalanceSnapshot({
-        payload,
-        response: {
-          url: response.url(),
-          status: response.status(),
-          method: response.request().method(),
-          headers,
-        },
-        observedAt: input.observedAt,
-      });
-    } catch (error) {
-      if (diagnostics.length === 0) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `${message} SinoPac balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,
-        { cause: error },
-      );
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      if (listener) page.off("response", listener);
-    }
-  } finally {
-    page.off("response", diagnosticListener);
-  }
 }
