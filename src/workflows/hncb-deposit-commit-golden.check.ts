@@ -7,7 +7,7 @@ import { withBoundProducts } from "../lib/automation/product-collection.fixtures
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { HNCB_SOURCE } from "../lib/automation/server/sources/hncb.ts";
 import {
-  hncbCurrentDepositBalances,
+  hncbCurrentDepositBalanceTable,
   readHncbDepositSource,
   runHncbStatements,
   stageHncbDeposit,
@@ -15,9 +15,9 @@ import {
   type HncbStatementDownload,
 } from "./hncb-statements.ts";
 import {
-  parseHncbCurrentDepositBalanceSnapshot,
-  parseHncbCurrentDepositOverviewSnapshot,
-} from "./hncb-current-deposit-balances.ts";
+  hncbCurrentDepositDetailRow,
+  hncbCurrentDepositDetailTable,
+} from "./hncb-current-deposit-balances.fixtures.ts";
 import {
   assertDepositCommitGolden,
   recordDepositCommit,
@@ -40,7 +40,7 @@ const august: CollectionPeriod = {
 };
 
 type Statement = HncbStatementDownload;
-type CurrentCells = string[][];
+type CurrentCells = readonly (readonly string[])[];
 
 function row(date: string, time: string, outflow: string, inflow: string, balance: string, memo: string): string[] {
   return [date, time, date, "TWD", outflow, inflow, balance, memo, "", "", ""];
@@ -59,12 +59,6 @@ function statement(account: string, rows: string[][]): Statement {
   };
 }
 
-const detailResponse = {
-  url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.EAccDDSummary",
-  status: 200,
-  method: "GET",
-  headers: { date: "Tue, 01 Sep 2026 03:59:00 GMT", "cache-control": "no-store" },
-};
 const overviewResponse = {
   url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.AcctInfoInq&state=prompt&time_str=20260901115930",
   status: 200,
@@ -76,13 +70,8 @@ const overviewResponse = {
   },
 };
 
-/** One 活期存款 result row: available balance in the fourth cell, 帳上餘額 in the eleventh. */
-function currentRow(accountNumber: string, ledger: string, available: string): CurrentCells[number] {
-  return ["SYNTHETIC", accountNumber, "TWD", available, "0", "0", "0", "0", "0", "0", ledger, "0"];
-}
-
 /** One 帳戶總覽 row with the blank currency HNCB shows for some accounts. */
-function overviewRow(accountNumber: string, amount: string): CurrentCells[number] {
+function overviewRow(accountNumber: string, amount: string): readonly string[] {
   return [accountNumber, "活存", "", amount, amount, amount, "-", "餘額", "明細", "轉帳", "其他"];
 }
 
@@ -121,13 +110,13 @@ async function record(
           await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
           depositContext,
           product,
-          hncbCurrentDepositBalances(
-            async ({ observedAt }) => current.overview
-              ? parseHncbCurrentDepositOverviewSnapshot({ rows: current.overview, response: overviewResponse, observedAt })
-              : [],
-            async ({ observedAt }) => current.detail
-              ? parseHncbCurrentDepositBalanceSnapshot({ rows: current.detail, response: detailResponse, observedAt })
-              : [],
+          hncbCurrentDepositBalanceTable(
+            async () => ({
+              view: "overview",
+              evidence: { kind: "cells", rows: current.overview ?? [] },
+              response: overviewResponse,
+            }),
+            async () => hncbCurrentDepositDetailTable(current.detail ?? []),
           ),
         );
       },
@@ -161,7 +150,7 @@ test("HNCB golden: two accounts with inflow and outflow rows and matched current
       { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
       { value: accountB, label: `HNCB ${accountB}`, statement: statement(accountB, accountBRows) },
     ],
-    { detail: [currentRow(accountA, "13800.00", "13800.00"), currentRow(accountB, "3500.00", "3400.00")] },
+    { detail: [hncbCurrentDepositDetailRow(accountA, "13800.00", "13800.00"), hncbCurrentDepositDetailRow(accountB, "3500.00", "3400.00")] },
   );
   assert.equal((recorded.output as { status: string }).status, "financial-admitted");
   assert.equal(commandKinds(recorded).length, 4);
@@ -174,7 +163,7 @@ test("HNCB golden: an account with no data commits beside an admitted account", 
       { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
       { value: accountB, label: accountB, statement: null },
     ],
-    { detail: [currentRow(accountA, "13800.00", "13800.00")] },
+    { detail: [hncbCurrentDepositDetailRow(accountA, "13800.00", "13800.00")] },
   );
   assert.equal(commandKinds(recorded).length, 3);
 });
@@ -186,7 +175,7 @@ test("HNCB golden: a shared-account label falls back to a source-only commit", a
       { value: accountA, label: `HNCB ${accountA}`, statement: statement(accountA, accountARows) },
       { value: accountB, label: `HNCB 共同帳戶 ${accountB}`, statement: statement(accountB, accountBRows) },
     ],
-    { detail: [currentRow(accountA, "13800.00", "13800.00")] },
+    { detail: [hncbCurrentDepositDetailRow(accountA, "13800.00", "13800.00")] },
   );
   assert.equal(commandKinds(recorded).length, 3);
 });
@@ -210,7 +199,7 @@ test("HNCB golden: accounts with no data and current balances are financial-admi
       { value: accountA, label: accountA, statement: null },
       { value: accountB, label: accountB, statement: null },
     ],
-    { detail: [currentRow(accountA, "13800.00", "13800.00"), currentRow(accountB, "3500.00", "3400.00")] },
+    { detail: [hncbCurrentDepositDetailRow(accountA, "13800.00", "13800.00"), hncbCurrentDepositDetailRow(accountB, "3500.00", "3400.00")] },
   );
   assert.equal((recorded.output as { status: string }).status, "financial-admitted",
     "zero-record deposit captures and current balances are financial data (ADR 0064)");

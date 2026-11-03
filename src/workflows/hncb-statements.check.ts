@@ -13,14 +13,15 @@ import {
   hncbCurrentBalanceCaptureMatching,
   parseStatementExport,
   prepareHncbStatementQueryForm,
-  hncbCurrentDepositBalances,
+  hncbCurrentDepositBalanceTable,
   stageHncbDeposit,
-  type HncbReadCurrentDepositBalances,
+  type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
 import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
@@ -32,8 +33,14 @@ import { HNCB_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/hncb-human-
 import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
-  parseHncbCurrentDepositOverviewTable,
+  parseHncbCurrentDepositOverviewSnapshot,
+  readHncbCurrentDepositOverviewCells,
+  type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
+import {
+  hncbCurrentDepositDetailRow,
+  hncbCurrentDepositDetailTable,
+} from "./hncb-current-deposit-balances.fixtures.ts";
 
 const providerSource = readFileSync(new URL("./hncb-statements.ts", import.meta.url), "utf8");
 assert.doesNotMatch(
@@ -349,9 +356,9 @@ try {
       </table>
     </td></tr></tbody></table>
   `);
-  const overview = await parseHncbCurrentDepositOverviewTable(overviewPage, {
+  const overview = parseHncbCurrentDepositOverviewSnapshot({
+    rows: await readHncbCurrentDepositOverviewCells(overviewPage),
     observedAt: "2026-09-09T13:57:10+08:00",
-    text: strictSourceText,
     response: {
       url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
       status: 200,
@@ -528,20 +535,22 @@ try {
 // Current balances: the account overview is read first and wins when it has
 // rows; the current-balance page is read only when the overview is empty.
 const balanceReads: string[] = [];
-const balanceInput = {
-  observedAt: "2026-09-09T13:57:10+08:00",
-};
-const overviewOnly = await hncbCurrentDepositBalances(
-  async () => { balanceReads.push("overview"); return [overviewCurrentRow]; },
-  async () => { balanceReads.push("detail"); return []; },
-)(balanceInput);
-assert.deepEqual(overviewOnly, [overviewCurrentRow]);
+const overviewTable = (rows: readonly (readonly string[])[]): HncbCurrentDepositTable => ({
+  ...hncbCurrentDepositDetailTable(rows),
+  view: "overview",
+});
+const overviewWithRows = overviewTable([[overviewAccountB, "活存", "", "0.00", "0.00", "0.00", "-", "餘額", "明細", "", "其他"]]);
+const detailTable = hncbCurrentDepositDetailTable([hncbCurrentDepositDetailRow(overviewAccountB)]);
+assert.equal(await hncbCurrentDepositBalanceTable(
+  async () => { balanceReads.push("overview"); return overviewWithRows; },
+  async () => { balanceReads.push("detail"); return detailTable; },
+)(), overviewWithRows);
 assert.deepEqual(balanceReads, ["overview"]);
 balanceReads.length = 0;
-await hncbCurrentDepositBalances(
-  async () => { balanceReads.push("overview"); return []; },
-  async () => { balanceReads.push("detail"); return []; },
-)(balanceInput);
+assert.equal(await hncbCurrentDepositBalanceTable(
+  async () => { balanceReads.push("overview"); return overviewTable([]); },
+  async () => { balanceReads.push("detail"); return detailTable; },
+)(), detailTable);
 assert.deepEqual(balanceReads, ["overview", "detail"]);
 
 // The build half reads current balances only after a capture was admitted as
@@ -554,7 +563,7 @@ function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
     collectionPeriod: () => assert.fail("the build half reads no collection period"),
   };
 }
-const live = { signal: new AbortController().signal };
+const live = { signal: new AbortController().signal, text: strictSourceText };
 function readCapture(account: string, label: string) {
   const structural = admitHncbDomesticDepositCaptureEvidence(buildHncbCapture(
     { value: account, label },
@@ -577,7 +586,10 @@ function readCapture(account: string, label: string) {
 const admitted = readCapture(accountA, `HNCB ${accountA}`);
 const sourceOnly = readCapture(accountB, `HNCB 共同帳戶 ${accountB}`);
 let currentReads = 0;
-const countingReads: HncbReadCurrentDepositBalances = async () => { currentReads += 1; return []; };
+const countingReads: HncbReadCurrentDepositBalanceTable = async () => {
+  currentReads += 1;
+  return hncbCurrentDepositDetailTable([hncbCurrentDepositDetailRow(accountA, "100.00")]);
+};
 
 const sourceOnlyStaged: ProductStageRequest[] = [];
 const sourceOnlySummary = await stageHncbDeposit(
@@ -601,6 +613,7 @@ assert.equal(currentReads, 1);
 assert.deepEqual(financialStaged.map((item) => item.command.kind), [
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
 ]);
 
 const cancelledRun = new AbortController();
@@ -608,7 +621,7 @@ cancelledRun.abort(cancellation);
 await assert.rejects(
   stageHncbDeposit(
     { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted] },
-    { signal: cancelledRun.signal },
+    { signal: cancelledRun.signal, text: strictSourceText },
     productHandle([]),
     countingReads,
   ),

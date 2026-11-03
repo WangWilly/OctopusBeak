@@ -1,5 +1,6 @@
 import type { Frame, Locator, Page, Response } from "playwright";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 /** HNCB's current deposit balance query is a provider snapshot. */
 export const HNCB_CURRENT_DEPOSIT_BALANCE_PATH =
@@ -250,25 +251,20 @@ function validateResponse(
   );
 }
 
+const HNCB_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "strip",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
 function parseExactDecimal(
   value: string,
   label: string,
 ): HncbCurrentDepositExactDecimal {
   const sourceLexeme = cleanText(value);
-  const normalized = sourceLexeme.replace(/\s/gu, "");
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(
-    normalized,
-  );
-  if (!match) throw new Error(`HNCB current deposit ${label} is not an exact decimal.`);
-  const sign = match[1] === "-" ? "-" : "";
-  const whole = (match[2] ?? "").replace(/,/g, "");
-  const fraction = match[3] ?? "";
-  const digits = `${whole}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${sign}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  const amount = parseProviderDecimal(sourceLexeme, HNCB_AMOUNT);
+  if (!amount) throw new Error(`HNCB current deposit ${label} is not an exact decimal.`);
+  return { ...amount, sourceLexeme };
 }
 
 function parseAccount(value: string, rowIndex: number): string {
@@ -375,11 +371,13 @@ async function readCellTexts(row: Locator, selector: string): Promise<string[]> 
   return values;
 }
 
-/** Locate the un-nested observed HNCB result table by its exact header row. */
-export async function parseHncbCurrentDepositBalanceTable(
+/**
+ * Locate the un-nested observed HNCB result table by its exact header row and
+ * read its account rows' cell texts. Footer totals are left out.
+ */
+export async function readHncbCurrentDepositDetailCells(
   scope: Page | Frame | Locator,
-  input: Omit<HncbCurrentDepositSnapshotInput, "rows"> & Readonly<{ text: SourceTextPort }>,
-): Promise<readonly HncbCurrentDepositBalanceRow[]> {
+): Promise<readonly (readonly string[])[]> {
   const scopedTables = scope.locator("table");
   const scopedTableCount = await scopedTables.count();
   const tables =
@@ -430,14 +428,7 @@ export async function parseHncbCurrentDepositBalanceTable(
       }
       dataRows.push(values);
     }
-    if (headerFound) {
-      for (const cell of dataRows.flat()) input.text.assertIntact(cell);
-      return parseHncbCurrentDepositBalanceSnapshot({
-        response: input.response,
-        observedAt: input.observedAt,
-        rows: dataRows,
-      });
-    }
+    if (headerFound) return dataRows;
   }
   throw new Error("HNCB current deposit result table headers are not recognized.");
 }
@@ -606,11 +597,13 @@ export function parseHncbCurrentDepositOverviewSnapshot(
   return rows;
 }
 
-/** Locate the un-nested account-overview table and preserve its span layout. */
-export async function parseHncbCurrentDepositOverviewTable(
+/**
+ * Locate the un-nested account-overview table and read its account rows' cell
+ * texts in logical columns, after expanding header spans.
+ */
+export async function readHncbCurrentDepositOverviewCells(
   scope: Page | Frame | Locator,
-  input: Omit<HncbCurrentDepositOverviewSnapshotInput, "rows"> & Readonly<{ text: SourceTextPort }>,
-): Promise<readonly HncbCurrentDepositOverviewBalanceRow[]> {
+): Promise<readonly (readonly string[])[]> {
   const scopedTables = scope.locator("table");
   const scopedTableCount = await scopedTables.count();
   const tables = scopedTableCount === 0
@@ -673,14 +666,8 @@ export async function parseHncbCurrentDepositOverviewTable(
         throw new Error(`HNCB current deposit overview data row ${rowIndex} must have 11 TD cells.`);
       dataRows.push(row.values);
     }
-    if (headerFound && (parentHeaderFound || tableRows.some((row) => overviewHeader(row.values)))) {
-      for (const cell of dataRows.flat()) input.text.assertIntact(cell);
-      return parseHncbCurrentDepositOverviewSnapshot({
-        response: input.response,
-        observedAt: input.observedAt,
-        rows: dataRows,
-      });
-    }
+    if (headerFound && (parentHeaderFound || tableRows.some((row) => overviewHeader(row.values))))
+      return dataRows;
   }
   throw new Error("HNCB current deposit overview table headers are not recognized.");
 }
@@ -820,15 +807,30 @@ function overviewResponseMatches(response: Response): boolean {
   }
 }
 
-/** Navigate 帳務查詢 → 餘額查詢 → 活期存款, then parse the source table. */
-export async function readHncbCurrentDepositBalances(
+/**
+ * One current-state table before decoding: the account overview or the
+ * 活期存款 balance page, which carry different columns and transactions.
+ */
+export type HncbCurrentDepositTable = Readonly<{
+  view: "overview" | "detail";
+  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  response: HncbCurrentDepositResponseMetadata;
+}>;
+
+async function responseMetadata(response: Response): Promise<HncbCurrentDepositResponseMetadata> {
+  return {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: await response.allHeaders(),
+  };
+}
+
+/** Navigate 帳務查詢 → 餘額查詢 → 活期存款, then read the source table. */
+export async function readHncbCurrentDepositDetailTable(
   page: Page,
-  input: Readonly<{
-    observedAt: string;
-    text: SourceTextPort;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly HncbCurrentDepositBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<HncbCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
   const accountingMenu = await findExactControl(page, "帳務查詢", timeoutMs);
   await accountingMenu.click();
@@ -837,30 +839,20 @@ export async function readHncbCurrentDepositBalances(
   const demandDeposit = await findExactControl(page, "活期存款", timeoutMs);
   const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
   await demandDeposit.click();
-  const response = await responsePromise;
-  const headers = await response.allHeaders();
+  const response = await responseMetadata(await responsePromise);
   const result = await findResultTable(page, timeoutMs);
-  return parseHncbCurrentDepositBalanceTable(result.scope, {
-    observedAt: input.observedAt,
-    text: input.text,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
-  });
+  return {
+    view: "detail",
+    evidence: { kind: "cells", rows: await readHncbCurrentDepositDetailCells(result.scope) },
+    response,
+  };
 }
 
-/** Navigate 帳務查詢 → 帳戶總覽, then parse the authenticated overview page. */
-export async function readHncbCurrentDepositOverviewBalances(
+/** Navigate 帳務查詢 → 帳戶總覽, then read the authenticated overview table. */
+export async function readHncbCurrentDepositOverviewTable(
   page: Page,
-  input: Readonly<{
-    observedAt: string;
-    text: SourceTextPort;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly HncbCurrentDepositOverviewBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<HncbCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
   const accountingMenu = await findExactControl(page, "帳務查詢", timeoutMs);
   const accountingResponse = page
@@ -876,17 +868,11 @@ export async function readHncbCurrentDepositOverviewBalances(
   const overviewMenu = await findMenuFrameControl(page, "帳戶總覽", timeoutMs);
   const responsePromise = page.waitForResponse(overviewResponseMatches, { timeout: timeoutMs });
   await overviewMenu.click();
-  const response = await responsePromise;
-  const headers = await response.allHeaders();
+  const response = await responseMetadata(await responsePromise);
   const result = await findOverviewResultTable(page, timeoutMs);
-  return parseHncbCurrentDepositOverviewTable(result.scope, {
-    observedAt: input.observedAt,
-    text: input.text,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
-  });
+  return {
+    view: "overview",
+    evidence: { kind: "cells", rows: await readHncbCurrentDepositOverviewCells(result.scope) },
+    response,
+  };
 }

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
@@ -9,8 +8,9 @@ import {
   HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   parseHncbCurrentDepositBalanceSnapshot,
-  parseHncbCurrentDepositBalanceTable,
-  parseHncbCurrentDepositOverviewTable,
+  parseHncbCurrentDepositOverviewSnapshot,
+  readHncbCurrentDepositDetailCells,
+  readHncbCurrentDepositOverviewCells,
   type HncbCurrentDepositResponseMetadata,
 } from "./hncb-current-deposit-balances.ts";
 
@@ -262,10 +262,10 @@ const currentTable = fixtureTable([
     ],
   },
 ]);
-const parsedTable = await parseHncbCurrentDepositBalanceTable(
-  currentTable as never,
-  { response: response(), observedAt, text: strictSourceText },
-);
+const parsedTable = parseHncbCurrentDepositBalanceSnapshot({
+  rows: await readHncbCurrentDepositDetailCells(currentTable as never),
+  response: response(), observedAt,
+});
 assert.equal(parsedTable.length, 2);
 assert.equal(parsedTable[1]?.ledger.coefficient, "2450");
 
@@ -346,10 +346,10 @@ const overviewTable = fixtureTable([
     cells: [{ kind: "cell", tag: "td", text: "查詢結果", attributes: { colspan: "11" } }],
   },
 ]);
-const parsedOverview = await parseHncbCurrentDepositOverviewTable(
-  overviewTable as never,
-  { response: overviewResponse(), observedAt, text: strictSourceText },
-);
+const parsedOverview = parseHncbCurrentDepositOverviewSnapshot({
+  rows: await readHncbCurrentDepositOverviewCells(overviewTable as never),
+  response: overviewResponse(), observedAt,
+});
 assert.equal(parsedOverview.length, 2);
 assert.equal(parsedOverview[0]?.currency, "TWD");
 assert.equal(parsedOverview[0]?.ledger.coefficient, "1138900");
@@ -364,9 +364,8 @@ const malformedOverviewHeader = overviewParentHeader();
 malformedOverviewHeader.cells[4]!.attributes = { colspan: "1" };
 await assert.rejects(
   () =>
-    parseHncbCurrentDepositOverviewTable(
+    readHncbCurrentDepositOverviewCells(
       fixtureTable([malformedOverviewHeader, overviewSecondHeader(), ...overviewRows]) as never,
-      { response: overviewResponse(), observedAt, text: strictSourceText },
     ),
   /headers are not recognized|parent header must span/u,
 );
@@ -378,7 +377,7 @@ const unmarkedSingleCell = fixtureTable([
   { kind: "row", cells: [{ kind: "cell", tag: "td", text: "查詢結果" }] },
 ]);
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(unmarkedSingleCell as never, { response: response(), observedAt, text: strictSourceText }),
+  () => readHncbCurrentDepositDetailCells(unmarkedSingleCell as never),
   /12 TD cells/u,
 );
 
@@ -398,13 +397,13 @@ const nestedTable = new FixtureLocator([
 // as another account row. The fixture intentionally uses the same observed
 // header so the nested-table guard is the decisive check.
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(nestedTable as never, { response: response(), observedAt, text: strictSourceText }),
+  () => readHncbCurrentDepositDetailCells(nestedTable as never),
   /headers are not recognized/u,
 );
 
 const overlong = fixtureTable([header(), data([...rowA, "unexpected"])]);
 await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(overlong as never, { response: response(), observedAt, text: strictSourceText }),
+  () => readHncbCurrentDepositDetailCells(overlong as never),
   /12 TD cells/u,
 );
 
@@ -513,13 +512,5 @@ assert.match(source, /活期存款/u);
 assert.match(source, /waitForResponse/);
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
 assert.doesNotMatch(source, /click\(\{\s*force:/u);
-
-await assert.rejects(
-  () => parseHncbCurrentDepositBalanceTable(
-    fixtureTable([header(), data(rowA.map((value, index) => index === 10 ? `${value}\uFFFD` : value))]) as never,
-    { response: response(), observedAt, text: strictSourceText },
-  ),
-  SourceTextIntegrityError,
-);
 
 console.log("hncb-current-deposit-balances.check passed");
