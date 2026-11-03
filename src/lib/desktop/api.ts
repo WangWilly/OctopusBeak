@@ -1,4 +1,3 @@
-import type { SpendingPageReadResult } from "../spending/page-reader.ts";
 import type { AssetsPageDto } from "$lib/assets/types.ts";
 import type {
   AutomationCredentialGroup,
@@ -19,6 +18,7 @@ import type {
   SpendingPairingPrewarmInput,
   SpendingPairingPrewarmResult,
   SpendingPageDto,
+  SpendingPageReadResult,
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
   SpendingRecordPageDto,

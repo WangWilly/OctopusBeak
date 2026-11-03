@@ -105,14 +105,6 @@ export function optionalMoney(row: Row, coefficient: string, scale: string, curr
   return row[coefficient] === null || row[coefficient] === undefined ? null : exactMoney(row, coefficient, scale, currency);
 }
 
-/** The latest canonical commit sequence: the Spending data version. */
-export async function latest(reader: PGliteSpendingReader): Promise<number> {
-  const result = await reader.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits");
-  const value = Number(result.rows[0]?.value ?? 0);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Canonical knowledge point is invalid.");
-  return value;
-}
-
 export function pairKey(invoiceId: string, transactionId: string): string {
   return `${invoiceId}/${transactionId}`;
 }

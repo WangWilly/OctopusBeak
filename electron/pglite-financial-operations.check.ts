@@ -1,42 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createPGliteFinancialLocalPort,
   createPGliteFinancialRpcClient,
   createPGliteFinancialRpcServer,
-  PGLITE_FINANCIAL_CONTRACTS,
-  PGLITE_FINANCIAL_OPERATIONS,
   type PGliteFinancialPort,
-  type PGliteFinancialRegistry,
 } from "./pglite-financial-registry.ts";
-import { SpendingPageVersionError } from "../src/lib/spending/page-reader.ts";
-
-const PAGE_READS = [
-  "financial.spending.recordPage",
-  "financial.spending.candidatePage",
-  "financial.spending.pendingOverview",
-  "financial.spending.mergeLog",
-  "financial.spending.monthInsight",
-  "financial.spending.merchantStats",
-] as const;
-
-test("each Spending page read is declared as one, and only those", () => {
-  const declared = PGLITE_FINANCIAL_OPERATIONS.filter((operation) => PGLITE_FINANCIAL_CONTRACTS[operation].pageRead);
-  assert.deepEqual([...declared].sort(), [...PAGE_READS].sort());
-});
-
-test("a page read's stale version becomes { stale }, and other operations keep the error", async () => {
-  const stale = async () => { throw new SpendingPageVersionError("record", 42); };
-  const port = createPGliteFinancialLocalPort({
-    "financial.spending.recordPage": async () => ({ rows: [] }),
-    "financial.spending.candidatePage": stale,
-    "financial.spending.current": stale,
-  } as unknown as PGliteFinancialRegistry);
-
-  assert.deepEqual(await port.request("financial.spending.candidatePage", [{ knowledgeAt: 41 } as never]), { stale: true, knowledgeAt: 42 });
-  assert.deepEqual(await port.request("financial.spending.recordPage", [{ knowledgeAt: 42 } as never]), { rows: [] });
-  await assert.rejects(port.request("financial.spending.current", []), SpendingPageVersionError);
-});
 
 test("an interactive page read runs before queued background reads", async () => {
   type Listener = (value: unknown) => void;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { applyPGliteSpendingPageAction, confirmPGliteSpendingStrongCandidates } from "./spending-command.ts";
 
@@ -41,7 +41,7 @@ async function seed(): Promise<Seeded> {
   const crossMonthPayment = await fixture.addTransaction({ amount: "600", date: "2026-10-02", description: "Bakery", card: { consumeDate: "2026-10-01" } });
   const query = createPGliteSpendingQuery(fixture.store);
   const knowledgeAt = await fixture.knowledgeAt();
-  const page = await query.candidatePage({ knowledgeAt, month: null, limit: 100 });
+  const page = freshPage(await query.candidatePage({ knowledgeAt, month: null, limit: 100 }));
   const denied = page.items.find((item) => item.candidate.invoiceId === deniedInvoice && item.candidate.transactionId === deniedPayment);
   assert.ok(denied, "the denied pair is pending before the denial");
   await applyPGliteSpendingPageAction(fixture.store, {
@@ -59,7 +59,7 @@ test("the global pending set excludes linked sides and decided pairs and classif
   try {
     const query = createPGliteSpendingQuery(seeded.fixture.store);
     const knowledgeAt = await seeded.fixture.knowledgeAt();
-    const all = await query.candidatePage({ knowledgeAt, month: null, limit: 100 });
+    const all = freshPage(await query.candidatePage({ knowledgeAt, month: null, limit: 100 }));
     assert.deepEqual(pairsOf(all.items), [
       `${seeded.strongInvoice}/${seeded.strongPayment}`,
       `${seeded.fallbackInvoice}/${seeded.fallbackPayment}`,
@@ -83,13 +83,13 @@ test("the global pending set excludes linked sides and decided pairs and classif
     assert.equal(byPair.get(`${seeded.sharedInvoice}/${seeded.sharedPaymentA}`)?.strength, "possible", "two pending payments for one invoice are both possible");
     assert.equal(byPair.get(`${seeded.sharedInvoice}/${seeded.sharedPaymentB}`)?.strength, "possible");
 
-    const september = await query.candidatePage({ knowledgeAt, month: "2026-09", limit: 100 });
-    const october = await query.candidatePage({ knowledgeAt, month: "2026-10", limit: 100 });
+    const september = freshPage(await query.candidatePage({ knowledgeAt, month: "2026-09", limit: 100 }));
+    const october = freshPage(await query.candidatePage({ knowledgeAt, month: "2026-10", limit: 100 }));
     assert.equal(september.totalCandidateCount, 5, "the month count keeps invoice-or-payment month membership");
     assert.equal(october.totalCandidateCount, 1);
     assert.equal(october.items[0]?.candidate.strength, "strong", "a month slice keeps the global strength");
 
-    const overview = await query.pendingOverview({ knowledgeAt });
+    const overview = freshPage(await query.pendingOverview({ knowledgeAt }));
     assert.equal(overview.pendingCount, 5);
     assert.equal(overview.strongCount, 2);
     assert.deepEqual(overview.strongPairs.map((pair) => `${pair.invoiceIdentityId}/${pair.transactionIdentityId}`).sort(), [
@@ -98,7 +98,7 @@ test("the global pending set excludes linked sides and decided pairs and classif
     ].sort());
     assert.deepEqual(overview.affectedByCurrency, [{ currency: "TWD", coefficient: "1200", scale: 0, count: 4 }],
       "affected money counts each pending invoice once: 100 + 200 + 300 + 600");
-    await assert.rejects(query.pendingOverview({ knowledgeAt: knowledgeAt - 1 }), /data version is stale/u);
+    assert.deepEqual(await query.pendingOverview({ knowledgeAt: knowledgeAt - 1 }), { stale: true, knowledgeAt });
   } finally {
     await seeded.fixture.close();
   }
@@ -112,7 +112,7 @@ test("a revoked link returns neither its pair nor anything else to the pending s
     await applyPGliteSpendingPageAction(seeded.fixture.store, {
       action: "revoke", kind: "revoke", invoiceIdentityId: seeded.linkedInvoice, transactionIdentityId: seeded.linkedPayment, dataVersion: knowledgeAt,
     });
-    const after = await query.candidatePage({ knowledgeAt: await seeded.fixture.knowledgeAt(), month: null, limit: 100 });
+    const after = freshPage(await query.candidatePage({ knowledgeAt: await seeded.fixture.knowledgeAt(), month: null, limit: 100 }));
     const pairs = pairsOf(after.items);
     assert.equal(pairs.includes(`${seeded.linkedInvoice}/${seeded.linkedPayment}`), false, "a decided pair stays out of the pending set");
     assert.equal(after.totalCandidateCount, 7, "the revoked sides pair with their other unlinked same-amount neighbors");
@@ -136,7 +136,7 @@ test("strong-match batch confirmation writes one commit with one evidence-bearin
   try {
     const query = createPGliteSpendingQuery(seeded.fixture.store);
     const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
-    const shown = await query.pendingOverview({ knowledgeAt: shownKnowledgeAt });
+    const shown = freshPage(await query.pendingOverview({ knowledgeAt: shownKnowledgeAt }));
     await seeded.fixture.addTransaction({ amount: "999", date: "2026-11-20", description: "Unrelated" });
     const before = await decisionState(seeded.fixture);
     const result = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
@@ -161,7 +161,7 @@ test("strong-match batch confirmation writes one commit with one evidence-bearin
       assert.equal(evidence.shownKnowledgeAt, shownKnowledgeAt);
       assert.equal((evidence.reasons as Record<string, unknown>).merchantMatch, true);
     }
-    const overview = await query.pendingOverview({ knowledgeAt: result.knowledgeAt });
+    const overview = freshPage(await query.pendingOverview({ knowledgeAt: result.knowledgeAt }));
     assert.equal(overview.strongCount, 0);
     assert.equal(overview.pendingCount, 3);
   } finally {
@@ -174,7 +174,7 @@ test("a shown pair that became ambiguous rejects the whole batch without writing
   try {
     const query = createPGliteSpendingQuery(seeded.fixture.store);
     const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
-    const shown = await query.pendingOverview({ knowledgeAt: shownKnowledgeAt });
+    const shown = freshPage(await query.pendingOverview({ knowledgeAt: shownKnowledgeAt }));
     assert.equal(shown.strongPairs.length, 2);
     await seeded.fixture.addTransaction({ amount: "100", date: "2026-09-04", description: "全家便利商店 信義店", card: { consumeDate: "2026-09-04" } });
     const before = await decisionState(seeded.fixture);
@@ -196,7 +196,7 @@ test("a shown pair that is no longer pending, or was only possible, rejects the 
   try {
     const query = createPGliteSpendingQuery(seeded.fixture.store);
     const shownKnowledgeAt = await seeded.fixture.knowledgeAt();
-    const page = await query.candidatePage({ knowledgeAt: shownKnowledgeAt, month: null, limit: 100 });
+    const page = freshPage(await query.candidatePage({ knowledgeAt: shownKnowledgeAt, month: null, limit: 100 }));
     const strongItem = page.items.find((item) => item.candidate.invoiceId === seeded.strongInvoice)!;
     const possibleItem = page.items.find((item) => item.candidate.invoiceId === seeded.fallbackInvoice)!;
     const ref = (item: typeof strongItem) => ({ candidateId: item.candidate.candidateId, invoiceIdentityId: item.candidate.invoiceId, transactionIdentityId: item.candidate.transactionId });
@@ -228,7 +228,7 @@ test("links expose their decision time and the merge log pages decisions newest 
          JOIN canonical_commits commit_row ON commit_row.commit_id = event.commit_id
         WHERE event.event_kind = 'confirmed'`,
     )).rows[0]!;
-    const page = await query.recordPage({ knowledgeAt: linkedAt, month: "2026-09" });
+    const page = freshPage(await query.recordPage({ knowledgeAt: linkedAt, month: "2026-09" }));
     const linked = page.records.find((record) => record.basis === "linked");
     assert.equal(linked?.link?.decidedAt, new Date(Math.floor(Number(recorded.recorded_at_utc_us) / 1000)).toISOString());
     assert.equal(linked?.link?.origin, "user");
@@ -237,10 +237,10 @@ test("links expose their decision time and the merge log pages decisions newest 
       action: "revoke", kind: "revoke", invoiceIdentityId: seeded.linkedInvoice, transactionIdentityId: seeded.linkedPayment, dataVersion: linkedAt,
     });
     const knowledgeAt = await seeded.fixture.knowledgeAt();
-    const first = await query.mergeLog({ knowledgeAt, limit: 2 });
+    const first = freshPage(await query.mergeLog({ knowledgeAt, limit: 2 }));
     assert.deepEqual(first.entries.map((entry) => entry.kind), ["revoked", "denied"]);
     assert.ok(first.nextCursor);
-    const second = await query.mergeLog({ knowledgeAt, cursor: first.nextCursor, limit: 2 });
+    const second = freshPage(await query.mergeLog({ knowledgeAt, cursor: first.nextCursor, limit: 2 }));
     assert.deepEqual(second.entries.map((entry) => entry.kind), ["confirmed"]);
     assert.equal(second.nextCursor, null);
     const revoked = first.entries[0]!;
@@ -253,7 +253,7 @@ test("links expose their decision time and the merge log pages decisions newest 
       amount: { coefficient: "400", scale: 0, currency: "TWD" }, institution: "fubon", cardMask: null,
     });
     assert.ok(revoked.commitSequence > second.entries[0]!.commitSequence);
-    await assert.rejects(query.mergeLog({ knowledgeAt: knowledgeAt - 1 }), /data version is stale/u);
+    assert.deepEqual(await query.mergeLog({ knowledgeAt: knowledgeAt - 1 }), { stale: true, knowledgeAt });
   } finally {
     await seeded.fixture.close();
   }
@@ -271,7 +271,7 @@ test("records carry only a ****dddd card mask, the institution, and the latest s
     const linkedPayment = await fixture.addTransaction({ amount: "16", date: "2026-09-02", description: "Cake", card: { cardMask: "****7788" } });
     await fixture.link(linkedInvoice, linkedPayment);
     const query = createPGliteSpendingQuery(fixture.store);
-    const page = await query.recordPage({ knowledgeAt: await fixture.knowledgeAt(), month: "2026-09", limit: 100 });
+    const page = freshPage(await query.recordPage({ knowledgeAt: await fixture.knowledgeAt(), month: "2026-09", limit: 100 }));
     const source = (predicate: (record: (typeof page.records)[number]) => boolean) => page.records.find(predicate)?.paymentSource;
     assert.deepEqual(source((record) => record.transaction?.transactionId === dashed), {
       institution: "fubon", cardMask: "****5512", billingPeriod: { start: "2026-08-22", end: "2026-09-21" },
@@ -309,14 +309,14 @@ test("month insights find the largest purchase per currency and same-merchant to
     const query = createPGliteSpendingQuery(fixture.store);
     const knowledgeAt = await fixture.knowledgeAt();
 
-    const insight = await query.monthInsight({ knowledgeAt, month: "2026-09" });
+    const insight = freshPage(await query.monthInsight({ knowledgeAt, month: "2026-09" }));
     assert.deepEqual(insight.largestByCurrency.map((entry) => ({ amount: entry.amount, occurrence: entry.occurrence, label: entry.merchantLabel })), [
       { amount: { coefficient: "1000", scale: 0, currency: "TWD" }, occurrence: "2026-09-07T13:45", label: "Big Store" },
       { amount: { coefficient: "3050", scale: 2, currency: "USD" }, occurrence: "2026-09-12", label: "Amazon" },
     ]);
     assert.ok(insight.largestByCurrency[0]!.purchaseId.startsWith("invoice:"));
 
-    const seller = await query.merchantStats({ knowledgeAt, purchaseId: `invoice:${first}` });
+    const seller = freshPage(await query.merchantStats({ knowledgeAt, purchaseId: `invoice:${first}` }));
     assert.deepEqual({ merchant: seller.merchant, count: seller.count, totals: seller.totalsByCurrency, month: seller.month }, {
       merchant: { kind: "seller-tax-id", taxId: "11111111" },
       count: 3,
@@ -324,17 +324,18 @@ test("month insights find the largest purchase per currency and same-merchant to
       month: "2026-09",
     }, "invoice-backed purchases match by tax ID, linked ones at their bank amount, never by seller name");
 
-    const bank = await query.merchantStats({ knowledgeAt, purchaseId: `transaction:${coffee}` });
+    const bank = freshPage(await query.merchantStats({ knowledgeAt, purchaseId: `transaction:${coffee}` }));
     assert.deepEqual({ merchant: bank.merchant, count: bank.count, totals: bank.totalsByCurrency }, {
       merchant: { kind: "bank-description", description: "starbucks taipei" },
       count: 2,
       totals: [{ currency: "TWD", coefficient: "250", scale: 0, count: 2 }],
     }, "bank-only purchases match by exact normalized description within the month");
-    const gone = await query.merchantStats({ knowledgeAt, purchaseId: "transaction:00000000-0000-0000-0000-000000000000" });
+    const gone = freshPage(await query.merchantStats({ knowledgeAt, purchaseId: "transaction:00000000-0000-0000-0000-000000000000" }));
     assert.deepEqual({ month: gone.month, merchant: gone.merchant, count: gone.count, totals: gone.totalsByCurrency }, {
       month: null, merchant: null, count: 0, totals: [],
     });
-    await assert.rejects(query.monthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-09" }), /data version is stale/u);
+    assert.deepEqual(await query.monthInsight({ knowledgeAt: knowledgeAt - 1, month: "2026-09" }), { stale: true, knowledgeAt });
+    assert.deepEqual(await query.merchantStats({ knowledgeAt: knowledgeAt - 1, purchaseId: `invoice:${first}` }), { stale: true, knowledgeAt });
   } finally {
     await fixture.close();
   }
@@ -356,8 +357,8 @@ test("record search and the linked filter compose with day, category, and the ke
     await fixture.addTransaction({ amount: "50", date: "2026-10-01", description: "coffee" });
     const query = createPGliteSpendingQuery(fixture.store);
     const knowledgeAt = await fixture.knowledgeAt();
-    const ids = (page: Awaited<ReturnType<typeof query.recordPage>>) => page.records.map((record) => record.purchaseId).sort();
-    const page = (request: Omit<Parameters<typeof query.recordPage>[0], "knowledgeAt">) => query.recordPage({ knowledgeAt, ...request });
+    const ids = (read: Awaited<ReturnType<typeof page>>) => read.records.map((record) => record.purchaseId).sort();
+    const page = (request: Omit<Parameters<typeof query.recordPage>[0], "knowledgeAt">) => query.recordPage({ knowledgeAt, ...request }).then(freshPage);
 
     const coffee = await page({ month: "2026-09", query: "coffee", limit: 100 });
     assert.deepEqual(ids(coffee), [`invoice:${coffeeInvoice}`, `transaction:${coffeeBank}`, `transaction:${beans}`, coffee.records.find((record) => record.basis === "linked")!.purchaseId].sort());
@@ -404,9 +405,9 @@ test("the merge overview and strong batch stay inside the selected month", async
     const september = `${seeded.strongInvoice}/${seeded.strongPayment}`;
     const crossMonth = `${seeded.crossMonthInvoice}/${seeded.crossMonthPayment}`;
 
-    const all = await query.pendingOverview({ knowledgeAt });
+    const all = freshPage(await query.pendingOverview({ knowledgeAt }));
     assert.ok(all.strongPairs.map(pairKey).includes(september), "without a month the overview stays global");
-    const october = await query.pendingOverview({ knowledgeAt, month: "2026-10" });
+    const october = freshPage(await query.pendingOverview({ knowledgeAt, month: "2026-10" }));
     assert.ok(!october.strongPairs.map(pairKey).includes(september), "October does not offer September's strong pair");
     assert.ok(october.pendingCount < all.pendingCount, "the October count leaves September-only pairs out");
     assert.ok(october.strongPairs.every((pair) => pairKey(pair) === crossMonth), "October offers only pairs that touch October");
@@ -417,7 +418,7 @@ test("the merge overview and strong batch stay inside the selected month", async
     assert.equal(crossed.status, "conflict", "a September pair cannot be merged from October");
     assert.equal(await fixture.knowledgeAt(), knowledgeAt, "the rejected batch wrote nothing");
 
-    const septemberView = await query.pendingOverview({ knowledgeAt, month: "2026-09" });
+    const septemberView = freshPage(await query.pendingOverview({ knowledgeAt, month: "2026-09" }));
     assert.ok(septemberView.strongPairs.map(pairKey).includes(september));
     const result = await confirmPGliteSpendingStrongCandidates(fixture.store, {
       shownKnowledgeAt: knowledgeAt, month: "2026-09", pairs: septemberView.strongPairs.filter((pair) => pairKey(pair) === september),

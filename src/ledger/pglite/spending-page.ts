@@ -6,6 +6,7 @@ import {
   type SpendingPageDto,
   type SpendingPurchaseReportSummaryDto,
 } from "../../lib/spending/model.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import { readManualAssetRevision, readManualSpendingPurchases } from "./manual-assets.ts";
 import { queryCurrentSpendingSummaryPage } from "./purchase-report.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
@@ -40,11 +41,8 @@ export async function readSpendingPage(
 }
 
 export async function readSpendingPageVersion(reader: Reader, scope: SpendingPageScope): Promise<SpendingPageVersion> {
-  const result = await reader.query<{ value: number | string }>(
-    "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits",
-  );
   return {
-    knowledgeAt: Number(result.rows[0]?.value ?? 0),
+    knowledgeAt: await readKnowledgePoint(reader),
     manualRevision: scope.manualAssets ? await readManualAssetRevision(reader) : 0,
   };
 }

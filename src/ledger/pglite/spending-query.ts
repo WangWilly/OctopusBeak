@@ -1,4 +1,3 @@
-import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import { createHash } from "node:crypto";
 import type {
@@ -30,6 +29,7 @@ import type {
   SpendingMerchantStatsRequest,
   SpendingMonthInsightDto,
   SpendingMonthInsightRequest,
+  SpendingPageReadResult,
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
   SpendingRecordPageRequest,
@@ -85,7 +85,6 @@ import {
   HEX_ID,
   idString,
   jsonValue,
-  latest,
   nullableString,
   numeric,
   optionalMoney,
@@ -99,6 +98,7 @@ import {
   type PGliteSpendingStore,
   type Row,
 } from "./spending-sql.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 export type { PGliteSpendingReader, PGliteSpendingStore } from "./spending-sql.ts";
 export { recordedAtIso, querySpendingRecognition } from "./spending-facts.ts";
@@ -254,7 +254,7 @@ export async function resolvePGliteSpendingCandidate(
   pairHint?: Readonly<{ invoiceId: string; transactionId: string }>,
 ): Promise<PGliteSpendingCandidateResolution> {
   const cleanCandidateId = candidateId.trim();
-  const knowledgeAt = await latest(reader);
+  const knowledgeAt = await readKnowledgePoint(reader);
   let durableRow: Row | undefined;
   if (UUID.test(cleanCandidateId) || HEX_ID.test(cleanCandidateId)) {
     durableRow = rows(await pgliteQuery<Row>(reader,
@@ -343,7 +343,7 @@ async function queryPairingTransactionsDirect(
                WHERE identity.transaction_id = entry.transaction_id AND NOT (${COUNTED_ACCOUNT_SQL("identity.account_id")})
             )
         ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
-    [await readPGliteCoveredAccountIds(reader, await latest(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],
+    [await readPGliteCoveredAccountIds(reader, await readKnowledgePoint(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],
   );
   const value = packed.rows[0]?.packed;
   const resultRows = (Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"))) as readonly (readonly unknown[])[];
@@ -397,7 +397,7 @@ export async function queryPGliteSpendingRecognitionPair(
   reader: PGliteSpendingReader,
   request: Readonly<{ invoiceId: string; transactionId: string; knowledgeAt?: number }>,
 ): Promise<SpendingRecognitionSnapshot> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   const cutoff = request.knowledgeAt ?? current;
   if (!Number.isSafeInteger(cutoff) || cutoff < 0 || cutoff > current) throw new Error("Spending recognition knowledge cutoff is invalid.");
   const invoiceId = bytes(request.invoiceId, "Recognition invoice");
@@ -602,7 +602,7 @@ export async function querySpendingLineage(
   if (subject.kind !== "spending-pair") throw new Error("Spending lineage subject kind is invalid.");
   const [invoiceId, transactionId, extra] = subject.id.split("/");
   if (!invoiceId || !transactionId || extra) throw new Error("Spending pair lineage id must be invoiceId/transactionId.");
-  const invoice = (await invoices(reader, await latest(reader), false, invoiceId))[0] ?? null;
+  const invoice = (await invoices(reader, await readKnowledgePoint(reader), false, invoiceId))[0] ?? null;
   if (!invoice) throw new Error("Spending lineage invoice identity does not exist.");
   const transactionExists = rows(await pgliteQuery<Row>(reader,
     "SELECT 1 FROM financial_transactions WHERE transaction_id = ?",
@@ -712,15 +712,16 @@ export function pendingPairRef(pair: PendingSpendingCandidate): SpendingCandidat
   });
 }
 
-/** Read one pending-pairing slice: one month, or every month when month is null. */
+/**
+ * Read one pending-pairing slice: one month, or every month when month is null.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingCandidatePage(
   reader: PGliteSpendingReader,
   request: SpendingCandidatePageRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingCandidatePageDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("candidate", current);
+  const current = request.knowledgeAt;
   const month = request.month ?? null;
   if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending candidate page month is invalid.");
   const offset = Number.isSafeInteger(request.offset) && (request.offset ?? 0) >= 0 ? request.offset ?? 0 : 0;
@@ -773,15 +774,16 @@ export async function queryCurrentSpendingCandidatePage(
   });
 }
 
-/** The pending count, strong set, and invoice amounts at stake, for one month or all of them. */
+/**
+ * The pending count, strong set, and invoice amounts at stake, for one month or all of them.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingPendingOverview(
   reader: PGliteSpendingReader,
   request: SpendingPendingOverviewRequest,
   cachedPending?: PGlitePendingSpendingCandidates,
 ): Promise<SpendingPendingOverviewDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("pending-overview", current);
+  const current = request.knowledgeAt;
   const pending = cachedPending?.knowledgeAt === current ? cachedPending : await queryPendingSpendingCandidates(reader, current);
   const month = request.month ?? null;
   const pairs = month === null ? pending.pairs : pending.pairs.filter((pair) => pendingPairInMonth(pair, month));
@@ -826,7 +828,7 @@ export async function rankPGliteSpendingPaymentCandidates(
   input: SpendingPairingCandidatesInput,
   pairingIndexAt: (reader: PGliteSpendingReader, knowledgeAt: number) => Promise<PGlitePairingIndex> = queryPGlitePairingIndex,
 ): Promise<SpendingPairingCandidatesResult> {
-  const knowledgeAt = await latest(reader);
+  const knowledgeAt = await readKnowledgePoint(reader);
   if (knowledgeAt !== input.dataVersion) throw new Error("Spending pairing data version is stale; reload Spending before pairing.");
   const invoice = (await invoices(reader, knowledgeAt, false, input.invoiceIdentityId))[0];
   if (!invoice || invoice.revision.state === "revoked") throw new Error("Spending invoice selection is stale, revoked, or missing.");
@@ -862,15 +864,16 @@ export async function rankPGliteSpendingPaymentCandidates(
   };
 }
 
-/** 最高消費: the month's largest single purchase per currency. */
+/**
+ * 最高消費: the month's largest single purchase per currency.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMonthInsight(
   reader: PGliteSpendingReader,
   request: SpendingMonthInsightRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMonthInsightDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("month-insight", current);
+  const current = request.knowledgeAt;
   if (!validSpendingMonth(request.month)) throw new TypeError("Spending month insight month is invalid.");
   const facts = await readFacts(reader, current, { month: request.month });
   return Object.freeze({
@@ -881,15 +884,16 @@ export async function queryCurrentSpendingMonthInsight(
   });
 }
 
-/** 本月同商家: the count and total of the purchase's month with its exact merchant identity. */
+/**
+ * 本月同商家: the count and total of the purchase's month with its exact merchant identity.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMerchantStats(
   reader: PGliteSpendingReader,
   request: SpendingMerchantStatsRequest,
   readFacts: MonthPurchaseFactsReader = queryMonthPurchaseFacts,
 ): Promise<SpendingMerchantStatsDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("merchant-stats", current);
+  const current = request.knowledgeAt;
   if (typeof request.purchaseId !== "string" || request.purchaseId.trim() === "")
     throw new TypeError("Spending merchant stats purchase id is required.");
   const purchaseId = request.purchaseId.trim();
@@ -936,14 +940,15 @@ function mergeLogCursorFromToken(token: string | null | undefined, knowledgeAt: 
   }
 }
 
-/** 合併紀錄: every confirmed, denied, and revoked decision, newest first, keyset paged. */
+/**
+ * 合併紀錄: every confirmed, denied, and revoked decision, newest first, keyset paged.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingMergeLog(
   reader: PGliteSpendingReader,
   request: SpendingMergeLogRequest,
 ): Promise<SpendingMergeLogDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("merge-log", current);
+  const current = request.knowledgeAt;
   const cursor = mergeLogCursorFromToken(request.cursor, current);
   const limit = Number.isSafeInteger(request.limit) && (request.limit ?? 0) > 0 ? Math.min(request.limit ?? 50, 100) : 50;
   const params: unknown[] = [current];
@@ -1061,36 +1066,39 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
     if (month) byMonth.set(month, facts);
     return facts;
   };
+  // Every page read checks the caller's knowledge point once, inside the
+  // transaction the page is read in, so the query functions trust it.
+  const pageRead = <Request extends Readonly<{ knowledgeAt: number }>, Page>(
+    read: (transaction: PGliteSpendingReader, request: Request) => Promise<Page>,
+  ) => (request: Request): Promise<SpendingPageReadResult<Page>> => store.transaction(async (transaction) => {
+    const knowledgeAt = await readKnowledgePoint(transaction);
+    if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== knowledgeAt)
+      return Object.freeze({ stale: true as const, knowledgeAt });
+    return read(transaction, request);
+  });
   return Object.freeze({
     // A facade call owns one repeatable-read transaction for every complete
     // report. Callers that already own a transaction may use the lower-level
-    // query functions above directly with its PGliteTransaction capability.
+    // query functions above directly with its PGliteTransaction capability;
+    // a page query then trusts the caller's knowledgeAt as that reader's.
     current: (request?: Parameters<typeof queryCurrentSpending>[1]) =>
       store.transaction((transaction) => queryCurrentSpending(transaction, request)),
     summary: (request?: Parameters<typeof queryCurrentSpendingSummary>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummary(transaction, request)),
     summaryPage: (request?: Parameters<typeof queryCurrentSpendingSummaryPage>[1]) =>
       store.transaction((transaction) => queryCurrentSpendingSummaryPage(transaction, request)),
-    recordPage: (request: SpendingRecordPageRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingRecordPage(transaction, request)),
-    candidatePage: async (request: SpendingCandidatePageRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
-      if (knowledgeAt !== request.knowledgeAt)
-        throw new SpendingPageVersionError("candidate", knowledgeAt);
-      return queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, knowledgeAt));
-    }),
-    monthInsight: (request: SpendingMonthInsightRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
-    merchantStats: (request: SpendingMerchantStatsRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
-    mergeLog: (request: SpendingMergeLogRequest) =>
-      store.transaction((transaction) => queryCurrentSpendingMergeLog(transaction, request)),
-    pendingOverview: async (request: SpendingPendingOverviewRequest) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
-      if (knowledgeAt !== request.knowledgeAt)
-        throw new SpendingPageVersionError("pending-overview", knowledgeAt);
-      return queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, knowledgeAt));
-    }),
+    recordPage: pageRead((transaction, request: SpendingRecordPageRequest) =>
+      queryCurrentSpendingRecordPage(transaction, request)),
+    candidatePage: pageRead(async (transaction, request: SpendingCandidatePageRequest) =>
+      queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
+    monthInsight: pageRead((transaction, request: SpendingMonthInsightRequest) =>
+      queryCurrentSpendingMonthInsight(transaction, request, monthFacts)),
+    merchantStats: pageRead((transaction, request: SpendingMerchantStatsRequest) =>
+      queryCurrentSpendingMerchantStats(transaction, request, monthFacts)),
+    mergeLog: pageRead((transaction, request: SpendingMergeLogRequest) =>
+      queryCurrentSpendingMergeLog(transaction, request)),
+    pendingOverview: pageRead(async (transaction, request: SpendingPendingOverviewRequest) =>
+      queryCurrentSpendingPendingOverview(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
     historical: (request: Readonly<{ financialAt: string; knowledgeAt: number }>) => store.transaction((transaction) => queryHistoricalSpending(transaction, request)),
     recognition: (request?: Readonly<{ knowledgeAt?: number }>) => store.transaction((transaction) => querySpendingRecognition(transaction, request)),
     lineage: (request: PGliteSpendingLineageRequest) => store.transaction((transaction) => querySpendingLineage(transaction, request)),
@@ -1098,7 +1106,7 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       store.transaction((transaction) => rankPGliteSpendingPaymentCandidates(transaction, request, pairingIndexAt)),
     /** Build the pairing index for the current version so the next dialog open only ranks. */
     prewarmPairing: (dataVersion: number) => store.transaction(async (transaction) => {
-      const knowledgeAt = await latest(transaction);
+      const knowledgeAt = await readKnowledgePoint(transaction);
       if (knowledgeAt === dataVersion) await pairingIndexAt(transaction, knowledgeAt);
       return knowledgeAt;
     }),

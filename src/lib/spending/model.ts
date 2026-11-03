@@ -132,6 +132,9 @@ export function preserveSpendingMonthSelection(
   };
 }
 
+/** A stale page is a recoverable version negotiation, not a query failure. */
+export type SpendingPageReadResult<T> = T | Readonly<{ stale: true; knowledgeAt: number }>;
+
 export type SpendingRecordPageRequest = Readonly<{
   knowledgeAt: number;
   month?: string | null;

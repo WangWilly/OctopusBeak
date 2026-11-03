@@ -1,4 +1,3 @@
-import { SpendingPageVersionError } from "../../lib/spending/page-reader.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import type { PGliteTransaction } from "./transaction.ts";
 import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
@@ -54,7 +53,6 @@ import {
   exactMoney,
   idString,
   ISO_DATE,
-  latest,
   nullableString,
   numeric,
   optionalMoney,
@@ -65,6 +63,7 @@ import {
   type PGliteSpendingReader,
   type Row,
 } from "./spending-sql.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
  * The Purchase report: the one interface for Purchase-basis spending
@@ -147,7 +146,7 @@ export async function queryCurrentSpending(
   reader: PGliteSpendingReader,
   request: Readonly<{ sourceConnectionKey?: string; accountIds?: readonly string[]; transactionIds?: readonly string[]; startDate?: string; endDate?: string }> = {},
 ): Promise<CurrentSpendingQueryResult> {
-  const knowledgeAt = await latest(reader);
+  const knowledgeAt = await readKnowledgePoint(reader);
   const [spending, invoiceViews, recognition, itemCategorizations] = await Promise.all([
     querySpendingReport(reader, "current", knowledgeAt, null, request),
     invoices(reader, knowledgeAt),
@@ -181,7 +180,7 @@ export async function queryHistoricalSpending(
   request: Readonly<{ financialAt: string; knowledgeAt: number }>,
 ): Promise<HistoricalSpendingQueryResult> {
   if (!ISO_DATE.test(request.financialAt)) throw new Error("Historical Spending financialAt is invalid.");
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt < 0 || request.knowledgeAt > current) throw new Error("Historical Spending knowledgeAt is invalid.");
   const [spending, invoiceViews, recognition] = await Promise.all([
     querySpendingReport(reader, "historical", request.knowledgeAt, request.financialAt),
@@ -615,14 +614,15 @@ function categoryTotalsByMonth(purchases: readonly PurchaseCategoryRow[]): reado
   })));
 }
 
-/** Read one version-bound, keyset-paged slice of current Spending records. */
+/**
+ * Read one version-bound, keyset-paged slice of current Spending records.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
 export async function queryCurrentSpendingRecordPage(
   reader: PGliteSpendingReader,
   request: SpendingRecordPageRequest,
 ): Promise<SpendingRecordPageDto> {
-  const current = await latest(reader);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
-    throw new SpendingPageVersionError("record", current);
+  const current = request.knowledgeAt;
   const month = request.month ?? null;
   const day = request.day ?? null;
   if (month !== null && !validSpendingMonth(month)) throw new TypeError("Spending record page month is invalid.");
@@ -740,7 +740,7 @@ export async function queryCurrentSpendingActionRecords(
   reader: PGliteSpendingReader,
   request: Readonly<{ knowledgeAt: number } & PurchasePair>,
 ): Promise<readonly PurchaseRecord[]> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new Error("Spending action records data version is stale; reload Spending.");
   const composed = await purchaseRecordsByIdentity(reader, current, {
@@ -794,10 +794,10 @@ export async function decide(
   affectedRecords: SpendingPageActionResult["affectedRecords"];
   summaryDelta: SpendingPageActionResult["summaryDelta"];
 }>> {
-  const baseKnowledgeAt = await latest(transaction);
+  const baseKnowledgeAt = await readKnowledgePoint(transaction);
   const beforeRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt: baseKnowledgeAt, ...pair });
   await write(transaction);
-  const knowledgeAt = await latest(transaction);
+  const knowledgeAt = await readKnowledgePoint(transaction);
   const affectedRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt, ...pair });
   return Object.freeze({
     baseKnowledgeAt,
@@ -818,7 +818,7 @@ export async function queryCurrentSpendingSummary(
   reader: PGliteSpendingReader,
   request: Readonly<{ knowledgeAt?: number }> = {},
 ): Promise<SpendingSummaryDto> {
-  const current = await latest(reader);
+  const current = await readKnowledgePoint(reader);
   const knowledgeAt = request.knowledgeAt ?? current;
   if (!Number.isSafeInteger(knowledgeAt) || knowledgeAt < 0 || knowledgeAt !== current)
     throw new Error("Spending summary data version is stale; reload Spending.");

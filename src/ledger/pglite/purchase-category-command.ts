@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import {
   USER_CATEGORIZATION_RULE_LINEAGE,
   writeEInvoiceItemUserCategory,
@@ -86,11 +87,6 @@ export function parsePurchaseIdentity(purchaseId: unknown): PurchaseIdentity {
     case "refund": return { basis: "refund", refundId: id };
     default: return fail("invalid", "Spending purchase id has an unknown basis.");
   }
-}
-
-async function latest(transaction: PGliteTransaction): Promise<number> {
-  const row = (await query<{ value: number | string }>(transaction, "SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits"))[0];
-  return Number(row?.value ?? 0);
 }
 
 async function resolveSubject(transaction: PGliteTransaction, identity: PurchaseIdentity): Promise<PurchaseCategorySubject> {
@@ -250,7 +246,7 @@ export async function setPGliteSpendingPurchaseCategoryInTransaction(
   request: SpendingPurchaseCategoryRequest,
 ): Promise<SpendingPurchaseCategoryResult> {
   const { identity, knowledgeAt, categoryCode } = validateRequest(request);
-  const current = await latest(transaction);
+  const current = await readKnowledgePoint(transaction);
   if (knowledgeAt !== current) fail("stale", "Spending purchase category data version is stale; reload Spending.");
   const subject = await resolveSubject(transaction, identity);
   const kind = subject.kind === "items" ? "purchase" : await transactionKind(transaction, subject.transactionId);
@@ -278,7 +274,7 @@ export async function setPGliteSpendingPurchaseCategoryInTransaction(
     subject: subject.kind,
     categoryCode,
     baseKnowledgeAt: current,
-    knowledgeAt: await latest(transaction),
+    knowledgeAt: await readKnowledgePoint(transaction),
   });
 }
 

@@ -10,6 +10,7 @@ import {
 } from "./einvoice.ts";
 import { confirmPGliteSpendingDedupLink } from "./spending-command.ts";
 import type { CanonicalEInvoiceInput, CanonicalEInvoiceItemInput } from "../canonical/einvoice-contract.ts";
+import type { SpendingPageReadResult } from "../../lib/spending/model.ts";
 
 /**
  * Test fixture for Spending category checks. Bank transactions are seeded as
@@ -63,6 +64,12 @@ export type FixtureInvoiceInput = Readonly<{
 
 function uuidBytes(): Uint8Array {
   return Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
+}
+
+/** The page of a Spending page read that a check expects at the current knowledge point. */
+export function freshPage<T extends object>(result: SpendingPageReadResult<T>): T {
+  if ("stale" in result) throw new Error(`Spending page read was stale; the knowledge point is ${result.knowledgeAt}.`);
+  return result;
 }
 
 export function uuidText(value: Uint8Array): string {
