@@ -4,11 +4,11 @@ type Port = {
   postMessage(value: unknown): void;
 };
 export type ViewStop = () => Promise<void>;
-type ViewSource<View extends string> = {
+export type ViewSource<View extends string = string> = {
   subscribe(
     view: View,
     params: object,
-    onRows: (rows: unknown[]) => void,
+    onValue: (value: unknown) => void,
     onError?: (error: unknown) => void,
   ): Promise<ViewStop>;
 };
@@ -19,7 +19,7 @@ type Request =
 type Response =
   | { kind: "ready"; id: number }
   | { kind: "stopped"; id: number }
-  | { kind: "rows"; id: number; rows: unknown[] }
+  | { kind: "value"; id: number; value: unknown }
   | { kind: "error"; id: number; code: "subscription-failed" | "duplicate-subscription" };
 
 type Subscription = {
@@ -86,8 +86,8 @@ export function createViewPortServer<View extends string>(port: Port, source: Vi
         .then(() => source.subscribe(
           request.view as View,
           request.params,
-          (rows) => {
-            if (!closed && !subscription.cancelled) safePost(port, { kind: "rows", id: request.id, rows });
+          (value) => {
+            if (!closed && !subscription.cancelled) safePost(port, { kind: "value", id: request.id, value });
           },
           () => {
             if (!closed && !subscription.cancelled) safePost(port, { kind: "error", id: request.id, code: "subscription-failed" });
@@ -144,15 +144,15 @@ export function createViewPortServer<View extends string>(port: Port, source: Vi
 export function createViewPortClient(port: Port) {
   let nextId = 1;
   let closed = false;
-  const listeners = new Map<number, { rows: (rows: unknown[]) => void; error?: (error: Error) => void }>();
+  const listeners = new Map<number, { value: (value: unknown) => void; error?: (error: Error) => void }>();
   const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   let closePromise: Promise<void> | undefined;
   const onMessage = (value: unknown) => {
     if (typeof value !== "object" || value === null) return;
     const response = value as Response;
     if (!Number.isSafeInteger(response.id) || response.id < 1) return;
-    if (response.kind === "rows") {
-      if (Array.isArray(response.rows)) listeners.get(response.id)?.rows(response.rows);
+    if (response.kind === "value") {
+      if ("value" in response) listeners.get(response.id)?.value(response.value);
     }
     else {
       if (!["ready", "stopped", "error"].includes(response.kind)) return;
@@ -198,10 +198,10 @@ export function createViewPortClient(port: Port) {
   };
 
   return {
-    async subscribe<Row>(view: string, params: object, onRows: (rows: Row[]) => void, onError?: (error: Error) => void): Promise<ViewStop> {
+    async subscribe(view: string, params: object, onValue: (value: unknown) => void, onError?: (error: Error) => void): Promise<ViewStop> {
       if (closed) throw new Error("View port is closed");
       const id = nextId++;
-      listeners.set(id, { rows: onRows as (rows: unknown[]) => void, error: onError });
+      listeners.set(id, { value: onValue, error: onError });
       try {
         await roundTrip({ kind: "subscribe", id, view, params });
       } catch (error) {

@@ -140,4 +140,4 @@ recorded.listened.length = 0;
 await dataViews.enabled();
 await dataViews.subscribe("financial.overview.current", {}, () => {});
 assert.deepEqual(recorded.invoked, ["data-views:enabled", "data-views:subscribe"]);
-assert.deepEqual(recorded.listened, ["data-views:rows", "data-views:error"]);
+assert.deepEqual(recorded.listened, ["data-views:value", "data-views:error"]);

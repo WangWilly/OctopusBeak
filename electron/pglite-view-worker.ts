@@ -4,11 +4,7 @@ import { join } from "node:path";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
-import {
-  createSharedLiveViews,
-  defineLiveView,
-} from "../src/lib/data-views/server/shared-live-views.ts";
-import { createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
+import { createViewPortServer, type ViewSource } from "../src/lib/data-views/server/view-port.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
 import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
@@ -20,53 +16,40 @@ import {
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
-import { createLocalDateClock, createPGliteLiveViewDependencies } from "./pglite-financial-live-dependencies.ts";
+import {
+  createLocalDateClock,
+  createPGliteLiveViewDependencies,
+  type LocalDateClock,
+} from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import {
   createPGliteFinancialRegistry,
   createPGliteFinancialLocalPort,
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
+  type PGliteWorkScheduler,
 } from "./pglite-financial-registry.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 
-type HealthRow = { ready: boolean };
+export type PGliteWorkerViewContext = Readonly<{
+  db: PGliteWithLive;
+  registry: ReturnType<typeof createPGliteFinancialRegistry>;
+  clock: LocalDateClock;
+  scheduler: PGliteWorkScheduler;
+}>;
 
-/** The first safe view proves the worker/transport seam without opening the ledger. */
-export const pgliteWorkerViews = {
-  "system.health": defineLiveView<Record<string, never>, HealthRow>(() => ({
-    sql: "SELECT TRUE AS ready",
-    args: [],
-  })),
-};
+/** Builds the worker's only named-view source from the database it opened. */
+export type PGliteWorkerViewSourceFactory = (context: PGliteWorkerViewContext) => ViewSource;
 
-type ViewSubscribe = (
-  view: string,
-  params: object,
-  onRows: (rows: unknown[]) => void,
-  onError?: (error: unknown) => void,
-) => Promise<() => Promise<void>>;
-
-/** Routes each named view to the source that owns it, carrying every subscribe argument through. */
-export function workerViewSource(
-  financial: Readonly<{ subscribe: ViewSubscribe }>,
-  health: Readonly<{
-    subscribe(view: "system.health", params: Record<string, never>, onRows: (rows: HealthRow[]) => void): Promise<() => Promise<void>>;
-  }>,
-): Readonly<{ subscribe: ViewSubscribe }> {
-  return {
-    subscribe(view, params, onRows, onError) {
-      if (view !== "system.health") return financial.subscribe(view, params, onRows, onError);
-      return health.subscribe(
-        view,
-        params as Record<string, never>,
-        onRows as (rows: HealthRow[]) => void,
-      );
-    },
-  };
-}
+export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, clock, scheduler }) =>
+  createPGliteFinancialLiveViews(
+    registry,
+    createPGliteLiveViewDependencies(db, registry, clock),
+    () => configuredOverviewSources(),
+    scheduler,
+  );
 
 export type PGliteViewWorkerRuntime = {
   dataDir: string;
@@ -75,6 +58,7 @@ export type PGliteViewWorkerRuntime = {
 
 export async function startPGliteViewWorker(
   port: MessagePort,
+  createViewSource: PGliteWorkerViewSourceFactory,
   dataDir?: string,
 ): Promise<PGliteViewWorkerRuntime> {
   const ownsDataDir = dataDir === undefined;
@@ -100,7 +84,6 @@ export async function startPGliteViewWorker(
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
     throw error;
   }
-  const views = createSharedLiveViews(db, pgliteWorkerViews);
   const operationalProvider = createPgliteOperationalProvider(database);
   const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone()));
   const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
@@ -117,13 +100,7 @@ export async function startPGliteViewWorker(
       error instanceof Error ? error.message : String(error),
     ),
   });
-  const financialViews = createPGliteFinancialLiveViews(
-    financialRegistry,
-    createPGliteLiveViewDependencies(db, financialRegistry, clock),
-    () => configuredOverviewSources(),
-    scheduler,
-  );
-  const source = workerViewSource(financialViews, views);
+  const source = createViewSource({ db, registry: financialRegistry, clock, scheduler });
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
@@ -166,7 +143,7 @@ if (parentPort) {
     && typeof (workerData as { dataDir?: unknown }).dataDir === "string"
     ? (workerData as { dataDir: string }).dataDir
     : undefined;
-  const runtime = startPGliteViewWorker(port, configuredDataDir).catch((error: unknown) => {
+  const runtime = startPGliteViewWorker(port, financialWorkerViewSource, configuredDataDir).catch((error: unknown) => {
     try {
       port.postMessage({
         kind: "worker-start-failed",

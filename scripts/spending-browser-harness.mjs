@@ -117,14 +117,14 @@ export function createSpendingDesktopApi(model) {
   return {
     dataViews: {
       enabled: async () => true,
-      subscribe: async (view, _params, onRows) => {
+      subscribe: async (view, _params, onValue) => {
         const pages = {
           "financial.overview.current": emptyOverview,
           "financial.assets.current": emptyAssets,
           "financial.liabilities.current": emptyLiabilities,
           "financial.spending.current": spendingPage,
         };
-        queueMicrotask(() => onRows([pages[view]]));
+        queueMicrotask(() => onValue(pages[view]));
         return () => {};
       },
     },
@@ -245,7 +245,7 @@ function installSpendingDesktopApi(model) {
   window.octopusBeak = {
     dataViews: {
       enabled: async () => true,
-      subscribe: async (view, _params, onRows) => {
+      subscribe: async (view, _params, onValue) => {
         const pages = {
           "financial.overview.current": fixtureOverview,
           "financial.assets.current": fixtureAssets,
@@ -253,7 +253,7 @@ function installSpendingDesktopApi(model) {
           "financial.spending.current": spendingPage,
         };
         window.__spendingLiveSubscribeCount += 1;
-        queueMicrotask(() => onRows([pages[view]]));
+        queueMicrotask(() => onValue(pages[view]));
         return () => {};
       },
     },

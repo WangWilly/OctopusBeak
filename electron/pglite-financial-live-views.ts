@@ -77,7 +77,7 @@ export function createPGliteFinancialLiveViews(
     lastValue?: unknown;
   }>();
   return {
-    async subscribe(view: string, params: object, onRows: (rows: unknown[]) => void, onError?: (error: unknown) => void): Promise<() => Promise<void>> {
+    async subscribe(view: string, params: object, onValue: (value: unknown) => void, onError?: (error: unknown) => void): Promise<() => Promise<void>> {
       if (!isFinancialLiveView(view)) throw new Error(`Unknown financial live view: ${view}`);
       const definition: FinancialLiveViewDefinition = FINANCIAL_LIVE_VIEWS[view];
       const key = `${view}:${JSON.stringify(params)}`;
@@ -163,7 +163,7 @@ export function createPGliteFinancialLiveViews(
         const listener = {
           value: (value: unknown) => {
             delivered = true;
-            onRows([value]);
+            onValue(value);
           },
           error: (error: unknown) => onError?.(error),
         };
@@ -177,7 +177,7 @@ export function createPGliteFinancialLiveViews(
           await stop();
           throw error;
         }
-        if (!delivered && entry.lastValue !== undefined && !stopped) onRows([entry.lastValue]);
+        if (!delivered && entry.lastValue !== undefined && !stopped) onValue(entry.lastValue);
         return async () => {
           if (!entry) return;
           entry.listeners.delete(listener);
@@ -185,11 +185,11 @@ export function createPGliteFinancialLiveViews(
         };
       }
       const listener = {
-        value: (value: unknown) => onRows([value]),
+        value: onValue,
         error: (error: unknown) => onError?.(error),
       };
       entry.listeners.add(listener);
-      if (entry.lastValue !== undefined) onRows([entry.lastValue]);
+      if (entry.lastValue !== undefined) onValue(entry.lastValue);
       return async () => {
         if (!entry) return;
         entry.listeners.delete(listener);

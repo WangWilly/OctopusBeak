@@ -21,7 +21,6 @@ test("financial page refreshes use live views and isolate first-run failures", (
 
 test("financial pages are live-only and hand dashboards the whole page", () => {
   assert.match(source, /createFinancialPage\(\{ dataViews: window\.octopusBeak\?\.dataViews \}\)/);
-  assert.doesNotMatch(source, /createFinancialPageLiveStores/);
   assert.doesNotMatch(source, /readyDashboardBlock|(overview|assets|liabilities|spending)Blocks\(/);
   assert.doesNotMatch(source, /octopusBeak\.(overview|assets|liabilities|spending)\.(load|loadBlock)\(/);
   assert.match(source, /return window\.octopusBeak\.automation\.loadBlock\(key, options\)/);

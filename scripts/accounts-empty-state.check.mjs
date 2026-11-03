@@ -39,8 +39,8 @@ function installAwaitingLedger(gaps) {
   const awaiting = (page) => ({ ...page, availability: "awaiting", coverage: "awaiting", sourceGaps: gaps });
   const bridge = window.octopusBeak;
   const subscribe = bridge.dataViews.subscribe;
-  bridge.dataViews.subscribe = (view, params, onRows) =>
-    subscribe(view, params, (rows) => onRows(view === "financial.spending.current" ? rows : rows.map(awaiting)));
+  bridge.dataViews.subscribe = (view, params, onValue) =>
+    subscribe(view, params, (page) => onValue(view === "financial.spending.current" ? page : awaiting(page)));
 }
 
 const text = async (locator) => (await locator.innerText()).replace(/\s+/gu, " ").trim();

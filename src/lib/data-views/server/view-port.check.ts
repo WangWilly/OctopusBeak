@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { MessageChannel } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
-import { live } from "@electric-sql/pglite/live";
-import { createSharedLiveViews } from "./shared-live-views.ts";
+import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createViewPortServer, createViewPortClient } from "./view-port.ts";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -13,23 +12,32 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
+/** A one-view source over a PGlite live query, standing in for the worker's views. */
+function monthlyTotalSource(db: PGliteWithLive) {
+  return {
+    async subscribe(view: string, params: object, onValue: (value: unknown) => void) {
+      assert.equal(view, "spending.summary");
+      const query = await db.live.query<{ amount: number }>(
+        "SELECT amount FROM monthly_totals WHERE month = $1",
+        [(params as { month: string }).month],
+        (result) => onValue(result.rows[0]),
+      );
+      return () => query.unsubscribe();
+    },
+  };
+}
+
 const db = await PGlite.create({ extensions: { live } });
 const channel = new MessageChannel();
 try {
   await db.exec("CREATE TABLE monthly_totals (month text PRIMARY KEY, amount integer NOT NULL)");
   await db.query("INSERT INTO monthly_totals (month, amount) VALUES ($1, $2)", ["2026-09", 10]);
-  const views = createSharedLiveViews(db, {
-    "spending.summary": (params: { month: string }) => ({
-      sql: "SELECT month, amount FROM monthly_totals WHERE month = $1",
-      args: [params.month],
-    }),
-  });
-  const server = createViewPortServer(channel.port1, views);
+  const server = createViewPortServer(channel.port1, monthlyTotalSource(db));
   const client = createViewPortClient(channel.port2);
   const received: number[] = [];
-  const stop = await client.subscribe<{ amount: number }>(
+  const stop = await client.subscribe(
     "spending.summary", { month: "2026-09" },
-    (rows) => received.push(rows[0]?.amount ?? -1),
+    (value) => received.push((value as { amount: number }).amount),
   );
   await waitFor(() => received.at(-1) === 10);
   await db.transaction(async (transaction) => {
@@ -43,7 +51,7 @@ try {
     }),
     /rollback this update/u,
   );
-  assert.equal(received.at(-1), 20, "rolled-back transactions must not publish view rows");
+  assert.equal(received.at(-1), 20, "rolled-back transactions must not publish a view value");
   await stop();
   await db.query("UPDATE monthly_totals SET amount = $1 WHERE month = $2", [30, "2026-09"]);
   assert.equal(received.at(-1), 20);
@@ -156,13 +164,13 @@ try {
 const stopFailureChannel = new MessageChannel();
 try {
   const server = createViewPortServer(stopFailureChannel.port1, {
-    subscribe: async (_view, _params, onRows) => {
-      onRows([{ ready: true }]);
+    subscribe: async (_view, _params, onValue) => {
+      onValue({ ready: true });
       return async () => { throw new Error("stop failed"); };
     },
   });
   const client = createViewPortClient(stopFailureChannel.port2);
-  const stop = await client.subscribe("system.health", {}, () => {});
+  const stop = await client.subscribe("fake.value", {}, () => {});
   await stop();
   await client.close();
   await server.close();
@@ -178,7 +186,7 @@ const throwingPort = {
 };
 const throwingClient = createViewPortClient(throwingPort);
 await assert.rejects(
-  throwingClient.subscribe("system.health", {}, () => {}),
+  throwingClient.subscribe("fake.value", {}, () => {}),
   /port is gone/u,
 );
 await throwingClient.close();
@@ -189,6 +197,6 @@ const silentPort = {
   postMessage() {},
 };
 const silentClient = createViewPortClient(silentPort);
-const neverReady = silentClient.subscribe("system.health", {}, () => {});
+const neverReady = silentClient.subscribe("fake.value", {}, () => {});
 await silentClient.close();
 await assert.rejects(neverReady, /closed/u);

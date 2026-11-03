@@ -10,8 +10,8 @@ import {
   createPGliteViewWorkerClient,
   PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS,
 } from "./pglite-view-worker-client.ts";
-import { startPGliteViewWorker, workerViewSource } from "./pglite-view-worker.ts";
-import { createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
+import { startPGliteViewWorker } from "./pglite-view-worker.ts";
+import { createViewPortClient, createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 5_000;
@@ -21,23 +21,18 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   }
 }
 
-test("dedicated PGlite worker exposes only named live views and closes subscriptions", async () => {
+test("the worker entry serves only the financial live views and never treats a view name as SQL", async () => {
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
   });
   const client = createPGliteViewWorkerClient(worker);
-  const rows: unknown[][] = [];
   try {
-    const stop = await client.subscribe("system.health", {}, (value) => rows.push(value));
-    await waitFor(() => rows.length === 1);
-    assert.deepEqual(rows[0], [{ ready: true }]);
-
-    await stop();
     await assert.rejects(
       client.subscribe("SELECT 1", {}, () => {}),
       /subscription-failed/u,
       "renderer input must not be treated as SQL",
     );
+    await assert.rejects(client.subscribe("system.health", {}, () => {}), /subscription-failed/u);
   } finally {
     await client.close();
   }
@@ -50,11 +45,9 @@ test("bundled worker reopens its explicit data directory after durable close", a
   const openAndClose = async () => {
     const worker = new Worker(bundledWorker, { workerData: { dataDir } });
     const client = createPGliteViewWorkerClient(worker);
-    const rows: unknown[][] = [];
     try {
-      await client.subscribe("system.health", {}, (value) => rows.push(value));
-      await waitFor(() => rows.length === 1);
-      assert.deepEqual(rows[0], [{ ready: true }]);
+      // Reaching the view source's own rejection proves the worker became ready.
+      await assert.rejects(client.subscribe("SELECT 1", {}, () => {}), /subscription-failed/u);
     } finally {
       await client.close();
     }
@@ -68,11 +61,28 @@ test("bundled worker reopens its explicit data directory after durable close", a
   }
 });
 
-test("worker-owned temporary data is removed after shutdown", async () => {
+test("the worker serves its injected view source, closes subscriptions, and removes owned data", async () => {
+  let stops = 0;
+  const source = {
+    async subscribe(view: string, _params: object, onValue: (value: unknown) => void) {
+      if (view !== "fake.value") throw new Error(`Unknown view: ${view}`);
+      onValue({ ready: true });
+      return async () => { stops += 1; };
+    },
+  };
   const channel = new MessageChannel();
-  const runtime = await startPGliteViewWorker(channel.port1);
+  const runtime = await startPGliteViewWorker(channel.port1, () => source);
+  const client = createViewPortClient(channel.port2);
+  const values: unknown[] = [];
   try {
     assert.ok(existsSync(runtime.dataDir));
+    const stop = await client.subscribe("fake.value", {}, (value) => values.push(value));
+    await waitFor(() => values.length === 1);
+    assert.deepEqual(values, [{ ready: true }]);
+    await stop();
+    assert.equal(stops, 1);
+    await assert.rejects(client.subscribe("SELECT 1", {}, () => {}), /subscription-failed/u);
+    await client.close();
     await runtime.close();
     assert.equal(existsSync(runtime.dataDir), false);
   } finally {
@@ -113,20 +123,19 @@ test("closing the client gives a slow worker shutdown its full bound before term
 test("a financial view's error after its first value reaches the port as a failed subscription", async () => {
   let fail: (error: unknown) => void = () => {};
   const financial = {
-    async subscribe(_view: string, _params: object, onRows: (rows: unknown[]) => void, onError?: (error: unknown) => void) {
-      onRows([{ page: 1 }]);
+    async subscribe(_view: string, _params: object, onValue: (value: unknown) => void, onError?: (error: unknown) => void) {
+      onValue({ page: 1 });
       fail = (error) => onError?.(error);
       return async () => {};
     },
   };
-  const health = { subscribe: async () => async () => {} };
   const channel = new MessageChannel();
-  const server = createViewPortServer(channel.port1, workerViewSource(financial, health));
+  const server = createViewPortServer(channel.port1, financial);
   const responses: unknown[] = [];
   channel.port2.on("message", (message) => responses.push(message));
   try {
     channel.port2.postMessage({ kind: "subscribe", id: 1, view: "financial.overview.current", params: {} });
-    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "rows"));
+    await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "value"));
     fail(new Error("recompute failed"));
     await waitFor(() => responses.some((response) => (response as { kind: string }).kind === "error"));
     assert.deepEqual(responses.at(-1), { kind: "error", id: 1, code: "subscription-failed" });
