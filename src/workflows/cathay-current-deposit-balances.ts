@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
+import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
   "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview" as const;
@@ -292,24 +294,22 @@ function compareProviderTimes(systemTime: string, httpDate: string): void {
   }
 }
 
+const CATHAY_AMOUNT: ProviderDecimalPolicy = {
+  internalWhitespace: "strip",
+  grouping: "thousands",
+  digits: "decimal",
+};
+
 function parseExactDecimal(value: unknown, label: string): CathayCurrentDepositExactDecimal {
   if (typeof value !== "string") {
     throw new Error(`Cathay current deposit ${label} lacks exact JSON lexical evidence.`);
   }
   const sourceLexeme = cleanText(value);
-  const normalized = sourceLexeme.replace(/\s/gu, "");
-  const match = /^(-?)(\d+|\d{1,3}(?:,\d{3})*)(?:\.(\d+))?$/u.exec(normalized);
-  if (!match) {
+  const amount = parseProviderDecimal(sourceLexeme, CATHAY_AMOUNT);
+  if (!amount) {
     throw new Error(`Cathay current deposit ${label} is not an exact decimal.`);
   }
-  const integer = (match[2] ?? "").replace(/,/g, "");
-  const fraction = match[3] ?? "";
-  const digits = `${integer}${fraction}`.replace(/^0+(?=\d)/u, "") || "0";
-  return {
-    coefficient: digits === "0" ? "0" : `${match[1] === "-" ? "-" : ""}${digits}`,
-    scale: fraction.length,
-    sourceLexeme,
-  };
+  return { ...amount, sourceLexeme };
 }
 
 function parseAccount(value: unknown, label: string, digits: number): string {
@@ -566,46 +566,63 @@ function responseMatches(
   }
 }
 
-/** Passive response observer reached through the authenticated Cathay UI. */
-export async function readCathayCurrentDepositBalances(
+/** The overview response Cathay's page triggers, before decoding. */
+export type CathayCurrentDepositResponse = Readonly<{
+  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  response: CathayCurrentDepositResponseMetadata & Readonly<{ method: string }>;
+  /** Domestic only: the account buttons the overview renders, which bind each row to its UI account. */
+  uiAccountNumbers?: readonly string[];
+}>;
+
+/**
+ * Open the 臺幣 or 外幣 account overview through the authenticated menu and
+ * passively observe the one overview POST it triggers.
+ */
+export async function readCathayCurrentDepositBalanceResponse(
   page: Page,
   kind: CathayCurrentDepositKind,
-  input: Readonly<{
-    /** If omitted, capture knowledge time is sampled after the provider response arrives. */
-    observedAt?: string;
-    timeoutMs?: number;
-  }>,
-): Promise<readonly CathayCurrentDepositBalanceRow[]> {
+  input: Readonly<{ timeoutMs?: number }> = {},
+): Promise<CathayCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const section = await findExactControl(page, kind === "domestic" ? "臺幣" : "外幣", timeoutMs);
-  await section.click();
-  const overview = await findExactControl(
-    page,
-    kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
-    timeoutMs,
-  );
-  const responsePromise = page.waitForResponse(
-    (response) => responseMatches(kind, response),
-    { timeout: timeoutMs },
-  );
-  await overview.click();
-  const response = await responsePromise;
-  const rawBody = await response.text();
-  const headers = await response.allHeaders();
-  const uiAccountNumbers =
-    kind === "domestic"
-      ? await readDomesticUiAccountNumbers(page, timeoutMs)
-      : undefined;
-  return parseCathayCurrentDepositBalanceSnapshot({
-    kind,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
-    rawBody,
-    observedAt: input.observedAt ?? new Date().toISOString(),
-    uiAccountNumbers,
-  });
+  let matching = 0;
+  const listener = (candidate: Response) => {
+    if (responseMatches(kind, candidate)) matching += 1;
+  };
+  page.on("response", listener);
+  try {
+    const section = await findExactControl(page, kind === "domestic" ? "臺幣" : "外幣", timeoutMs);
+    await section.click();
+    const overview = await findExactControl(
+      page,
+      kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
+      timeoutMs,
+    );
+    const responsePromise = page.waitForResponse(
+      (response) => responseMatches(kind, response),
+      { timeout: timeoutMs },
+    );
+    await overview.click();
+    const response = await responsePromise;
+    const bytes = await response.body();
+    const headers = await response.allHeaders();
+    const uiAccountNumbers =
+      kind === "domestic"
+        ? await readDomesticUiAccountNumbers(page, timeoutMs)
+        : undefined;
+    if (matching !== 1) {
+      throw new Error("Cathay current balance source response was missing or ambiguous.");
+    }
+    return {
+      evidence: { kind: "json", bytes },
+      response: {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        headers,
+      },
+      ...(uiAccountNumbers ? { uiAccountNumbers } : {}),
+    };
+  } finally {
+    page.off("response", listener);
+  }
 }

@@ -3,11 +3,6 @@ import { registerHooks } from "node:module";
 import {
   admitForeignCurrencyDepositCapture,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { matchCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
-import {
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
-  parseCathayCurrentDepositBalanceSnapshot,
-} from "./cathay-current-deposit-balances.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -23,8 +18,6 @@ const oneWeek = { startDate: "2026-08-17", endDate: "2026-08-24" };
 
 const {
   buildCathayForeignCurrencyCaptureInput,
-  cathayForeignCurrentBalanceCaptureMatching,
-  collectCathayCurrentForeignDepositBalanceCaptures,
   createCathayForeignCanonicalCaptureCollector,
   deriveCathayForeignAccountNumberEvidence,
   parseCathayApiJson,
@@ -150,85 +143,6 @@ assert.deepEqual(deriveCathayForeignAccountNumberEvidence("００１２３４５
 assert.equal(deriveCathayForeignAccountNumberEvidence("****7890"), null);
 collector.reset();
 assert.equal(collector.captures.length, 0);
-
-const freshForeignRows = parseCathayCurrentDepositBalanceSnapshot({
-  kind: "foreign",
-  response: {
-    url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH}`,
-    status: 200,
-    method: "POST",
-    headers: { date: "Mon, 24 Aug 2026 12:00:00 GMT" },
-  },
-  rawBody:
-    `{"success":true,"systemTime":"2026-08-24T20:00:00.0000000+08:00","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[{"account":"${syntheticCathayForeignAccountNumber}","demandType":"DemandDeposit","status":"Normal","details":[{"currencyCode":"USD","balance":10.00,"equalTwdBalance":320.00}]}]}}`,
-  observedAt: "2026-08-24T20:00:05.000+08:00",
-});
-assert.equal(freshForeignRows.length, 1);
-assert.equal(freshForeignRows[0]!.sourceAccountKey, syntheticCathayForeignAccountNumber);
-
-{
-  const foreignCaptureFor = (account: string, occurrence: string) =>
-    buildCathayForeignCurrencyCaptureInput(
-      { account },
-      "USD",
-      oneWeek,
-      {
-        currencyCode: "USD",
-        transferInfos: [{
-          sequenceNumber: "1",
-          transferDate: "2026-08-23",
-          debitCreditType: "C",
-          amount: "10.00",
-          balance: "10.00",
-        }],
-      },
-      "2026-08-24T12:00:00+08:00",
-      occurrence,
-    );
-  const admittedCapture = foreignCaptureFor(syntheticCathayForeignAccountNumber, "cathay-foreign-check-current-1");
-  const unadmittedRow = { ...freshForeignRows[0]!, sourceAccountKey: "CATHAY-FOREIGN-UNADMITTED" };
-  const collectCurrent = (
-    captures: Parameters<typeof collectCathayCurrentForeignDepositBalanceCaptures>[1],
-    rows: typeof freshForeignRows,
-  ) => collectCathayCurrentForeignDepositBalanceCaptures({} as never, captures, {
-    readCurrentDepositBalances: async () => rows,
-  });
-
-  const current = await collectCurrent([admittedCapture], [unadmittedRow, freshForeignRows[0]!]);
-  assert.deepEqual(
-    current.map((entry) => entry.identity.sourceAccountKey),
-    [syntheticCathayForeignAccountNumber],
-    "a row for an account the run did not admit is skipped silently",
-  );
-  await assert.rejects(
-    collectCurrent([admittedCapture], [unadmittedRow]),
-    /^Error: Cathay current foreign balance response did not contain an admitted account\.$/u,
-  );
-  await assert.rejects(
-    collectCurrent(
-      [admittedCapture, foreignCaptureFor("CATHAY-FOREIGN-133", "cathay-foreign-check-current-2")],
-      [freshForeignRows[0]!],
-    ),
-    /^Error: Cathay current foreign balance response omitted an admitted account\.$/u,
-  );
-
-  const identity = {
-    accountNo: syntheticCathayForeignAccountNumber,
-    sourceConnectionKey: "sha256:cathay-connection",
-    identityEpochKey: "sha256:cathay-epoch",
-    subjectDigest: "sha256:cathay-subject-first",
-  };
-  const lastIdentity = { ...identity, subjectDigest: "sha256:cathay-subject-last" };
-  assert.deepEqual(
-    matchCurrentBalanceCaptures(
-      [freshForeignRows[0]!],
-      [identity, lastIdentity],
-      cathayForeignCurrentBalanceCaptureMatching,
-    ).matched.map(({ capture }) => capture),
-    [lastIdentity],
-    "the last admitted identity for an account wins without an ambiguity check",
-  );
-}
 
 for (const missingOccurrence of [undefined, "   "] as const) {
   assert.throws(

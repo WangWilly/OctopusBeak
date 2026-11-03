@@ -1,19 +1,15 @@
 import { z } from "zod";
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import {
   type CollectionProductOutcome,
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
-  type ProductCollectionActivityReporter,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
   CathayApiClient,
-  cathayResponseMetadata,
-  decodeCathayApiSourceResponse,
   cathaySignInPlan,
   signInCathayForApp,
   collectCathayDomesticFinancialRequests,
@@ -23,31 +19,18 @@ import {
 } from "./cathay-statements.ts";
 import {
   collectCathayForeignFinancialCaptures,
-  collectCathayCurrentForeignDepositBalanceCaptures,
   type CathayForeignFinancialCollection,
   type CathayForeignQueryRange,
 } from "./cathay-foreign-statements.ts";
 import {
-  buildCathayCurrentDepositBalanceCaptures,
-  buildCathayDomesticCurrentDepositBalanceCaptures,
+  captureCathayDomesticCurrentBalances,
+  captureCathayForeignCurrentBalances,
 } from "./cathay-current-deposit-canonical.ts";
-import {
-  type CathayCurrentDepositBalanceRow,
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
-  parseCathayCurrentDepositBalanceSnapshot,
-  readCathayCurrentDepositBalances,
-} from "./cathay-current-deposit-balances.ts";
+import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import {
-  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../lib/preview-sources/attached-products.ts";
 import {
@@ -102,17 +85,6 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
     observedAt: () => string,
     range: CathayForeignQueryRange,
   ) => Promise<CathayForeignFinancialCollection>;
-  readCurrentBalances?: (
-    page: Page,
-    kind: "domestic" | "foreign",
-    context: WorkflowContext,
-  ) => Promise<readonly CathayCurrentDepositBalanceRow[]>;
-  collectCurrentBalanceItems?: (
-    page: Page,
-    domestic: CathayDomesticFinancialCollection | undefined,
-    foreign: CathayForeignFinancialCollection | undefined,
-    context: WorkflowContext,
-  ) => Promise<readonly ProductStageRequest[]>;
   attachedPreviewPort?: (
     page: Page,
     session: () => CathaySession,
@@ -126,98 +98,6 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRange {
   const { startDate, endDate } = cathayQueryPeriod(period);
   return { startDate, endDate };
-}
-
-function cathayBalanceResponseMatches(
-  kind: "domestic" | "foreign",
-  response: Response,
-): boolean {
-  try {
-    const url = new URL(response.url());
-    const path =
-      kind === "domestic"
-        ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
-        : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
-    return (
-      url.hostname === CATHAY_CURRENT_DEPOSIT_HOST &&
-      url.pathname === path &&
-      response.request().method().toUpperCase() === "POST"
-    );
-  } catch {
-    return false;
-  }
-}
-
-async function readCathayCurrentBalancesForApp(
-  page: Page,
-  kind: "domestic" | "foreign",
-  context: WorkflowContext,
-): Promise<readonly CathayCurrentDepositBalanceRow[]> {
-  const responses: Response[] = [];
-  const listener = (response: Response) => {
-    if (cathayBalanceResponseMatches(kind, response)) responses.push(response);
-  };
-  page.on("response", listener);
-  try {
-    const observedAt = context.now();
-    const legacyReaderRows = await withAbort(
-      readCathayCurrentDepositBalances(page, kind, { observedAt }),
-      context.signal,
-    );
-    context.signal.throwIfAborted();
-    if (responses.length !== 1) {
-      throw new Error(
-        "Cathay current balance source response was missing or ambiguous.",
-      );
-    }
-    const response = responses[0]!;
-    const metadata = await withAbort(
-      cathayResponseMetadata(response),
-      context.signal,
-    );
-    const bytes = await withAbort(response.body(), context.signal);
-    const rawBody = decodeCathayApiSourceResponse(
-      metadata,
-      kind === "domestic"
-        ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
-        : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
-      bytes,
-      context.text,
-    );
-    const uiAccountNumbers =
-      kind === "domestic"
-        ? legacyReaderRows
-            .filter((row) => row.kind === "domestic")
-            .map((row) => row.uiAccountNumber)
-        : undefined;
-    return parseCathayCurrentDepositBalanceSnapshot({
-      kind,
-      response: metadata,
-      rawBody,
-      observedAt,
-      ...(uiAccountNumbers ? { uiAccountNumbers } : {}),
-    });
-  } finally {
-    page.off("response", listener);
-  }
-}
-
-function currentBalanceItems(
-  captures: readonly ReturnType<
-    typeof buildCathayCurrentDepositBalanceCaptures
-  >[number][],
-  product: string,
-): ProductStageRequest[] {
-  return captures.map((capture, index) => ({
-    product,
-    itemKey: `current-balance:${index}`,
-    command: {
-      kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-      request: currentDepositBalanceCommandRequest(
-        admitCurrentDepositBalanceCapture(capture),
-      ),
-    },
-  }));
 }
 
 /** App-owned Cathay group workflow. Every selected statement and balance
@@ -255,71 +135,13 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    const readCurrent =
-      dependencies.readCurrentBalances ?? readCathayCurrentBalancesForApp;
-    const collectCurrentBalanceItems = async (
-      typeId: "domestic" | "foreign_currency",
-      domestic: CathayDomesticFinancialCollection | undefined,
-      foreign: CathayForeignFinancialCollection | undefined,
-      reportActivity: ProductCollectionActivityReporter,
-    ): Promise<readonly ProductStageRequest[]> => {
-      const label = typeId === "foreign_currency" ? "foreign" : "domestic";
-      await context.event(
-        "collection",
-        "started",
-        `${label}-current-balance-started`,
+    const acquireCurrentBalances = (kind: "domestic" | "foreign") => async () => {
+      const capturedAt = context.now();
+      const response = await withAbort(
+        readCathayCurrentDepositBalanceResponse(page, kind),
+        context.signal,
       );
-      let items: readonly ProductStageRequest[];
-      await reportActivity("query");
-      if (dependencies.collectCurrentBalanceItems) {
-        items = await withAbort(
-          dependencies.collectCurrentBalanceItems(
-            page,
-            domestic,
-            foreign,
-            context,
-          ),
-          context.signal,
-        );
-      } else if (typeId === "domestic" && domestic) {
-        const rows = await withAbort(
-          readCurrent(page, "domestic", context),
-          context.signal,
-        );
-        items = currentBalanceItems(
-          buildCathayDomesticCurrentDepositBalanceCaptures(rows, domestic.requests),
-          "domestic-current-balance",
-        );
-      } else if (typeId === "foreign_currency" && foreign) {
-        const rows = await withAbort(
-          readCurrent(page, "foreign", context),
-          context.signal,
-        );
-        const captures = await withAbort(
-          collectCathayCurrentForeignDepositBalanceCaptures(
-            page,
-            foreign.captures,
-            {
-              readCurrentDepositBalances: async () => rows,
-            },
-          ),
-          context.signal,
-        );
-        if (captures.length === 0)
-          throw new Error(
-            "Cathay foreign current balance source is incomplete.",
-          );
-        items = currentBalanceItems(captures, "foreign-current-balance");
-      } else {
-        throw new Error("Cathay current balance collection lacks its statement source.");
-      }
-      await context.event(
-        "collection",
-        "completed",
-        `${label}-current-balance-completed`,
-        { completed: items.length, total: items.length },
-      );
-      return items;
+      return { ...response, observedAt: capturedAt };
     };
 
     const assertSession = async () => {
@@ -394,12 +216,14 @@ export async function runCathayAllProviderWorkflow(
           completed: domestic.requests.length,
           total: domestic.requests.length,
         });
-        const balances = await collectCurrentBalanceItems(
-          "domestic",
-          domestic,
-          undefined,
-          product.reportActivity,
-        );
+        await product.reportActivity("query");
+        const balances = await captureCathayDomesticCurrentBalances({
+          admitted: domestic.requests,
+          acquire: acquireCurrentBalances("domestic"),
+          product,
+          text: context.text,
+          signal: context.signal,
+        });
         product.stage(...balances);
         statementCaptureCount += domestic.captureCount;
         return {
@@ -459,12 +283,14 @@ export async function runCathayAllProviderWorkflow(
           completed: foreign.captures.length,
           total: foreign.captures.length,
         });
-        const balances = await collectCurrentBalanceItems(
-          "foreign_currency",
-          undefined,
-          foreign,
-          product.reportActivity,
-        );
+        await product.reportActivity("query");
+        const balances = await captureCathayForeignCurrentBalances({
+          admitted: foreign.captures,
+          acquire: acquireCurrentBalances("foreign"),
+          product,
+          text: context.text,
+          signal: context.signal,
+        });
         product.stage(...balances);
         statementCaptureCount += foreign.captures.length;
         return {

@@ -15,10 +15,8 @@ import {
 } from "../../ledger/pglite/cathay-domestic-admission.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../../ledger/canonical/foreign-currency-deposit.fixtures.ts";
-import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
-  WorkflowContext,
   WorkflowFinancialCommitPort,
   WorkflowContextWith,
 } from "./workflow-executor.ts";
@@ -28,13 +26,12 @@ import {
 } from "../../workflows/cathay-statements.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import {
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  parseCathayCurrentDepositBalanceSnapshot,
-} from "../../workflows/cathay-current-deposit-balances.ts";
-import {
-  ProductCollectionInterruptedError,
-  type ProductStageRequest,
-} from "./product-collection.ts";
+  cathayDomesticOverviewBody,
+  cathayForeignOverviewBody,
+  cathayOverviewPage,
+  type CathayRecordedOverview,
+} from "../../workflows/cathay-current-deposit-balances.fixtures.ts";
+import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import { FailureCodeError } from "./workflow-failures.ts";
 import { parsePreviewWrite, type PreviewCreditCollection, type PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import { previewReceipt } from "../preview-sources/preview-source-harness.ts";
@@ -72,6 +69,11 @@ function runCathay(
   return runCathayAllProviderWorkflow(withBoundProducts(context, CATHAY_SOURCE, input), input, dependencies);
 }
 
+/** Cathay's UI renders twelve-digit domestic and foreign account numbers. */
+const DOMESTIC_ACCOUNT = ["9990", "0000", "0001"].join("");
+const FOREIGN_ACCOUNT = ["9991", "0000", "0001"].join("");
+const FOREIGN_CAPTURE = { ...CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1, accountNo: FOREIGN_ACCOUNT };
+
 const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
   sourceConnectionId: "synthetic-cathay-connection",
   identityEpoch: "cathay-domestic-deposit-v1",
@@ -81,13 +83,16 @@ const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
   observedAt: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.observedAt,
   pages: [
     {
-      accountNo: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo,
+      accountNo: DOMESTIC_ACCOUNT,
       currency: "TWD",
       scope: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.scope,
       pageOrdinal: 0,
       requestPageToken: null,
       nextPageToken: null,
-      rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse,
+      rawResponse: CATHAY_DOMESTIC_DEPOSIT_FIXTURE.rawResponse.replace(
+        CATHAY_DOMESTIC_DEPOSIT_FIXTURE.accountNo,
+        DOMESTIC_ACCOUNT,
+      ),
       contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
       preflightFingerprint: "cathay/domestic-deposit/collection-v1",
       absenceAuthority: "comparable-complete-range",
@@ -164,16 +169,30 @@ function resultFor(items: readonly unknown[]) {
   };
 }
 
-/** A page already on Cathay's signed-in home, so the run's sign-in takes the existing session. */
-const signedInPage = {
+/** Cathay's signed-in home, so the run's sign-in takes the existing session. */
+const signedInHome = {
   url: () => "https://www.cathaybk.com.tw/OnlineBanking/Home",
   getByText: () => ({ first: () => ({ isVisible: async () => true }) }),
-  on() {},
-  off() {},
-} as unknown as Page;
+};
+
+const overviewSystemTime = "2026-09-25T09:00:00.0000000+08:00";
+const overviewDate = "Fri, 25 Sep 2026 01:00:00 GMT";
+/** The overview responses for the default domestic and foreign accounts. */
+const OVERVIEWS: Readonly<{ domestic?: CathayRecordedOverview; foreign?: CathayRecordedOverview }> = {
+  domestic: {
+    body: cathayDomesticOverviewBody(overviewSystemTime, [{ ui: DOMESTIC_ACCOUNT, ledger: "1000.00", available: "900.25" }]),
+    date: overviewDate,
+    uiAccounts: [DOMESTIC_ACCOUNT],
+  },
+  foreign: {
+    body: cathayForeignOverviewBody(overviewSystemTime, [{ number: FOREIGN_ACCOUNT, details: [{ currency: "EUR", balance: "100.25" }] }]),
+    date: overviewDate,
+  },
+};
 
 function contextHarness(
   makeResult: (items: readonly unknown[]) => unknown = resultFor,
+  page: Page = cathayOverviewPage(signedInHome, OVERVIEWS),
 ) {
   const controller = new AbortController();
   const events: Array<{ stage: string; code: string }> = [];
@@ -190,7 +209,7 @@ function contextHarness(
     signal: controller.signal,
     now: () => "2026-09-25T01:00:00.000Z",
     browser: {
-      withPage: (run) => run(signedInPage),
+      withPage: (run) => run(page),
     },
     text: strictSourceText,
     verification: { complete: async () => undefined },
@@ -209,12 +228,6 @@ function collectionDependencies(
   override: Partial<{
     domestic: CathayDomesticFinancialCollection;
     foreign: CathayForeignFinancialCollection;
-    collectCurrentBalanceItems: (
-      page: Page,
-      domestic: CathayDomesticFinancialCollection | undefined,
-      foreign: CathayForeignFinancialCollection | undefined,
-      context: WorkflowContext,
-    ) => Promise<readonly ProductStageRequest[]>;
   }> = {},
 ) {
   return {
@@ -231,13 +244,11 @@ function collectionDependencies(
       },
     collectForeign: async () =>
       override.foreign ?? {
-        captures: [CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1],
+        captures: [FOREIGN_CAPTURE],
         selectedStatementCount: 1,
         rowCount: 1,
-        accountKeys: [CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1.accountNo],
+        accountKeys: [FOREIGN_ACCOUNT],
       },
-    collectCurrentBalanceItems:
-      override.collectCurrentBalanceItems ?? (async () => []),
   };
 }
 
@@ -286,8 +297,8 @@ test("Cathay all workflow collects and commits selected products independently w
     assert.deepEqual(output.counts, {
       sourceCaptureCount: 2,
       rowCount: 4,
-      itemCount: 2,
-      committedCount: 2,
+      itemCount: 4,
+      committedCount: 4,
       count: 2,
     });
     assert.equal(harness.committed.length, 2);
@@ -421,17 +432,11 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
 });
 
 test("Cathay balance collection failure discards that product's staged statements and continues", async () => {
-  const harness = contextHarness();
+  const harness = contextHarness(resultFor, cathayOverviewPage(signedInHome, { foreign: OVERVIEWS.foreign! }));
   const output = await runCathay(
     harness.context,
     bothProductsInput,
-    collectionDependencies({
-      collectCurrentBalanceItems: async (_page, domestic, foreign) => {
-        if (domestic) throw new Error("Domestic balance source failed.");
-        assert.ok(foreign);
-        return [];
-      },
-    }),
+    collectionDependencies(),
   );
 
   assert.equal(output.status, "partial");
@@ -478,21 +483,10 @@ test("Cathay balance admission failure keeps product receipts and does not block
       failedCount: 1,
     };
   });
-  const balanceItem = {
-    product: "domestic-current-balance",
-    itemKey: "cathay-test-run:domestic:balance:0",
-    command: {
-      kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-      request: {},
-    },
-  } as unknown as ProductStageRequest;
   const output = await runCathay(
     harness.context,
     bothProductsInput,
-    collectionDependencies({
-      collectCurrentBalanceItems: async (_page, domestic) =>
-        domestic ? [balanceItem] : [],
-    }),
+    collectionDependencies(),
   );
 
   assert.equal(output.status, "partial");
@@ -505,10 +499,10 @@ test("Cathay balance admission failure keeps product receipts and does not block
     ]),
     [
       ["domestic", "failed", 1, "canonical-commit-failed"],
-      ["foreign_currency", "success", 1, undefined],
+      ["foreign_currency", "success", 2, undefined],
     ],
   );
-  assert.equal(output.counts.committedCount, 2);
+  assert.equal(output.counts.committedCount, 3);
   assert.equal(harness.committed.length, 2);
   assert.equal(harness.committed[0]!.length, 2);
 });
@@ -657,10 +651,10 @@ test("Cathay all workflow cancellation stops later products and retains prior re
       collectForeign: async () => {
         harness.controller.abort(new Error("fixture cancellation"));
         return {
-          captures: [CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1],
+          captures: [FOREIGN_CAPTURE],
           selectedStatementCount: 1,
           rowCount: 1,
-          accountKeys: [CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1.accountNo],
+          accountKeys: [FOREIGN_ACCOUNT],
         };
       },
     }),
@@ -678,7 +672,7 @@ test("Cathay all workflow cancellation stops later products and retains prior re
           ["foreign_currency", "failed", undefined],
         ],
       );
-      assert.equal(error.summary.committedCount, 1);
+      assert.equal(error.summary.committedCount, 2);
       return true;
     },
   );
@@ -829,28 +823,11 @@ test("Cathay domestic current balances take their identity from the admitted sta
   const harness = contextHarness();
   const admitted = DOMESTIC_REQUESTS[0]!;
   const accountKey = admitted.account.sourceAccountKey;
-  const [parsed] = parseCathayCurrentDepositBalanceSnapshot({
-    kind: "domestic",
-    response: {
-      url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`,
-      status: 200,
-      method: "POST",
-      headers: { date: "Fri, 25 Sep 2026 01:00:00 GMT" },
-    },
-    rawBody: `{"success":true,"systemTime":"2026-09-25T09:00:00.0000000+08:00","content":{"depositData":{"queryStatus":"Success","datas":[{"accountNo":"0000${["1234", "5678", "9012"].join("")}","accountBalance":1000.00,"avaliableBalance":900.25}]}}}`,
-    observedAt: "2026-09-25T09:00:00.000+08:00",
-    uiAccountNumbers: [["1234", "5678", "9012"].join("")],
-  });
-  assert.ok(parsed);
-  const row = { ...parsed, sourceAccountKey: accountKey, uiAccountNumber: accountKey };
-  const { collectCurrentBalanceItems: _stubbed, ...dependencies } = collectionDependencies();
+  assert.equal(accountKey, DOMESTIC_ACCOUNT);
   const output = await runCathay(
     harness.context,
     { ...bothProductsInput, statementTypes: ["domestic"] },
-    {
-      ...dependencies,
-      readCurrentBalances: async (_page, kind) => (kind === "domestic" ? [row] : []),
-    },
+    collectionDependencies(),
   );
 
   assert.equal(output.products![0]!.status, "success");

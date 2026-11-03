@@ -10,16 +10,6 @@ import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { readCathayCurrentDepositBalances } from "./cathay-current-deposit-balances.ts";
-import { buildCathayCurrentDepositBalanceCaptures } from "./cathay-current-deposit-canonical.ts";
-import type { CathayCurrentDepositBalanceRow } from "./cathay-current-deposit-balances.ts";
-import {
-  matchCurrentBalanceCaptures,
-  type CurrentBalanceCaptureMatching,
-} from "./current-state-snapshot-capture.ts";
-import {
-  type CurrentDepositBalanceCaptureInput,
-} from "../ledger/pglite/current-deposit-admission.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
@@ -367,11 +357,6 @@ export type CathayForeignCanonicalCaptureCollector = Readonly<{
   onStatement: CathayForeignStatementObserver;
 }>;
 
-export type CathayCurrentForeignDepositBalanceCaptureOptions = Readonly<{
-  /** Focused-check seam; production uses the authenticated UI reader. */
-  readCurrentDepositBalances?: typeof readCathayCurrentDepositBalances;
-}>;
-
 /** Keep provider collection and canonical admission on one reusable seam.
  * Retries reset the pending batch before recollecting; only a successfully
  * completed attempt is committed by the workflow that owns the retry. */
@@ -406,94 +391,6 @@ export function createCathayForeignCanonicalCaptureCollector(
       }
     },
   };
-}
-
-type CathayForeignAdmittedIdentity = Readonly<{
-  accountNo: string;
-  sourceConnectionKey: string;
-  identityEpochKey: string;
-  subjectDigest: string;
-}>;
-
-/**
- * Cathay foreign currency keys a balance by the admitted account number. The
- * last capture for an account wins and is never checked for ambiguity, and a
- * row for an account the run did not admit is skipped silently.
- */
-export const cathayForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
-  Readonly<{ sourceAccountKey: string }>,
-  CathayForeignAdmittedIdentity
-> = {
-  captureKey: (identity) => identity.accountNo,
-  rowKey: (row) => row.sourceAccountKey,
-  duplicates: "last-wins",
-  sameIdentity: () => true,
-  ambiguousMessage: "Cathay current foreign deposit identities are ambiguous.",
-  unmatched: { kind: "skip" },
-};
-
-export async function collectCathayCurrentForeignDepositBalanceCaptures(
-  page: Page,
-  accountCaptures: readonly ForeignCurrencyDepositCaptureInput[],
-  options: Pick<
-    CathayCurrentForeignDepositBalanceCaptureOptions,
-    "readCurrentDepositBalances"
-  > = {},
-): Promise<CurrentDepositBalanceCaptureInput[]> {
-  const identities = accountCaptures.map((capture): CathayForeignAdmittedIdentity => {
-    const admitted = admitForeignCurrencyDepositCapture(capture);
-    return {
-      accountNo: capture.accountNo,
-      sourceConnectionKey: admitted.identity.sourceConnectionKey,
-      identityEpochKey: admitted.identity.identityEpochKey,
-      subjectDigest: admitted.identity.subjectDigest,
-    };
-  });
-  const currentRows = await (
-    options.readCurrentDepositBalances ?? readCathayCurrentDepositBalances
-  )(page, "foreign", {});
-  const { matched } = matchCurrentBalanceCaptures(
-    currentRows,
-    identities,
-    cathayForeignCurrentBalanceCaptureMatching,
-  );
-  if (matched.length === 0) {
-    throw new Error(
-      "Cathay current foreign balance response did not contain an admitted account.",
-    );
-  }
-  const missingAccountKeys = [...new Set(identities.map(({ accountNo }) => accountNo))].filter(
-    (accountKey) =>
-      !matched.some(({ row }) => row.sourceAccountKey === accountKey),
-  );
-  if (missingAccountKeys.length > 0) {
-    throw new Error(
-      "Cathay current foreign balance response omitted an admitted account.",
-    );
-  }
-  const rowsByAccount = new Map<
-    string,
-    { identity: CathayForeignAdmittedIdentity; rows: CathayCurrentDepositBalanceRow[] }
-  >();
-  for (const { row, capture: identity } of matched) {
-    const account = rowsByAccount.get(row.sourceAccountKey) ?? { identity, rows: [] };
-    account.rows.push(row);
-    rowsByAccount.set(row.sourceAccountKey, account);
-  }
-  const captures: CurrentDepositBalanceCaptureInput[] = [];
-  for (const { identity, rows } of rowsByAccount.values()) {
-    const observedAt = rows[0]!.observedAt;
-    captures.push(
-      ...buildCathayCurrentDepositBalanceCaptures(rows, {
-        sourceConnectionKey: identity.sourceConnectionKey,
-        identityEpochKey: identity.identityEpochKey,
-        subjectDigest: identity.subjectDigest,
-        observedAt,
-        scopeDate: observedAt.slice(0, 10),
-      }),
-    );
-  }
-  return captures;
 }
 
 /** Execute foreign statements and current balances through one child RPC

@@ -3,7 +3,9 @@ import {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+  type CathayCurrentDepositKind,
 } from "./cathay-current-deposit-balances.ts";
+import type { CathayCurrentDepositAcquired } from "./cathay-current-deposit-canonical.ts";
 
 /** A recorded Cathay overview response: the body as the provider sent it. */
 export type CathayRecordedOverview = Readonly<{
@@ -12,6 +14,8 @@ export type CathayRecordedOverview = Readonly<{
   date: string;
   /** Domestic only: the twelve-digit account buttons the overview page renders. */
   uiAccounts?: readonly string[];
+  /** How many overview POSTs one click triggers; the reader accepts only one. */
+  posts?: number;
 }>;
 
 /**
@@ -39,6 +43,26 @@ export function cathayForeignOverviewBody(
   return `{"success":true,"systemTime":"${systemTime}","content":{"isGetDemandAccountSuccess":true,"demandAccounts":[${demand.join(",")}],"depositAccounts":[]}}`;
 }
 
+/** What the page reader returns for a recorded overview, sampled at `observedAt`. */
+export function cathayOverviewAcquired(
+  kind: CathayCurrentDepositKind,
+  overview: CathayRecordedOverview,
+  observedAt: string,
+): CathayCurrentDepositAcquired {
+  const path = kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
+  return {
+    evidence: { kind: "json", bytes: new TextEncoder().encode(overview.body) },
+    response: {
+      url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${path}`,
+      status: 200,
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8", date: overview.date },
+    },
+    ...(overview.uiAccounts ? { uiAccountNumbers: overview.uiAccounts } : {}),
+    observedAt,
+  };
+}
+
 function recordedResponse(path: string, overview: CathayRecordedOverview): Response {
   const bytes = Buffer.from(overview.body, "utf8");
   return {
@@ -64,22 +88,24 @@ export function cathayOverviewPage(
   const deliver = (response: Response) => {
     for (const listener of [...listeners]) listener(response);
   };
-  const overviewFor: Record<string, () => Response> = {
+  const overviewFor: Record<string, () => CathayRecordedOverview & Readonly<{ path: string }>> = {
     臺幣帳戶總覽: () => {
       if (!overviews.domestic) throw new Error("No recorded Cathay domestic overview.");
-      return recordedResponse(CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH, overviews.domestic);
+      return { ...overviews.domestic, path: CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH };
     },
     外幣帳戶總覽: () => {
       if (!overviews.foreign) throw new Error("No recorded Cathay foreign overview.");
-      return recordedResponse(CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH, overviews.foreign);
+      return { ...overviews.foreign, path: CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH };
     },
   };
   const controls = ["臺幣", "外幣", ...Object.keys(overviewFor)];
   const control = (label: string) => ({
     isVisible: async () => true,
     click: async () => {
-      const response = overviewFor[label]?.();
-      if (response) deliver(response);
+      const overview = overviewFor[label]?.();
+      if (!overview) return;
+      for (let post = 0; post < (overview.posts ?? 1); post += 1)
+        deliver(recordedResponse(overview.path, overview));
     },
   });
   const uiButtons = overviews.domestic?.uiAccounts ?? [];

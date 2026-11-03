@@ -3,9 +3,25 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
+  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+  parseCathayCurrentDepositBalanceSnapshot,
   type CathayCurrentDepositBalanceRow,
+  type CathayCurrentDepositKind,
   type CathayCurrentDepositObservation,
+  type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
+import { decodeCathayApiSourceResponse } from "./cathay-statements.ts";
+import {
+  captureCurrentStateSnapshots,
+  type CurrentBalanceCaptureMatching,
+} from "./current-state-snapshot-capture.ts";
+import {
+  admitForeignCurrencyDepositCapture,
+  type ForeignCurrencyDepositCaptureInput,
+} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
@@ -241,6 +257,52 @@ export function buildCathayCurrentDepositBalanceCaptures(
   return captures;
 }
 
+/** The overview response, with the knowledge time the run sampled for it. */
+export type CathayCurrentDepositAcquired = CathayCurrentDepositResponse & Readonly<{ observedAt: string }>;
+
+type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
+  /** The statement captures this product admitted; their accounts each need a balance. */
+  admitted: readonly Admitted[];
+  acquire: () => Promise<CathayCurrentDepositAcquired>;
+  product: Pick<ProductCollectionHandle, "event">;
+  text: SourceTextPort;
+  signal: AbortSignal;
+}>;
+
+/**
+ * The module decodes the evidence strictly, but its parsed value has lost the
+ * provider's numeric lexemes, which carry each balance's scale. Re-read the
+ * same bytes as the Cathay source text and parse that, as statements do.
+ */
+function parseOverview(
+  kind: CathayCurrentDepositKind,
+  acquired: CathayCurrentDepositAcquired,
+  text: SourceTextPort,
+): readonly CathayCurrentDepositBalanceRow[] {
+  const rawBody = decodeCathayApiSourceResponse(
+    acquired.response,
+    kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+    acquired.evidence.bytes,
+    text,
+  );
+  return parseCathayCurrentDepositBalanceSnapshot({
+    kind,
+    response: acquired.response,
+    rawBody,
+    observedAt: acquired.observedAt,
+    ...(acquired.uiAccountNumbers ? { uiAccountNumbers: acquired.uiAccountNumbers } : {}),
+  });
+}
+
+function requireEveryAdmittedAccount(
+  admittedKeys: readonly string[],
+  matched: readonly Readonly<{ row: Readonly<{ sourceAccountKey: string }> }>[],
+  message: string,
+): void {
+  const matchedKeys = new Set(matched.map(({ row }) => row.sourceAccountKey));
+  if (admittedKeys.some((key) => !matchedKeys.has(key))) throw new Error(message);
+}
+
 type CathayDomesticAdmittedRequest = Readonly<{
   capture: Pick<
     PGliteCanonicalFinancialCommitRequest["capture"],
@@ -249,42 +311,152 @@ type CathayDomesticAdmittedRequest = Readonly<{
   account: Pick<PGliteCanonicalFinancialCommitRequest["account"], "sourceAccountKey">;
 }>;
 
-/** Attach domestic current balances to the run's admitted statement captures,
- * taking connection, epoch, stream, and account key from those captures. */
-export function buildCathayDomesticCurrentDepositBalanceCaptures(
-  rows: readonly CathayCurrentDepositBalanceRow[],
-  admitted: readonly CathayDomesticAdmittedRequest[],
-): readonly CurrentDepositBalanceCaptureInput[] {
-  const first = admitted[0];
-  if (
-    !first ||
-    admitted.some(
-      (request) =>
-        request.capture.sourceConnectionKey !== first.capture.sourceConnectionKey ||
-        request.capture.identityEpoch !== first.capture.identityEpoch ||
-        request.capture.stream !== first.capture.stream,
-    )
-  ) {
-    throw new Error("Cathay domestic admitted captures do not share one source identity.");
-  }
-  const admittedKeys = new Set(admitted.map((request) => request.account.sourceAccountKey));
-  const selectedRows = rows.filter(
-    (row) => row.kind === "domestic" && admittedKeys.has(row.sourceAccountKey),
-  );
-  if ([...admittedKeys].some((key) => !selectedRows.some((row) => row.sourceAccountKey === key))) {
-    throw new Error("Cathay domestic current balance source omitted a selected account.");
-  }
-  if (selectedRows.some((row) => row.stream !== first.capture.stream)) {
+/**
+ * Domestic balances take connection, epoch, stream, and account key from the
+ * run's admitted statement captures, which must share one source identity.
+ * A row for an account the run did not admit is skipped.
+ */
+export const cathayDomesticCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  CathayCurrentDepositBalanceRow,
+  CathayDomesticAdmittedRequest
+> = {
+  captureKey: (request) => request.account.sourceAccountKey,
+  rowKey: (row) => row.sourceAccountKey,
+  duplicates: "first-wins",
+  // oneScope already holds every capture to one connection, epoch, and stream.
+  sameIdentity: () => true,
+  ambiguousMessage: "Cathay domestic admitted captures are ambiguous.",
+  oneScope: {
+    scope: ({ capture }) => `${capture.sourceConnectionKey}\u0000${capture.identityEpoch}\u0000${capture.stream}`,
+    message: "Cathay domestic admitted captures do not share one source identity.",
+  },
+  unmatched: { kind: "skip" },
+};
+
+function buildDomesticCapture(
+  row: CathayCurrentDepositBalanceRow,
+  request: CathayDomesticAdmittedRequest,
+): CurrentDepositBalanceCaptureInput {
+  if (row.stream !== request.capture.stream) {
     throw new Error("Cathay domestic current balance row stream does not match its admitted capture.");
   }
-  const { sourceConnectionKey, identityEpoch } = first.capture;
-  return buildCathayCurrentDepositBalanceCaptures(selectedRows, {
+  const { sourceConnectionKey, identityEpoch } = request.capture;
+  return onlyCapture(buildCathayCurrentDepositBalanceCaptures([row], {
     sourceConnectionKey,
     identityEpochKey: identityEpoch,
     subjectDigest: cathayCurrentSubjectDigest(sourceConnectionKey, identityEpoch),
-    observedAt: selectedRows[0]!.observedAt,
-    scopeDate: selectedRows[0]!.observedAt.slice(0, 10),
+    observedAt: row.observedAt,
+    scopeDate: row.observedAt.slice(0, 10),
+  }));
+}
+
+/** Stage the domestic overview's balance for every admitted account. */
+export async function captureCathayDomesticCurrentBalances(
+  input: CathayCurrentDepositSnapshotInput<CathayDomesticAdmittedRequest>,
+): Promise<readonly ProductStageRequest[]> {
+  const { items, matched } = await captureCurrentStateSnapshots(
+    {
+      product: "domestic-current-balance",
+      parse: (_decoded, acquired) => parseOverview("domestic", acquired, input.text),
+      matching: cathayDomesticCurrentBalanceCaptureMatching,
+      build: buildDomesticCapture,
+    },
+    { ...input, captures: input.admitted },
+  );
+  requireEveryAdmittedAccount(
+    input.admitted.map((request) => request.account.sourceAccountKey),
+    matched,
+    "Cathay domestic current balance source omitted a selected account.",
+  );
+  return items;
+}
+
+/** One foreign account's overview rows, one per currency it holds. */
+type CathayForeignOverviewAccount = Readonly<{
+  sourceAccountKey: string;
+  rows: readonly CathayCurrentDepositBalanceRow[];
+}>;
+
+function groupForeignAccounts(
+  rows: readonly CathayCurrentDepositBalanceRow[],
+): readonly CathayForeignOverviewAccount[] {
+  const accounts = new Map<string, CathayCurrentDepositBalanceRow[]>();
+  for (const row of rows) {
+    const account = accounts.get(row.sourceAccountKey) ?? [];
+    account.push(row);
+    accounts.set(row.sourceAccountKey, account);
+  }
+  return [...accounts].map(([sourceAccountKey, accountRows]) => ({ sourceAccountKey, rows: accountRows }));
+}
+
+type CathayForeignAdmittedIdentity = Readonly<{
+  accountNo: string;
+  sourceConnectionKey: string;
+  identityEpochKey: string;
+  subjectDigest: string;
+}>;
+
+/**
+ * Cathay foreign currency keys a balance by the admitted account number. The
+ * last capture for an account wins and is never checked for ambiguity, and a
+ * row for an account the run did not admit is skipped silently.
+ */
+export const cathayForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ sourceAccountKey: string }>,
+  CathayForeignAdmittedIdentity
+> = {
+  captureKey: (identity) => identity.accountNo,
+  rowKey: (row) => row.sourceAccountKey,
+  duplicates: "last-wins",
+  sameIdentity: () => true,
+  ambiguousMessage: "Cathay current foreign deposit identities are ambiguous.",
+  unmatched: { kind: "skip" },
+};
+
+/** Stage one balance capture per admitted foreign account, holding every currency the overview lists for it. */
+export async function captureCathayForeignCurrentBalances(
+  input: CathayCurrentDepositSnapshotInput<ForeignCurrencyDepositCaptureInput>,
+): Promise<readonly ProductStageRequest[]> {
+  const identities = input.admitted.map((capture): CathayForeignAdmittedIdentity => {
+    const { identity } = admitForeignCurrencyDepositCapture(capture);
+    return {
+      accountNo: capture.accountNo,
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      subjectDigest: identity.subjectDigest,
+    };
   });
+  const { items, matched } = await captureCurrentStateSnapshots(
+    {
+      product: "foreign-current-balance",
+      parse: (_decoded, acquired) => groupForeignAccounts(parseOverview("foreign", acquired, input.text)),
+      matching: cathayForeignCurrentBalanceCaptureMatching,
+      build: (account, identity) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
+        sourceConnectionKey: identity.sourceConnectionKey,
+        identityEpochKey: identity.identityEpochKey,
+        subjectDigest: identity.subjectDigest,
+        observedAt: account.rows[0]!.observedAt,
+        scopeDate: account.rows[0]!.observedAt.slice(0, 10),
+      })),
+    },
+    { ...input, captures: identities },
+  );
+  if (matched.length === 0) {
+    throw new Error("Cathay current foreign balance response did not contain an admitted account.");
+  }
+  requireEveryAdmittedAccount(
+    identities.map(({ accountNo }) => accountNo),
+    matched,
+    "Cathay current foreign balance response omitted an admitted account.",
+  );
+  return items;
+}
+
+function onlyCapture(
+  captures: readonly CurrentDepositBalanceCaptureInput[],
+): CurrentDepositBalanceCaptureInput {
+  if (captures.length !== 1) throw new Error("Cathay current deposit account built more than one capture.");
+  return captures[0]!;
 }
 
 export function cathayCurrentSubjectDigest(

@@ -426,7 +426,7 @@
         },
         {
           "product": "domestic-current-balance",
-          "itemKey": "current-balance:0",
+          "itemKey": "current-balance:domestic-deposit:9990_0000_0001",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -584,7 +584,7 @@
         },
         {
           "product": "domestic-current-balance",
-          "itemKey": "current-balance:1",
+          "itemKey": "current-balance:domestic-deposit:9990_0000_0002",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -1110,7 +1110,7 @@
         },
         {
           "product": "foreign-current-balance",
-          "itemKey": "current-balance:0",
+          "itemKey": "current-balance:foreign-currency-deposit:9991_0000_0001:JPY+USD",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -1268,7 +1268,7 @@
         },
         {
           "product": "foreign-current-balance",
-          "itemKey": "current-balance:1",
+          "itemKey": "current-balance:foreign-currency-deposit:9991_0000_0002:EUR",
           "command": {
             "kind": "financial.balance.capture",
             "request": {
@@ -1441,11 +1441,6 @@
     },
     {
       "stage": "collection",
-      "outcome": "started",
-      "code": "domestic-current-balance-started"
-    },
-    {
-      "stage": "collection",
       "outcome": "advanced",
       "code": "domestic-collection-query-started",
       "counts": {
@@ -1455,11 +1450,44 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
       "outcome": "completed",
-      "code": "domestic-current-balance-completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
       "counts": {
         "completed": 2,
-        "total": 2
+        "total": 3
       }
     },
     {
@@ -1538,11 +1566,6 @@
     },
     {
       "stage": "collection",
-      "outcome": "started",
-      "code": "foreign-current-balance-started"
-    },
-    {
-      "stage": "collection",
       "outcome": "advanced",
       "code": "foreign-currency-collection-query-started",
       "counts": {
@@ -1552,11 +1575,44 @@
     },
     {
       "stage": "collection",
+      "outcome": "started",
+      "code": "current-balance-collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "current-balance-decoding-started"
+    },
+    {
+      "stage": "decoding",
       "outcome": "completed",
-      "code": "foreign-current-balance-completed",
+      "code": "current-balance-decoding-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "current-balance-collection-completed",
+      "counts": {
+        "completed": 3,
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 3
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
       "counts": {
         "completed": 2,
-        "total": 2
+        "total": 3
       }
     },
     {
