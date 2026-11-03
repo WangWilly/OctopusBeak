@@ -1,6 +1,7 @@
 import type { Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 /**
  * CTBC renders the summary shell first and fills it with this authenticated
@@ -516,10 +517,10 @@ function formatResponseDiagnostics(
     .join("; ");
 }
 
-async function clickExactText(page: Page, text: string, timeoutMs: number): Promise<void> {
-  const control = page.getByText(text, { exact: true }).first();
-  await control.waitFor({ state: "visible", timeout: timeoutMs });
-  await control.click();
+async function clickExactText(scope: FrameScope, text: string, timeoutMs: number): Promise<void> {
+  const control = scope.page.getByText(text, { exact: true }).first();
+  await scope.withSignal((signal) => control.waitFor({ state: "visible", timeout: timeoutMs, signal }));
+  await scope.withSignal((signal) => control.click({ signal }));
 }
 
 /** The summary response CTBC's page triggers, before decoding. */
@@ -536,8 +537,10 @@ export type CtbcCurrentDepositResponse = Readonly<{
  */
 export async function readCtbcCurrentDepositBalanceResponse(
   page: Page,
+  signal: AbortSignal,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<CtbcCurrentDepositResponse> {
+  const scope = frameScope(page, signal);
   const timeoutMs = input.timeoutMs ?? 60_000;
   const diagnostics: CtbcResponseDiagnostic[] = [];
   let matching = 0;
@@ -548,13 +551,16 @@ export async function readCtbcCurrentDepositBalanceResponse(
   };
   page.on("response", listener);
   try {
-    const responsePromise = page.waitForResponse(responseMatches, { timeout: timeoutMs });
-    await clickExactText(page, "臺幣/轉帳", timeoutMs);
-    await clickExactText(page, "臺幣存款概要", timeoutMs);
-    await page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs });
+    const responsePromise = scope.withSignal((signal) =>
+      page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
+    responsePromise.catch(() => undefined);
+    await clickExactText(scope, "臺幣/轉帳", timeoutMs);
+    await clickExactText(scope, "臺幣存款概要", timeoutMs);
+    await scope.withSignal((signal) =>
+      page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs, signal }));
     const response = await responsePromise;
-    const bytes = await response.body();
-    const headers = await response.allHeaders();
+    const bytes = await scope.race(response.body());
+    const headers = await scope.race(response.allHeaders());
     if (matching !== 1)
       throw new Error("CTBC current balance source response was missing or ambiguous.");
     return {
@@ -568,7 +574,7 @@ export async function readCtbcCurrentDepositBalanceResponse(
       },
     };
   } catch (error) {
-    if (diagnostics.length === 0) throw error;
+    if (signal.aborted || diagnostics.length === 0) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `${message} CTBC balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,

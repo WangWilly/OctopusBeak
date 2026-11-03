@@ -44,6 +44,7 @@ import { CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   captureCurrentStateSnapshots,
@@ -426,19 +427,17 @@ function isCtbcResourceResponse(resource: string) {
 }
 
 async function nextCtbcResource<T>(
-  page: Page,
+  scope: FrameScope,
   resource: string,
   options: { allowNoData?: boolean; context: WorkflowContext },
 ): Promise<CtbcResourceCapture<T>> {
-  const response = await withAbort(page.waitForResponse(
+  const response = await scope.withSignal((signal) => scope.page.waitForResponse(
     isCtbcResourceResponse(resource),
-    {
-      timeout: 60_000,
-    },
-  ), options.context.signal);
+    { timeout: 60_000, signal },
+  ));
   let body: CtbcResourceResponse<T>;
   try {
-    const bytes = await withAbort(response.body(), options.context.signal);
+    const bytes = await scope.race(response.body());
     body = decodeCtbcSourceJson<CtbcResourceResponse<T>>(
       bytes,
       options.context.text,
@@ -497,21 +496,23 @@ export function ctbcResponseShape(
 }
 
 async function openDomesticDetailsPage(
-  page: Page,
+  scope: FrameScope,
   context: WorkflowContext,
 ) {
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
-    page,
+    scope,
     "/twrbc-deposit/qu002/010",
     { context },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
-    page,
+    scope,
     "/twrbc-deposit/qu002/011",
     { allowNoData: true, context },
   );
+  bootstrapPromise.catch(() => undefined);
+  initialDetailsPromise.catch(() => undefined);
 
-  await withAbort(page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded" }), context.signal);
+  await scope.withSignal((signal) => scope.page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded", signal }));
   const [bootstrap, initialDetails] = await Promise.all([
     bootstrapPromise,
     initialDetailsPromise,
@@ -544,35 +545,37 @@ function accountFromOptionText(
 }
 
 async function readDetailAccountOptions(
-  page: Page,
+  scope: FrameScope,
   fallbackAccounts: CtbcAccount[],
-  context: WorkflowContext,
 ): Promise<CtbcAccount[]> {
+  const { page } = scope;
   const dropdown = detailAccountDropdown(page);
-  if (!(await withAbort(dropdown.isVisible().catch(() => false), context.signal))) {
+  if (!(await scope.race(dropdown.isVisible().catch(() => false)))) {
     return resolveCtbcAccountScope([], fallbackAccounts);
   }
-  await withAbort(dropdown.click(), context.signal);
-  const optionVisible = await withAbort(detailAccountOptions(page)
+  await scope.withSignal((signal) => dropdown.click({ signal }));
+  const optionVisible = await scope.withSignal((signal) => detailAccountOptions(page)
     .first()
-    .waitFor({ state: "visible", timeout: 10_000 })
-    .then(() => true)
-    .catch(() => false), context.signal);
+    .waitFor({ state: "visible", timeout: 10_000, signal }))
+    .then(() => true, () => {
+      scope.signal.throwIfAborted();
+      return false;
+    });
   if (!optionVisible) {
-    await withAbort(page.keyboard.press("Escape").catch(() => undefined), context.signal);
+    await scope.race(page.keyboard.press("Escape").catch(() => undefined));
     return resolveCtbcAccountScope([], fallbackAccounts);
   }
 
-  const count = await withAbort(detailAccountOptions(page).count(), context.signal);
+  const count = await scope.race(detailAccountOptions(page).count());
   const accounts: CtbcAccount[] = [];
   for (let index = 0; index < count; index += 1) {
     const text = cleanText(
-      await withAbort(detailAccountOptions(page).nth(index).textContent(), context.signal),
+      await scope.withSignal((signal) => detailAccountOptions(page).nth(index).textContent({ signal })),
     );
     const account = accountFromOptionText(text, index);
     if (account) accounts.push(account);
   }
-  await withAbort(page.keyboard.press("Escape"), context.signal);
+  await scope.race(page.keyboard.press("Escape"));
 
   return resolveCtbcAccountScope(accounts, fallbackAccounts);
 }
@@ -589,7 +592,7 @@ export function resolveCtbcAccountScope(
 }
 
 async function selectDetailAccount(
-  page: Page,
+  scope: FrameScope,
   account: CtbcAccount,
   context: WorkflowContext,
 ) {
@@ -597,21 +600,23 @@ async function selectDetailAccount(
     throw new Error(`No CTBC page option index for ${account.label}.`);
   }
 
-  await withAbort(detailAccountDropdown(page).click(), context.signal);
-  const option = detailAccountOptions(page).nth(account.optionIndex);
-  await withAbort(option.waitFor({ state: "visible", timeout: 60_000 }), context.signal);
+  await scope.withSignal((signal) => detailAccountDropdown(scope.page).click({ signal }));
+  const option = detailAccountOptions(scope.page).nth(account.optionIndex);
+  await scope.withSignal((signal) => option.waitFor({ state: "visible", timeout: 60_000, signal }));
 
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
-    page,
+    scope,
     "/twrbc-deposit/qu002/010",
     { context },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
-    page,
+    scope,
     "/twrbc-deposit/qu002/011",
     { allowNoData: true, context },
   );
-  await withAbort(option.click(), context.signal);
+  bootstrapPromise.catch(() => undefined);
+  initialDetailsPromise.catch(() => undefined);
+  await scope.withSignal((signal) => option.click({ signal }));
   const [bootstrap, initialDetails] = await Promise.all([
     bootstrapPromise,
     initialDetailsPromise,
@@ -690,24 +695,25 @@ function monthTabs(page: Page): Locator {
 }
 
 async function captureVisibleMonthDetails(
-  page: Page,
+  scope: FrameScope,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
   context: WorkflowContext,
 ): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
-  const tabs = monthTabs(page);
-  await withAbort(tabs.first().waitFor({ state: "visible", timeout: 60_000 }), context.signal);
+  const tabs = monthTabs(scope.page);
+  await scope.withSignal((signal) => tabs.first().waitFor({ state: "visible", timeout: 60_000, signal }));
   const captures = [initialCapture];
   detailsFromCapture(initialCapture);
 
-  const count = await withAbort(tabs.count(), context.signal);
+  const count = await scope.race(tabs.count());
   for (let index = 1; index < count; index += 1) {
-    context.signal.throwIfAborted();
+    scope.signal.throwIfAborted();
     const detailPromise = nextCtbcResource<CtbcDetailData>(
-      page,
+      scope,
       "/twrbc-deposit/qu002/011",
       { allowNoData: true, context },
     );
-    await withAbort(tabs.nth(index).click(), context.signal);
+    detailPromise.catch(() => undefined);
+    await scope.withSignal((signal) => tabs.nth(index).click({ signal }));
     const capture = await detailPromise;
     detailsFromCapture(capture);
     captures.push(capture);
@@ -717,7 +723,7 @@ async function captureVisibleMonthDetails(
 }
 
 async function accountRowsFromCurrentPage(
-  page: Page,
+  scope: FrameScope,
   account: CtbcAccount,
   bootstrap: CtbcBootstrapData,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
@@ -728,7 +734,7 @@ async function accountRowsFromCurrentPage(
   rows: CtbcStatementRow[];
   responses: CtbcObservedRangeResponse[];
 }> {
-  const captures = await captureVisibleMonthDetails(page, initialCapture, context);
+  const captures = await captureVisibleMonthDetails(scope, initialCapture, context);
   const ranges = bootstrap.dateRanges ?? [];
   const queryPeriods = queryPeriodsForBootstrap(bootstrap, input);
   const responses = captures.map((capture, rangeOrdinal) => {
@@ -763,11 +769,11 @@ export async function readCtbcDepositSource(
   context: WorkflowContext,
   _product: ProductCollectionHandle,
 ): Promise<CtbcDepositSourceSnapshot> {
-  const opened = await openDomesticDetailsPage(page, context);
+  const scope = frameScope(page, context.signal);
+  const opened = await openDomesticDetailsPage(scope, context);
   const allAccounts = await readDetailAccountOptions(
-    page,
+    scope,
     accountsFromBootstrap(opened.data),
-    context,
   );
   const accounts = filterAccounts(allAccounts, input.accountFilters);
 
@@ -791,7 +797,7 @@ export async function readCtbcDepositSource(
       account.optionIndex !== currentOptionIndex
     ) {
       const selected = await selectDetailAccount(
-        page,
+        scope,
         account,
         context,
       );
@@ -801,7 +807,7 @@ export async function readCtbcDepositSource(
     }
 
     const { queryPeriods, rows, responses } = await accountRowsFromCurrentPage(
-      page,
+      scope,
       account,
       bootstrap,
       initialCapture,
@@ -1200,7 +1206,7 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
     input,
     context,
     product,
-    () => withAbort(readCtbcCurrentDepositBalanceResponse(page), context.signal),
+    () => readCtbcCurrentDepositBalanceResponse(page, context.signal),
   );
 };
 
