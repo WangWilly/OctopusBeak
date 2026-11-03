@@ -452,8 +452,12 @@ A Balance or Holding Observation returned by a provider endpoint whose verified 
 _Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
 
 **Current-state snapshot capture**:
-The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence and how to build its admission input.
+The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It verifies the provider response against what the source declares, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence, how to read its rows and their effective time, and how to build its admission input.
 _Avoid_: Current balance reader, per-bank balance staging, index-keyed balance item
+
+**Verified provider response**:
+The transport facts of one provider response (address, request method, status, content type, cache policy and provider date) after they match what the source declares for that endpoint, together with the time the run observed the response. A bank's row parser reads these facts only from the verified provider response. The provider date may establish effective time; the observed time never does.
+_Avoid_: Provider response envelope, per-bank header check, provider-supplied observed time
 
 **Measurement history**:
 The append-only sequence of Balance or Holding Observations created for distinct source-side measurement evidence with a contract-established effective time. Reprocessing the same Source Capture does not create another observation, while a measurement whose effective time cannot be established fails integration admission rather than entering history.
