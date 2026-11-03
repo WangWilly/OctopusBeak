@@ -12,7 +12,7 @@ ADR 0092 moved decoding, matching, keying and events into the Current-state snap
 
 **A source declares the response that carries its snapshot, and the module verifies it before parsing.** The declaration names the host, one or more endpoints (path, method, optional content type, allowed query), the Cache-Control directives the response must carry, and whether the HTTP Date is required. The acquisition hands over its evidence together with the response's URL, status, method and headers. The module rejects any response the declaration does not name, with the source's label leading the message, and the failure reports as a decoding failure exactly as a parser failure did. Acquisitions use the same declaration to recognise the response they wait for.
 
-**The module stamps observedAt from the run clock**, as RFC3339 in Taipei's offset to the second, the one form every source admission accepts. Banks no longer pass or check observedAt for balances. Statement captures format their observedAt the same way through the same helper.
+**The module stamps observedAt from the run clock**, as RFC3339 in Taipei's offset to the second, the one form every source admission accepts. It samples the clock when the acquisition returns. Banks no longer pass or check observedAt for balances. LINE Bank reuses the account-list response it read before the statements, so it hands the module the run-clock instant of that read instead of the live clock. The statement captures that already used Taipei time (CTBC, HNCB, Post and Yuanta) format it through the same helper. SinoPac and Cathay statement captures keep the run clock's own form.
 
 **The row parser receives a Verified provider response.** It reads the URL, content type, cache policy, provider date and observedAt from it, and still decides effective time: the HTTP Date by default, or a body time where the provider sends one (CTBC `dataTime`, Cathay `systemTime`, Post `SERVER_TIMESTAMP`), compared with the HTTP Date as before.
 
@@ -25,7 +25,8 @@ ADR 0092 moved decoding, matching, keying and events into the Current-state snap
 
 ## Consequences
 
-- Every balance observedAt is `YYYY-MM-DDTHH:mm:ss+08:00`. The deposit-commit goldens record the new values. observedAt varies by run and is not identity, so no stored data changes meaning.
+- Every balance observedAt is `YYYY-MM-DDTHH:mm:ss+08:00`. The deposit-commit goldens record the new values. observedAt varies by run and no identity derives from it.
+- Cathay derives its balance scope date from observedAt, so the scope date is now the Taipei calendar day. A run between 00:00 and 08:00 Taipei time used to record the previous UTC day.
 - Transport-failure tests live once in the module's check. Each bank keeps tests for its declared data and its rows.
 - A new bank declares its response instead of writing a checker. A check the declaration cannot express extends the declaration type.
 - Source admissions keep their own observedAt validators, as ADR 0054 decided.

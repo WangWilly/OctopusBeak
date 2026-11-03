@@ -1162,9 +1162,11 @@ export async function runLineBankProviderWorkflow(
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
         let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
+        let accountSnapshotAt: string;
         let accounts: LineBankAccount[];
         try {
           accountSnapshot = await client.fetchAccountSnapshot();
+          accountSnapshotAt = context.now();
           accounts = filterAccounts(
             accountSnapshot.accounts,
             parsed.data.accountFilters,
@@ -1326,7 +1328,8 @@ export async function runLineBankProviderWorkflow(
               observedAt: capture.observedAt,
             })),
             acquire: async () => accountSnapshot.currentBalance,
-            now: () => context.now(),
+            // The balances ride on the account list read before the statements, so they were observed then.
+            now: () => accountSnapshotAt,
             product,
             text: context.text,
             signal: context.signal,

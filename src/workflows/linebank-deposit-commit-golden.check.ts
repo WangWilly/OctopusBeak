@@ -179,23 +179,37 @@ function countedUuids(): void {
   syncBuiltinESMExports();
 }
 
-async function run(holdings: readonly Holding[]) {
+type RunOptions = Readonly<{
+  now?: () => string;
+  /** Called on each transaction-history request, after the account list was read. */
+  onTransactionQuery?: () => void;
+}>;
+
+async function run(holdings: readonly Holding[], options: RunOptions = {}) {
   countedUuids();
   try {
-    return await runWithCountedUuids(holdings);
+    return await runWithCountedUuids(holdings, options);
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
   }
 }
 
-async function runWithCountedUuids(holdings: readonly Holding[]) {
+async function runWithCountedUuids(holdings: readonly Holding[], options: RunOptions) {
   const recorder = recordDepositCommit();
+  const page = signedInPage(holdings);
+  const evaluate = page.evaluate.bind(page) as (expression: unknown, argument: { path: string }) => Promise<unknown>;
+  Object.assign(page, {
+    evaluate: async (expression: unknown, argument: { path: string }) => {
+      if (!argument.path.includes("/v1/account/common/payables")) options.onTransactionQuery?.();
+      return await evaluate(expression, argument);
+    },
+  });
   const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-linebank-golden",
     signal: new AbortController().signal,
-    now: () => "2026-09-25T12:00:00.000Z",
-    browser: { withPage: async (body) => body(signedInPage(holdings)) },
+    now: options.now ?? (() => "2026-09-25T12:00:00.000Z"),
+    browser: { withPage: async (body) => body(page) },
     text: strictSourceText,
     verification: {
       async complete() {
@@ -241,4 +255,20 @@ test("LINE Bank account with no transactions commits beside a financial account"
   ]);
   assert.equal(result.output.status, "financial-admitted");
   await assertDepositCommitGolden("linebank-no-data-account", result.recorded);
+});
+
+test("LINE Bank balances carry the time the account list was read, not the time they stage", async () => {
+  let now = "2026-09-25T12:00:00.000Z";
+  const result = await run([
+    { account: accountA, available: `"5600"`, rows: [row("101", "20260809", "112233", "1", "78.00", "5600.00", "Synthetic transfer")] },
+  ], {
+    now: () => now,
+    onTransactionQuery: () => {
+      now = "2026-09-25T13:00:00.000Z";
+    },
+  });
+  assert.equal(result.output.status, "financial-admitted");
+  const recorded = JSON.stringify(result.recorded);
+  assert.match(recorded, /"observedAt":"2026-09-25T20:00:00\+08:00"/u);
+  assert.doesNotMatch(recorded, /2026-09-25T21:00:00\+08:00/u);
 });
