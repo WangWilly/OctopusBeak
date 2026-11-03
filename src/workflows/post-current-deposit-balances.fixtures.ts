@@ -39,13 +39,13 @@ export function postCurrentDepositResponse(
         "cache-control": "no-store",
         "content-type": "application/json; charset=UTF-8",
       },
-      requestPostData: JSON.stringify({
-        header: {
-          TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-          BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-        },
-        body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
-      }),
     },
+    requestPostData: JSON.stringify({
+      header: {
+        TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+        BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+      },
+      body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+    }),
   };
 }

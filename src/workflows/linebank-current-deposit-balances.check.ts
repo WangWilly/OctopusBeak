@@ -1,22 +1,21 @@
 import assert from "node:assert/strict";
 
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
+  LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
   linebankCurrentSourceAccountKey,
-  type LineBankCurrentDepositResponseMetadata,
 } from "./linebank-current-deposit-balances.ts";
 
 const providerHttpDate = "Wed, 09 Sep 2026 02:05:08 GMT";
 const observedAt = "2026-09-09T10:05:09+08:00";
 const endpoint = `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=01`;
 
-function response(
-  overrides: Partial<LineBankCurrentDepositResponseMetadata> = {},
-): LineBankCurrentDepositResponseMetadata {
-  return {
+function response(overrides: Partial<ProviderResponse> = {}) {
+  return verifyProviderResponse(LINEBANK_CURRENT_DEPOSIT_RESPONSE, {
     url: endpoint,
     status: 200,
     method: "GET",
@@ -26,7 +25,7 @@ function response(
       "content-type": "application/json;charset=UTF-8",
     },
     ...overrides,
-  };
+  }, observedAt);
 }
 
 function body(overrides: Record<string, unknown> = {}): string {
@@ -65,7 +64,6 @@ function body(overrides: Record<string, unknown> = {}): string {
 const rows = parseLinebankCurrentDepositBalanceSnapshot({
   response: response(),
   rawBody: body(),
-  observedAt,
 });
 assert.equal(rows.length, 1);
 assert.equal(rows[0]?.accountNumber, "012345678901");
@@ -86,7 +84,6 @@ assert.doesNotMatch(JSON.stringify(rows), /777777|acctBal/u);
 const negative = parseLinebankCurrentDepositBalanceSnapshot({
   response: response(),
   rawBody: body().replace("9007199254740993.25", "-0.25"),
-  observedAt,
 })[0]!;
 assert.deepEqual(negative.available, {
   coefficient: "-25",
@@ -99,7 +96,6 @@ assert.deepEqual(
   parseLinebankCurrentDepositBalanceSnapshot({
     response: response(),
     rawBody: changedRaw,
-    observedAt,
   })[0]?.available,
   rows[0]?.available,
 );
@@ -109,12 +105,12 @@ const missingContent = missingAmount.content as Record<string, unknown>;
 const missingAccounts = missingContent.dpstAcctList as Array<Record<string, unknown>>;
 delete missingAccounts[0]!.wdrwAvblAmt;
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: JSON.stringify(missingAmount), observedAt }),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: JSON.stringify(missingAmount) }),
   /wdrwAvblAmt.*preserve/u,
 );
 
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: body().replace("9007199254740993.25", "1e3"), observedAt }),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: body().replace("9007199254740993.25", "1e3") }),
   /exact decimal/u,
 );
 
@@ -123,42 +119,29 @@ const duplicateContent = duplicate.content as Record<string, unknown>;
 const duplicateAccounts = duplicateContent.dpstAcctList as Array<Record<string, unknown>>;
 duplicateAccounts.push({ ...duplicateAccounts[0] });
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: JSON.stringify(duplicate), observedAt }),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: JSON.stringify(duplicate) }),
   /duplicate account/u,
 );
 
+assert.throws(
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: body({ code: "500", message: "failed" }) }),
+  /account list failed/u,
+);
+
 for (const [name, overrides, pattern] of [
-  ["wrong code", {}, /account list failed/u],
-  ["wrong endpoint", { url: "https://evil.example/v1/account/common/payables?featureTypeCode=01" }, /endpoint/u],
-  ["wrong feature", { url: `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=02` }, /featureTypeCode/u],
-  ["wrong method", { method: "POST" }, /method/u],
-  ["wrong status", { status: 503 }, /status/u],
-  ["missing date", { headers: { "cache-control": "no-cache, no-store", "content-type": "application/json" } }, /HTTP Date/u],
+  ["wrong feature", { url: `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=02` }, /endpoint is unexpected/u],
+  ["extra query", { url: `${endpoint}&page=1` }, /endpoint is unexpected/u],
+  ["wrong method", { method: "POST" }, /method is not GET/u],
+  ["not JSON", { headers: { date: providerHttpDate, "cache-control": "no-cache, no-store", "content-type": "text/html" } }, /content type/u],
   ["missing cache policy", { headers: { date: providerHttpDate, "content-type": "application/json" } }, /Cache-Control/u],
 ] as const) {
-  const rawBody = name === "wrong code"
-    ? body({ code: "500", message: "failed" })
-    : body();
-  assert.throws(
-    () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(overrides), rawBody, observedAt }),
-    pattern,
-    name,
-  );
+  assert.throws(() => response(overrides), pattern, name);
 }
 
 const missingList = body({ content: {} });
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: missingList, observedAt }),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: missingList }),
   /dpstAcctList.*non-empty/u,
-);
-
-assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({
-    response: response(),
-    rawBody: body(),
-    observedAt: "2026-09-09T01:00:00Z",
-  }),
-  /precedes provider HTTP Date/u,
 );
 
 const badAccountNumber = body();
@@ -166,13 +149,12 @@ assert.throws(
   () => parseLinebankCurrentDepositBalanceSnapshot({
     response: response(),
     rawBody: badAccountNumber.replace("012345678901", "12345678901"),
-    observedAt,
   }),
   /twelve digits/u,
 );
 
 assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: "not-json", observedAt }),
+  () => parseLinebankCurrentDepositBalanceSnapshot({ response: response(), rawBody: "not-json" }),
   /not valid JSON/u,
 );
 

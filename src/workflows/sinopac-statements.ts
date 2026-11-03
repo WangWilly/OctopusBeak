@@ -44,6 +44,7 @@ import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/
 import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-provider-admission.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
+  SINOPAC_CURRENT_DEPOSIT_RESPONSE,
   readSinopacCurrentDepositBalanceResponse,
   type SinopacCurrentDepositBalanceRow,
   type SinopacCurrentDepositResponse,
@@ -374,19 +375,15 @@ export const sinopacCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching
   },
 };
 
-type SinopacCurrentDepositAcquired = SinopacCurrentDepositResponse & Readonly<{ observedAt: string }>;
 
 const sinopacCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  SinopacCurrentDepositAcquired,
+  SinopacCurrentDepositResponse,
   SinopacCurrentDepositBalanceRow,
   ExistingSinopacFinancialCapture
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => parseSinopacCurrentDepositBalanceSnapshot({
-    payload: decoded.value,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
-  }),
+  response: SINOPAC_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response) => parseSinopacCurrentDepositBalanceSnapshot({ payload: decoded.value, response }),
   matching: sinopacCurrentBalanceCaptureMatching,
   build: buildSinopacCurrentDepositBalanceCapture,
 };
@@ -1517,7 +1514,8 @@ export async function stageSinopacDeposit(
 
   const balances = await captureCurrentStateSnapshots(sinopacCurrentBalanceSnapshot, {
     captures: financialCapturesForCurrent,
-    acquire: async () => ({ ...(await readCurrentBalances()), observedAt }),
+    acquire: readCurrentBalances,
+    now: () => context.now(),
     product,
     text: context.text,
     signal,

@@ -3,20 +3,21 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+  CATHAY_CURRENT_DOMESTIC_RESPONSE,
+  CATHAY_CURRENT_FOREIGN_RESPONSE,
   parseCathayCurrentDepositBalanceSnapshot,
   type CathayCurrentDepositBalanceRow,
   type CathayCurrentDepositKind,
   type CathayCurrentDepositObservation,
   type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
-import { requireCathayApiSourceResponse } from "./cathay-statements.ts";
+import { cathayResponseCharset } from "./cathay-statements.ts";
 import {
   captureCurrentStateSnapshots,
   declaresUtf8,
   type CurrentBalanceCaptureMatching,
   type DecodedSnapshotEvidence,
+  type VerifiedProviderResponse,
 } from "./current-state-snapshot-capture.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -259,13 +260,12 @@ export function buildCathayCurrentDepositBalanceCaptures(
   return captures;
 }
 
-/** The overview response, with the knowledge time the run sampled for it. */
-export type CathayCurrentDepositAcquired = CathayCurrentDepositResponse & Readonly<{ observedAt: string }>;
-
 type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
   /** The statement captures this product admitted; their accounts each need a balance. */
   admitted: readonly Admitted[];
-  acquire: () => Promise<CathayCurrentDepositAcquired>;
+  acquire: () => Promise<CathayCurrentDepositResponse>;
+  /** The run clock, an RFC3339 instant. */
+  now: () => string;
   product: Pick<ProductCollectionHandle, "event">;
   text: SourceTextPort;
   signal: AbortSignal;
@@ -277,19 +277,16 @@ type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
  */
 function parseOverview(
   kind: CathayCurrentDepositKind,
-  decoded: DecodedSnapshotEvidence<CathayCurrentDepositAcquired["evidence"]>,
-  acquired: CathayCurrentDepositAcquired,
+  decoded: DecodedSnapshotEvidence<CathayCurrentDepositResponse["evidence"]>,
+  response: VerifiedProviderResponse<"required">,
+  acquired: CathayCurrentDepositResponse,
 ): readonly CathayCurrentDepositBalanceRow[] {
-  const charset = requireCathayApiSourceResponse(
-    acquired.response,
-    kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
-  );
-  if (!declaresUtf8(charset)) throw new Error("Cathay source response charset is not UTF-8.");
+  if (!declaresUtf8(cathayResponseCharset(response.contentType)))
+    throw new Error("Cathay source response charset is not UTF-8.");
   return parseCathayCurrentDepositBalanceSnapshot({
     kind,
-    response: acquired.response,
+    response,
     rawBody: decoded.text,
-    observedAt: acquired.observedAt,
     ...(acquired.uiAccountNumbers ? { uiAccountNumbers: acquired.uiAccountNumbers } : {}),
   });
 }
@@ -357,7 +354,8 @@ export async function captureCathayDomesticCurrentBalances(
   const { items } = await captureCurrentStateSnapshots(
     {
       product: "domestic-current-balance",
-      parse: (decoded, acquired) => parseOverview("domestic", decoded, acquired),
+      response: CATHAY_CURRENT_DOMESTIC_RESPONSE,
+      parse: (decoded, response, acquired) => parseOverview("domestic", decoded, response, acquired),
       matching: cathayDomesticCurrentBalanceCaptureMatching,
       build: buildDomesticCapture,
       validate: ({ matched }) => requireEveryAdmittedAccount(
@@ -429,7 +427,9 @@ export async function captureCathayForeignCurrentBalances(
   const { items } = await captureCurrentStateSnapshots(
     {
       product: "foreign-current-balance",
-      parse: (decoded, acquired) => groupForeignAccounts(parseOverview("foreign", decoded, acquired)),
+      response: CATHAY_CURRENT_FOREIGN_RESPONSE,
+      parse: (decoded, response, acquired) =>
+        groupForeignAccounts(parseOverview("foreign", decoded, response, acquired)),
       matching: cathayForeignCurrentBalanceCaptureMatching,
       build: (account, identity) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
         sourceConnectionKey: identity.sourceConnectionKey,

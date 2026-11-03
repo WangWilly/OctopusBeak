@@ -25,7 +25,7 @@
                     "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
                     "contractVersion": "capture-evidence-v2",
                     "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
-                    "observedAt": "2026-09-25T20:00:00.000+08:00",
+                    "observedAt": "2026-09-25T20:00:00+08:00",
                     "accountNumber": {
                       "value": "9999_0000_0000_0001",
                       "kind": "depository-account",
@@ -157,7 +157,7 @@
                         "accountType": "depository",
                         "currency": "TWD"
                       },
-                      "observedAt": "2026-09-25T20:00:00.000+08:00",
+                      "observedAt": "2026-09-25T20:00:00+08:00",
                       "scope": {
                         "startDate": "2026-07-01",
                         "endDate": "2026-08-31",
@@ -311,7 +311,7 @@
               "routeKey": "ctbc/domestic-deposit/capture-evidence-v2",
               "contractVersion": "capture-evidence-v2",
               "subjectDigest": "sha256:3BZN_hpLhGZR_dQlznth3tXY8Y-lGFalq1y4Vtjfio0",
-              "observedAt": "2026-09-25T20:00:00.000+08:00",
+              "observedAt": "2026-09-25T20:00:00+08:00",
               "accountNumber": {
                 "value": "9999_0000_0000_0002",
                 "kind": "depository-account",
@@ -394,7 +394,7 @@
                 "routeKey": "ctbc/domestic-deposit/current-balance-v1",
                 "contractVersion": "ctbc/current-deposit-balance-v1",
                 "subjectDigest": "sha256:ecHiF3fsJKKiLV3oc3TcN9-d_VvVo8E_FfQKrZCD3SA",
-                "observedAt": "2026-09-25T20:00:00.000+08:00",
+                "observedAt": "2026-09-25T20:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-25",
                   "endDate": "2026-09-25",

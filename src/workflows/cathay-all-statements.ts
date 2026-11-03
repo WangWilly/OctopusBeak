@@ -135,11 +135,8 @@ export async function runCathayAllProviderWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    const acquireCurrentBalances = (kind: "domestic" | "foreign") => async () => {
-      const capturedAt = context.now();
-      const response = await readCathayCurrentDepositBalanceResponse(page, kind, context.signal);
-      return { ...response, observedAt: capturedAt };
-    };
+    const acquireCurrentBalances = (kind: "domestic" | "foreign") => () =>
+      readCathayCurrentDepositBalanceResponse(page, kind, context.signal);
 
     const assertSession = async () => {
       // Cathay's GetJWT request is the authenticated session health check.
@@ -217,6 +214,7 @@ export async function runCathayAllProviderWorkflow(
         const balances = await captureCathayDomesticCurrentBalances({
           admitted: domestic.requests,
           acquire: acquireCurrentBalances("domestic"),
+          now: () => context.now(),
           product,
           text: context.text,
           signal: context.signal,
@@ -284,6 +282,7 @@ export async function runCathayAllProviderWorkflow(
         const balances = await captureCathayForeignCurrentBalances({
           admitted: foreign.captures,
           acquire: acquireCurrentBalances("foreign"),
+          now: () => context.now(),
           product,
           text: context.text,
           signal: context.signal,

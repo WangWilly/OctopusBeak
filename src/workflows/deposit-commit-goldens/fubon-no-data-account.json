@@ -370,7 +370,7 @@
                 "routeKey": "fubon/domestic-deposit/current-balance-v1",
                 "contractVersion": "fubon/current-deposit-balance-v1",
                 "subjectDigest": "sha256:hsDvqZCp85G6Py3SGKmaOtauCS_9QLbonRpgMDaJPqc",
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-24",
                   "endDate": "2026-09-24",
@@ -530,7 +530,7 @@
                 "routeKey": "fubon/domestic-deposit/current-balance-v1",
                 "contractVersion": "fubon/current-deposit-balance-v1",
                 "subjectDigest": "sha256:EYeKVUZshu2d76KRJHa-np-_ZOWSQ1ZOBKg7AXP6__o",
-                "observedAt": "2026-09-25T00:00:00.000Z",
+                "observedAt": "2026-09-25T08:00:00+08:00",
                 "scope": {
                   "startDate": "2026-09-24",
                   "endDate": "2026-09-24",

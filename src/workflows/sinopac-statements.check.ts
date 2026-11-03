@@ -14,7 +14,11 @@ import {
   SINOPAC_LOGIN_URL,
   buildSinopacCurrentDepositBalanceCapture,
 } from "./sinopac-statements.ts";
-import { parseSinopacCurrentDepositBalanceSnapshot } from "./sinopac-current-deposit-balances.ts";
+import { verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import {
+  parseSinopacCurrentDepositBalanceSnapshot,
+  SINOPAC_CURRENT_DEPOSIT_RESPONSE,
+} from "./sinopac-current-deposit-balances.ts";
 import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
 
 const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
@@ -55,8 +59,7 @@ const sinopacBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       Message: "",
     },
   ],
-  response: sinopacBalanceResponse,
-  observedAt: "2026-09-09T10:01:02.123+08:00",
+  response: verifyProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, sinopacBalanceResponse, "2026-09-09T10:01:02+08:00"),
 })[0]!;
 const sinopacForeignBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
   payload: [
@@ -82,8 +85,7 @@ const sinopacForeignBalanceRow = parseSinopacCurrentDepositBalanceSnapshot({
       Message: "",
     },
   ],
-  response: sinopacBalanceResponse,
-  observedAt: "2026-09-09T10:01:02.123+08:00",
+  response: verifyProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, sinopacBalanceResponse, "2026-09-09T10:01:02+08:00"),
 })[0]!;
 const sinopacBalanceIdentity = {
   identity: {

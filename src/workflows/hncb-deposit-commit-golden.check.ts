@@ -97,10 +97,11 @@ async function record(
     const recorder = recordDepositCommit();
     const context = withBoundProducts({
       signal: new AbortController().signal,
+      now: () => new Date().toISOString(),
       text: strictSourceText,
       event: recorder.event,
       financialCommit: recorder.financialCommit,
-    } as Pick<WorkflowContext, "signal" | "text" | "event"> as WorkflowContextWith<"financialCommit">, HNCB_SOURCE, {
+    } as Pick<WorkflowContext, "signal" | "now" | "text" | "event"> as WorkflowContextWith<"financialCommit">, HNCB_SOURCE, {
       statementTypes: ["deposit"],
     });
     const output = await runHncbStatements({} as Page, input, context, {

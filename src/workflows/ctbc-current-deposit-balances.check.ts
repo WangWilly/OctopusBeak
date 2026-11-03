@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
   CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
   CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY,
+  CTBC_CURRENT_DEPOSIT_RESPONSE,
   parseCtbcCurrentDepositBalanceSnapshot,
-  type CtbcCurrentDepositResponseMetadata,
 } from "./ctbc-current-deposit-balances.ts";
 
 const serverTime = 1788919783601;
@@ -18,9 +19,7 @@ const requestPostData = JSON.stringify({
   deviceId: "DEVICE-ID-MUST-NOT-ESCAPE",
 });
 
-function response(
-  overrides: Partial<CtbcCurrentDepositResponseMetadata> = {},
-): CtbcCurrentDepositResponseMetadata {
+function response(overrides: Partial<ProviderResponse> = {}): ProviderResponse {
   return {
     url: endpoint,
     status: 200,
@@ -30,9 +29,16 @@ function response(
       "cache-control": "no-cache, no-store, must-revalidate",
       "content-type": "application/json;charset=UTF-8",
     },
-    requestPostData,
     ...overrides,
   };
+}
+
+function parse(candidate: unknown, candidateResponse: ProviderResponse, requestBody: string | null = requestPostData) {
+  return parseCtbcCurrentDepositBalanceSnapshot({
+    payload: candidate,
+    response: verifyProviderResponse(CTBC_CURRENT_DEPOSIT_RESPONSE, candidateResponse, "2026-09-09T10:10:00+08:00"),
+    requestPostData: requestBody,
+  });
 }
 
 function payload(): Record<string, unknown> {
@@ -65,11 +71,7 @@ function payload(): Record<string, unknown> {
   };
 }
 
-const parsed = parseCtbcCurrentDepositBalanceSnapshot({
-  payload: payload(),
-  response: response(),
-  observedAt: "2026-09-09T10:10:00+08:00",
-});
+const parsed = parse(payload(), response());
 
 assert.equal(parsed.length, 1);
 assert.equal(parsed[0]?.accountNumber, "0000123456789100");
@@ -91,13 +93,9 @@ assert.doesNotMatch(
 );
 
 const transportQueryValue = "TRANSPORT-VALUE-MUST-NOT-ESCAPE";
-const transportQueryRows = parseCtbcCurrentDepositBalanceSnapshot({
-  payload: payload(),
-  response: response({
+const transportQueryRows = parse(payload(), response({
     url: `${endpoint}?${CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY}=${transportQueryValue}`,
-  }),
-  observedAt: "2026-09-09T10:10:00+08:00",
-});
+  }));
 assert.equal(
   transportQueryRows[0]?.sourceEvidence.endpoint,
   CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -108,23 +106,15 @@ assert.doesNotMatch(
 );
 assert.throws(
   () =>
-    parseCtbcCurrentDepositBalanceSnapshot({
-      payload: payload(),
-      response: response({ url: `${endpoint}?unexpected=1` }),
-      observedAt: "2026-09-09T10:10:00+08:00",
-    }),
+    parse(payload(), response({ url: `${endpoint}?unexpected=1` })),
   /endpoint/u,
   "unknown transport query keys are rejected",
 );
 assert.throws(
   () =>
-    parseCtbcCurrentDepositBalanceSnapshot({
-      payload: payload(),
-      response: response({
+    parse(payload(), response({
         url: `${endpoint}?${CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY}=one&${CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY}=two`,
-      }),
-      observedAt: "2026-09-09T10:10:00+08:00",
-    }),
+      })),
   /endpoint/u,
   "duplicate transport query keys are rejected",
 );
@@ -135,11 +125,7 @@ const midnight = payload();
 midnight.serverTime = Date.UTC(2026, 8, 8, 16, 0, 0);
 ((midnight.rsData as Record<string, unknown>).twdAcctSummaryResponse as Record<string, unknown>).dataTime =
   "2026/09/09 00:00:00";
-const midnightRows = parseCtbcCurrentDepositBalanceSnapshot({
-  payload: midnight,
-  response: response(),
-  observedAt: "2026-09-09T00:01:00+08:00",
-});
+const midnightRows = parse(midnight, response());
 assert.equal(midnightRows[0]?.providerDataTime, "2026/09/09 00:00:00");
 assert.equal(midnightRows[0]?.effectiveAt, "2026-09-08T16:00:00.000Z");
 
@@ -153,53 +139,38 @@ changedSummary.twdAcctSummaryTotalAmountIB = "888,888";
 const changedDemand = changedSummary.demDepBalSummaryResponse as Record<string, unknown>;
 changedDemand.totalAmount = "999,999";
 (changedDemand.infoList as Array<Record<string, unknown>>)[0]!.availableBalance = "1";
-const changedRows = parseCtbcCurrentDepositBalanceSnapshot({
-  payload: changedNonLedgerAmounts,
-  response: response(),
-  observedAt: "2026-09-09T10:10:00+08:00",
-});
+const changedRows = parse(changedNonLedgerAmounts, response());
 assert.deepEqual(changedRows[0]?.ledger, parsed[0]?.ledger);
 
-const wrongRequest = response({
-  requestPostData: JSON.stringify({ resource: "/twrbc-deposit/qu002/010", rqData: {} }),
-});
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({ payload: payload(), response: wrongRequest, observedAt: "2026-09-09T10:10:00+08:00" }),
+  () => parse(payload(), response(), JSON.stringify({ resource: "/twrbc-deposit/qu002/010", rqData: {} })),
   /request resource is unexpected/u,
 );
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({
-    payload: payload(),
-    response: response({ requestPostData: JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: "not-an-object" }) }),
-    observedAt: "2026-09-09T10:10:00+08:00",
-  }),
+  () => parse(payload(), response(), JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: "not-an-object" })),
   /rqData is not an object/u,
 );
 const responseMetadata = payload();
 responseMetadata.resource = "/twrbc-deposit/qu002/010";
-const responseMetadataRows = parseCtbcCurrentDepositBalanceSnapshot({
-  payload: responseMetadata,
-  response: response(),
-  observedAt: "2026-09-09T10:10:00+08:00",
-});
+const responseMetadataRows = parse(responseMetadata, response());
 assert.deepEqual(responseMetadataRows[0]?.ledger, parsed[0]?.ledger);
 
 const missingTimestamp = payload();
 delete missingTimestamp.serverTime;
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({ payload: missingTimestamp, response: response(), observedAt: "2026-09-09T10:10:00+08:00" }),
+  () => parse(missingTimestamp, response()),
   /serverTime is missing/u,
 );
 const inconsistentTime = payload();
 ((inconsistentTime.rsData as Record<string, unknown>).twdAcctSummaryResponse as Record<string, unknown>).dataTime = "2026/09/09 10:09:44";
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({ payload: inconsistentTime, response: response(), observedAt: "2026-09-09T10:10:00+08:00" }),
+  () => parse(inconsistentTime, response()),
   /does not match serverTime/u,
 );
 const noRows = payload();
 (((noRows.rsData as Record<string, unknown>).twdAcctSummaryResponse as Record<string, unknown>).demDepBalSummaryResponse as Record<string, unknown>).infoList = [];
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({ payload: noRows, response: response(), observedAt: "2026-09-09T10:10:00+08:00" }),
+  () => parse(noRows, response()),
   /infoList must be a non-empty array/u,
 );
 
@@ -210,7 +181,7 @@ duplicateDemand.infoList = [
   { ...(duplicateDemand.infoList as Array<Record<string, unknown>>)[0] },
 ];
 assert.throws(
-  () => parseCtbcCurrentDepositBalanceSnapshot({ payload: duplicate, response: response(), observedAt: "2026-09-09T10:10:00+08:00" }),
+  () => parse(duplicate, response()),
   /duplicate accountId/u,
 );
 
@@ -225,21 +196,20 @@ for (const [field, value, pattern] of [
   const row = (((malformed.rsData as Record<string, unknown>).twdAcctSummaryResponse as Record<string, unknown>).demDepBalSummaryResponse as Record<string, unknown>).infoList as Array<Record<string, unknown>>;
   row[0]![field] = value;
   assert.throws(
-    () => parseCtbcCurrentDepositBalanceSnapshot({ payload: malformed, response: response(), observedAt: "2026-09-09T10:10:00+08:00" }),
+    () => parse(malformed, response()),
     pattern,
     `malformed ${field} is rejected`,
   );
 }
 
 for (const [name, overrides, pattern] of [
-  ["missing date", { headers: { "cache-control": "no-cache, no-store, must-revalidate", "content-type": "application/json" } }, /HTTP Date/u],
-  ["missing cache policy", { headers: { date: "Wed, 09 Sep 2026 02:09:43 GMT", "content-type": "application/json" } }, /Cache-Control/u],
+  ["missing must-revalidate", { headers: { date: "Wed, 09 Sep 2026 02:09:43 GMT", "cache-control": "no-cache, no-store", "content-type": "application/json" } }, /Cache-Control/u],
+  ["non-JSON content type", { headers: { date: "Wed, 09 Sep 2026 02:09:43 GMT", "cache-control": "no-cache, no-store, must-revalidate", "content-type": "text/html" } }, /content type/u],
   ["wrong endpoint", { url: "https://www.ctbcbank.com/other", }, /endpoint/u],
   ["wrong method", { method: "GET" }, /method/u],
-  ["wrong status", { status: 503 }, /status/u],
 ] as const) {
   assert.throws(
-    () => parseCtbcCurrentDepositBalanceSnapshot({ payload: payload(), response: response(overrides), observedAt: "2026-09-09T10:10:00+08:00" }),
+    () => parse(payload(), response(overrides)),
     pattern,
     name,
   );

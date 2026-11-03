@@ -5,7 +5,6 @@ import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { parseLinebankCurrentDepositBalanceSnapshot } from "./linebank-current-deposit-balances.ts";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
@@ -53,21 +52,12 @@ const accountSnapshotHeaders = {
   "content-type": "application/json;charset=UTF-8",
 };
 
-/**
- * The provider response can finish after the local request starts.  Keep the
- * fixture deterministic so the check catches sampling observedAt before the
- * awaited response rather than merely asserting parser behavior.
- */
-const delayedAccountSnapshotPage = {
+const accountSnapshotPage = {
   async evaluate(
     _expression: unknown,
     argument: { path: string; body?: unknown },
   ) {
     assert.equal(argument.path, "/v1/account/common/payables?featureTypeCode=01");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    // Advance the synthetic clock to response completion.  The old client
-    // samples its default before this await; the fixed client samples after it.
-    SequencedDate.noArgumentValues.shift();
     return {
       bodyBytes: Array.from(new TextEncoder().encode(accountSnapshotBody)),
       url: accountSnapshotEndpoint,
@@ -78,57 +68,13 @@ const delayedAccountSnapshotPage = {
   },
 };
 
-const OriginalDate = Date;
-class SequencedDate extends OriginalDate {
-  static noArgumentValues: string[] = [];
-
-  constructor(value?: string | number) {
-    super(
-      value === undefined
-        ? SequencedDate.noArgumentValues.shift()!
-        : value,
-    );
-  }
-}
-
-SequencedDate.noArgumentValues = [
-  "1970-01-01T10:00:00.000Z",
-  "1970-01-01T10:00:02.000Z",
-];
-globalThis.Date = SequencedDate as unknown as DateConstructor;
-try {
-  const snapshot = await new LineBankApiClient(readScope(delayedAccountSnapshotPage as never), {
-    text: strictSourceText,
-  }).fetchAccountSnapshot();
-  assert.equal(snapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
-} finally {
-  globalThis.Date = OriginalDate;
-}
-
-let snapshotClock = "1970-01-01T10:00:00.000Z";
-const workflowClockPage = {
-  async evaluate(...args: Parameters<typeof delayedAccountSnapshotPage.evaluate>) {
-    const response = await delayedAccountSnapshotPage.evaluate(...args);
-    snapshotClock = "1970-01-01T10:00:02.000Z";
-    return response;
-  },
-} as never;
-const workflowSnapshot = await new LineBankApiClient(readScope(workflowClockPage), {
+const accountSnapshot = await new LineBankApiClient(readScope(accountSnapshotPage as never), {
   text: strictSourceText,
-}).fetchAccountSnapshot(() => snapshotClock);
-assert.equal(workflowSnapshot.currentBalance.observedAt, "1970-01-01T10:00:02.000Z");
+}).fetchAccountSnapshot();
 assert.deepEqual(
-  workflowSnapshot.currentBalance.evidence.bytes,
+  accountSnapshot.currentBalance.evidence.bytes,
   new TextEncoder().encode(accountSnapshotBody),
   "the snapshot module receives the account-list bytes the statements read",
-);
-
-const earlySnapshot = await new LineBankApiClient(readScope(delayedAccountSnapshotPage as never), {
-  text: strictSourceText,
-}).fetchAccountSnapshot(() => "1970-01-01T10:00:00.000Z");
-assert.throws(
-  () => parseLinebankCurrentDepositBalanceSnapshot({ ...earlySnapshot.currentBalance, rawBody: accountSnapshotBody }),
-  /LINE Bank current deposit observedAt precedes provider HTTP Date/u,
 );
 
 const linebankWorkflowSource = await readFile(

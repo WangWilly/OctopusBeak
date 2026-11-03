@@ -60,6 +60,7 @@ import {
   parseFubonCurrentDepositBalanceSnapshot,
   readFubonCurrentDepositBalanceTable,
   FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
+  FUBON_CURRENT_DEPOSIT_RESPONSE,
   type FubonCurrentDepositBalanceRow,
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
@@ -428,16 +429,13 @@ export const fubonCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
  * only TWD rows, so it calls the module's read and stage halves separately.
  */
 const fubonCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  FubonCurrentDepositTable & Readonly<{ observedAt: string }>,
+  FubonCurrentDepositTable,
   FubonCurrentDepositBalanceRow,
   ExistingFubonFinancialCapture
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => parseFubonCurrentDepositBalanceSnapshot({
-    rows: decoded.rows,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
-  }),
+  response: FUBON_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
   matching: fubonCurrentBalanceCaptureMatching,
   build: buildFubonCurrentDepositBalanceCapture,
 };
@@ -2663,7 +2661,6 @@ function reconcileFubonDepositBalance(
   account: FubonDepositAccountOption,
   statements: readonly FubonParsedDepositStatement[],
   snapshotRows: readonly FubonCurrentDepositBalanceRow[],
-  snapshotObservedAt: string,
 ): FubonDepositBalanceReconciliation | undefined {
   const accountNumber = deriveFubonCompositeAccountNumberEvidence(account)?.value;
   const accountRows = snapshotRows.filter((row) => row.accountNumber === accountNumber);
@@ -2681,7 +2678,7 @@ function reconcileFubonDepositBalance(
     snapshotOtherBalances: accountRows
       .filter((row) => row.currency !== "TWD")
       .map((row) => ({ currency: row.currency, balance: decimal(row.instantBalance) })),
-    snapshotObservedAt,
+    snapshotObservedAt: twdRow.observedAt,
   };
 }
 
@@ -2931,15 +2928,14 @@ export async function stageFubonDeposit(
     // this run behind. The snapshot follows the statements, so a posting in
     // between breaks a USD-coded account's reconciliation for this run only.
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
-    let currentObservedAt = "";
     if (financialCaptures.length > 0 || deferred.length > 0) {
       currentRows = await readCurrentStateSnapshot(fubonCurrentBalanceSnapshot, {
-        acquire: async () => ({ ...(await readCurrentBalances()), observedAt: context.now() }),
+        acquire: readCurrentBalances,
+        now: () => context.now(),
         product,
         text: context.text,
         signal: context.signal,
       });
-      currentObservedAt = context.now();
     }
 
     for (const { account, statements } of deferred) {
@@ -2947,7 +2943,6 @@ export async function stageFubonDeposit(
         account,
         statements,
         currentRows,
-        currentObservedAt,
       );
       await admitAccount(
         account,
@@ -2961,8 +2956,7 @@ export async function stageFubonDeposit(
       ? await stageCurrentStateSnapshot(
         fubonCurrentBalanceSnapshot,
         currentRows
-          .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber))
-          .map((row) => ({ ...row, observedAt: currentObservedAt })),
+          .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber)),
         { captures: financialCaptures, product, signal: context.signal },
       )
       : { items: [], excluded: [] };

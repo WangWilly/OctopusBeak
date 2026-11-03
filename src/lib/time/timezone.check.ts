@@ -3,6 +3,7 @@ import {
   formatUtcDateTime,
   formatUtcDate,
   isIanaTimezone,
+  taipeiInstant,
   zonedDateTimeToUtc,
 } from "./timezone.ts";
 
@@ -19,3 +20,6 @@ assert.throws(() => formatUtcDateTime("2026-07-15T04:34:56", "Asia/Taipei", "zh-
 assert.throws(() => zonedDateTimeToUtc("2026-02-30", "12:00:00", "Asia/Taipei"));
 assert.throws(() => zonedDateTimeToUtc("2026-03-08", "02:30:00", "America/New_York"));
 assert.throws(() => zonedDateTimeToUtc("2026-11-01", "01:30:00", "America/New_York"));
+assert.equal(taipeiInstant("2026-07-15T16:34:56.789Z"), "2026-07-16T00:34:56+08:00");
+assert.equal(taipeiInstant("2026-07-16T00:34:56+08:00"), "2026-07-16T00:34:56+08:00");
+assert.throws(() => taipeiInstant("2026-07-15T16:34:56"));

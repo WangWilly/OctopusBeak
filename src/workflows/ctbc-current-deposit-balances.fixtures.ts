@@ -51,7 +51,7 @@ export function ctbcCurrentDepositResponse(
         "cache-control": "no-cache, no-store, must-revalidate",
         "content-type": "application/json;charset=UTF-8",
       },
-      requestPostData: JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: {} }),
     },
+    requestPostData: JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: {} }),
   };
 }

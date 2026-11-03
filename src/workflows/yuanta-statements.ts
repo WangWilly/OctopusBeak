@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import {
@@ -47,6 +48,7 @@ import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/cano
 import {
   parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
+  YUANTA_CURRENT_DEPOSIT_RESPONSE,
   YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
   type YuantaCurrentDepositTable,
@@ -302,26 +304,6 @@ export const yuantaCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
       "Yuanta current deposit snapshot contains an account without exactly one existing financial identity.",
   },
 };
-
-/** Produce a bank-local observation timestamp without exposing user data. */
-export function yuantaObservedAt(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Taipei",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  })
-    .formatToParts(date)
-    .reduce<Record<string, string>>((result, part) => {
-      if (part.type !== "literal") result[part.type] = part.value;
-      return result;
-    }, {});
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
-}
 
 const downloadedBankHeaders = [
   "帳號",
@@ -786,17 +768,13 @@ export type YuantaDepositSourceSnapshot = Readonly<{
 export type YuantaReadCurrentDepositBalanceTable = () => Promise<YuantaCurrentDepositTable>;
 
 const yuantaCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  YuantaCurrentDepositTable & Readonly<{ observedAt: string }>,
+  YuantaCurrentDepositTable,
   YuantaCurrentDepositBalanceRow,
   ExistingYuantaFinancialCapture
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => parseYuantaCurrentDepositBalanceSnapshot({
-    kind: "domestic",
-    rows: decoded.rows,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
-  }),
+  response: YUANTA_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response) => parseYuantaCurrentDepositBalanceSnapshot({ kind: "domestic", rows: decoded.rows, response }),
   matching: yuantaCurrentBalanceCaptureMatching,
   build: buildYuantaCurrentDepositBalanceCapture,
 };
@@ -808,7 +786,7 @@ export async function readYuantaDepositSource(
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<YuantaDepositSourceSnapshot> {
-  const observedAt = yuantaObservedAt(new Date(context.now()));
+  const observedAt = taipeiInstant(context.now());
   const queryRange = yuantaDepositQueryRange(product.collectionPeriod());
   // The canonical domestic scope is all visible TWD selectors. Input
   // accountFilters remains accepted for compatibility but never narrows it.
@@ -931,10 +909,8 @@ export async function stageYuantaDeposit(
   // failure here must not leave statement captures from this run behind.
   const balances = await captureCurrentStateSnapshots(yuantaCurrentBalanceSnapshot, {
     captures: financialDepositCaptures,
-    acquire: async () => ({
-      ...(await readCurrentBalanceTable()),
-      observedAt: yuantaObservedAt(new Date(context.now())),
-    }),
+    acquire: readCurrentBalanceTable,
+    now: () => context.now(),
     product,
     text: context.text,
     signal: context.signal,

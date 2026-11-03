@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
 import { cathayDomesticOverviewBody, cathayOverviewPage } from "./cathay-current-deposit-balances.fixtures.ts";
 import { registerHooks } from "node:module";
 
@@ -15,21 +16,18 @@ const {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+  cathayCurrentDepositResponseDeclaration,
   parseCathayCurrentDepositBalanceSnapshot,
 } = await import("./cathay-current-deposit-balances.ts");
-
-type ResponseMetadata = Parameters<
-  typeof parseCathayCurrentDepositBalanceSnapshot
->[0]["response"];
 
 const observedAt = "2026-09-08T21:20:10+08:00";
 const httpDate = "Tue, 08 Sep 2026 13:20:04 GMT";
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 
-const response = (
+const rawResponse = (
   kind: "domestic" | "foreign",
-  overrides: Partial<ResponseMetadata> = {},
-): ResponseMetadata => ({
+  overrides: Partial<ProviderResponse> = {},
+): ProviderResponse => ({
   url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${
     kind === "domestic"
       ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
@@ -37,9 +35,14 @@ const response = (
   }`,
   status: 200,
   method: "POST",
-  headers: { date: httpDate },
+  headers: { "content-type": "application/json; charset=utf-8", date: httpDate },
   ...overrides,
 });
+
+const response = (
+  kind: "domestic" | "foreign",
+  overrides: Partial<ProviderResponse> = {},
+) => verifyProviderResponse(cathayCurrentDepositResponseDeclaration(kind), rawResponse(kind, overrides), observedAt);
 
 const domesticBody = `{"success":true,"systemTime":"${systemTime}","content":{"depositData":{"queryStatus":"Success","totalAccountBalance":9999.99,"totalAvaliableBalance":8888.88,"datas":[{"accountType":"DemandDeposit","accountNo":"0000123456789012","accountName":"fixture domestic","accountNickName":"fixture","accountBalance":1000.00,"avaliableBalance":900.25,"datas":[]}]},"timeDepositData":[{"accountNo":"0000999999999999","accountBalance":999999.99}]}}`;
 
@@ -47,7 +50,6 @@ const domestic = parseCathayCurrentDepositBalanceSnapshot({
   kind: "domestic",
   response: response("domestic"),
   rawBody: domesticBody,
-  observedAt,
   uiAccountNumbers: ["123456789012"],
 });
 
@@ -90,7 +92,6 @@ const foreign = parseCathayCurrentDepositBalanceSnapshot({
   kind: "foreign",
   response: response("foreign"),
   rawBody: foreignBody,
-  observedAt,
 });
 
 assert.deepEqual(
@@ -138,69 +139,24 @@ const domesticInput = {
   kind: "domestic" as const,
   response: response("domestic"),
   rawBody: domesticBody,
-  observedAt,
   uiAccountNumbers: ["123456789012"],
 };
 
+assert.throws(() => response("domestic", { method: "GET" }), /method is not POST/u);
 assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", {
-        url: "https://evil.example/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
-      }),
-    }),
-  /host is unexpected/u,
+  () => verifyProviderResponse(cathayCurrentDepositResponseDeclaration("foreign"), rawResponse("domestic"), observedAt),
+  /endpoint is unexpected/u,
+  "each overview kind admits only its own endpoint",
 );
+assert.equal(response("domestic", { headers: { "content-type": "text/plain", date: httpDate } }).contentType, "text/plain");
 assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", { status: 204 }),
-    }),
-  /status is 204/u,
+  () => response("domestic", { headers: { "content-type": "text/html; charset=utf-8", date: httpDate } }),
+  /content type is unexpected/u,
 );
-assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", { method: "GET" }),
-    }),
-  /method is not POST/u,
-);
-assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", { method: undefined }),
-    }),
-  /method is not POST/u,
-);
-assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", {
-        headers: { date: "Tue, 08 Sep 2026 13:20:04 +0000" },
-      }),
-    }),
-  /HTTP Date is invalid/u,
-);
-assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      response: response("domestic", { headers: {} }),
-    }),
-  /HTTP Date is invalid/u,
-);
-assert.throws(
-  () =>
-    parseCathayCurrentDepositBalanceSnapshot({
-      ...domesticInput,
-      observedAt: "2026-02-30T21:20:10+08:00",
-    }),
-  /observedAt has an invalid calendar date/u,
+assert.equal(
+  response("domestic", { url: `${rawResponse("domestic").url}?_=1` }).url.search,
+  "?_=1",
+  "Cathay never constrained the overview query",
 );
 assert.throws(
   () =>
@@ -263,7 +219,6 @@ const foreignInput = {
   kind: "foreign" as const,
   response: response("foreign"),
   rawBody: foreignBody,
-  observedAt,
 };
 assert.throws(
   () =>

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Locator, Page, Response } from "playwright";
 import { z } from "zod";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  CTBC_CURRENT_DEPOSIT_RESPONSE,
   parseCtbcCurrentDepositBalanceSnapshot,
   readCtbcCurrentDepositBalanceResponse,
   type CtbcCurrentDepositBalanceRow,
@@ -90,8 +92,6 @@ export type CtbcDepositRunner = (
 
 /** Observe the current-summary response; the snapshot module decodes and parses it. */
 export type CtbcReadCurrentDepositBalanceResponse = () => Promise<CtbcCurrentDepositResponse>;
-
-type CtbcCurrentDepositAcquired = CtbcCurrentDepositResponse & Readonly<{ observedAt: string }>;
 
 type CtbcResourceResponse<T> = {
   code?: string;
@@ -836,12 +836,6 @@ export async function readCtbcDepositSource(
   };
 }
 
-function ctbcObservedAt(now = Date.now()): string {
-  return new Date(now + 8 * 60 * 60 * 1_000)
-    .toISOString()
-    .replace("Z", "+08:00");
-}
-
 function buildCtbcCapture(
   observed: CtbcObservedAccountCapture,
   observedAt: string,
@@ -1071,15 +1065,16 @@ export const ctbcCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
 };
 
 const ctbcCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  CtbcCurrentDepositAcquired,
+  CtbcCurrentDepositResponse,
   CtbcCurrentDepositBalanceRow,
   ExistingCtbcFinancialCapture
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => parseCtbcCurrentDepositBalanceSnapshot({
+  response: CTBC_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response, acquired) => parseCtbcCurrentDepositBalanceSnapshot({
     payload: decoded.value,
-    response: acquired.response,
-    observedAt: acquired.observedAt,
+    response,
+    requestPostData: acquired.requestPostData,
   }),
   matching: ctbcCurrentBalanceCaptureMatching,
   build: buildCtbcCurrentDepositBalanceCapture,
@@ -1110,7 +1105,7 @@ export async function stageCtbcDeposit(
     completed: 0,
     total: snapshot.captures.length,
   });
-  const observedAt = ctbcObservedAt(new Date(context.now()).getTime());
+  const observedAt = taipeiInstant(context.now());
   const validatedCaptures: CtbcDomesticDepositValidatedEvidence[] = [];
   for (const observed of snapshot.captures) {
     context.signal.throwIfAborted();
@@ -1182,10 +1177,8 @@ export async function stageCtbcDeposit(
   context.signal.throwIfAborted();
   const balances = await captureCurrentStateSnapshots(ctbcCurrentBalanceSnapshot, {
     captures: financialCaptures,
-    acquire: async () => ({
-      ...(await readCurrentBalanceResponse()),
-      observedAt: ctbcObservedAt(new Date(context.now()).getTime()),
-    }),
+    acquire: readCurrentBalanceResponse,
+    now: () => context.now(),
     product,
     text: context.text,
     signal: context.signal,

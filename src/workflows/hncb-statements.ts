@@ -4,6 +4,7 @@ import {
   SourceTextIntegrityError,
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
 import {
@@ -35,6 +36,7 @@ import {
   HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
   parseHncbCurrentDepositBalanceSnapshot,
   parseHncbCurrentDepositOverviewSnapshot,
+  HNCB_CURRENT_DEPOSIT_RESPONSE,
   readHncbCurrentDepositDetailTable,
   readHncbCurrentDepositOverviewTable,
   type HncbCurrentDepositOverviewBalanceRow,
@@ -939,25 +941,6 @@ export async function downloadCurrentStatementInMemory(
   }
 }
 
-function hncbObservedAt(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Taipei",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  })
-    .formatToParts(date)
-    .reduce<Record<string, string>>((result, part) => {
-      if (part.type !== "literal") result[part.type] = part.value;
-      return result;
-    }, {});
-  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+08:00`;
-}
-
 function emptyDownloadDigest(): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("base64url")}`;
 }
@@ -1049,13 +1032,14 @@ export type HncbDepositSourceSnapshot = Readonly<{
 export type HncbReadCurrentDepositBalanceTable = () => Promise<HncbCurrentDepositTable>;
 
 const hncbCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  HncbCurrentDepositTable & Readonly<{ observedAt: string }>,
+  HncbCurrentDepositTable,
   HncbCurrentDepositRow,
   ExistingHncbFinancialCapture
 > = {
   product: "current-balance",
-  parse: (decoded, acquired) => {
-    const snapshot = { rows: decoded.rows, response: acquired.response, observedAt: acquired.observedAt };
+  response: HNCB_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response, acquired) => {
+    const snapshot = { rows: decoded.rows, response };
     return acquired.view === "overview"
       ? parseHncbCurrentDepositOverviewSnapshot(snapshot)
       : parseHncbCurrentDepositBalanceSnapshot(snapshot);
@@ -1064,7 +1048,7 @@ const hncbCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
   build: buildHncbCurrentDepositBalanceCapture,
 };
 
-type HncbDepositContext = Pick<WorkflowContext, "signal" | "text">;
+type HncbDepositContext = Pick<WorkflowContext, "signal" | "text" | "now">;
 
 /** The deposit product runner; checks replace it to drive the read half against a fake source. */
 export type HncbDepositRunner = (
@@ -1115,11 +1099,11 @@ export function hncbCurrentDepositBalanceTable(
 export async function readHncbDepositSource(
   source: HncbDepositSource,
   input: HncbDepositInput,
-  context: Pick<WorkflowContext, "signal">,
+  context: Pick<WorkflowContext, "signal" | "now">,
   product: ProductCollectionHandle,
 ): Promise<HncbDepositSourceSnapshot> {
   const dateRange = hncbDateRange(product.collectionPeriod());
-  const observedAt = hncbObservedAt();
+  const observedAt = taipeiInstant(context.now());
   const captures: HncbDomesticDepositValidatedEvidence[] = [];
   const admit = (account: HncbDepositAccount, statement?: HncbStatementDownload) => {
     const structural = admitHncbDomesticDepositCaptureEvidence(
@@ -1191,7 +1175,7 @@ export async function readHncbDepositSource(
  */
 export async function stageHncbDeposit(
   snapshot: HncbDepositSourceSnapshot,
-  context: Pick<WorkflowContext, "signal" | "text">,
+  context: HncbDepositContext,
   product: ProductCollectionHandle,
   readCurrentBalanceTable: HncbReadCurrentDepositBalanceTable,
 ): Promise<HncbDepositSummary> {
@@ -1243,7 +1227,8 @@ export async function stageHncbDeposit(
   // this run behind.
   const balances = await captureCurrentStateSnapshots(hncbCurrentBalanceSnapshot, {
     captures: financialCaptures,
-    acquire: async () => ({ ...(await readCurrentBalanceTable()), observedAt: hncbObservedAt() }),
+    acquire: readCurrentBalanceTable,
+    now: () => context.now(),
     product,
     text: context.text,
     signal: context.signal,
@@ -1286,7 +1271,7 @@ const collectHncbDeposit: HncbDepositRunner = async (page, input, context, produ
   );
 };
 
-export type HncbStatementsContext = Pick<WorkflowContextWith<"products">, "signal" | "text" | "products">;
+export type HncbStatementsContext = Pick<WorkflowContextWith<"products">, "signal" | "text" | "now" | "products">;
 
 /** The session check and Attached Preview Product collectors from sign-in, and a check's deposit runner. */
 export type HncbStatementsRun = ProductCollectOptions & Readonly<{

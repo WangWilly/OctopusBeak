@@ -1,7 +1,13 @@
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
-import type { SnapshotEvidence } from "./current-state-snapshot-capture.ts";
+import {
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+  type SnapshotEvidence,
+  type VerifiedProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 
 /**
  * SinoPac renders the account-summary HTML shell first and fills its balance
@@ -30,12 +36,19 @@ export type SinopacCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-export type SinopacCurrentDepositResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method?: string;
-  headers: Readonly<Record<string, string>>;
-}>;
+/** The ws_bankbal POST; a 13-digit cache-busting key is its only allowed query. */
+export const SINOPAC_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
+  label: "SinoPac current deposit",
+  host: SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: "POST",
+    contentType: /^application\/json\s*;\s*charset\s*=\s*utf-8$/iu,
+    search: /^(?:\?\d{13}(?:=[^&]*)?)?$/u,
+  }],
+  cacheControl: ["no-cache", "no-store"],
+  providerDate: "required",
+};
 
 export type SinopacCurrentDepositBalanceRow = Readonly<{
   source: "sinopac";
@@ -74,11 +87,6 @@ export type SinopacCurrentDepositBalanceRow = Readonly<{
 
 type JsonRecord = Record<string, unknown>;
 
-const RFC3339 =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/u;
-const HTTP_DATE =
-  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
-
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -105,114 +113,6 @@ function requiredString(
   if (!options.allowEmpty && text.length === 0)
     throw new Error(`SinoPac current deposit ${label} is empty.`);
   return text;
-}
-
-function requireObservedAt(value: string): string {
-  const match =
-    typeof value === "string"
-      ? /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2})$/u.exec(
-          value,
-        )
-      : null;
-  if (
-    !match ||
-    !RFC3339.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    (match[2]?.length ?? 0) > 9
-  ) {
-    throw new Error("SinoPac current deposit observedAt must be RFC3339.");
-  }
-  const calendarDate = new Date(`${match[1]}T00:00:00.000Z`);
-  if (
-    Number.isNaN(calendarDate.getTime()) ||
-    calendarDate.toISOString().slice(0, 10) !== match[1]
-  ) {
-    throw new Error("SinoPac current deposit observedAt has an invalid calendar date.");
-  }
-  if (match[3] !== "Z") {
-    const [hours, minutes] = match[3].slice(1).split(":").map(Number);
-    if (hours > 23 || minutes > 59)
-      throw new Error("SinoPac current deposit observedAt has an invalid offset.");
-  }
-  return value;
-}
-
-function responseHeader(
-  headers: Readonly<Record<string, string>>,
-  name: string,
-): string {
-  const expected = name.toLowerCase();
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === expected) return value.trim();
-  }
-  return "";
-}
-
-function providerDate(headers: Readonly<Record<string, string>>): {
-  raw: string;
-  effectiveAt: string;
-} {
-  const raw = responseHeader(headers, "date");
-  if (!HTTP_DATE.test(raw))
-    throw new Error("SinoPac current deposit response is missing a valid HTTP Date.");
-  const timestamp = Date.parse(raw);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).toUTCString() !== raw)
-    throw new Error("SinoPac current deposit HTTP Date is invalid.");
-  return { raw, effectiveAt: new Date(timestamp).toISOString() };
-}
-
-function hasApprovedTransportQuery(url: URL): boolean {
-  const keys = [...url.searchParams.keys()];
-  return keys.length === 0 || (keys.length === 1 && /^\d{13}$/u.test(keys[0]!));
-}
-
-function requireContentType(
-  headers: Readonly<Record<string, string>>,
-): typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE {
-  const raw = responseHeader(headers, "content-type");
-  if (!/^application\/json\s*;\s*charset\s*=\s*utf-8$/iu.test(raw))
-    throw new Error(
-      "SinoPac current deposit response content type is not application/json;charset=UTF-8.",
-    );
-  return SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE;
-}
-
-function requireResponse(
-  response: SinopacCurrentDepositResponseMetadata,
-): {
-  providerDate: { raw: string; effectiveAt: string };
-  contentType: typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE;
-  cacheControl: string;
-} {
-  let parsed: URL;
-  try {
-    parsed = new URL(response.url);
-  } catch {
-    throw new Error("SinoPac current deposit response URL is invalid.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST ||
-    parsed.pathname !== SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
-    !hasApprovedTransportQuery(parsed) ||
-    parsed.hash !== "" ||
-    parsed.port !== "" ||
-    parsed.username !== "" ||
-    parsed.password !== ""
-  ) {
-    throw new Error("SinoPac current deposit response endpoint is unexpected.");
-  }
-  if (response.method?.toUpperCase() !== "POST")
-    throw new Error("SinoPac current deposit response method is not POST.");
-  if (response.status !== 200)
-    throw new Error("SinoPac current deposit response status is not 200.");
-  const contentType = requireContentType(response.headers);
-  const cacheControl = responseHeader(response.headers, "cache-control");
-  if (!/\bno-cache\b/iu.test(cacheControl) || !/\bno-store\b/iu.test(cacheControl))
-    throw new Error(
-      "SinoPac current deposit response must carry Cache-Control: no-cache,no-store.",
-    );
-  return { providerDate: providerDate(response.headers), contentType: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE, cacheControl };
 }
 
 const SINOPAC_AMOUNT: ProviderDecimalPolicy = {
@@ -246,11 +146,7 @@ function parseCurrency(value: unknown, rowIndex: number): string {
 function parseRow(
   value: unknown,
   rowIndex: number,
-  effectiveAt: string,
-  providerHttpDate: string,
-  observedAt: string,
-  contentType: typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE,
-  cacheControl: string,
+  response: VerifiedProviderResponse<"required">,
 ): SinopacCurrentDepositBalanceRow {
   if (!isRecord(value))
     throw new Error(`SinoPac current deposit row ${rowIndex} is not an object.`);
@@ -316,14 +212,14 @@ function parseRow(
       category,
       digiTalFg,
     },
-    effectiveAt,
-    providerHttpDate,
-    observedAt,
+    effectiveAt: response.providerDate.effectiveAt,
+    providerHttpDate: response.providerDate.raw,
+    observedAt: response.observedAt,
     sourceEvidence: {
       endpoint: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
       status: 200,
-      contentType,
-      cacheControl,
+      contentType: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE,
+      cacheControl: response.cacheControl,
       contractVersion: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
     },
   };
@@ -332,11 +228,8 @@ function parseRow(
 /** Parse one completed ws_bankbal JSON response without coercing provider amounts. */
 export function parseSinopacCurrentDepositBalanceSnapshot(input: Readonly<{
   payload: unknown;
-  response: SinopacCurrentDepositResponseMetadata;
-  observedAt: string;
+  response: VerifiedProviderResponse<"required">;
 }>): readonly SinopacCurrentDepositBalanceRow[] {
-  const { providerDate, contentType, cacheControl } = requireResponse(input.response);
-  const observedAt = requireObservedAt(input.observedAt);
   if (!Array.isArray(input.payload) || input.payload.length !== 1)
     throw new Error("SinoPac current deposit response must contain one envelope.");
   const envelope = input.payload[0];
@@ -346,17 +239,7 @@ export function parseSinopacCurrentDepositBalanceSnapshot(input: Readonly<{
     throw new Error(`SinoPac current deposit response failed: ${String(envelope.Message ?? "unknown")}`);
   if (!Array.isArray(envelope.SubInfo) || envelope.SubInfo.length === 0)
     throw new Error("SinoPac current deposit response SubInfo is missing or empty.");
-  const rows = envelope.SubInfo.map((row, rowIndex) =>
-    parseRow(
-      row,
-      rowIndex,
-      providerDate.effectiveAt,
-      providerDate.raw,
-      observedAt,
-      contentType,
-      cacheControl,
-    ),
-  );
+  const rows = envelope.SubInfo.map((row, rowIndex) => parseRow(row, rowIndex, input.response));
   const seen = new Set<string>();
   for (const row of rows) {
     const key = `${row.sourceAccountKey}\u0000${row.currency}`;
@@ -367,29 +250,10 @@ export function parseSinopacCurrentDepositBalanceSnapshot(input: Readonly<{
   return rows;
 }
 
-function responseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.protocol === "https:" &&
-      url.hostname === SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST &&
-      url.pathname === SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH &&
-      hasApprovedTransportQuery(url) &&
-      url.hash === "" &&
-      url.port === "" &&
-      url.username === "" &&
-      url.password === "" &&
-      response.request().method().toUpperCase() === "POST"
-    );
-  } catch {
-    return false;
-  }
-}
-
 /** The ws_bankbal response SinoPac's balance page triggers, before decoding. */
 export type SinopacCurrentDepositResponse = Readonly<{
   evidence: Extract<SnapshotEvidence, { kind: "json" }>;
-  response: SinopacCurrentDepositResponseMetadata;
+  response: ProviderResponse;
 }>;
 
 /**
@@ -404,7 +268,11 @@ export async function readSinopacCurrentDepositBalanceResponse(
   const timeoutMs = input.timeoutMs ?? 60_000;
   const scope = frameScope(page, signal);
   const responsePromise = scope.withSignal((signal) =>
-    page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
+    page.waitForResponse((response) => isDeclaredProviderResponse(
+      SINOPAC_CURRENT_DEPOSIT_RESPONSE,
+      response.url(),
+      response.request().method(),
+    ), { timeout: timeoutMs, signal }));
   void responsePromise.catch(() => undefined);
   await scope.withSignal((signal) => page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
     waitUntil: "domcontentloaded",
