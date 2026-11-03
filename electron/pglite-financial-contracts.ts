@@ -102,6 +102,21 @@ function operation<Args extends readonly unknown[], Result>(
   return Object.freeze({ accepts, ...flags });
 }
 
+/** The renderer bridge groups a financial operation may join (ADR 0098). */
+export type FinancialBridgeGroup = "spending" | "manualAssets";
+
+/**
+ * Opens an operation to the renderer as `window.octopusBeak[group][method]`.
+ * Preload still spells the channel itself, because its sandbox loads only electron.
+ */
+function rendered<const Group extends FinancialBridgeGroup, const Method extends string, Contract>(
+  group: Group,
+  method: Method,
+  contract: Contract,
+): Contract & Readonly<{ renderer: Readonly<{ group: Group; method: Method }> }> {
+  return Object.freeze({ ...contract, renderer: Object.freeze({ group, method }) });
+}
+
 function nonNegativeSafeInteger(value: unknown): boolean {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
@@ -172,34 +187,34 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
     { lane: "background" },
   ),
-  "financial.spending.recordPage": operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(
+  "financial.spending.recordPage": rendered("spending", "loadRecordPage", operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
-  ),
+  )),
   "financial.spending.candidatePage": operation<[request: SpendingCandidatePageRequest], SpendingPageReadResult<SpendingCandidatePageDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "background" },
   ),
-  "financial.spending.pendingOverview": operation<[request: SpendingPendingOverviewRequest], SpendingPageReadResult<SpendingPendingOverviewDto>>(
+  "financial.spending.pendingOverview": rendered("spending", "loadPendingOverview", operation<[request: SpendingPendingOverviewRequest], SpendingPageReadResult<SpendingPendingOverviewDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
-  ),
-  "financial.spending.mergeLog": operation<[request: SpendingMergeLogRequest], SpendingPageReadResult<SpendingMergeLogDto>>(
+  )),
+  "financial.spending.mergeLog": rendered("spending", "loadMergeLog", operation<[request: SpendingMergeLogRequest], SpendingPageReadResult<SpendingMergeLogDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "background" },
-  ),
-  "financial.spending.monthInsight": operation<[request: SpendingMonthInsightRequest], SpendingPageReadResult<SpendingMonthInsightDto>>(
+  )),
+  "financial.spending.monthInsight": rendered("spending", "loadMonthInsight", operation<[request: SpendingMonthInsightRequest], SpendingPageReadResult<SpendingMonthInsightDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
-  ),
-  "financial.spending.merchantStats": operation<[request: SpendingMerchantStatsRequest], SpendingPageReadResult<SpendingMerchantStatsDto>>(
+  )),
+  "financial.spending.merchantStats": rendered("spending", "loadMerchantStats", operation<[request: SpendingMerchantStatsRequest], SpendingPageReadResult<SpendingMerchantStatsDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
-  ),
-  "financial.spending.pageAction": operation<[request: SpendingPageActionRequest], SpendingPageActionResult>(
+  )),
+  "financial.spending.pageAction": rendered("spending", "applyPageAction", operation<[request: SpendingPageActionRequest], SpendingPageActionResult>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
-  ),
+  )),
   /** The canonical knowledge point and the Manual Asset revision, read together (ADR 0089). */
   "financial.spending.version": operation<[], SpendingPageVersion>(
     (args) => args.length === 0,
@@ -214,26 +229,26 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 0,
     { lane: "background" },
   ),
-  "financial.spending.pairing": operation<[input: SpendingPairingCandidatesInput], SpendingPairingCandidatesResult>(
+  "financial.spending.pairing": rendered("spending", "rankPairingCandidates", operation<[input: SpendingPairingCandidatesInput], SpendingPairingCandidatesResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion),
     { lane: "interactive" },
-  ),
-  "financial.spending.setPurchaseCategory": operation<[input: SpendingPurchaseCategoryRequest], SpendingPurchaseCategoryResult>(
+  )),
+  "financial.spending.setPurchaseCategory": rendered("spending", "setPurchaseCategory", operation<[input: SpendingPurchaseCategoryRequest], SpendingPurchaseCategoryResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && stringField(args[0], "purchaseId")
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
       && ((args[0] as Record<string, unknown>).categoryCode === null
         || typeof (args[0] as Record<string, unknown>).categoryCode === "string"),
     { lane: "background" },
-  ),
-  "financial.spending.confirmStrongCandidates": operation<[input: SpendingStrongConfirmRequest], SpendingStrongConfirmResult>(
+  )),
+  "financial.spending.confirmStrongCandidates": rendered("spending", "confirmStrongCandidates", operation<[input: SpendingStrongConfirmRequest], SpendingStrongConfirmResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
       && Array.isArray((args[0] as Record<string, unknown>).pairs),
     { lane: "background" },
-  ),
+  )),
   "financial.source.admit": operation<[request: PGliteCanonicalSourceAdmissionRequest], PGliteCanonicalSourceAdmissionReceipt>(
     (args) => args.length === 1 && sourceEvidenceShape(args[0]),
     { lane: "background" },
@@ -328,10 +343,10 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     { lane: "background" },
   ),
   /** One Manual Asset command (ADR 0087); the worker parses it against the category registry. */
-  "financial.manualAssets.apply": operation<[command: ManualAssetCommand], ManualAssetCommandResult>(
+  "financial.manualAssets.apply": rendered("manualAssets", "apply", operation<[command: ManualAssetCommand], ManualAssetCommandResult>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
-  ),
+  )),
   /** Canonical Reset (ADR 0062): replaces all financial state with an empty store. */
   "financial.canonical.reset": operation<[], void>(
     (args) => args.length === 0,
@@ -353,6 +368,31 @@ export type PGliteFinancialResult<Op extends PGliteFinancialOperation> =
 export const PGLITE_FINANCIAL_OPERATIONS = Object.freeze(
   Object.keys(PGLITE_FINANCIAL_CONTRACTS) as PGliteFinancialOperation[],
 );
+
+type FinancialContracts = typeof PGLITE_FINANCIAL_CONTRACTS;
+type BridgeRoute = Readonly<{ group: FinancialBridgeGroup; method: string }>;
+type RendererRoute<Op extends PGliteFinancialOperation> =
+  FinancialContracts[Op] extends Readonly<{ renderer: infer Route extends BridgeRoute }> ? Route : never;
+
+/** The financial operations the renderer may call, each through its own preload channel. */
+export type RendererFinancialOperation = {
+  [Op in PGliteFinancialOperation]: [RendererRoute<Op>] extends [never] ? never : Op;
+}[PGliteFinancialOperation];
+
+export const RENDERER_FINANCIAL_OPERATIONS = Object.freeze(
+  PGLITE_FINANCIAL_OPERATIONS.filter((operation) => "renderer" in PGLITE_FINANCIAL_CONTRACTS[operation]) as RendererFinancialOperation[],
+);
+
+export type RendererFinancialGroup<Op extends RendererFinancialOperation> =
+  RendererRoute<Op> extends Readonly<{ group: infer Group extends FinancialBridgeGroup }> ? Group : never;
+export type RendererFinancialMethod<Op extends RendererFinancialOperation> =
+  RendererRoute<Op> extends Readonly<{ method: infer Method extends string }> ? Method : never;
+
+/** The bridge methods a group's renderer operations give `window.octopusBeak[group]`. */
+export type FinancialBridge<Group extends FinancialBridgeGroup> = {
+  [Op in RendererFinancialOperation as RendererFinancialGroup<Op> extends Group ? RendererFinancialMethod<Op> : never]:
+    (...args: Extract<PGliteFinancialArgs<Op>, readonly unknown[]>) => Promise<PGliteFinancialResult<Op>>;
+};
 
 export function isPGliteFinancialOperation(value: unknown): value is PGliteFinancialOperation {
   return typeof value === "string" && Object.hasOwn(PGLITE_FINANCIAL_CONTRACTS, value);
