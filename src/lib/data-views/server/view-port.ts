@@ -4,7 +4,7 @@ type Port = {
   postMessage(value: unknown): void;
 };
 export type ViewStop = () => Promise<void>;
-type ViewSource<View extends string> = {
+export type ViewSource<View extends string = string> = {
   subscribe(
     view: View,
     params: object,

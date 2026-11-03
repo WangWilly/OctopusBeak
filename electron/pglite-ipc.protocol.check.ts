@@ -46,7 +46,7 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
   const worker = {
     async subscribe<Row>(view: string, _params: object, onRows: (rows: Row[]) => void) {
       if (view === "broken") throw new Error("/private/raw/database/path");
-      assert.equal(view, "system.health");
+      assert.equal(view, "fake.value");
       const key = `${rowListeners.size + 1}`;
       rowListeners.set(key, onRows as (rows: unknown[]) => void);
       return async () => { stops.set(key, (stops.get(key) ?? 0) + 1); };
@@ -70,13 +70,13 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
 
   const result = await subscribe({ sender: first }, {
     requestId: "request-1",
-    view: "system.health",
+    view: "fake.value",
     params: {},
   }) as { ok: true; subscriptionId: string };
   assert.equal(result.ok, true);
   assert.equal((await subscribe({ sender: first }, {
     requestId: "request-1",
-    view: "system.health",
+    view: "fake.value",
     params: {},
   })).code, "duplicate-subscription");
   assert.equal((await unsubscribe({ sender: second }, {
@@ -102,7 +102,7 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
 
   const secondResult = await subscribe({ sender: first }, {
     requestId: "request-2",
-    view: "system.health",
+    view: "fake.value",
     params: {},
   }) as { ok: true; subscriptionId: string };
   first.emit("did-navigate");
@@ -112,7 +112,7 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
 
   const thirdResult = await subscribe({ sender: second }, {
     requestId: "request-3",
-    view: "system.health",
+    view: "fake.value",
     params: {},
   }) as { ok: true; subscriptionId: string };
   workerFailure?.(new Error("worker gone"));
