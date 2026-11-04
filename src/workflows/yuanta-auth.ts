@@ -384,13 +384,13 @@ async function submitLogin(
 
 export function yuantaBankSignInPlan(credentials: YuantaCredentials): FormPlan {
   return {
-    signedIn: isYuantaSignedIn,
-    fill: (page, signal) => withAbort(fillLoginForm(page, credentials), signal),
+    signedIn: (scope) => isYuantaSignedIn(scope.page),
+    fill: ({ page, signal }) => withAbort(fillLoginForm(page, credentials), signal),
     captcha: {
       stage: async (page) => yuantaBankCaptchaAssistanceStage(await waitForMainFrame(page)),
       answer: (page) => (page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME }) ?? page.mainFrame()).locator("#gcode"),
     },
-    submit: async (page, signal) => {
+    submit: async ({ page, signal }) => {
       // Navigation may recreate the login frame while Assist is open.
       const loginFrame = await withAbort(waitForMainFrame(page), signal);
       const loginButtonVisible = await withAbort(
@@ -403,7 +403,7 @@ export function yuantaBankSignInPlan(credentials: YuantaCredentials): FormPlan {
       if (loginButtonVisible) await withAbort(submitLogin(page, credentials), signal);
     },
     dialogs: yuantaBankDialogDecision,
-    session: isYuantaSignedIn,
+    session: (scope) => isYuantaSignedIn(scope.page),
   };
 }
 

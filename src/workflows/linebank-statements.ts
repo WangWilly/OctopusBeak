@@ -1041,8 +1041,8 @@ export async function linebankHumanAttestedCapture(input: {
 
 export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
   return {
-    signedIn: linebankIsSignedIn,
-    fill: async (page, signal) => {
+    signedIn: (scope) => linebankIsSignedIn(scope.page),
+    fill: async ({ page, signal }) => {
       const { linebank_user_id: nationalId, linebank_account: userId, linebank_password: password } = credentials;
       if (new URL(page.url()).pathname !== "/login")
         await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
@@ -1050,7 +1050,7 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
       await withAbort(page.locator("#userId").fill(userId), signal);
       await withAbort(page.locator("#pw").fill(password), signal);
     },
-    submit: async (page, signal) => {
+    submit: async ({ page, signal }) => {
       const loginButtons = page.getByRole("button", {
         name: "登入友善網路銀行",
         exact: true,
@@ -1062,7 +1062,7 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
         throw new Error("LINE Bank login submit button is not visible.");
       await withAbort(loginButton.click(), signal);
     },
-    prompts: (page, signal) => linebankAutoDismissApprovedAlert(frameScope(page, signal)),
+    prompts: ({ page, signal }) => linebankAutoDismissApprovedAlert(frameScope(page, signal)),
     dialogs: "dismiss",
     session: { none: "needs live verification" },
     timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS,

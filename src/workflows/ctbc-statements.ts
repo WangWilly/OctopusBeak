@@ -372,10 +372,10 @@ async function fillCtbcLoginForm(page: Page, credentials: CtbcCredentials, signa
 
 export function ctbcSignInPlan(credentials: CtbcCredentials): FormPlan {
   return {
-    signedIn: isSignedIn,
-    fill: (page, signal) => fillCtbcLoginForm(page, credentials, signal),
-    submit: (page, signal) => withAbort(page.getByRole("button", { name: "登入" }).click(), signal),
-    prompts: handleCtbcPasswordReminder,
+    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
+    fill: ({ page, signal }) => fillCtbcLoginForm(page, credentials, signal),
+    submit: ({ page, signal }) => withAbort(page.getByRole("button", { name: "登入" }).click(), signal),
+    prompts: (scope) => handleCtbcPasswordReminder(scope.page, scope.signal),
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
     timeoutMs: 180_000,

@@ -611,9 +611,9 @@ async function enterLoginCredentials(
 
 function esunSignInPlan(credentials: EsunCredentials): FormPlan {
   return {
-    signedIn: isSignedIn,
-    fill: (page, signal) => enterLoginCredentials(page, credentials, signal),
-    submit: (page, signal) => withAbort(page.getByRole("button", { name: "登入", exact: true }).click(), signal),
+    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
+    fill: ({ page, signal }) => enterLoginCredentials(page, credentials, signal),
+    submit: ({ page, signal }) => withAbort(page.getByRole("button", { name: "登入", exact: true }).click(), signal),
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
     timeoutMs: 15_000,

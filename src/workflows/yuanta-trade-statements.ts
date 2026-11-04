@@ -1631,8 +1631,8 @@ async function signInYuantaTrade(
 
 export function yuantaTradeSignInPlan(credentials: YuantaTradeCredentials, context: WorkflowContext): ShellPlan {
   return {
-    own: (page, signal) => signInYuantaTrade(page, credentials, context, signal),
-    signedIn: isSignedIn,
+    own: ({ page, signal }) => signInYuantaTrade(page, credentials, context, signal),
+    signedIn: (scope) => isSignedIn(scope.page),
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
   };

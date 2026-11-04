@@ -34,6 +34,7 @@ import {
   type ShellPlan,
   type SignInSource,
 } from "./sign-in.ts";
+import type { FrameScope } from "./frame-scope.ts";
 
 const TAKEOVER = "您可能重複登入，或上次的使用未依照正常程序登出，如確定登入，系統將強制關閉他處登入狀態";
 const REJECTED = "驗證碼失效或輸入錯誤，請重新輸入";
@@ -168,13 +169,13 @@ const calls = (): Calls => ({ fill: 0, submit: 0, prompts: 0 });
 
 function form(count: Calls, overrides: Partial<FormPlan> = {}): FormPlan {
   return {
-    signedIn: (page) => page.locator("#ok").isVisible(),
-    fill: async (page) => {
+    signedIn: ({ page }) => page.locator("#ok").isVisible(),
+    fill: async ({ page }) => {
       count.fill += 1;
       await page.fill("#user", "someone");
     },
     captcha: { stage, answer: (page) => page.locator("#answer") },
-    submit: async (page) => {
+    submit: async ({ page }) => {
       count.submit += 1;
       await page.click("#login");
     },
@@ -406,7 +407,7 @@ test("the fail policy also fails on a dialog during fill, before any stage", () 
     const run = fakeRun(page);
     const count = calls();
     const plan = form(count, {
-      fill: async (p) => {
+      fill: async ({ page: p }) => {
         count.fill += 1;
         await p.evaluate(() => alert("during fill"));
       },
@@ -449,7 +450,7 @@ test("a before-submit modal is confirmed once, the form is filled again, and the
     const run = fakeRun(page);
     const count = calls();
     const plan = form(count, {
-      fill: async (p) => {
+      fill: async ({ page: p }) => {
         count.fill += 1;
         await p.fill("#user", "someone");
         if (count.fill === 1) await p.evaluate(() => (window as unknown as { openModal(): void }).openModal());
@@ -467,7 +468,7 @@ test("a before-submit modal that returns after the refill is a repeated takeover
     const run = fakeRun(page);
     const count = calls();
     const plan = form(count, {
-      fill: async (p) => {
+      fill: async ({ page: p }) => {
         count.fill += 1;
         await p.fill("#user", "someone");
         await p.evaluate(() => (window as unknown as { openModal(): void }).openModal());
@@ -486,7 +487,7 @@ test("only a before-submit prompt causes the pre-submit wait; a while-settling m
     const run = fakeRun(page);
     const count = calls();
     const plan = form(count, {
-      fill: async (p) => {
+      fill: async ({ page: p }) => {
         count.fill += 1;
         await p.fill("#user", "someone");
         await p.evaluate(() => (window as unknown as { openModal(): void }).openModal());
@@ -665,10 +666,12 @@ test("a stage callback that throws fails the sign-in with that error", () =>
   }));
 
 test("abort at each wait rejects with the run's reason and emits nothing after", async () => {
-  const hangOnArrival = (arrive: () => void) => (_page: Page, signal: AbortSignal) => {
+  const hang = (arrive: () => void, signal: AbortSignal) => {
     arrive();
     return untilAborted<never>(signal);
   };
+  const hangOnArrival = (arrive: () => void) => ({ signal }: FrameScope) => hang(arrive, signal);
+  const assistHangsOnArrival = (arrive: () => void): Assist => (_page, signal) => hang(arrive, signal);
   const waits: Array<{
     name: string;
     script: string;
@@ -677,7 +680,7 @@ test("abort at each wait rejects with the run's reason and emits nothing after",
   }> = [
     { name: "signedIn", script: "", callbacks: (arrive) => ({ plan: { signedIn: hangOnArrival(arrive) } }), before: [STARTED] },
     { name: "fill", script: "", callbacks: (arrive) => ({ plan: { fill: hangOnArrival(arrive) } }), before: [STARTED] },
-    { name: "stage", script: "", callbacks: (arrive) => ({ assist: hangOnArrival(arrive), plan: {} }), before: [STARTED, REQUESTED] },
+    { name: "stage", script: "", callbacks: (arrive) => ({ assist: assistHangsOnArrival(arrive), plan: {} }), before: [STARTED, REQUESTED] },
     { name: "submit", script: "", callbacks: (arrive) => ({ plan: { submit: hangOnArrival(arrive) } }), before: [STARTED, REQUESTED, ASSISTED] },
     {
       name: "poll",
@@ -686,7 +689,7 @@ test("abort at each wait rejects with the run's reason and emits nothing after",
         let submitted = false;
         return {
           plan: {
-            submit: async (p) => {
+            submit: async ({ page: p }) => {
               await p.click("#login");
               submitted = true;
             },
@@ -725,9 +728,9 @@ test("abort at each wait rejects with the run's reason and emits nothing after",
       let planSignal: AbortSignal | undefined;
       const plan = form(calls(), {
         ...callbacks.plan,
-        fill: async (p, signal) => {
-          planSignal = signal;
-          await (callbacks.plan.fill ?? form(calls()).fill)(p, signal);
+        fill: async (scope) => {
+          planSignal = scope.signal;
+          await (callbacks.plan.fill ?? form(calls()).fill)(scope);
         },
       });
       const running = failure(signIn(run.context, page, source(), plan));
@@ -817,7 +820,7 @@ test("the settle window runs only when the plan has prompts, and an acting promp
 test("assertSession comes from the session probe, or not at all", async () => {
   await withPage("show()", async (page) => {
     const run = fakeRun(page);
-    const { assertSession } = await signIn(run.context, page, source(), form(calls(), { session: (p) => p.locator("#ok").isVisible() }));
+    const { assertSession } = await signIn(run.context, page, source(), form(calls(), { session: ({ page: p }) => p.locator("#ok").isVisible() }));
     assert.ok(assertSession);
     await assertSession();
     await page.evaluate(() => (window as unknown as { hide(): void }).hide());
@@ -834,7 +837,7 @@ test("assertSession comes from the session probe, or not at all", async () => {
 
 function shell(overrides: Partial<ShellPlan> = {}): ShellPlan {
   return {
-    own: async (page, signal) => {
+    own: async ({ page, signal }) => {
       await page.click("#login");
       await page.locator("#ok").waitFor({ state: "visible", timeout: 2_000 });
       signal.throwIfAborted();
@@ -858,7 +861,7 @@ test("a shell plan checks the existing session only when it names a probe", asyn
   await withPage("", async (page) => {
     const run = fakeRun(page);
     let owned = 0;
-    const signedIn = await signIn(run.context, page, source(), shell({ own: async () => { owned += 1; }, signedIn: (p) => p.locator("#ok").isVisible() }));
+    const signedIn = await signIn(run.context, page, source(), shell({ own: async () => { owned += 1; }, signedIn: ({ page: p }) => p.locator("#ok").isVisible() }));
     assert.deepEqual(signedIn, { usedExistingSession: true });
     assert.equal(owned, 0);
   }, { signedIn: true });
@@ -883,7 +886,7 @@ test("a shell plan's own error fails authentication, unless the declared rejecti
     const run = fakeRun(page);
     const rejection: RejectionEvidence = { frame: "txnFrame", text: { pattern: /^0290\s*驗證碼輸入錯誤$/u } };
     const error = await failure(signIn(run.context, page, source({ rejection }), shell({
-      own: async (p) => {
+      own: async ({ page: p }) => {
         await p.click("#login");
         throw broken;
       },
@@ -904,7 +907,7 @@ test("a shell plan's dialogs follow the same classification: takeover accepted, 
     const run = fakeRun(page);
     let ownSignal: AbortSignal | undefined;
     const error = await failure(signIn(run.context, page, source(), shell({
-      own: async (p, signal) => {
+      own: async ({ page: p, signal }) => {
         ownSignal = signal;
         await p.click("#login");
         await untilAborted(signal);
@@ -927,7 +930,7 @@ test("aborting a shell plan rejects with the reason and emits nothing after", ()
   withPage("", async (page) => {
     const run = fakeRun(page);
     const reason = new Error("cancelled during own");
-    const running = failure(signIn(run.context, page, source(), shell({ own: (_p, signal) => untilAborted(signal) })));
+    const running = failure(signIn(run.context, page, source(), shell({ own: ({ signal }) => untilAborted(signal) })));
     await delay(200);
     run.controller.abort(reason);
     assert.equal(await running, reason);

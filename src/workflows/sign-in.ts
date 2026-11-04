@@ -14,9 +14,15 @@ import type { SessionTakeover } from "../lib/automation/types.ts";
 import { VerificationStageIncompleteError, type VerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { withAbort } from "./abort.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 
-export type Probe = (page: Page, signal: AbortSignal) => Promise<boolean>;
-export type Act = (page: Page, signal: AbortSignal) => Promise<void>;
+/**
+ * Plan code reaches the page only through the scope the step hands it. During
+ * sign-in the scope ends with the run, with the attempt, or with the first
+ * dialog verdict, and its reason is the one the step throws (ADR 0101).
+ */
+export type Probe = (scope: FrameScope) => Promise<boolean>;
+export type Act = (scope: FrameScope) => Promise<void>;
 
 export type DialogDecision = "accept" | "dismiss" | "fail" | Error;
 
@@ -158,12 +164,13 @@ class Attempt {
   private readonly page: Page;
   private readonly source: SignInSource;
   private readonly plan: SignInPlan;
+  /** Aborted with the first dialog verdict, or without a reason when the attempt ends. */
   private readonly ended = new AbortController();
-  /** Ends with the run or with this attempt, whichever comes first. */
+  /** Ends with the run, with the first dialog verdict, or with this attempt, whichever comes first. */
   private readonly signal: AbortSignal;
+  /** Every plan call runs in this scope, so ending the attempt stops its browser work too. */
+  private readonly scope: FrameScope;
   private verdict: Error | undefined;
-  private interrupt!: (error: Error) => void;
-  private readonly interrupted: Promise<never>;
   private takeovers = 0;
   private restartDeadline: (() => void) | undefined;
   private listening = false;
@@ -179,15 +186,12 @@ class Attempt {
     this.source = source;
     this.plan = plan;
     this.signal = AbortSignal.any([context.signal, this.ended.signal]);
-    this.interrupted = new Promise<never>((_resolve, reject) => {
-      this.interrupt = reject;
-    });
-    void this.interrupted.catch(() => undefined);
+    this.scope = frameScope(page, this.signal);
   }
 
   async run(): Promise<SignedIn> {
     const existing = this.plan.signedIn;
-    if (existing && await this.raced(existing(this.page, this.signal))) return this.finish(true);
+    if (existing && await this.raced(existing(this.scope))) return this.finish(true);
     this.page.on("dialog", this.onDialog);
     this.listening = true;
     if ("own" in this.plan) await this.runShell(this.plan);
@@ -214,7 +218,8 @@ class Attempt {
     return {
       usedExistingSession,
       assertSession: async () => {
-        if (!(await session(this.page, this.context.signal))) {
+        // Collection checks the session after this attempt has ended, so the probe gets a scope bound to the run alone.
+        if (!(await session(frameScope(this.page, this.context.signal)))) {
           throw new FailureCodeError("authentication-failed");
         }
       },
@@ -226,22 +231,22 @@ class Attempt {
     const captcha = plan.captcha;
     if (captcha) {
       const stage = await this.raced(Promise.resolve().then(() => captcha.stage(this.page)));
-      // Never abandon a pending stage: a dialog verdict waits until the port returns, then the next raced await throws it.
+      // Never abandon a pending stage: a dialog verdict aborts the scope, but the port is not raced, so the next raced await throws it.
       await this.context.verification.complete(stage);
-      if (!(await this.raced(plan.signedIn(this.page, this.signal)))) {
+      if (!(await this.raced(plan.signedIn(this.scope)))) {
         const answer = await this.raced(captcha.answer(this.page).inputValue());
         if (answer.trim() === "") throw new SignInError("answer-missing");
-        await this.raced(plan.submit(this.page, this.signal));
+        await this.raced(plan.submit(this.scope));
       }
     } else {
-      await this.raced(plan.submit(this.page, this.signal));
+      await this.raced(plan.submit(this.scope));
     }
     await this.waitUntilSettled(plan);
   }
 
   private async runShell(plan: ShellPlan): Promise<void> {
     try {
-      await this.raced(plan.own(this.page, this.signal));
+      await this.raced(plan.own(this.scope));
     } catch (error) {
       if (this.context.signal.aborted || error === this.verdict) throw error;
       if (await this.pageRejectionVisible().catch(() => false)) throw new CaptchaProviderRejectedError();
@@ -253,9 +258,9 @@ class Attempt {
   private async fillForm(plan: FormPlan): Promise<void> {
     const prompt = this.source.sessionTakeover?.prompt;
     const before = this.takeovers;
-    await this.raced(plan.fill(this.page, this.signal));
+    await this.raced(plan.fill(this.scope));
     if (prompt?.phase !== "before-submit" || !(await this.takeoverAppears(prompt, before, PRE_SUBMIT_PROMPT_MS))) return;
-    await this.raced(plan.fill(this.page, this.signal));
+    await this.raced(plan.fill(this.scope));
     await this.takeoverAppears(prompt, this.takeovers, PRE_SUBMIT_PROMPT_MS);
   }
 
@@ -269,7 +274,7 @@ class Attempt {
     let heldSince: number | undefined;
     try {
       for (;;) {
-        if (await this.raced(plan.signedIn(this.page, this.signal))) {
+        if (await this.raced(plan.signedIn(this.scope))) {
           if (!plan.prompts) return;
           heldSince ??= Date.now();
           if (Date.now() - heldSince >= SETTLE_MS) return;
@@ -280,26 +285,30 @@ class Attempt {
         if (heldSince === undefined && Date.now() >= deadline) {
           throw new SignInDeadlineError(timeoutMs, this.takeovers > 0);
         }
-        if (plan.prompts && await this.raced(plan.prompts(this.page, this.signal))) heldSince = undefined;
+        if (plan.prompts && await this.raced(plan.prompts(this.scope))) heldSince = undefined;
         await this.checkPageTakeover();
         if (await this.pageRejectionVisible()) throw new CaptchaProviderRejectedError();
-        await this.raced(sleep(TICK_MS, this.signal));
+        await this.scope.pause(TICK_MS);
       }
     } finally {
       this.restartDeadline = undefined;
     }
   }
 
-  /** Every await of plan code ends with the run's abort reason or the first dialog verdict. */
+  /**
+   * Every await of plan code ends with the run's abort reason or the first dialog
+   * verdict. The scope already stops the browser work; this also stops the wait
+   * for plan code that did not go through the scope.
+   */
   private async raced<T>(operation: Promise<T>): Promise<T> {
     void operation.catch(() => undefined);
-    return await withAbort(Promise.race([operation, this.interrupted]), this.context.signal);
+    return await withAbort(operation, this.signal);
   }
 
   private fail(error: Error): void {
     if (this.verdict) return;
     this.verdict = error;
-    this.interrupt(error);
+    this.ended.abort(error);
   }
 
   private async handleDialog(dialog: Dialog): Promise<void> {
@@ -359,7 +368,7 @@ class Attempt {
     if ("dialog" in prompt) {
       while (this.takeovers === before) {
         if (Date.now() >= deadline) return false;
-        await this.raced(sleep(Math.min(TICK_MS, deadline - Date.now()), this.signal));
+        await this.scope.pause(Math.min(TICK_MS, deadline - Date.now()));
       }
       return true;
     }
@@ -458,22 +467,4 @@ async function bounded<T>(operation: Promise<T>, ms: number, late: T): Promise<T
   } finally {
     clearTimeout(timer);
   }
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal.reason);
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }, ms);
-    signal.addEventListener("abort", abort, { once: true });
-  });
 }

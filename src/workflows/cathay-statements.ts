@@ -741,8 +741,8 @@ export function cathaySignInPlan(credentials: CathayCredentials, event: Workflow
   // The refill after the duplicate-session logout types into the form the logout cleared, without reloading it.
   let formOpen = false;
   return {
-    signedIn: (page, signal) => cathaySignedIn(page, signal, progress(signal)),
-    fill: async (page, signal) => {
+    signedIn: ({ page, signal }) => cathaySignedIn(page, signal, progress(signal)),
+    fill: async ({ page, signal }) => {
       if (formOpen) {
         await withAbort(page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 }), signal);
       } else {
@@ -752,8 +752,8 @@ export function cathaySignInPlan(credentials: CathayCredentials, event: Workflow
       }
       await enterCathayCredentials(page, credentials, signal, progress(signal));
     },
-    submit: (page, signal) => submitCathayLogin(page, signal, progress(signal)),
-    prompts: skipCathayTrustDevicePrompt,
+    submit: ({ page, signal }) => submitCathayLogin(page, signal, progress(signal)),
+    prompts: (scope) => skipCathayTrustDevicePrompt(scope.page, scope.signal),
     dialogs: "accept-for-page",
     session: { none: "GetJWT customer check runs in collection" },
     timeoutMs: 120_000,

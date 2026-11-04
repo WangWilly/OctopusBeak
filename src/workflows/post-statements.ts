@@ -353,8 +353,8 @@ export function postSignInPlan(credentials: PostCredentials): FormPlan {
   // The CAPTCHA the stage solved must be the one submitted: the stage and submit share this snapshot.
   let assisted: Readonly<{ url: string; element: ElementHandle }> | undefined;
   return {
-    signedIn: isSignedIn,
-    fill: async (page, signal) => {
+    signedIn: (scope) => isSignedIn(scope.page),
+    fill: async ({ page, signal }) => {
       if (!postLoginEntryUrl(page.url()))
         await withAbort(page.goto(HOME_URL, { waitUntil: "domcontentloaded" }), signal);
       await withAbort(page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }), signal);
@@ -374,7 +374,7 @@ export function postSignInPlan(credentials: PostCredentials): FormPlan {
       },
       answer: captchaInput,
     },
-    submit: async (page, signal) => {
+    submit: async ({ page, signal }) => {
       if (!assisted) throw new Error("iPost CAPTCHA assistance did not run before submit.");
       const sameElement = await withAbort(
         captchaInput(page)

@@ -578,20 +578,20 @@ export function hncbCaptchaAssistanceStage(
 
 export function hncbSignInPlan(credentials: HncbCredentials): FormPlan {
   return {
-    signedIn: isSignedIn,
-    fill: (page, signal) => fillLoginForm(page, credentials, signal),
+    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
+    fill: ({ page, signal }) => fillLoginForm(page, credentials, signal),
     captcha: {
       stage: hncbCaptchaAssistanceStage,
       answer: (page) => page.locator("#TrxCaptchaKey"),
     },
-    submit: async (page, signal) => {
+    submit: async ({ page, signal }) => {
       const accountField = page.locator("#NICKNAME");
       if (!(await withAbort(accountField.inputValue(), signal)).trim())
         await withAbort(accountField.fill(credentials.hncb_account), signal);
       await withAbort(page.locator("li#WannaLogin a").click(), signal);
     },
     dialogs: "dismiss",
-    session: isSignedIn,
+    session: (scope) => isSignedIn(scope.page, scope.signal),
   };
 }
 

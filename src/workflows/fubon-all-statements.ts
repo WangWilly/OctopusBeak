@@ -194,7 +194,7 @@ export function fubonSignInPlan(
     account: credentials.fubon_account,
     password: credentials.fubon_password,
   }, complete);
-  return { own: login.run, dialogs: login.observe, session: fubonSessionProbe };
+  return { own: (scope) => login.run(scope.page, scope.signal), dialogs: login.observe, session: (scope) => fubonSessionProbe(scope.page) };
 }
 
 async function authenticateFubonForApp(

@@ -811,16 +811,16 @@ async function sinopacSessionProbe(page: Page, signal: AbortSignal): Promise<boo
 
 export function sinopacSignInPlan(credentials: SinopacCredentials): FormPlan {
   return {
-    signedIn: isSignedIn,
-    fill: (page, signal) => fillLoginForm(page, credentials, signal),
+    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
+    fill: ({ page, signal }) => fillLoginForm(page, credentials, signal),
     captcha: {
       stage: sinopacCaptchaAssistanceStage,
       answer: (page) => page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
     },
-    submit: clickLoginButton,
-    prompts: dismissPasswordExpiryNotice,
+    submit: (scope) => clickLoginButton(scope.page, scope.signal),
+    prompts: (scope) => dismissPasswordExpiryNotice(scope.page, scope.signal),
     dialogs: "fail",
-    session: sinopacSessionProbe,
+    session: (scope) => sinopacSessionProbe(scope.page, scope.signal),
     timeoutMs: 300_000,
   };
 }
