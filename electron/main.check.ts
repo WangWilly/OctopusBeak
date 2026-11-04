@@ -14,13 +14,14 @@ assert.match(
   /runtime\.runMany\(\["exchange-rates"\], \{ scheduledAtUtc \}\)/,
   "a scheduled exchange-rate run passes the same admission check as every other start",
 );
+// host-services.check.ts covers when the background services start, take settings, pause and stop;
+// main only hands them recovery's readiness and stops them first on quit.
+assert.match(source, /services\.startWhenReady\(automationRuntimeReady\)/u);
+assert.match(source, /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*hostServices\?\.stop\(\);/u);
 assert.match(
   source,
-  /automationRuntimeReady\.then\(\(\) => \{[\s\S]*?scheduler\?\.start\(\);\s*collectionScheduler\?\.start\(\);[\s\S]*?if \(app\.isPackaged && !cdpFixture && !packagedBrowserFixture\) usagePinger\?\.start\(\);\s*appUpdater\?\.start\(\);\s*\}\)/,
-);
-assert.match(
-  source,
-  /const handleBeforeQuit = createBeforeQuitHandler\(\{\s*cleanup: async \(\) => \{\s*scheduler\?\.stop\(\);\s*collectionScheduler\?\.stop\(\);/,
+  /run: \{\s*schedules: !cdpFixture && !packagedBrowserFixture,\s*usagePing: app\.isPackaged && !cdpFixture && !packagedBrowserFixture,\s*\}/u,
+  "fixtures run no schedules, and only a packaged app pings",
 );
 assert.match(
   source,
@@ -38,7 +39,6 @@ assert.match(
   /hasOccurrenceBeenAttempted:\s*\(occurrenceUtc\)\s*=>\s*operationalRuntime\.provider\.automation\.hasOccurrenceBeenAttempted\(\s*"exchange-rates",\s*occurrenceUtc,?\s*\)/,
 );
 assert.match(source, /process\.env\.OCTOPUSBEAK_CDP_FIXTURE === "171"/);
-assert.match(source, /if \(!cdpFixture && !packagedBrowserFixture\)/);
 assert.match(source, /const packagedBrowserFixture = packagedBrowserFixtureEnabled\(process\.env\)/);
 assert.match(source, /runPackagedBrowserWorkerFixture\(\s*runtime,\s*userData,\s*process\.env,\s*\)/);
 assert.match(source, /PACKAGED_BROWSER_FIXTURE_RESULT_PREFIX/);
@@ -57,11 +57,6 @@ assert.deepEqual(
   source.match(/squirrelHandoff\.quitAndInstall\b.*/g),
   ["squirrelHandoff.quitAndInstall,"],
   "only the updater's restart, which refuses while a run is active, installs an update",
-);
-assert.match(
-  source,
-  /cleanup: async \(\) => \{[\s\S]*?appUpdater\?\.stop\(\);[\s\S]*?\},\s*cleanupWaitMs/,
-  "quitting stops the update timer",
 );
 const appUpdatesSource = readFileSync(new URL("../src/lib/settings/app-updates.ts", import.meta.url), "utf8");
 assert.doesNotMatch(appUpdatesSource, /USAGE_PING|usage-statistics/, "update checks never reach the usage statistics receiver");
