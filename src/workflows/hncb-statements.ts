@@ -58,7 +58,6 @@ import type {
   ProductCollectOptions,
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
-import { withAbort } from "./abort.ts";
 import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
@@ -480,13 +479,13 @@ function matchesAccountFilter(
   });
 }
 
-async function isSignedIn(page: Page, signal: AbortSignal): Promise<boolean> {
-  const scope = await ifFound(frameScope(page, signal).scopeWith(
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  const found = await ifFound(scope.scopeWith(
     (candidate) => candidate.locator('a[href*="Logout"]').filter({ hasText: "登出" }),
     "the HNCB logout link",
     { timeoutMs: 3_000 },
   ));
-  return scope !== null;
+  return found !== null;
 }
 
 function normalizedPathname(pathname: string): string {
@@ -514,25 +513,16 @@ export function isHncbLoginEntryUrl(url: string): boolean {
 }
 
 async function fillLoginForm(
-  page: Page,
+  scope: FrameScope,
   credentials: HncbCredentials,
-  signal: AbortSignal,
 ): Promise<void> {
+  const { page } = scope;
   if (!isHncbLoginEntryUrl(page.url()))
-    await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
-  await withAbort(
-    page.locator("#USERIDTEXT").fill(credentials.hncb_user_id),
-    signal,
-  );
-  await withAbort(
-    page.locator("#NICKNAME").fill(credentials.hncb_account),
-    signal,
-  );
-  await withAbort(
-    page.locator("#password").fill(credentials.hncb_password),
-    signal,
-  );
-  await withAbort(page.locator("#TrxCaptchaKey").focus(), signal);
+    await scope.withSignal((signal) => page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) => page.locator("#USERIDTEXT").fill(credentials.hncb_user_id, { signal }));
+  await scope.withSignal((signal) => page.locator("#NICKNAME").fill(credentials.hncb_account, { signal }));
+  await scope.withSignal((signal) => page.locator("#password").fill(credentials.hncb_password, { signal }));
+  await scope.withSignal((signal) => page.locator("#TrxCaptchaKey").focus({ signal }));
 }
 
 export function hncbCaptchaAssistanceStage(
@@ -578,20 +568,20 @@ export function hncbCaptchaAssistanceStage(
 
 export function hncbSignInPlan(credentials: HncbCredentials): FormPlan {
   return {
-    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
-    fill: ({ page, signal }) => fillLoginForm(page, credentials, signal),
+    signedIn: isSignedIn,
+    fill: (scope) => fillLoginForm(scope, credentials),
     captcha: {
       stage: hncbCaptchaAssistanceStage,
       answer: (page) => page.locator("#TrxCaptchaKey"),
     },
-    submit: async ({ page, signal }) => {
-      const accountField = page.locator("#NICKNAME");
-      if (!(await withAbort(accountField.inputValue(), signal)).trim())
-        await withAbort(accountField.fill(credentials.hncb_account), signal);
-      await withAbort(page.locator("li#WannaLogin a").click(), signal);
+    submit: async (scope) => {
+      const accountField = scope.page.locator("#NICKNAME");
+      if (!(await scope.withSignal((signal) => accountField.inputValue({ signal }))).trim())
+        await scope.withSignal((signal) => accountField.fill(credentials.hncb_account, { signal }));
+      await scope.withSignal((signal) => scope.page.locator("li#WannaLogin a").click({ signal }));
     },
     dialogs: "dismiss",
-    session: (scope) => isSignedIn(scope.page, scope.signal),
+    session: isSignedIn,
   };
 }
 
