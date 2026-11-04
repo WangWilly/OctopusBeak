@@ -170,6 +170,11 @@ export function createSpendingDesktopApi(model) {
       runHistory: async () => [],
       openExternalPrerequisite: async () => ({ ok: true }),
       forceQuit: async () => ({ ok: true, closed: true }),
+      runtimeSnapshot: async () => ({ sessionId: "fixture", revision: 0, tasks: [] }),
+      fatalRuntimeSnapshot: async () => {},
+      onRuntimeChanged: () => () => {},
+      takeNotificationTarget: async () => null,
+      onNotificationTargetRequested: () => () => {},
     },
     data: {
       getVersion: async () => version,
@@ -294,6 +299,11 @@ function installSpendingDesktopApi(model) {
       runHistory: async () => [],
       openExternalPrerequisite: async () => ({ ok: true }),
       forceQuit: async () => ({ ok: true, closed: true }),
+      runtimeSnapshot: async () => ({ sessionId: "fixture", revision: 0, tasks: [] }),
+      fatalRuntimeSnapshot: async () => {},
+      onRuntimeChanged: () => () => {},
+      takeNotificationTarget: async () => null,
+      onNotificationTargetRequested: () => () => {},
     },
     data: {
       getVersion: async () => version,
