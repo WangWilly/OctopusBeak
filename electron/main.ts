@@ -79,7 +79,7 @@ import {
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
 import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
 import { createSquirrelHandoff } from "./squirrel-update-handoff.ts";
-import { createHumanAssistanceContract } from "../src/lib/automation/human-assistance.ts";
+import { seedCdpRuntimeFixture } from "./cdp-runtime-fixture.ts";
 import { createTdccRegistrationFixtureFetch } from "../src/lib/automation/server/tdcc-registration-fixture.ts";
 import { useTdccRegistrationFixture } from "../src/lib/automation/server/tdcc-registration-service.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
@@ -391,63 +391,10 @@ async function start() {
     setImmediate(() => {
       runtime.recover()
         .then(async () => {
-          if (cdpVerificationFixture) {
-            const contract = createHumanAssistanceContract({
-              stageId: "esun-credit-card-login-captcha",
-              title: "Complete the E.SUN verification challenge",
-              targets: [{
-                id: "captcha-input",
-                label: "Verification code",
-                semanticId: "esun.login.captcha-input",
-                modes: ["type"],
-                rect: { x: 220, y: 280, width: 220, height: 42 },
-              }],
-              contextRegions: [],
-              challengeKind: "text-captcha",
-              charset: "digits",
-              expectedAnswerLength: 6,
-              challengeImageRegion: {
-                id: "captcha-image",
-                label: "Verification image",
-                semanticId: "esun.login.captcha-image",
-                rect: { x: 220, y: 210, width: 220, height: 54 },
-              },
-              completion: { mode: "inline", targetIds: ["captcha-input"] },
-              focus: { targetId: "captcha-input", contextRegionIds: [] },
-            }, 1);
-            await operationalRuntime.provider.automation.createTaskRun({
-              taskId: "esun-credit-card-statements",
-              kind: "crawler",
-              status: "waiting_for_human",
-              attempt: 1,
-              maxAttempts: 1,
-              startedAt: new Date().toISOString(),
-              humanAssistanceContract: contract,
-            });
-            await runtime.rehydrate();
-          }
-          // This is an isolated Electron regression seam. It is only active
-          // for the disposable CDP fixture and lets the fatal invariant be
-          // exercised without seeding or touching a user's ledger.
-          if (
-            cdpFixture
-            && unknownActiveRuntimeFixture
-          ) {
-            runtime.upsertRuntimeTask({
-              taskId: "unknown-cdp-active-task",
-              runId: "unknown-cdp-run",
-              status: "running",
-              attempt: 1,
-              maxAttempts: 1,
-              progress: {
-                phaseCode: "fixture",
-                completed: 0,
-                total: 1,
-                percent: 0,
-                attempt: 1,
-              },
-              appWorkflowOutcome: null,
-              updatedAt: new Date().toISOString(),
+          if (cdpFixture) {
+            await seedCdpRuntimeFixture(runtime, operationalRuntime.provider, {
+              verification: cdpVerificationFixture,
+              unknownActiveTask: unknownActiveRuntimeFixture,
             });
           }
         })
