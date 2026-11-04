@@ -7,7 +7,7 @@ const trendSource = readFileSync(new URL("./MonthTrendChart.svelte", import.meta
 const mergeSource = readFileSync(new URL("./SpendingMergeModal.svelte", import.meta.url), "utf8");
 const detailSource = readFileSync(new URL("./SpendingPurchaseModal.svelte", import.meta.url), "utf8");
 const chartSources = [["pace", paceSource], ["trend", trendSource]] as const;
-const dictionarySource = readFileSync(new URL("../../i18n/i18n.ts", import.meta.url), "utf8");
+const dictionarySource = readFileSync(new URL("../copy.ts", import.meta.url), "utf8");
 const matchingSource = readFileSync(new URL("../purchase-matching.ts", import.meta.url), "utf8");
 const entry = readFileSync(new URL("../../../routes/+page.svelte", import.meta.url), "utf8");
 
