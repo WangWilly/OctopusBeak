@@ -13,19 +13,11 @@ function sourceBetween(start: string, end: string) {
   assert.notEqual(to, -1, `missing anchor ${end}`);
   return source.slice(from, to);
 }
-const runTaskSource = source.slice(
-  source.indexOf("async function runTask"),
-  source.indexOf("async function runParallelTasks"),
-);
-const runParallelTasksSource = source.slice(
-  source.indexOf("async function runParallelTasks"),
-  source.indexOf("async function stopAllTasks"),
-);
-
-assert.doesNotMatch(runTaskSource, /expandedRunDetailsTaskId\s*=/);
-assert.doesNotMatch(runParallelTasksSource, /expandedRunDetailsTaskId\s*=/);
-assert.match(runParallelTasksSource, /state\.runMany\(tasks\.map\(\(task\) => task\.id\)\)/);
-assert.doesNotMatch(runParallelTasksSource, /Promise\.allSettled/);
+// run-actions.check.ts covers the run flows; the dashboard asks for confirmation and hands each action over.
+assert.match(source, /const runActions = createRunActions<AutomationTaskRow>\(\{\s*state,/);
+for (const call of ["runActions.runTask(task)", "runActions.runAll(tasks)", "runActions.stopAll(activeTasks)"]) {
+  assert.ok(source.includes(call), `the dashboard hands ${call} to the run actions`);
+}
 assert.match(source, /import \{ slide \} from "svelte\/transition"/);
 assert.match(source, /function disclosureSlide\(node: Element\)/);
 assert.match(
@@ -118,8 +110,7 @@ assert.match(source, /onpointerleave=\{hideTaskTooltip\}/);
 assert.match(source, /present\(hoveredTask\)\.statusLabel/);
 assert.match(source, /border-radius: 50%/);
 assert.match(source, /\.active-task-jump\.failed\s*\{[\s\S]*?var\(--danger\)/);
-assert.doesNotMatch(runTaskSource, /primaryAction === "Resume"|automation\.resume/);
-assert.match(runTaskSource, /state\.run\(task\.id\)/);
+assert.doesNotMatch(source, /primaryAction === "Resume"|automation\.resume/);
 assert.doesNotMatch(source, /aggregateProgress/);
 assert.doesNotMatch(source, /combinedTaskProgress/);
 assert.doesNotMatch(source, /class="aggregate-progress"/);
@@ -155,13 +146,13 @@ const primaryTaskActionSource = sourceBetween(
   "async function saveCredentials",
 );
 // automation-actions.check.ts covers force-terminating a run waiting for a person.
-assert.match(primaryTaskActionSource, /state\.cancel\(task\)/);
+assert.match(primaryTaskActionSource, /runActions\.cancel\(task\)/);
 const forceTerminateTaskSource = source.slice(
   source.indexOf("async function forceTerminateTask"),
   source.indexOf("async function revealTaskDetails"),
 );
 assert.match(forceTerminateTaskSource, /confirm\(\$t\.automation\.confirmForceQuit\)/);
-assert.match(forceTerminateTaskSource, /state\.forceTerminate\(task\.id\)/);
+assert.match(forceTerminateTaskSource, /runActions\.forceTerminate\(task\)/);
 assert.match(
   source,
   /\{#if task\.status === "cancelling" && task\.forceTerminateAvailable\}[\s\S]*?forceTerminateTask\(task\)[\s\S]*?\$t\.automation\.forceQuit/,
@@ -290,12 +281,12 @@ const saveCredentialsSource = sourceBetween(
 // The save rules (generation, failure, the story's saved source) are tested in credential-editor.check.ts.
 assert.match(
   saveCredentialsSource,
-  /if \(submission\.kind === "blocked"\) return;\s*actionError = "";/,
+  /if \(submission\.kind === "blocked"\) return;\s*runActions\.setError\(""\);/,
   "a blocked submit leaves the page's error alone",
 );
 assert.match(
   saveCredentialsSource,
-  /if \(\(await submission\.settled\) === "failed"\) actionError = \$t\.automation\.saveCredentialsFailed/,
+  /if \(\(await submission\.settled\) === "failed"\) runActions\.setError\(\$t\.automation\.saveCredentialsFailed\)/,
   "a failed save shows the page's own copy, not the raw error",
 );
 assert.match(

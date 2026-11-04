@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { get, writable } from "svelte/store";
 import type { OnboardingWorkflowToken } from "../onboarding/controller.ts";
-import { createRunActions, type RunActionsState } from "./run-actions.ts";
+import { createRunActions, type RunActionsState, type RunTask } from "./run-actions.ts";
 
-type Task = Parameters<ReturnType<typeof createRunActions>["runTask"]>[0];
+type Task = RunTask;
 
 const task = (id: string, overrides: Partial<Task> = {}): Task => ({
   id, isActive: false, canRun: true, credentialGroupId: `${id}-group`, status: "queued", ...overrides,

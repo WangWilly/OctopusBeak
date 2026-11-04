@@ -3,7 +3,8 @@ import type { OnboardingWorkflowToken } from "../onboarding/controller.ts";
 import type { AutomationPageState } from "./automation-page-state.ts";
 import type { AutomationTaskRow } from "./types.ts";
 
-type RunTask = Pick<AutomationTaskRow, "id" | "isActive" | "canRun" | "credentialGroupId" | "status">;
+/** What the run flows read of a task row. */
+export type RunTask = Pick<AutomationTaskRow, "id" | "isActive" | "canRun" | "credentialGroupId" | "status">;
 
 /** The page state's intents the dashboard's run flows use. */
 export type RunActionsState = Pick<
@@ -19,21 +20,21 @@ export type RunActionsOnboarding = Readonly<{
 }>;
 
 /** The words the person sees, in the page's language. */
-export type RunActionsMessages = Readonly<{
+export type RunActionsMessages<Task extends RunTask> = Readonly<{
   registrationBlocksSync(): string;
-  taskLabel(task: RunTask): string;
+  taskLabel(task: Task): string;
 }>;
 
-export type RunActions = Readonly<{
+export type RunActions<Task extends RunTask> = Readonly<{
   /** The last action's failure for the person, or "" while there is none. */
   actionError: Readable<string>;
   setError(message: string): void;
-  runTask(task: RunTask): Promise<void>;
-  runAll(tasks: readonly RunTask[]): Promise<void>;
+  runTask(task: Task): Promise<void>;
+  runAll(tasks: readonly Task[]): Promise<void>;
   /** Stop every given task; the caller has already asked the person. */
-  stopAll(tasks: readonly RunTask[]): Promise<void>;
-  cancel(task: RunTask): Promise<void>;
-  forceTerminate(task: RunTask): Promise<void>;
+  stopAll(tasks: readonly Task[]): Promise<void>;
+  cancel(task: Task): Promise<void>;
+  forceTerminate(task: Task): Promise<void>;
 }>;
 
 /** The host refuses a start while a device registration holds the source's sign-in. */
@@ -45,13 +46,13 @@ const REGISTRATION_IN_PROGRESS = "Device registration is in progress";
  * reload once an action settles. The dashboard asks for confirmation and shows
  * `actionError`; the page state performs each action.
  */
-export function createRunActions(input: Readonly<{
+export function createRunActions<Task extends RunTask>(input: Readonly<{
   state: RunActionsState;
   onboarding: RunActionsOnboarding;
   /** True while a device registration blocks this task's source. */
-  registering(task: RunTask): boolean;
-  messages: RunActionsMessages;
-}>): RunActions {
+  registering(task: Task): boolean;
+  messages: RunActionsMessages<Task>;
+}>): RunActions<Task> {
   const { state, onboarding, messages } = input;
   const actionError = writable("");
 
@@ -69,7 +70,7 @@ export function createRunActions(input: Readonly<{
     actionError: { subscribe: actionError.subscribe },
     setError: (message: string) => actionError.set(message),
 
-    async runTask(task: RunTask) {
+    async runTask(task: Task) {
       if (get(state).pendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
       if (input.registering(task)) {
         actionError.set(messages.registrationBlocksSync());
@@ -89,7 +90,7 @@ export function createRunActions(input: Readonly<{
       await state.reload();
     },
 
-    async runAll(tasks: readonly RunTask[]) {
+    async runAll(tasks: readonly Task[]) {
       if (!tasks.length) return;
       const start = state.runMany(tasks.map((task) => task.id));
       if (!start) return;
@@ -105,19 +106,19 @@ export function createRunActions(input: Readonly<{
       await state.reload();
     },
 
-    async stopAll(tasks: readonly RunTask[]) {
+    async stopAll(tasks: readonly Task[]) {
       if (!tasks.length) return;
       const results = await Promise.all(state.cancelAll(tasks).map((stop) => stop.settled));
       actionError.set(results.flatMap((result) => result.error === null ? [] : [result.error]).join("\n"));
       await state.reload();
     },
 
-    async cancel(task: RunTask) {
+    async cancel(task: Task) {
       const stop = state.cancel(task);
       if (stop) await settleStop(stop.settled);
     },
 
-    async forceTerminate(task: RunTask) {
+    async forceTerminate(task: Task) {
       const stop = state.forceTerminate(task.id);
       if (stop) await settleStop(stop.settled);
     },
