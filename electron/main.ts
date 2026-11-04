@@ -79,6 +79,7 @@ import {
 } from "../src/lib/automation/server/packaged-browser-fixture.ts";
 import { runPackagedBrowserWorkerFixture } from "./packaged-browser-worker-fixture.ts";
 import { createSquirrelHandoff } from "./squirrel-update-handoff.ts";
+import { createHostServices, type HostServices } from "./host-services.ts";
 import { seedCdpRuntimeFixture } from "./cdp-runtime-fixture.ts";
 import { createTdccRegistrationFixtureFetch } from "../src/lib/automation/server/tdcc-registration-fixture.ts";
 import { useTdccRegistrationFixture } from "../src/lib/automation/server/tdcc-registration-service.ts";
@@ -114,12 +115,7 @@ let mainWindow: BrowserWindow | null = null;
 let createWindowPromise: Promise<BrowserWindow> | null = null;
 let currentRendererUrl: string | null = null;
 let currentPreloadPath: string | null = null;
-let scheduler: ReturnType<typeof createExchangeRateScheduler> | null = null;
-let collectionScheduler: ReturnType<typeof createScheduledCollectionScheduler> | null = null;
-let usagePinger: ReturnType<typeof createUsagePinger> | null = null;
-let appUpdater: ReturnType<typeof createAppUpdater> | null = null;
-let stopBrowserStateCleanup: (() => void) | null = null;
-let stopWorkflowRunEventCleanup: (() => void) | null = null;
+let hostServices: HostServices | null = null;
 let ipcRegistration: ReturnType<typeof registerOctopusBeakIpc> | null = null;
 let automationDesktopService: AutomationDesktopService<BrowserWindow | null> | null = null;
 let pgliteOperationalRuntime: PGliteOperationalRuntime | null = null;
@@ -171,12 +167,7 @@ const USAGE_FAILURES_FILE = "usage-failures.json";
 const QUIT_CLEANUP_WAIT_MS = 2_000;
 const handleBeforeQuit = createBeforeQuitHandler({
   cleanup: async () => {
-    scheduler?.stop();
-    collectionScheduler?.stop();
-    usagePinger?.stop();
-    appUpdater?.stop();
-    stopBrowserStateCleanup?.();
-    stopWorkflowRunEventCleanup?.();
+    hostServices?.stop();
     try {
       await ipcRegistration?.close();
     } finally {
@@ -365,7 +356,7 @@ async function start() {
     useTdccRegistrationFixture(createTdccRegistrationFixtureFetch());
   }
   ensureDataRoot(userData, DEFAULT_AUTOMATION_SETTINGS);
-  stopBrowserStateCleanup = startBrowserStateCleanup({
+  const stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
     isActive: (name) => automationRuntime?.activeTaskIds().includes(name) ?? false,
     onError: () => console.error("browser-state-cleanup-failed"),
@@ -405,47 +396,40 @@ async function start() {
   void automationRuntimeReady.catch((error) => {
     handleAutomationRuntimeFatal(automationRuntimeFatalDetails("startup-reconcile", error));
   });
-  if (!cdpFixture && !packagedBrowserFixture) {
-    scheduler = createExchangeRateScheduler({
-      now: () => new Date(),
-      setTimer: (callback, ms) => setTimeout(callback, ms),
-      clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
-      readSettings: () => systemSettings(readAutomationSettings()),
-      hasOccurrenceBeenAttempted: (occurrenceUtc) =>
-        operationalRuntime.provider.automation.hasOccurrenceBeenAttempted(
-          "exchange-rates",
-          occurrenceUtc,
-        ),
-      hasSuccessSince: (occurrenceUtc) => operationalRuntime.provider.automation.hasSuccessfulTaskRunSince(
+  const exchangeRates = createExchangeRateScheduler({
+    now: () => new Date(),
+    setTimer: (callback, ms) => setTimeout(callback, ms),
+    clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
+    readSettings: () => systemSettings(readAutomationSettings()),
+    hasOccurrenceBeenAttempted: (occurrenceUtc) =>
+      operationalRuntime.provider.automation.hasOccurrenceBeenAttempted(
         "exchange-rates",
         occurrenceUtc,
       ),
-      isTaskActive: () => runtime.activeTaskIds().includes("exchange-rates"),
-      startTask: async (scheduledAtUtc) => {
-        const started = await runtime.runMany(["exchange-rates"], { scheduledAtUtc });
-        const result = started.results["exchange-rates"];
-        if (result?.status === "error") throw new Error(result.error);
-      },
-      reportError: (error) => console.error("exchange-rate-scheduler-error", error),
-    });
-    collectionScheduler = createScheduledCollectionScheduler({
-      now: () => new Date(),
-      setTimer: (callback, ms) => setTimeout(callback, ms),
-      clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
-      readSettings: () => systemSettings(readAutomationSettings()),
-      startCollection: (occurrenceUtc) =>
-        startScheduledCollection(runtime, occurrenceUtc, (results) => notifyCollection("scheduled", results))
-          .then(() => undefined),
-      reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
-    });
-  }
-  const collection = {
-    pauseSchedules: () => {
-      const resumes = [scheduler?.pause(), collectionScheduler?.pause()];
-      return () => {
-        for (const resume of resumes) resume?.();
-      };
+    hasSuccessSince: (occurrenceUtc) => operationalRuntime.provider.automation.hasSuccessfulTaskRunSince(
+      "exchange-rates",
+      occurrenceUtc,
+    ),
+    isTaskActive: () => runtime.activeTaskIds().includes("exchange-rates"),
+    startTask: async (scheduledAtUtc) => {
+      const started = await runtime.runMany(["exchange-rates"], { scheduledAtUtc });
+      const result = started.results["exchange-rates"];
+      if (result?.status === "error") throw new Error(result.error);
     },
+    reportError: (error) => console.error("exchange-rate-scheduler-error", error),
+  });
+  const collectionSchedule = createScheduledCollectionScheduler({
+    now: () => new Date(),
+    setTimer: (callback, ms) => setTimeout(callback, ms),
+    clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
+    readSettings: () => systemSettings(readAutomationSettings()),
+    startCollection: (occurrenceUtc) =>
+      startScheduledCollection(runtime, occurrenceUtc, (results) => notifyCollection("scheduled", results))
+        .then(() => undefined),
+    reportError: (error) => console.error("scheduled-collection-scheduler-error", error),
+  });
+  const collection = {
+    pauseSchedules: () => services.pauseSchedules(),
     whileStopped: <T>(work: () => Promise<T>) => runtime.whileStopped(work),
   };
   const automation = createAutomationDesktopService<BrowserWindow | null>({
@@ -476,7 +460,7 @@ async function start() {
     onAutomationRuntimeReady: () => automationRuntimeReady,
   });
   automationDesktopService = automation;
-  usagePinger = createUsagePinger({
+  const usagePinger = createUsagePinger({
     url: USAGE_PING_URL,
     // Lets a developer see the one-time question again; packaged apps ignore it.
     forceAsk: !app.isPackaged && process.env.OCTOPUSBEAK_ASK_USAGE_STATISTICS === "1",
@@ -518,14 +502,14 @@ async function start() {
     zipPath: (release) => verifiedZipPath(updatesDirectory, release.version),
     start: startSquirrelHandoff,
     rehearse: rehearseSquirrelHandoff,
-    receive: (signal) => appUpdater?.receive(signal),
+    receive: (signal) => appUpdater.receive(signal),
     reportError: (code) => console.error(code),
   });
   const appUpdateView = (): AppUpdateView => ({
     currentVersion: app.getVersion(),
-    state: appUpdater?.state() ?? { status: "unsupported", reason: "development-build" },
+    state: appUpdater.state(),
   });
-  appUpdater = createAppUpdater({
+  const appUpdater = createAppUpdater({
     support: appUpdatesSupport,
     currentVersion: app.getVersion(),
     enabled: () => appUpdatesEnabled(readAutomationSettings()),
@@ -547,21 +531,33 @@ async function start() {
     clearInterval: (timer) => clearInterval(timer as NodeJS.Timeout),
     reportError: (code) => console.error(code),
   });
+  const services = createHostServices({
+    exchangeRates,
+    collection: collectionSchedule,
+    usagePing: usagePinger,
+    appUpdates: appUpdater,
+    // Development builds and fixtures never ping, so they cannot count as users; fixtures run no schedules.
+    run: {
+      schedules: !cdpFixture && !packagedBrowserFixture,
+      usagePing: app.isPackaged && !cdpFixture && !packagedBrowserFixture,
+    },
+    startAfterReady: [() => startWorkflowRunEventCleanup(
+      operationalRuntime.provider.automation,
+      { onError: () => console.error("workflow-run-event-cleanup-failed") },
+    )],
+    stopOnQuit: [stopBrowserStateCleanup],
+  });
+  hostServices = services;
   onTaskRunFinished((run) => {
     forgetStaleFailureDiagnostic(run.taskId, run.taskRunId);
-    usagePinger?.recordFailures(runFailures(run));
+    usagePinger.recordFailures(runFailures(run));
   });
   const settings = createSettingsDesktopService({
     settingsFile: {
       read: () => readAutomationSettings(),
       write: (value) => writeAutomationSettings(value),
     },
-    onSystemSettingsChanged: (settings) => {
-      scheduler?.reschedule();
-      collectionScheduler?.reschedule();
-      void usagePinger?.check();
-      appUpdater?.applySettings({ enabled: settings.appUpdatesEnabled, autoDownload: settings.appUpdatesAutoDownload });
-    },
+    onSystemSettingsChanged: (settings) => services.settingsChanged(settings),
     usagePing: usagePinger,
     dataVersions: dataVersionStore,
     collection,
@@ -576,9 +572,9 @@ async function start() {
     spending: createSpendingDesktopService({ financial: operationalRuntime.worker.financial }),
     appUpdates: {
       view: appUpdateView,
-      check: () => void appUpdater?.check(),
-      download: () => void appUpdater?.download(),
-      restart: () => appUpdater?.restart() ?? { ok: false, reason: "not-ready" },
+      check: () => void appUpdater.check(),
+      download: () => void appUpdater.download(),
+      restart: () => appUpdater.restart(),
     },
     errorReports: {
       available: () => Boolean(errorReportUrl(USAGE_PING_URL)),
@@ -601,22 +597,9 @@ async function start() {
     },
     pgliteFinancial: operationalRuntime.worker.financial,
   });
-  // Recovery owns the persisted active-run boundary.  Do not let the
-  // scheduler claim a new run until that boundary has been reconciled; the
-  // shell and IPC registration still proceed while recovery is in flight.
-  void automationRuntimeReady.then(() => {
-    stopWorkflowRunEventCleanup = startWorkflowRunEventCleanup(
-      operationalRuntime.provider.automation,
-      { onError: () => console.error("workflow-run-event-cleanup-failed") },
-    );
-    scheduler?.start();
-    collectionScheduler?.start();
-    // Development builds and fixtures never ping, so they cannot count as users.
-    if (app.isPackaged && !cdpFixture && !packagedBrowserFixture) usagePinger?.start();
-    appUpdater?.start();
-  }).catch(() => {
-    // The shared readiness rejection already reports the fatal runtime error.
-  });
+  // Recovery owns the persisted active-run boundary: no schedule claims a run
+  // until it is reconciled, while the shell and IPC go ahead meanwhile.
+  services.startWhenReady(automationRuntimeReady);
   if (packagedBrowserFixture) {
     void automationRuntimeReady
       .then(async () => await runPackagedBrowserWorkerFixture(

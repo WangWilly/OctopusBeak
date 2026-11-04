@@ -52,13 +52,8 @@ assert.doesNotMatch(source, /spending:updateItemCategory|spending:updateTransact
 
 const mainSource = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 assert.match(mainSource, /createExchangeRateScheduler/);
-assert.match(
-  mainSource,
-  /onSystemSettingsChanged:\s*\(settings\)\s*=>\s*\{\s*scheduler\?\.reschedule\(\);\s*collectionScheduler\?\.reschedule\(\);\s*void usagePinger\?\.check\(\);\s*appUpdater\?\.applySettings\(\{ enabled: settings\.appUpdatesEnabled, autoDownload: settings\.appUpdatesAutoDownload \}\);\s*\}/,
-);
+assert.match(mainSource, /onSystemSettingsChanged: \(settings\) => services\.settingsChanged\(settings\)/u);
 assert.match(mainSource, /scheduled-collection-scheduler-error/);
-assert.match(mainSource, /scheduler\?\.start\(\)/);
-assert.match(mainSource, /scheduler\?\.stop\(\)/);
 assert.match(mainSource, /const automation = createAutomationDesktopService/);
 assert.match(mainSource, /ipcRegistration = registerOctopusBeakIpc\(\{\s*automation,/);
 assert.match(
