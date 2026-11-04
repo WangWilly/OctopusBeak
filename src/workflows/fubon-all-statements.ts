@@ -30,6 +30,7 @@ import { fubonAttachedPreviewCollectors, type FubonAttachedPreviewPort } from ".
 import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { signIn, type ShellPlan, type SignedIn } from "./sign-in.ts";
+import type { FrameScope } from "./frame-scope.ts";
 import {
   deriveFubonSourceConnectionKey,
   type FubonStableLoginCredentials,
@@ -168,19 +169,20 @@ export type FubonAllWorkflowDependencies = Readonly<{
   attachedPreviewPort?: (page: Page, context: FubonAllWorkflowContext) => FubonAttachedPreviewPort;
 }>;
 
-async function fubonSessionProbe(page: Page): Promise<boolean> {
+async function fubonSessionProbe(scope: FrameScope): Promise<boolean> {
+  const { page } = scope;
   if (page.isClosed() || hasFubonDuplicateLoginTerminal(page)) return false;
   const headerFrame = page.frame({ name: "frame1" });
   if (!headerFrame) return false;
-  const loggedIn = await headerFrame.evaluate(() => {
+  const loggedIn = await scope.race(headerFrame.evaluate(() => {
     const bankWindow = globalThis as typeof globalThis & { loggedIn?: unknown };
     return bankWindow.loggedIn === true;
-  }).catch(() => false);
-  const logoutVisible = await headerFrame
+  }).catch(() => false));
+  const logoutVisible = await scope.race(headerFrame
     .locator("#header_form\\:header_logout")
     .first()
     .isVisible()
-    .catch(() => false);
+    .catch(() => false));
   return loggedIn || logoutVisible;
 }
 
@@ -194,7 +196,7 @@ export function fubonSignInPlan(
     account: credentials.fubon_account,
     password: credentials.fubon_password,
   }, complete);
-  return { own: (scope) => login.run(scope.page, scope.signal), dialogs: login.observe, session: (scope) => fubonSessionProbe(scope.page) };
+  return { own: login.run, dialogs: login.observe, session: fubonSessionProbe };
 }
 
 async function authenticateFubonForApp(
