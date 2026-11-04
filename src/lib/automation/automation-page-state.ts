@@ -129,7 +129,8 @@ export function createAutomationPageState(input: Readonly<{
         if (open) acceptSnapshot(snapshot);
       };
       const read = (failure: string) => {
-        void input.api.runtimeSnapshot().then(accept, (error: unknown) => {
+        // A failure while accepting the snapshot is fatal too, as a failed read is.
+        void input.api.runtimeSnapshot().then(accept).catch((error: unknown) => {
           console.error(failure, error);
           void input.api.fatalRuntimeSnapshot();
         });
