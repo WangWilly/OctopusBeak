@@ -951,12 +951,24 @@ const coverLogin = (page: Page) => page.evaluate((ms) => {
 
 const clicks = (page: Page) => page.evaluate(() => (window as unknown as { clicks?: number }).clicks ?? 0);
 
-/** A fill that clicks the covered login button through the scope, after `beforeClick`. */
-const clickThroughScope = (arrive: () => void, beforeClick: (page: Page) => Promise<unknown> = async () => {}) =>
+type Click = { stoppedWith?: unknown };
+
+/**
+ * A fill that covers the login button, runs `beforeClick`, and clicks it through
+ * the scope. The cover starts here, so setup time cannot eat into it, and the
+ * plan records the reason its click stopped with before the step unwinds.
+ */
+const clickThroughScope = (click: Click, arrive: () => void, beforeClick: (page: Page) => Promise<unknown> = async () => {}) =>
   async (scope: FrameScope) => {
+    await coverLogin(scope.page);
     await beforeClick(scope.page);
     arrive();
-    await scope.withSignal((signal) => scope.page.click("#login", { signal }));
+    try {
+      await scope.withSignal((signal) => scope.page.click("#login", { signal }));
+    } catch (error) {
+      click.stoppedWith = error;
+      throw error;
+    }
   };
 
 test("cancelling the run stops a plan's pending click in the browser", () =>
@@ -965,14 +977,15 @@ test("cancelling the run stops a plan's pending click in the browser", () =>
     const arrived = new Promise<void>((resolve) => {
       arrive = resolve;
     });
-    await coverLogin(page);
+    const click: Click = {};
     const run = fakeRun(page);
     const reason = new Error("cancelled while fill waits on a covered button");
-    const running = failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(arrive) })));
+    const running = failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(click, arrive) })));
     await arrived;
     await delay(100);
     run.controller.abort(reason);
     assert.equal(await running, reason);
+    assert.equal(click.stoppedWith, reason, "the plan's click stops with the run's reason");
     await delay(COVERED_MS * 2);
     assert.equal(await clicks(page), 0, "the click never lands after the run is cancelled");
     assert.equal(listeners(page), 0);
@@ -980,13 +993,15 @@ test("cancelling the run stops a plan's pending click in the browser", () =>
 
 test("a dialog verdict stops a plan's pending click in the browser and ends with the verdict", () =>
   withPage("window.clicks = (window.clicks ?? 0) + 1", async (page) => {
-    await coverLogin(page);
+    const click: Click = {};
     const run = fakeRun(page);
     const raise = (p: Page) => p.evaluate((message) => {
       setTimeout(() => alert(message), 100);
     }, UNRELATED);
-    const error = await failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(() => {}, raise) })));
+    const error = await failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(click, () => {}, raise) })));
     assertSignInError(error, "dialog-interrupted");
+    // The attempt's end would also stop the click, but without a reason; only the verdict carries this one.
+    assert.equal(click.stoppedWith, error, "the verdict, not the attempt's end, stops the plan's click");
     assert.deepEqual(run.codes, [STARTED, INTERRUPTED]);
     await delay(COVERED_MS * 2);
     assert.equal(await clicks(page), 0, "the click never lands after the verdict");
