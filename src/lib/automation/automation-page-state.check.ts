@@ -173,3 +173,106 @@ test("Stop all reaches a run that the runtime has not shown yet", async (t) => {
   assert.equal(row(current, "a").status, "cancelling");
   assert.equal(state.run("a"), null, "a pending stop still refuses a new run");
 });
+
+/** A page state whose runtime reads answer from a script, with push and resync sources the test fires. */
+function connected(t: import("node:test").TestContext, reads: Array<AutomationRuntimeSnapshot | Error | Promise<AutomationRuntimeSnapshot>>) {
+  t.mock.method(console, "error", () => {});
+  const calls = { reads: 0, fatal: 0 };
+  const api: AutomationActionPort = {
+    run: async (taskId) => ({ started: taskId }),
+    runMany: async () => ({ started: [], results: {} }),
+    cancel: async (taskId) => ({ cancelled: taskId }),
+    forceTerminate: async (taskId) => ({ cancelled: taskId }),
+    async runtimeSnapshot() {
+      calls.reads += 1;
+      const next = reads.shift();
+      if (!next) throw new Error("no scripted read");
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    async fatalRuntimeSnapshot() {
+      calls.fatal += 1;
+    },
+  };
+  const state = createAutomationPageState({ api, requestReload: () => {} });
+  let latest!: Parameters<Parameters<typeof state.subscribe>[0]>[0];
+  const unsubscribe = state.subscribe((value) => { latest = value; });
+  const push = new Set<(snapshot: AutomationRuntimeSnapshot) => void>();
+  const resync = new Set<() => void>();
+  const events = {
+    runtimeChanged: (listener: (snapshot: AutomationRuntimeSnapshot) => void) => {
+      push.add(listener);
+      return () => push.delete(listener);
+    },
+    resync: (listener: () => void) => {
+      resync.add(listener);
+      return () => resync.delete(listener);
+    },
+  };
+  t.after(() => {
+    unsubscribe();
+    state.dispose();
+  });
+  return {
+    state,
+    events,
+    calls,
+    revision: () => latest.runtime?.revision ?? null,
+    pushSnapshot: (value: AutomationRuntimeSnapshot) => { for (const listener of [...push]) listener(value); },
+    fireResync: () => { for (const listener of [...resync]) listener(); },
+    listeners: () => push.size + resync.size,
+  };
+}
+
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+test("connecting reads the runtime once, then accepts every pushed snapshot", async (t) => {
+  const page = connected(t, [snapshot(1, [])]);
+  page.state.connect(page.events);
+  await flush();
+  assert.equal(page.calls.reads, 1);
+  assert.equal(page.revision(), 1);
+  page.pushSnapshot(snapshot(2, []));
+  assert.equal(page.revision(), 2);
+});
+
+test("each resync reads the runtime again", async (t) => {
+  const page = connected(t, [snapshot(1, []), snapshot(3, [])]);
+  page.state.connect(page.events);
+  await flush();
+  page.fireResync();
+  await flush();
+  assert.equal(page.calls.reads, 2);
+  assert.equal(page.revision(), 3);
+});
+
+test("a failed first read or resync read reports the runtime fatal once each", async (t) => {
+  const page = connected(t, [new Error("bridge closed"), new Error("bridge closed")]);
+  page.state.connect(page.events);
+  await flush();
+  assert.equal(page.calls.fatal, 1);
+  page.fireResync();
+  await flush();
+  assert.equal(page.calls.fatal, 2);
+});
+
+test("after dispose, neither a push nor a resync reaches the state", async (t) => {
+  const page = connected(t, [snapshot(1, [])]);
+  page.state.connect(page.events);
+  await flush();
+  page.state.dispose();
+  assert.equal(page.listeners(), 0, "dispose ends the connection's subscriptions");
+  page.fireResync();
+  await flush();
+  assert.equal(page.calls.reads, 1);
+});
+
+test("a snapshot that arrives after the connection ends is dropped", async (t) => {
+  let answer!: (value: AutomationRuntimeSnapshot) => void;
+  const page = connected(t, [new Promise<AutomationRuntimeSnapshot>((resolve) => { answer = resolve; })]);
+  const disconnect = page.state.connect(page.events);
+  disconnect();
+  answer(snapshot(5, []));
+  await flush();
+  assert.equal(page.revision(), null);
+});

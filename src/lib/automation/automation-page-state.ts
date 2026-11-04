@@ -36,6 +36,16 @@ export type AutomationPageStateValue = Readonly<{
 type StopTask = Readonly<{ id: string; status: AutomationTaskStatus }>;
 
 /**
+ * Where runtime snapshots come from besides a read: the host's push, and the
+ * moments the shell wants a fresh read (the window regains focus or becomes
+ * visible). Each returns its unsubscribe.
+ */
+export type AutomationRuntimeEvents = Readonly<{
+  runtimeChanged(listener: (snapshot: AutomationRuntimeSnapshot) => void): () => void;
+  resync(listener: () => void): () => void;
+}>;
+
+/**
  * The renderer's one owner of Automation task state. It gates runtime
  * snapshots, holds pending actions, merges both over the loaded page model,
  * and refreshes the blocks while work is active. The shell keeps loading the
@@ -51,6 +61,7 @@ export function createAutomationPageState(input: Readonly<{
   const subscribers = new Set<(value: AutomationPageStateValue) => void>();
   let model: AutomationPageModel | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const connections = new Set<() => void>();
   let value = compute();
 
   function compute(): AutomationPageStateValue {
@@ -107,6 +118,35 @@ export function createAutomationPageState(input: Readonly<{
       publish();
     },
     acceptSnapshot,
+    /**
+     * Keep the runtime current: read a snapshot now, accept every pushed one,
+     * and read again on each resync. A failed read reports the runtime fatal
+     * through the host. Returns the disconnect; `dispose` disconnects too.
+     */
+    connect(events: AutomationRuntimeEvents): () => void {
+      let open = true;
+      const accept = (snapshot: AutomationRuntimeSnapshot) => {
+        if (open) acceptSnapshot(snapshot);
+      };
+      const read = (failure: string) => {
+        void input.api.runtimeSnapshot().then(accept, (error: unknown) => {
+          console.error(failure, error);
+          void input.api.fatalRuntimeSnapshot();
+        });
+      };
+      const unsubscribePush = events.runtimeChanged(accept);
+      const unsubscribeResync = events.resync(() => read("automation-runtime-resync-failed"));
+      read("automation-runtime-snapshot-failed");
+      const disconnect = () => {
+        if (!open) return;
+        open = false;
+        unsubscribePush();
+        unsubscribeResync();
+        connections.delete(disconnect);
+      };
+      connections.add(disconnect);
+      return disconnect;
+    },
     run: actions.run,
     runMany: actions.runMany,
     cancel: actions.cancel,
@@ -119,6 +159,7 @@ export function createAutomationPageState(input: Readonly<{
       await input.requestReload("manual");
     },
     dispose() {
+      for (const disconnect of [...connections]) disconnect();
       stopPolling();
       actions.dispose();
       unsubscribeController();
