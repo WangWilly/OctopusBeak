@@ -44,7 +44,7 @@ function translationFor(locale: Locale) {
     statements: accountsCopy[locale].statements,
     positions: accountsCopy[locale].positions,
     automation: automationCopy[locale].automation,
-    usageStatisticsPrompt: shellCopy[locale].usageStatisticsPrompt,
+    usageStatisticsPrompt: settingsCopy[locale].usageStatisticsPrompt,
     firstRunWelcome: welcomeCopy[locale].firstRunWelcome,
     onboarding: onboardingCopy[locale].onboarding,
     settings: settingsCopy[locale].settings,

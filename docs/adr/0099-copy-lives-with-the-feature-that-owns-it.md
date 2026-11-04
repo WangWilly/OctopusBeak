@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of about 1,530 lines, then a Traditional Chinese copy of the same shape. In six weeks it was the most changed file in the repository, with 96 commits, most of them also changing one to fifteen feature files. Changing a single Automation string meant editing two places 1,500 lines apart in a file that did not say which feature a section belonged to, and every feature's copy change touched the same file.
+Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of about 1,530 lines, then a Traditional Chinese copy of the same shape. It was the most changed file in the repository, with 93 commits in six weeks, most of them also changing one to fifteen feature files. Changing a single Automation string meant editing two places 1,500 lines apart in a file that did not say which feature a section belonged to, and every feature's copy change touched the same file.
 
 **Each feature's copy lives in a `copy.ts` beside that feature.** For example, `src/lib/automation/copy.ts` holds the `automation` section and `src/lib/spending/copy.ts` holds the four Spending sections. Each file keeps its English object and its Traditional Chinese object next to each other, types the second as `typeof en`, and exports `{ en, "zh-TW": zh } satisfies Record<Locale, …Copy>`. Adding a locale therefore fails the build in every copy file until that file has the new locale.
 
@@ -13,8 +13,9 @@ Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of ab
 | Owner | Sections |
 | --- | --- |
 | `i18n/shared-copy.ts` | `common`, `chart` |
-| `shared-shell` | `nav`, `usageStatisticsPrompt` |
-| `overview`, `assets`, `liabilities`, `manual-assets`, `automation`, `onboarding`, `settings` | their own section |
+| `shared-shell` | `nav` |
+| `overview`, `assets`, `liabilities`, `manual-assets`, `automation`, `onboarding` | their own section |
+| `settings` | `settings`, `usageStatisticsPrompt` |
 | `spending` | `spending`, `purchaseSpending`, `spendingInsight`, `spendingReview` |
 | `shared-accounts` | `accounts`, `historyTable`, `accountHistory`, `transactions`, `statements`, `positions`, `accountProducts`, `unidentifiedAccount` |
 | `preview-sources` | `preview` |
@@ -27,7 +28,7 @@ Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of ab
 
 - **One `{ en, zh }` pair per key.** Rejected. It would rewrite all 3,000 lines, does not fit copy written as functions, and the smaller files already keep the two locales close together.
 - **A store per feature, such as `$automationCopy`.** Rejected. It would change every caller, and a feature that reads another feature's section would need two stores.
-- **One file per section.** Rejected. Sections such as the four Spending ones change together, and 25 files would cost more navigation than they save.
+- **One file per section.** Rejected. Sections such as the four Spending ones change together, and 26 files would cost more navigation than they save.
 
 ## Consequences
 
