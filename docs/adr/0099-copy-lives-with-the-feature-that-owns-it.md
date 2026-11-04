@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of about 1,530 lines, then a Traditional Chinese copy of the same shape. It was the most changed file in the repository, with 93 commits in six weeks, most of them also changing one to fifteen feature files. Changing a single Automation string meant editing two places 1,500 lines apart in a file that did not say which feature a section belonged to, and every feature's copy change touched the same file.
+Every piece of UI copy lived in `src/lib/i18n/i18n.ts`: one English object of about 1,530 lines, then a Traditional Chinese copy of the same shape. It was the most changed file in the repository, with over 90 commits in the six weeks before this change, most of them also changing one to fifteen feature files. Changing a single Automation string meant editing two places 1,500 lines apart in a file that did not say which feature a section belonged to, and every feature's copy change touched the same file.
 
 **Each feature's copy lives in a `copy.ts` beside that feature.** For example, `src/lib/automation/copy.ts` holds the `automation` section and `src/lib/spending/copy.ts` holds the four Spending sections. Each file keeps its English object and its Traditional Chinese object next to each other, types the second as `typeof en`, and exports `{ en, "zh-TW": zh } satisfies Record<Locale, …Copy>`. Adding a locale therefore fails the build in every copy file until that file has the new locale.
 
