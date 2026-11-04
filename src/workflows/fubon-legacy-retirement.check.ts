@@ -20,7 +20,7 @@ for (const fileName of fileNames) {
 }
 
 const auth = await readFile(new URL("./fubon-auth.ts", import.meta.url), "utf8");
-assert.doesNotMatch(auth, /npx libretto|\bpause\(/u, "Fubon assistance must use the App-owned assistance port");
+assert.doesNotMatch(auth, /npx libretto|(?<!\.)\bpause\(/u, "Fubon assistance must use the App-owned assistance port");
 
 const allStatements = await readFile(new URL("./fubon-all-statements.ts", import.meta.url), "utf8");
 assert.match(allStatements, /export const fubonWorkflow = fubonWorkflowWith\(\);/u);

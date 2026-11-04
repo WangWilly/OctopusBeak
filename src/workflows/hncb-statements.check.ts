@@ -46,7 +46,7 @@ import {
 const providerSource = readFileSync(new URL("./hncb-statements.ts", import.meta.url), "utf8");
 assert.doesNotMatch(
   providerSource,
-  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|\bpause\(/u,
+  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|(?<!\.)\bpause\(/u,
   "HNCB production must use the App-owned typed workflow only",
 );
 assert.doesNotMatch(
