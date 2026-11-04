@@ -19,7 +19,7 @@ import {
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
-import { frameScope } from "./frame-scope.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
@@ -567,12 +567,19 @@ function matchesAccountFilter(
   });
 }
 
+/** Device registration drives these helpers outside the Source sign-in step, with no scope of its own. */
+const UNCANCELLED = new AbortController().signal;
+
 export async function clickFirstVisible(locator: Locator): Promise<boolean> {
-  const count = await locator.count().catch(() => 0);
+  return await clickFirstVisibleIn(frameScope(locator.page(), UNCANCELLED), locator);
+}
+
+async function clickFirstVisibleIn(scope: FrameScope, locator: Locator): Promise<boolean> {
+  const count = await scope.race(locator.count().catch(() => 0));
   for (let index = 0; index < count; index += 1) {
     const candidate = locator.nth(index);
-    if (await candidate.isVisible().catch(() => false)) {
-      await candidate.click({ force: true });
+    if (await scope.race(candidate.isVisible().catch(() => false))) {
+      await scope.withSignal((signal) => candidate.click({ force: true, signal }));
       return true;
     }
   }
@@ -583,51 +590,50 @@ function startupAnnouncement(page: Page): Locator {
   return page.locator(".modal.show").filter({ hasText: /系統維護公告/ }).first();
 }
 
-async function hasStartupAnnouncement(page: Page): Promise<boolean> {
-  return await startupAnnouncement(page).isVisible().catch(() => false);
+async function hasStartupAnnouncement(scope: FrameScope): Promise<boolean> {
+  return await scope.race(startupAnnouncement(scope.page).isVisible().catch(() => false));
 }
 
-async function dismissAnnouncementModal(page: Page): Promise<boolean> {
-  const modal = startupAnnouncement(page);
-  if (!(await modal.isVisible().catch(() => false))) return false;
-  return await clickFirstVisible(
+async function dismissAnnouncementModal(scope: FrameScope): Promise<boolean> {
+  const modal = startupAnnouncement(scope.page);
+  if (!(await scope.race(modal.isVisible().catch(() => false)))) return false;
+  return await clickFirstVisibleIn(
+    scope,
     modal.locator(
       '[data-dismiss="modal"], [data-bs-dismiss="modal"], .close, .btn-close, button[aria-label="Close"], button[aria-label*="關閉"]',
     ).or(modal.locator("button").filter({ hasText: /^\s*(關閉|我知道了|OK)\s*$/ })),
   );
 }
 
-async function dismissStartupAnnouncements(
-  page: Page,
-  timeoutMs = 15_000,
-  signal?: AbortSignal,
-): Promise<void> {
+async function dismissStartupAnnouncements(scope: FrameScope, timeoutMs: number): Promise<void> {
+  const { page } = scope;
   const deadline = Date.now() + timeoutMs;
   let lastActionAt = Date.now();
 
   while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    const clicked = await dismissAnnouncementModal(page) || await clickFirstVisible(
+    scope.signal.throwIfAborted();
+    const clicked = await dismissAnnouncementModal(scope) || await clickFirstVisibleIn(
+      scope,
       page.locator("button").filter({
         hasText: /^\s*(下一則|我知道了|OK)\s*$/,
       }),
     );
     if (clicked) {
       lastActionAt = Date.now();
-      await page.waitForTimeout(700);
+      await scope.pause(700);
       continue;
     }
 
-    const announcementVisible = await hasStartupAnnouncement(page);
+    const announcementVisible = await hasStartupAnnouncement(scope);
     if (!announcementVisible && Date.now() - lastActionAt >= 1_000) {
       return;
     }
-    if (announcementVisible) await page.keyboard.press("Escape").catch(() => undefined);
+    if (announcementVisible) await scope.race(page.keyboard.press("Escape").catch(() => undefined));
 
-    await page.waitForTimeout(250);
+    await scope.pause(250);
   }
 
-  if (await hasStartupAnnouncement(page)) {
+  if (await hasStartupAnnouncement(scope)) {
     throw new Error("Could not dismiss Cathay startup announcements.");
   }
 }
@@ -641,41 +647,54 @@ export async function isCathaySignedIn(page: Page): Promise<boolean> {
     .catch(() => false);
 }
 
-async function clickLoginPastLateAnnouncements(page: Page, signal?: AbortSignal): Promise<void> {
-  const login = page.locator("button.js-login");
+async function clickLoginPastLateAnnouncements(scope: FrameScope): Promise<void> {
+  const login = scope.page.locator("button.js-login");
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    signal?.throwIfAborted();
+    scope.signal.throwIfAborted();
     try {
-      await login.click({ timeout: 4_000 });
+      await scope.withSignal((signal) => login.click({ timeout: 4_000, signal }));
       return;
     } catch (error) {
-      if (attempt === 2 || !(await hasStartupAnnouncement(page))) throw error;
-      await dismissStartupAnnouncements(page, 10_000, signal);
+      if (attempt === 2 || !(await hasStartupAnnouncement(scope))) throw error;
+      await dismissStartupAnnouncements(scope, 10_000);
     }
   }
 }
 
 type Progress = (code: string) => Promise<void>;
 
+async function fillCathayLoginForm(
+  scope: FrameScope,
+  credentials: CathayCredentials,
+  progress?: Progress,
+): Promise<void> {
+  const fill = (selector: string, value: string) =>
+    scope.withSignal((signal) => scope.page.locator(selector).fill(value, { signal }));
+  await dismissStartupAnnouncements(scope, 15_000);
+  await progress?.("authentication-login-announcements-dismissed");
+  await fill("#CustID", credentials.cathay_user_id);
+  await fill("#UserIdKeyin", credentials.cathay_account);
+  await fill("#PasswordKeyin", credentials.cathay_password);
+  await progress?.("authentication-login-fields-entered");
+  await dismissStartupAnnouncements(scope, 5_000);
+}
+
+async function clickCathayLogin(scope: FrameScope, progress?: Progress): Promise<void> {
+  await progress?.("authentication-login-submit-started");
+  await clickLoginPastLateAnnouncements(scope);
+  await progress?.("authentication-login-submitted");
+}
+
 export async function enterCathayCredentials(
   page: Page,
   credentials: CathayCredentials,
-  signal?: AbortSignal,
-  progress?: Progress,
+  signal: AbortSignal,
 ): Promise<void> {
-  await withAbort(dismissStartupAnnouncements(page, 15_000, signal), signal);
-  await progress?.("authentication-login-announcements-dismissed");
-  await withAbort(page.locator("#CustID").fill(credentials.cathay_user_id), signal);
-  await withAbort(page.locator("#UserIdKeyin").fill(credentials.cathay_account), signal);
-  await withAbort(page.locator("#PasswordKeyin").fill(credentials.cathay_password), signal);
-  await progress?.("authentication-login-fields-entered");
-  await withAbort(dismissStartupAnnouncements(page, 5_000, signal), signal);
+  await fillCathayLoginForm(frameScope(page, signal), credentials);
 }
 
-export async function submitCathayLogin(page: Page, signal?: AbortSignal, progress?: Progress): Promise<void> {
-  await progress?.("authentication-login-submit-started");
-  await withAbort(clickLoginPastLateAnnouncements(page, signal), signal);
-  await progress?.("authentication-login-submitted");
+export async function submitCathayLogin(page: Page, signal: AbortSignal): Promise<void> {
+  await clickCathayLogin(frameScope(page, signal));
 }
 
 export function cathayTrustDevicePrompt(page: Page): Locator {
@@ -686,6 +705,11 @@ export async function answerCathayTrustDevicePrompt(
   page: Page,
   answer: "skip" | "trust",
 ): Promise<void> {
+  await answerTrustDevicePrompt(frameScope(page, UNCANCELLED), answer);
+}
+
+async function answerTrustDevicePrompt(scope: FrameScope, answer: "skip" | "trust"): Promise<void> {
+  const { page } = scope;
   const prompt = page
     .locator(".chakra-modal__content, .modal.show, [role=dialog]")
     .filter({ hasText: "信任這台裝置？" })
@@ -693,7 +717,7 @@ export async function answerCathayTrustDevicePrompt(
   const choice = answer === "trust"
     ? prompt.getByRole("button", { name: "加入信任裝置", exact: true })
     : prompt.getByRole("button", { name: /^暫時不用(加入信任裝置)?$/u });
-  if (!(await clickFirstVisible(choice))) {
+  if (!(await clickFirstVisibleIn(scope, choice))) {
     throw new Error(`Could not click Cathay trusted-device ${answer === "trust" ? "opt-in" : "opt-out"}.`);
   }
 
@@ -702,58 +726,62 @@ export async function answerCathayTrustDevicePrompt(
     .or(page.getByRole("button", { name: /^(確定加入|確認加入|確定|確認|完成)$/u }))
     .filter({ visible: true })
     .first();
-  if (await confirm.isVisible().catch(() => false)) {
-    await confirm.click();
-    await page.waitForTimeout(500);
+  if (await scope.race(confirm.isVisible().catch(() => false))) {
+    await scope.withSignal((signal) => confirm.click({ signal }));
+    await scope.pause(500);
   }
 
-  await cathayTrustDevicePrompt(page)
-    .waitFor({ state: "hidden", timeout: 15_000 })
-    .catch(() => undefined);
+  try {
+    await scope.withSignal((signal) =>
+      cathayTrustDevicePrompt(page).waitFor({ state: "hidden", timeout: 15_000, signal }));
+  } catch (error) {
+    if (scope.signal.aborted) throw error;
+  }
 }
 
-async function skipCathayTrustDevicePrompt(page: Page, signal: AbortSignal): Promise<boolean> {
-  if (!(await withAbort(cathayTrustDevicePrompt(page).isVisible().catch(() => false), signal))) return false;
-  await withAbort(answerCathayTrustDevicePrompt(page, "skip"), signal);
+async function skipCathayTrustDevicePrompt(scope: FrameScope): Promise<boolean> {
+  if (!(await scope.race(cathayTrustDevicePrompt(scope.page).isVisible().catch(() => false)))) return false;
+  await answerTrustDevicePrompt(scope, "skip");
   return true;
 }
 
 export const CATHAY_OTP_CHALLENGE = "#OtpMailPassword, #js-otp-send, #js-otp-email-send, .js-otp-view";
 
 /** Signed in, or the one-time-code wall that only device registration passes. */
-async function cathaySignedIn(page: Page, signal: AbortSignal, progress: Progress): Promise<boolean> {
-  if (await withAbort(isCathaySignedIn(page), signal)) return true;
-  const challenge = page
+async function cathaySignedIn(scope: FrameScope, progress: Progress): Promise<boolean> {
+  if (await scope.race(isCathaySignedIn(scope.page))) return true;
+  const challenge = scope.page
     .locator(CATHAY_OTP_CHALLENGE)
-    .or(page.locator("a").filter({ hasText: "Email驗證" }))
+    .or(scope.page.locator("a").filter({ hasText: "Email驗證" }))
     .first();
-  if (!(await withAbort(challenge.isVisible().catch(() => false), signal))) return false;
+  if (!(await scope.race(challenge.isVisible().catch(() => false)))) return false;
   await progress("device-registration-required");
   throw new FailureCodeError("device-registration-required");
 }
 
 /** Reports each form step as an authentication advance; nothing is reported once the attempt ends. */
 export function cathaySignInPlan(credentials: CathayCredentials, event: WorkflowContext["event"]): FormPlan {
-  const progress = (signal: AbortSignal): Progress => async (code) => {
-    signal.throwIfAborted();
+  const progress = (scope: FrameScope): Progress => async (code) => {
+    scope.signal.throwIfAborted();
     await event("authentication", "advanced", code);
   };
   // The refill after the duplicate-session logout types into the form the logout cleared, without reloading it.
   let formOpen = false;
   return {
-    signedIn: ({ page, signal }) => cathaySignedIn(page, signal, progress(signal)),
-    fill: async ({ page, signal }) => {
+    signedIn: (scope) => cathaySignedIn(scope, progress(scope)),
+    fill: async (scope) => {
       if (formOpen) {
-        await withAbort(page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000 }), signal);
+        await scope.withSignal((signal) =>
+          scope.page.locator("#CustID").waitFor({ state: "visible", timeout: 10_000, signal }));
       } else {
-        await withAbort(navigateToCathayLoginForm(page), signal);
+        await scope.withSignal((signal) => navigateToCathayLoginForm(scope.page, signal));
         formOpen = true;
-        await progress(signal)("authentication-login-form-ready");
+        await progress(scope)("authentication-login-form-ready");
       }
-      await enterCathayCredentials(page, credentials, signal, progress(signal));
+      await fillCathayLoginForm(scope, credentials, progress(scope));
     },
-    submit: ({ page, signal }) => submitCathayLogin(page, signal, progress(signal)),
-    prompts: (scope) => skipCathayTrustDevicePrompt(scope.page, scope.signal),
+    submit: (scope) => clickCathayLogin(scope, progress(scope)),
+    prompts: skipCathayTrustDevicePrompt,
     dialogs: "accept-for-page",
     session: { none: "GetJWT customer check runs in collection" },
     timeoutMs: 120_000,
