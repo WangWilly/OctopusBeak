@@ -10,6 +10,7 @@ const {
   yuantaSourceConnectionScope,
   deriveYuantaSourceConnectionKey,
 } = await import("./yuanta-auth.ts");
+const { frameScope } = await import("./frame-scope.ts");
 const { deriveSourceConnectionIdentityKey } =
   await import("../ledger/canonical/source-connection-identity.ts");
 const { canonicalLoanSourceIdentity } =
@@ -70,6 +71,9 @@ function fakeFrame(
   };
 }
 
+/** A scope no run cancels, for probing a fake page. */
+const unbound = (page: Page) => frameScope(page, new AbortController().signal);
+
 function fakePage(
   frames: FakeFrame[],
   pageUrl = "https://ebank.yuantabank.com.tw/nib/tx/home",
@@ -87,7 +91,7 @@ test("shared Yuanta signed-in probe accepts bank navigation without cid", async 
     fakeFrame("fmenu", "navigation"),
     fakeFrame("fmain", "none"),
   ]);
-  assert.equal(await isYuantaSignedIn(page), true);
+  assert.equal(await isYuantaSignedIn(unbound(page)), true);
 });
 
 test("shared Yuanta signed-in probe accepts a bank logout marker", async () => {
@@ -95,7 +99,7 @@ test("shared Yuanta signed-in probe accepts a bank logout marker", async () => {
     fakeFrame("fmenu", "none"),
     fakeFrame("fmain", "logout"),
   ]);
-  assert.equal(await isYuantaSignedIn(page), true);
+  assert.equal(await isYuantaSignedIn(unbound(page)), true);
 });
 
 test("shared Yuanta signed-in probe rejects stale frames without bank evidence", async () => {
@@ -103,7 +107,7 @@ test("shared Yuanta signed-in probe rejects stale frames without bank evidence",
     fakeFrame("fmenu", "none"),
     fakeFrame("fmain", "none"),
   ]);
-  assert.equal(await isYuantaSignedIn(page), false);
+  assert.equal(await isYuantaSignedIn(unbound(page)), false);
 });
 
 test("shared Yuanta signed-in probe rejects NotAuth and timeout documents", async () => {
@@ -115,7 +119,7 @@ test("shared Yuanta signed-in probe rejects NotAuth and timeout documents", asyn
       fakeFrame("fmenu", "navigation", frameUrl),
       fakeFrame("fmain", "logout"),
     ]);
-    assert.equal(await isYuantaSignedIn(page), false, frameUrl);
+    assert.equal(await isYuantaSignedIn(unbound(page)), false, frameUrl);
   }
 });
 
@@ -125,7 +129,7 @@ test("shared Yuanta signed-in probe rejects a visible login frame", async () => 
     fakeFrame("fmenu", "navigation"),
     fakeFrame("fmain", "logout"),
   ]);
-  assert.equal(await isYuantaSignedIn(page), false);
+  assert.equal(await isYuantaSignedIn(unbound(page)), false);
 });
 
 test("shared Yuanta signed-in probe rejects external or mixed-origin shells", async () => {
@@ -154,7 +158,7 @@ test("shared Yuanta signed-in probe rejects external or mixed-origin shells", as
     ),
   ];
   for (const page of cases) {
-    assert.equal(await isYuantaSignedIn(page), false);
+    assert.equal(await isYuantaSignedIn(unbound(page)), false);
   }
 });
 
@@ -164,7 +168,7 @@ test("shared Yuanta signed-in probe checks every visible login field", async () 
     fakeFrame("fmenu", "navigation"),
     fakeFrame("fmain", "logout"),
   ]);
-  assert.equal(await isYuantaSignedIn(page), false);
+  assert.equal(await isYuantaSignedIn(unbound(page)), false);
 });
 
 test("shared Yuanta CAPTCHA seam publishes a digit text challenge for the observed GOTP image", async () => {
@@ -305,23 +309,23 @@ test("the Vite production auth loader uses current bank shell evidence", async (
     const module = await server.ssrLoadModule("/src/workflows/yuanta-auth.ts");
     assert.equal(
       await module.isYuantaSignedIn(
-        fakePage([
+        unbound(fakePage([
           fakeFrame("fmenu", "navigation"),
           fakeFrame("fmain", "none"),
-        ]),
+        ])),
       ),
       true,
     );
     assert.equal(
       await module.isYuantaSignedIn(
-        fakePage([
+        unbound(fakePage([
           fakeFrame(
             "fmenu",
             "navigation",
             "https://ebank.yuantabank.com.tw/nib/common/error/NotAuth.jsp?type=timeout",
           ),
           fakeFrame("fmain", "logout"),
-        ]),
+        ])),
       ),
       false,
     );

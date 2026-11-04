@@ -10,6 +10,7 @@ import { registerHooks } from "node:module";
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
+import { frameScope } from "./frame-scope.ts";
 import { YUANTA_RELATION_EVIDENCE_FIXTURES_V1 } from "./yuanta-relation-evidence.fixtures.ts";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import {
@@ -337,14 +338,18 @@ assert.doesNotMatch(source, /console\.log\s*\(|export default/u, "the domestic p
 assert.doesNotMatch(source, /from ["']\.\/yuanta-auth\.ts["']/u, "the collector must leave authentication to the App-owned parent");
 assert.doesNotMatch(source, /waitForEvent\(["']download|\.createReadStream\(/u, "the App collector must not depend on Playwright download artifacts");
 
+/** The notice reads only the scope's signal; the fake frame carries the page. */
+const unbound = () => frameScope({} as never, new AbortController().signal);
+
+
 const lateNotice = new LateNotice();
-const dismissingLateNotice = dismissYuantaBankNotice(noticeFrame(lateNotice), 100);
+const dismissingLateNotice = dismissYuantaBankNotice(unbound(), noticeFrame(lateNotice), 100);
 lateNotice.show();
 assert.equal(await dismissingLateNotice, true);
 assert.equal(lateNotice.clicked, true);
 
 const absentNotice = new LateNotice();
-assert.equal(await dismissYuantaBankNotice(noticeFrame(absentNotice), 10), false);
+assert.equal(await dismissYuantaBankNotice(unbound(), noticeFrame(absentNotice), 10), false);
 assert.equal(absentNotice.clicked, false);
 
 const observedAt = taipeiInstant("2026-08-21T03:04:05.000Z");

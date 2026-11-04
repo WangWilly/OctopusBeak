@@ -5,7 +5,7 @@ import {
   assembleStableSourceLoginScope,
   deriveSourceConnectionIdentityKey,
 } from "../ledger/canonical/source-connection-identity.ts";
-import { withAbort } from "./abort.ts";
+import type { FrameScope } from "./frame-scope.ts";
 import type { DialogDecision, FormPlan } from "./sign-in.ts";
 import { YUANTA_CREDENTIAL_FIELDS, YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.ts";
@@ -263,7 +263,8 @@ function isYuantaBankOrigin(url: string): boolean {
   }
 }
 
-export async function isYuantaSignedIn(page: Page): Promise<boolean> {
+export async function isYuantaSignedIn(scope: FrameScope): Promise<boolean> {
+  const { page } = scope;
   const fmenu = page.frame({ name: "fmenu" });
   const fmain = page.frame({ name: "fmain" });
   if (!fmenu || !fmain) return false;
@@ -277,7 +278,7 @@ export async function isYuantaSignedIn(page: Page): Promise<boolean> {
   const loginFrame = page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME });
   if (
     loginFrame &&
-    (await hasVisibleLocator(loginFrame, YUANTA_LOGIN_FIELD_SELECTOR))
+    (await scope.race(hasVisibleLocator(loginFrame, YUANTA_LOGIN_FIELD_SELECTOR)))
   ) {
     return false;
   }
@@ -286,124 +287,127 @@ export async function isYuantaSignedIn(page: Page): Promise<boolean> {
   // not by a `cid` query parameter. The provider can keep fmenu/fmain alive
   // while removing cid from frame URLs after a component navigation.
   return (
-    (await hasAttachedLocator(fmenu, YUANTA_SIGNED_IN_NAVIGATION_SELECTOR)) ||
-    (await hasAttachedLocator(fmain, YUANTA_SIGNED_IN_NAVIGATION_SELECTOR)) ||
-    (await hasAttachedLocator(fmenu, YUANTA_SIGNED_IN_LOGOUT_SELECTOR)) ||
-    (await hasAttachedLocator(fmain, YUANTA_SIGNED_IN_LOGOUT_SELECTOR))
+    (await scope.race(hasAttachedLocator(fmenu, YUANTA_SIGNED_IN_NAVIGATION_SELECTOR))) ||
+    (await scope.race(hasAttachedLocator(fmain, YUANTA_SIGNED_IN_NAVIGATION_SELECTOR))) ||
+    (await scope.race(hasAttachedLocator(fmenu, YUANTA_SIGNED_IN_LOGOUT_SELECTOR))) ||
+    (await scope.race(hasAttachedLocator(fmain, YUANTA_SIGNED_IN_LOGOUT_SELECTOR)))
   );
 }
 
 export async function dismissYuantaBankNotice(
+  scope: FrameScope,
   frame: Frame,
   visibilityTimeoutMs = 2_000,
 ): Promise<boolean> {
+  const step = scope.withSignal;
   const popup = frame.locator("#commonPopup");
-  const popupVisible = await popup
-    .waitFor({ state: "visible", timeout: visibilityTimeoutMs })
-    .then(() => true)
-    .catch(() => false);
+  const popupVisible = await step((signal) => popup
+    .waitFor({ state: "visible", timeout: visibilityTimeoutMs, signal })
+    .then(() => true, () => false));
   if (!popupVisible) return false;
 
   const dismissButton = popup.locator("#commonPopupLeftBtnImg");
-  const dismissButtonVisible = await dismissButton
-    .waitFor({ state: "visible", timeout: visibilityTimeoutMs })
-    .then(() => true)
-    .catch(() => false);
+  const dismissButtonVisible = await step((signal) => dismissButton
+    .waitFor({ state: "visible", timeout: visibilityTimeoutMs, signal })
+    .then(() => true, () => false));
   if (!dismissButtonVisible) return false;
 
-  await dismissButton.click();
-  await popup.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+  await step((signal) => dismissButton.click({ signal }));
+  await step((signal) => popup.waitFor({ state: "hidden", timeout: 5_000, signal }).catch(() => {}));
   return true;
 }
 
-async function maskUserId(loginFrame: Frame): Promise<void> {
-  await loginFrame.evaluate(() => {
+async function maskUserId(scope: FrameScope, loginFrame: Frame): Promise<void> {
+  await scope.race(loginFrame.evaluate(() => {
     const yuanTaWindow = window as typeof window & { maskID?: () => void };
     if (typeof yuanTaWindow.maskID !== "function") {
       throw new Error("YuanTa login page did not expose maskID().");
     }
     yuanTaWindow.maskID();
-  });
+  }));
 
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
+  const hiddenUserId = await scope.withSignal((signal) => loginFrame.locator("#custid").inputValue({ signal }));
   if (!hiddenUserId.trim()) {
     throw new Error("YuanTa login page did not populate hidden custid.");
   }
 }
 
 async function fillReadonlyLoginInput(
+  scope: FrameScope,
   field: Locator,
   value: string,
 ): Promise<void> {
-  await field.click({ force: true });
-  await field.evaluate((element) => element.removeAttribute("readonly"));
-  await field.fill(value);
+  await scope.withSignal((signal) => field.click({ force: true, signal }));
+  await scope.withSignal((signal) => field.evaluate((element) => element.removeAttribute("readonly"), undefined, { signal }));
+  await scope.withSignal((signal) => field.fill(value, { signal }));
 }
 
+const loginFrameOf = (scope: FrameScope) => scope.frame(YUANTA_BANK_MAIN_FRAME_NAME);
+
 async function fillLoginForm(
-  page: Page,
+  scope: FrameScope,
   credentials: YuantaCredentials,
 ): Promise<void> {
-  await page.goto(YUANTA_ENTRY_URL, { waitUntil: "domcontentloaded" });
+  await scope.withSignal((signal) => scope.page.goto(YUANTA_ENTRY_URL, { waitUntil: "domcontentloaded", signal }));
 
-  const loginFrame = await waitForMainFrame(page);
-  await dismissYuantaBankNotice(loginFrame);
-  await loginFrame.locator("#custidMask").fill(credentials.yuanta_user_id);
-  await maskUserId(loginFrame);
-  await fillReadonlyLoginInput(loginFrame.locator("#custnoInput"), credentials.yuanta_account);
-  await fillReadonlyLoginInput(loginFrame.locator("#custcode"), credentials.yuanta_password);
-  await loginFrame.locator("#gcode").focus();
-  await dismissYuantaBankNotice(await waitForMainFrame(page), 5_000);
+  const loginFrame = await loginFrameOf(scope);
+  await dismissYuantaBankNotice(scope, loginFrame);
+  await scope.withSignal((signal) => loginFrame.locator("#custidMask").fill(credentials.yuanta_user_id, { signal }));
+  await maskUserId(scope, loginFrame);
+  await fillReadonlyLoginInput(scope, loginFrame.locator("#custnoInput"), credentials.yuanta_account);
+  await fillReadonlyLoginInput(scope, loginFrame.locator("#custcode"), credentials.yuanta_password);
+  await scope.withSignal((signal) => loginFrame.locator("#gcode").focus({ signal }));
+  await dismissYuantaBankNotice(scope, await loginFrameOf(scope), 5_000);
 }
 
 async function restoreUserIdForSubmit(
+  scope: FrameScope,
   loginFrame: Frame,
   userId: string,
 ): Promise<void> {
   const normalizedUserId = userId.trim();
-  await loginFrame.locator("#custid").evaluate((element, value) => {
+  await scope.withSignal((signal) => loginFrame.locator("#custid").evaluate((element, value) => {
     (element as HTMLInputElement).value = value;
-  }, normalizedUserId);
+  }, normalizedUserId, { signal }));
 
-  const hiddenUserId = await loginFrame.locator("#custid").inputValue();
+  const hiddenUserId = await scope.withSignal((signal) => loginFrame.locator("#custid").inputValue({ signal }));
   if (hiddenUserId !== normalizedUserId) {
     throw new Error("YuanTa login page did not restore hidden custid.");
   }
 }
 
 async function submitLogin(
-  page: Page,
+  scope: FrameScope,
   credentials: YuantaCredentials,
 ): Promise<void> {
-  if (page.frame({ name: "fmain" }) && currentCidFromFrameUrls(page)) return;
+  if (scope.page.frame({ name: "fmain" }) && currentCidFromFrameUrls(scope.page)) return;
 
-  const loginFrame = await waitForMainFrame(page);
-  await restoreUserIdForSubmit(loginFrame, credentials.yuanta_user_id);
-  await loginFrame.locator('a[href="javascript:doPreLogin();"]').click();
+  const loginFrame = await loginFrameOf(scope);
+  await restoreUserIdForSubmit(scope, loginFrame, credentials.yuanta_user_id);
+  await scope.withSignal((signal) => loginFrame.locator('a[href="javascript:doPreLogin();"]').click({ signal }));
 }
 
 export function yuantaBankSignInPlan(credentials: YuantaCredentials): FormPlan {
   return {
-    signedIn: (scope) => isYuantaSignedIn(scope.page),
-    fill: ({ page, signal }) => withAbort(fillLoginForm(page, credentials), signal),
+    signedIn: isYuantaSignedIn,
+    fill: (scope) => fillLoginForm(scope, credentials),
     captcha: {
       stage: async (page) => yuantaBankCaptchaAssistanceStage(await waitForMainFrame(page)),
       answer: (page) => (page.frame({ name: YUANTA_BANK_MAIN_FRAME_NAME }) ?? page.mainFrame()).locator("#gcode"),
     },
-    submit: async ({ page, signal }) => {
+    submit: async (scope) => {
       // Navigation may recreate the login frame while Assist is open.
-      const loginFrame = await withAbort(waitForMainFrame(page), signal);
-      const loginButtonVisible = await withAbort(
+      const loginFrame = await loginFrameOf(scope);
+      const loginButtonVisible = await scope.race(
         loginFrame
           .locator('a[href="javascript:doPreLogin();"]')
           .isVisible()
           .catch(() => false),
-        signal,
       );
-      if (loginButtonVisible) await withAbort(submitLogin(page, credentials), signal);
+      if (loginButtonVisible) await submitLogin(scope, credentials);
     },
     dialogs: yuantaBankDialogDecision,
-    session: (scope) => isYuantaSignedIn(scope.page),
+    session: isYuantaSignedIn,
   };
 }
 
