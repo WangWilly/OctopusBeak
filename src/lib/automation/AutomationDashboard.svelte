@@ -54,18 +54,14 @@ import { onboardingTaskDisclosure } from "$lib/onboarding/state.ts";
     type PendingCredentialChange,
   } from "$lib/automation/credential-changes.ts";
   import {
-    CLOSED_CREDENTIAL_SHEET,
-    applyCredentialSaveResult,
     certificateFileValidationMessage as certificateFileMessage,
     credentialGroupAltName as groupAltName,
     credentialGroupName as groupName,
     credentialSheetView,
-    planCredentialSave,
-    reduceCredentialSheet,
     type CredentialSheetAction,
     type CredentialSheetContext,
-    type CredentialSheetState,
   } from "$lib/automation/credential-sheet.ts";
+  import { createCredentialEditor } from "$lib/automation/credential-editor.ts";
   import {
     countsOutsideTdccExclusions,
     presentTaskRow,
@@ -163,7 +159,15 @@ import type {
       : undefined;
   }
 
-  let sheet: CredentialSheetState = CLOSED_CREDENTIAL_SHEET;
+  const credentialEditor = createCredentialEditor({
+    bridge: () => window.octopusBeak.automation,
+    page: { reload: () => state.reload(), tasks: () => live.tasks },
+    onboarding: { story: (event) => onOnboardingStoryEvent(event) },
+    runTask: (task) => runTask(task),
+    now: () => new Date().toISOString(),
+  });
+  const credentialEditorState = credentialEditor.state;
+  $: sheet = $credentialEditorState;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
@@ -407,7 +411,7 @@ import type {
   }
 
   function dispatchSheet(action: CredentialSheetAction) {
-    sheet = reduceCredentialSheet(sheet, action, sheetContext);
+    credentialEditor.dispatch(action, sheetContext);
   }
 
   function openCredentials() {
@@ -415,21 +419,11 @@ import type {
   }
 
   function openCredentialsFromStoryEntry() {
-    openCredentials();
-    if (onboardingSourceSelection && onboardingNodeId === "source-entry") {
-      onOnboardingStoryEvent({ type: "open-picker" });
-      dispatchSheet({ type: "present", presentation: "picker" });
-    }
-  }
-
-  function storyChoosesSource() {
-    return onboardingSourceSelection && onboardingNodeId === "source-selection";
+    credentialEditor.openFromStoryEntry(sheetContext);
   }
 
   function chooseCredentialGroup(groupId: string) {
-    const choosing = storyChoosesSource();
-    dispatchSheet({ type: "choose-group", groupId });
-    if (choosing) onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
+    credentialEditor.choose(groupId, sheetContext);
   }
 
   export async function openCredentialsForOnboarding() {
@@ -535,9 +529,7 @@ import type {
   }
 
   function enableAndSelectGroup(groupId: string) {
-    const choosing = storyChoosesSource();
-    dispatchSheet({ type: "enable-and-select-group", groupId });
-    if (choosing) onOnboardingStoryEvent({ type: "choose-source", credentialGroupId: groupId });
+    credentialEditor.enableAndSelect(groupId, sheetContext);
   }
 
   function updateCredentialDraft(key: string, event: Event) {
@@ -599,19 +591,7 @@ import type {
 
   async function selectCertificateFile(key: string) {
     actionError = "";
-    dispatchSheet({ type: "certificate-file-started", key });
-    const generation = sheet.generation;
-    try {
-      const result = await window.octopusBeak.automation.selectCertificateFile($locale);
-      dispatchSheet({ type: "certificate-file-selected", generation, key, result });
-    } catch (error) {
-      dispatchSheet({
-        type: "certificate-file-failed",
-        generation,
-        key,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
+    await credentialEditor.selectCertificateFile(key, $locale, sheetContext);
   }
 
   function updateCredentialSearch(event: Event) {
@@ -767,45 +747,18 @@ import type {
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
-    const save = planCredentialSave(sheet, sheetContext);
-    if (save.kind === "blocked") return;
-    sheet = save.state;
+    const submission = credentialEditor.submit(sheetContext);
+    if (submission.kind === "blocked") return;
     actionError = "";
-    if (save.kind === "invalid") {
+    if (submission.kind === "focus-statement-selection") {
       await tick();
-      document.getElementById(`${save.groupId}-statement-selection`)?.focus();
+      document.getElementById(`${submission.groupId}-statement-selection`)?.focus();
       return;
     }
-    const { generation } = sheet;
-    try {
-      const result = await window.octopusBeak.automation.saveCredentials(save.plan.updates);
-      sheet = applyCredentialSaveResult(sheet, generation, { kind: "result", result }, sheetContext);
-      if (!result.saved) return;
-      // The sheet stays open, still saving, while the page reloads.
-      await state.reload();
-      if (sheet.generation !== generation) return;
-      const savedGroupId = save.savedGroupId;
-      if (onboardingSourceSelection && savedGroupId) {
-        onOnboardingStoryEvent({
-          type: "source-saved",
-          credentialGroupId: savedGroupId,
-          configuredAt: new Date().toISOString(),
-        });
-        dispatchSheet({ type: "saved-and-reloaded", generation });
-        const selectedTask = live.tasks.find(
-          (task) => task.credentialGroupId === savedGroupId,
-        );
-        if (selectedTask?.canRun) {
-          await runTask(selectedTask);
-        }
-      } else {
-        dispatchSheet({ type: "saved-and-reloaded", generation });
-      }
-    } catch {
-      sheet = applyCredentialSaveResult(sheet, generation, { kind: "failed" }, sheetContext);
-      actionError = $t.automation.saveCredentialsFailed;
-    }
+    if ((await submission.settled) === "failed") actionError = $t.automation.saveCredentialsFailed;
   }
+
+
 
   const ONBOARDING_PROGRESS_NODES: readonly string[] = [
     "collection-progress",
