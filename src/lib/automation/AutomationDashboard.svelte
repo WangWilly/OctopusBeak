@@ -41,6 +41,7 @@
     structureReportLoaded,
   } from "$lib/automation/structure-report-state.ts";
   import type { AutomationPageState } from "$lib/automation/automation-page-state.ts";
+  import { createRunActions } from "$lib/automation/run-actions.ts";
   import {
     deviceRegistrationSource,
     type DeviceRegistrationSource,
@@ -159,6 +160,21 @@ import type {
       : undefined;
   }
 
+  const runActions = createRunActions<AutomationTaskRow>({
+    state,
+    onboarding: {
+      starting: (taskId, credentialGroupId) => onOnboardingWorkflowStarting(taskId, credentialGroupId),
+      started: (token, run) => onOnboardingWorkflowStarted(token, run),
+      startFailed: (token, message) => onOnboardingWorkflowStartFailed(token, message),
+    },
+    registering: (task) => registrationBlocksRun(task),
+    messages: {
+      registrationBlocksSync: () => $t.automation.deviceRegistrationBlocksSync,
+      taskLabel: (task) => taskLabel(task, $locale),
+    },
+  });
+  const actionError = runActions.actionError;
+
   const credentialEditor = createCredentialEditor({
     bridge: () => window.octopusBeak.automation,
     page: { reload: () => state.reload(), tasks: () => live.tasks },
@@ -214,7 +230,6 @@ import type {
   let jumpHighlightTaskId: string | null = null;
   let jumpHighlightTimer: ReturnType<typeof setTimeout> | null = null;
   let historyOpen = false;
-  let actionError = "";
   let hoveredTask: AutomationTaskRow | null = null;
   let taskTooltipPosition = { left: 0, top: 0 };
   let deviceRegistering: Record<DeviceRegistrationSource, boolean> = { tdcc: false, cathay: false };
@@ -477,12 +492,6 @@ import type {
     document.getElementById(`${source}-device-title`)?.focus();
   }
 
-  function runStartErrorMessage(message: string) {
-    return message.includes("Device registration is in progress")
-      ? $t.automation.deviceRegistrationBlocksSync
-      : message;
-  }
-
   function closeCredentials() {
     if (onboardingSourceSelection) return;
     if (sheetView.dirty && !confirm($t.automation.discardCredentialChanges)) return;
@@ -590,7 +599,7 @@ import type {
   }
 
   async function selectCertificateFile(key: string) {
-    actionError = "";
+    runActions.setError("");
     await credentialEditor.selectCertificateFile(key, $locale, sheetContext);
   }
 
@@ -603,40 +612,24 @@ import type {
   }
 
   async function runTask(task: AutomationTaskRow) {
-    if (pendingTaskIds.has(task.id) || task.isActive || !task.canRun) return;
-    if (registrationBlocksRun(task)) {
-      actionError = $t.automation.deviceRegistrationBlocksSync;
-      return;
-    }
-    const start = state.run(task.id);
-    if (!start) return;
-    const onboardingToken = onOnboardingWorkflowStarting(task.id, task.credentialGroupId ?? null);
-    actionError = "";
-    const result = await start.settled;
-    if (result.error !== null) {
-      onOnboardingWorkflowStartFailed(onboardingToken, result.error);
-      actionError = runStartErrorMessage(result.error);
-      return;
-    }
-    onOnboardingWorkflowStarted(onboardingToken, { taskId: task.id, runId: result.runId });
-    await state.reload();
+    await runActions.runTask(task);
   }
 
   async function openExternalPrerequisite(prerequisiteId: string) {
     try {
-      actionError = "";
+      runActions.setError("");
       await window.octopusBeak.automation.openExternalPrerequisite(prerequisiteId);
     } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+      runActions.setError(error instanceof Error ? error.message : String(error));
     }
   }
 
   async function openSetupGuideLink(groupId: string, linkId: string) {
     try {
-      actionError = "";
+      runActions.setError("");
       await window.octopusBeak.automation.openSetupGuideLink(groupId, linkId, $locale);
     } catch (error) {
-      actionError = error instanceof Error ? error.message : String(error);
+      runActions.setError(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -644,40 +637,17 @@ import type {
     const tasks = syncTasks;
     if (!tasks.length) return;
     syncOpen = false;
-    const start = state.runMany(tasks.map((task) => task.id));
-    if (!start) return;
-    actionError = "";
-    const result = await start.settled;
-    if (result.error !== null) {
-      actionError = result.error;
-      return;
-    }
-    actionError = Object.entries(result.errors)
-      .map(([taskId, message]) => `${taskLabel(tasks.find((task) => task.id === taskId) ?? tasks[0]!, $locale)}: ${runStartErrorMessage(message)}`)
-      .join("\n");
-    await state.reload();
+    await runActions.runAll(tasks);
   }
 
   async function stopAllTasks() {
     if (!activeTasks.length || !confirm($t.automation.confirmStopAll)) return;
-    const results = await Promise.all(state.cancelAll(activeTasks).map((stop) => stop.settled));
-    actionError = results
-      .flatMap((result) => result.error === null ? [] : [result.error])
-      .join("\n");
-    await state.reload();
+    await runActions.stopAll(activeTasks);
   }
 
   async function forceTerminateTask(task: AutomationTaskRow) {
     if (!confirm($t.automation.confirmForceQuit)) return;
-    const stop = state.forceTerminate(task.id);
-    if (stop) await settleStop(stop.settled);
-  }
-
-  async function settleStop(settled: Promise<Readonly<{ error: string | null }>>) {
-    actionError = "";
-    const { error } = await settled;
-    if (error !== null) actionError = error;
-    else await state.reload();
+    await runActions.forceTerminate(task);
   }
 
   async function revealTaskDetails(task: AutomationTaskRow) {
@@ -741,21 +711,20 @@ import type {
       return;
     }
     if (!confirm($t.automation.confirmCancel(taskLabel(task, $locale)))) return;
-    const stop = state.cancel(task);
-    if (stop) await settleStop(stop.settled);
+    await runActions.cancel(task);
   }
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
     const submission = credentialEditor.submit(sheetContext);
     if (submission.kind === "blocked") return;
-    actionError = "";
+    runActions.setError("");
     if (submission.kind === "focus-statement-selection") {
       await tick();
       document.getElementById(`${submission.groupId}-statement-selection`)?.focus();
       return;
     }
-    if ((await submission.settled) === "failed") actionError = $t.automation.saveCredentialsFailed;
+    if ((await submission.settled) === "failed") runActions.setError($t.automation.saveCredentialsFailed);
   }
 
 
@@ -1337,7 +1306,7 @@ import type {
     </section>
     </ProgressiveBlock>
 
-    {#if actionError}<p class="viewer-error">{actionError}</p>{/if}
+    {#if $actionError}<p class="viewer-error">{$actionError}</p>{/if}
   </div>
 </DashboardShell>
 
@@ -1823,8 +1792,8 @@ import type {
       </div>
       <div class="credential-footer" aria-live="polite">
         <p class="credential-footer-summary">
-          {#if actionError}
-            <span class="credential-error">{actionError}</span>
+          {#if $actionError}
+            <span class="credential-error">{$actionError}</span>
           {:else if sheet.changes.editor}
             {$t.automation.editingCredential(editorFieldLabel($t))}
           {:else if sheetView.pendingChanges.length}
