@@ -46,7 +46,6 @@ import { CTBC_CREDENTIAL_FIELDS, CTBC_PRODUCTS, CTBC_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -298,84 +297,87 @@ function rowWithinDateRange(
   return true;
 }
 
-async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
-  return await withAbort(page
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  return await scope.race(scope.page
     .locator("#btnHeaderLogout")
     .isVisible()
-    .catch(() => false), signal);
+    .catch(() => false));
 }
 
-async function waitForLoginForm(
-  page: Page,
-  signal?: AbortSignal,
-  initialHttpStatus?: number,
-): Promise<void> {
+async function waitForLoginForm(scope: FrameScope, initialHttpStatus?: number): Promise<void> {
+  const { page } = scope;
   const firstField = page.locator("form input[type=text]").first();
   const unavailable = page.getByText(/系統忙碌中，請稍後再試/u).first();
   const startedAt = Date.now();
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    signal?.throwIfAborted();
-    if (await withAbort(unavailable.isVisible().catch(() => false), signal)) {
+    scope.signal.throwIfAborted();
+    if (await scope.race(unavailable.isVisible().catch(() => false))) {
       throw new SourceUnavailableError();
     }
-    if (await withAbort(firstField.isVisible().catch(() => false), signal)) break;
+    if (await scope.race(firstField.isVisible().catch(() => false))) break;
     if (initialHttpStatus === 202 && Date.now() - startedAt >= 1_000) {
       throw new SourceUnavailableError();
     }
-    await withAbort(page.waitForTimeout(200), signal);
+    await scope.pause(200);
   }
-  await withAbort(firstField.waitFor({
+  await scope.withSignal((signal) => firstField.waitFor({
     state: "visible",
     timeout: Math.max(1, deadline - Date.now()),
-  }), signal);
-  await withAbort(page.locator("form input[type=password]").nth(1).waitFor({
+    signal,
+  }));
+  await scope.withSignal((signal) => page.locator("form input[type=password]").nth(1).waitFor({
     state: "visible",
     timeout: 60_000,
-  }), signal);
-  await withAbort(page.getByRole("button", { name: "登入" }).waitFor({
+    signal,
+  }));
+  await scope.withSignal((signal) => page.getByRole("button", { name: "登入" }).waitFor({
     state: "visible",
     timeout: 60_000,
-  }), signal);
-  await withAbort(page.waitForTimeout(1_000), signal);
+    signal,
+  }));
+  await scope.pause(1_000);
 }
 
-async function openCtbcLoginForm(page: Page, signal?: AbortSignal): Promise<void> {
+async function openCtbcLoginForm(scope: FrameScope): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    signal?.throwIfAborted();
-    const response = await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+    const response = await scope.withSignal((signal) =>
+      scope.page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", signal }));
     try {
-      await waitForLoginForm(page, signal, response?.status());
+      await waitForLoginForm(scope, response?.status());
       return;
     } catch (error) {
       if (!(error instanceof SourceUnavailableError) || attempt === 2) throw error;
-      await withAbort(page.waitForTimeout(1_000), signal);
+      await scope.pause(1_000);
     }
   }
 }
 
-async function handleCtbcPasswordReminder(page: Page, signal?: AbortSignal): Promise<boolean> {
+async function handleCtbcPasswordReminder(scope: FrameScope): Promise<boolean> {
+  const { page } = scope;
   const reminder = page.getByText("密碼變更提醒", { exact: true });
-  if (!await withAbort(reminder.isVisible().catch(() => false), signal)) return false;
-  await withAbort(page.getByText("下次再提醒", { exact: true }).click(), signal);
-  await withAbort(page.waitForTimeout(1_000), signal);
+  if (!await scope.race(reminder.isVisible().catch(() => false))) return false;
+  await scope.withSignal((signal) => page.getByText("下次再提醒", { exact: true }).click({ signal }));
+  await scope.pause(1_000);
   return true;
 }
 
-async function fillCtbcLoginForm(page: Page, credentials: CtbcCredentials, signal: AbortSignal): Promise<void> {
-  await openCtbcLoginForm(page, signal);
-  await withAbort(page.locator("form input[type=text]").first().fill(credentials.ctbc_user_id), signal);
+async function fillCtbcLoginForm(scope: FrameScope, credentials: CtbcCredentials): Promise<void> {
+  await openCtbcLoginForm(scope);
+  const { page } = scope;
+  await scope.withSignal((signal) =>
+    page.locator("form input[type=text]").first().fill(credentials.ctbc_user_id, { signal }));
   const passwordFields = page.locator("form input[type=password]");
-  await withAbort(passwordFields.nth(0).fill(credentials.ctbc_account), signal);
-  await withAbort(passwordFields.nth(1).fill(credentials.ctbc_password), signal);
+  await scope.withSignal((signal) => passwordFields.nth(0).fill(credentials.ctbc_account, { signal }));
+  await scope.withSignal((signal) => passwordFields.nth(1).fill(credentials.ctbc_password, { signal }));
 }
 
 export function ctbcSignInPlan(credentials: CtbcCredentials): FormPlan {
   return {
-    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
-    fill: ({ page, signal }) => fillCtbcLoginForm(page, credentials, signal),
-    submit: ({ page, signal }) => withAbort(page.getByRole("button", { name: "登入" }).click(), signal),
-    prompts: (scope) => handleCtbcPasswordReminder(scope.page, scope.signal),
+    signedIn: isSignedIn,
+    fill: (scope) => fillCtbcLoginForm(scope, credentials),
+    submit: (scope) => scope.withSignal((signal) => scope.page.getByRole("button", { name: "登入" }).click({ signal })),
+    prompts: handleCtbcPasswordReminder,
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
     timeoutMs: 180_000,
