@@ -8,7 +8,7 @@ Each Automation task shows progress for its own run. A new run starts at zero; q
 
 The percentage is an approximate indication of stage advancement, not elapsed time or remaining duration. Product work is projected across an approximate 18–90% band, weighted by selected product and stage; generic workflow boundaries use coarse values from preparation through commit. Event counts refine a stage only when a meaningful total is available. Time alone never advances progress. Within a run, progress is monotonic and nonterminal work is capped below 100%; only a successfully classified completed outcome reaches 100%.
 
-The bar animates while work is active, including automatic verification. Manual assistance waits keep the last percentage and stop the animation until work resumes. Failed, cancelled, interrupted, and partial outcomes keep their last percentage and stop animating. Partial runs retain the existing product outcome list so successful and failed products remain identifiable. Existing exchange-rate progress remains supported.
+The bar animates while work is active, including automatic verification. Manual assistance waits keep the last percentage and stop the animation until work resumes. Failed, cancelled, interrupted, and partial outcomes keep their last percentage and stop animating. Partial runs retain the existing product outcome list so successful and failed products remain identifiable. Exchange-rate sync reports its steps as run events like any other workflow (ADR 0100).
 
 The bar exposes `role="progressbar"`, its numeric value when known, and localized stage/status text through `aria-valuetext`. Reduced-motion preferences disable the active sweep animation. Progress and labels are localized in English and Traditional Chinese.
 

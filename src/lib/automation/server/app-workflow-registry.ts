@@ -1,5 +1,4 @@
-import { createExchangeRateWorkflow, type ExchangeRateSyncService } from "../exchange-rate-workflow.ts";
-import type { AutomationProgressEvent } from "../progress.ts";
+import { createExchangeRateWorkflow } from "../exchange-rate-workflow.ts";
 import { requiredWorkflowCapabilities, type WorkflowDefinition } from "../workflow-executor.ts";
 import type { CollectionProductTypeId } from "../product-collection.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
@@ -35,15 +34,6 @@ export type AppWorkflowRegistration = Readonly<{
   definition: WorkflowDefinition;
   runtime: AppWorkflowRuntime;
   inputFromEnvironment(environment: NodeJS.ProcessEnv): unknown;
-}>;
-
-type AppWorkflowCatalogEntry = AppWorkflowRegistration & Readonly<{
-  definitionForDependencies?: (dependencies: AppWorkflowRegistryDependencies) => WorkflowDefinition;
-}>;
-
-export type AppWorkflowRegistryDependencies = Readonly<{
-  exchangeRateSyncService?: ExchangeRateSyncService;
-  exchangeRateProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
 }>;
 
 /**
@@ -122,20 +112,10 @@ function verifiedWorkflowRegistration(source: VerifiedSource): AppWorkflowRegist
   };
 }
 
-const exchangeRateServiceUnavailable: ExchangeRateSyncService = async () => {
-  throw new Error("Exchange-rate service is unavailable.");
-};
-
 /** One registration catalog for workflows activated on the App executor. */
-const appWorkflowCatalog: readonly AppWorkflowCatalogEntry[] = [
+const appWorkflowCatalog: readonly AppWorkflowRegistration[] = [
   {
-    definition: createExchangeRateWorkflow(exchangeRateServiceUnavailable, { emitProgress: () => undefined }),
-    definitionForDependencies(dependencies) {
-      return createExchangeRateWorkflow(
-        dependencies.exchangeRateSyncService ?? exchangeRateServiceUnavailable,
-        { emitProgress: dependencies.exchangeRateProgress ?? (() => undefined) },
-      );
-    },
+    definition: createExchangeRateWorkflow(),
     runtime: NONBROWSER,
     inputFromEnvironment() { return null; },
   },
@@ -144,8 +124,8 @@ const appWorkflowCatalog: readonly AppWorkflowCatalogEntry[] = [
 
 export function appWorkflowCatalogForEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
-): readonly AppWorkflowCatalogEntry[] {
-  const packagedBrowserFixtureRegistrations: readonly AppWorkflowCatalogEntry[] =
+): readonly AppWorkflowRegistration[] {
+  const packagedBrowserFixtureRegistrations: readonly AppWorkflowRegistration[] =
     packagedBrowserFixtureEnabled(environment)
     ? PACKAGED_BROWSER_FIXTURE_TASKS.map(({ workflowId }) => ({
       definition: packagedBrowserFixtureDefinition(workflowId),
@@ -153,7 +133,7 @@ export function appWorkflowCatalogForEnvironment(
       inputFromEnvironment() { return null; },
     }))
     : [];
-  const previewRegistrations: readonly AppWorkflowCatalogEntry[] = PREVIEW_SOURCES.map((source) => ({
+  const previewRegistrations: readonly AppWorkflowRegistration[] = PREVIEW_SOURCES.map((source) => ({
     definition: previewWorkflowDefinition(source) as WorkflowDefinition,
     runtime: browser(source.startUrl),
     inputFromEnvironment: (environment) => previewWorkflowInput(source, environment),
@@ -162,27 +142,15 @@ export function appWorkflowCatalogForEnvironment(
 }
 
 /** Test-only local workflow registrations are absent during ordinary App startup. */
-export const APP_WORKFLOW_CATALOG: readonly AppWorkflowCatalogEntry[] = appWorkflowCatalogForEnvironment();
+export const APP_WORKFLOW_CATALOG: readonly AppWorkflowRegistration[] = appWorkflowCatalogForEnvironment();
 
 export const APP_WORKFLOW_DEFINITIONS: readonly WorkflowDefinition[] =
   APP_WORKFLOW_CATALOG.map(({ definition }) => definition);
 
-/**
- * The registration of a workflow on the App executor, or undefined for an
- * unknown id. `dependencies` reach a definition built from them, which only
- * the worker supplies.
- */
-export function appWorkflowRegistration(
-  workflowId: string | undefined,
-  dependencies: AppWorkflowRegistryDependencies = {},
-): AppWorkflowRegistration | undefined {
+/** The registration of a workflow on the App executor, or undefined for an unknown id. */
+export function appWorkflowRegistration(workflowId: string | undefined): AppWorkflowRegistration | undefined {
   if (!workflowId) return undefined;
-  const entry = APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
-  if (!entry) return undefined;
-  const { definitionForDependencies, ...registration } = entry;
-  return definitionForDependencies
-    ? { ...registration, definition: definitionForDependencies(dependencies) }
-    : registration;
+  return APP_WORKFLOW_CATALOG.find(({ definition }) => definition.id === workflowId);
 }
 
 export function workflowStartUrlForWorkflow(workflowId: string) {

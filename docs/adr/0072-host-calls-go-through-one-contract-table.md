@@ -1,6 +1,6 @@
 # Host calls go through one contract table
 
-Status: accepted
+Status: accepted; exchange-rate progress and its sync service superseded by [ADR 0100](0100-exchange-rate-sync-is-a-capability-workflow.md)
 
 Refines [ADR 0032](0032-app-owned-workflow-runtime.md). Applies [ADR 0056](0056-commit-attempt-is-the-authority-for-commit-outcome.md).
 

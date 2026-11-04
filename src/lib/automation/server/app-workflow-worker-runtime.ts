@@ -38,16 +38,12 @@ import {
   type AppWorkflowWorkerOutboundFrame,
   type AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
-import {
-  appWorkflowRegistration,
-  type AppWorkflowRegistryDependencies,
-} from "./app-workflow-registry.ts";
+import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
 import {
   createPGliteChildRpcClient,
   type PGliteChildRpcClient,
 } from "../../../../electron/pglite-child-rpc-client.ts";
-import { createExchangeRateSyncService } from "./exchange-rate-sync-service.ts";
 import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
 
@@ -85,10 +81,7 @@ export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   port: MessagePort;
   workerData: unknown;
   /** Test seam; production resolves from the App's typed workflow catalog. */
-  resolveDefinition?: (
-    workflowId: string,
-    dependencies?: AppWorkflowRegistryDependencies,
-  ) => WorkflowDefinition | null;
+  resolveDefinition?: (workflowId: string) => WorkflowDefinition | null;
   /** Test seam; production attaches to the run-scoped App browser page. */
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
@@ -108,6 +101,10 @@ function childRpcCapabilityPorts(
     tdcc: {
       session: tdccSession,
       admittedFundAccounts: (connection) => child.financial.request("financial.tdccFundAccounts.list", [connection]),
+    },
+    exchangeRates: {
+      persistence: child.operationalProvider.exchangeRates,
+      overviewCurrent: () => child.financial.request("financial.overview.current", []),
     },
     accountIdentity: {
       continuity: (request) => child.financial.request("financial.accountIdentity.continuity", [request]),
@@ -200,7 +197,6 @@ export async function runAppWorkflowWorker(
 
   let childRpc: PGliteChildRpcClient | undefined;
   let previewWorkflow = false;
-  let progressQueue = Promise.resolve();
   const connectChildRpc = async (rpc: NonNullable<AppWorkflowWorkerStart["pgliteRpc"]>) => {
     childRpc = createPGliteChildRpcClient({
       endpoint: rpc.endpoint,
@@ -216,28 +212,9 @@ export async function runAppWorkflowWorker(
     if (start.pgliteRpc && runtime.kind === "nonbrowser") {
       await connectChildRpc(start.pgliteRpc);
     }
-    const definitionDependencies: AppWorkflowRegistryDependencies = {
-      ...(start.workflowId === "exchange-rates" && childRpc ? {
-        exchangeRateSyncService: createExchangeRateSyncService({
-          exchangeRates: childRpc.operationalProvider.exchangeRates,
-          financial: { overviewCurrent: () => childRpc!.financial.request("financial.overview.current", []) },
-        }),
-        exchangeRateProgress: (event) => {
-          progressQueue = progressQueue.then(async () => {
-            await hostCalls.call("exchangeRateProgress", {
-              phaseCode: event.phaseCode as "load-request" | "sync" | "complete",
-              completed: event.completed ?? 0,
-              total: event.total ?? 3,
-              percent: event.percent ?? 0,
-            });
-          });
-          void progressQueue.catch(() => undefined);
-        },
-      } : {}),
-    };
     const definition = options.resolveDefinition
-      ? options.resolveDefinition(start.workflowId, definitionDependencies)
-      : appWorkflowRegistration(start.workflowId, definitionDependencies)?.definition;
+      ? options.resolveDefinition(start.workflowId)
+      : appWorkflowRegistration(start.workflowId)?.definition;
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
     previewWorkflow = definition.requiresPreviewWrite === true;
     const previewWrite = workflowUsesPreviewWrite(definition) ? options.previewWrite : undefined;
@@ -306,7 +283,6 @@ export async function runAppWorkflowWorker(
       start.input,
       controller.signal,
     );
-    await progressQueue;
     terminal = true;
     try {
       // A workflow returns exactly its run result; anything else could carry provider data.

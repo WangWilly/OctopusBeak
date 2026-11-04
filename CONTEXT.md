@@ -998,7 +998,7 @@ The App-owned production runtime that starts typed workflow definitions, injects
 _Avoid_: Provider workflow, Libretto CLI command, second financial commit policy
 
 **Host call**:
-One request a workflow worker makes of the App host: a run event, a Commit attempt, exchange-rate progress, a Human assistance request, or the TDCC session. Each is declared once in the host-call contract table with its lane, its per-run cap, and whether a stop abandons it; a rotated TDCC session is a one-way host call the host keeps only the newest of (ADR 0072).
+One request a workflow worker makes of the App host: a run event, a Commit attempt, a Human assistance request, or the TDCC session. Each is declared once in the host-call contract table with its lane, its per-run cap, and whether a stop abandons it; a rotated TDCC session is a one-way host call the host keeps only the newest of (ADR 0072).
 _Avoid_: Worker frame, ACK, worker message
 
 **Commit attempt**:

@@ -16,7 +16,6 @@ import type {
   AppWorkflowWorkerOutboundFrame,
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
-import type { ExchangeRateProgress } from "./app-workflow-host-calls.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
@@ -39,17 +38,13 @@ type WorkflowEventInput = Readonly<{
   statementType?: string;
   activity?: "query" | "download";
   retrying?: boolean;
+  completed?: number;
+  total?: number;
 }>;
 
 type WorkerStep = Readonly<{
   eventId: string;
   event: WorkflowEventInput;
-}>;
-
-/** An exchange-rate progress call, named like a step so its acknowledgement can be observed. */
-type ExchangeRateProgressStep = Readonly<{
-  eventId: string;
-  progress: ExchangeRateProgress;
 }>;
 
 type TerminalFrameInput = Readonly<{
@@ -80,7 +75,6 @@ class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerH
     steps: readonly WorkerStep[],
     terminal: TerminalFrameInput,
     onEventAcknowledged: (eventId: string, runId: string) => Promise<void>,
-    progressSteps: readonly ExchangeRateProgressStep[] = [],
   ) {
     super();
     this.onEventAcknowledged = onEventAcknowledged;
@@ -93,10 +87,6 @@ class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerH
             occurredAt: "2026-10-04T00:00:00.000Z",
           },
         }),
-        acknowledged: { eventId, runId: start.taskRunId },
-      })),
-      ...progressSteps.map(({ eventId, progress }) => ({
-        frame: call("exchangeRateProgress", progress),
         acknowledged: { eventId, runId: start.taskRunId },
       })),
       {
@@ -426,13 +416,15 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       appWorkflowWorkerFactory: (_workerPath, options: WorkerOptions) =>
         new SequencedWorkflowWorker(
           options.workerData as AppWorkflowWorkerStart,
-          [{ eventId: "exchange-run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } }],
+          [
+            { eventId: "exchange-run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } },
+            {
+              eventId: "exchange-complete",
+              event: { stage: "collection", outcome: "advanced", code: "progress-update", completed: 3, total: 3 },
+            },
+          ],
           { kind: "completed", summary: null },
           onEventAcknowledged,
-          [{
-            eventId: "exchange-complete",
-            progress: { phaseCode: "complete", completed: 3, total: 3, percent: 100 },
-          }],
         ),
     });
     assert.equal(exchangeRateResult.status, "completed");
@@ -441,8 +433,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     const exchangeProgressBeforeTerminal = snapshots.find(
       (snapshot) => snapshot.runId === exchangeRunId && snapshot.eventId === "exchange-complete",
     )?.progress;
-    assert.ok(exchangeProgressBeforeTerminal?.percent !== null && exchangeProgressBeforeTerminal?.percent !== undefined);
-    assert.ok(exchangeProgressBeforeTerminal.percent < 100, "the exchange-rate complete phase is capped before terminal success");
+    assert.equal(exchangeProgressBeforeTerminal?.percent, 47, "the last sync step projects to 47% before terminal success");
     assert.equal((await persistence.taskRunById(exchangeRunId))?.status, "completed");
 
     const cancelledActive = await openRun();

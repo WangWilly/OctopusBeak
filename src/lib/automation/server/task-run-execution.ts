@@ -110,16 +110,6 @@ function createWorkflowProgressReporter(context: ExecutionContext, input: unknow
       );
       if (projected) await persistProgress(projected);
     },
-
-    async appendExchangeRateProgress(value: Readonly<{
-      phaseCode: "load-request" | "sync" | "complete";
-      completed: number;
-      total: number;
-      percent: number;
-    }>): Promise<void> {
-      const percent = Math.max(progress.percent ?? 0, Math.min(99, Math.max(0, value.percent)));
-      await persistProgress({ ...value, percent, attempt: context.run.current().attempt });
-    },
   };
 }
 
@@ -250,9 +240,6 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
-          ...(definition.reportsExchangeRateProgress ? {
-            exchangeRateProgress: (progress) => progressReporter.appendExchangeRateProgress(progress),
-          } : {}),
           ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(seams)) : {}),
         },
         ...(seams.appWorkflowWorkerFactory
