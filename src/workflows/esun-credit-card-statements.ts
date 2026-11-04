@@ -552,11 +552,11 @@ export function esunCurrentUsedCreditFromSummaryResponse(
   };
 }
 
-async function isSignedIn(page: Page, signal: AbortSignal): Promise<boolean> {
-  return await withAbort(page
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  return await scope.race(scope.page
     .getByText("信用卡", { exact: true })
     .isVisible()
-    .catch(() => false), signal);
+    .catch(() => false));
 }
 
 
@@ -579,13 +579,10 @@ function waitForOptionalResponse(
   });
 }
 
-async function enterLoginCredentials(
-  page: Page,
-  credentials: EsunCredentials,
-  signal: AbortSignal,
-): Promise<void> {
-  await withAbort(page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded" }), signal);
-  await withAbort(page.locator('input[name="id"]').waitFor({ timeout: 60_000 }), signal);
+async function enterLoginCredentials(scope: FrameScope, credentials: EsunCredentials): Promise<void> {
+  const { page } = scope;
+  await scope.withSignal((signal) => page.goto(BANK_ENTRY_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) => page.locator('input[name="id"]').waitFor({ timeout: 60_000, signal }));
 
   const { esun_user_id: userId, esun_account: account, esun_password: password } = credentials;
   const fields = [
@@ -598,12 +595,12 @@ async function enterLoginCredentials(
     },
   ];
 
-  for (const field of fields) await withAbort(field.locator.fill(field.value), signal);
+  for (const field of fields) await scope.withSignal((signal) => field.locator.fill(field.value, { signal }));
   for (const field of fields) {
-    if ((await withAbort(field.locator.inputValue(), signal)) !== field.value) {
-      await withAbort(field.locator.fill(field.value), signal);
+    if ((await scope.race(field.locator.inputValue())) !== field.value) {
+      await scope.withSignal((signal) => field.locator.fill(field.value, { signal }));
     }
-    if ((await withAbort(field.locator.inputValue(), signal)) !== field.value) {
+    if ((await scope.race(field.locator.inputValue())) !== field.value) {
       throw new Error(`ESun login ${field.label} field did not retain value`);
     }
   }
@@ -611,9 +608,10 @@ async function enterLoginCredentials(
 
 function esunSignInPlan(credentials: EsunCredentials): FormPlan {
   return {
-    signedIn: (scope) => isSignedIn(scope.page, scope.signal),
-    fill: ({ page, signal }) => enterLoginCredentials(page, credentials, signal),
-    submit: ({ page, signal }) => withAbort(page.getByRole("button", { name: "登入", exact: true }).click(), signal),
+    signedIn: isSignedIn,
+    fill: (scope) => enterLoginCredentials(scope, credentials),
+    submit: (scope) => scope.withSignal((signal) =>
+      scope.page.getByRole("button", { name: "登入", exact: true }).click({ signal })),
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },
     timeoutMs: 15_000,
