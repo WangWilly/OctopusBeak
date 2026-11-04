@@ -5,16 +5,23 @@ import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createLocalDateClock, createPGliteLiveViewDependencies } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
-import { readAssetsSummary } from "../src/lib/assets/assets-summary.ts";
 import { readOverview } from "../src/lib/overview/overview-model.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
-import type { PGliteCanonicalBalanceCaptureRequest } from "../src/ledger/pglite/balance.ts";
-import type { PGliteCanonicalFinancialCommitRequest } from "../src/ledger/pglite/canonical-source-store.ts";
-import { applyManualAssetCommand, applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
-import { applyPgliteOperationalBaseline, createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
+import {
+  addUsdRate,
+  commitVerifiedDeposit,
+  HIDDEN,
+  TODAY,
+  twdSavings,
+  usdSavings,
+  VISIBLE,
+  writePreviewDeposits,
+} from "../src/ledger/pglite/financial-pages.fixtures.ts";
+import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
+import { applyPgliteOperationalBaseline } from "../src/ledger/pglite/operational.ts";
 import {
   applyPglitePreviewFinancialDataSchema,
   createPGlitePreviewFinancialData,
@@ -23,144 +30,9 @@ import {
   type PreviewVisibility,
 } from "../src/ledger/pglite/preview-financial-data.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
-import { commitTdccSettlement } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 
 process.env.OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE = "1";
 const { currentPreviewVisibility } = await import("../src/lib/automation/server/settings.ts");
-
-const token = (value: string): string => `sha256:${value.padEnd(64, value.at(-1) ?? "x").slice(0, 64)}`;
-const VISIBLE: PreviewVisibility = { visible: [{ sourceId: "synthetic", product: "deposit" }] };
-const HIDDEN: PreviewVisibility = { visible: [] };
-const TODAY = "2026-10-15";
-
-function depositCommit(): PGliteCanonicalFinancialCommitRequest {
-  const occurrenceKey = token("occurrence");
-  return {
-    capture: {
-      captureId: "preview-check-deposit",
-      integrationNamespace: "cathay",
-      sourceConnectionKey: token("a"),
-      identityEpoch: token("b"),
-      stream: "domestic-deposit",
-      recordKind: "source-record",
-      routeKey: "cathay/domestic-deposit/v1",
-      contractVersion: "v1",
-      subjectDigest: token("c"),
-      observedAt: "2026-10-01T00:00:00.000Z",
-      accountNumber: { value: "123456", kind: "depository-account", evidenceVersion: "synthetic-v1", sourceField: "accountNumber" },
-      scope: {
-        startDate: "20261001", endDate: "20261001", kind: "point-in-time", completeness: "single-page",
-        ruleVersion: "cathay/domestic-deposit/v1", sourceAccountKey: "123456",
-      },
-      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { pageCount: 1 } }],
-      records: [{
-        occurrenceKey,
-        collisionKey: token("collision"),
-        providerKey: token("provider"),
-        contentHash: token("content"),
-        compact: { amount: { coefficient: "100", scale: 0 } },
-      }],
-    },
-    account: { sourceAccountKey: "123456", accountNo: "123456", accountType: "depository", currency: "TWD" },
-    transactions: [{
-      sourceOccurrenceKey: occurrenceKey,
-      sourceSequence: "sequence-1",
-      amount: { coefficient: "100", scale: 0 },
-      currency: "TWD",
-      direction: "outflow",
-      postingStatus: "posted",
-      postingOrigin: "provider_booked_history",
-      postingBasis: "query-status-success-with-accounting-date",
-      postingRuleVersion: "cathay/domestic-deposit/v1",
-      description: "canonical outflow",
-      economicStatus: "normal",
-      administrativeState: "active",
-      semanticRuleVersion: "cathay/domestic-deposit/v1",
-      effectiveOn: "2026-10-01",
-      transactionDateTimeLocal: "2026-10-01T00:00:00+08:00",
-      timeZone: "Asia/Taipei",
-      timePrecision: "second",
-      timeOrigin: "source_reported",
-      effectiveTimeBasis: "accounting",
-      effectiveTimeRuleVersion: "cathay/domestic-deposit/v1",
-      utcInstantUtcUs: 1,
-    }],
-  };
-}
-
-function canonicalBalanceOf100Point1Twd(): PGliteCanonicalBalanceCaptureRequest {
-  const occurrenceKey = token("balance-occurrence");
-  const effectiveAt = "2026-10-01T04:00:00.000Z";
-  return {
-    capture: {
-      captureId: "preview-check-balance",
-      integrationNamespace: "cathay",
-      sourceConnectionKey: token("a"),
-      identityEpoch: token("b"),
-      stream: "domestic-deposit",
-      recordKind: "synthetic-balance",
-      routeKey: "cathay/domestic-deposit/current-balance-v1",
-      contractVersion: "cathay/current-deposit-balance-v1",
-      subjectDigest: token("balance-subject"),
-      observedAt: effectiveAt,
-      accountNumber: null,
-      scope: {
-        startDate: "2026-10-01", endDate: "2026-10-01", dateFormat: "YYYY-MM-DD", kind: "point-in-time",
-        completeness: "single-page", ruleVersion: "cathay/current-deposit-balance-v1",
-        sourceAccountKey: "123456", accountNo: "123456",
-      },
-      pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: 1, terminal: true, metadata: { provider: "synthetic" } }],
-      records: [{
-        occurrenceKey,
-        collisionKey: token("balance-collision"),
-        providerKey: token("balance-provider"),
-        contentHash: token("balance-content"),
-        compact: { balance: { coefficient: "1001", scale: 1 }, effectiveAt, currency: "TWD" },
-      }],
-    },
-    account: { sourceAccountKey: "123456", accountType: "depository", currency: "TWD" },
-    observations: [{
-      observationKey: token("ledger-observation"),
-      balanceKind: "ledger",
-      balance: { coefficient: "1001", scale: 1 },
-      currency: "TWD",
-      effectiveAt,
-      effectiveTimeBasis: "provider-system-time",
-      effectiveTimeRuleVersion: "cathay/current-deposit-balance-v1",
-      evidenceSourceRecordKey: occurrenceKey,
-      evidenceSourceField: "balance",
-      evidenceSourceValue: "100.1",
-      evidenceContractVersion: "cathay/current-deposit-balance-v1",
-      sourceOccurrenceKey: occurrenceKey,
-    }],
-  };
-}
-
-const twdSavings: PreviewAccount = {
-  sourceAccountKey: "savings",
-  displayLabel: "Preview savings",
-  currency: "TWD",
-  type: "depository",
-  balances: [
-    { kind: "current", amount: "1000.00", currency: "TWD", observedAt: { at: "2026-10-03T02:00:00.000Z", source: "reported" } },
-    { kind: "current", amount: "1234.50", currency: "TWD", observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" } },
-  ],
-  transactions: [
-    { sourceRowKey: "row-1", amount: "250", currency: "TWD", direction: "unknown",
-      postedAt: { precision: "day", value: "2026-10-04" }, description: "preview row" },
-    { sourceRowKey: "row-2", amount: "-40", currency: "TWD", direction: "outflow",
-      postedAt: { precision: "minute", value: "2026-10-05T09:30" }, description: "preview fee" },
-  ],
-};
-
-const usdSavings: PreviewAccount = {
-  sourceAccountKey: "usd",
-  displayLabel: "Preview USD",
-  currency: "USD",
-  type: "depository",
-  balances: [{ kind: "current", amount: "10.00", currency: "USD", observedAt: { at: "2026-10-05T02:00:00.000Z", source: "collection-time" } }],
-  transactions: [],
-};
 
 async function withLedger(run: (input: {
   store: PGliteStore;
@@ -173,93 +45,19 @@ async function withLedger(run: (input: {
   try {
     await applyPglitePreviewFinancialDataSchema(store);
     await applyPgliteManualAssetsSchema(store);
-    const operational = createPgliteOperationalProvider(store);
-    const canonical = createPGliteFinancialRegistry(store);
-    await canonical["financial.source.commit"]([depositCommit()]);
-    await canonical["financial.balance.capture"]([canonicalBalanceOf100Point1Twd()]);
+    await commitVerifiedDeposit(store);
     const preview = createPGlitePreviewFinancialData(store);
     await run({
       store,
       preview,
       registry: (visibility) => createPGliteFinancialRegistry(store, visibility),
-      writePreview: async (...accounts) => {
-        await preview.write({
-          sourceId: "synthetic",
-          institution: "bank-017",
-          product: "deposit",
-          collection: { collectedAt: "2026-10-05T03:00:00.000Z", accounts },
-        });
-      },
-      addUsdRate: () => operational.exchangeRates.upsertExchangeRates([{
-        rateDate: "2026-10-01", currency: "USD", twdPerUnit: 32, source: "check", fetchedAt: "2026-10-01T00:00:00.000Z",
-      }]),
+      writePreview: (...accounts) => writePreviewDeposits(preview, ...accounts),
+      addUsdRate: () => addUsdRate(store, "2026-10-01"),
     });
   } finally {
     await store.close();
   }
 }
-
-function convertedNet(overview: OverviewPageDto) {
-  const net = overview.summary.net;
-  if (net.display !== "converted") assert.fail(`expected a converted Net position, got ${net.display}`);
-  return net;
-}
-
-test("visible preview balances count in overview and assets totals with exact decimals and a flag", async () => {
-  await withLedger(async ({ registry, writePreview }) => {
-    await writePreview(twdSavings);
-    const shown = registry(() => VISIBLE);
-    const overview = await shown["financial.overview.current"]([]);
-    assert.deepEqual(overview.summary.assets.amounts.map((amount) => [amount.currency, amount.exact]), [
-      ["TWD", { coefficient: "133460", scale: 2 }],
-    ], "100.1 canonical plus 1234.50 preview, exactly");
-    assert.equal(overview.summary.assets.provenance.preview, true);
-    const preview = overview.accounts.find((account) => account.preview)!;
-    assert.match(preview.id, /^preview:[0-9a-f]{32}$/u);
-    assert.equal(preview.canonicalAccountId, undefined);
-    assert.deepEqual(preview.preview!.transactions.map((row) => row.direction), ["outflow", "unknown"]);
-    assert.deepEqual(overview.dailyHistory.map((row) => [row.date, row.provenance.preview]), [
-      ["2026-10-01", false],
-      ["2026-10-03", true],
-      ["2026-10-05", true],
-    ]);
-    assert.deepEqual(overview.dailyHistory.at(-1)!.assets.map((amount) => amount.exact), [{ coefficient: "13346", scale: 1 }]);
-
-    const assets = await shown["financial.assets.current"]([]);
-    assert.ok(assets.accounts.some((account) => account.id === preview.id));
-    assert.deepEqual(assets.dailyHistoryByAccount[preview.id]!.map((row) => row.date), ["2026-10-03", "2026-10-05"]);
-    assert.deepEqual(assets.transactionsByAccount[preview.id], undefined, "preview rows never become canonical transactions");
-
-    const model = readOverview(overview, { today: TODAY });
-    const net = convertedNet(overview);
-    assert.equal(net.twd, 1334.6);
-    assert.equal(net.provenance.preview, true);
-    assert.equal(model.assetAllocation.provenance.preview, true);
-    assert.equal(model.series.at(-1)!.provenance.preview, true);
-    const summary = readAssetsSummary(assets);
-    assert.ok(summary.state === "ready" && summary.provenance.preview && summary.total === 1334.6);
-  });
-});
-
-test("hidden preview data adds no account, history row, total, or flag", async () => {
-  await withLedger(async ({ registry, writePreview }) => {
-    await writePreview(twdSavings);
-    const hidden = registry(() => HIDDEN);
-    const overview = await hidden["financial.overview.current"]([]);
-    assert.deepEqual(overview.summary.assets.amounts.map((amount) => amount.exact), [{ coefficient: "1001", scale: 1 }]);
-    assert.equal(convertedNet(overview).twd, 100.1);
-    assert.equal(overview.accounts.some((account) => account.preview), false);
-    assert.deepEqual(overview.dailyHistory.map((row) => row.date), ["2026-10-01"]);
-    assert.equal(overview.dailyHistory.some((row) => row.provenance.preview), false);
-    const assets = await hidden["financial.assets.current"]([]);
-    assert.equal(assets.accounts.some((account) => account.preview), false);
-    assert.equal(Object.keys(assets.dailyHistoryByAccount).some((id) => id.startsWith("preview:")), false);
-    const model = readOverview(overview, { today: TODAY });
-    assert.equal(overview.summary.net.provenance.preview, false);
-    assert.equal(model.netWorth.chipsProvenance.preview, false);
-    assert.equal(model.assetAllocation.provenance.preview, false);
-  });
-});
 
 test("the Preview features setting decides visibility at each read", async () => {
   await withLedger(async ({ registry, writePreview }) => {
@@ -274,161 +72,6 @@ test("the Preview features setting decides visibility at each read", async () =>
     assert.equal(off.summary.net.provenance.preview, false);
     assert.equal(readOverview(off, { today: TODAY }).netWorth.chipsProvenance.preview, false);
     assert.equal((await live["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
-  });
-});
-
-test("a USD preview balance converts with a rate and is left out, listed, and unflagged without one", async () => {
-  await withLedger(async ({ registry, writePreview, addUsdRate }) => {
-    await writePreview(usdSavings);
-    const shown = registry(() => VISIBLE);
-    const ratelessPage = await shown["financial.overview.current"]([]);
-    const rateless = readOverview(ratelessPage, { today: TODAY });
-    const ratelessNet = convertedNet(ratelessPage);
-    assert.equal(ratelessNet.twd, 100.1, "verified net worth stays when preview data has no rate");
-    assert.deepEqual(ratelessNet.unconvertedCurrencies, ["USD"]);
-    assert.equal(ratelessNet.provenance.preview, false);
-    assert.equal(rateless.assetAllocation.total, 100.1);
-    assert.deepEqual(rateless.assetAllocation.unconvertedCurrencies, ["USD"]);
-    assert.equal(rateless.assetAllocation.provenance.preview, false);
-    assert.equal(rateless.series.some((point) => point.provenance.preview), false);
-    const ratelessAssets = readAssetsSummary(await shown["financial.assets.current"]([]));
-    assert.ok(ratelessAssets.state === "ready" && !ratelessAssets.provenance.preview);
-
-    await addUsdRate();
-    const ratedPage = await shown["financial.overview.current"]([]);
-    const rated = readOverview(ratedPage, { today: TODAY });
-    const ratedNet = convertedNet(ratedPage);
-    assert.equal(ratedNet.twd, 100.1 + 320);
-    assert.equal(ratedNet.provenance.preview, true);
-    assert.equal(rated.assetAllocation.provenance.preview, true);
-    assert.deepEqual(rated.assetAllocation.unconvertedCurrencies, []);
-    assert.equal(rated.series.at(-1)!.provenance.preview, true);
-  });
-});
-
-test("the published Net position converts verified TWD beside a USD preview, naming the rateless currency until a rate arrives", async () => {
-  await withLedger(async ({ registry, writePreview, addUsdRate }) => {
-    await writePreview(usdSavings);
-    const shown = registry(() => VISIBLE);
-    assert.deepEqual((await shown["financial.overview.current"]([])).summary.net, {
-      display: "converted",
-      twd: 100.1,
-      unconvertedCurrencies: ["USD"],
-      provenance: { preview: false, manual: false },
-      incomplete: false,
-    }, "the rateless USD preview is named, not shown as a native line, and does not mark the figure");
-
-    await addUsdRate();
-    assert.deepEqual((await shown["financial.overview.current"]([])).summary.net, {
-      display: "converted",
-      twd: 100.1 + 320,
-      unconvertedCurrencies: [],
-      provenance: { preview: true, manual: false },
-      incomplete: false,
-    }, "with a rate the USD preview counts in the TWD figure and marks it");
-  });
-});
-
-test("a native Net position carries the preview and manual markers its per-currency amounts include", async () => {
-  await withLedger(async ({ store, writePreview }) => {
-    await writePreview(twdSavings);
-    await commitTdccSettlement(store, "013", { currency: "USD" });
-    const clock = { now: () => "2026-10-15T02:00:00.000Z", today: () => TODAY };
-    const created = await applyManualAssetCommand(store, {
-      kind: "createAsset", category: "house", name: "Apartment", currency: "TWD",
-      firstValuation: { valuedOn: "2026-10-05", amount: "5000000", source: "appraisal_report", note: null },
-    }, clock);
-    assert.ok(created.ok);
-    const shown = createPGliteFinancialRegistry(store, () => VISIBLE, { today: () => TODAY });
-    const overview = await shown["financial.overview.current"]([]);
-    const net = overview.summary.net;
-    assert.equal(net.display, "native", "a verified USD balance without a rate withholds the TWD figure");
-    assert.deepEqual(net.provenance, { preview: true, manual: true });
-    assert.deepEqual(overview.summary.assets.provenance, { preview: true, manual: true });
-    assert.deepEqual(overview.summary.liabilities.provenance, { preview: false, manual: false });
-  });
-});
-
-test("preview credit accounts list on Liabilities only, and an unknown used credit counts as no amount", async () => {
-  await withLedger(async ({ registry, preview }) => {
-    await preview.write({
-      sourceId: "synthetic",
-      institution: "bank-017",
-      product: "credit_card",
-      collection: {
-        collectedAt: "2026-10-05T03:00:00.000Z",
-        accounts: [
-          {
-            sourceAccountKey: "known", displayLabel: "Known card", currency: "TWD", creditLimit: "50000",
-            cards: [{ sourceCardKey: "c1", cardMask: "****-1111", displayLabel: null }],
-            balances: [{
-              amount: "300", currency: "TWD", observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" },
-              basis: { kind: "provider-used-credit", usedCredit: "300" },
-            }],
-            purchases: [], statements: [],
-          },
-          {
-            sourceAccountKey: "unknown", displayLabel: "Unknown card", currency: "TWD", creditLimit: null,
-            cards: [], balances: [], purchases: [], statements: [],
-          },
-        ],
-      },
-    });
-    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "credit_card" }] }));
-    const liabilities = await shown["financial.liabilities.current"]([]);
-    const rows = liabilities.accounts.filter((account) => account.preview);
-    assert.deepEqual(rows.map((account) => [account.label, account.valueAvailability]), [
-      ["Known card", "available"],
-      ["Unknown card", "unavailable"],
-    ]);
-    assert.equal(liabilities.dailyHistory.at(-1)!.liabilities[0]!.value, 300);
-    assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
-  });
-});
-
-test("preview loans list on Liabilities only, count against the Net position with a marker, and close out of every total", async () => {
-  await withLedger(async ({ registry, preview }) => {
-    const loan = (key: string, amount: string) => ({
-      sourceAccountKey: key, displayLabel: `Loan ****${key}`, currency: "TWD", category: "housing" as const,
-      outstandingBalance: { amount, observedAt: { at: "2026-10-05T02:00:00.000Z", source: "reported" as const } },
-      originalAmount: "1000", interestRate: null, paymentAmount: null, nextPaymentDate: null,
-      installmentsPaid: null, installmentsTotal: null, openedOn: null, maturityDate: null,
-    });
-    const write = (collectedAt: string, loans: ReturnType<typeof loan>[]) => preview.write({
-      sourceId: "synthetic", institution: "bank-017", product: "loan",
-      collection: { collectedAt, completeness: "complete", loans },
-    });
-    await write("2026-10-05T03:00:00.000Z", [loan("1111", "40.10"), loan("2222", "20")]);
-    const shown = registry(() => ({ visible: [{ sourceId: "synthetic", product: "loan" }] }));
-    const liabilities = await shown["financial.liabilities.current"]([]);
-    assert.deepEqual(liabilities.accounts.filter((account) => account.preview).map((account) => [account.label, account.kind]), [
-      ["Loan ****1111", "loan"],
-      ["Loan ****2222", "loan"],
-    ]);
-    assert.equal((await shown["financial.assets.current"]([])).accounts.some((account) => account.preview), false);
-    assert.deepEqual(convertedNet(await shown["financial.overview.current"]([])), {
-      display: "converted", twd: 100.1 - 60.1, unconvertedCurrencies: [], provenance: { preview: true, manual: false }, incomplete: false,
-    });
-    assert.equal(convertedNet(await registry(() => HIDDEN)["financial.overview.current"]([])).twd, 100.1, "hidden loans count toward nothing");
-
-    await write("2026-10-06T03:00:00.000Z", [loan("1111", "40.10")]);
-    assert.equal(convertedNet(await shown["financial.overview.current"]([])).twd, 100.1 - 40.1, "the closed loan leaves the total");
-  });
-});
-
-test("preview transactions stay out of Spending reads", async () => {
-  await withLedger(async ({ registry, writePreview }) => {
-    const shown = registry(() => VISIBLE);
-    const readSpending = async () => {
-      const { knowledgeAt } = await shown["financial.spending.version"]([]);
-      return {
-        summary: await shown["financial.spending.current"]([]),
-        records: await shown["financial.spending.recordPage"]([{ knowledgeAt, month: "2026-10" }]),
-      };
-    };
-    const before = await readSpending();
-    await writePreview(twdSavings, usdSavings);
-    assert.deepEqual(await readSpending(), before);
   });
 });
 
