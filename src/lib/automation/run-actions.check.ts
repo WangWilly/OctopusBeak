@@ -15,7 +15,7 @@ const TOKEN = { token: "onboarding" } as unknown as OnboardingWorkflowToken;
 /** A page state whose intents settle with what each test scripts, recording every call. */
 function harness(options: Readonly<{
   pending?: readonly string[];
-  run?: Readonly<{ runId: string | null; error: string | null }> | null;
+  run?: Readonly<{ runId: string | null; error: string | null }> | Promise<Readonly<{ runId: string | null; error: string | null }>> | null;
   runMany?: Readonly<{ errors: Record<string, string>; error: string | null }>;
   stops?: readonly (string | null)[];
   registering?: boolean;
@@ -75,6 +75,21 @@ test("a task whose source is registering a device does not start and says why", 
   await actions.runTask(task("a"));
   assert.deepEqual(log, []);
   assert.equal(error(), "Finish the device registration first.");
+
+  const pending = harness({ registering: true, pending: ["a"] });
+  await pending.actions.runTask(task("a"));
+  assert.equal(pending.error(), "", "a task already starting is skipped before the registration message");
+});
+
+test("onboarding hears of a start before the host answers", async () => {
+  let answer!: (value: Readonly<{ runId: string | null; error: string | null }>) => void;
+  const { actions, log } = harness({ run: new Promise((resolve) => { answer = resolve; }) });
+  const running = actions.runTask(task("a"));
+  await Promise.resolve();
+  assert.deepEqual(log, ["run a", "onboarding.starting a a-group"]);
+  answer({ runId: "run-2", error: null });
+  await running;
+  assert.deepEqual(log.slice(2), ["onboarding.started true a run-2", "reload"]);
 });
 
 test("a started task tells onboarding before and after the start, then reloads", async () => {
@@ -123,6 +138,13 @@ test("a batch names each refused task and still reloads; a failed batch shows it
   assert.deepEqual(empty.log, []);
 });
 
+test("stopping every task clears an earlier failure when all stop", async () => {
+  const { actions, error } = harness({ stops: [null, null] });
+  actions.setError("an earlier failure");
+  await actions.stopAll([task("a"), task("b")]);
+  assert.equal(error(), "");
+});
+
 test("stopping every task joins the failures and reloads", async () => {
   const { actions, log, error } = harness({ stops: [null, "already finished", "timed out"] });
   await actions.stopAll([task("a"), task("b"), task("c")]);
@@ -137,6 +159,7 @@ test("a stop that fails shows its error; one that succeeds reloads", async () =>
   assert.equal(failed.error(), "not running");
 
   const stopped = harness({ stops: [null] });
+  stopped.actions.setError("an earlier failure");
   await stopped.actions.forceTerminate(task("a"));
   assert.deepEqual(stopped.log, ["forceTerminate a", "reload"]);
   assert.equal(stopped.error(), "");
