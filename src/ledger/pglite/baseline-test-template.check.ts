@@ -12,6 +12,8 @@ import {
   type TestBaseline,
 } from "./baseline-test-template.ts";
 import { assertPgliteOperationalBaseline } from "./operational.ts";
+import { MANUAL_ASSET_TABLES } from "./manual-assets.ts";
+import { PREVIEW_FINANCIAL_DATA_TABLES } from "./preview-financial-data.ts";
 
 const PROBE_ROUTE = "template-probe/domestic-deposit/v1";
 
@@ -27,13 +29,19 @@ async function closeAll(databases: readonly PGlite[]): Promise<void> {
   for (const database of databases) if (!database.closed) await database.close();
 }
 
-const SHAPES: readonly TestBaseline[] = ["ledger", "operational", "ledger+operational"];
+const SHAPES: readonly TestBaseline[] = ["ledger", "operational", "ledger+operational", "full"];
 
 async function assertShape(database: PGlite, baseline: TestBaseline): Promise<void> {
   if (baseline === "operational") await assert.rejects(assertPgliteBaseline(database), `${baseline} must not carry the ledger baseline`);
   else await assertPgliteBaseline(database);
   if (baseline === "ledger") await assert.rejects(assertPgliteOperationalBaseline(database), `${baseline} must not carry the operational baseline`);
   else await assertPgliteOperationalBaseline(database);
+  const tables = new Set((await database.query<{ table_name: string }>(
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
+  )).rows.map((row) => row.table_name));
+  for (const table of [...PREVIEW_FINANCIAL_DATA_TABLES, ...MANUAL_ASSET_TABLES]) {
+    assert.equal(tables.has(table), baseline === "full", `${baseline} ${baseline === "full" ? "must" : "must not"} carry ${table}`);
+  }
 }
 
 async function insertProbeCommit(database: PGlite): Promise<void> {

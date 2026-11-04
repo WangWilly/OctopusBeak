@@ -11,8 +11,6 @@ export type OutsideReader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction,
 
 export type OutsideScope = Readonly<{
   previewVisibility: PreviewVisibility;
-  /** Whether the store holds the Manual Asset tables; a ledger-only store has none to read. */
-  manualAssets: boolean;
   /** The person's local date; an ended Manual Asset still counts on its end date. */
   today: string;
 }>;
@@ -29,7 +27,7 @@ export async function readOutsideFinancialData(reader: OutsideReader, scope: Out
     await readPreviewDepositOutside(reader, scope.previewVisibility),
     await readPreviewCreditOutside(reader, scope.previewVisibility),
     await readPreviewLoanOutside(reader, scope.previewVisibility),
-    ...(scope.manualAssets ? [await readManualOutside(reader, scope.today)] : []),
+    await readManualOutside(reader, scope.today),
   ];
   return {
     accounts: parts.flatMap((part) => part.accounts),

@@ -4,8 +4,7 @@ import { registerHooks } from "node:module";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
-import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
-import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
+import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { createPGliteChildRpcServer, requirePGliteChildRpcClientFromEnv } from "../electron/pglite-child-rpc.ts";
 import { createPGliteFinancialLocalPort, createPGliteFinancialRegistry } from "../electron/pglite-financial-registry.ts";
@@ -437,8 +436,7 @@ function maicoinFetch(date: () => string): typeof fetch {
 export async function seedAppDemo(userData: string) {
   const spending = await seedSpendingDemo(userData);
   const database = await PGlite.create({ dataDir: spending.dataDir });
-  const store = new PGliteStore(database);
-  await applyPgliteMaicoinOperationalSchema(store);
+  const store = await installFinancialStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
     provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },

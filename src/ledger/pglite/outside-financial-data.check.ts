@@ -3,7 +3,6 @@ import test from "node:test";
 import type { AccountRowDto, DailyHistoryRowDto } from "../../lib/shared-ledger/types.ts";
 import type { PGliteDailyHistory } from "./daily-history.ts";
 import {
-  applyPglitePreviewFinancialDataSchema,
   createPGlitePreviewFinancialData,
   type PreviewCreditAccountView,
   type PreviewLoanAccountView,
@@ -321,9 +320,8 @@ test("a manual asset beside a preview loan marks each total with the origins it 
 });
 
 test("rows read for many preview accounts at once land on their own account, newest first", async () => {
-  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  const store = new PGliteStore(await createTestPGlite("full"));
   try {
-    await applyPglitePreviewFinancialDataSchema(store);
     const preview = createPGlitePreviewFinancialData(store);
     const observedAt = { at: "2026-10-15T01:00:00.000Z", source: "collection-time" } as const;
     const deposit = (key: string, rows: readonly [string, string][]) => ({
@@ -367,7 +365,6 @@ test("rows read for many preview accounts at once land on their own account, new
 
     const { accounts } = await readOutsideFinancialData(store, {
       previewVisibility: { visible: [{ sourceId: "deposits", product: "deposit" }, { sourceId: "cards", product: "credit_card" }] },
-      manualAssets: false,
       today: "2026-10-15",
     });
     const byLabel = new Map(accounts.map((account) => [account.label, account.preview!]));

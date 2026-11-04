@@ -327,7 +327,7 @@ test("an exchange-rate update republishes the Assets and Liabilities pages, whic
 });
 
 test("PGlite overview exposes observed daily balances to exchange-rate requirements", async () => {
-  const database = await createTestPGlite("ledger+operational");
+  const database = await createTestPGlite("full");
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const registry = createPGliteFinancialRegistry(store);

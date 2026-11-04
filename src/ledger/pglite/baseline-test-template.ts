@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { applyPgliteOperationalBaseline } from "./operational.ts";
+import { installFinancialStore } from "./store-layout.ts";
 import { PGliteStore } from "./transaction.ts";
 
 /**
@@ -15,9 +16,10 @@ import { PGliteStore } from "./transaction.ts";
  * {@link TEMPLATE_DIRECTORY_ENV} at them, so test file processes share one
  * install. Without it, each process installs its own on first use.
  */
-export type TestBaseline = "ledger" | "operational" | "ledger+operational";
+/** `full` is the store the app opens, built by {@link installFinancialStore}; a check that reads a Financial page uses it. */
+export type TestBaseline = "ledger" | "operational" | "ledger+operational" | "full";
 
-const TEST_BASELINES: readonly TestBaseline[] = ["ledger", "operational", "ledger+operational"];
+const TEST_BASELINES: readonly TestBaseline[] = ["ledger", "operational", "ledger+operational", "full"];
 
 export const TEMPLATE_DIRECTORY_ENV = "OCTOPUSBEAK_TEST_PGLITE_TEMPLATES";
 
@@ -27,8 +29,12 @@ const templateFile = (directory: string, baseline: TestBaseline) =>
 async function installTemplate(baseline: TestBaseline): Promise<Blob> {
   const seed = await PGlite.create();
   try {
-    if (baseline !== "operational") await applyPgliteBaseline(seed);
-    if (baseline !== "ledger") await applyPgliteOperationalBaseline(new PGliteStore(seed));
+    if (baseline === "full") {
+      await installFinancialStore(seed);
+    } else {
+      if (baseline !== "operational") await applyPgliteBaseline(seed);
+      if (baseline !== "ledger") await applyPgliteOperationalBaseline(new PGliteStore(seed));
+    }
     return await seed.dumpDataDir("none");
   } finally {
     await seed.close();
