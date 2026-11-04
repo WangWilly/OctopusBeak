@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { get } from "svelte/store";
 import { translations } from "../i18n/i18n.ts";
 import type { AutomationCredentialSaveResult, CertificateFileSelectionResult, CredentialGroupDto } from "../desktop/api.ts";
 import type { OnboardingStoryEvent } from "../onboarding/story.ts";
@@ -88,6 +87,11 @@ function harness(options: {
   return { editor, calls, stories, ran, bridgeReads: () => bridgeReads };
 }
 
+async function save(editor: ReturnType<typeof harness>["editor"], ctx: CredentialSheetContext) {
+  const submission = editor.submit(ctx);
+  return submission.kind === "saving" ? await submission.settled : submission.kind;
+}
+
 function stageMaicoin(editor: ReturnType<typeof harness>["editor"], ctx: CredentialSheetContext) {
   editor.dispatch({ type: "open" }, ctx);
   editor.dispatch({ type: "toggle-group", groupId: "maicoin" }, ctx);
@@ -98,7 +102,7 @@ test("a save submits the staged updates, reloads the page and closes the sheet",
   const { editor, calls, stories, ran } = harness({ tasks: [{ credentialGroupId: "fubon", canRun: true }] });
   const ctx = context();
   stageMaicoin(editor, ctx);
-  assert.deepEqual(await editor.save(ctx), { kind: "done" });
+  assert.equal(await save(editor, ctx), "done");
   assert.equal(calls.length, 2);
   assert.match(calls[0]!, /^save .*MAICOIN_ENABLED,MAICOIN_ID$/u);
   assert.equal(calls[1], "reload");
@@ -113,29 +117,30 @@ test("an invalid Statement Selection asks the view to focus that source and subm
   const ctx = context();
   editor.dispatch({ type: "open" }, ctx);
   editor.dispatch({ type: "toggle-group", groupId: "cathay" }, ctx);
-  assert.deepEqual(await editor.save(ctx), { kind: "focus-statement-selection", groupId: "cathay" });
+  assert.deepEqual(editor.submit(ctx), { kind: "focus-statement-selection", groupId: "cathay" });
   assert.deepEqual(calls, []);
 });
 
-test("a save that cannot reach the host marks the failure and leaves the sheet editable", async () => {
+test("a save that cannot reach the host settles as failed and leaves the sheet editable", async () => {
   const { editor } = harness({ save: async () => { throw new Error("ipc down"); } });
   const ctx = context();
   stageMaicoin(editor, ctx);
-  await editor.save(ctx);
-  assert.equal(get(editor.state).failure, "save-failed");
+  assert.equal(await save(editor, ctx), "failed");
   assert.equal(editor.sheet().saving, false);
   assert.equal(editor.sheet().open, true);
 });
 
-test("a later save clears the earlier failure", async () => {
-  let fail = true;
-  const { editor } = harness({ save: async () => { if (fail) throw new Error("ipc down"); return { saved: true }; } });
+test("a submit while a save is in flight is blocked and submits nothing", async () => {
+  let release = () => {};
+  const { editor, calls } = harness({ save: () => new Promise((done) => { release = () => done({ saved: true }); }) });
   const ctx = context();
   stageMaicoin(editor, ctx);
-  await editor.save(ctx);
-  fail = false;
-  await editor.save(ctx);
-  assert.equal(get(editor.state).failure, null);
+  const first = editor.submit(ctx);
+  assert.equal(first.kind, "saving");
+  assert.deepEqual(editor.submit(ctx), { kind: "blocked" });
+  release();
+  if (first.kind === "saving") assert.equal(await first.settled, "done");
+  assert.equal(calls.filter((call) => call.startsWith("save")).length, 1);
 });
 
 test("a host refusal keeps the sheet open without a reload", async () => {
@@ -144,10 +149,9 @@ test("a host refusal keeps the sheet open without a reload", async () => {
   });
   const ctx = context();
   stageMaicoin(editor, ctx);
-  await editor.save(ctx);
+  assert.equal(await save(editor, ctx), "done");
   assert.equal(calls.length, 1, "no reload after a refusal");
   assert.equal(editor.sheet().open, true);
-  assert.equal(get(editor.state).failure, null);
 });
 
 test("a save whose sheet was closed and reopened during the reload neither closes the new sheet nor starts a task", async () => {
@@ -170,7 +174,7 @@ test("a save whose sheet was closed and reopened during the reload neither close
   editor.enableAndSelect("maicoin", ctx);
   editor.dispatch({ type: "stage-value", key: "MAICOIN_ID", value: "user-1" }, ctx);
   stories.length = 0;
-  await editor.save(ctx);
+  await save(editor, ctx);
   assert.equal(editor.sheet().open, true, "the reopened sheet stays open");
   assert.deepEqual(stories, []);
   assert.deepEqual(ran, []);
@@ -191,7 +195,7 @@ test("during the story's source selection a saved source is told and its runnabl
   const plan = planCredentialSave(editor.sheet(), ctx);
   assert.equal(plan.kind, "submit");
   const savedGroupId = plan.kind === "submit" ? plan.savedGroupId : "";
-  await editor.save(ctx);
+  await save(editor, ctx);
   assert.deepEqual(stories, [
     { type: "choose-source", credentialGroupId: "maicoin" },
     { type: "source-saved", credentialGroupId: savedGroupId, configuredAt: "2026-11-04T01:02:03.000Z" },
@@ -211,7 +215,7 @@ test("a saved source whose task cannot run starts nothing", async () => {
   editor.enableAndSelect("maicoin", ctx);
   editor.dispatch({ type: "stage-value", key: "MAICOIN_ID", value: "user-1" }, ctx);
   assert.equal(planCredentialSave(editor.sheet(), ctx).kind, "submit");
-  await editor.save(ctx);
+  await save(editor, ctx);
   assert.deepEqual(ran, []);
 });
 

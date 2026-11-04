@@ -29,16 +29,15 @@ export type CredentialEditorPorts<Task extends EditorTask = AutomationTaskRow> =
   now(): string;
 }>;
 
-export type CredentialEditorState = Readonly<{
-  sheet: CredentialSheetState;
-  /** Set when the last save could not reach the host; the page shows its own copy. */
-  failure: "save-failed" | null;
-}>;
-
-/** What a save asks of the view: nothing, or focus on the source whose Statement Selection is invalid. */
-export type CredentialSaveResult =
-  | Readonly<{ kind: "done" }>
-  | Readonly<{ kind: "focus-statement-selection"; groupId: string }>;
+/**
+ * What a submit did, known as soon as it is made: nothing, an invalid
+ * Statement Selection for the view to focus, or a save whose outcome settles
+ * later. A failed save could not reach the host; the page shows its own copy.
+ */
+export type CredentialSubmission =
+  | Readonly<{ kind: "blocked" }>
+  | Readonly<{ kind: "focus-statement-selection"; groupId: string }>
+  | Readonly<{ kind: "saving"; settled: Promise<"done" | "failed"> }>;
 
 /**
  * The Automation page's sign-in details editor: the sheet state, and every
@@ -46,16 +45,16 @@ export type CredentialSaveResult =
  * DOM work: focus, confirm dialogs and input redaction.
  */
 export function createCredentialEditor<Task extends EditorTask>(ports: CredentialEditorPorts<Task>) {
-  const store = writable<CredentialEditorState>({ sheet: CLOSED_CREDENTIAL_SHEET, failure: null });
-  const sheet = () => get(store).sheet;
-  const setSheet = (next: CredentialSheetState) => store.update((state) => ({ ...state, sheet: next }));
+  const store = writable<CredentialSheetState>(CLOSED_CREDENTIAL_SHEET);
+  const sheet = () => get(store);
+  const setSheet = (next: CredentialSheetState) => store.set(next);
   const dispatch = (action: CredentialSheetAction, context: CredentialSheetContext) =>
     setSheet(reduceCredentialSheet(sheet(), action, context));
   const choosingSource = (context: CredentialSheetContext) =>
     context.onboardingSourceSelection && context.onboardingNodeId === "source-selection";
 
   return {
-    state: { subscribe: store.subscribe } satisfies Readable<CredentialEditorState>,
+    state: { subscribe: store.subscribe } satisfies Readable<CredentialSheetState>,
     sheet,
     dispatch,
 
@@ -81,7 +80,6 @@ export function createCredentialEditor<Task extends EditorTask>(ports: Credentia
     },
 
     async selectCertificateFile(key: string, locale: Locale, context: CredentialSheetContext) {
-      store.update((state) => ({ ...state, failure: null }));
       dispatch({ type: "certificate-file-started", key }, context);
       const { generation } = sheet();
       try {
@@ -98,36 +96,40 @@ export function createCredentialEditor<Task extends EditorTask>(ports: Credentia
     },
 
     /**
-     * Saves the staged changes. A result for a sheet closed or reopened since
+     * Submits the staged changes. A result for a sheet closed or reopened since
      * is dropped. During the story's source selection a saved source is told to
      * the story and its task, when runnable, starts.
      */
-    async save(context: CredentialSheetContext): Promise<CredentialSaveResult> {
+    submit(context: CredentialSheetContext): CredentialSubmission {
       const save = planCredentialSave(sheet(), context);
-      if (save.kind === "blocked") return { kind: "done" };
-      store.set({ sheet: save.state, failure: null });
+      if (save.kind === "blocked") return save;
+      setSheet(save.state);
       if (save.kind === "invalid") return { kind: "focus-statement-selection", groupId: save.groupId };
       const { generation } = save.state;
-      try {
-        const result = await ports.bridge().saveCredentials(save.plan.updates);
-        setSheet(applyCredentialSaveResult(sheet(), generation, { kind: "result", result }, context));
-        if (!result.saved) return { kind: "done" };
-        // The sheet stays open, still saving, while the page reloads.
-        await ports.page.reload();
-        if (sheet().generation !== generation) return { kind: "done" };
-        const { savedGroupId } = save;
-        if (context.onboardingSourceSelection && savedGroupId) {
-          ports.onboarding.story({ type: "source-saved", credentialGroupId: savedGroupId, configuredAt: ports.now() });
-          dispatch({ type: "saved-and-reloaded", generation }, context);
-          const task = ports.page.tasks().find((candidate) => candidate.credentialGroupId === savedGroupId);
-          if (task?.canRun) await ports.runTask(task);
-        } else {
-          dispatch({ type: "saved-and-reloaded", generation }, context);
+      const settled = (async (): Promise<"done" | "failed"> => {
+        try {
+          const result = await ports.bridge().saveCredentials(save.plan.updates);
+          setSheet(applyCredentialSaveResult(sheet(), generation, { kind: "result", result }, context));
+          if (!result.saved) return "done";
+          // The sheet stays open, still saving, while the page reloads.
+          await ports.page.reload();
+          if (sheet().generation !== generation) return "done";
+          const { savedGroupId } = save;
+          if (context.onboardingSourceSelection && savedGroupId) {
+            ports.onboarding.story({ type: "source-saved", credentialGroupId: savedGroupId, configuredAt: ports.now() });
+            dispatch({ type: "saved-and-reloaded", generation }, context);
+            const task = ports.page.tasks().find((candidate) => candidate.credentialGroupId === savedGroupId);
+            if (task?.canRun) await ports.runTask(task);
+          } else {
+            dispatch({ type: "saved-and-reloaded", generation }, context);
+          }
+          return "done";
+        } catch {
+          setSheet(applyCredentialSaveResult(sheet(), generation, { kind: "failed" }, context));
+          return "failed";
         }
-      } catch {
-        store.set({ sheet: applyCredentialSaveResult(sheet(), generation, { kind: "failed" }, context), failure: "save-failed" });
-      }
-      return { kind: "done" };
+      })();
+      return { kind: "saving", settled };
     },
   };
 }

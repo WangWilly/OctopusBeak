@@ -290,12 +290,17 @@ const saveCredentialsSource = sourceBetween(
 // The save rules (generation, failure, the story's saved source) are tested in credential-editor.check.ts.
 assert.match(
   saveCredentialsSource,
-  /if \(\$credentialEditorState\.failure === "save-failed"\) actionError = \$t\.automation\.saveCredentialsFailed/,
+  /if \(submission\.kind === "blocked"\) return;\s*actionError = "";/,
+  "a blocked submit leaves the page's error alone",
+);
+assert.match(
+  saveCredentialsSource,
+  /if \(\(await submission\.settled\) === "failed"\) actionError = \$t\.automation\.saveCredentialsFailed/,
   "a failed save shows the page's own copy, not the raw error",
 );
 assert.match(
   saveCredentialsSource,
-  /if \(result\.kind === "focus-statement-selection"\) \{\s*await tick\(\);\s*document\.getElementById\(`\$\{result\.groupId\}-statement-selection`\)\?\.focus\(\)/,
+  /if \(submission\.kind === "focus-statement-selection"\) \{\s*await tick\(\);\s*document\.getElementById\(`\$\{submission\.groupId\}-statement-selection`\)\?\.focus\(\)/,
 );
 
 assert.match(source, /\{#each sheetView\.railEnabledGroups as group \(group\.id\)\}/);

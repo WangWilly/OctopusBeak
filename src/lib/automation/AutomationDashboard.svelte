@@ -167,7 +167,7 @@ import type {
     now: () => new Date().toISOString(),
   });
   const credentialEditorState = credentialEditor.state;
-  $: sheet = $credentialEditorState.sheet;
+  $: sheet = $credentialEditorState;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
@@ -747,14 +747,17 @@ import type {
 
   async function saveCredentials(event: SubmitEvent) {
     event.preventDefault();
+    const submission = credentialEditor.submit(sheetContext);
+    if (submission.kind === "blocked") return;
     actionError = "";
-    const result = await credentialEditor.save(sheetContext);
-    if ($credentialEditorState.failure === "save-failed") actionError = $t.automation.saveCredentialsFailed;
-    if (result.kind === "focus-statement-selection") {
+    if (submission.kind === "focus-statement-selection") {
       await tick();
-      document.getElementById(`${result.groupId}-statement-selection`)?.focus();
+      document.getElementById(`${submission.groupId}-statement-selection`)?.focus();
+      return;
     }
+    if ((await submission.settled) === "failed") actionError = $t.automation.saveCredentialsFailed;
   }
+
 
 
   const ONBOARDING_PROGRESS_NODES: readonly string[] = [
