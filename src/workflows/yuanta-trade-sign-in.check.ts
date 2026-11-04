@@ -68,7 +68,7 @@ const accepted = (page: Page) => page.evaluate(() => confirm("still signed in?")
 function observed(plan: ShellPlan): Readonly<{ plan: ShellPlan; settled: () => boolean }> {
   let settled = false;
   return {
-    plan: { ...plan, own: (page, signal) => plan.own(page, signal).finally(() => { settled = true; }) },
+    plan: { ...plan, own: (scope) => plan.own(scope).finally(() => { settled = true; }) },
     settled: () => settled,
   };
 }

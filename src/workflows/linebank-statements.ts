@@ -26,7 +26,6 @@ import {
 } from "./linebank-current-deposit-balances.ts";
 import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
-import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 
@@ -774,15 +773,16 @@ export async function linebankAutoDismissApprovedAlert(
   return true;
 }
 
-export async function linebankIsSignedIn(page: Page): Promise<boolean> {
+export async function linebankIsSignedIn(scope: FrameScope): Promise<boolean> {
+  const { page } = scope;
   const pathname = new URL(page.url()).pathname;
   if (pathname === "/login") return false;
   if (pathname === "/transaction") {
     return (
-      (await firstVisibleMatch(page.locator("#account-dropdown"))) !== null
+      (await scope.race(firstVisibleMatch(page.locator("#account-dropdown")))) !== null
     );
   }
-  return (await firstVisibleMatch(transactionLinkLocator(page))) !== null;
+  return (await scope.race(firstVisibleMatch(transactionLinkLocator(page)))) !== null;
 }
 
 /** Enter the transaction stage only after authentication has completed. */
@@ -1039,30 +1039,35 @@ export async function linebankHumanAttestedCapture(input: {
   return validation.capture;
 }
 
+async function linebankFillLoginForm(scope: FrameScope, credentials: LineBankCredentials): Promise<void> {
+  const { page } = scope;
+  const { linebank_user_id: nationalId, linebank_account: userId, linebank_password: password } = credentials;
+  if (new URL(page.url()).pathname !== "/login")
+    await scope.withSignal((signal) => page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", signal }));
+  await scope.withSignal((signal) => page.locator("#nationalId").fill(nationalId, { signal }));
+  await scope.withSignal((signal) => page.locator("#userId").fill(userId, { signal }));
+  await scope.withSignal((signal) => page.locator("#pw").fill(password, { signal }));
+}
+
+async function linebankSubmitLoginForm(scope: FrameScope): Promise<void> {
+  const loginButtons = scope.page.getByRole("button", {
+    name: "登入友善網路銀行",
+    exact: true,
+  });
+  if (await scope.race(loginButtons.count()) !== 1)
+    throw new Error("LINE Bank login requires exactly one submit button.");
+  const loginButton = loginButtons.first();
+  if (!(await scope.race(loginButton.isVisible().catch(() => false))))
+    throw new Error("LINE Bank login submit button is not visible.");
+  await scope.withSignal((signal) => loginButton.click({ signal }));
+}
+
 export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
   return {
     signedIn: linebankIsSignedIn,
-    fill: async (page, signal) => {
-      const { linebank_user_id: nationalId, linebank_account: userId, linebank_password: password } = credentials;
-      if (new URL(page.url()).pathname !== "/login")
-        await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
-      await withAbort(page.locator("#nationalId").fill(nationalId), signal);
-      await withAbort(page.locator("#userId").fill(userId), signal);
-      await withAbort(page.locator("#pw").fill(password), signal);
-    },
-    submit: async (page, signal) => {
-      const loginButtons = page.getByRole("button", {
-        name: "登入友善網路銀行",
-        exact: true,
-      });
-      if (await withAbort(loginButtons.count(), signal) !== 1)
-        throw new Error("LINE Bank login requires exactly one submit button.");
-      const loginButton = loginButtons.first();
-      if (!(await withAbort(loginButton.isVisible().catch(() => false), signal)))
-        throw new Error("LINE Bank login submit button is not visible.");
-      await withAbort(loginButton.click(), signal);
-    },
-    prompts: (page, signal) => linebankAutoDismissApprovedAlert(frameScope(page, signal)),
+    fill: (scope) => linebankFillLoginForm(scope, credentials),
+    submit: linebankSubmitLoginForm,
+    prompts: linebankAutoDismissApprovedAlert,
     dialogs: "dismiss",
     session: { none: "needs live verification" },
     timeoutMs: LINEBANK_LOGIN_TIMEOUT_MS,

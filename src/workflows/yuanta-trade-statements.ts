@@ -50,7 +50,6 @@ import {
   YUANTA_TRADE_SOURCE,
 } from "../lib/automation/server/sources/yuanta-trade.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
-import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
@@ -680,12 +679,12 @@ export function parseReportPage(
   };
 }
 
-async function settleAfterNavigation(page: Page, signal?: AbortSignal): Promise<void> {
-  await page.waitForLoadState("domcontentloaded", { timeout: 30_000, signal });
-  await page.waitForLoadState("networkidle", { timeout: 10_000, signal }).catch(() => {
+async function settleAfterNavigation(page: Page, scope: FrameScope): Promise<void> {
+  await scope.withSignal((signal) => page.waitForLoadState("domcontentloaded", { timeout: 30_000, signal }));
+  await scope.withSignal((signal) => page.waitForLoadState("networkidle", { timeout: 10_000, signal }).catch(() => {
     // YuanTa pages keep analytics and local signing requests alive.
-  });
-  await withAbort(page.waitForTimeout(750), signal);
+  }));
+  await scope.pause(750);
 }
 
 const YUANTA_SECURITY_COMPONENT_MESSAGE = "系統找不到安控元件";
@@ -700,15 +699,13 @@ export async function isYuantaSecurityComponentMissing(
     .catch(() => false);
 }
 
-export async function dismissPasswordChangeReminderIfPresent(
-  page: Page,
-  signal?: AbortSignal,
-): Promise<void> {
+export async function dismissPasswordChangeReminderIfPresent(scope: FrameScope): Promise<void> {
+  const page = scope.page;
   const postpone = page.getByRole("button", {
     name: "暫不變更",
     exact: true,
   });
-  const visible = await postpone
+  const probe = postpone
     .isVisible()
     .catch((error: unknown) => {
       if (
@@ -719,10 +716,11 @@ export async function dismissPasswordChangeReminderIfPresent(
       }
       throw error;
     });
+  const visible = await scope.race(probe);
   if (!visible) return;
 
-  await postpone.click();
-  await settleAfterNavigation(page, signal);
+  await scope.withSignal((signal) => postpone.click({ signal }));
+  await settleAfterNavigation(page, scope);
 }
 
 async function grantYuantaBrowserPermissions(page: Page): Promise<void> {
@@ -731,35 +729,37 @@ async function grantYuantaBrowserPermissions(page: Page): Promise<void> {
   });
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  if (!page.url().includes("/NexusWebTrade/AssetReport/")) return false;
-  return await page
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  if (!scope.page.url().includes("/NexusWebTrade/AssetReport/")) return false;
+  return await scope.race(scope.page
     .locator("#btnLogout")
     .isVisible()
-    .catch(() => false);
+    .catch(() => false));
 }
 
-async function acceptDisclaimerIfPresent(page: Page, signal?: AbortSignal): Promise<void> {
+async function acceptDisclaimerIfPresent(scope: FrameScope): Promise<void> {
+  const { page } = scope;
   const checkbox = page.locator("#checkDisclaimer");
-  if (!(await checkbox.isVisible().catch(() => false))) {
+  if (!(await scope.race(checkbox.isVisible().catch(() => false)))) {
     return;
   }
 
-  await checkbox.check({ force: true, signal });
-  await page.locator("#btnConfirm").click({ signal });
-  await settleAfterNavigation(page, signal);
+  await scope.withSignal((signal) => checkbox.check({ force: true, signal }));
+  await scope.withSignal((signal) => page.locator("#btnConfirm").click({ signal }));
+  await settleAfterNavigation(page, scope);
 }
 
-async function dismissPersonalMessageIfPresent(page: Page, signal?: AbortSignal): Promise<void> {
+async function dismissPersonalMessageIfPresent(scope: FrameScope): Promise<void> {
+  const { page } = scope;
   if (!page.url().includes("/NexusWebTrade/RA/PersonalMessage")) return;
 
   const closeButton = page.locator("button.close").first();
-  if (!(await closeButton.isVisible().catch(() => false))) {
+  if (!(await scope.race(closeButton.isVisible().catch(() => false)))) {
     return;
   }
 
-  await closeButton.click();
-  await settleAfterNavigation(page, signal);
+  await scope.withSignal((signal) => closeButton.click({ signal }));
+  await settleAfterNavigation(page, scope);
 }
 
 export async function fillTradeLoginForm(
@@ -915,7 +915,7 @@ export async function captureTypedReport(
     reportType,
     { request: page.context().request, params },
   ));
-  await scope.race(acceptDisclaimerIfPresent(page, context.signal));
+  await acceptDisclaimerIfPresent(scope);
   await scope.withSignal((signal) => page.locator("#btnLogout").waitFor({ timeout: 60_000, signal }));
   return captured;
 }
@@ -1510,31 +1510,31 @@ export async function assertYuantaTradeServiSignAvailable(
 }
 
 async function completeTypedCertificateIfPresent(
-  page: Page,
+  scope: FrameScope,
   credentials: YuantaTradeCredentials,
   context: WorkflowContext,
-  signal: AbortSignal,
 ): Promise<void> {
+  const { page } = scope;
   const selectFileButton = page.locator("#btnPfxFile");
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    signal.throwIfAborted();
-    if (await page.locator("#btnLogout, #checkDisclaimer").first().isVisible().catch(() => false)) {
+    scope.signal.throwIfAborted();
+    if (await scope.race(page.locator("#btnLogout, #checkDisclaimer").first().isVisible().catch(() => false))) {
       return;
     }
-    await assertYuantaTradeServiSignAvailable(page, context);
-    if (await selectFileButton.isVisible().catch(() => false)) break;
-    await withAbort(page.waitForTimeout(500), signal);
+    await scope.race(assertYuantaTradeServiSignAvailable(page, context));
+    if (await scope.race(selectFileButton.isVisible().catch(() => false))) break;
+    await scope.pause(500);
   }
 
-  if (!(await selectFileButton.isVisible().catch(() => false))) {
-    await assertYuantaTradeServiSignAvailable(page, context);
+  if (!(await scope.race(selectFileButton.isVisible().catch(() => false)))) {
+    await scope.race(assertYuantaTradeServiSignAvailable(page, context));
     throw new Error("Timed out waiting for the YuanTa certificate form.");
   }
 
-  await page.locator("#jpki_PfxFile").fill(credentials.yuanta_trade_ca_path);
+  await scope.withSignal((signal) => page.locator("#jpki_PfxFile").fill(credentials.yuanta_trade_ca_path, { signal }));
   const passwordField = page.locator("#jpki_PfxFilePwd");
-  if (!(await passwordField.isVisible().catch(() => false))) {
+  if (!(await scope.race(passwordField.isVisible().catch(() => false)))) {
     const stage: VerificationStage = {
       stageId: "yuanta-trade-certificate-selection",
       title: "Select the YuanTa Trade certificate",
@@ -1557,81 +1557,82 @@ async function completeTypedCertificateIfPresent(
       },
     };
     await context.verification.complete(stage);
-    await passwordField.waitFor({ state: "visible", timeout: 60_000, signal });
+    await scope.withSignal((signal) => passwordField.waitFor({ state: "visible", timeout: 60_000, signal }));
   }
-  await passwordField.fill(credentials.yuanta_trade_ca_password);
-  await page.locator("#btnGo").click();
-  await settleAfterNavigation(page, signal);
+  await scope.withSignal((signal) => passwordField.fill(credentials.yuanta_trade_ca_password, { signal }));
+  await scope.withSignal((signal) => page.locator("#btnGo").click({ signal }));
+  await settleAfterNavigation(page, scope);
 }
 
-async function submitTypedLoginIfReady(page: Page, signal: AbortSignal): Promise<void> {
+async function submitTypedLoginIfReady(scope: FrameScope): Promise<void> {
+  const { page } = scope;
   const loginButton = page.locator("#loginBtn");
-  if (!(await loginButton.isVisible().catch(() => false))) return;
+  if (!(await scope.race(loginButton.isVisible().catch(() => false)))) return;
 
   const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR);
-  if (await checkbox.isVisible().catch(() => false)) {
-    const checked = await checkbox.isChecked().catch(() => false);
+  if (await scope.race(checkbox.isVisible().catch(() => false))) {
+    const checked = await scope.withSignal((signal) => checkbox.isChecked({ signal }).catch(() => false));
     if (!checked) {
       throw new Error("YuanTa Trade CAPTCHA checkbox was not completed.");
     }
   }
-  if (await yuantaTradeCaptchaModal(page).isVisible().catch(() => false)) {
+  if (await scope.race(yuantaTradeCaptchaModal(page).isVisible().catch(() => false))) {
     throw new Error("YuanTa Trade image challenge was not completed.");
   }
-  await loginButton.click();
-  await settleAfterNavigation(page, signal);
+  await scope.withSignal((signal) => loginButton.click({ signal }));
+  await settleAfterNavigation(page, scope);
 }
 
 async function signInYuantaTrade(
-  page: Page,
+  scope: FrameScope,
   credentials: YuantaTradeCredentials,
   context: WorkflowContext,
-  signal: AbortSignal,
 ): Promise<void> {
-  await fillTradeLoginForm(page, credentials, signal);
-  const canSwitchCaptcha = await page.evaluate(() =>
+  const { page } = scope;
+  await scope.withSignal((signal) => fillTradeLoginForm(page, credentials, signal));
+  const canSwitchCaptcha = await scope.race(page.evaluate(() =>
     typeof (window as unknown as { switchCaptchaType?: unknown }).switchCaptchaType === "function",
-  ).catch(() => false);
+  ).catch(() => false));
   if (canSwitchCaptcha) {
-    await page.evaluate(() => (
+    await scope.race(page.evaluate(() => (
       window as unknown as { switchCaptchaType: (type: string) => void }
-    ).switchCaptchaType("A"));
+    ).switchCaptchaType("A")));
   }
   const audioInput = page.locator("#verificationCode");
-  if (await audioInput.isVisible().catch(() => false)) {
+  if (await scope.race(audioInput.isVisible().catch(() => false))) {
     await context.verification.complete(yuantaTradeAudioAssistanceStage(page));
-    if (!(await audioInput.inputValue()).trim()) {
+    if (!(await scope.withSignal((signal) => audioInput.inputValue({ signal }))).trim()) {
       throw new Error("YuanTa Trade audio verification code was not entered.");
     }
   }
 
   const checkbox = page.locator(YUANTA_TRADE_CAPTCHA_CHECKBOX_SELECTOR);
   if (
-    await checkbox.isVisible().catch(() => false) &&
-    !(await checkbox.isChecked().catch(() => false))
+    await scope.race(checkbox.isVisible().catch(() => false)) &&
+    !(await scope.withSignal((signal) => checkbox.isChecked({ signal }).catch(() => false)))
   ) {
     await context.verification.complete(yuantaTradeCaptchaCheckboxAssistanceStage(page));
   }
   const modal = yuantaTradeCaptchaModal(page);
-  if (await modal.isVisible().catch(() => false)) {
-    await context.verification.complete(await yuantaTradeImageAssistanceStage(page));
-    if (await modal.isVisible().catch(() => false)) {
+  if (await scope.race(modal.isVisible().catch(() => false))) {
+    await context.verification.complete(await scope.race(yuantaTradeImageAssistanceStage(page)));
+    if (await scope.race(modal.isVisible().catch(() => false))) {
       throw new Error("YuanTa Trade image challenge was not completed.");
     }
   }
 
-  await assertYuantaTradeServiSignAvailable(page, context);
-  await submitTypedLoginIfReady(page, signal);
-  await completeTypedCertificateIfPresent(page, credentials, context, signal);
-  await dismissPasswordChangeReminderIfPresent(page, signal);
-  await dismissPersonalMessageIfPresent(page, signal);
-  await acceptDisclaimerIfPresent(page, signal);
-  await page.locator("#btnLogout").waitFor({ timeout: 120_000, signal });
+  await scope.race(assertYuantaTradeServiSignAvailable(page, context));
+  await submitTypedLoginIfReady(scope);
+  await completeTypedCertificateIfPresent(scope, credentials, context);
+  await dismissPasswordChangeReminderIfPresent(scope);
+  await dismissPersonalMessageIfPresent(scope);
+  await acceptDisclaimerIfPresent(scope);
+  await scope.withSignal((signal) => page.locator("#btnLogout").waitFor({ timeout: 120_000, signal }));
 }
 
 export function yuantaTradeSignInPlan(credentials: YuantaTradeCredentials, context: WorkflowContext): ShellPlan {
   return {
-    own: (page, signal) => signInYuantaTrade(page, credentials, context, signal),
+    own: (scope) => signInYuantaTrade(scope, credentials, context),
     signedIn: isSignedIn,
     dialogs: "accept-for-page",
     session: { none: "needs live verification" },

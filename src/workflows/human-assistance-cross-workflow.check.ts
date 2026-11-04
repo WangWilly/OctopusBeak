@@ -59,7 +59,8 @@ const explicitlyExcludedCaptchaWorkflows = [
 function rechecksInlineVerificationInput(source: string): boolean {
   // A sign-in plan that names its answer field hands the empty-answer check to signIn.
   if (/\bcaptcha:\s*\{[\s\S]{0,400}?\banswer:/u.test(source)) return true;
-  if (source.includes("inputValue()).trim()")) return true;
+  // The value may be read with options, such as the scope's signal, and through a scope wrapper.
+  if (/\.inputValue\([^()]*\)\)+\.trim\(\)/u.test(source)) return true;
 
   const assignedInputValue =
     /const\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+[\s\S]{0,400}?\.inputValue\(\)[\s\S]{0,120}?;/g;
@@ -284,6 +285,14 @@ test("inline verification check recognizes a deadline-wrapped value probe or a s
         stage: sinopacCaptchaAssistanceStage,
         answer: (page) => page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),
       },
+    `),
+    true,
+  );
+  assert.equal(
+    rechecksInlineVerificationInput(`
+      if (!(await scope.withSignal((signal) => audioInput.inputValue({ signal }))).trim()) {
+        throw new Error("empty");
+      }
     `),
     true,
   );

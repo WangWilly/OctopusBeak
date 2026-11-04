@@ -25,8 +25,9 @@ export async function ifFound<T>(wait: Promise<T>): Promise<T | null> {
 }
 
 /**
- * Finds elements across a signed-in page and its frames, and waits on them.
- * Every wait yields to the run's signal and rejects with its reason (ADR 0066).
+ * Finds elements across a provider page and its frames, and waits on them.
+ * Every wait yields to the scope's signal and rejects with its reason: the run's
+ * for a signed-in read (ADR 0066), the attempt's during Source sign-in (ADR 0101).
  */
 export type FrameScope = Readonly<{
   page: Page;

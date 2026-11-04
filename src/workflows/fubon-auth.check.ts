@@ -21,6 +21,9 @@ import {
   type FubonLoginDialogChannel,
   type FubonLoginSnapshot,
 } from "./fubon-auth.ts";
+import { frameScope } from "./frame-scope.ts";
+
+const scoped = (page: Page) => frameScope(page, new AbortController().signal);
 
 test("recognizes only the exact Fubon duplicate-login terminal URL", () => {
   const pageWith = (url: string) =>
@@ -56,7 +59,7 @@ test("login-document wait fails immediately on duplicate-login terminal", async 
     },
   } as unknown as Page;
   await assert.rejects(
-    waitForFubonLoginDocument(page, { timeoutMs: 10 }),
+    waitForFubonLoginDocument(scoped(page), { timeoutMs: 10 }),
     FubonDuplicateLoginTerminalError,
   );
   assert.equal(waits, 0);
@@ -366,22 +369,22 @@ test("waits through 0/6 transient fields and returns a stable three-field snapsh
       if (existing) return existing;
       const created = {
         locator: () => ({
-          evaluate: async () => ({
-            markerReady: current.marker,
-            generation: current.frame,
-            visibleCredentialCount: current.count,
-            visibleCredentialIdentities: current.ids,
-          }),
+          evaluate: async () => {
+            index += 1;
+            return {
+              markerReady: current.marker,
+              generation: current.frame,
+              visibleCredentialCount: current.count,
+              visibleCredentialIdentities: current.ids,
+            };
+          },
         }),
       } as unknown as Frame;
       frames.set(current.frame, created);
       return created;
     },
-    waitForTimeout: async () => {
-      index += 1;
-    },
   } as unknown as Page;
-  const result = await waitForFubonLoginDocument(page, {
+  const result = await waitForFubonLoginDocument(scoped(page), {
     timeoutMs: 50,
     pollIntervalMs: 1,
     confirmationMs: 1,
@@ -394,7 +397,7 @@ test("waits through 0/6 transient fields and returns a stable three-field snapsh
 test("fails closed for a stable ambiguous field set", async () => {
   const dom = fakeDom({ fields: [input(), input(), input(), input()] });
   await assert.rejects(
-    waitForFubonLoginDocument(fakePage(dom), {
+    waitForFubonLoginDocument(scoped(fakePage(dom)), {
       timeoutMs: 20,
       pollIntervalMs: 1,
       confirmationMs: 1,
@@ -414,7 +417,7 @@ test("initial fill remains bounded after one observed detached frame", async () 
     );
   };
   await fillFubonLoginCredentials(
-    page,
+    scoped(page),
     {
       userId: "id",
       account: "account",
@@ -427,10 +430,10 @@ test("initial fill remains bounded after one observed detached frame", async () 
 
 test("unchanged generation with credentials present submits without mutations", async () => {
   const page = fakePage();
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     {
       userId: "id",
       account: "account",
@@ -447,10 +450,10 @@ test("unchanged generation with empty credentials refills exactly three fields",
   const dom = fakeDom();
   setCredentialFields(dom, ["", "", ""]);
   const page = fakePage(dom);
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     {
       userId: "id",
       account: "account",
@@ -468,7 +471,7 @@ test("unchanged generation with empty credentials refills exactly three fields",
 
 test("changed document requires new assistance and does not click", async () => {
   const page = fakePage();
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const next = fakeDom({
     generation: "generation-2",
@@ -476,7 +479,7 @@ test("changed document requires new assistance and does not click", async () => 
   });
   (page as unknown as { replace: (nextDom: FakeDom) => void }).replace(next);
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     {
       userId: "id",
       account: "account",
@@ -504,11 +507,11 @@ test("changed input identity, CAPTCHA identity, or document URL requires assista
   ]) {
     const dom = fakeDom();
     const page = fakePage(dom);
-    const before = await readFubonLoginGeneration(page);
+    const before = await readFubonLoginGeneration(scoped(page));
     assert.ok(before);
     mutate(dom);
     const result = await submitFubonCaptchaFromCurrentFrame(
-      page,
+      scoped(page),
       { userId: "id", account: "account", password: "password" },
       { before, timeoutMs: 40 },
     );
@@ -521,10 +524,10 @@ test("changed input identity, CAPTCHA identity, or document URL requires assista
 test("explicit 0240 before submit never reuses the CAPTCHA", async () => {
   const dom = fakeDom();
   const page = fakePage(dom);
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     { userId: "id", account: "account", password: "password" },
     { before, preSubmitErrorCode: "0240", timeoutMs: 40 },
   );
@@ -539,10 +542,10 @@ test("missing or empty CAPTCHA never mutates credentials", async () => {
   for (const captcha of [undefined, input("")]) {
     const dom = fakeDom({ captcha });
     const page = fakePage(dom);
-    const before = await readFubonLoginGeneration(page);
+    const before = await readFubonLoginGeneration(scoped(page));
     assert.ok(before);
     const result = await submitFubonCaptchaFromCurrentFrame(
-      page,
+      scoped(page),
       {
         userId: "id",
         account: "account",
@@ -559,10 +562,10 @@ test("missing or empty CAPTCHA never mutates credentials", async () => {
 test("submit invocation is an uncertainty fence", async () => {
   const dom = fakeDom({ throwOnClick: true });
   const page = fakePage(dom);
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     {
       userId: "id",
       account: "account",
@@ -577,7 +580,7 @@ test("submit invocation is an uncertainty fence", async () => {
 test("evaluate rejection after click remains uncertain and is never retried", async () => {
   const dom = fakeDom({ throwAfterClickEvaluation: true });
   const page = fakePage(dom);
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   let assists = 0;
   const bounded = await runFubonCaptchaAcquisition({
@@ -587,7 +590,7 @@ test("evaluate rejection after click remains uncertain and is never retried", as
     },
     submit: async () =>
       submitFubonCaptchaFromCurrentFrame(
-        page,
+        scoped(page),
         { userId: "id", account: "account", password: "password" },
         { before, timeoutMs: 40 },
       ),
@@ -612,7 +615,7 @@ test("synchronous pre-click detach reacquires without clicking", async () => {
     markerReady: true,
   };
   const result = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     { userId: "id", account: "account", password: "password" },
     { before, timeoutMs: 40 },
   );
@@ -641,14 +644,14 @@ test("acquisition stops after one uncertain submit", async () => {
 
 test("OTP inspection reacquires when the observed generation changes", async () => {
   const page = fakePage();
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const next = fakeDom({
     generation: "otp-generation-2",
     otp: input("123456", "otp-2"),
   });
   (page as unknown as { replace: (nextDom: FakeDom) => void }).replace(next);
-  const result = await inspectFubonOtpFromCurrentFrame(page, {
+  const result = await inspectFubonOtpFromCurrentFrame(scoped(page), {
     before,
     timeoutMs: 40,
   });
@@ -747,7 +750,7 @@ test("the dialog observer accepts an alert and rejects every other dialog withou
 test("accepts an authenticated marker", async () => {
   const result = await withTelemetry(() =>
     waitForFubonPostLoginOutcome(
-      { frame: () => undefined } as unknown as Page,
+      scoped({ frame: () => undefined } as unknown as Page),
       {
         timeoutMs: 20,
         pollIntervalMs: 1,
@@ -763,7 +766,7 @@ test("accepts an authenticated marker", async () => {
 test("rejects a sanitized 0240 alert", async () => {
   const result = await withTelemetry(() =>
     waitForFubonPostLoginOutcome(
-      { frame: () => undefined } as unknown as Page,
+      scoped({ frame: () => undefined } as unknown as Page),
       {
         timeoutMs: 20,
         pollIntervalMs: 1,
@@ -783,7 +786,7 @@ test("waits for a post-submit bank dialog before treating the still-visible logi
   let probes = 0;
   const result = await withTelemetry(() =>
     waitForFubonPostLoginOutcome(
-      { frame: () => undefined } as unknown as Page,
+      scoped({ frame: () => undefined } as unknown as Page),
       {
         timeoutMs: 50,
         pollIntervalMs: 1,
@@ -804,7 +807,7 @@ test("still rejects an unchanged login form when no bank outcome appears", async
   let probes = 0;
   const result = await withTelemetry(() =>
     waitForFubonPostLoginOutcome(
-      { frame: () => undefined } as unknown as Page,
+      scoped({ frame: () => undefined } as unknown as Page),
       {
         timeoutMs: 8,
         pollIntervalMs: 1,
@@ -836,7 +839,7 @@ test("an in-page 0290 CAPTCHA response is a provider CAPTCHA rejection", async (
       : undefined,
   } as unknown as Page;
   const result = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
+    waitForFubonPostLoginOutcome(scoped(page), {
       timeoutMs: 50,
       pollIntervalMs: 1,
       probe: async () => {
@@ -863,7 +866,7 @@ test("a server refusal of filled credentials is a retryable login refusal", asyn
     }),
   } as unknown as Page;
   const result = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
+    waitForFubonPostLoginOutcome(scoped(page), {
       timeoutMs: 50,
       pollIntervalMs: 1,
       probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
@@ -887,7 +890,7 @@ test("a single missing-field message is not a server login refusal", async () =>
     }),
   } as unknown as Page;
   const result = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
+    waitForFubonPostLoginOutcome(scoped(page), {
       timeoutMs: 8,
       pollIntervalMs: 1,
       probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
@@ -910,7 +913,7 @@ test("a 0290 credential response is not a CAPTCHA rejection", async () => {
     }),
   } as unknown as Page;
   const result = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
+    waitForFubonPostLoginOutcome(scoped(page), {
       timeoutMs: 8,
       pollIntervalMs: 1,
       probe: async () => snapshot({ loggedIn: false, loginFormVisible: true }),
@@ -923,10 +926,10 @@ test("a 0290 credential response is not a CAPTCHA rejection", async () => {
 test("post-click 0240 is terminal after the single submit", async () => {
   const dom = fakeDom();
   const page = fakePage(dom);
-  const before = await readFubonLoginGeneration(page);
+  const before = await readFubonLoginGeneration(scoped(page));
   assert.ok(before);
   const submit = await submitFubonCaptchaFromCurrentFrame(
-    page,
+    scoped(page),
     { userId: "id", account: "account", password: "password" },
     { before, timeoutMs: 40 },
   );
@@ -934,7 +937,7 @@ test("post-click 0240 is terminal after the single submit", async () => {
   assert.equal(dom.clickInvocations, 1);
 
   const outcome = await withTelemetry(() =>
-    waitForFubonPostLoginOutcome(page, {
+    waitForFubonPostLoginOutcome(scoped(page), {
       timeoutMs: 20,
       pollIntervalMs: 1,
       probe: async () => snapshot({ result: false, errorCode: "0240" }),
@@ -959,8 +962,9 @@ test("prepared login exposes only an opaque, non-sensitive snapshot", async () =
     frame: () => frame,
     waitForTimeout: async () => undefined,
   } as unknown as Page;
-  const prepared = await prepareFubonLoginDocument(page, {
+  const prepared = await prepareFubonLoginDocument(scoped(page), {
     timeoutMs: 20,
+    pollIntervalMs: 1,
     confirmationMs: 0,
   });
   assert.ok(prepared.snapshot.documentIdentity);

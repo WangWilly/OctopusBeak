@@ -8,7 +8,7 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
-import { frameScope } from "./frame-scope.ts";
+import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   SINOPAC_CREDENTIAL_FIELDS,
@@ -669,16 +669,15 @@ function isServiceErrorUrl(href: string): boolean {
 }
 
 /** SinoPac's generic error page would otherwise sit under the five-minute sign-in deadline. */
-async function isSignedIn(page: Page, signal?: AbortSignal): Promise<boolean> {
-  const url = page.url();
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  const url = scope.page.url();
   if (isServiceErrorUrl(url)) throw new SourceUnavailableError();
   if (!sinopacSignedInPageUrl(url)) return false;
-  return await withAbort(
-    page
+  return await scope.race(
+    scope.page
       .locator('a#user-logout:visible, a[href*="MMALogout"]:visible')
       .isVisible()
       .catch(() => false),
-    signal,
   );
 }
 
@@ -692,29 +691,25 @@ export function sinopacPasswordExpiryNoticeDismissTargets(): string[] {
   ];
 }
 
-async function clickLoginButton(page: Page, signal?: AbortSignal): Promise<void> {
-  const visibleButton = page.locator("#MMA_Login");
-  if (await withAbort(visibleButton.isVisible().catch(() => false), signal)) {
-    await withAbort(visibleButton.click(), signal);
+async function clickLoginButton(scope: FrameScope): Promise<void> {
+  const visibleButton = scope.page.locator("#MMA_Login");
+  if (await scope.race(visibleButton.isVisible().catch(() => false))) {
+    await scope.withSignal((signal) => visibleButton.click({ signal }));
     return;
   }
-  await withAbort(page.locator('input[alt="登入"]').click({ force: true }), signal);
+  await scope.withSignal((signal) => scope.page.locator('input[alt="登入"]').click({ force: true, signal }));
 }
 
-async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Promise<boolean> {
-  signal?.throwIfAborted();
+async function dismissPasswordExpiryNotice(scope: FrameScope): Promise<boolean> {
+  scope.signal.throwIfAborted();
   for (const selector of sinopacPasswordExpiryNoticeDismissTargets()) {
-    const dismiss = page.locator(selector).first();
-    if (await withAbort(dismiss.isVisible().catch(() => false), signal)) {
-      await withAbort(dismiss.click(), signal);
-      await withAbort(
-        dismiss.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {}),
-        signal,
-      );
-      await withAbort(
-        page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {}),
-        signal,
-      );
+    const dismiss = scope.page.locator(selector).first();
+    if (await scope.race(dismiss.isVisible().catch(() => false))) {
+      await scope.withSignal((signal) => dismiss.click({ signal }));
+      await scope.withSignal((signal) =>
+        dismiss.waitFor({ state: "hidden", timeout: 10_000, signal }).catch(() => {}));
+      await scope.withSignal((signal) =>
+        scope.page.waitForLoadState("domcontentloaded", { timeout: 10_000, signal }).catch(() => {}));
       return true;
     }
   }
@@ -722,35 +717,35 @@ async function dismissPasswordExpiryNotice(page: Page, signal?: AbortSignal): Pr
 }
 
 async function fillLoginForm(
-  page: Page,
+  scope: FrameScope,
   credentials: SinopacCredentials,
-  signal?: AbortSignal,
 ): Promise<void> {
+  const { page } = scope;
   // The App may attach to an existing signed-out browser page. Navigate only
   // when it is not already at the sign-in entry to avoid duplicate requests.
   if (!sinopacLoginEntryUrl(page.url())) {
-    await withAbort(page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" }), signal);
+    await scope.withSignal((signal) => page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", signal }));
   } else {
-    await withAbort(page.waitForLoadState("domcontentloaded", { timeout: 60_000 }), signal);
+    await scope.withSignal((signal) => page.waitForLoadState("domcontentloaded", { timeout: 60_000, signal }));
   }
-  await withAbort(page.locator("form#aspnetForm").waitFor({ timeout: 60_000 }), signal);
+  await scope.withSignal((signal) => page.locator("form#aspnetForm").waitFor({ timeout: 60_000, signal }));
 
   const loginInputs = page.locator(
     "input.selectable:visible, input.tips:visible",
   );
 
-  await withAbort(loginInputs
+  await scope.withSignal((signal) => loginInputs
     .first()
-    .fill(credentials.sinopac_user_id), signal);
-  await withAbort(loginInputs
+    .fill(credentials.sinopac_user_id, { signal }));
+  await scope.withSignal((signal) => loginInputs
     .nth(1)
-    .fill(credentials.sinopac_account), signal);
-  await withAbort(loginInputs
+    .fill(credentials.sinopac_account, { signal }));
+  await scope.withSignal((signal) => loginInputs
     .nth(2)
-    .fill(credentials.sinopac_password), signal);
+    .fill(credentials.sinopac_password, { signal }));
   const captcha = page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR);
-  await withAbort(captcha.fill(""), signal);
-  await withAbort(captcha.focus(), signal);
+  await scope.withSignal((signal) => captcha.fill("", { signal }));
+  await scope.withSignal((signal) => captcha.focus({ signal }));
 }
 
 export function sinopacCaptchaAssistanceStage(
@@ -800,19 +795,17 @@ export function sinopacCaptchaAssistanceStage(
 }
 
 // The logout link can render after a dismissed notice, so give it time before calling the session lost.
-async function sinopacSessionProbe(page: Page, signal: AbortSignal): Promise<boolean> {
-  return sinopacSignedInPageUrl(page.url()) && await withAbort(
-    page.locator('a#user-logout, a[href*="MMALogout"]').first()
-      .waitFor({ state: "visible", timeout: 10_000 })
-      .then(() => true, () => false),
-    signal,
-  );
+async function sinopacSessionProbe(scope: FrameScope): Promise<boolean> {
+  return sinopacSignedInPageUrl(scope.page.url()) && await scope.withSignal((signal) =>
+    scope.page.locator('a#user-logout, a[href*="MMALogout"]').first()
+      .waitFor({ state: "visible", timeout: 10_000, signal })
+      .then(() => true, () => false));
 }
 
 export function sinopacSignInPlan(credentials: SinopacCredentials): FormPlan {
   return {
     signedIn: isSignedIn,
-    fill: (page, signal) => fillLoginForm(page, credentials, signal),
+    fill: (scope) => fillLoginForm(scope, credentials),
     captcha: {
       stage: sinopacCaptchaAssistanceStage,
       answer: (page) => page.locator(SINOPAC_CAPTCHA_INPUT_SELECTOR),

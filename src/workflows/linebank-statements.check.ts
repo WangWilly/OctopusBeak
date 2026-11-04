@@ -263,13 +263,13 @@ const rootPage = {
   url: () => "https://accessibility.linebank.com.tw/",
   getByRole: () => rootLinkLocator,
 } as never;
-assert.equal(await linebankIsSignedIn(rootPage), true);
+assert.equal(await linebankIsSignedIn(readScope(rootPage)), true);
 
 const loginPageWithNavigationLink = {
   url: () => "https://accessibility.linebank.com.tw/login",
   getByRole: () => rootLinkLocator,
 } as never;
-assert.equal(await linebankIsSignedIn(loginPageWithNavigationLink), false);
+assert.equal(await linebankIsSignedIn(readScope(loginPageWithNavigationLink)), false);
 
 const transactionDropdown = {
   async count() {
@@ -290,7 +290,7 @@ const transactionPage = {
     return transactionDropdown;
   },
 } as never;
-assert.equal(await linebankIsSignedIn(transactionPage), true);
+assert.equal(await linebankIsSignedIn(readScope(transactionPage)), true);
 
 const alreadyTransactionPage = {
   url: () => "https://accessibility.linebank.com.tw/transaction",

@@ -36,7 +36,7 @@ const providerSource = readFileSync(
 );
 assert.doesNotMatch(
   providerSource,
-  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|\bpause\(/u,
+  /from\s+["']libretto["']|librettoAuthenticate|export\s+default\s+workflow\s*\(|(?<!\.)\bpause\(/u,
   "Post production must use the App-owned typed workflow only",
 );
 assert.doesNotMatch(

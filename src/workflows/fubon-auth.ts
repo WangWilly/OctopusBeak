@@ -5,6 +5,7 @@ import type { DialogSnapshot, PageMatch } from "../lib/automation/sign-in-prompt
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { withAbort } from "./abort.ts";
+import type { FrameScope } from "./frame-scope.ts";
 import { locatePageMatch, type DialogDecision } from "./sign-in.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import {
@@ -102,7 +103,6 @@ export type FubonLoginFillOptions = Readonly<{
   frameName?: string;
   timeoutMs?: number;
   retryIntervalMs?: number;
-  signal?: AbortSignal;
 }>;
 
 export type FubonLoginDocumentOptions = Readonly<{
@@ -110,7 +110,6 @@ export type FubonLoginDocumentOptions = Readonly<{
   timeoutMs?: number;
   pollIntervalMs?: number;
   confirmationMs?: number;
-  signal?: AbortSignal;
 }>;
 
 /** Non-sensitive evidence captured before the App requests CAPTCHA assistance. */
@@ -190,7 +189,6 @@ export type FubonPostLoginOutcomeOptions = Readonly<{
   pollIntervalMs?: number;
   frameName?: string;
   silent?: boolean;
-  signal?: AbortSignal;
   dialogChannel?: FubonLoginDialogChannel;
   probe?: (
     page: Page,
@@ -273,21 +271,21 @@ function isRecoverableLoginFrameError(error: unknown): boolean {
 }
 
 async function waitForLoginFrame(
-  page: Page,
+  scope: FrameScope,
   frameName: string,
   deadline: number,
   retryIntervalMs: number,
-  signal?: AbortSignal,
 ): Promise<Frame> {
+  const { page } = scope;
   while (Date.now() < deadline) {
-    signal?.throwIfAborted();
+    scope.signal.throwIfAborted();
     if (hasFubonDuplicateLoginTerminal(page)) {
       throw new FubonDuplicateLoginTerminalError();
     }
     const frame = page.frame({ name: frameName });
     if (frame) return frame;
     const remainingMs = deadline - Date.now();
-    await withAbort(page.waitForTimeout(Math.min(retryIntervalMs, remainingMs)), signal);
+    await scope.pause(Math.min(retryIntervalMs, remainingMs));
   }
   throw new Error(`Timed out waiting for Fubon login frame "${frameName}".`);
 }
@@ -299,37 +297,36 @@ async function waitForLoginFrame(
  * has observed the authenticated state. In particular, do not activate a
  * deposit/card/loan menu or resolve a protected href while unauthenticated.
  */
-async function openFubonLoginForm(page: Page, signal: AbortSignal): Promise<void> {
-  await page.goto(FUBON_ENTRY_URL, { waitUntil: "domcontentloaded", signal });
+async function openFubonLoginForm(scope: FrameScope): Promise<void> {
+  const { page } = scope;
+  await scope.withSignal((signal) => page.goto(FUBON_ENTRY_URL, { waitUntil: "domcontentloaded", signal }));
   if (hasFubonDuplicateLoginTerminal(page)) {
     throw new FubonDuplicateLoginTerminalError();
   }
 
   const deadline = Date.now() + DEFAULT_LOGIN_DOCUMENT_TIMEOUT_MS;
   const headerFrame = await waitForLoginFrame(
-    page,
+    scope,
     FUBON_AUTH_FRAME_NAME,
     deadline,
     DEFAULT_LOGIN_DOCUMENT_POLL_INTERVAL_MS,
-    signal,
   );
   const loginLink = headerFrame
     .locator("a")
     .filter({ hasText: "登入" })
     .first();
-  await loginLink.waitFor({
+  await scope.withSignal((signal) => loginLink.waitFor({
     state: "attached",
     timeout: Math.max(1, deadline - Date.now()),
     signal,
-  });
-  await activateControlWithoutPointer(loginLink);
+  }));
+  await scope.race(activateControlWithoutPointer(loginLink));
 
   await waitForLoginFrame(
-    page,
+    scope,
     FUBON_LOGIN_FRAME_NAME,
     deadline,
     DEFAULT_LOGIN_DOCUMENT_POLL_INTERVAL_MS,
-    signal,
   );
   if (hasFubonDuplicateLoginTerminal(page)) {
     throw new FubonDuplicateLoginTerminalError();
@@ -374,13 +371,13 @@ type FubonLoginDocumentObservation = Readonly<{
  * leaves the browser context.
  */
 export async function readFubonLoginGeneration(
-  page: Page,
+  scope: FrameScope,
   options: FubonLoginDocumentOptions = {},
 ): Promise<FubonLoginAssistanceSnapshot | undefined> {
   const frameName = options.frameName ?? FUBON_LOGIN_FRAME_NAME;
-  const frame = page.frame({ name: frameName });
+  const frame = scope.page.frame({ name: frameName });
   if (!frame) return undefined;
-  const observation = await frame.locator("html").evaluate(
+  const observation = await scope.withSignal((signal) => frame.locator("html").evaluate(
     () => {
       type TrackedDocument = Document & {
         __librettoFubonLoginGeneration?: string;
@@ -467,8 +464,8 @@ export async function readFubonLoginGeneration(
       } satisfies FubonLoginDocumentObservation;
     },
     undefined,
-    { timeout: Math.max(1, Math.min(1_000, options.timeoutMs ?? 1_000)) },
-  );
+    { timeout: Math.max(1, Math.min(1_000, options.timeoutMs ?? 1_000)), signal },
+  ));
   return {
     frameName,
     frameIdentity: identityForFrame(frame),
@@ -484,9 +481,10 @@ export async function readFubonLoginGeneration(
 
 /** Wait for the evidence-backed 0/multi-tab -> stable-three-field state. */
 export async function waitForFubonLoginDocument(
-  page: Page,
+  scope: FrameScope,
   options: FubonLoginDocumentOptions = {},
 ): Promise<FubonLoginAssistanceSnapshot> {
+  const { page } = scope;
   const timeoutMs = Math.max(
     1,
     options.timeoutMs ?? DEFAULT_LOGIN_DOCUMENT_TIMEOUT_MS,
@@ -503,18 +501,19 @@ export async function waitForFubonLoginDocument(
   let candidate: FubonLoginAssistanceSnapshot | undefined;
   let since = 0;
   while (Date.now() < deadline) {
-    options.signal?.throwIfAborted();
+    scope.signal.throwIfAborted();
     if (hasFubonDuplicateLoginTerminal(page)) {
       throw new FubonDuplicateLoginTerminalError();
     }
     let current: FubonLoginAssistanceSnapshot | undefined;
     try {
       const remainingMs = deadline - Date.now();
-      current = await readFubonLoginGeneration(page, {
+      current = await readFubonLoginGeneration(scope, {
         ...options,
         timeoutMs: Math.max(1, Math.min(1_000, remainingMs)),
       });
     } catch {
+      scope.signal.throwIfAborted();
       current = undefined;
     }
     const key = current
@@ -557,7 +556,7 @@ export async function waitForFubonLoginDocument(
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs > 0)
-      await withAbort(page.waitForTimeout(Math.min(pollIntervalMs, remainingMs)), options.signal);
+      await scope.pause(Math.min(pollIntervalMs, remainingMs));
   }
   throw new Error(
     "Timed out waiting for the Fubon login document to become ready.",
@@ -565,11 +564,11 @@ export async function waitForFubonLoginDocument(
 }
 
 export async function prepareFubonLoginDocument(
-  page: Page,
+  scope: FrameScope,
   options: FubonLoginDocumentOptions = {},
 ): Promise<FubonPreparedLoginDocument> {
-  const snapshot = await waitForFubonLoginDocument(page, options);
-  const frame = page.frame({ name: snapshot.frameName });
+  const snapshot = await waitForFubonLoginDocument(scope, options);
+  const frame = scope.page.frame({ name: snapshot.frameName });
   if (!frame || identityForFrame(frame) !== snapshot.frameIdentity) {
     throw new Error("Fubon login frame changed while preparing assistance.");
   }
@@ -597,7 +596,7 @@ function loginValuesMatch(
 }
 
 async function readLoginFieldValues(
-  page: Page,
+  scope: FrameScope,
   frameName: string,
   frame: Frame,
   deadline: number,
@@ -607,42 +606,44 @@ async function readLoginFieldValues(
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return undefined;
     try {
-      const value = await frame
+      const value = await scope.withSignal((signal) => frame
         .locator('input[type="password"]:visible')
         .nth(index)
-        .inputValue({ timeout: remainingMs });
+        .inputValue({ timeout: remainingMs, signal }));
       values.push(value);
     } catch {
+      scope.signal.throwIfAborted();
       return undefined;
     }
 
-    const currentFrame = page.frame({ name: frameName });
+    const currentFrame = scope.page.frame({ name: frameName });
     if (currentFrame !== frame) return undefined;
   }
   return values;
 }
 
 async function verifyCurrentLoginForm(
-  page: Page,
+  scope: FrameScope,
   frameName: string,
   expectedValues: readonly string[],
   deadline: number,
   frame: Frame,
 ): Promise<boolean> {
-  const readback = await readLoginFieldValues(page, frameName, frame, deadline);
+  const readback = await readLoginFieldValues(scope, frameName, frame, deadline);
   return (
     readback !== undefined &&
     loginValuesMatch(readback, expectedValues) &&
-    page.frame({ name: frameName }) === frame
+    scope.page.frame({ name: frameName }) === frame
   );
 }
 
 /** Fill the three login fields with a bounded retry after an observed detach. */
 export async function fillFubonLoginCredentials(
-  page: Page,
+  scope: FrameScope,
   values: FubonLoginCredentialValues,
   options: FubonLoginFillOptions = {},
 ): Promise<void> {
+  const { page } = scope;
   const frameName = options.frameName ?? FUBON_LOGIN_FRAME_NAME;
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOGIN_FILL_TIMEOUT_MS;
   const retryIntervalMs =
@@ -656,20 +657,18 @@ export async function fillFubonLoginCredentials(
 
   while (Date.now() < deadline) {
     const frame = await waitForLoginFrame(
-      page,
+      scope,
       frameName,
       deadline,
       retryIntervalMs,
-      options.signal,
     );
     if (currentFrame && currentFrame !== frame) {
       const readinessRemainingMs = deadline - Date.now();
       if (readinessRemainingMs <= 0) break;
-      await waitForFubonLoginDocument(page, {
+      await waitForFubonLoginDocument(scope, {
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
-        signal: options.signal,
       });
     }
     if (currentFrame !== frame) {
@@ -684,18 +683,18 @@ export async function fillFubonLoginCredentials(
     const visibleFields = frame.locator('input[type="password"]:visible');
     let visibleFieldCount: number;
     try {
-      visibleFieldCount = await boundedLocatorCount(visibleFields, deadline);
+      visibleFieldCount = await scope.race(boundedLocatorCount(visibleFields, deadline));
     } catch (error) {
+      scope.signal.throwIfAborted();
       lastError = error;
       const current = page.frame({ name: frameName });
       if (current && current !== frame) {
         const readinessRemainingMs = deadline - Date.now();
         if (readinessRemainingMs <= 0) break;
-        await waitForFubonLoginDocument(page, {
+        await waitForFubonLoginDocument(scope, {
           frameName,
           timeoutMs: readinessRemainingMs,
           pollIntervalMs: retryIntervalMs,
-          signal: options.signal,
         });
         currentFrame = current;
         fieldIndex = 0;
@@ -708,11 +707,10 @@ export async function fillFubonLoginCredentials(
     if (visibleFieldCount !== fields.length) {
       const readinessRemainingMs = deadline - Date.now();
       if (readinessRemainingMs <= 0) break;
-      await waitForFubonLoginDocument(page, {
+      await waitForFubonLoginDocument(scope, {
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
-        signal: options.signal,
       });
       currentFrame = undefined;
       fieldIndex = 0;
@@ -720,24 +718,25 @@ export async function fillFubonLoginCredentials(
     }
     const field = visibleFields.nth(fieldIndex);
     try {
-      await field.waitFor({
+      await scope.withSignal((signal) => field.waitFor({
         state: "visible",
         timeout: Math.min(remainingMs, 5_000),
-      });
+        signal,
+      }));
       const fillTimeoutMs = deadline - Date.now();
       if (fillTimeoutMs <= 0) break;
-      await field.fill(value, { timeout: fillTimeoutMs });
+      await scope.withSignal((signal) => field.fill(value, { timeout: fillTimeoutMs, signal }));
     } catch (error) {
+      scope.signal.throwIfAborted();
       lastError = error;
       const current = page.frame({ name: frameName });
       if (current && current !== frame) {
         const readinessRemainingMs = deadline - Date.now();
         if (readinessRemainingMs <= 0) break;
-        await waitForFubonLoginDocument(page, {
+        await waitForFubonLoginDocument(scope, {
           frameName,
           timeoutMs: readinessRemainingMs,
           pollIntervalMs: retryIntervalMs,
-          signal: options.signal,
         });
         currentFrame = current;
         fieldIndex = 0;
@@ -750,7 +749,7 @@ export async function fillFubonLoginCredentials(
       }
       const retryRemainingMs = deadline - Date.now();
       if (retryRemainingMs > 0) {
-        await withAbort(page.waitForTimeout(Math.min(retryIntervalMs, retryRemainingMs)), options.signal);
+        await scope.pause(Math.min(retryIntervalMs, retryRemainingMs));
       }
       continue;
     }
@@ -759,11 +758,10 @@ export async function fillFubonLoginCredentials(
     if (current && current !== frame) {
       const readinessRemainingMs = deadline - Date.now();
       if (readinessRemainingMs <= 0) break;
-      await waitForFubonLoginDocument(page, {
+      await waitForFubonLoginDocument(scope, {
         frameName,
         timeoutMs: readinessRemainingMs,
         pollIntervalMs: retryIntervalMs,
-        signal: options.signal,
       });
       currentFrame = current;
       fieldIndex = 0;
@@ -774,7 +772,7 @@ export async function fillFubonLoginCredentials(
     if (fieldIndex >= fields.length) {
       if (
         !(await verifyCurrentLoginForm(
-          page,
+          scope,
           frameName,
           fields,
           deadline,
@@ -837,7 +835,7 @@ function snapshotChangeReason(
  * human assistance; a stale CAPTCHA is never submitted.
  */
 export async function submitFubonCaptchaFromCurrentFrame(
-  page: Page,
+  scope: FrameScope,
   values: FubonLoginCredentialValues,
   options: FubonCurrentFrameSubmitOptions = {},
 ): Promise<FubonCurrentFrameSubmitResult> {
@@ -852,7 +850,7 @@ export async function submitFubonCaptchaFromCurrentFrame(
   ) {
     return { status: "reacquire-human-assistance", reason: "idle-expired" };
   }
-  const frame = page.frame({ name: frameName });
+  const frame = scope.page.frame({ name: frameName });
   if (!frame) {
     return { status: "reacquire-human-assistance", reason: "frame-missing" };
   }
@@ -860,11 +858,12 @@ export async function submitFubonCaptchaFromCurrentFrame(
     options.before ?? options.assistanceBefore ?? options.beforeSnapshot;
   let current: FubonLoginAssistanceSnapshot | undefined;
   try {
-    current = await readFubonLoginGeneration(page, {
+    current = await readFubonLoginGeneration(scope, {
       frameName,
       timeoutMs,
     });
   } catch (error) {
+    scope.signal.throwIfAborted();
     if (before) {
       return {
         status: "reacquire-human-assistance",
@@ -898,7 +897,7 @@ export async function submitFubonCaptchaFromCurrentFrame(
 
   let submitInvocationStarted = false;
   try {
-    const prepared = await frame.locator("html").evaluate(
+    const prepared = await scope.withSignal((signal) => frame.locator("html").evaluate(
       (_root, credentials) => {
         const expectedDocumentIdentity = (
           credentials as FubonLoginCredentialValues & {
@@ -1032,15 +1031,15 @@ export async function submitFubonCaptchaFromCurrentFrame(
         ...values,
         __expectedDocumentIdentity: current?.documentIdentity,
       },
-      { timeout: timeoutMs },
-    );
+      { timeout: timeoutMs, signal },
+    ));
     if (prepared.status !== "ready-to-submit") return prepared;
 
     // From this point onward the browser task may invoke the bank submit
     // handler. Any transport/detach/timeout rejection is therefore fenced as
     // uncertain, even if the browser cannot report whether click ran.
     submitInvocationStarted = true;
-    return await frame.locator("html").evaluate(
+    return await scope.withSignal((signal) => frame.locator("html").evaluate(
       () => {
         const submit = document.querySelector<HTMLElement>("#btnLogin2");
         if (!submit || !submit.isConnected) {
@@ -1053,9 +1052,10 @@ export async function submitFubonCaptchaFromCurrentFrame(
         return { status: "submitted" } as const;
       },
       undefined,
-      { timeout: timeoutMs },
-    );
+      { timeout: timeoutMs, signal },
+    ));
   } catch (error) {
+    scope.signal.throwIfAborted();
     if (submitInvocationStarted) {
       return {
         status: "submit-outcome-uncertain",
@@ -1094,7 +1094,7 @@ export async function runFubonCaptchaAcquisition(
 
 /** Inspect the OTP only in the current document. No OTP value leaves it. */
 export async function inspectFubonOtpFromCurrentFrame(
-  page: Page,
+  scope: FrameScope,
   options: FubonCurrentFrameSubmitOptions = {},
 ): Promise<FubonCurrentFrameOtpResult> {
   const frameName = options.frameName ?? FUBON_LOGIN_FRAME_NAME;
@@ -1102,7 +1102,7 @@ export async function inspectFubonOtpFromCurrentFrame(
     1,
     options.timeoutMs ?? DEFAULT_CURRENT_FRAME_TRANSACTION_TIMEOUT_MS,
   );
-  const frame = page.frame({ name: frameName });
+  const frame = scope.page.frame({ name: frameName });
   if (!frame) {
     return { status: "reacquire-human-assistance", reason: "frame-missing" };
   }
@@ -1111,11 +1111,12 @@ export async function inspectFubonOtpFromCurrentFrame(
   if (before) {
     let current: FubonLoginAssistanceSnapshot | undefined;
     try {
-      current = await readFubonLoginGeneration(page, {
+      current = await readFubonLoginGeneration(scope, {
         frameName,
         timeoutMs,
       });
     } catch (error) {
+      scope.signal.throwIfAborted();
       return {
         status: "reacquire-human-assistance",
         reason: isRecoverableLoginFrameError(error)
@@ -1142,7 +1143,7 @@ export async function inspectFubonOtpFromCurrentFrame(
   }
 
   try {
-    return await frame.locator("html").evaluate(
+    return await scope.withSignal((signal) => frame.locator("html").evaluate(
       () => {
         const otp = document.querySelector<HTMLInputElement>("#m1_inputOTP");
         if (!otp) return { status: "no-challenge" } as const;
@@ -1164,9 +1165,10 @@ export async function inspectFubonOtpFromCurrentFrame(
         return { status: "ready" } as const;
       },
       undefined,
-      { timeout: timeoutMs },
-    );
+      { timeout: timeoutMs, signal },
+    ));
   } catch (error) {
+    scope.signal.throwIfAborted();
     return {
       status: "reacquire-human-assistance",
       reason: isRecoverableLoginFrameError(error)
@@ -1233,24 +1235,25 @@ export function fubonCaptchaAssistanceStage(
 }
 
 async function currentOtpChallengeVisible(
-  page: Page,
+  scope: FrameScope,
   timeoutMs = 3_000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const frame = page.frame({ name: FUBON_LOGIN_FRAME_NAME });
+    scope.signal.throwIfAborted();
+    const frame = scope.page.frame({ name: FUBON_LOGIN_FRAME_NAME });
     if (
       frame &&
-      (await frame
+      (await scope.race(frame
         .locator("#m1_inputOTP")
         .isVisible()
-        .catch(() => false))
+        .catch(() => false)))
     ) {
       return true;
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs > 0) {
-      await page.waitForTimeout(Math.min(100, remainingMs));
+      await scope.pause(Math.min(100, remainingMs));
     }
   }
   return false;
@@ -1258,7 +1261,7 @@ async function currentOtpChallengeVisible(
 
 
 type FubonLogin = Readonly<{
-  run: (page: Page, signal: AbortSignal) => Promise<void>;
+  run: (scope: FrameScope) => Promise<void>;
   observe: (dialog: DialogSnapshot) => DialogDecision;
 }>;
 
@@ -1279,7 +1282,7 @@ export function fubonLogin(
     },
   };
   return {
-    run: (page, signal) => runFubonLogin(page, values, { signal, complete, dialogs }),
+    run: (scope) => runFubonLogin(scope, values, { complete, dialogs }),
     observe: (dialog) => {
       if (dialog.type !== "alert") {
         emitOutcome("rejected", "unknown-confirm");
@@ -1292,25 +1295,24 @@ export function fubonLogin(
 }
 
 async function runFubonLogin(
-  page: Page,
+  scope: FrameScope,
   values: FubonLoginCredentialValues,
   options: Readonly<{
-    signal: AbortSignal;
     complete(stage: VerificationStage): Promise<void>;
     dialogs: FubonLoginDialogChannel;
   }>,
 ): Promise<void> {
-  const { signal, complete, dialogs } = options;
-  await openFubonLoginForm(page, signal);
+  const { complete, dialogs } = options;
+  await openFubonLoginForm(scope);
 
   let outcomeWindowStarted = false;
   let assistanceBefore: FubonLoginAssistanceSnapshot | undefined;
-  const submit = await withAbort(runFubonCaptchaAcquisition({
+  const submit = await runFubonCaptchaAcquisition({
     prepare: async () => {
-      signal.throwIfAborted();
-      await prepareFubonLoginDocument(page, { signal });
-      await fillFubonLoginCredentials(page, values, { signal });
-      assistanceBefore = await readFubonLoginGeneration(page);
+      scope.signal.throwIfAborted();
+      await prepareFubonLoginDocument(scope);
+      await fillFubonLoginCredentials(scope, values);
+      assistanceBefore = await readFubonLoginGeneration(scope);
       if (!assistanceBefore)
         throw new Error("Fubon login frame disappeared while preparing assistance.");
       return assistanceBefore;
@@ -1321,41 +1323,39 @@ async function runFubonLogin(
         outcomeWindowStarted = true;
       }
       const frame = await waitForLoginFrame(
-        page,
+        scope,
         FUBON_LOGIN_FRAME_NAME,
         Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
         DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-        signal,
       );
-      await frame.locator("#m1_userCaptcha").focus();
-      await complete(fubonCaptchaAssistanceStage(frame));
+      await scope.withSignal((signal) => frame.locator("#m1_userCaptcha").focus({ signal }));
+      await withAbort(complete(fubonCaptchaAssistanceStage(frame)), scope.signal);
     },
     submit: async () => {
-      signal.throwIfAborted();
+      scope.signal.throwIfAborted();
       if (dialogs.messages.length > 0) {
-        await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true, signal });
+        await waitForFubonPostLoginOutcome(scope, { dialogChannel: dialogs, silent: true });
       }
-      return await submitFubonCaptchaFromCurrentFrame(page, values, {
+      return await submitFubonCaptchaFromCurrentFrame(scope, values, {
         before: assistanceBefore,
       });
     },
-  }), signal);
+  });
 
   if (submit.status === "submit-outcome-uncertain")
     throw new FubonSubmitOutcomeUncertainError(submit.reason);
   if (submit.status !== "submitted")
     throw new Error(`Fubon CAPTCHA assistance retry bound reached (${submit.reason ?? "reacquire"}).`);
 
-  if (await withAbort(currentOtpChallengeVisible(page), signal)) {
+  if (await currentOtpChallengeVisible(scope)) {
     for (;;) {
-      signal.throwIfAborted();
-      const otpBefore = await readFubonLoginGeneration(page);
+      scope.signal.throwIfAborted();
+      const otpBefore = await readFubonLoginGeneration(scope);
       const frame = await waitForLoginFrame(
-        page,
+        scope,
         FUBON_LOGIN_FRAME_NAME,
         Date.now() + DEFAULT_LOGIN_FILL_TIMEOUT_MS,
         DEFAULT_LOGIN_FILL_RETRY_INTERVAL_MS,
-        signal,
       );
       await complete({
         stageId: "fubon-login-otp",
@@ -1371,12 +1371,12 @@ async function runFubonLogin(
         completion: { mode: "inline", targetIds: ["otp-input"] },
         focus: { targetId: "otp-input", contextRegionIds: ["otp-challenge"], initialZoom: 1.15 },
       });
-      const otp = await withAbort(inspectFubonOtpFromCurrentFrame(page, { before: otpBefore }), signal);
+      const otp = await inspectFubonOtpFromCurrentFrame(scope, { before: otpBefore });
       if (otp.status === "ready" || otp.status === "no-challenge") break;
     }
   }
 
-  await waitForFubonPostLoginOutcome(page, { dialogChannel: dialogs, silent: true, signal });
+  await waitForFubonPostLoginOutcome(scope, { dialogChannel: dialogs, silent: true });
 }
 
 function emitOutcome(
@@ -1568,36 +1568,20 @@ function throwDialogRejection(
   throw new FubonLoginRejectedError("dialog-alert", errorCode);
 }
 
-function sleep(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const abort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", abort);
-      resolve();
-    }, milliseconds);
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
 /** Fubon renders login responses inline in the login frame, not as dialogs. */
-async function fubonLoginResponseVisible(page: Page, response: PageMatch): Promise<boolean> {
+async function fubonLoginResponseVisible(scope: FrameScope, response: PageMatch): Promise<boolean> {
   try {
-    const found = locatePageMatch(page, response);
-    return Boolean(await found?.match.first().isVisible());
+    const found = locatePageMatch(scope.page, response);
+    if (!found) return false;
+    return await scope.race(found.match.first().isVisible().catch(() => false));
   } catch {
+    scope.signal.throwIfAborted();
     return false;
   }
 }
 
 export async function waitForFubonPostLoginOutcome(
-  page: Page,
+  scope: FrameScope,
   options: FubonPostLoginOutcomeOptions = {},
 ): Promise<void> {
   const timeoutMs = Math.max(
@@ -1621,7 +1605,7 @@ export async function waitForFubonPostLoginOutcome(
       probeFubonLoginPage(actualPage, context, options.frameName));
 
   while (Date.now() < deadline) {
-    options.signal?.throwIfAborted();
+    scope.signal.throwIfAborted();
     const dialogBeforeProbe = latestDialogMessage(options.dialogChannel);
     if (dialogBeforeProbe !== undefined) {
       throwDialogRejection(dialogBeforeProbe, undefined);
@@ -1636,8 +1620,8 @@ export async function waitForFubonPostLoginOutcome(
     const timer = setTimeout(() => controller.abort(), probeTimeoutMs);
     let snapshot: FubonLoginSnapshot | undefined;
     try {
-      snapshot = await probe(page, {
-        signal: controller.signal,
+      snapshot = await probe(scope.page, {
+        signal: AbortSignal.any([controller.signal, scope.signal]),
         timeoutMs: probeTimeoutMs,
       });
     } catch {
@@ -1645,17 +1629,18 @@ export async function waitForFubonPostLoginOutcome(
     } finally {
       clearTimeout(timer);
     }
+    scope.signal.throwIfAborted();
 
     const dialogMessage = latestDialogMessage(options.dialogChannel);
     if (dialogMessage !== undefined) {
       throwDialogRejection(dialogMessage, snapshot);
     }
 
-    if (await fubonLoginResponseVisible(page, CAPTCHA_REJECTION)) {
+    if (await fubonLoginResponseVisible(scope, CAPTCHA_REJECTION)) {
       if (!options.silent) emitOutcome("rejected", "captcha-rejected");
       throw new CaptchaProviderRejectedError();
     }
-    if (await fubonLoginResponseVisible(page, LOGIN_REFUSED)) {
+    if (await fubonLoginResponseVisible(scope, LOGIN_REFUSED)) {
       if (!options.silent) emitOutcome("rejected", "login-refused");
       throw new FubonLoginRefusedError();
     }
@@ -1683,7 +1668,7 @@ export async function waitForFubonPostLoginOutcome(
 
     const remainingAfterProbe = deadline - Date.now();
     if (remainingAfterProbe <= 0) break;
-    await sleep(Math.min(pollIntervalMs, remainingAfterProbe), options.signal);
+    await scope.pause(Math.min(pollIntervalMs, remainingAfterProbe));
   }
 
   const dialogMessage = latestDialogMessage(options.dialogChannel);

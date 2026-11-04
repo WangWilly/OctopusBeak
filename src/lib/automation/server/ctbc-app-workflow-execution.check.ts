@@ -45,6 +45,7 @@ function sourceResponse(resource: string, value: unknown): Response {
 function createPage(options: {
   expectedRanges?: number;
   signedIn?: boolean;
+  /** Runs each time sign-in probes for the signed-in marker before it shows. */
   onPoll?: () => Promise<void>;
   malformedSource?: boolean;
 } = {}) {
@@ -82,8 +83,11 @@ function createPage(options: {
     last() { return locator(selector, 0); },
     nth(value: number) { return locator(selector, value); },
     filter() { return this; },
-    isVisible: async () => selector === "form input[type=text]"
-      || (selector === "#btnHeaderLogout" && probeSignedIn()),
+    isVisible: async () => {
+      if (selector === "#btnHeaderLogout" && !signedIn) await options.onPoll?.();
+      return selector === "form input[type=text]"
+        || (selector === "#btnHeaderLogout" && probeSignedIn());
+    },
     waitFor: async () => undefined,
     count: async () => selector === "a.nav-link" ? 1 : 0,
     textContent: async () => selector === "a.nav-link" ? "2026/08" : "帳戶餘額 0000123456789100",
@@ -99,9 +103,7 @@ function createPage(options: {
       keyboard: { press: async () => undefined },
       goto: async () => undefined,
       waitForURL: async () => undefined,
-      waitForTimeout: async () => {
-        await options.onPoll?.();
-      },
+      waitForTimeout: async () => undefined,
       waitForResponse: async (predicate: (candidate: Response) => boolean) => {
         const index = responses.findIndex(predicate);
         if (index < 0) throw new Error("No synthetic CTBC App response matched.");
