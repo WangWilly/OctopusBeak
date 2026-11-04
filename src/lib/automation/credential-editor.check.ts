@@ -242,9 +242,12 @@ test("a certificate file chosen after the sheet closed is dropped, and a dialog 
   assert.deepEqual(calls, ["select zh-TW"]);
   assert.deepEqual(editor.sheet().changes.credentials, {}, "the stale choice stages nothing");
 
+  assert.equal(bridgeReads(), 1);
+
   const failing = harness();
   failing.editor.dispatch({ type: "open" }, ctx);
   await failing.editor.selectCertificateFile("MAICOIN_ID", "en", ctx);
   assert.equal(failing.editor.sheet().fileErrors.MAICOIN_ID, "no dialog");
-  assert.equal(bridgeReads(), 1, "the bridge is read per call");
+  await failing.editor.selectCertificateFile("MAICOIN_ID", "en", ctx);
+  assert.equal(failing.bridgeReads(), 2, "the bridge is read on every call, not once");
 });

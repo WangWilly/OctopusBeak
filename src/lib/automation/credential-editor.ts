@@ -32,7 +32,8 @@ export type CredentialEditorPorts<Task extends EditorTask = AutomationTaskRow> =
 /**
  * What a submit did, known as soon as it is made: nothing, an invalid
  * Statement Selection for the view to focus, or a save whose outcome settles
- * later. A failed save could not reach the host; the page shows its own copy.
+ * later. A save fails when the host call, the page reload or the started
+ * task throws, so the host may have saved; the page shows its own copy.
  */
 export type CredentialSubmission =
   | Readonly<{ kind: "blocked" }>
