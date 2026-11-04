@@ -1,17 +1,16 @@
 <script lang="ts">
   import { onMount, setContext, tick } from "svelte";
-  import { writable } from "svelte/store";
+  import { get, writable } from "svelte/store";
   import AssetsDashboard from "$lib/assets/AssetsDashboard.svelte";
   import AutomationDashboard from "$lib/automation/AutomationDashboard.svelte";
   import UsageStatisticsPrompt from "$lib/settings/UsageStatisticsPrompt.svelte";
   import { createAutomationPageState } from "$lib/automation/automation-page-state.ts";
   import type { AutomationActionStart, AutomationStopRequested } from "$lib/automation/automation-actions.ts";
   import {
-    createAutomationBlockRefreshCoordinator,
     type AutomationActionToken,
     type AutomationBlockRefreshReason,
   } from "$lib/automation/runtime-controller.ts";
-  import { isAutomationBlockStale, mergeAutomationRuntime } from "$lib/automation/runtime-sync.ts";
+  import { mergeAutomationRuntime } from "$lib/automation/runtime-sync.ts";
   import { isActiveAutomationRuntimeStatus } from "$lib/automation/task-row.ts";
   import type {
     AutomationDesktopModel,
@@ -67,50 +66,28 @@
   import RouteLoadNotice from "$lib/shared-shell/components/RouteLoadNotice.svelte";
   import {
     createRefreshCoordinator,
-    RefreshLoadError,
     type RefreshResult,
   } from "$lib/shared-shell/refresh-coordinator.ts";
-  import {
-    beginIndependentBlocks,
-    loadIndependentBlocks,
-    type DashboardBlockKey,
-    type BlockState,
-    type BlockStateMap,
-  } from "$lib/shared-shell/block-load-state.ts";
-  import {
-    type DashboardBlockPayload,
-    type DashboardBlockValueMap,
-  } from "$lib/shared-shell/dashboard-blocks.ts";
-  import {
-    type DataReadOptions,
-    type DataVersionSnapshot,
-  } from "$lib/shared-shell/data-version.ts";
+  import type { DashboardBlockKey } from "$lib/shared-shell/block-load-state.ts";
+  import type { DataVersionSnapshot } from "$lib/shared-shell/data-version.ts";
   import { installDataVersionLifecycle } from "$lib/shared-shell/data-version-lifecycle.ts";
   import {
     initialRefreshUiState,
     REFRESH_CONTEXT_KEY,
     type RefreshUiState,
   } from "$lib/shared-shell/refresh-context.ts";
+  import type { ViewLoadState } from "$lib/shared-shell/view-load-state.ts";
   import {
-    beginViewLoad,
-    failViewLoad,
-    finishViewLoad,
-    type ViewLoadState,
-  } from "$lib/shared-shell/view-load-state.ts";
-  import {
+    acceptVersionSnapshot,
     beginRefresh,
     failRefresh,
     markRefreshInvalidated,
     settleRefresh,
   } from "$lib/shared-shell/refresh-ui-state.ts";
-  import { createRouteLoadCache, settleIndependentLoads } from "./route-loader.ts";
+  import { settleIndependentLoads } from "./route-loader.ts";
+  import { automationBlockValue, automationRouteModel, createAutomationRouteLoader } from "./automation-route-loader.ts";
 
   type RouteId = OnboardingRoute;
-  type DashboardRoute = Exclude<RouteId, "settings">;
-  type RouteData = {
-    automation: AutomationDesktopModel;
-  };
-  type LoadState<T> = ViewLoadState<T>;
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
@@ -122,7 +99,13 @@
   $: spending = $financialState.routes.spending.load;
   // Only the current route's live failure is announced.
   $: financialLiveError = isFinancialRoute(route) && $financialState.routes[route].liveError;
-  let automation: LoadState<AutomationDesktopModel> = { status: "loading" };
+  const automationRoute = createAutomationRouteLoader({
+    loadBlock: (key, options) => window.octopusBeak.automation.loadBlock(key, options),
+    runtime: () => get(automationState).runtime,
+  });
+  const automationRouteState = automationRoute.state;
+  $: automation = $automationRouteState.view;
+  $: automationBlocks = $automationRouteState.blocks;
   // Runtime ownership lives at the app shell so route changes never drop
   // events or lose the latest state while Automation is off-screen.
   const automationState = createAutomationPageState({
@@ -160,16 +143,7 @@
   let settingsFocus: SettingsFocus | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
-  const routeDataCache = createRouteLoadCache<RouteData>();
   const refreshUi = writable<RefreshUiState>(initialRefreshUiState);
-  const automationBlockKeys: readonly DashboardBlockKey[] = ["summary", "list", "details"];
-  let automationBlocks: BlockStateMap<DashboardBlockPayload> = {};
-  let routeBlockLoadIds: Partial<Record<DashboardRoute, number>> = {};
-  let routeBlockPromises: Partial<Record<DashboardRoute, Promise<Record<string, BlockState<DashboardBlockPayload>>>>> = {};
-  type AutomationBlockRefreshPhase = "direct" | "primary" | "trailing";
-  const automationBlockRefreshCoordinator = createAutomationBlockRefreshCoordinator(
-    () => startRouteBlockLoadsUncoordinated("automation", undefined, undefined, "primary"),
-  );
 
   setContext(REFRESH_CONTEXT_KEY, {
     state: refreshUi,
@@ -301,8 +275,7 @@
     if (!preserveOnboardingOverviewRead) {
       financialPage.show(isFinancialRoute(route) ? route : null);
     }
-    const hasAutomationData = routeDataCache.read("automation") !== undefined
-      || Object.values(automationBlocks).some((state) => "data" in state);
+    const hasAutomationData = automationRoute.hasData();
     if (isFinancialRoute(route) && $financialState.enabled) return;
     // Settings reports source and exchange-rate status from Automation's data.
     void loadRoute(
@@ -333,41 +306,11 @@
   }
 
 
-  function progressiveAutomation(): AutomationDesktopModel | undefined {
-    return automationFromBlockStates(automationBlocks);
-  }
-
-  function automationBlockValue<Key extends "summary" | "list" | "details">(
-    states: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
-    key: Key,
-  ): DashboardBlockValueMap["automation"][Key] | undefined {
-    const state = states[key];
-    if (!state || !("data" in state) || state.data === undefined) return undefined;
-    const payload = state.data;
-    return payload.route === "automation" && payload.block === key
-      ? payload.data as DashboardBlockValueMap["automation"][Key]
-      : undefined;
-  }
-
-  function automationFromBlockStates(
-    states: Readonly<Record<string, BlockState<DashboardBlockPayload>>>,
-  ): AutomationDesktopModel | undefined {
-    const summary = automationBlockValue(states, "summary");
-    const list = automationBlockValue(states, "list");
-    const details = automationBlockValue(states, "details");
-    const source = details ?? list ?? summary;
-    if (!source) return undefined;
-    return {
-      automation: details?.automation ?? source.automation,
-      credentialGroups: details?.credentialGroups ?? list?.credentialGroups ?? [],
-    };
-  }
-
   $: overviewRenderValue = overviewValue;
   $: assetsRenderValue = assetsValue;
   $: liabilitiesRenderValue = liabilitiesValue;
   $: spendingRenderValue = spendingValue;
-  $: automationRenderValue = automationValue ?? progressiveAutomation();
+  $: automationRenderValue = automationRouteModel($automationRouteState);
   $: automationState.setModel(
     automationBlockValue(automationBlocks, "list")?.automation ?? automationRenderValue?.automation ?? null,
   );
@@ -380,121 +323,9 @@
     }
     : null;
 
-  function loadRouteBlock(
-    key: DashboardBlockKey,
-    options: DataReadOptions | undefined,
-  ): Promise<DashboardBlockPayload> {
-    return window.octopusBeak.automation.loadBlock(key, options);
-  }
-
-  function startRouteBlockLoadsUncoordinated(
-    nextRoute: "automation",
-    options: DataReadOptions | undefined,
-    onlyKey?: DashboardBlockKey,
-    refreshPhase: AutomationBlockRefreshPhase = "direct",
-  ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
-    const loadId = (routeBlockLoadIds.automation ?? 0) + 1;
-    routeBlockLoadIds = { ...routeBlockLoadIds, automation: loadId };
-    const keys = onlyKey ? [onlyKey] : automationBlockKeys;
-    const current = automationBlocks;
-    if (!onlyKey) {
-      automationBlocks = beginIndependentBlocks(current, keys);
-    } else {
-      automationBlocks = {
-        ...current,
-        [onlyKey]: beginViewLoad(current[onlyKey] ?? { status: "loading" }),
-      };
-    }
-    const loaders = Object.fromEntries(keys.map((key) => [
-      key,
-      () => loadRouteBlock(key, options),
-    ])) as Record<string, () => Promise<DashboardBlockPayload>>;
-    let staleBlockDetected = false;
-    const settled = loadIndependentBlocks(loaders, (key, state) => {
-      if (routeBlockLoadIds.automation !== loadId) return;
-      const payload = "data" in state ? state.data : undefined;
-      if (
-        payload?.route === "automation"
-        && isAutomationBlockStale(payload.data, $automationState.runtime)
-        && refreshPhase !== "trailing"
-      ) {
-        // Commit the block first. Starting a refresh from inside this
-        // callback increments the route load id and can otherwise invalidate
-        // the current callback before its ready state reaches the renderer.
-        staleBlockDetected = true;
-      }
-      automationBlocks = {
-        ...automationBlocks,
-        [key]: state,
-      };
-    });
-    void settled.then((states) => {
-      if (routeBlockLoadIds.automation !== loadId) return;
-      // The per-block callbacks provide progressive rendering. The final
-      // commit is a safety net for fast/parallel resolutions and guarantees
-      // that a completed request cannot leave a block in loading state.
-      automationBlocks = {
-        ...automationBlocks,
-        ...states,
-      };
-      if (
-        staleBlockDetected
-        && refreshPhase !== "trailing"
-      ) {
-        void automationBlockRefreshCoordinator.refresh(
-          "overtaken",
-          (isTrailing) => startRouteBlockLoadsUncoordinated(
-            "automation",
-            options,
-            onlyKey,
-            isTrailing ? "trailing" : "primary",
-          ),
-        );
-      }
-    });
-    routeBlockPromises = { ...routeBlockPromises, [nextRoute]: settled };
-    void settled.finally(() => {
-      if (routeBlockPromises.automation === settled) {
-        const remaining = { ...routeBlockPromises };
-        delete remaining.automation;
-        routeBlockPromises = remaining;
-      }
-    });
-    return settled;
-  }
-
-  function startRouteBlockLoads(
-    nextRoute: "automation",
-    options: DataReadOptions | undefined,
-    onlyKey?: DashboardBlockKey,
-    refreshReason?: AutomationBlockRefreshReason,
-  ): Promise<Record<string, BlockState<DashboardBlockPayload>>> {
-    if (!refreshReason) {
-      return startRouteBlockLoadsUncoordinated(nextRoute, options, onlyKey);
-    }
-    return automationBlockRefreshCoordinator.refresh(
-      refreshReason,
-      (isTrailing) => startRouteBlockLoadsUncoordinated(
-        nextRoute,
-        options,
-        onlyKey,
-        isTrailing ? "trailing" : "primary",
-      ),
-    );
-  }
-
   function retryAutomationBlock(key: string) {
-    if (!routeDataCache.read("automation")) {
-      void loadRoute("automation", { force: true });
-      return;
-    }
-    startRouteBlockLoads(
-      "automation",
-      key === "details" ? { refreshCredentials: true } : undefined,
-      key as DashboardBlockKey,
-    );
+    automationRoute.retry(key as DashboardBlockKey);
   }
-
 
   const refreshCoordinator = createRefreshCoordinator({
     readSnapshot: () => window.octopusBeak.data.getVersion(),
@@ -570,7 +401,7 @@
           awaitBlocks: true,
           automationRefreshReason: "session-resync",
         });
-        const latest = viewData(automation) ?? progressiveAutomation();
+        const latest = automationRouteModel(get(automationRouteState));
         if (!latest) throw new Error("Automation data unavailable.");
         return latest;
       },
@@ -702,12 +533,9 @@
       return;
     }
 
-    automation = beginViewLoad(automation);
-    const automationBlocks = startRouteBlockLoads("automation", undefined, undefined, "route-entry");
     const settled = await settleIndependentLoads({
       automation: async () => {
-        const states = await automationBlocks;
-        const data = automationFromBlockStates(states);
+        const data = await automationRoute.load({ reason: "route-entry", rethrow: true });
         if (!data) throw new Error("Automation data unavailable.");
         return data;
       },
@@ -727,10 +555,7 @@
       ? overviewResult.value as OverviewPageDto
       : null;
 
-    if (automationData) {
-      automation = finishViewLoad(automationData);
-    } else if (automationResult?.status === "rejected") {
-      automation = failViewLoad(automation, automationResult.error);
+    if (!automationData && automationResult?.status === "rejected") {
       console.warn("welcome-automation-load-failed", message(automationResult.error));
     }
     if (overviewResult?.status === "rejected") {
@@ -769,66 +594,15 @@
       }
       return;
     }
-    const readOptions: DataReadOptions | undefined = options.snapshot
-      ? {
-        expectedVersion: options.snapshot.version,
-        ...(options.refreshCredentials ? { refreshCredentials: true } : {}),
-      }
-      : options.refreshCredentials
-        ? { refreshCredentials: true }
-      : undefined;
-    const automationRefreshReason = next === "automation"
-      ? options.automationRefreshReason ?? (options.force ? "manual" : undefined)
-      : undefined;
-    if (next === "automation") automation = beginViewLoad(automation);
-    let blockLoads: Promise<Record<string, BlockState<DashboardBlockPayload>>> | null = null;
-    if (next === "automation") {
-      const hasCachedData = routeDataCache.read("automation") !== undefined;
-      const hasBlockRead = Object.values(automationBlocks).some((state) => state.status === "loading");
-      const automationRefreshRequested = automationRefreshReason !== undefined;
-      if (options.force || automationRefreshRequested || !hasCachedData && !hasBlockRead) {
-        blockLoads = startRouteBlockLoads(
-          "automation",
-          readOptions,
-          undefined,
-          automationRefreshReason,
-        );
-      } else if (!hasCachedData) {
-        blockLoads = routeBlockPromises.automation ?? null;
-      }
-    }
-    try {
-      if (next === "automation") {
-        const data = await routeDataCache.load("automation", async () => {
-          const states = blockLoads
-            ? await blockLoads
-            : await startRouteBlockLoads("automation", readOptions);
-          const value = automationFromBlockStates(states);
-          if (!value) throw new Error("Automation data unavailable.");
-          return value;
-        }, {
-          ...options,
-          force: options.force || automationRefreshReason !== undefined,
-        });
-        automation = finishViewLoad(data);
-      }
-      if (options.awaitBlocks && blockLoads) {
-        const states = await blockLoads;
-        const failedBlocks = Object.entries(states)
-          .filter(([, state]) => state.status === "error")
-          .map(([key]) => `${next}:${key}`);
-        if (failedBlocks.length > 0) {
-          throw new RefreshLoadError(
-            `${next} block refresh failed`,
-            failedBlocks,
-          );
-        }
-      }
-    } catch (error) {
-      if (options.awaitBlocks && blockLoads) await blockLoads;
-      if (next === "automation") automation = failViewLoad(automation, error);
-      if (options.rethrow) throw error;
-    }
+    if (next !== "automation") return;
+    await automationRoute.load({
+      ...(options.force ? { force: true } : {}),
+      ...(options.rethrow ? { rethrow: true } : {}),
+      ...(options.awaitBlocks ? { awaitBlocks: true } : {}),
+      ...(options.refreshCredentials ? { refreshCredentials: true } : {}),
+      ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+      ...(options.automationRefreshReason ? { reason: options.automationRefreshReason } : {}),
+    });
   }
 
   onMount(() => {
@@ -862,34 +636,7 @@
         refreshUi.update((state) => markRefreshInvalidated(state, event));
       },
       onSnapshot: (snapshot) => {
-        refreshUi.update((state) => {
-          // A reconnect response can have been captured before an event that
-          // is already visible to the renderer.  Never let that older/current
-          // response hide the newer stale marker.
-          if (snapshot.version < state.version) return state;
-          if (state.status === "stale" && snapshot.version === state.version && !snapshot.stale) {
-            return state;
-          }
-          // A reconnect query must not make an in-flight refresh look settled.
-          // An observed stale snapshot is still latched until that round ends.
-          if (state.status === "refreshing") {
-            return snapshot.stale
-              ? {
-                ...state,
-                version: Math.max(state.version, snapshot.version),
-                changedAt: snapshot.changedAt,
-                staleDuringRefresh: true,
-              }
-              : state;
-          }
-          return {
-            status: snapshot.stale ? "stale" : "current",
-            version: snapshot.version,
-            changedAt: snapshot.changedAt,
-            failed: [],
-            staleDuringRefresh: false,
-          };
-        });
+        refreshUi.update((state) => acceptVersionSnapshot(state, snapshot));
       },
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });

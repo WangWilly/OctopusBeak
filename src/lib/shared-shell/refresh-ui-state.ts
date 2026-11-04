@@ -1,4 +1,4 @@
-import type { DataInvalidationEvent } from "./data-version.ts";
+import type { DataInvalidationEvent, DataVersionSnapshot } from "./data-version.ts";
 import type { RefreshResult } from "./refresh-coordinator.ts";
 import type { RefreshUiState } from "./refresh-context.ts";
 
@@ -29,6 +29,37 @@ export function markRefreshInvalidated(
     status: "stale",
     version: event.version,
     changedAt: event.changedAt,
+    failed: [],
+    staleDuringRefresh: false,
+  };
+}
+
+/** Take in a version snapshot from a reconnect or resume query. */
+export function acceptVersionSnapshot(
+  state: RefreshUiState,
+  snapshot: DataVersionSnapshot,
+): RefreshUiState {
+  // A reconnect response can have been captured before an event that is
+  // already visible to the renderer. Never let that older or equal response
+  // hide the newer stale marker.
+  if (snapshot.version < state.version) return state;
+  if (state.status === "stale" && snapshot.version === state.version && !snapshot.stale) return state;
+  // A reconnect query must not make an in-flight refresh look settled. An
+  // observed stale snapshot stays latched until that round ends.
+  if (state.status === "refreshing") {
+    return snapshot.stale
+      ? {
+        ...state,
+        version: Math.max(state.version, snapshot.version),
+        changedAt: snapshot.changedAt,
+        staleDuringRefresh: true,
+      }
+      : state;
+  }
+  return {
+    status: snapshot.stale ? "stale" : "current",
+    version: snapshot.version,
+    changedAt: snapshot.changedAt,
     failed: [],
     staleDuringRefresh: false,
   };
