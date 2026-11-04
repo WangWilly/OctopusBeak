@@ -237,7 +237,7 @@ test("a certificate file chosen after the sheet closed is dropped, and a dialog 
   editor.dispatch({ type: "open" }, ctx);
   const choosing = editor.selectCertificateFile("MAICOIN_ID", "zh-TW", ctx);
   editor.dispatch({ type: "close" }, ctx);
-  resolve({ selected: true, path: "/tmp/cert.pfx", name: "cert.pfx" } as unknown as CertificateFileSelectionResult);
+  resolve({ cancelled: false, path: "/tmp/cert.pfx", filename: "cert.pfx" });
   await choosing;
   assert.deepEqual(calls, ["select zh-TW"]);
   assert.deepEqual(editor.sheet().changes.credentials, {}, "the stale choice stages nothing");
