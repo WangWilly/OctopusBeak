@@ -120,6 +120,15 @@ test("stop ends every service and cleanup, including those started after recover
   assert.equal(log.includes("runEventCleanup.stop"), false, "a started cleanup stops once");
 });
 
+test("a second wait for readiness starts nothing more", async () => {
+  const { services, log } = harness();
+  services.startWhenReady(Promise.resolve());
+  services.startWhenReady(Promise.resolve());
+  await settle();
+  assert.equal(log.filter((entry) => entry === "runEventCleanup.start").length, 1);
+  assert.equal(log.filter((entry) => entry === "usagePing.start").length, 1);
+});
+
 test("a settings change reaches every service, with the update choices it carries", () => {
   const { services, log } = harness();
   services.settingsChanged({ appUpdatesEnabled: true, appUpdatesAutoDownload: false });
@@ -131,7 +140,7 @@ test("a settings change reaches every service, with the update choices it carrie
   ]);
 });
 
-test("pausing the schedules pauses both, and resume restarts only those that were running", async () => {
+test("pausing the schedules pauses both, and the returned resume resumes both", async () => {
   const { services, log } = harness();
   services.startWhenReady(Promise.resolve());
   await settle();
@@ -147,5 +156,5 @@ test("pausing the schedules pauses both, and resume restarts only those that wer
     "collection.pause",
     "exchangeRates.resume (idle)",
     "collection.resume (idle)",
-  ], "a fixture launch's idle schedules stay idle after a resume");
+  ], "a fixture launch's schedules are paused and resumed too; each schedule keeps its own idle state");
 });

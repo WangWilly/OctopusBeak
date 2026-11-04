@@ -40,7 +40,8 @@ export type HostServiceDependencies = Readonly<{
 export type HostServices = Readonly<{
   /**
    * Start the services once `ready` resolves, after recovery has reconciled the
-   * persisted active run. Nothing starts if `ready` rejects or `stop` came first.
+   * persisted active run. Nothing starts if `ready` rejects or `stop` came first,
+   * and only the first call counts.
    */
   startWhenReady(ready: Promise<unknown>): void;
   settingsChanged(settings: HostServiceSettings): void;
@@ -52,6 +53,7 @@ export type HostServices = Readonly<{
 
 export function createHostServices(deps: HostServiceDependencies): HostServices {
   let stopped = false;
+  let waiting = false;
   const startedStops: (() => void)[] = [];
 
   const start = () => {
@@ -67,6 +69,8 @@ export function createHostServices(deps: HostServiceDependencies): HostServices 
 
   return Object.freeze({
     startWhenReady(ready) {
+      if (waiting) return;
+      waiting = true;
       void ready.then(start, () => {
         // A failed recovery is reported as a fatal runtime error by its owner; nothing starts.
       });
