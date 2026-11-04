@@ -11,13 +11,10 @@ import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingPageDto } from "../src/lib/spending/model.ts";
-import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import { commitCathay } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 import { applyManual, createManualAsset as create, MANUAL_CLOCK as CLOCK } from "../src/ledger/pglite/financial-pages.fixtures.ts";
-import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
-import { applyPgliteOperationalBaseline } from "../src/ledger/pglite/operational.ts";
-import { applyPglitePreviewFinancialDataSchema } from "../src/ledger/pglite/preview-financial-data.ts";
+import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 
 async function withManualLedger(run: (input: {
@@ -25,10 +22,9 @@ async function withManualLedger(run: (input: {
   registry: ReturnType<typeof createPGliteFinancialRegistry>;
   apply: (command: unknown) => Promise<Readonly<{ revision: number; assetId?: string; transactionId?: string }>>;
 }) => Promise<void>, database?: PGlite) {
-  const store = new PGliteStore(database ?? await createTestPGlite("ledger+operational"));
+  // A live-extension database gets the same layout the worker installs.
+  const store = database ? await installFinancialStore(database) : new PGliteStore(await createTestPGlite("full"));
   try {
-    await applyPglitePreviewFinancialDataSchema(store);
-    await applyPgliteManualAssetsSchema(store);
     await commitCathay(store);
     await run({
       store,
@@ -42,8 +38,6 @@ async function withManualLedger(run: (input: {
 
 test("every live page republishes on each kind of manual write", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await applyPgliteBaseline(database as unknown as PGlite);
-  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withManualLedger(async ({ registry, apply }) => {
     const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
     const latest = new Map<string, unknown>();
@@ -106,8 +100,6 @@ test("every live page republishes on each kind of manual write", async () => {
 
 test("a live page republishes when the date moves past an asset's end date, with no write", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await applyPgliteBaseline(database as unknown as PGlite);
-  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withManualLedger(async ({ store, apply }) => {
     let date = CLOCK.today();
     let midnight = () => {};
@@ -144,8 +136,6 @@ test("a live page republishes when the date moves past an asset's end date, with
 
 test("a manual write during a Spending page action is published once the action settles", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await applyPgliteBaseline(database as unknown as PGlite);
-  await applyPgliteOperationalBaseline(new PGliteStore(database as unknown as PGlite));
   await withManualLedger(async ({ registry, apply }) => {
     let inFlight = false;
     let settle: ((result: null) => void) | null = null;
