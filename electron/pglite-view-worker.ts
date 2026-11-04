@@ -74,7 +74,6 @@ export async function startPGliteViewWorker(
   const operationalProvider = createPgliteOperationalProvider(database);
   const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone()));
   const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
-    manualAssets: true,
     today: clock.today,
   });
   // Renderer requests and live-view recomputes share the database; one queue

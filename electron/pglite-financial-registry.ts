@@ -68,8 +68,6 @@ export type PGliteFinancialPageActionEvents = Readonly<{
 type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Required<PGliteFinancialPageActionEvents>;
 
 export type PGliteFinancialRegistryOptions = Readonly<{
-  /** The store holds the Manual Asset tables; the desktop worker installs them, a ledger-only check does not. */
-  manualAssets?: boolean;
   /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
   today?: () => string;
 }>;
@@ -79,11 +77,10 @@ export function createPGliteFinancialRegistry(
   previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
   options: PGliteFinancialRegistryOptions = {},
 ): PGliteFinancialRegistryWithPageActionEvents {
-  const manualAssets = options.manualAssets === true;
   const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
   const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
-    ({ expectedSources, previewVisibility: previewVisibility(), manualAssets, today: today() });
+    ({ expectedSources, previewVisibility: previewVisibility(), today: today() });
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
@@ -99,7 +96,7 @@ export function createPGliteFinancialRegistry(
     "financial.liabilities.current": ([expectedSources = []]) =>
       store.transaction((transaction) => readLiabilitiesPage(transaction, pageScope(expectedSources))),
     "financial.spending.current": ([input = {}]) =>
-      store.transaction((transaction) => readSpendingPage(transaction, { manualAssets }, input)),
+      store.transaction((transaction) => readSpendingPage(transaction, input)),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
     "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),
@@ -107,7 +104,7 @@ export function createPGliteFinancialRegistry(
     "financial.spending.monthInsight": ([request]) => spending.monthInsight(request),
     "financial.spending.merchantStats": ([request]) => spending.merchantStats(request),
     "financial.spending.version": () =>
-      store.transaction((transaction) => readSpendingPageVersion(transaction, { manualAssets })),
+      store.transaction((transaction) => readSpendingPageVersion(transaction)),
     "financial.spending.prewarmPairing"([dataVersion]) {
       return spending.prewarmPairing(dataVersion);
     },
@@ -173,7 +170,6 @@ export function createPGliteFinancialRegistry(
     "financial.tdccFundAccounts.list": ([connection]) => listPGliteTdccFundAccounts(store, connection),
     "financial.accountIdentity.continuity": ([request]) => resolvePGliteAccountIdentityContinuity(store, request),
     "financial.manualAssets.apply"([command]) {
-      if (!manualAssets) throw new Error("This store holds no Manual Asset tables.");
       return applyManualAssetCommand(store, command, manualClock);
     },
     "financial.canonical.reset": () => resetPGliteCanonicalStore(store),

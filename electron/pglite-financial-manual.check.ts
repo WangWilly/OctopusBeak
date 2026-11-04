@@ -39,7 +39,7 @@ async function withManualLedger(run: (input: {
     const operational = createPgliteOperationalProvider(store);
     await run({
       store,
-      registry: createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: CLOCK.today }),
+      registry: createPGliteFinancialRegistry(store, undefined, { today: CLOCK.today }),
       apply: async (command) => {
         const result = await applyManualAssetCommand(store, command, CLOCK);
         if (!result.ok) assert.fail(`refused: ${result.code}`);
@@ -157,17 +157,6 @@ test("a Manual Account counts its latest count plus the transactions after it", 
   });
 });
 
-test("a store without the manual tables reads its pages as before", async () => {
-  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
-  try {
-    await commitCathay(store);
-    const overview = await createPGliteFinancialRegistry(store)["financial.overview.current"]([]);
-    assert.equal(overview.accounts.some((account) => account.manual), false);
-  } finally {
-    await store.close();
-  }
-});
-
 test("Spending counts manual purchases in their month, day, and Personal Category, and never a receipt or transfer", async () => {
   await withManualLedger(async ({ registry, apply }) => {
     const before = await registry["financial.spending.current"]([{}]);
@@ -274,7 +263,7 @@ test("a live page republishes when the date moves past an asset's end date, with
         return async () => {};
       },
     };
-    const registry = createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: clock.today });
+    const registry = createPGliteFinancialRegistry(store, undefined, { today: clock.today });
     const { assetId } = await apply(create("other", "Watch", "TWD", "2026-10-01", "50000", "market_quote"));
     await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
     const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, clock));
@@ -347,7 +336,7 @@ test("a store holding only manual assets fills the Assets page and its history, 
     await applyPgliteManualAssetsSchema(store);
     const result = await applyManualAssetCommand(store, create("house", "Home", "TWD", "2025-03-01", "12000000", "actual_price_registration"), CLOCK);
     assert.equal(result.ok, true);
-    const registry = createPGliteFinancialRegistry(store, undefined, { manualAssets: true, today: CLOCK.today });
+    const registry = createPGliteFinancialRegistry(store, undefined, { today: CLOCK.today });
     const assets = await registry["financial.assets.current"]([]);
     assert.equal(assets.availability, "available");
     assert.notEqual(assets.coverage, "awaiting", "the 尚無可用的財務帳戶 banner shows only for awaiting or unavailable coverage");

@@ -19,31 +19,24 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 
 type Reader = Pick<PGliteStore, "query"> | Pick<PGliteTransaction, "query">;
 
-export type SpendingPageScope = Readonly<{
-  /** Whether the store holds the Manual Asset tables; a ledger-only store has none to read. */
-  manualAssets: boolean;
-}>;
-
 /** What a published Spending page was read at: the canonical knowledge point and the Manual Asset revision. */
 export type SpendingPageVersion = Readonly<{ knowledgeAt: number; manualRevision: number }>;
 
 export async function readSpendingPage(
   reader: Reader,
-  scope: SpendingPageScope,
   request: Parameters<typeof queryCurrentSpendingSummaryPage>[1] = {},
 ): Promise<SpendingPageDto> {
   const page = await queryCurrentSpendingSummaryPage(reader, request);
-  if (!scope.manualAssets) return page;
   return spendingPageWithManual(page, {
     revision: await readManualAssetRevision(reader),
     purchases: await readManualSpendingPurchases(reader),
   });
 }
 
-export async function readSpendingPageVersion(reader: Reader, scope: SpendingPageScope): Promise<SpendingPageVersion> {
+export async function readSpendingPageVersion(reader: Reader): Promise<SpendingPageVersion> {
   return {
     knowledgeAt: await readKnowledgePoint(reader),
-    manualRevision: scope.manualAssets ? await readManualAssetRevision(reader) : 0,
+    manualRevision: await readManualAssetRevision(reader),
   };
 }
 

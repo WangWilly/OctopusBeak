@@ -5,16 +5,12 @@ import { assertPgliteBaseline } from "./baseline.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
-import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
-import { applyPglitePreviewFinancialDataSchema } from "./preview-financial-data.ts";
 import { PGliteStore } from "./transaction.ts";
 
 async function withDesktopStore(run: (store: PGliteStore) => Promise<void>) {
-  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  const store = new PGliteStore(await createTestPGlite("full"));
   try {
-    await applyPgliteMaicoinOperationalSchema(store);
-    await applyPglitePreviewFinancialDataSchema(store);
     await run(store);
   } finally {
     await store.close();

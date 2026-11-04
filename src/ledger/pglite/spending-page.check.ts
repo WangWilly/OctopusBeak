@@ -3,14 +3,14 @@ import test from "node:test";
 import type { SpendingPageDto } from "../../lib/spending/model.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
-import { applyManualAssetCommand, applyPgliteManualAssetsSchema } from "./manual-assets.ts";
+import { applyManualAssetCommand } from "./manual-assets.ts";
 import { readSpendingPage, readSpendingPageVersion, spendingPageBehind } from "./spending-page.ts";
 import { PGliteStore } from "./transaction.ts";
 
 const CLOCK = { now: () => "2026-11-01T02:00:00.000Z", today: () => "2026-11-01" };
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  const store = new PGliteStore(await createTestPGlite("full"));
   try {
     await commitCathay(store);
     await run(store);
@@ -27,8 +27,7 @@ async function apply(store: PGliteStore, command: unknown) {
 
 test("the Spending page and its version read canonical purchases and Manual Asset purchases from one reader", async () => {
   await withStore(async (store) => {
-    await applyPgliteManualAssetsSchema(store);
-    const canonical = await readSpendingPage(store, { manualAssets: true });
+    const canonical = await readSpendingPage(store);
     const { assetId } = await apply(store, {
       kind: "createAsset", category: "cash", name: "Wallet", currency: "TWD",
       firstValuation: { valuedOn: "2026-10-01", amount: "500", source: "counted", note: null },
@@ -38,24 +37,14 @@ test("the Spending page and its version read canonical purchases and Manual Asse
       transaction: { kind: "purchase", personalCategory: "dining", occurredOn: "2026-10-02", amount: "40", note: null },
     });
 
-    const page = await store.transaction((transaction) => readSpendingPage(transaction, { manualAssets: true }));
-    const version = await store.transaction((transaction) => readSpendingPageVersion(transaction, { manualAssets: true }));
+    const page = await store.transaction((transaction) => readSpendingPage(transaction));
+    const version = await store.transaction((transaction) => readSpendingPageVersion(transaction));
     assert.equal(page.manual?.revision, version.manualRevision);
     assert.equal(page.purchaseReport.knowledgeAt, version.knowledgeAt);
     assert.equal(page.manual?.purchases.length, 1);
     assert.equal(page.purchaseReport.summary!.recordCount, canonical.purchaseReport.summary!.recordCount + 1);
     assert.equal(page.canonical.availability, "available");
     assert.equal(spendingPageBehind(page, version), false, "a page read at the current version is not behind");
-  });
-});
-
-test("a store without the Manual Asset tables reads its Spending page and version without them", async () => {
-  await withStore(async (store) => {
-    const page = await readSpendingPage(store, { manualAssets: false });
-    assert.equal(page.manual, undefined);
-    const version = await readSpendingPageVersion(store, { manualAssets: false });
-    assert.equal(version.manualRevision, 0);
-    assert.equal(version.knowledgeAt, page.purchaseReport.knowledgeAt);
   });
 });
 

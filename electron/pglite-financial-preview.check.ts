@@ -339,7 +339,7 @@ test("a native Net position carries the preview and manual markers its per-curre
       firstValuation: { valuedOn: "2026-10-05", amount: "5000000", source: "appraisal_report", note: null },
     }, clock);
     assert.ok(created.ok);
-    const shown = createPGliteFinancialRegistry(store, () => VISIBLE, { manualAssets: true, today: () => TODAY });
+    const shown = createPGliteFinancialRegistry(store, () => VISIBLE, { today: () => TODAY });
     const overview = await shown["financial.overview.current"]([]);
     const net = overview.summary.net;
     assert.equal(net.display, "native", "a verified USD balance without a rate withholds the TWD figure");

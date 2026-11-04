@@ -3,15 +3,13 @@ import test from "node:test";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { readAssetsPage, readLiabilitiesPage, readOverviewPage, type FinancialPageScope } from "./financial-pages.ts";
-import { applyPglitePreviewFinancialDataSchema } from "./preview-financial-data.ts";
 import { PGliteStore } from "./transaction.ts";
 
-const SCOPE: FinancialPageScope = { expectedSources: [], previewVisibility: { visible: [] }, manualAssets: false, today: "2026-11-03" };
+const SCOPE: FinancialPageScope = { expectedSources: [], previewVisibility: { visible: [] }, today: "2026-11-03" };
 
 async function withStore(run: (store: PGliteStore) => Promise<void>) {
-  const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  const store = new PGliteStore(await createTestPGlite("full"));
   try {
-    await applyPglitePreviewFinancialDataSchema(store);
     await run(store);
   } finally {
     await store.close();
