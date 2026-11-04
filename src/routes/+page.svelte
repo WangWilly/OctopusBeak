@@ -641,11 +641,22 @@
       onQueryError: (error) => console.warn("data-version-query-failed", error),
     });
     const automationApi = window.octopusBeak.automation;
-    const unsubscribeAutomationRuntime = typeof automationApi.onRuntimeChanged === "function"
-      ? automationApi.onRuntimeChanged(automationState.acceptSnapshot)
-      : () => {};
+    automationState.connect({
+      runtimeChanged: (listener) => automationApi.onRuntimeChanged(listener),
+      resync: (listener) => {
+        const onVisibilityChange = () => {
+          if (document.visibilityState === "visible") listener();
+        };
+        addEventListener("focus", listener);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        return () => {
+          removeEventListener("focus", listener);
+          document.removeEventListener("visibilitychange", onVisibilityChange);
+        };
+      },
+    });
     const takeNotificationTarget = () => {
-      void automationApi.takeNotificationTarget?.().then((target) => {
+      void automationApi.takeNotificationTarget().then((target) => {
         if (!target) return;
         if (target.route === "automation" && target.credentialGroupId) {
           signInSettingsGroupId = target.credentialGroupId;
@@ -654,36 +665,8 @@
         navigateToRoute(target.route);
       });
     };
-    const unsubscribeNotificationTargets = typeof automationApi.onNotificationTargetRequested === "function"
-      ? automationApi.onNotificationTargetRequested(takeNotificationTarget)
-      : () => {};
+    const unsubscribeNotificationTargets = automationApi.onNotificationTargetRequested(takeNotificationTarget);
     takeNotificationTarget();
-    if (typeof automationApi.runtimeSnapshot === "function") {
-      void automationApi.runtimeSnapshot()
-        .then(automationState.acceptSnapshot)
-        .catch((error) => {
-          console.error("automation-runtime-snapshot-failed", error);
-          if (typeof automationApi.fatalRuntimeSnapshot === "function") {
-            void automationApi.fatalRuntimeSnapshot();
-          }
-        });
-    }
-    const onAutomationRuntimeResync = () => {
-      if (typeof automationApi.runtimeSnapshot !== "function") return;
-      void automationApi.runtimeSnapshot()
-        .then(automationState.acceptSnapshot)
-        .catch((error) => {
-          console.error("automation-runtime-resync-failed", error);
-          if (typeof automationApi.fatalRuntimeSnapshot === "function") {
-            void automationApi.fatalRuntimeSnapshot();
-          }
-        });
-    };
-    addEventListener("focus", onAutomationRuntimeResync);
-    const onAutomationRuntimeVisibilityChange = () => {
-      if (document.visibilityState === "visible") onAutomationRuntimeResync();
-    };
-    document.addEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
     addEventListener("hashchange", normalizeRoute);
     addEventListener("popstate", normalizeRoute);
     const unsubscribeAppUpdates = window.octopusBeak.appUpdates.onChanged((view) => appUpdateView.set(view));
@@ -693,11 +676,9 @@
       mounted = false;
       dataVersionLifecycle.dispose();
       financialPage.dispose();
-      unsubscribeAutomationRuntime();
       unsubscribeNotificationTargets();
+      // Ends the runtime connection too.
       automationState.dispose();
-      removeEventListener("focus", onAutomationRuntimeResync);
-      document.removeEventListener("visibilitychange", onAutomationRuntimeVisibilityChange);
       removeEventListener("hashchange", normalizeRoute);
       removeEventListener("popstate", normalizeRoute);
     };
