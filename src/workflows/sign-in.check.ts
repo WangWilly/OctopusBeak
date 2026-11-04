@@ -938,3 +938,57 @@ test("aborting a shell plan rejects with the reason and emits nothing after", ()
     assert.deepEqual(run.codes, [STARTED]);
     assert.equal(listeners(page), 0);
   }));
+
+const COVERED_MS = 400;
+
+/** Cover the page for `COVERED_MS`, so a click on the login button waits for it to lift. */
+const coverLogin = (page: Page) => page.evaluate((ms) => {
+  const cover = document.createElement("div");
+  cover.style.cssText = "position:fixed;inset:0";
+  document.body.append(cover);
+  setTimeout(() => cover.remove(), ms);
+}, COVERED_MS);
+
+const clicks = (page: Page) => page.evaluate(() => (window as unknown as { clicks?: number }).clicks ?? 0);
+
+/** A fill that clicks the covered login button through the scope, after `beforeClick`. */
+const clickThroughScope = (arrive: () => void, beforeClick: (page: Page) => Promise<unknown> = async () => {}) =>
+  async (scope: FrameScope) => {
+    await beforeClick(scope.page);
+    arrive();
+    await scope.withSignal((signal) => scope.page.click("#login", { signal }));
+  };
+
+test("cancelling the run stops a plan's pending click in the browser", () =>
+  withPage("window.clicks = (window.clicks ?? 0) + 1", async (page) => {
+    let arrive!: () => void;
+    const arrived = new Promise<void>((resolve) => {
+      arrive = resolve;
+    });
+    await coverLogin(page);
+    const run = fakeRun(page);
+    const reason = new Error("cancelled while fill waits on a covered button");
+    const running = failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(arrive) })));
+    await arrived;
+    await delay(100);
+    run.controller.abort(reason);
+    assert.equal(await running, reason);
+    await delay(COVERED_MS * 2);
+    assert.equal(await clicks(page), 0, "the click never lands after the run is cancelled");
+    assert.equal(listeners(page), 0);
+  }));
+
+test("a dialog verdict stops a plan's pending click in the browser and ends with the verdict", () =>
+  withPage("window.clicks = (window.clicks ?? 0) + 1", async (page) => {
+    await coverLogin(page);
+    const run = fakeRun(page);
+    const raise = (p: Page) => p.evaluate((message) => {
+      setTimeout(() => alert(message), 100);
+    }, UNRELATED);
+    const error = await failure(signIn(run.context, page, source(), form(calls(), { fill: clickThroughScope(() => {}, raise) })));
+    assertSignInError(error, "dialog-interrupted");
+    assert.deepEqual(run.codes, [STARTED, INTERRUPTED]);
+    await delay(COVERED_MS * 2);
+    assert.equal(await clicks(page), 0, "the click never lands after the verdict");
+    await assertUsable(page);
+  }));
