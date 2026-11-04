@@ -433,8 +433,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     const exchangeProgressBeforeTerminal = snapshots.find(
       (snapshot) => snapshot.runId === exchangeRunId && snapshot.eventId === "exchange-complete",
     )?.progress;
-    assert.ok(exchangeProgressBeforeTerminal?.percent !== null && exchangeProgressBeforeTerminal?.percent !== undefined);
-    assert.ok(exchangeProgressBeforeTerminal.percent < 100, "the exchange-rate complete phase is capped before terminal success");
+    assert.equal(exchangeProgressBeforeTerminal?.percent, 47, "the last sync step projects to 47% before terminal success");
     assert.equal((await persistence.taskRunById(exchangeRunId))?.status, "completed");
 
     const cancelledActive = await openRun();

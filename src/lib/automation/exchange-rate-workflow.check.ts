@@ -112,7 +112,7 @@ test("cancelling the run aborts the in-flight rate request and writes nothing", 
   const running = run.run(controller.signal);
   await fetchStarted;
   controller.abort(new Error("exchange-rate sync cancelled"));
-  await assert.rejects(running);
+  await assert.rejects(running, /exchange-rate sync cancelled/u);
   assert.deepEqual(run.writes, []);
 });
 

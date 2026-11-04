@@ -251,16 +251,14 @@ async function persistTerminal(
     finishedAt,
     appWorkflowOutcome: { errorCode: outcome.errorCode, summary: outcome.summary },
     ...(outcome.status === "completed" ? {
-      progress: current.progress?.phaseCode === "complete"
-        ? { ...current.progress, percent: 100, attempt: current.attempt }
-        : {
-          ...current.progress,
-          phaseCode: "workflow-finalization",
-          completed: 1,
-          total: 1,
-          percent: 100,
-          attempt: current.attempt,
-        },
+      progress: {
+        ...current.progress,
+        phaseCode: "workflow-finalization",
+        completed: 1,
+        total: 1,
+        percent: 100,
+        attempt: current.attempt,
+      },
     } : {}),
     ...(outcome.forced ? { terminationMode: "forced" as const } : {}),
   });
