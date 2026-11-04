@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
+import { frameScope } from "./frame-scope.ts";
 import {
   YUANTA_TRADE_BROKERAGE_ACCOUNT_NUMBER_EVIDENCE_VERSION,
 } from "../ledger/canonical/yuanta-investment-adapters.ts";
@@ -193,6 +194,8 @@ test("stages nothing from an incomplete read", async () => {
   }
 });
 
+const unbound = (page: Page) => frameScope(page, new AbortController().signal);
+
 function fakePage(reminderVisible: boolean | Error) {
   let clicks = 0;
   let settles = 0;
@@ -223,12 +226,12 @@ function fakePage(reminderVisible: boolean | Error) {
 
 test("dismisses only a visible YuanTa password reminder", async () => {
   const visible = fakePage(true);
-  await dismissPasswordChangeReminderIfPresent(visible.page);
+  await dismissPasswordChangeReminderIfPresent(unbound(visible.page));
   assert.equal(visible.clicks(), 1);
-  assert.equal(visible.settles(), 3);
+  assert.equal(visible.settles(), 2);
 
   const absent = fakePage(false);
-  await dismissPasswordChangeReminderIfPresent(absent.page);
+  await dismissPasswordChangeReminderIfPresent(unbound(absent.page));
   assert.equal(absent.clicks(), 0);
   assert.equal(absent.settles(), 0);
 });
@@ -236,7 +239,7 @@ test("dismisses only a visible YuanTa password reminder", async () => {
 test("propagates errors while checking the YuanTa password reminder", async () => {
   const closed = fakePage(new Error("page closed"));
   await assert.rejects(
-    dismissPasswordChangeReminderIfPresent(closed.page),
+    dismissPasswordChangeReminderIfPresent(unbound(closed.page)),
     /page closed/,
   );
 });
@@ -247,7 +250,7 @@ test("ignores navigation races while checking the YuanTa password reminder", asy
       "page.evaluate: Execution context was destroyed, most likely because of a navigation",
     ),
   );
-  await dismissPasswordChangeReminderIfPresent(navigating.page);
+  await dismissPasswordChangeReminderIfPresent(unbound(navigating.page));
   assert.equal(navigating.clicks(), 0);
 });
 
