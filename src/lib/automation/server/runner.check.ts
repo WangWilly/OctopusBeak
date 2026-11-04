@@ -12,10 +12,8 @@ import type {
   AutomationPersistenceProvider,
   AutomationTaskRun,
 } from "./store.ts";
-import type { ExchangeRatePersistencePort, ExchangeRateRecord } from "../../../ledger/exchange-rates.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { createExchangeRateSyncService, type ExchangeRateSyncCapabilities } from "./exchange-rate-sync-service.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { SourceDeviceBusyError, sourceDeviceLocks } from "./source-device-lock.ts";
 
@@ -197,122 +195,6 @@ for (const { source, taskId, settings } of [
     }
   });
 }
-
-test("exchange-rate service uses injected overview and persistence with progress", async () => {
-  const readCurrencies: string[][] = [];
-  const writes: ExchangeRateRecord[][] = [];
-  const persistence: ExchangeRatePersistencePort = {
-    async readExchangeRates(currencies = []) {
-      readCurrencies.push([...currencies]);
-      return [];
-    },
-    async upsertExchangeRates(rows) { writes.push(rows.map((row) => ({ ...row }))); },
-  };
-  let overviewReads = 0;
-  const provider = {
-    automation: {},
-    exchangeRates: persistence,
-    financial: {
-      async overviewCurrent() {
-        overviewReads += 1;
-        return {
-          dailyHistory: [{
-            date: "2026-01-03",
-            netAssets: [{ currency: "USD", value: 100 }],
-            dailyChange: [],
-            assets: [],
-            liabilities: [],
-            accountChanges: [],
-            positionCount: 1,
-          }],
-        };
-      },
-    },
-  } as unknown as AutomationPersistenceProvider;
-  const progress: Array<{ phaseCode: string | null; completed: number | null }> = [];
-  let receivedSignal: AbortSignal | undefined;
-  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
-    now: () => new Date("2026-07-12T12:00:00.000Z"),
-    fetchImpl: async (input, init) => {
-      const url = new URL(input.toString());
-      assert.equal(url.searchParams.get("from"), "2025-12-27");
-      assert.equal(url.searchParams.get("to"), "2026-07-12");
-      receivedSignal = init?.signal as AbortSignal;
-      return new Response(JSON.stringify([
-        { date: "2026-07-12", base: "TWD", quote: "USD", rate: 0.5 },
-      ]), { status: 200, headers: { "content-type": "application/json" } });
-    },
-  });
-
-  const result = await service({
-    signal: new AbortController().signal,
-    emitProgress: (event) => progress.push({ phaseCode: event.phaseCode, completed: event.completed }),
-  });
-
-  assert.equal(overviewReads, 1);
-  assert.deepEqual(readCurrencies, [["USD"]]);
-  assert.equal(writes.length, 1);
-  assert.deepEqual(writes[0]?.map(({ currency, twdPerUnit }) => ({ currency, twdPerUnit })), [
-    { currency: "USD", twdPerUnit: 2 },
-  ]);
-  assert.equal(receivedSignal?.aborted, false);
-  assert.equal(result.written, 1);
-  assert.deepEqual(progress, [
-    { phaseCode: "load-request", completed: 0 },
-    { phaseCode: "sync", completed: 1 },
-    { phaseCode: "complete", completed: 3 },
-  ]);
-});
-
-test("exchange-rate service forwards cancellation to its in-flight request", async () => {
-  let markFetchStarted!: () => void;
-  const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
-  let writes = 0;
-  const provider = {
-    automation: {},
-    exchangeRates: {
-      async readExchangeRates() { return []; },
-      async upsertExchangeRates() { writes += 1; },
-    },
-    financial: {
-      async overviewCurrent() {
-        return {
-          dailyHistory: [{
-            date: "2026-01-03",
-            netAssets: [{ currency: "USD", value: 100 }],
-            dailyChange: [],
-            assets: [],
-            liabilities: [],
-            accountChanges: [],
-            positionCount: 1,
-          }],
-        };
-      },
-    },
-  } as unknown as AutomationPersistenceProvider;
-  const service = createExchangeRateSyncService(provider as unknown as ExchangeRateSyncCapabilities, {
-    now: () => new Date("2026-07-12T12:00:00.000Z"),
-    fetchImpl: async (_input, init) => {
-      markFetchStarted();
-      await new Promise<never>((_resolve, reject) => {
-        const signal = init?.signal;
-        if (signal?.aborted) {
-          reject(signal.reason);
-          return;
-        }
-        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-      });
-      throw new Error("unreachable after abort");
-    },
-  });
-  const controller = new AbortController();
-  const running = service({ signal: controller.signal });
-  const rejected = assert.rejects(running, /exchange-rate sync cancelled/u);
-  await fetchStarted;
-  controller.abort(new Error("exchange-rate sync cancelled"));
-  await rejected;
-  assert.equal(writes, 0);
-});
 
 test("the task catalog contains only typed workflows and the two typed nonbrowser jobs", () => {
   const allowedNonbrowserTaskIds = new Set(["exchange-rates", "sync-maicoin"]);

@@ -1,40 +1,31 @@
-import type { AutomationProgressEvent } from "./progress.ts";
-import type { WorkflowDefinition } from "./workflow-executor.ts";
+import { exchangeRateRequestFromOverview } from "../../ledger/exchange-rate-requirements.ts";
+import { syncExchangeRates, type ExchangeRateSyncOptions } from "../../ledger/exchange-rates.ts";
+import { defineWorkflow } from "./workflow-executor.ts";
 
-export type ExchangeRateSyncService = (options: {
-  signal: AbortSignal;
-  scheduledAtUtc?: string;
-  emitProgress?: (event: Omit<AutomationProgressEvent, "type">) => void;
-}) => Promise<unknown>;
+const SYNC_STEPS = 3;
 
-/** A nonbrowser workflow built with the same executor contract as providers. */
+/**
+ * The nonbrowser exchange-rate sync: reads which currencies the current
+ * history needs, then fetches and stores their rates. Its progress is the
+ * run's own events, one per step.
+ */
 export function createExchangeRateWorkflow(
-  service: ExchangeRateSyncService,
-  options: Readonly<{
-    scheduledAtUtc?: string;
-    emitProgress: (event: Omit<AutomationProgressEvent, "type">) => void;
-  }>,
-): WorkflowDefinition {
-  return {
+  dependencies: Pick<ExchangeRateSyncOptions, "fetchImpl" | "now"> = {},
+) {
+  return defineWorkflow({
     id: "exchange-rates",
     requiresFinancialCommit: false,
-    reportsExchangeRateProgress: true,
-    async run(context) {
-      let eventQueue = Promise.resolve();
-      try {
-        await service({
-          signal: context.signal,
-          scheduledAtUtc: options.scheduledAtUtc,
-          emitProgress: (event) => {
-            options.emitProgress(event);
-            eventQueue = eventQueue.then(() => context.event("collection", "advanced", "progress-update"));
-          },
-        });
-      } catch (error) {
-        await eventQueue;
-        throw error;
-      }
-      await eventQueue;
-    },
-  };
+    requiresExchangeRates: true,
+  }, async (context) => {
+    const step = (completed: number) =>
+      context.event("collection", "advanced", "progress-update", { completed, total: SYNC_STEPS });
+    context.signal.throwIfAborted();
+    await step(0);
+    const request = exchangeRateRequestFromOverview(await context.exchangeRates.overviewCurrent());
+    context.signal.throwIfAborted();
+    await step(1);
+    await syncExchangeRates(context.exchangeRates.persistence, request, { ...dependencies, signal: context.signal });
+    context.signal.throwIfAborted();
+    await step(SYNC_STEPS);
+  });
 }

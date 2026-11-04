@@ -354,11 +354,16 @@ class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
     const answered = this.calls.answered(frame);
     if (answered === "run-started-id") {
       if (this.exchange) {
-        setImmediate(() => this.emit("message", this.calls.call("progress-id", "exchangeRateProgress", {
-          phaseCode: "complete",
-          completed: 3,
-          total: 3,
-          percent: 100,
+        setImmediate(() => this.emit("message", this.calls.call("progress-id", "event", {
+          event: {
+            runId: this.start.taskRunId,
+            stage: "collection",
+            outcome: "advanced",
+            code: "progress-update",
+            completed: 3,
+            total: 3,
+            occurredAt: "2026-09-26T00:00:00.000Z",
+          },
         })));
       } else this.complete();
     } else if (answered === "progress-id") {
@@ -413,7 +418,10 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
       assert.equal(run?.status, "completed");
       assert.ok(run?.events.some((event) => event.code === "run-started"));
       if (taskId === "exchange-rates") {
-        assert.equal(run?.progress?.phaseCode, "complete");
+        assert.ok(
+          run?.events.some((event) => event.code === "progress-update" && event.completed === 3 && event.total === 3),
+          "exchange-rate progress is a run event",
+        );
         assert.equal(run?.progress?.percent, 100);
       }
       assert.equal(run && "logPath" in run, false);

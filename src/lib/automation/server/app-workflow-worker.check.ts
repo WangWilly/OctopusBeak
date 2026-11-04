@@ -206,18 +206,6 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     input: null,
     pgliteRpc: undefined,
   }), /protocol rejected/u);
-  assert.equal(parseCall("exchangeRateProgress", {
-    phaseCode: "complete",
-    completed: 3,
-    total: 3,
-    percent: 100,
-  }).phaseCode, "complete");
-  assert.throws(() => parseCall("exchangeRateProgress", {
-    phaseCode: "private-value",
-    completed: 1,
-    total: 3,
-    percent: 33,
-  }), /protocol rejected/u);
 });
 
 test("worker terminal frame round-trips bounded product outcomes and rejects malformed products", () => {
@@ -276,7 +264,7 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
     } as never,
   });
   let worker: Worker | undefined;
-  const phases: string[] = [];
+  const steps: Array<number | undefined> = [];
   const codes: string[] = [];
   try {
     await server.ready;
@@ -300,9 +288,7 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
         const frame = parseAppWorkflowWorkerOutboundFrame(value);
         if (isCall(frame, "event")) {
           codes.push(frame.request.event.code);
-          activeWorker.postMessage(reply(frame.callId));
-        } else if (isCall(frame, "exchangeRateProgress")) {
-          phases.push(frame.request.phaseCode);
+          if (frame.request.event.code === "progress-update") steps.push(frame.request.event.completed);
           activeWorker.postMessage(reply(frame.callId));
         } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") {
           clearTimeout(timeout);
@@ -311,7 +297,7 @@ test("nonbrowser exchange-rate worker derives its request through authenticated 
       });
     });
     assert.equal((await terminal).kind, "completed");
-    assert.deepEqual(phases, ["load-request", "sync", "complete"]);
+    assert.deepEqual(steps, [0, 1, 3], "each sync step is a run event");
     assert.deepEqual(codes.slice(-1), ["run-completed"]);
     assert.equal(readCalls, 0, "a zero-currency overview needs no exchange-rate database read");
   } finally {

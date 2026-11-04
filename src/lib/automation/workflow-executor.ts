@@ -12,6 +12,8 @@ import type { PGliteWorkflowAdmissionReason } from "../../ledger/pglite/workflow
 import type { SourceTextPort } from "./source-text.ts";
 import type { TypedWorkflowErrorCode } from "./workflow-failures.ts";
 import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import type { ExchangeRatePersistencePort } from "../../ledger/exchange-rates.ts";
+import type { OverviewPageDto } from "../overview/types.ts";
 import type { AttachedPreviewSource } from "../preview-sources/attached-products.ts";
 import type { WorkflowPreviewWritePort } from "../preview-sources/workflow.ts";
 import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
@@ -101,6 +103,12 @@ export type WorkflowTdccPort = Readonly<{
   admittedFundAccounts(connection: TdccConnection): Promise<readonly TdccAdmittedFundAccount[]>;
 }>;
 
+/** What the exchange-rate sync reads and writes: the rates it keeps and the history that says which it needs. */
+export type WorkflowExchangeRatePort = Readonly<{
+  persistence: ExchangeRatePersistencePort;
+  overviewCurrent(): Promise<Pick<OverviewPageDto, "dailyHistory">>;
+}>;
+
 export type WorkflowAccountIdentityPort = Readonly<{
   continuity(request: AccountIdentityContinuityRequest): Promise<AccountIdentityContinuity>;
 }>;
@@ -115,6 +123,7 @@ export type WorkflowContext = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  exchangeRates?: WorkflowExchangeRatePort;
   accountIdentity?: WorkflowAccountIdentityPort;
   previewWrite?: WorkflowPreviewWritePort;
   /** The Product collection run bound to this run's Verified source. */
@@ -138,8 +147,7 @@ export type WorkflowDefinition<Input = unknown, Output extends WorkflowOutput = 
   requiresFinancialCommit: boolean;
   requiresMaicoinPersistence?: boolean;
   requiresTdcc?: boolean;
-  /** The workflow reports exchange-rate progress, which the host writes to the run's progress (ADR 0072). */
-  reportsExchangeRateProgress?: boolean;
+  requiresExchangeRates?: boolean;
   requiresAccountIdentity?: boolean;
   requiresPreviewWrite?: boolean;
   /** ADR 0051: the preview products this verified workflow may write beside its canonical commit. */
@@ -167,6 +175,7 @@ export type WorkflowExecutorPorts = Readonly<{
   financialCommit?: WorkflowFinancialCommitPort;
   maicoinPersistence?: PGliteMaicoinPersistencePort;
   tdcc?: WorkflowTdccPort;
+  exchangeRates?: WorkflowExchangeRatePort;
   accountIdentity?: WorkflowAccountIdentityPort;
   previewWrite?: WorkflowPreviewWritePort;
   /** Required with financialCommit: each request is recorded before it starts. */
@@ -182,6 +191,7 @@ const WORKFLOW_CAPABILITIES = {
   financialCommit: { flag: "requiresFinancialCommit", label: "Canonical Financial Commit" },
   maicoinPersistence: { flag: "requiresMaicoinPersistence", label: "MaiCoin operational persistence" },
   tdcc: { flag: "requiresTdcc", label: "TDCC session" },
+  exchangeRates: { flag: "requiresExchangeRates", label: "Exchange rates" },
   accountIdentity: { flag: "requiresAccountIdentity", label: "Account identity" },
   previewWrite: { flag: "requiresPreviewWrite", label: "Preview write" },
 } as const satisfies Record<string, Readonly<{ flag: keyof WorkflowDefinition; label: string }>>;

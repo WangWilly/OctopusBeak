@@ -164,19 +164,11 @@ function parseAcknowledgement(value: unknown): void {
   if (value !== null) invalid();
 }
 
-export type ExchangeRateProgress = Readonly<{
-  phaseCode: "load-request" | "sync" | "complete";
-  completed: number;
-  total: number;
-  percent: number;
-}>;
-
 export type TdccSessionOperation = "open" | "sign-in-details";
 
 /** The request and result of each host call. */
 export type HostCalls = {
   event: { request: Readonly<{ event: WorkflowRunEvent }>; result: void };
-  exchangeRateProgress: { request: ExchangeRateProgress; result: void };
   commitAttempt: { request: Readonly<{ attempt: CommitAttemptReport }>; result: void };
   humanAssistance: {
     request: Readonly<{ contract: HumanAssistanceContractInput }>;
@@ -232,24 +224,6 @@ export const HOST_CALL_CONTRACTS: Readonly<{ [M in HostCallMethod]: HostCallCont
     parseRequest(value) {
       if (!isRecord(value) || !exactKeys(value, ["event"]) || !validEvent(value.event)) invalid();
       return value as HostCallRequest<"event">;
-    },
-    parseResult: parseAcknowledgement,
-  },
-  exchangeRateProgress: {
-    kind: "request",
-    lane: "acknowledged",
-    maxPerRun: 64,
-    duringStop: "drop",
-    failureCode: "event-persistence-failed",
-    parseRequest(value) {
-      if (
-        !isRecord(value) || !exactKeys(value, ["phaseCode", "completed", "total", "percent"])
-        || (value.phaseCode !== "load-request" && value.phaseCode !== "sync" && value.phaseCode !== "complete")
-        || !Number.isSafeInteger(value.completed) || Number(value.completed) < 0 || Number(value.completed) > 3
-        || value.total !== 3
-        || !Number.isSafeInteger(value.percent) || Number(value.percent) < 0 || Number(value.percent) > 100
-      ) invalid();
-      return value as HostCallRequest<"exchangeRateProgress">;
     },
     parseResult: parseAcknowledgement,
   },
