@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  acceptVersionSnapshot,
   beginRefresh,
   markRefreshInvalidated,
   settleRefresh,
@@ -56,4 +57,21 @@ test("a refreshed latest version clears an invalidation received during the clic
 
   assert.equal(settled.status, "current");
   assert.equal(settled.version, 8);
+});
+
+test("a version snapshot never hides a newer stale marker, nor settles a refresh in flight", () => {
+  const stale = markRefreshInvalidated(initialRefreshUiState, { version: 5, changedAt: "t5" } as never);
+  assert.equal(acceptVersionSnapshot(stale, { version: 4, stale: false, changedAt: "t4" }), stale, "an older snapshot is ignored");
+  assert.equal(acceptVersionSnapshot(stale, { version: 5, stale: false, changedAt: "t5" }), stale, "an equal current snapshot keeps the stale marker");
+  assert.deepEqual(acceptVersionSnapshot(stale, { version: 6, stale: false, changedAt: "t6" }), {
+    status: "current", version: 6, changedAt: "t6", failed: [], staleDuringRefresh: false,
+  });
+  assert.equal(acceptVersionSnapshot(stale, { version: 6, stale: true, changedAt: "t6" }).status, "stale");
+
+  const refreshing = beginRefresh({ ...stale, version: 5 });
+  assert.equal(acceptVersionSnapshot(refreshing, { version: 6, stale: false, changedAt: "t6" }), refreshing,
+    "a current snapshot does not settle a refresh");
+  assert.deepEqual(acceptVersionSnapshot(refreshing, { version: 7, stale: true, changedAt: "t7" }), {
+    ...refreshing, version: 7, changedAt: "t7", staleDuringRefresh: true,
+  });
 });
