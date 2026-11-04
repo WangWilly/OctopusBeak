@@ -5,15 +5,11 @@ import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createViewPortServer, type ViewSource } from "../src/lib/data-views/server/view-port.ts";
-import { applyPgliteBaseline } from "../src/ledger/pglite/baseline.ts";
-import { applyPgliteMaicoinOperationalSchema } from "../src/ledger/pglite/maicoin-operational.ts";
-import { applyPgliteManualAssetsSchema } from "../src/ledger/pglite/manual-assets.ts";
-import { applyPglitePreviewFinancialDataSchema } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
-  applyPgliteOperationalBaseline,
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
-import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
+import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
 import {
@@ -66,23 +62,12 @@ export async function startPGliteViewWorker(
   const ownsDataDir = dataDir === undefined;
   const ownedDataDir = dataDir ?? await mkdtemp(join(tmpdir(), "octopus-beak-pglite-"));
   let db: PGliteWithLive | undefined;
+  let database: PGliteStore;
   try {
     db = await PGlite.create(ownedDataDir, { extensions: { live } }) as PGliteWithLive;
-    await applyPgliteBaseline(db as unknown as import("@electric-sql/pglite").PGlite);
+    database = await installFinancialStore(db as unknown as import("@electric-sql/pglite").PGlite);
   } catch (error) {
     await db?.close().catch(() => undefined);
-    if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
-    throw error;
-  }
-  if (!db) throw new Error("PGlite worker database did not initialize.");
-  const database = new PGliteStore(db as unknown as import("@electric-sql/pglite").PGlite);
-  try {
-    await applyPgliteOperationalBaseline(database);
-    await applyPgliteMaicoinOperationalSchema(database);
-    await applyPglitePreviewFinancialDataSchema(database);
-    await applyPgliteManualAssetsSchema(database);
-  } catch (error) {
-    await database.close().catch(() => undefined);
     if (ownsDataDir) await rm(ownedDataDir, { recursive: true, force: true });
     throw error;
   }
