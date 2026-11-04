@@ -28,7 +28,6 @@ import {
 import {
   POST_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/post-human-attestation-contract.ts";
-import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -305,43 +304,38 @@ export function postCaptchaAssistanceStage(
   };
 }
 
-export async function dismissPostNoticeIfPresent(
-  page: Page,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  signal?.throwIfAborted();
-  const closeButtons = page
+export async function dismissPostNotice(scope: FrameScope): Promise<boolean> {
+  scope.signal.throwIfAborted();
+  const closeButtons = scope.page
     .locator('button.css_btn_class[ng-click="closeBox()"]:visible')
     .filter({ hasText: /^\s*關閉\s*$/ });
   const closeButton = closeButtons.first();
   // isVisible ignores its timeout; iPost opens this notice about a second
   // after the login form, over the CAPTCHA image.
-  const appeared = await withAbort(
-    closeButton.waitFor({ state: "visible", timeout: 3_000 }).then(() => true, () => false),
-    signal,
-  );
-  if (!appeared || !(await withAbort(closeButton.isVisible().catch(() => false), signal))) {
+  const appeared = await scope.withSignal((signal) =>
+    closeButton.waitFor({ state: "visible", timeout: 3_000, signal }).then(() => true, () => false));
+  if (!appeared || !(await scope.race(closeButton.isVisible().catch(() => false)))) {
     return false;
   }
 
   try {
-    await withAbort(closeButton.click({ timeout: 2_000 }), signal);
+    await scope.withSignal((signal) => closeButton.click({ timeout: 2_000, signal }));
   } catch (error) {
-    signal?.throwIfAborted();
-    const remainingVisibleButtons = await closeButtons.count().catch(() => 1);
+    scope.signal.throwIfAborted();
+    const remainingVisibleButtons = await scope.race(closeButtons.count().catch(() => 1));
     if (remainingVisibleButtons > 0) throw error;
     return false;
   }
-  await withAbort(page.waitForTimeout(250), signal);
+  await scope.pause(250);
   return true;
 }
 
-async function isSignedIn(page: Page): Promise<boolean> {
-  return await page
+async function isSignedIn(scope: FrameScope): Promise<boolean> {
+  return await scope.race(scope.page
     .locator(postDetailLinkSelector(true))
     .first()
     .isVisible()
-    .catch(() => false);
+    .catch(() => false));
 }
 
 function captchaInput(page: Page): Locator {
@@ -353,17 +347,19 @@ export function postSignInPlan(credentials: PostCredentials): FormPlan {
   // The CAPTCHA the stage solved must be the one submitted: the stage and submit share this snapshot.
   let assisted: Readonly<{ url: string; element: ElementHandle }> | undefined;
   return {
-    signedIn: (scope) => isSignedIn(scope.page),
-    fill: async ({ page, signal }) => {
+    signedIn: isSignedIn,
+    fill: async (scope) => {
+      const { page } = scope;
       if (!postLoginEntryUrl(page.url()))
-        await withAbort(page.goto(HOME_URL, { waitUntil: "domcontentloaded" }), signal);
-      await withAbort(page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000 }), signal);
-      await dismissPostNoticeIfPresent(page, signal);
-      await withAbort(page.locator("#cifID").fill(cifId), signal);
-      await withAbort(page.locator("#userID_1_Input").fill(userCode), signal);
-      await withAbort(page.locator("#userPWD_1_Input").fill(password), signal);
-      await dismissPostNoticeIfPresent(page, signal);
-      await withAbort(captchaInput(page).focus(), signal);
+        await scope.withSignal((signal) => page.goto(HOME_URL, { waitUntil: "domcontentloaded", signal }));
+      await scope.withSignal((signal) =>
+        page.locator("#cifID").waitFor({ state: "visible", timeout: 60_000, signal }));
+      await dismissPostNotice(scope);
+      await scope.withSignal((signal) => page.locator("#cifID").fill(cifId, { signal }));
+      await scope.withSignal((signal) => page.locator("#userID_1_Input").fill(userCode, { signal }));
+      await scope.withSignal((signal) => page.locator("#userPWD_1_Input").fill(password, { signal }));
+      await dismissPostNotice(scope);
+      await scope.withSignal((signal) => captchaInput(page).focus({ signal }));
     },
     captcha: {
       stage: async (page) => {
@@ -374,20 +370,20 @@ export function postSignInPlan(credentials: PostCredentials): FormPlan {
       },
       answer: captchaInput,
     },
-    submit: async ({ page, signal }) => {
+    submit: async (scope) => {
+      const { page } = scope;
       if (!assisted) throw new Error("iPost CAPTCHA assistance did not run before submit.");
-      const sameElement = await withAbort(
+      const { element } = assisted;
+      const sameElement = await scope.withSignal((signal) =>
         captchaInput(page)
-          .evaluate((current, element) => current === element, assisted.element)
-          .catch(() => false),
-        signal,
-      );
-      await assisted.element.dispose().catch(() => undefined);
+          .evaluate((current, assistedElement) => current === assistedElement, element, { signal })
+          .catch(() => false));
+      await element.dispose().catch(() => undefined);
       if (!postCaptchaGenerationUnchanged(assisted.url, page.url(), sameElement))
         throw new Error(
           "iPost login document or CAPTCHA changed during assistance; start a fresh CAPTCHA assistance session.",
         );
-      await withAbort(postIdLoginButton(page).click(), signal);
+      await scope.withSignal((signal) => postIdLoginButton(page).click({ signal }));
     },
     dialogs: "fail",
     session: { none: "needs live verification" },

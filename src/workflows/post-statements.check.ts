@@ -3,7 +3,7 @@ import { chromium } from "playwright";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildPostDomesticDepositCapture,
-  dismissPostNoticeIfPresent,
+  dismissPostNotice,
   postCaptchaAssistanceStage,
   postCaptchaGenerationUnchanged,
   postDetailLinkSelector,
@@ -14,6 +14,7 @@ import {
   postRowsToStatementRows,
 } from "./post-statements.ts";
 import { verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { frameScope } from "./frame-scope.ts";
 import {
   parsePostCurrentDepositBalanceSnapshot,
   POST_CURRENT_DEPOSIT_RESPONSE,
@@ -106,11 +107,11 @@ function visibilityRacingNoticePage(page: import("playwright").Page) {
 
 {
   const present = fakeNoticePage(true);
-  assert.equal(await dismissPostNoticeIfPresent(present.page as never), true);
+  assert.equal(await dismissPostNotice(frameScope(present.page as never, new AbortController().signal)), true);
   assert.equal(present.clicks(), 1);
 
   const absent = fakeNoticePage(false);
-  assert.equal(await dismissPostNoticeIfPresent(absent.page as never), false);
+  assert.equal(await dismissPostNotice(frameScope(absent.page as never, new AbortController().signal)), false);
   assert.equal(absent.clicks(), 0);
 }
 
@@ -176,7 +177,7 @@ try {
     >關閉</button>
   `);
   const racingNotice = visibilityRacingNoticePage(racingNoticePage);
-  await dismissPostNoticeIfPresent(racingNotice.page as never);
+  await dismissPostNotice(frameScope(racingNotice.page as never, new AbortController().signal));
   assert.equal(racingNotice.probeCompleted(), true);
   assert.equal(
     await racingNoticePage.locator("body").getAttribute("data-racing-closed"),
@@ -210,7 +211,7 @@ try {
       >關閉</button>
     </div>
   `);
-  assert.equal(await dismissPostNoticeIfPresent(duplicateNoticePage), true);
+  assert.equal(await dismissPostNotice(frameScope(duplicateNoticePage as never, new AbortController().signal)), true);
   assert.equal(
     await duplicateNoticePage.locator("body").getAttribute("data-active-notice-closed"),
     "yes",
@@ -234,13 +235,13 @@ try {
         document.body.append(notice);
       }, 800);
     </script>`);
-  assert.equal(await dismissPostNoticeIfPresent(lateNoticePage), true, "a notice that opens after the login form is still closed");
+  assert.equal(await dismissPostNotice(frameScope(lateNoticePage as never, new AbortController().signal)), true, "a notice that opens after the login form is still closed");
   assert.equal(await lateNoticePage.locator("#late-notice").count(), 0);
   await lateNoticePage.close();
 
   const goneNoticePage = await browser.newPage();
   await goneNoticePage.setContent(`<main data-post-login="ready"></main>`);
-  assert.equal(await dismissPostNoticeIfPresent(goneNoticePage), false);
+  assert.equal(await dismissPostNotice(frameScope(goneNoticePage as never, new AbortController().signal)), false);
   await goneNoticePage.close();
 
   const blockedNoticePage = await browser.newPage();
@@ -259,7 +260,7 @@ try {
     </div>
   `);
   await assert.rejects(
-    dismissPostNoticeIfPresent(blockedNoticePage),
+    dismissPostNotice(frameScope(blockedNoticePage as never, new AbortController().signal)),
     /intercepts pointer events|Timeout 2000ms exceeded/i,
   );
   await blockedNoticePage.close();
