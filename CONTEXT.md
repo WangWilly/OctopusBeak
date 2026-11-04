@@ -958,7 +958,7 @@ A provider sign-in that ends the person's other session with that provider, such
 _Avoid_: Silent sign-out, account lock, device registration
 
 **Source sign-in**:
-The part of a browser-driven Verified Source's run that signs in: it fills the Sign-in Details, completes any Verification Stage, submits, and waits for the signed-in page while classifying every provider dialog and prompt. It alone confirms a Session Takeover prompt, and it turns proven CAPTCHA rejection into a CAPTCHA Retry Trigger (ADR 0061).
+The part of a browser-driven Verified Source's run that signs in: it fills the Sign-in Details, completes any Verification Stage, submits, and waits for the signed-in page while classifying every provider dialog and prompt. It alone confirms a Session Takeover prompt, and it turns proven CAPTCHA rejection into a CAPTCHA Retry Trigger (ADR 0061). It hands each provider step a scope bound to this sign-in, and a dialog that ends the sign-in stops the provider's browser work the way cancelling the run does (ADR 0101).
 _Avoid_: Login attempt, per-source login helper
 
 **Source site**:

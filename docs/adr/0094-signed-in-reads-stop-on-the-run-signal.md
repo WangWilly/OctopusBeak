@@ -21,4 +21,4 @@ ADR 0066 made the Fubon and Yuanta Source sites race every wait against the run 
 ## Consequences
 
 - A new bank's signed-in read uses `FrameScope` from the start, and a review can reject a bare `withAbort` around a page operation.
-- Sign-in flows still follow ADR 0061 and may use `withAbort` until that step adopts the same helper.
+- Sign-in flows follow ADR 0061. [ADR 0101](0101-source-sign-in-hands-each-plan-a-scope-bound-to-the-attempt.md) later gave them the same `FrameScope`, bound to the sign-in attempt.
