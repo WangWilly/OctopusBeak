@@ -232,12 +232,6 @@ const sourceGroupIdsSource = source.slice(
   source.indexOf("$: onboardingDisclosure"),
 );
 assert.match(sourceGroupIdsSource, /\.filter\(\(task\) => task\.credentialGroupId\)/);
-const saveSourceTaskSource = source.slice(
-  source.indexOf("const selectedTask = live.tasks.find"),
-  source.indexOf("if (selectedTask?.canRun)"),
-);
-assert.match(saveSourceTaskSource, /task\.credentialGroupId === savedGroupId/);
-assert.doesNotMatch(saveSourceTaskSource, /task\.kind === "crawler"/);
 assert.match(
   source,
   /value=\{sheet\.search\} oninput=\{updateCredentialSearch\}/,
@@ -293,26 +287,15 @@ const saveCredentialsSource = sourceBetween(
   "async function saveCredentials",
   "const ONBOARDING_PROGRESS_NODES",
 );
+// The save rules (generation, failure, the story's saved source) are tested in credential-editor.check.ts.
 assert.match(
   saveCredentialsSource,
-  /const result = await window\.octopusBeak\.automation\.saveCredentials\(save\.plan\.updates\)/,
+  /if \(\$credentialEditorState\.failure === "save-failed"\) actionError = \$t\.automation\.saveCredentialsFailed/,
+  "a failed save shows the page's own copy, not the raw error",
 );
 assert.match(
   saveCredentialsSource,
-  /const \{ generation \} = sheet;[\s\S]*?applyCredentialSaveResult\(sheet, generation,[\s\S]*?await state\.reload\(\);\s*if \(sheet\.generation !== generation\) return;/,
-  "a save result applies only to the sheet generation that submitted it",
-);
-assert.match(
-  saveCredentialsSource,
-  /catch \{[\s\S]*?actionError = \$t\.automation\.saveCredentialsFailed/,
-);
-assert.doesNotMatch(
-  saveCredentialsSource,
-  /error instanceof Error \? error\.message/,
-);
-assert.match(
-  saveCredentialsSource,
-  /if \(save\.kind === "invalid"\) \{\s*await tick\(\);\s*document\.getElementById\(`\$\{save\.groupId\}-statement-selection`\)\?\.focus\(\)/,
+  /if \(result\.kind === "focus-statement-selection"\) \{\s*await tick\(\);\s*document\.getElementById\(`\$\{result\.groupId\}-statement-selection`\)\?\.focus\(\)/,
 );
 
 assert.match(source, /\{#each sheetView\.railEnabledGroups as group \(group\.id\)\}/);
