@@ -714,7 +714,7 @@ test("a deposit capture is assembled from its envelope and one record and observ
   assert.deepEqual(capture.records.map((record) => record.sourceRecordKey), ["record-ledger", "record-available"]);
   for (const record of capture.records)
     assert.equal(record.contentHash, currentDepositSourceRecordContentHash(record.compact));
-  assert.equal("effectiveAt" in capture.records[0]!.compact, false, "only a record that repeats the time carries it");
+  assert.equal("effectiveAt" in capture.records[0]!.compact, false, "time fields come from `time` only when timeInRecord is true");
   assert.equal(capture.records[1]!.compact.effectiveTimeSourceValue, time.sourceValue);
   assert.deepEqual(capture.observations, capture.records.map((record, index) => ({
     observationKey: "observation",

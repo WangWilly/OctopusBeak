@@ -549,7 +549,12 @@ export type CurrentDepositBalanceEntry = Readonly<{
   currency: string;
   value: CurrentDepositExactAmount;
   time: CurrentDepositTimeEvidence;
-  /** Whether the source record repeats the effective time. Banks differ, and the record's content hash keeps it. */
+  /**
+   * Whether the record's compact form also gets the effective time and its
+   * source field and value from `time`. A bank may already carry time fields
+   * in `compact`; this flag adds none. Flipping it changes the record's content
+   * hash, so it follows what the bank's records already held.
+   */
   timeInRecord: boolean;
   compact: Record<string, unknown>;
 }>;
