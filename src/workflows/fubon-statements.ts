@@ -71,6 +71,7 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 import {
   type CurrentDepositBalanceCaptureInput,
@@ -404,6 +405,7 @@ const fubonCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
   product: "current-balance",
   response: FUBON_CURRENT_DEPOSIT_RESPONSE,
   parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: fubonCurrentBalanceCaptureMatching,
   build: buildFubonCurrentDepositBalanceCapture,
 };

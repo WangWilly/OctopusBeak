@@ -20,6 +20,7 @@ import {
   type CurrentBalanceCaptureMatching,
   type DecodedSnapshotEvidence,
   type VerifiedProviderResponse,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -318,6 +319,7 @@ export async function captureCathayDomesticCurrentBalances(
       product: "domestic-current-balance",
       response: CATHAY_CURRENT_DOMESTIC_RESPONSE,
       parse: (decoded, response, acquired) => parseOverview("domestic", decoded, response, acquired),
+      kind: CURRENT_DEPOSIT_BALANCE_STAGING,
       matching: cathayDomesticCurrentBalanceCaptureMatching,
       build: buildDomesticCapture,
       validate: ({ matched }) => requireEveryAdmittedAccount(
@@ -392,6 +394,7 @@ export async function captureCathayForeignCurrentBalances(
       response: CATHAY_CURRENT_FOREIGN_RESPONSE,
       parse: (decoded, response, acquired) =>
         groupForeignAccounts(parseOverview("foreign", decoded, response, acquired)),
+      kind: CURRENT_DEPOSIT_BALANCE_STAGING,
       matching: cathayForeignCurrentBalanceCaptureMatching,
       build: (account, identity) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
         sourceConnectionKey: identity.sourceConnectionKey,

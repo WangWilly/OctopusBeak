@@ -29,6 +29,7 @@ import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   captureCurrentStateSnapshots,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 import {
   buildPostCurrentDepositBalanceCapture,
@@ -109,6 +110,7 @@ const postCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
     response,
     requestPostData: acquired.requestPostData,
   }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: postCurrentBalanceCaptureMatching,
   build: buildPostCurrentDepositBalanceCapture,
 };

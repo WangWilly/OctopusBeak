@@ -49,6 +49,7 @@ import {
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
@@ -1028,6 +1029,7 @@ const ctbcCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
     response,
     requestPostData: acquired.requestPostData,
   }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: ctbcCurrentBalanceCaptureMatching,
   build: buildCtbcCurrentDepositBalanceCapture,
 };
