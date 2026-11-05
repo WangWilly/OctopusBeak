@@ -5,11 +5,19 @@ import type {
   PGliteFinancialResult,
 } from "./pglite-financial-contracts.ts";
 import type { PGliteWorkScheduler } from "./pglite-financial-rpc-server.ts";
-import type { PGliteFinancialPageActionEvents } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPreviewEvents } from "./pglite-financial-registry.ts";
+import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
 import { SPENDING_LIVE_VIEW } from "./pglite-financial-spending-live-view.ts";
 
-type LiveViewRegistry = PGliteFinancialRegistry & PGliteFinancialPageActionEvents;
+type LiveViewRegistry = PGliteFinancialRegistry & PGliteFinancialPreviewEvents;
+
+/** What a view reads its page and the store's events from. */
+export type FinancialLiveViewSources = Readonly<{
+  registry: LiveViewRegistry;
+  /** The Spending page actions the registry runs, so the Spending view publishes their results. */
+  pageActions: SpendingPageActions;
+}>;
 
 export type FinancialLiveViewDefinition = Readonly<{
   load(registry: LiveViewRegistry, params: object, sources: PGliteFinancialExpectedSources): Promise<unknown>;
@@ -21,10 +29,9 @@ export type FinancialLiveViewDefinition = Readonly<{
    */
   dependsOn: readonly LiveViewDependencyName[];
   /** Decides whether a dependency change needs a full recompute. */
-  shouldRecompute?(registry: LiveViewRegistry, lastValue: () => unknown): Promise<boolean>;
+  shouldRecompute?(sources: FinancialLiveViewSources, lastValue: () => unknown): Promise<boolean>;
   /** Subscribes to view-specific events; returns the unsubscribe. */
-  watch?(context: Readonly<{
-    registry: LiveViewRegistry;
+  watch?(context: FinancialLiveViewSources & Readonly<{
     lastValue(): unknown;
     publish(value: unknown): void;
     recompute(): void;
@@ -67,11 +74,12 @@ function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {
  * invalidate a complete financial DTO on every task update.
  */
 export function createPGliteFinancialLiveViews(
-  registry: LiveViewRegistry,
+  sources: FinancialLiveViewSources,
   dependencies: LiveViewDependencies,
   expectedSources: () => PGliteFinancialExpectedSources = () => [],
   scheduler?: PGliteWorkScheduler,
 ) {
+  const { registry, pageActions } = sources;
   const entries = new Map<string, {
     stop: () => Promise<void>;
     listeners: Set<{ value(value: unknown): void; error(error: unknown): void }>;
@@ -131,13 +139,14 @@ export function createPGliteFinancialLiveViews(
         const trigger = () => {
           if (!initialReady) return;
           void (async () => {
-            if (definition.shouldRecompute && !await definition.shouldRecompute(registry, () => entry?.lastValue)) return;
+            if (definition.shouldRecompute && !await definition.shouldRecompute(sources, () => entry?.lastValue)) return;
             if (!stopped) await recompute();
           })().catch(fail);
         };
         if (definition.watch) {
           stopWatch = definition.watch({
             registry,
+            pageActions,
             lastValue: () => entry?.lastValue,
             publish,
             recompute: () => {

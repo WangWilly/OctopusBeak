@@ -9,6 +9,7 @@ import {
 } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
+import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingPageDto } from "../src/lib/spending/model.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
@@ -16,6 +17,9 @@ import { commitCathay } from "../src/ledger/pglite/direct-source-precedence-fixt
 import { applyManual, createManualAsset as create, MANUAL_CLOCK as CLOCK } from "../src/ledger/pglite/financial-pages.fixtures.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+
+/** These views never see a Spending page action run. */
+const NO_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
 
 async function withManualLedger(run: (input: {
   store: PGliteStore;
@@ -39,7 +43,7 @@ async function withManualLedger(run: (input: {
 test("every live page republishes on each kind of manual write", async () => {
   const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
   await withManualLedger(async ({ registry, apply }) => {
-    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
+    const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
     const latest = new Map<string, unknown>();
     const counts = new Map<string, number>();
     const stops: Array<() => Promise<void>> = [];
@@ -113,7 +117,7 @@ test("a live page republishes when the date moves past an asset's end date, with
     const registry = createPGliteFinancialRegistry(store, undefined, { today: clock.today });
     const { assetId } = await apply(create("other", "Watch", "TWD", "2026-10-01", "50000", "market_quote"));
     await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
-    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, clock));
+    const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, createPGliteLiveViewDependencies(database, registry, clock));
     const published: OverviewPageDto[] = [];
     const stop = await views.subscribe("financial.overview.current", {}, (value) => published.push(value as OverviewPageDto));
     const watchLines = () => published.at(-1)!.accounts.find((account) => account.manual)!.amountLines.length;
@@ -139,15 +143,15 @@ test("a manual write during a Spending page action is published once the action 
   await withManualLedger(async ({ registry, apply }) => {
     let inFlight = false;
     let settle: ((result: null) => void) | null = null;
-    const racing = {
-      ...registry,
-      isSpendingPageActionInFlight: () => inFlight,
-      onSpendingPageActionSettled: (listener: (result: null) => void) => {
+    const pageActions: SpendingPageActions = {
+      run: () => Promise.reject(new Error("this check settles the action by hand")),
+      inFlight: () => inFlight,
+      onSettled: (listener) => {
         settle = listener;
         return () => {};
       },
-    } as typeof registry;
-    const views = createPGliteFinancialLiveViews(racing, createPGliteLiveViewDependencies(database, racing, createLocalDateClock(CLOCK.today)));
+    };
+    const views = createPGliteFinancialLiveViews({ registry, pageActions }, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
     const pages: SpendingPageDto[] = [];
     const stop = await views.subscribe("financial.spending.current", {}, (value) => pages.push(value as SpendingPageDto));
     const purchases = () => pages.at(-1)?.manual?.purchases.length ?? 0;

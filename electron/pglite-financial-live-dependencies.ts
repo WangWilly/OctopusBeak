@@ -1,7 +1,7 @@
 import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import { MANUAL_ASSET_REVISION_SQL } from "../src/ledger/pglite/manual-assets.ts";
 import { PREVIEW_DATA_REVISION_SQL } from "../src/ledger/pglite/preview-financial-data.ts";
-import type { PGliteFinancialPageActionEvents } from "./pglite-financial-registry.ts";
+import type { PGliteFinancialPreviewEvents } from "./pglite-financial-registry.ts";
 
 export type LiveViewDependencySignals = Readonly<{
   /** The dependency changed; the view reads its page again. */
@@ -33,7 +33,7 @@ export function liveRowDependency(db: PGliteWithLive, sql: string): LiveViewDepe
 }
 
 /** Preview rows and the Preview features setting, which lives in settings rather than in preview data. */
-function previewDependency(db: PGliteWithLive, events: PGliteFinancialPageActionEvents): LiveViewDependency {
+function previewDependency(db: PGliteWithLive, events: PGliteFinancialPreviewEvents): LiveViewDependency {
   const revision = liveRowDependency(db, PREVIEW_DATA_REVISION_SQL);
   return {
     async watch(signals) {
@@ -92,7 +92,7 @@ export function createLocalDateClock(today: () => string, intervalMs = 60_000): 
 
 export function createPGliteLiveViewDependencies(
   db: PGliteWithLive,
-  events: PGliteFinancialPageActionEvents,
+  events: PGliteFinancialPreviewEvents,
   clock: LocalDateClock,
 ): LiveViewDependencies {
   return {

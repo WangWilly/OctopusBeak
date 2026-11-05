@@ -25,6 +25,10 @@ import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-req
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import { createSpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+
+/** These views never see a Spending page action run. */
+const NO_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
 
 const token = (letter: string): string => `sha256:${letter.repeat(64)}`;
 
@@ -610,7 +614,7 @@ test("financial live views recover after a transient read failure and stop durin
       return page;
     },
   } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews(registry, dependencies);
+  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
   const values: unknown[] = [];
   const errors: unknown[] = [];
   const stop = await views.subscribe(
@@ -649,7 +653,7 @@ test("a dependency's own failure reaches every listener of the view, and a later
       return EMPTY_OVERVIEW;
     },
   } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews(registry, dependencies);
+  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
   const errors: unknown[][] = [[], []];
   const stops = await Promise.all(errors.map((seen) =>
     views.subscribe("financial.overview.current", {}, () => {}, (error) => seen.push(error))));
@@ -680,7 +684,7 @@ test("failed live subscription releases started dependencies and permits retry",
       return { availability: "empty" };
     },
   } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews(registry, dependencies);
+  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
   await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /dependency setup failed/u);
   assert.equal(active(), 0, "a partial dependency setup must be drained");
   failRead = true;
