@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { chromium, type APIRequestContext, type Response as BrowserResponse } from "playwright";
-import { captureTypedReport, decodeYuantaTradeReportResponse } from "../../../workflows/yuanta-trade-statements.ts";
+import {
+  captureTypedReport,
+  decodeYuantaTradeReportResponse,
+  type YuantaReportReader,
+} from "../../../workflows/yuanta-trade-statements.ts";
 import { strictSourceText } from "../source-text.ts";
-import type { WorkflowContext } from "../workflow-executor.ts";
+
+const reader: YuantaReportReader = { text: strictSourceText, validate: async (check) => await check() };
 
 test("Yuanta report retries a lost browser navigation body with a validated raw POST", async () => {
   const url = "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock";
@@ -28,7 +33,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
       };
     },
   } as unknown as APIRequestContext;
-  const report = await decodeYuantaTradeReportResponse(browserResponse, strictSourceText, "Stock", {
+  const report = await decodeYuantaTradeReportResponse(browserResponse, reader, "Stock", {
     request,
     params: { index: -1 },
   });
@@ -44,7 +49,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
     }),
   } as unknown as APIRequestContext;
   await assert.rejects(
-    decodeYuantaTradeReportResponse(browserResponse, strictSourceText, "Stock", {
+    decodeYuantaTradeReportResponse(browserResponse, reader, "Stock", {
       request: redirectedRequest,
       params: { index: -1 },
     }),
@@ -62,9 +67,9 @@ test("Yuanta report submission uses the report route when login ends on a differ
     }));
     await page.goto("https://global.yuanta.com.tw/NexusWebTrade/Main/Index");
     const report = await captureTypedReport(page, "Stock", { index: -1 }, {
-      text: strictSourceText,
+      ...reader,
       signal: new AbortController().signal,
-    } as WorkflowContext);
+    });
     assert.equal(new URL(report.url).pathname, "/NexusWebTrade/AssetReport/Stock");
     assert.equal(report.currentAssetType, "Stock");
   } finally {
@@ -93,7 +98,7 @@ test("cancelling the run stops a Yuanta report read at each of its waits", async
     setTimeout(() => controller.abort(cancelled), 500);
     const started = Date.now();
     await assert.rejects(
-      captureTypedReport(page, "Stock", { index: -1 }, { text: strictSourceText, signal: controller.signal } as WorkflowContext),
+      captureTypedReport(page, "Stock", { index: -1 }, { ...reader, signal: controller.signal }),
       (error: unknown) => error === cancelled,
       landing,
     );

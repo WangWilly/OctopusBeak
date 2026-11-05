@@ -54,7 +54,7 @@ import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -790,6 +790,12 @@ function responseCharset(headers: Record<string, string>, bytes: Uint8Array): st
 
 type YuantaReportResponse = Pick<Response, "url" | "status" | "headers" | "body">;
 
+/** How a report is read: decoded by `text`, its page parsed inside `validate`. */
+export type YuantaReportReader = Readonly<{
+  text: SourceTextPort;
+  validate: ProductCollectionHandle["validate"];
+}>;
+
 function isUnavailableBrowserResponseBody(error: unknown): boolean {
   return error instanceof Error &&
     error.message.includes("Network.getResponseBody") &&
@@ -799,7 +805,7 @@ function isUnavailableBrowserResponseBody(error: unknown): boolean {
 async function decodeYuantaReportSource(
   response: YuantaReportResponse,
   method: string,
-  text: SourceTextPort,
+  reader: YuantaReportReader,
   reportType: string,
 ): Promise<ReportPage> {
   const expectedUrl = new URL(
@@ -828,27 +834,27 @@ async function decodeYuantaReportSource(
     throw new Error("Yuanta Trade report response was not HTML.");
   }
   const bytes = await response.body();
-  const html = text.decode(bytes, responseCharset(headers, bytes));
-  text.assertIntact(html);
-  return parseReportPage(html, response.url(), reportType);
+  const html = reader.text.decode(bytes, responseCharset(headers, bytes));
+  reader.text.assertIntact(html);
+  return reader.validate(() => parseReportPage(html, response.url(), reportType));
 }
 
 /** Validate and strictly decode the report. If CDP loses a navigation body,
  * make one fresh, authenticated POST and validate that response independently. */
 export async function decodeYuantaTradeReportResponse(
   response: Response,
-  text: SourceTextPort,
+  reader: YuantaReportReader,
   reportType: string,
   retryRequest?: { request: APIRequestContext; params: Record<string, string | number> },
 ): Promise<ReportPage> {
   try {
-    return await decodeYuantaReportSource(response, response.request().method(), text, reportType);
+    return await decodeYuantaReportSource(response, response.request().method(), reader, reportType);
   } catch (error) {
     if (!retryRequest || !isUnavailableBrowserResponseBody(error)) throw error;
     const reportUrl = new URL(`/NexusWebTrade/AssetReport/${reportType}`, YUANTA_TRADE_LOGIN_URL).href;
     const form = Object.fromEntries(Object.entries(retryRequest.params).map(([key, value]) => [key, String(value)]));
     const retried = await retryRequest.request.post(reportUrl, { form, failOnStatusCode: false });
-    return await decodeYuantaReportSource(retried, "POST", text, reportType);
+    return await decodeYuantaReportSource(retried, "POST", reader, reportType);
   }
 }
 
@@ -892,7 +898,7 @@ export async function captureTypedReport(
   page: Page,
   reportType: string,
   params: Record<string, string | number>,
-  context: WorkflowContext,
+  context: YuantaReportReader & Readonly<{ signal: AbortSignal }>,
 ): Promise<ReportPage> {
   const scope = frameScope(page, context.signal);
   const reportUrl = new URL(
@@ -911,7 +917,7 @@ export async function captureTypedReport(
   }
   const captured = await scope.race(decodeYuantaTradeReportResponse(
     response,
-    context.text,
+    context,
     reportType,
     { request: page.context().request, params },
   ));
@@ -1671,7 +1677,10 @@ export type YuantaTradeSource = Readonly<{
   ) => Promise<YuantaTradeReportPage>;
 }>;
 
-export function yuantaTradeSource(page: Page, context: WorkflowContext): YuantaTradeSource {
+export function yuantaTradeSource(
+  page: Page,
+  context: YuantaReportReader & Readonly<{ signal: AbortSignal }>,
+): YuantaTradeSource {
   return {
     captureReport: (reportType, params) => captureTypedReport(page, reportType, params, context),
   };
@@ -1729,8 +1738,6 @@ export async function readYuantaTradeSource(
       completed: holdings.length + trades.length,
       total: requests.length,
     });
-    if (error instanceof SourceTextIntegrityError)
-      await product.event("decoding", "failed", "source-decoding-failed");
     throw error;
   }
   context.signal.throwIfAborted();
@@ -1750,25 +1757,20 @@ export async function stageYuantaTrade(
   const { holdings, trades } = snapshot;
   const { dateRange } = input;
   const total = input.holdingTypes.length + input.tradeTypes.length;
-  const completeHoldings = isCompleteHoldingCapture(holdings, input.holdingTypes);
-  const completeTrades = isCompleteTradeCapture(trades, input.tradeTypes, dateRange);
-  if (!completeHoldings || !completeTrades) {
-    await product.event("validation", "failed", "source-validation-rejected", {
-      completed: holdings.length + trades.length,
-      total,
-    });
-    throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
-  }
+  await product.validate(() => {
+    if (!isCompleteHoldingCapture(holdings, input.holdingTypes)
+      || !isCompleteTradeCapture(trades, input.tradeTypes, dateRange))
+      throw new Error("YuanTa Trade source is incomplete; Canonical Financial Commit was rejected.");
+  });
 
   await product.event("validation", "started", "source-validation-started", {
     completed: total,
     total,
   });
-  const tradeRows = normalizeTradeRows(trades, dateRange);
-  const holdingRows = normalizeHoldingRows(holdings, dateRange);
-  let captures: InvestmentValidatedCapture[];
-  try {
-    captures = buildYuantaTradeCanonicalCaptures(
+  const { tradeRows, holdingRows, captures } = await product.validate(() => {
+    const tradeRows = normalizeTradeRows(trades, dateRange);
+    const holdingRows = normalizeHoldingRows(holdings, dateRange);
+    const captures: InvestmentValidatedCapture[] = buildYuantaTradeCanonicalCaptures(
       input.credentials,
       holdingRows,
       tradeRows,
@@ -1777,10 +1779,8 @@ export async function stageYuantaTrade(
     if (captures.length === 0) {
       throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
     }
-  } catch (error) {
-    await product.event("validation", "failed", "source-validation-rejected");
-    throw error;
-  }
+    return { tradeRows, holdingRows, captures };
+  });
   context.signal.throwIfAborted();
 
   product.stage(...captures.map((capture) => ({
@@ -1824,7 +1824,12 @@ export type YuantaTradeProductRunner = (
 ) => Promise<YuantaTradeStaged>;
 
 const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, input, context, product) => {
-  const snapshot = await readYuantaTradeSource(yuantaTradeSource(page, context), input, context, product);
+  const snapshot = await readYuantaTradeSource(
+    yuantaTradeSource(page, { signal: context.signal, text: context.text, validate: product.validate }),
+    input,
+    context,
+    product,
+  );
   return stageYuantaTrade(snapshot, input, context, product);
 };
 

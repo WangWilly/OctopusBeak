@@ -479,7 +479,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 
   await assert.rejects(
     runPost(harness.context, workflowInput, depositReading(() => [{ ...statement, rows: [] }])),
-    assertProductFailure("source-collection-failed", /source admission blocked/u),
+    assertProductFailure("source-validation-failed", /source admission blocked/u),
   );
   assert.equal(harness.committed.length, 0);
 

@@ -304,7 +304,8 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.equal(malformed.status, "failed");
     assert.equal(committed.length, 1, "malformed LINE Bank response is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
-    assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
+    assert.equal(malformed.outcome.errorCode, "source-integrity-failed");
+    assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
 
     const incompletePage = createPage({ incompleteTransactions: true });
     const incompleteRunId = await createRun(provider);

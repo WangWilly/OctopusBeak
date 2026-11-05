@@ -70,6 +70,9 @@ test("cancelling the run stops the transaction link click, which never lands", (
 test("cancelling the run abandons an account snapshot whose fetch never answers", () =>
   withSilentLineBank(async (page) => {
     await page.goto(`${ORIGIN}/transaction`);
-    const client = new LineBankApiClient(scopeCancelledAfter(page, 300), { text: strictSourceText });
+    const client = new LineBankApiClient(scopeCancelledAfter(page, 300), {
+      text: strictSourceText,
+      validate: async (check) => await check(),
+    });
     assert.ok((await settlesWithin(client.fetchAccountSnapshot())) < 2_000);
   }));

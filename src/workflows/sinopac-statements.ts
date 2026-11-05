@@ -2,11 +2,7 @@ import { createHash } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
-import {
-  SourceTextIntegrityError,
-  strictSourceText,
-  type SourceTextPort,
-} from "../lib/automation/source-text.ts";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
 import type { FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
@@ -862,12 +858,11 @@ const SINOPAC_TRANSACTION_ROUTE: SinopacMmaRoute = {
 async function listSinopacAccounts(
   site: SinopacMmaSite,
   text: SourceTextPort,
-  event: ProductCollectionHandle["event"],
+  validate: ProductCollectionHandle["validate"],
 ): Promise<SinopacAccount[]> {
   const { bytes, response } = await site.open(SINOPAC_TRANSACTION_ROUTE);
-  let payload: unknown;
-  try {
-    payload = decodeSinopacJsonSource({
+  return await validate(() => {
+    const payload = decodeSinopacJsonSource({
       bytes,
       response: {
         url: response.url,
@@ -878,21 +873,10 @@ async function listSinopacAccounts(
       expectedPath: ACCOUNT_ENDPOINT,
       text,
     });
-  } catch (error) {
-    await event(
-      error instanceof SourceTextIntegrityError ? "decoding" : "validation",
-      "failed",
-      error instanceof SourceTextIntegrityError
-        ? "account-source-decode-rejected"
-        : "account-source-response-rejected",
-    );
-    throw error;
-  }
-  if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0])) {
-    await event("validation", "failed", "account-source-response-rejected");
-    throw new Error("SinoPac account source response is incomplete.");
-  }
-  return accountListFromResponse(payload as SinopacAccountResponse[]);
+    if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0]))
+      throw new Error("SinoPac account source response is incomplete.");
+    return accountListFromResponse(payload as SinopacAccountResponse[]);
+  });
 }
 
 async function querySinopacTransactions(
@@ -900,6 +884,7 @@ async function querySinopacTransactions(
   account: SinopacAccount,
   dateRange: DateRange,
   businessDate: string,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<SinopacTransactionResponse> {
   const body = new URLSearchParams({
     Acct: accountLabel(account),
@@ -915,12 +900,12 @@ async function querySinopacTransactions(
   });
   const reply = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, {
     body: body.toString(),
-    accept: acceptSinopacJsonReply(TRANSACTION_ENDPOINT),
+    accept: (reply) => validate(() => acceptSinopacJsonReply(TRANSACTION_ENDPOINT)(reply)),
   });
-  return sinopacSingleEnvelope<SinopacTransactionResponse>(
+  return await validate(() => sinopacSingleEnvelope<SinopacTransactionResponse>(
     parseSinopacJson(reply.text),
     "transaction",
-  );
+  ));
 }
 
 type SinopacWrapperCategory = "native" | "patched" | "unknown";
@@ -1076,6 +1061,7 @@ export async function runSinopacIdentityValidation(
         accounts[0]!,
         window,
         querySet.range.endDate,
+        async (check) => await check(),
       ));
       windows.push({
         window,
@@ -1200,9 +1186,9 @@ export function sinopacDepositSource(
   product: ProductCollectionHandle,
 ): SinopacDepositSource {
   return {
-    listAccounts: () => listSinopacAccounts(site, context.text, product.event),
+    listAccounts: () => listSinopacAccounts(site, context.text, product.validate),
     queryTransactions: (account, window, businessDate) =>
-      querySinopacTransactions(site, account, window, businessDate),
+      querySinopacTransactions(site, account, window, businessDate, product.validate),
     readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(site),
   };
 }
@@ -1275,23 +1261,11 @@ export async function readSinopacDepositSource(
         completed: sourceCompleted,
         total: sourceTotal,
       });
-      let response: SinopacTransactionResponse;
-      try {
-        response = validateSinopacTransactionRows(await withAbort(
-          source.queryTransactions(account, window, businessDate),
-          signal,
-        ));
-      } catch (error) {
-        await event(
-          error instanceof SourceTextIntegrityError ? "decoding" : "validation",
-          "failed",
-          error instanceof SourceTextIntegrityError
-            ? "source-decode-rejected"
-            : "source-response-rejected",
-          { completed: sourceCompleted, total: sourceTotal },
-        );
-        throw error;
-      }
+      const queried = await withAbort(
+        source.queryTransactions(account, window, businessDate),
+        signal,
+      );
+      const response = await product.validate(() => validateSinopacTransactionRows(queried));
       signal.throwIfAborted();
       if (
         response.Header !== "FAIL" ||

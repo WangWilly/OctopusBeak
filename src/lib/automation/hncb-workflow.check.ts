@@ -20,7 +20,7 @@ import {
 import { hncbCurrentDepositDetailTable, hncbCurrentDepositUnavailableRow } from "../../workflows/hncb-current-deposit-balances.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, type ProductCollectionHandle } from "./product-collection.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "./server/sources/hncb.ts";
 import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-current-deposit-balances.ts";
@@ -38,8 +38,13 @@ const parsedFixture = parseStatementExport(strictSourceText.decode(exportBytes, 
 assert.equal(parsedFixture.queryPeriod, "2026/08/01-2026/08/31");
 assert.equal(parsedFixture.currency, "TWD");
 
+/** A check run outside any product, for the export read driven directly. */
+const unreported: ProductCollectionHandle["validate"] = async (check) => await check();
+
 /** The real read and build halves over one account whose query opens `download`, with no current balances. */
-function oneAccount(download: () => Promise<HncbStatementDownload>): HncbDepositRunner {
+function oneAccount(
+  download: (validate: ProductCollectionHandle["validate"]) => Promise<HncbStatementDownload>,
+): HncbDepositRunner {
   const source: HncbDepositSource = {
     accounts: async () => [{ value: account, label: `HNCB ${account}` }],
     query: async () => ({ download }),
@@ -210,12 +215,13 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
       event: async (stage, _outcome, code) => { events.push({ stage, code }); },
     });
     const output = await runHncbStatements(page, { accountFilters: [] }, context, {
-      collectDeposit: oneAccount(async () => {
+      collectDeposit: oneAccount(async (validate) => {
         const statement = await downloadCurrentStatementInMemory(
           frameScope(page, context.signal),
           `HNCB ${account}`,
           page.mainFrame(),
           context.text,
+          validate,
           5_000,
         );
         statementResponse = statement.sourceResponse;
@@ -290,6 +296,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           account,
           page.mainFrame(),
           strictSourceText,
+          unreported,
           5_000,
         ),
         scenario.error,
@@ -301,6 +308,32 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     assert.equal(downloadEvents, 0);
     assert.match(requestCookie, /hncb-session=fixture/u);
     assert.equal(postCount - 1, rejectedResponses.length);
+
+    // ADR 0106: an export reply the check refuses fails the product as a validation failure.
+    responseBody = Buffer.from("<html><body><table><tr><td>partial", "ascii");
+    responseStatus = 200;
+    responseContentType = "application/vnd.ms-excel; charset=big5";
+    responseDisposition = 'attachment; filename="incomplete.xls"';
+    await openExportLink();
+    const incompleteContext = runContext(financialCommit);
+    await assert.rejects(
+      runHncbStatements(page, { accountFilters: [] }, incompleteContext, {
+        collectDeposit: oneAccount((validate) => downloadCurrentStatementInMemory(
+          frameScope(page, incompleteContext.signal),
+          `HNCB ${account}`,
+          page.mainFrame(),
+          incompleteContext.text,
+          validate,
+          5_000,
+        )),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ProductCollectionInterruptedError);
+        assert.equal(error.errorCode, "source-validation-failed");
+        return true;
+      },
+    );
+    assert.equal(commitItems.length, 1);
   } finally {
     process.chdir(previousWorkingDirectory);
     await rm(workingDirectory, { recursive: true, force: true });
@@ -373,7 +406,7 @@ test("HNCB rejects malformed or incomplete exports before the Canonical Financia
       }),
       (error: unknown) => {
         assert.ok(error instanceof ProductCollectionInterruptedError);
-        assert.equal(error.errorCode, "source-collection-failed");
+        assert.equal(error.errorCode, "source-validation-failed");
         assert.match(String((error as Error & { cause?: unknown }).cause), /source admission blocked/u);
         return true;
       },
@@ -432,7 +465,7 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
   };
   const page = { async waitForEvent() { return popup; } } as never;
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
-  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, strictSourceText, 20);
+  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, strictSourceText, unreported, 20);
   let watchdog: ReturnType<typeof setTimeout>;
   try {
     await assert.rejects(Promise.race([
@@ -445,6 +478,31 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
     releaseSubmit();
     await run.catch(() => undefined);
   }
+});
+
+test("HNCB export that times out fails the product as a collection failure, not a validation failure", async () => {
+  const popup = {
+    async waitForLoadState() {},
+    async route() {},
+    async evaluate() { await new Promise(() => undefined); },
+    async unroute() {},
+    async close() {},
+  };
+  const page = { async waitForEvent() { return popup; } } as never;
+  const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
+  const context = runContext({ async execute() { throw new Error("a failed read must not reach the commit"); } });
+  await assert.rejects(
+    runHncbStatements(page, { accountFilters: [] }, context, {
+      collectDeposit: oneAccount((validate) =>
+        downloadCurrentStatementInMemory(frameScope(page, context.signal), account, frame, context.text, validate, 20)),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ProductCollectionInterruptedError);
+      assert.equal(error.errorCode, "source-collection-failed");
+      assert.match(String((error as Error & { cause?: unknown }).cause), /Timed out waiting for the HNCB export response/u);
+      return true;
+    },
+  );
 });
 
 test("HNCB export stops at the run's cancellation instead of its deadline", async () => {
@@ -462,7 +520,7 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
   const run = new AbortController();
   const reason = new Error("run cancelled");
-  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, 60_000);
+  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, unreported, 60_000);
   setTimeout(() => run.abort(reason), 10);
   await assert.rejects(download, (error: unknown) => error === reason);
   assert.equal(closed, true);
@@ -485,7 +543,8 @@ test("cancelling the run stops a pending export click in the browser and stages 
       },
     };
     let readError: unknown;
-    const download = () => downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText)
+    const download = (validate: ProductCollectionHandle["validate"]) =>
+      downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, validate)
       .catch((error: unknown) => { readError = error; throw error; });
     setTimeout(() => run.abort(cancellation), 300);
     // The export link appears only after the cancellation; an abandoned click would still land on it.

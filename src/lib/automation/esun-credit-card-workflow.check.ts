@@ -87,6 +87,7 @@ function issuerSummary(period: string): unknown {
 
 function createPage(options: {
   timelineBytes?: Uint8Array;
+  timelineTimeout?: boolean;
   monthCount?: number;
   cursor?: number;
   portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply;
@@ -99,9 +100,9 @@ function createPage(options: {
     `${oldestPeriod.year}/${oldestPeriod.month}`,
   ];
   const responses = [
-    options.timelineBytes
+    ...options.timelineTimeout ? [] : [options.timelineBytes
       ? byteResponse(options.timelineBytes, timelineEndpoint)
-      : jsonResponse(timelineValue(now, options.monthCount, options.cursor), timelineEndpoint),
+      : jsonResponse(timelineValue(now, options.monthCount, options.cursor), timelineEndpoint)],
     jsonResponse(issuerSummary(periods[1]!), summaryEndpoint),
     jsonResponse(issuerSummary(periods[0]!), summaryEndpoint),
   ];
@@ -123,6 +124,8 @@ function createPage(options: {
     waitForURL: async () => undefined,
     waitForResponse: async (predicate: (response: Response) => boolean) => {
       const index = responses.findIndex((response) => predicate(response));
+      if (index < 0 && options.timelineTimeout)
+        throw Object.assign(new Error("page.waitForResponse: Timeout 30000ms exceeded."), { name: "TimeoutError" });
       if (index < 0) throw new Error("Unexpected E.SUN response waiter.");
       return responses.splice(index, 1)[0]!;
     },
@@ -460,6 +463,8 @@ test("a card failure reports the card failed with its classified code beside the
   const cases: ReadonlyArray<[string, Parameters<typeof createPage>[0], string]> = [
     ["incomplete timeline", { monthCount: 11 }, "source-collection-failed"],
     ["malformed text", { timelineBytes: new Uint8Array([0xc3, 0x28]) }, "source-integrity-failed"],
+    ["malformed JSON", { timelineBytes: new TextEncoder().encode("{\"body\":") }, "source-validation-failed"],
+    ["timed-out timeline", { timelineTimeout: true }, "source-collection-failed"],
   ];
   for (const [name, page, errorCode] of cases) {
     const harness = createContext(createPage({ ...page, portal: depositPortal().portal }));

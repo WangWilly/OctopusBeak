@@ -747,7 +747,7 @@ for (const [name, collect, expected, reported] of [
     throw Object.assign(new Error("Timeout 60000ms exceeded"), { name: "TimeoutError" });
   }, "source-collection-failed", false],
   ["a check whose text is not intact", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
-    await validate(() => { throw new SourceTextIntegrityError(); });
+    await validate(() => { throw new SourceTextIntegrityError("invalid-encoding"); });
   }, "source-integrity-failed", false],
   ["a check that finds the source unavailable", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
     await validate(async () => { throw new SourceUnavailableError(); });

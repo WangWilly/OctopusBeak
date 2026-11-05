@@ -153,7 +153,7 @@ test("Post empty capture is rejected at source admission, not committed source-o
     statement(accountB, undefined),
   ], [currentBalance(accountA, "5678")]);
   assert.match(result.error ?? "", /source admission blocked/u);
-  assert.equal(result.errorCode, "source-collection-failed");
+  assert.equal(result.errorCode, "source-validation-failed");
   await assertDepositCommitGolden("post-empty-capture-rejected", { error: result.error, ...result.recorded });
 });
 
@@ -169,6 +169,6 @@ test("Post unknown-direction row is rejected because row-direction-unknown never
   }));
   const result = await run(t, [known, unknown], [currentBalance(accountA, "5678")]);
   assert.match(result.error ?? "", /financial admission failed: .*row-direction-unknown/u);
-  assert.equal(result.errorCode, "source-collection-failed");
+  assert.equal(result.errorCode, "source-validation-failed");
   await assertDepositCommitGolden("post-unknown-direction-rejected", { error: result.error, ...result.recorded });
 });

@@ -27,6 +27,7 @@ import {
   yuantaTradeWorkflow,
   stageYuantaTrade,
   type YuantaTradeCollectionInput,
+  type YuantaReportReader,
   type YuantaTradeReportPage,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
@@ -995,8 +996,9 @@ function fakeReportPage(landings: readonly ("report" | "error")[]) {
   return { page, submissions: () => submissions };
 }
 
-function reportContext(): WorkflowContext {
+function reportContext(): WorkflowContext & YuantaReportReader {
   return {
+    validate: async (check) => await check(),
     runId: "yuanta-trade-report-error-fixture",
     signal: new AbortController().signal,
     now: () => "2026-10-12T02:08:50.000Z",

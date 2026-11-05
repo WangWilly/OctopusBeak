@@ -8,11 +8,7 @@ import { POST_CREDENTIAL_FIELDS, POST_PRODUCTS, POST_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ElementHandle, Locator, Page, Response } from "playwright";
-import {
-  SourceTextIntegrityError,
-  strictSourceText,
-  type SourceTextPort,
-} from "../lib/automation/source-text.ts";
+import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -550,7 +546,11 @@ export function parsePostStatementResponse(input: Readonly<{
   };
 }
 
-async function queryCurrentStatement(scope: FrameScope, text: SourceTextPort) {
+async function queryCurrentStatement(
+  scope: FrameScope,
+  text: SourceTextPort,
+  validate: ProductCollectionHandle["validate"],
+): Promise<PostQueriedStatement> {
   const { page } = scope;
   if (!(await scope.withSignal((signal) => sixMonthDateInput(page).isChecked({ signal })))) {
     await scope.withSignal((signal) => sixMonthDateLabel(page).click({ signal }));
@@ -562,7 +562,7 @@ async function queryCurrentStatement(scope: FrameScope, text: SourceTextPort) {
     page.locator("a.css_btn_class:visible").filter({ hasText: "查詢" }).first().click({ signal }));
   const response = await responsePromise;
   const [body, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
-  return parsePostStatementResponse({
+  return await validate(() => parsePostStatementResponse({
     bytes: body,
     response: {
       url: response.url(),
@@ -572,7 +572,7 @@ async function queryCurrentStatement(scope: FrameScope, text: SourceTextPort) {
       requestPostData: response.request().postData(),
     },
     text,
-  });
+  }));
 }
 
 /** Read every visible account's statement from iPost: the only part of the deposit run that touches the page. */
@@ -586,7 +586,7 @@ export async function readPostDepositSource(
   const statements = await collectPostStatementSources(
     frameScope(page, context.signal),
     context.text,
-    product.event,
+    product,
   );
   return { observedAt, statements };
 }
@@ -594,7 +594,7 @@ export async function readPostDepositSource(
 async function collectPostStatementSources(
   scope: FrameScope,
   text: SourceTextPort,
-  event: ProductCollectionHandle["event"],
+  { event, validate }: Pick<ProductCollectionHandle, "event" | "validate">,
 ): Promise<PostQueriedStatement[]> {
   const { page, signal } = scope;
   await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
@@ -615,20 +615,7 @@ async function collectPostStatementSources(
       completed: index,
       total: accountCount,
     });
-    let statement: PostQueriedStatement;
-    try {
-      statement = await queryCurrentStatement(scope, text);
-    } catch (error) {
-      await event(
-        error instanceof SourceTextIntegrityError ? "decoding" : "validation",
-        "failed",
-        error instanceof SourceTextIntegrityError
-          ? "source-decode-rejected"
-          : "source-response-rejected",
-        { completed: index, total: accountCount },
-      );
-      throw error;
-    }
+    const statement = await queryCurrentStatement(scope, text, validate);
     signal.throwIfAborted();
     await event("decoding", "advanced", "source-decoding-completed", {
       completed: index + 1,
@@ -700,14 +687,16 @@ export async function stagePostDeposit(
   const captures: PostDomesticDepositValidatedEvidence[] = [];
   for (const [index, statement] of statements.entries()) {
     context.signal.throwIfAborted();
-    const admission = admitPostDomesticDepositCaptureEvidence(
-      buildPostDomesticDepositCapture(statement, observedAt),
-    );
-    if (admission.status !== "admissible" || !admission.capture)
-      throw new Error(
-        `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+    captures.push(await product.validate(() => {
+      const admission = admitPostDomesticDepositCaptureEvidence(
+        buildPostDomesticDepositCapture(statement, observedAt),
       );
-    captures.push(admission.capture);
+      if (admission.status !== "admissible" || !admission.capture)
+        throw new Error(
+          `Post domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+        );
+      return admission.capture;
+    }));
     await product.event("validation", "advanced", "source-validation-completed", {
       completed: index + 1,
       total: statements.length,
@@ -729,18 +718,18 @@ export async function stagePostDeposit(
       captureId: `post-financial-${captureId}`,
       humanAttestation: manifest,
     };
-    const admission = admitPostDomesticDepositFinancialCapture(input);
-    if (admission.status !== "admitted" || !admission.capture)
-      throw new Error(
-        `Post domestic deposit financial admission failed: ${[
-          ...new Set(admission.diagnostics),
-        ].join(", ")}`,
-      );
-    financialInputs.push({
-      captureId: input.captureId,
-      financialCapture: admission.capture,
+    const financialCapture = await product.validate(() => {
+      const admission = admitPostDomesticDepositFinancialCapture(input);
+      if (admission.status !== "admitted" || !admission.capture)
+        throw new Error(
+          `Post domestic deposit financial admission failed: ${[
+            ...new Set(admission.diagnostics),
+          ].join(", ")}`,
+        );
+      return admission.capture;
     });
-    financialCaptures.push({ identity: admission.capture.identity });
+    financialInputs.push({ captureId: input.captureId, financialCapture });
+    financialCaptures.push({ identity: financialCapture.identity });
   }
   // The overview response is staged before opening the execution run. Each
   // row still commits only after its statement identity item has committed.
