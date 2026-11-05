@@ -1,14 +1,8 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { Page, Response } from "playwright";
 import { z } from "zod";
-import {
-  creditCardBalanceCommandRequest,
-  creditCardCommandRequestFromCanonicalCapture,
-} from "../ledger/pglite/credit-card-adapters.ts";
-import {
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
+import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
   esunCanonicalSpineCapture,
@@ -23,11 +17,20 @@ import {
 import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
 import type { CreditCardMonthTimeline } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
-  admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
+  type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
-import { assembleCurrentCreditCardCapture } from "./current-state-snapshot-capture.ts";
+import {
+  assembleCurrentCreditCardCapture,
+  CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  issuerAggregateMatching,
+  readCurrentStateSnapshot,
+  stageCurrentStateSnapshot,
+  type CurrentCreditCardStagingCapture,
+  type CurrentStateSnapshotDeclaration,
+  type ProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -88,109 +91,14 @@ export type EsunIssuerStatementSummary = {
 export type EsunCurrentUsedCreditSnapshot = Readonly<{
   usedCredit: string;
   available: string;
-  sourceField: "已用額度" | "usedCreditLimit";
-  endpoint?: string;
+  sourceField: "usedCreditLimit";
+  endpoint: string;
   /** Issuer response time in Asia/Taipei, retained verbatim as time evidence. */
   queryTime: string;
-  httpDate?: string;
-  cacheControl?: string;
+  httpDate: string;
 }>;
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
-
-function esunCurrentAmount(value: string | undefined): string {
-  const normalized = cleanText(value).replace(/[,，\s]/gu, "");
-  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(normalized))
-    throw new Error("E.SUN current credit amount is not an exact decimal.");
-  return normalized;
-}
-
-function htmlAttribute(tag: string, name: string): string {
-  const match = tag.match(
-    new RegExp(`(?:^|\\s)${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "iu"),
-  );
-  return match?.[2] ?? match?.[3] ?? match?.[4] ?? "";
-}
-
-function singleHtmlTableById(html: string, id: string): string | undefined {
-  const tables = [...html.matchAll(/<table\b[^>]*>/giu)].filter(
-    (match) => htmlAttribute(match[0], "id") === id,
-  );
-  if (tables.length > 1)
-    throw new Error(`E.SUN current credit grid id ${id} is ambiguous.`);
-  const opener = tables[0];
-  if (!opener || opener.index === undefined) return undefined;
-
-  const tokens = html.matchAll(/<\/?table\b[^>]*>/giu);
-  let depth = 0;
-  for (const token of tokens) {
-    if (token.index === undefined || token.index < opener.index) continue;
-    if (token[0].startsWith("</")) depth -= 1;
-    else depth += 1;
-    if (depth === 0)
-      return html.slice(opener.index, token.index + token[0].length);
-  }
-  throw new Error(`E.SUN current credit grid id ${id} is unclosed.`);
-}
-
-function esunQueryTimeFromHtml(html: string): string | undefined {
-  const visibleText = html
-    .replace(/<script\b[\s\S]*?<\/script>/giu, " ")
-    .replace(/<style\b[\s\S]*?<\/style>/giu, " ")
-    .replace(/<[^>]+>/gu, " ")
-    .replace(/\u00a0/gu, " ");
-  const matches = [
-    ...visibleText.matchAll(
-      /查詢時間\s*[:：]?\s*(\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2})/gu,
-    ),
-  ].map((match) => match[1]);
-  const unique = [...new Set(matches)];
-  if (unique.length > 1)
-    throw new Error("E.SUN current credit query time is ambiguous.");
-  return unique[0];
-}
-
-function esunCurrentGridRows(tableHtml: string): string[][] {
-  return [...tableHtml.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu)].map((match) =>
-    [...match[0].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/giu)].map((cell) =>
-      cleanText(cell[1]?.replace(/<[^>]+>/gu, " ")),
-    ),
-  );
-}
-
-/** Select only the exact 歸戶 row from the current-credit grid. */
-export function parseEsunCurrentCreditCardUsedCreditHtml(
-  html: string,
-): EsunCurrentUsedCreditSnapshot | undefined {
-  const grid = singleHtmlTableById(html, "fcm01006:grid_DataGridBody");
-  if (!grid) return undefined;
-  const rows = esunCurrentGridRows(grid);
-  const headerIndices = rows.flatMap((row, index) =>
-    row.length >= 3 &&
-    row[0] === "信用狀態" &&
-    row[1] === "已用額度" &&
-    row[2] === "可用餘額"
-      ? [index]
-      : [],
-  );
-  if (headerIndices.length !== 1)
-    throw new Error("E.SUN current credit grid header is missing or ambiguous.");
-  const headerIndex = headerIndices[0];
-  const aggregateRows = rows.slice(headerIndex + 1).filter((row) => row[0] === "歸戶");
-  if (aggregateRows.length === 0) return undefined;
-  if (aggregateRows.length > 1)
-    throw new Error("E.SUN current credit aggregate row is ambiguous.");
-  const aggregate = aggregateRows[0];
-  const queryTime = esunQueryTimeFromHtml(html);
-  if (!queryTime) return undefined;
-  return {
-    usedCredit: esunCurrentAmount(aggregate[1]),
-    available: esunCurrentAmount(aggregate[2]),
-    sourceField: "已用額度",
-    queryTime,
-  };
-}
-
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -513,43 +421,70 @@ export function buildEsunCanonicalCreditCardCapture(
   return buildCanonicalEsunCreditCardCapture(options);
 }
 
-async function readEsunCurrentUsedCredit(
-  response: Response | undefined,
-  readJson: (response: Response) => Promise<unknown> = (value) => value.json(),
-): Promise<EsunCurrentUsedCreditSnapshot | undefined> {
-  if (!response || response.status() !== 200) return undefined;
-  return esunCurrentUsedCreditFromSummaryResponse(await readJson(response), {
-    endpoint: response.url(),
-    httpDate: response.headers().date,
-  });
-}
-
+/**
+ * Read the card summary's issuer used credit. A holder E.SUN reports as
+ * having no credit card has none; any other reply without one is rejected.
+ */
 export function esunCurrentUsedCreditFromSummaryResponse(
   value: unknown,
-  evidence: { endpoint: string; httpDate?: string },
-): EsunCurrentUsedCreditSnapshot | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const body = value as Record<string, unknown>;
-  if (body.resultCode !== "0000" || typeof body.resultTime !== "string") return undefined;
-  const result = body.resultBody;
-  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
-  const fields = result as Record<string, unknown>;
-  if (fields.hasCreditCard !== true || typeof fields.usedCreditLimit !== "string" ||
-    typeof fields.availableCreditLimit !== "string") return undefined;
-  const usedCredit = issuerAmount(fields.usedCreditLimit);
-  const available = issuerAmount(fields.availableCreditLimit);
-  if (!usedCredit || !available) return undefined;
-  const httpDate = evidence.httpDate;
-  if (!httpDate || !Number.isFinite(Date.parse(httpDate))) return undefined;
-  return {
+  evidence: Readonly<{ endpoint: string; httpDate: string }>,
+): readonly EsunCurrentUsedCreditSnapshot[] {
+  const object = (candidate: unknown, label: string): Record<string, unknown> => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+      throw new Error(`E.SUN card summary ${label} is not an object.`);
+    return candidate as Record<string, unknown>;
+  };
+  const body = object(value, "reply");
+  if (body.resultCode !== "0000") throw new Error("E.SUN card summary result code is not 0000.");
+  if (typeof body.resultTime !== "string") throw new Error("E.SUN card summary has no result time.");
+  const fields = object(body.resultBody, "result body");
+  if (fields.hasCreditCard === false) return [];
+  if (fields.hasCreditCard !== true) throw new Error("E.SUN card summary does not say whether a credit card is held.");
+  const usedCredit = typeof fields.usedCreditLimit === "string" ? issuerAmount(fields.usedCreditLimit) : undefined;
+  const available = typeof fields.availableCreditLimit === "string" ? issuerAmount(fields.availableCreditLimit) : undefined;
+  if (!usedCredit || !available) throw new Error("E.SUN card summary credit amounts are not exact decimals.");
+  return [{
     usedCredit,
     available,
     sourceField: "usedCreditLimit",
     endpoint: evidence.endpoint,
     queryTime: body.resultTime,
-    httpDate,
-  };
+    httpDate: evidence.httpDate,
+  }];
 }
+
+type EsunCardSummaryAcquisition = Readonly<{
+  evidence: Readonly<{ kind: "json"; bytes: Uint8Array }>;
+  response: ProviderResponse;
+}>;
+
+type EsunCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
+  capture: EsunCreditCardValidatedCapture;
+}>;
+
+const esunCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
+  EsunCardSummaryAcquisition,
+  EsunCurrentUsedCreditSnapshot,
+  EsunCurrentCreditCapture,
+  "required",
+  CreditCardCurrentBalanceCaptureInput
+> = {
+  product: "current-balance",
+  kind: CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  matching: issuerAggregateMatching("E.SUN current used credit"),
+  build: (row, { capture }) => esunCreditCurrentSnapshotCapture(capture, row),
+  response: {
+    label: "E.SUN current used credit",
+    host: "ebank.esunbank.com.tw",
+    endpoints: [{ path: "/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary" }],
+    cacheControl: [],
+    providerDate: "required",
+  },
+  parse: (decoded, response) => esunCurrentUsedCreditFromSummaryResponse(decoded.value, {
+    endpoint: response.url.href,
+    httpDate: response.providerDate.raw,
+  }),
+};
 
 async function isSignedIn(scope: FrameScope): Promise<boolean> {
   return await scope.race(scope.page
@@ -874,14 +809,8 @@ function esunCreditCurrentSnapshotInstant(queryTime: string): string {
 export function esunCreditCurrentSnapshotCapture(
   capture: EsunCreditCardValidatedCapture,
   snapshot: EsunCurrentUsedCreditSnapshot,
-): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
-  const isRedesigned = snapshot.sourceField === "usedCreditLimit";
-  if (!snapshot.endpoint || !snapshot.queryTime ||
-    (isRedesigned ? !snapshot.httpDate : !snapshot.cacheControl))
-    throw new Error("E.SUN current credit snapshot is missing response evidence.");
-  const route = isRedesigned
-    ? "esun/credit-card/current-used-credit-v2"
-    : "esun/credit-card/current-used-credit-v1";
+): CreditCardCurrentBalanceCaptureInput {
+  const route = "esun/credit-card/current-used-credit-v2";
   const effectiveAt = esunCreditCurrentSnapshotInstant(snapshot.queryTime);
   const used = esunExactAmount(snapshot.usedCredit);
   const sourceRecordKey = `sha256:${createHash("sha256")
@@ -894,7 +823,7 @@ export function esunCreditCurrentSnapshotCapture(
     effectiveAt,
     effectiveTimeBasis: "provider-query-time" as const,
     effectiveTimeRuleVersion: route,
-    sourceField: isRedesigned ? "resultTime" as const : "查詢時間" as const,
+    sourceField: "resultTime" as const,
     sourceValue: snapshot.queryTime,
     contractVersion: route,
   };
@@ -903,7 +832,7 @@ export function esunCreditCurrentSnapshotCapture(
     basis: "provider-used-credit" as const,
     formula: "provider-reported-used-credit",
   };
-  return admitCreditCardCurrentBalanceCapture(assembleCurrentCreditCardCapture({
+  return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: route,
     contractVersion: route,
@@ -922,7 +851,6 @@ export function esunCreditCurrentSnapshotCapture(
     providerResponse: {
       endpoint: snapshot.endpoint,
       status: 200,
-      cacheControl: snapshot.cacheControl,
       httpDate: snapshot.httpDate,
     },
     page: {
@@ -930,7 +858,8 @@ export function esunCreditCurrentSnapshotCapture(
         sourceField: snapshot.sourceField,
         aggregate: "歸戶",
         queryTime: snapshot.queryTime,
-        ...(isRedesigned ? { resultCode: "0000", httpDate: snapshot.httpDate } : {}),
+        resultCode: "0000",
+        httpDate: snapshot.httpDate,
       },
     },
   }, [{
@@ -949,10 +878,10 @@ export function esunCreditCurrentSnapshotCapture(
       available: snapshot.available,
       queryTime: snapshot.queryTime,
       endpoint: snapshot.endpoint,
-      ...(isRedesigned ? { resultCode: "0000" } : {}),
-      ...(snapshot.httpDate ? { httpDate: snapshot.httpDate } : {}),
+      resultCode: "0000",
+      httpDate: snapshot.httpDate,
     },
-  }]));
+  }]);
 }
 
 export function esunIssuerSummaryFromLabelRows(
@@ -1170,7 +1099,7 @@ async function collectEsunCreditCard(
   page: Page,
   context: WorkflowContext,
   input: EsunWorkflowInput,
-  product: Pick<ProductCollectionHandle, "stage" | "validate">,
+  product: Pick<ProductCollectionHandle, "event" | "stage" | "validate">,
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const scope = frameScope(page, context.signal);
@@ -1209,10 +1138,25 @@ async function collectEsunCreditCard(
     completed: issuerSummaries.length,
     total: issuerSummaries.length,
   });
-  let currentUsedCredit: EsunCurrentUsedCreditSnapshot | undefined;
+  // No reply, or 204 with nothing to report, leaves current used credit unread.
+  let currentUsedCredit: readonly EsunCurrentUsedCreditSnapshot[] | undefined;
   const response = await scope.race(waitForOptionalResponse(currentCreditResponse, 5_000));
-  if (response) {
-    currentUsedCredit = await scope.race(readEsunCurrentUsedCredit(response, readJson));
+  if (response && response.status() !== 204) {
+    currentUsedCredit = await readCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, {
+      acquire: async () => ({
+        evidence: { kind: "json", bytes: await scope.race(response.body()) },
+        response: {
+          url: response.url(),
+          status: response.status(),
+          method: response.request().method(),
+          headers: response.headers(),
+        },
+      }),
+      now: () => context.now(),
+      product,
+      text: context.text,
+      signal: context.signal,
+    });
   }
   const settledPeriods = await product.validate(() => {
     try {
@@ -1288,15 +1232,12 @@ async function collectEsunCreditCard(
     command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
   });
   if (currentUsedCredit) {
-    const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
-    product.stage({
-      product: "current-balance",
-      itemKey: balanceCapture.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-        request: creditCardBalanceCommandRequest(balanceCapture, cardRequest.identity),
-      },
+    const { items } = await stageCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, currentUsedCredit, {
+      captures: [{ capture: canonicalCapture, cardIdentity: cardRequest.identity }],
+      product,
+      signal: context.signal,
     });
+    product.stage(...items);
   }
 
   return { count: rows.length };
