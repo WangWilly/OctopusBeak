@@ -51,7 +51,7 @@ assert.doesNotMatch(
 assert.match(workflowSource, /error instanceof SourceTextIntegrityError/u);
 assert.match(workflowSource, /context\.text\.assertIntact/u);
 assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
-assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND/);
+assert.match(workflowSource, /CURRENT_CREDIT_CARD_BALANCE_STAGING/);
 const {
   buildYuantaCanonicalCreditCardCaptures,
   deriveYuantaCanonicalHumanAttestation,
@@ -299,7 +299,7 @@ const [summaryClickOptions] = summaryClickArguments as [Record<string, unknown>]
 assert.deepEqual(Object.keys(summaryClickOptions), ["signal"]);
 assert.ok(summaryClickOptions.signal instanceof AbortSignal);
 assert.equal(renderedDomRead, false);
-assert.equal(responseBodyLoaded.currentUsedCredit?.usedCredit, "3741");
+assert.equal(responseBodyLoaded.currentCredit?.html, responseBodyCurrentCreditHtml);
 
 
 const noPagerResponse = `
@@ -805,12 +805,12 @@ const currentUsedCreditEvidence = {
   httpDate: "Thu, 10 Sep 2026 02:03:04 GMT",
   cacheControl: "no-store",
 };
-function stageSnapshot(
+async function stageSnapshot(
   snapshot: Parameters<typeof stageYuantaCreditCard>[0],
   input: Parameters<typeof stageYuantaCreditCard>[1] = stageInput,
 ) {
   const staged: PGliteWorkflowRunItem[] = [];
-  const summary = stageYuantaCreditCard(
+  const summary = await stageYuantaCreditCard(
     snapshot,
     input,
     yuantaCollectionContext(),
@@ -819,24 +819,24 @@ function stageSnapshot(
   return { summary, products: staged.map((item) => item.product), staged };
 }
 {
-  const { summary, products } = stageSnapshot({
+  const { summary, products } = await stageSnapshot({
     ...fullSnapshot,
-    currentUsedCredit: currentUsedCreditEvidence,
+    currentUsedCredit: [currentUsedCreditEvidence],
   });
   assert.deepEqual(products, ["credit-card", "current-balance"]);
   assert.deepEqual(summary, { sourceCaptureCount: 8, rowCount: 7 });
 }
 {
   // 01:30 in Taipei is still the previous day in UTC.
-  const { staged } = stageSnapshot({
+  const { staged } = await stageSnapshot({
     ...fullSnapshot,
-    currentUsedCredit: { ...currentUsedCreditEvidence, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" },
+    currentUsedCredit: [{ ...currentUsedCreditEvidence, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" }],
   });
   const balance = staged.find((item) => item.product === "current-balance")!;
   const { scope } = (balance.command.request as { capture: { scope: { startDate: string; endDate: string } } }).capture;
   assert.deepEqual([scope.startDate, scope.endDate], ["2026-09-10", "2026-09-10"]);
 }
-assert.deepEqual(stageSnapshot(fullSnapshot).products, ["credit-card"]);
+assert.deepEqual((await stageSnapshot(fullSnapshot)).products, ["credit-card"]);
 for (const [scope, snapshot, input, counts] of [
   [
     "monthIndexes requested",
@@ -866,8 +866,8 @@ for (const [scope, snapshot, input, counts] of [
     { sourceCaptureCount: 8, rowCount: 7 },
   ],
 ] as const) {
-  const { summary, staged } = stageSnapshot(
-    { ...snapshot, currentUsedCredit: currentUsedCreditEvidence },
+  const { summary, staged } = await stageSnapshot(
+    { ...snapshot, currentUsedCredit: [currentUsedCreditEvidence] },
     input as Parameters<typeof stageYuantaCreditCard>[1],
   );
   assert.deepEqual(staged, [], `${scope} stages nothing`);

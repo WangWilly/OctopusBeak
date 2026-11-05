@@ -1,14 +1,8 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { errors, type Locator, type Page, type Response } from "playwright";
 import { z } from "zod";
-import {
-  creditCardBalanceCommandRequest,
-  creditCardCommandRequestFromCanonicalCapture,
-} from "../ledger/pglite/credit-card-adapters.ts";
-import {
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
+import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   SourceTextIntegrityError,
   type SourceTextPort,
@@ -27,11 +21,20 @@ import {
 import { YUANTA_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/yuanta-credit-card-human-attestation-contract.ts";
 import { statementGridQueryShortfalls } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
-  admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
+  type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
-import { assembleCurrentCreditCardCapture } from "./current-state-snapshot-capture.ts";
+import {
+  assembleCurrentCreditCardCapture,
+  CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  issuerAggregateMatching,
+  readCurrentStateSnapshot,
+  stageCurrentStateSnapshot,
+  type CurrentCreditCardStagingCapture,
+  type CurrentStateSnapshotDeclaration,
+  type ProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
@@ -548,30 +551,19 @@ async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean
  * Keep the current-used-credit read only when the reviewed table parsed and
  * the provider response carries its date and cache evidence.
  */
-function currentYuantaCreditEvidence(
-  html: string,
-  response: Response | null,
-): YuantaCurrentUsedCreditSnapshot | undefined {
-  const headers = response?.headers() ?? {};
-  let parsed: YuantaCurrentUsedCreditSnapshot | undefined;
-  try {
-    parsed = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(html);
-  } catch {
-    parsed = undefined;
-  }
-  if (
-    !parsed ||
-    !response ||
-    response.status() !== 200 ||
-    !headers.date ||
-    !headers["cache-control"]
-  )
-    return undefined;
+/** The summary page markup that carries current used credit, and the POST response it came with. */
+type YuantaCurrentCreditEvidence = Readonly<{ html: string; response: ProviderResponse }>;
+
+function yuantaCurrentCreditEvidence(html: string, response: Response | null): YuantaCurrentCreditEvidence | undefined {
+  if (!response) return undefined;
   return {
-    ...parsed,
-    endpoint: response.url(),
-    httpDate: headers.date,
-    cacheControl: headers["cache-control"],
+    html,
+    response: {
+      url: response.url(),
+      status: response.status(),
+      method: response.request().method(),
+      headers: response.headers(),
+    },
   };
 }
 
@@ -581,7 +573,8 @@ export async function loadYuantaCreditCardSummaryPage(
 ): Promise<{
   firstHtml: string;
   response: Response | null;
-  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
+  /** Absent when the summary's POST response was never observed. */
+  currentCredit?: YuantaCurrentCreditEvidence;
 }> {
   const { frames } = site;
   const [response] = await Promise.all([
@@ -607,7 +600,7 @@ export async function loadYuantaCreditCardSummaryPage(
     return {
       firstHtml: responseHtml,
       response,
-      currentUsedCredit: currentYuantaCreditEvidence(responseHtml, response),
+      currentCredit: yuantaCurrentCreditEvidence(responseHtml, response),
     };
   }
 
@@ -621,21 +614,24 @@ export async function loadYuantaCreditCardSummaryPage(
   return {
     firstHtml,
     response,
-    currentUsedCredit: currentYuantaCreditEvidence(firstHtml, response),
+    currentCredit: yuantaCurrentCreditEvidence(firstHtml, response),
   };
 }
+
+/** The settled-summary traversal, with the current-credit evidence its first page carried. */
+type YuantaSummaryRead = YuantaCreditCardSummaryTraversal & Readonly<{ currentCredit?: YuantaCurrentCreditEvidence }>;
 
 async function traverseYuantaSummaryWithCurrentEvidence(
   site: YuantaEbankSite,
   firstHtml: string,
-  currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined,
+  currentCredit: YuantaCurrentCreditEvidence | undefined,
   sourceText: SourceTextPort,
-): Promise<YuantaCreditCardSummaryTraversal> {
+): Promise<YuantaSummaryRead> {
   const { frames } = site;
   sourceText.assertIntact(firstHtml);
   frames.signal.throwIfAborted();
   let currentHtml = firstHtml;
-  const current = currentUsedCredit ? { currentUsedCredit } : {};
+  const current = currentCredit ? { currentCredit } : {};
   try {
     const traversal = await traverseYuantaCreditCardSettledStatementSummaryPages(
       firstHtml,
@@ -668,7 +664,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
 async function submitCreditCardSummary(
   site: YuantaEbankSite,
   sourceText: SourceTextPort,
-): Promise<YuantaCreditCardSummaryTraversal> {
+): Promise<YuantaSummaryRead> {
   let link = await findYuantaCreditCardSummaryLink(site);
   if (!link) {
     const openedFeatureOverview = await openYuantaFeatureOverview(site);
@@ -693,7 +689,7 @@ async function submitCreditCardSummary(
   return await traverseYuantaSummaryWithCurrentEvidence(
     site,
     loaded.firstHtml,
-    loaded.currentUsedCredit,
+    loaded.currentCredit,
     sourceText,
   );
 }
@@ -719,9 +715,7 @@ function yuantaCreditCurrentSnapshotDate(httpDate: string): string {
 function yuantaCreditCurrentSnapshotCapture(
   capture: YuantaCreditCardValidatedCapture,
   snapshot: YuantaCurrentUsedCreditSnapshot,
-): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
-  if (!snapshot.endpoint || !snapshot.httpDate || !snapshot.cacheControl)
-    throw new Error("Yuanta current credit snapshot is missing response evidence.");
+): CreditCardCurrentBalanceCaptureInput {
   const effectiveAt = new Date(Date.parse(snapshot.httpDate)).toISOString();
   const used = issuerExactAmount(snapshot.usedCredit);
   const sourceRecordKey = `sha256:${createHash("sha256")
@@ -743,7 +737,7 @@ function yuantaCreditCurrentSnapshotCapture(
     basis: "provider-used-credit" as const,
     formula: "provider-reported-used-credit",
   };
-  return admitCreditCardCurrentBalanceCapture(assembleCurrentCreditCardCapture({
+  return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: "yuanta/credit-card/current-used-credit-v1",
     contractVersion: "yuanta/credit-card/current-used-credit-v1",
@@ -782,8 +776,42 @@ function yuantaCreditCurrentSnapshotCapture(
       usedCredit: snapshot.usedCredit,
       available: snapshot.available,
     },
-  }]));
+  }]);
 }
+
+type YuantaCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
+  capture: YuantaCreditCardValidatedCapture;
+}>;
+
+const yuantaCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
+  Readonly<{ evidence: Readonly<{ kind: "html"; html: string }>; response: ProviderResponse }>,
+  YuantaCurrentUsedCreditSnapshot,
+  YuantaCurrentCreditCapture,
+  "required",
+  CreditCardCurrentBalanceCaptureInput
+> = {
+  product: "current-balance",
+  kind: CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  matching: issuerAggregateMatching("Yuanta current used credit"),
+  build: (row, { capture }) => yuantaCreditCurrentSnapshotCapture(capture, row),
+  response: {
+    label: "Yuanta current used credit",
+    host: "ebank.yuantabank.com.tw",
+    endpoints: [{ path: "/nib/tx/creditcardsummary", method: "POST" }],
+    cacheControl: ["no-store"],
+    providerDate: "required",
+  },
+  parse: (decoded, response) => {
+    const table = parseYuantaCurrentCreditCardUsedCreditSummaryHtml(decoded.html);
+    if (!table) throw new Error("Yuanta credit-card summary has no current used-credit table.");
+    return [{
+      ...table,
+      endpoint: response.url.href,
+      httpDate: response.providerDate.raw,
+      cacheControl: response.cacheControl,
+    }];
+  },
+};
 
 export async function submitCreditCardMonthOptions(
   monthOptions: MonthOption[],
@@ -1069,7 +1097,7 @@ export async function runYuantaCreditCardStatements(
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
   const snapshot = await readYuantaCreditCardSource(site, input, context, product);
-  return stageYuantaCreditCard(snapshot, input, context, product);
+  return await stageYuantaCreditCard(snapshot, input, context, product);
 }
 
 /** What one credit-card run read from the eBank pages, before anything is built (ADR 0065). */
@@ -1085,8 +1113,8 @@ export type YuantaCreditCardSourceSnapshot = Readonly<{
   terminalPages: readonly boolean[];
   /** Empty when unbilled rows were not requested. */
   unbilledRows: readonly StatementRow[];
-  /** The optional current used-credit evidence from the summary page. */
-  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
+  /** Current used credit, read only when the summary's POST response was observed. */
+  currentUsedCredit?: readonly YuantaCurrentUsedCreditSnapshot[];
 }>;
 
 /**
@@ -1165,16 +1193,16 @@ export async function readYuantaCreditCardSource(
     unbilledRows = parseCreditCardBillsHtml(unbilledHtml, null, false).rows;
   }
 
-  let currentUsedCredit: YuantaCurrentUsedCreditSnapshot | undefined;
+  let currentCredit: YuantaCurrentCreditEvidence | undefined;
   if (input.includeSummary) {
     try {
       await product.reportActivity("query");
-      const summaryTraversal = await submitCreditCardSummary(site, context.text);
+      const { currentCredit: evidence, ...summaryTraversal } = await submitCreditCardSummary(site, context.text);
       context.text.assertIntact(JSON.stringify(summaryTraversal));
-      currentUsedCredit = summaryTraversal.currentUsedCredit;
+      currentCredit = evidence;
     } catch (error) {
-      // The current used credit is optional evidence; only text corruption
-      // and cancellation stop the read here.
+      // A summary page that never loads leaves current used credit unread;
+      // only text corruption and cancellation stop the read here.
       if (
         error instanceof SourceTextIntegrityError ||
         context.signal.aborted
@@ -1183,6 +1211,20 @@ export async function readYuantaCreditCardSource(
       }
     }
   }
+  // Once the summary's POST response is observed, any failure to read its
+  // current used credit fails the card capture.
+  const currentUsedCredit = currentCredit
+    ? await readCurrentStateSnapshot(yuantaCurrentUsedCreditSnapshot, {
+        acquire: async () => ({
+          evidence: { kind: "html", html: currentCredit.html },
+          response: currentCredit.response,
+        }),
+        now: () => context.now(),
+        product,
+        text: context.text,
+        signal: context.signal,
+      })
+    : undefined;
 
   return {
     allMonthOptions,
@@ -1200,12 +1242,12 @@ export async function readYuantaCreditCardSource(
  * (ADR 0062), and stage the credit-card capture and its current balance when
  * the read covered the whole Query Inventory.
  */
-export function stageYuantaCreditCard(
+export async function stageYuantaCreditCard(
   snapshot: YuantaCreditCardSourceSnapshot,
   input: YuantaCreditCardCollectionInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-): ProductCollectionSummary {
+): Promise<ProductCollectionSummary> {
   const { instrumentFingerprintSecret, canonicalHumanAttestation } = input;
   const {
     allMonthOptions,
@@ -1304,21 +1346,16 @@ export function stageYuantaCreditCard(
         },
       }));
       if (currentUsedCredit) {
-        const balanceCapture = yuantaCreditCurrentSnapshotCapture(
-          canonicalCaptures[0]!,
+        const { items: balanceItems } = await stageCurrentStateSnapshot(
+          yuantaCurrentUsedCreditSnapshot,
           currentUsedCredit,
-        );
-        items.push({
-          product: "current-balance",
-          itemKey: balanceCapture.captureId,
-          command: {
-            kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-            request: creditCardBalanceCommandRequest(
-              balanceCapture,
-              requests[0]!.identity,
-            ),
+          {
+            captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
+            product,
+            signal: context.signal,
           },
-        });
+        );
+        items.push(...balanceItems);
       }
       context.signal.throwIfAborted();
       product.stage(...items);
