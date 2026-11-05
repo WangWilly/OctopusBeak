@@ -556,7 +556,6 @@ export function decodeSinopacJsonSource(input: Readonly<{
   return parseSinopacJson(decoded);
 }
 
-/** Parse a SinoPac POST reply the MMA site already decoded strictly. */
 /** Refuses a reply from the wrong endpoint, or one that is not a 200 JSON reply, before it is decoded. */
 const acceptSinopacJsonReply = (expectedPath: string) =>
   (reply: Readonly<{ url: string; status: number; contentType: string }>) =>
