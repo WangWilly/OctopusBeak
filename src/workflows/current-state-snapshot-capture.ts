@@ -1,7 +1,7 @@
 /**
  * Current-state snapshot capture: turn the evidence a bank acquired for its
- * current deposit balances into staged balance captures, and assemble every
- * Current-state capture, credit-card used credit included. The bank owns
+ * current deposit balances or credit-card used credit into staged balance
+ * captures (ADR 0108). The bank owns
  * acquisition, its row parser, its matching policy, and the facts its capture
  * builder hands over (ADR 0054, ADR 0107). This module owns the order between
  * them: strict decoding, parsing, matching rows to the Source Captures this

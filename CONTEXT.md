@@ -452,7 +452,7 @@ A Balance or Holding Observation returned by a provider endpoint whose verified 
 _Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
 
 **Current-state snapshot capture**:
-The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It verifies the provider response against what the source declares, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence, how to read its rows and their effective time and scope day, its identity check and digest namespaces, and its admission. The module assembles every capture from the bank's envelope and balance entries, including credit-card used-credit captures, which do not yet pass through the rest of this step.
+The one step that turns a bank's raw evidence of a Current-state provider snapshot, deposit balance or credit-card used credit, into staged balance items. It verifies the provider response, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, assembles the capture envelope and its content hash, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence, how to read its rows and their effective time and scope day, its identity check and digest namespaces, and its admission.
 _Avoid_: Current balance reader, per-bank balance staging, per-bank capture assembly, index-keyed balance item
 
 **Verified provider response**:
