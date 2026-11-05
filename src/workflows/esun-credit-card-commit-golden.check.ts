@@ -13,12 +13,13 @@ const NOW = "2026-09-25T12:00:00.000Z";
 const SECRET = "synthetic-esun-managed-secret";
 
 // resultTime is Asia/Taipei civil time; it and the HTTP Date name the same instant as NOW.
+const redesignedSummaryBody = {
+  resultCode: "0000",
+  resultTime: "2026-09-25 20:00:00",
+  resultBody: { hasCreditCard: true, usedCreditLimit: "46,989", availableCreditLimit: "53,011" },
+};
 const redesignedSummary: EsunCardSummaryReply = {
-  body: {
-    resultCode: "0000",
-    resultTime: "2026-09-25 20:00:00",
-    resultBody: { hasCreditCard: true, usedCreditLimit: "46,989", availableCreditLimit: "53,011" },
-  },
+  body: redesignedSummaryBody,
   headers: { date: "Fri, 25 Sep 2026 12:00:00 GMT", "content-type": "application/json" },
 };
 
@@ -73,7 +74,7 @@ test("E.SUN card with a redesigned current used-credit summary", (t) =>
 const EARLY_MORNING = "2026-09-25T17:30:00.000Z";
 test("E.SUN current used credit read at 01:30 Taipei is scoped to the Taipei day", (t) =>
   runGolden(t, "esun-card-current-used-credit-taipei-early-morning", {
-    body: { ...redesignedSummary.body, resultTime: "2026-09-26 01:30:00" },
+    body: { ...redesignedSummaryBody, resultTime: "2026-09-26 01:30:00" },
     headers: { ...redesignedSummary.headers, date: "Fri, 25 Sep 2026 17:30:00 GMT" },
   }, EARLY_MORNING));
 
