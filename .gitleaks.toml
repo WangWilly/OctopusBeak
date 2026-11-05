@@ -3,7 +3,8 @@ title = "Octopus Beak Gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
+description = "local build output, data and sessions"
 paths = [
   '''^\.env$''',
   '''^\.svelte-kit/''',
@@ -14,6 +15,15 @@ paths = [
   '''^\.libretto/sessions/''',
   '''^\.libretto/profiles/''',
 ]
+
+# Commit goldens record E.SUN card instrument fingerprints, HMACs of a synthetic
+# secret that the generic key rule reads as API keys.
+[[allowlists]]
+description = "E.SUN instrument fingerprints in commit goldens"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^src/workflows/(?:deposit|credit-card)-commit-goldens/[^/]+\.json$''']
+regexes = ['''^esun_instrument_[A-Za-z0-9_-]+$''']
 
 [[rules]]
 id = "libretto-cloud-credential"

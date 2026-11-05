@@ -1,6 +1,9 @@
 import { RUN_EVENT_SIGNALS } from "../lib/automation/run-event.ts";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { mock } from "node:test";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import type {
   WorkflowContext,
@@ -8,10 +11,11 @@ import type {
 } from "../lib/automation/workflow-executor.ts";
 
 /**
- * Pins what a deposit workflow hands to the Canonical Financial Commit, and the
- * progress events around it, so a change to any bank's admission can prove
- * its output is unchanged (ADR 0054). Set UPDATE_DEPOSIT_GOLDENS=1 to rewrite
- * the recorded files.
+ * Pins what a deposit or credit-card workflow hands to the Canonical Financial
+ * Commit, and the progress events around it, so a change to any bank's
+ * admission can prove its output is unchanged (ADR 0054). Set
+ * UPDATE_DEPOSIT_GOLDENS=1 or UPDATE_CREDIT_CARD_GOLDENS=1 to rewrite the
+ * recorded files.
  */
 export type DepositCommitRecorder = Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
@@ -76,14 +80,48 @@ function normalize(value: unknown): Record<string, unknown> {
   }));
 }
 
-export async function assertDepositCommitGolden(name: string, actual: unknown): Promise<void> {
-  const file = new URL(`./deposit-commit-goldens/${name}.json`, import.meta.url);
+const GOLDENS = {
+  deposit: { directory: "deposit-commit-goldens", update: "UPDATE_DEPOSIT_GOLDENS" },
+  "credit-card": { directory: "credit-card-commit-goldens", update: "UPDATE_CREDIT_CARD_GOLDENS" },
+} as const;
+
+async function assertCommitGolden(kind: keyof typeof GOLDENS, name: string, actual: unknown): Promise<void> {
+  const { directory, update } = GOLDENS[kind];
+  const file = new URL(`./${directory}/${name}.json`, import.meta.url);
   actual = JSON.parse(JSON.stringify(actual, (_key, field: unknown) =>
     typeof field === "string" ? field.replace(LONG_DIGITS, groupDigits) : field));
-  if (process.env.UPDATE_DEPOSIT_GOLDENS === "1") {
+  if (process.env[update] === "1") {
     await writeFile(file, `${JSON.stringify(actual, null, 2)}\n`);
     return;
   }
   const expected: unknown = JSON.parse(await readFile(file, "utf8"));
-  assert.deepEqual(actual, expected, `${name} deposit commit output changed; rerun with UPDATE_DEPOSIT_GOLDENS=1 only if the change is intended.`);
+  assert.deepEqual(actual, expected, `${name} ${kind} commit output changed; rerun with ${update}=1 only if the change is intended.`);
+}
+
+export function assertDepositCommitGolden(name: string, actual: unknown): Promise<void> {
+  return assertCommitGolden("deposit", name, actual);
+}
+
+export function assertCreditCardCommitGolden(name: string, actual: unknown): Promise<void> {
+  return assertCommitGolden("credit-card", name, actual);
+}
+
+/**
+ * Runs with counted UUIDs in place of random ones. A capture that hashes its
+ * random capture id into page digests or occurrence keys is out of reach of
+ * the recorder's UUID normalization, so the ids themselves are fixed.
+ */
+export async function withCountedUuids<T>(run: () => Promise<T>): Promise<T> {
+  let next = 0;
+  const randomUUID = mock.method(crypto, "randomUUID", () => {
+    next += 1;
+    return `00000000-0000-4000-8000-${next.toString(16).padStart(12, "0")}`;
+  });
+  syncBuiltinESMExports();
+  try {
+    return await run();
+  } finally {
+    randomUUID.mock.restore();
+    syncBuiltinESMExports();
+  }
 }

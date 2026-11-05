@@ -1,0 +1,1171 @@
+{
+  "result": {
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 8,
+      "rowCount": 7,
+      "itemCount": 2,
+      "committedCount": 2,
+      "skippedProductCount": 4
+    },
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "foreign_currency",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "credit_card",
+        "status": "success",
+        "itemCount": 2,
+        "committedCount": 2
+      },
+      {
+        "typeId": "loan",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "fund",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      }
+    ]
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "yuanta",
+        "product": "credit_card"
+      },
+      "items": [
+        {
+          "product": "credit-card",
+          "itemKey": "uuid-1",
+          "command": {
+            "kind": "financial.creditCard.commit",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1",
+                "integrationNamespace": "yuanta",
+                "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                "identityEpoch": "sha256:JvDi5e1S7QToAJBuXn4Lv8s84dCaBz6mLgQzozEcsaw",
+                "stream": "credit-card",
+                "recordKind": "yuanta-credit-card-transaction",
+                "routeKey": "yuanta/credit-card/human-attested-v2",
+                "contractVersion": "yuanta/credit-card/human-attested-v2",
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                    "startDate": "2026-01-02",
+                    "endDate": "2026-07-05",
+                    "contractVersion": "yuanta/credit-card/human-attested-v2",
+                    "bucketKeys": [
+                      "{\"kind\":\"statement\",\"period\":\"115/01\"}",
+                      "{\"kind\":\"statement\",\"period\":\"115/02\"}",
+                      "{\"kind\":\"statement\",\"period\":\"115/03\"}",
+                      "{\"kind\":\"statement\",\"period\":\"115/04\"}",
+                      "{\"kind\":\"statement\",\"period\":\"115/05\"}",
+                      "{\"kind\":\"statement\",\"period\":\"115/06\"}",
+                      "{\"kind\":\"unbilled\"}"
+                    ]
+                  }
+                ],
+                "subjectDigest": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "observedAt": "2026-09-10T03:00:00.000Z",
+                "accountNumber": null,
+                "scope": {
+                  "startDate": "2026-01-02",
+                  "endDate": "2026-07-05",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "bounded-range",
+                  "completeness": "complete-range",
+                  "ruleVersion": "yuanta/credit-card/human-attested-v2",
+                  "completenessBasis": "six-billed-months-plus-unbilled-terminal-no-pager-plus-settled-summary-cycles",
+                  "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                  "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                  "pageTerminalPolicy": "each",
+                  "sourceAccountKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                  "accountNo": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:ivuLhRv1uUrCYUNCvlhw0L57_G_j0aGMKR_DSCFxtUk",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/01",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/01\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:GBXAjkyn9nWZcJ6h0Rin7DVzU-4XgjFay-yqbe_j588",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/02",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/02\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 2,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:ZBCsveTr8jlQvNjUo5RkXp9y2Y_C-dR-uMQppkHxYpw",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/03",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/03\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 3,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:6PpEizabjtj-112yMBPyTYSbnK5xfG2lecCu8ABrvs8",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/04",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/04\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 4,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:gCRLOStXaeSrHPDuDjOEhUpBlLWu-MgfqhMfhp7fzYo",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/05",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/05\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 5,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:WtrWxL_TaNkvpzoTCT8viIxnQBJ9IE3bPEskDuhGoho",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "115/06",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"115/06\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 6,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:XwX3FS0FZako7ENxfLQwZbofbw1Iq8f0CThrokM4BAQ",
+                    "proofKind": "no-pager-terminal-grid",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "kind": "unbilled",
+                      "period": "unbilled",
+                      "currentPage": 1,
+                      "pageSize": 1,
+                      "capturedRowCount": 1,
+                      "terminal": true,
+                      "terminalEvidence": "no-pager-terminal"
+                    },
+                    "metadataJson": "{\"kind\":\"unbilled\",\"period\":\"unbilled\",\"currentPage\":1,\"pageSize\":1,\"capturedRowCount\":1,\"terminal\":true,\"terminalEvidence\":\"no-pager-terminal\"}"
+                  },
+                  {
+                    "pageOrdinal": 7,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 5,
+                    "responseDigest": "sha256:LPnCeZcYH-ZeSU1wi5bEOtdVpRF3e5xrSVTFL8NTSQU",
+                    "proofKind": "derived-statement-summary-evidence",
+                    "contractFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "preflightFingerprint": "sha256:xnVdLr42RPL7nvjIvxKLo3H8jKc8fz5kuWoEgEbYazY",
+                    "metadata": {
+                      "source": "statement-summary-evidence",
+                      "providerPage": false
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8",
+                    "collisionKey": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:QlKWOiwc1eLzr9GnFdc_X-XOYbaOcPEjxX0buFoOC2E",
+                    "compact": {
+                      "sourceRecordKey": "sha256:7aJfqijHMTHpQj40RLSLpT_ZT5kfSJrGoPDLtHSTlJw",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-01-02",
+                      "postingDate": "2026-01-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/01"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:7aJfqijHMTHpQj40RLSLpT_ZT5kfSJrGoPDLtHSTlJw\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-01-02\",\"postingDate\":\"2026-01-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/01\"}",
+                    "sequenceLexeme": "observed-source-order:0",
+                    "description": "BILLED 115/01",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8",
+                      "partitionDate": "2026-01-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/01\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE",
+                    "collisionKey": "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:N_1J1qN904hg0yWkKY8GUv7rV4pnqyUlbZX_BmAxaY0",
+                    "compact": {
+                      "sourceRecordKey": "sha256:ponBoIWhaj4_5-qP35Mkiwh-beyyyNygD4T3RFCA2Dg",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-02-02",
+                      "postingDate": "2026-02-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/02"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:ponBoIWhaj4_5-qP35Mkiwh-beyyyNygD4T3RFCA2Dg\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-02-02\",\"postingDate\":\"2026-02-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/02\"}",
+                    "sequenceLexeme": "observed-source-order:1",
+                    "description": "BILLED 115/02",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE",
+                      "partitionDate": "2026-02-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/02\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM",
+                    "collisionKey": "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:QZBHJA7tIWhW2ofpSCdcaN4Hp1jj2I9wBX1lSGiqMn4",
+                    "compact": {
+                      "sourceRecordKey": "sha256:H3LXigygtSo51Rv27upqmkEjGiLkN43MVwQ358q9XEE",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-03-02",
+                      "postingDate": "2026-03-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/03"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:H3LXigygtSo51Rv27upqmkEjGiLkN43MVwQ358q9XEE\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-03-02\",\"postingDate\":\"2026-03-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/03\"}",
+                    "sequenceLexeme": "observed-source-order:2",
+                    "description": "BILLED 115/03",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM",
+                      "partitionDate": "2026-03-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/03\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0",
+                    "collisionKey": "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:nJSCaaIZuaHRmAval_izXDNhTM__rjupY42h4E8Bkhw",
+                    "compact": {
+                      "sourceRecordKey": "sha256:ByZDTrBPd0hy-qp0JbKkK2GKO-ZsP-y3e8QVH4yNHAk",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-04-02",
+                      "postingDate": "2026-04-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/04"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:ByZDTrBPd0hy-qp0JbKkK2GKO-ZsP-y3e8QVH4yNHAk\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-04-02\",\"postingDate\":\"2026-04-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/04\"}",
+                    "sequenceLexeme": "observed-source-order:3",
+                    "description": "BILLED 115/04",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0",
+                      "partitionDate": "2026-04-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/04\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q",
+                    "collisionKey": "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:xSvnWt-Ec2FdyGf9j7_1eEP-GnaPDieQ9v6WQnKXWkQ",
+                    "compact": {
+                      "sourceRecordKey": "sha256:DzK48E_yZQson2eGnCWeBydBnN6p2s-93rTng8NzZ3M",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-05-02",
+                      "postingDate": "2026-05-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/05"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:DzK48E_yZQson2eGnCWeBydBnN6p2s-93rTng8NzZ3M\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-05-02\",\"postingDate\":\"2026-05-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/05\"}",
+                    "sequenceLexeme": "observed-source-order:4",
+                    "description": "BILLED 115/05",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q",
+                      "partitionDate": "2026-05-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/05\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8",
+                    "collisionKey": "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:CP-orrAuuwzTOtPh5g9dCH7xceifIG-CF_vuX-GScYE",
+                    "compact": {
+                      "sourceRecordKey": "sha256:0-2M1v2lOvOGj_Vb0kZx_gJO69zvs2MNNbBxfxodjdA",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-06-02",
+                      "postingDate": "2026-06-03",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "billed 115/06"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:0-2M1v2lOvOGj_Vb0kZx_gJO69zvs2MNNbBxfxodjdA\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-06-02\",\"postingDate\":\"2026-06-03\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"billed 115/06\"}",
+                    "sequenceLexeme": "observed-source-order:5",
+                    "description": "BILLED 115/06",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8",
+                      "partitionDate": "2026-06-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"115/06\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:mu0D3ptepb4sJ7Y8IIVK-at8r-pgL4YezGOYAE_rUh8",
+                    "collisionKey": "sha256:mu0D3ptepb4sJ7Y8IIVK-at8r-pgL4YezGOYAE_rUh8",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:Iwit5iIt7kqIc1xE9qlni5et9JIlx1FQH3CRMvDW7uA",
+                    "compact": {
+                      "sourceRecordKey": "sha256:D0vIWno2f92_Jk0E748fKKBQmxThaXishgL6kKlkXjM",
+                      "occurrenceIndex": 0,
+                      "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                      "cardMask": "****0101",
+                      "consumeDate": "2026-07-02",
+                      "postingDate": "2026-07-03",
+                      "amount": {
+                        "coefficient": "25",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "inflow",
+                      "foreignAmount": null,
+                      "foreignCurrency": null,
+                      "description": "unbilled purchase"
+                    },
+                    "compactJson": "{\"sourceRecordKey\":\"sha256:D0vIWno2f92_Jk0E748fKKBQmxThaXishgL6kKlkXjM\",\"occurrenceIndex\":0,\"instrumentKey\":\"yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI\",\"cardMask\":\"****0101\",\"consumeDate\":\"2026-07-02\",\"postingDate\":\"2026-07-03\",\"amount\":{\"coefficient\":\"25\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"inflow\",\"foreignAmount\":null,\"foreignCurrency\":null,\"description\":\"unbilled purchase\"}",
+                    "sequenceLexeme": "observed-source-order:6",
+                    "description": "UNBILLED PURCHASE",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:VNrYBNKMw-aDuuVRLJbLZU8XBahUt3pTIB0egVQ22mA",
+                      "fingerprint": "sha256:mu0D3ptepb4sJ7Y8IIVK-at8r-pgL4YezGOYAE_rUh8",
+                      "partitionDate": "2026-07-02",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"unbilled\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:6ZZdE_HpcDzZXqrXzlOhqZSQih4hpMbDZ0Rtp0znxQs",
+                    "collisionKey": "sha256:6ZZdE_HpcDzZXqrXzlOhqZSQih4hpMbDZ0Rtp0znxQs",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:4dfccbd96c585fb459c8f7ae8705b764e37706b4a9ca73733e512d23ddd920c0",
+                    "compact": {
+                      "statementKey": "sha256:j77UOmmN4mXzh_OPi9-OO4VLrDKfQvsUdoy-pMJuUF0",
+                      "cycleStart": "2026-01-21",
+                      "cycleEnd": "2026-02-20",
+                      "issueDate": "2026-02-21",
+                      "dueDate": "2026-03-05",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "1000",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:j77UOmmN4mXzh_OPi9-OO4VLrDKfQvsUdoy-pMJuUF0\",\"cycleStart\":\"2026-01-21\",\"cycleEnd\":\"2026-02-20\",\"issueDate\":\"2026-02-21\",\"dueDate\":\"2026-03-05\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"1000\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:j77UOmmN4mXzh_OPi9-OO4VLrDKfQvsUdoy-pMJuUF0",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:XXAMbBOFtr7PPbFWkbKDSVEwHrBsGwAU2ETA9bj_TbI",
+                    "collisionKey": "sha256:XXAMbBOFtr7PPbFWkbKDSVEwHrBsGwAU2ETA9bj_TbI",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:af67c420041481b44086d486e1d3a2245cbf671fbe894b50bc2164447ec05a10",
+                    "compact": {
+                      "statementKey": "sha256:pDcraiBwsg62OLQNCck_Hqd0F22dhtW3fEkmBTgrvvU",
+                      "cycleStart": "2026-02-21",
+                      "cycleEnd": "2026-03-20",
+                      "issueDate": "2026-03-21",
+                      "dueDate": "2026-04-05",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "1000",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:pDcraiBwsg62OLQNCck_Hqd0F22dhtW3fEkmBTgrvvU\",\"cycleStart\":\"2026-02-21\",\"cycleEnd\":\"2026-03-20\",\"issueDate\":\"2026-03-21\",\"dueDate\":\"2026-04-05\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"1000\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:pDcraiBwsg62OLQNCck_Hqd0F22dhtW3fEkmBTgrvvU",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:pWdfHkaowxlaIPCtjktwUInyAivzHOmiHOUhYxbNJIY",
+                    "collisionKey": "sha256:pWdfHkaowxlaIPCtjktwUInyAivzHOmiHOUhYxbNJIY",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:1c2e84c2ddbf4ca36a2bf158590dfce46cb1a61fcbaa72b21df6dd32fe47a63b",
+                    "compact": {
+                      "statementKey": "sha256:aLmpSon59ButMa5f-p4u81oC0pWn8P-H1XU1MslRePk",
+                      "cycleStart": "2026-03-21",
+                      "cycleEnd": "2026-04-20",
+                      "issueDate": "2026-04-21",
+                      "dueDate": "2026-05-05",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "1000",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:aLmpSon59ButMa5f-p4u81oC0pWn8P-H1XU1MslRePk\",\"cycleStart\":\"2026-03-21\",\"cycleEnd\":\"2026-04-20\",\"issueDate\":\"2026-04-21\",\"dueDate\":\"2026-05-05\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"1000\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:aLmpSon59ButMa5f-p4u81oC0pWn8P-H1XU1MslRePk",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:fihE3D5Zc5bUl5ocnAiyM5v8Mav4CTFXhYk-pfE9P00",
+                    "collisionKey": "sha256:fihE3D5Zc5bUl5ocnAiyM5v8Mav4CTFXhYk-pfE9P00",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:996505dd7fe6e05ce9e86c3e88578309f360e2a17c471287f7982489e7710d2b",
+                    "compact": {
+                      "statementKey": "sha256:8wqEvIQWQgO64M_VnqFGj2gE7zMreQCnrBIqnZZOdfk",
+                      "cycleStart": "2026-04-21",
+                      "cycleEnd": "2026-05-20",
+                      "issueDate": "2026-05-21",
+                      "dueDate": "2026-06-05",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "1000",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:8wqEvIQWQgO64M_VnqFGj2gE7zMreQCnrBIqnZZOdfk\",\"cycleStart\":\"2026-04-21\",\"cycleEnd\":\"2026-05-20\",\"issueDate\":\"2026-05-21\",\"dueDate\":\"2026-06-05\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"1000\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:8wqEvIQWQgO64M_VnqFGj2gE7zMreQCnrBIqnZZOdfk",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:LhS5BLIJpoVCZvIr1EdN1Q6zhBZT1Xq6IQegwQMpBH8",
+                    "collisionKey": "sha256:LhS5BLIJpoVCZvIr1EdN1Q6zhBZT1Xq6IQegwQMpBH8",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:69bb973a3acd6782f7dd1ad08e8cb9d7c24de55175a5fd56d68ea0114ad566f5",
+                    "compact": {
+                      "statementKey": "sha256:HpGzDEZ_WdGbZrIuNo802RCV0qvaE6Q4S83Q_70Hi-w",
+                      "cycleStart": "2026-05-21",
+                      "cycleEnd": "2026-06-20",
+                      "issueDate": "2026-06-21",
+                      "dueDate": "2026-07-05",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "1000",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:HpGzDEZ_WdGbZrIuNo802RCV0qvaE6Q4S83Q_70Hi-w\",\"cycleStart\":\"2026-05-21\",\"cycleEnd\":\"2026-06-20\",\"issueDate\":\"2026-06-21\",\"dueDate\":\"2026-07-05\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"1000\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:HpGzDEZ_WdGbZrIuNo802RCV0qvaE6Q4S83Q_70Hi-w",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "identityMethod": "human-attested"
+              },
+              "instruments": [
+                {
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "cardMask": "****0101",
+                  "role": "primary",
+                  "lifecycle": null,
+                  "evidenceSourceOccurrenceKey": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8"
+                }
+              ],
+              "transactions": [
+                {
+                  "sourceOccurrenceKey": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8",
+                  "sourceSequence": "sha256:jOhu7dcukvIYr_JzbdDdihtR2hSb23hEccoihSieq-8",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/01",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-01-02",
+                  "transactionDateTimeLocal": "2026-01-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1767283200000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-01-02",
+                  "postingDate": "2026-01-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE",
+                  "sourceSequence": "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/02",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-02-02",
+                  "transactionDateTimeLocal": "2026-02-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1769961600000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-02-02",
+                  "postingDate": "2026-02-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "sha256:j77UOmmN4mXzh_OPi9-OO4VLrDKfQvsUdoy-pMJuUF0"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM",
+                  "sourceSequence": "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/03",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-03-02",
+                  "transactionDateTimeLocal": "2026-03-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1772380800000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-03-02",
+                  "postingDate": "2026-03-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "sha256:pDcraiBwsg62OLQNCck_Hqd0F22dhtW3fEkmBTgrvvU"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0",
+                  "sourceSequence": "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/04",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-04-02",
+                  "transactionDateTimeLocal": "2026-04-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1775059200000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-04-02",
+                  "postingDate": "2026-04-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "sha256:aLmpSon59ButMa5f-p4u81oC0pWn8P-H1XU1MslRePk"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q",
+                  "sourceSequence": "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/05",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-05-02",
+                  "transactionDateTimeLocal": "2026-05-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1777651200000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-05-02",
+                  "postingDate": "2026-05-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "sha256:8wqEvIQWQgO64M_VnqFGj2gE7zMreQCnrBIqnZZOdfk"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8",
+                  "sourceSequence": "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "BILLED 115/06",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-06-02",
+                  "transactionDateTimeLocal": "2026-06-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1780329600000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-06-02",
+                  "postingDate": "2026-06-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "sha256:HpGzDEZ_WdGbZrIuNo802RCV0qvaE6Q4S83Q_70Hi-w"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:mu0D3ptepb4sJ7Y8IIVK-at8r-pgL4YezGOYAE_rUh8",
+                  "sourceSequence": "sha256:mu0D3ptepb4sJ7Y8IIVK-at8r-pgL4YezGOYAE_rUh8",
+                  "amount": {
+                    "coefficient": "25",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "inflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "description": "UNBILLED PURCHASE",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-07-02",
+                  "transactionDateTimeLocal": "2026-07-02T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1782921600000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "yuanta_instrument_zOdr1q8uMtX4Z8o7BHVXhNow-Mun5v1oJN9ujvrwcXI",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-07-02",
+                  "postingDate": "2026-07-03",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                }
+              ],
+              "statements": [
+                {
+                  "statementKey": "sha256:j77UOmmN4mXzh_OPi9-OO4VLrDKfQvsUdoy-pMJuUF0",
+                  "revisionKey": "sha256:ODiNrpXRzC98_Dyj5cs-V6sjOXjWc3wFq1bHZFxj1lE",
+                  "cycleStart": "2026-01-21",
+                  "cycleEnd": "2026-02-20",
+                  "issueDate": "2026-02-21",
+                  "dueDate": "2026-03-05",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "1000",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:H3PGuZG3opWr_CJTTE2yuW7BnWd4UEt-9F8zrFX8edE"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:6ZZdE_HpcDzZXqrXzlOhqZSQih4hpMbDZ0Rtp0znxQs"
+                },
+                {
+                  "statementKey": "sha256:pDcraiBwsg62OLQNCck_Hqd0F22dhtW3fEkmBTgrvvU",
+                  "revisionKey": "sha256:QABlmBZjmdFDqHpkD36jrNCD3vPKz1HR2M4aQiKT2IE",
+                  "cycleStart": "2026-02-21",
+                  "cycleEnd": "2026-03-20",
+                  "issueDate": "2026-03-21",
+                  "dueDate": "2026-04-05",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "1000",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:5CHeSzpMVYTXKw0hzyOqO1oGO9M1iIE3zGgXtYUWMhM"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:XXAMbBOFtr7PPbFWkbKDSVEwHrBsGwAU2ETA9bj_TbI"
+                },
+                {
+                  "statementKey": "sha256:aLmpSon59ButMa5f-p4u81oC0pWn8P-H1XU1MslRePk",
+                  "revisionKey": "sha256:e4-dOn1l3h2DgB1VyptbNdR6pwHQVZlP4JZoJ7BAn7M",
+                  "cycleStart": "2026-03-21",
+                  "cycleEnd": "2026-04-20",
+                  "issueDate": "2026-04-21",
+                  "dueDate": "2026-05-05",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "1000",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:Dg5KXomgUTFAnWMVkpu-d4PgDn33nm6y1uGCASU8Fw0"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:pWdfHkaowxlaIPCtjktwUInyAivzHOmiHOUhYxbNJIY"
+                },
+                {
+                  "statementKey": "sha256:8wqEvIQWQgO64M_VnqFGj2gE7zMreQCnrBIqnZZOdfk",
+                  "revisionKey": "sha256:L8atzmoaZkx9CYsm8bX-8Oe2lCLgxh4MhsCWRjuMUXI",
+                  "cycleStart": "2026-04-21",
+                  "cycleEnd": "2026-05-20",
+                  "issueDate": "2026-05-21",
+                  "dueDate": "2026-06-05",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "1000",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:HS0_DB8fIPYgmLa3it2eQxFYSXJ6oplOt882v37o64Q"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:fihE3D5Zc5bUl5ocnAiyM5v8Mav4CTFXhYk-pfE9P00"
+                },
+                {
+                  "statementKey": "sha256:HpGzDEZ_WdGbZrIuNo802RCV0qvaE6Q4S83Q_70Hi-w",
+                  "revisionKey": "sha256:RYo2HLiE0hj1Q4WOOg2LonLjmert2q7hdMLAjwjYLLI",
+                  "cycleStart": "2026-05-21",
+                  "cycleEnd": "2026-06-20",
+                  "issueDate": "2026-06-21",
+                  "dueDate": "2026-07-05",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "1000",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:GutwCx9W47vkJyQFSfuGvSA5cKiScdfuleBo4lLEgS8"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:LhS5BLIJpoVCZvIr1EdN1Q6zhBZT1Xq6IQegwQMpBH8"
+                }
+              ],
+              "relations": []
+            }
+          },
+          "provider": "yuanta"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "uuid-1:current-used-credit",
+          "command": {
+            "kind": "financial.creditCard.balance",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1:current-used-credit",
+                "integrationNamespace": "yuanta",
+                "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                "identityEpoch": "sha256:JvDi5e1S7QToAJBuXn4Lv8s84dCaBz6mLgQzozEcsaw",
+                "stream": "credit-card",
+                "recordKind": "credit-card-current-used-credit",
+                "routeKey": "yuanta/credit-card/current-used-credit-v1",
+                "contractVersion": "yuanta/credit-card/current-used-credit-v1",
+                "subjectDigest": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "observedAt": "2026-09-10T03:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-10",
+                  "endDate": "2026-09-10",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "yuanta/credit-card/current-used-credit-v1",
+                  "completenessBasis": "provider-credit-current-used-credit-snapshot",
+                  "sourceAccountKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "sourceField": "已使用額度",
+                      "table": "rwdTable:first-credit-limit"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:SsOHsqapnE5rxXUglmRMvatgYZXx5-RJp6kcNlzEXyo",
+                    "collisionKey": "sha256:SsOHsqapnE5rxXUglmRMvatgYZXx5-RJp6kcNlzEXyo",
+                    "providerKey": "sha256:-UhC2AxlQzwOeKBWUp-2mUsBcOm9roxwJIQ6jUsdMHE",
+                    "contentHash": "sha256:SGTY3_2JPbQkv4ipG9d3uUcqLRSyMBnQGDa2fg4vrTk",
+                    "compact": {
+                      "provider": "yuanta",
+                      "limit": "100000",
+                      "usedCredit": "12345",
+                      "available": "87655",
+                      "sourceField": "已使用額度",
+                      "balanceKind": "credit_used",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "12345",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-09-10T02:03:04.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Thu, 10 Sep 2026 02:03:04 GMT",
+                      "estimateKind": "estimate",
+                      "estimateBasis": "provider-used-credit",
+                      "formula": "provider-reported-used-credit"
+                    },
+                    "sequenceLexeme": "sha256:SsOHsqapnE5rxXUglmRMvatgYZXx5-RJp6kcNlzEXyo",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
+                "identityMethod": "human-attested"
+              },
+              "balance": {
+                "observation": {
+                  "observationKey": "issuer-aggregate",
+                  "balanceKind": "credit_used",
+                  "balance": {
+                    "coefficient": "12345",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-10T02:03:04.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "yuanta/credit-card/current-used-credit-v1",
+                  "evidenceSourceRecordKey": "sha256:SsOHsqapnE5rxXUglmRMvatgYZXx5-RJp6kcNlzEXyo",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Thu, 10 Sep 2026 02:03:04 GMT",
+                  "evidenceContractVersion": "yuanta/credit-card/current-used-credit-v1",
+                  "sourceOccurrenceKey": "sha256:SsOHsqapnE5rxXUglmRMvatgYZXx5-RJp6kcNlzEXyo",
+                  "evidenceEndpoint": "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store"
+                },
+                "estimate": {
+                  "kind": "estimate",
+                  "basis": "provider-used-credit",
+                  "formula": "provider-reported-used-credit"
+                }
+              }
+            }
+          },
+          "provider": "yuanta"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "started",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "completed",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "credit-card-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "credit-card-collection-completed",
+      "counts": {
+        "completed": 8,
+        "total": 8,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "credit-card-source-decoding-completed",
+      "counts": {
+        "completed": 8,
+        "total": 8,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "credit-card-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 8,
+        "total": 8
+      }
+    }
+  ]
+}

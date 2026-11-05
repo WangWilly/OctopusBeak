@@ -1,0 +1,1475 @@
+{
+  "result": {
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 1,
+      "rowCount": 13,
+      "itemCount": 2,
+      "committedCount": 2,
+      "count": 13,
+      "canonicalCaptureCount": 1
+    },
+    "products": [
+      {
+        "typeId": "credit_card",
+        "status": "success",
+        "itemCount": 2,
+        "committedCount": 2
+      }
+    ]
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "esun",
+        "product": "credit_card"
+      },
+      "items": [
+        {
+          "product": "credit-card",
+          "itemKey": "uuid-1",
+          "command": {
+            "kind": "financial.creditCard.commit",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1",
+                "integrationNamespace": "esun",
+                "sourceConnectionKey": "sha256:03gQi6UXEB6CEChWes1Beewxa6J4ib-oyDQYmbcrCrI",
+                "identityEpoch": "sha256:mzAjcdwchjc0FTaGC0A08UXiy-O2cFkkSzn1oxHH6SE",
+                "stream": "credit-card",
+                "recordKind": "esun-credit-card-transaction",
+                "routeKey": "esun/credit-card/human-attested-v4",
+                "contractVersion": "esun/credit-card/human-attested-v4",
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                    "startDate": "2025-09-01",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "esun/credit-card/human-attested-v4",
+                    "bucketKeys": [
+                      "{\"kind\":\"month\",\"month\":\"2026/09\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/08\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/07\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/06\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/05\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/04\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/03\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/02\"}",
+                      "{\"kind\":\"month\",\"month\":\"2026/01\"}",
+                      "{\"kind\":\"month\",\"month\":\"2025/12\"}",
+                      "{\"kind\":\"month\",\"month\":\"2025/11\"}",
+                      "{\"kind\":\"month\",\"month\":\"2025/10\"}",
+                      "{\"kind\":\"partial-month\",\"month\":\"2025/09\",\"queriedOn\":\"2026-09-25\"}"
+                    ]
+                  }
+                ],
+                "subjectDigest": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "accountNumber": null,
+                "scope": {
+                  "startDate": "2025-09-01",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "bounded-range",
+                  "completeness": "complete-range",
+                  "ruleVersion": "esun/credit-card/human-attested-v4",
+                  "completenessBasis": "bank-last-year-timeline-current-month-through-twelve-or-thirteen-contiguous-months-terminal-cursor-four-card-counts",
+                  "contractFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                  "preflightFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                  "pageTerminalPolicy": "each",
+                  "sourceAccountKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                  "accountNo": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 13,
+                    "responseDigest": "sha256:sKwZIYC-_SPGs_a3NoEIQKOZWPAj2ZM435FqJCTjkpA",
+                    "proofKind": "bounded-one-year-timeline",
+                    "contractFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                    "preflightFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                    "metadata": {
+                      "kind": "past-year-timeline",
+                      "firstMonth": "2026/09",
+                      "lastMonth": "2025/09",
+                      "months": [
+                        "2026/09",
+                        "2026/08",
+                        "2026/07",
+                        "2026/06",
+                        "2026/05",
+                        "2026/04",
+                        "2026/03",
+                        "2026/02",
+                        "2026/01",
+                        "2025/12",
+                        "2025/11",
+                        "2025/10",
+                        "2025/09"
+                      ],
+                      "pageCount": 1,
+                      "monthCount": 13,
+                      "capturedRowCount": 13,
+                      "terminal": true,
+                      "terminalCursor": 4
+                    },
+                    "metadataJson": "{\"kind\":\"past-year-timeline\",\"firstMonth\":\"2026/09\",\"lastMonth\":\"2025/09\",\"months\":[\"2026/09\",\"2026/08\",\"2026/07\",\"2026/06\",\"2026/05\",\"2026/04\",\"2026/03\",\"2026/02\",\"2026/01\",\"2025/12\",\"2025/11\",\"2025/10\",\"2025/09\"],\"pageCount\":1,\"monthCount\":13,\"capturedRowCount\":13,\"terminal\":true,\"terminalCursor\":4}"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "responseDigest": "sha256:8n_emOEO0tzHdi6que_1pdj5baXmXNXSxpZEaN5yTH0",
+                    "proofKind": "derived-statement-summary-evidence",
+                    "contractFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                    "preflightFingerprint": "sha256:-wwzOFWtJk8OBuaEeTJxxVLkUN75E2bYqSP_Mjeyklo",
+                    "metadata": {
+                      "source": "statement-summary-evidence",
+                      "providerPage": false
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:2yzmWuA3QCCO_RgamJMRsKXYuXrbk9cvUyX9qv930zA",
+                    "collisionKey": "sha256:2yzmWuA3QCCO_RgamJMRsKXYuXrbk9cvUyX9qv930zA",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:G72zviksZnLGEL654_oT_4QxN91NZNozkbFCEfByln0",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-09-25",
+                      "postingDate": "2026-09-25",
+                      "amount": {
+                        "coefficient": "100",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 0"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-09-25\",\"postingDate\":\"2026-09-25\",\"amount\":{\"coefficient\":\"100\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 0\"}",
+                    "sequenceLexeme": "observed-source-order:0",
+                    "description": "Synthetic purchase 0",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:r3xTMkn0zreIbX_ynybtJybwkPUhD9QMWdRn2NeNKGU",
+                      "partitionDate": "2026-09-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/09\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:OsowWoZ42p6XPgQ-GuEfuVUhr4jVfOwsRZJR1XNJ5_k",
+                    "collisionKey": "sha256:OsowWoZ42p6XPgQ-GuEfuVUhr4jVfOwsRZJR1XNJ5_k",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:UUeUjKsEBSjQRYuw7OYB0BJ0eeQmVQDEHAQra3B-yOc",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-08-25",
+                      "postingDate": "2026-08-25",
+                      "amount": {
+                        "coefficient": "101",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 1"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-08-25\",\"postingDate\":\"2026-08-25\",\"amount\":{\"coefficient\":\"101\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 1\"}",
+                    "sequenceLexeme": "observed-source-order:1",
+                    "description": "Synthetic purchase 1",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:iYKxd7_zqQwl8ckOBIPGJIe5NVVMnSYmYb8w4cqee_E",
+                      "partitionDate": "2026-08-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/08\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:VljULveiXDAdITRoHs5lB_DRa3Tcv-dUF5-MFQOaKLg",
+                    "collisionKey": "sha256:VljULveiXDAdITRoHs5lB_DRa3Tcv-dUF5-MFQOaKLg",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:mKbGWWlzJdF4DYbNucN0Ps7GsXzhOEtH_CMXlLGlgF0",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-07-25",
+                      "postingDate": "2026-07-25",
+                      "amount": {
+                        "coefficient": "102",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 2"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-07-25\",\"postingDate\":\"2026-07-25\",\"amount\":{\"coefficient\":\"102\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 2\"}",
+                    "sequenceLexeme": "observed-source-order:2",
+                    "description": "Synthetic purchase 2",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:ollGN1lwlywxpxf1wnI7ji6pVqmvx2I-p0S7WIc1We4",
+                      "partitionDate": "2026-07-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/07\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:ENl837b6zarV3uNqd34_ypYkqSCCTwxhgGWkoYmqAaI",
+                    "collisionKey": "sha256:ENl837b6zarV3uNqd34_ypYkqSCCTwxhgGWkoYmqAaI",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:k3__0ENdoK04W5hOvbRrBSeOMXg0HDoPgmHkGIhwJfA",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-06-25",
+                      "postingDate": "2026-06-25",
+                      "amount": {
+                        "coefficient": "103",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 3"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-06-25\",\"postingDate\":\"2026-06-25\",\"amount\":{\"coefficient\":\"103\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 3\"}",
+                    "sequenceLexeme": "observed-source-order:3",
+                    "description": "Synthetic purchase 3",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:0ncJtikfvphXOjQwzMo33F-6lloKYkQxc3lc9yqZ5tw",
+                      "partitionDate": "2026-06-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/06\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:LRhqG7purHOK-5fyPrqVTLBjFPWkXMEPxzeM29dfiJo",
+                    "collisionKey": "sha256:LRhqG7purHOK-5fyPrqVTLBjFPWkXMEPxzeM29dfiJo",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:Z72bzC0g0M-sHCmqgPVNDVtm0Whbm3auMKSdlCVleTA",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-05-25",
+                      "postingDate": "2026-05-25",
+                      "amount": {
+                        "coefficient": "104",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 4"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-05-25\",\"postingDate\":\"2026-05-25\",\"amount\":{\"coefficient\":\"104\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 4\"}",
+                    "sequenceLexeme": "observed-source-order:4",
+                    "description": "Synthetic purchase 4",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:9yHXNzX95nuKiibvmPvPzfp8PjO3151LLcFB7rdPDcc",
+                      "partitionDate": "2026-05-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/05\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:G5gTHNDr1tfx7fbPUW3fNPPgUxP1onex4qTCAkr99Fw",
+                    "collisionKey": "sha256:G5gTHNDr1tfx7fbPUW3fNPPgUxP1onex4qTCAkr99Fw",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:TwqX73736Z24o6AGr5WAzBKhiG1-WIt2ZEqKVvp35Z0",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-04-25",
+                      "postingDate": "2026-04-25",
+                      "amount": {
+                        "coefficient": "105",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 5"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-04-25\",\"postingDate\":\"2026-04-25\",\"amount\":{\"coefficient\":\"105\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 5\"}",
+                    "sequenceLexeme": "observed-source-order:5",
+                    "description": "Synthetic purchase 5",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:IXA0RRas_V6RGJw2eWoVseMUA5u-QR0Lvzy6F1n2Spc",
+                      "partitionDate": "2026-04-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/04\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:WDOAkw_1JxHmv9ilt9slFs_FdGZcmuFdyogAP6SpdWg",
+                    "collisionKey": "sha256:WDOAkw_1JxHmv9ilt9slFs_FdGZcmuFdyogAP6SpdWg",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:cPDcQUZW3CGHF9dd4SShUf8cqJdc6BUGbEsvmuvtlU0",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-03-25",
+                      "postingDate": "2026-03-25",
+                      "amount": {
+                        "coefficient": "106",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 6"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-03-25\",\"postingDate\":\"2026-03-25\",\"amount\":{\"coefficient\":\"106\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 6\"}",
+                    "sequenceLexeme": "observed-source-order:6",
+                    "description": "Synthetic purchase 6",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:B0pcrn7QgvXO8ihwjtz2EzNQdORyEih3nNw6zFlbAAo",
+                      "partitionDate": "2026-03-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/03\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:DbmHQ_I9SkChDa6l2gipwIhoLn3lwY7aYjK91fy1lf4",
+                    "collisionKey": "sha256:DbmHQ_I9SkChDa6l2gipwIhoLn3lwY7aYjK91fy1lf4",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:TOHwkFz0_n_pXbCdehvLQaPdb3ANXztcPC9vrrpPUqQ",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-02-25",
+                      "postingDate": "2026-02-25",
+                      "amount": {
+                        "coefficient": "107",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 7"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-02-25\",\"postingDate\":\"2026-02-25\",\"amount\":{\"coefficient\":\"107\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 7\"}",
+                    "sequenceLexeme": "observed-source-order:7",
+                    "description": "Synthetic purchase 7",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:0EVJbl42CaOK8XS-nLk9c0sWII42gQimNVkCjX9mdBo",
+                      "partitionDate": "2026-02-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/02\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:8UfOXAvKf94apskVjni2Y6cYYCaq5BrxPzLQ1MJBWfA",
+                    "collisionKey": "sha256:8UfOXAvKf94apskVjni2Y6cYYCaq5BrxPzLQ1MJBWfA",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:75RUkUfb9Z7ZRCRZBP3SXD_d5BPifvHj_aT01OsQdmE",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-01-25",
+                      "postingDate": "2026-01-25",
+                      "amount": {
+                        "coefficient": "108",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 8"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-01-25\",\"postingDate\":\"2026-01-25\",\"amount\":{\"coefficient\":\"108\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 8\"}",
+                    "sequenceLexeme": "observed-source-order:8",
+                    "description": "Synthetic purchase 8",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:4i0o4ADDuA7KIAospBJrCY2GVvkPfPpELzNgK-2ddw0",
+                      "partitionDate": "2026-01-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2026/01\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:xLcuwX-y6pXNYZJi0YUrrF5nynOGfQ1F-3bFbVnj_SU",
+                    "collisionKey": "sha256:xLcuwX-y6pXNYZJi0YUrrF5nynOGfQ1F-3bFbVnj_SU",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:hztra0x-9Bek9fJhwSpCe6P7HCliQZTRDM39aBNi6mQ",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2025-12-25",
+                      "postingDate": "2025-12-25",
+                      "amount": {
+                        "coefficient": "109",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 9"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2025-12-25\",\"postingDate\":\"2025-12-25\",\"amount\":{\"coefficient\":\"109\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 9\"}",
+                    "sequenceLexeme": "observed-source-order:9",
+                    "description": "Synthetic purchase 9",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:KKRIwdPCds-rJ3ATmoy45_JO1NFv31AG_tV7MOqvBZM",
+                      "partitionDate": "2025-12-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2025/12\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:RcjAl0NKL5zZhwFlUfCe07AkkxTHGMEutj-N547ElTQ",
+                    "collisionKey": "sha256:RcjAl0NKL5zZhwFlUfCe07AkkxTHGMEutj-N547ElTQ",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:4HChjwaLp_x-Mb5xYZ-EoibdDeO4jQYLIaAQtsg1HJk",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2025-11-25",
+                      "postingDate": "2025-11-25",
+                      "amount": {
+                        "coefficient": "110",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 10"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2025-11-25\",\"postingDate\":\"2025-11-25\",\"amount\":{\"coefficient\":\"110\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 10\"}",
+                    "sequenceLexeme": "observed-source-order:10",
+                    "description": "Synthetic purchase 10",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:r6RPW6Kf9RMfMia4lR9YpTBjhBu4IF6ekadgH_uTtDk",
+                      "partitionDate": "2025-11-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2025/11\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:5YFnStYsxBgJlcxIh-nKUDUc3A0YXxwC4os-xt8lNdg",
+                    "collisionKey": "sha256:5YFnStYsxBgJlcxIh-nKUDUc3A0YXxwC4os-xt8lNdg",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:TkWlxZYHsESnLS6yvD9Fw-yKb5AjBkuwbtRgepoDVyA",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2025-10-25",
+                      "postingDate": "2025-10-25",
+                      "amount": {
+                        "coefficient": "111",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 11"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2025-10-25\",\"postingDate\":\"2025-10-25\",\"amount\":{\"coefficient\":\"111\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 11\"}",
+                    "sequenceLexeme": "observed-source-order:11",
+                    "description": "Synthetic purchase 11",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:FM416LiaNRTmKmVXSyjKKOqiKSTKooUUh3FwuczYo5E",
+                      "partitionDate": "2025-10-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"month\",\"month\":\"2025/10\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:-MD0kr5_gEjF9y5x2x8d04I9irXpSYnS0YAX1x9Pe08",
+                    "collisionKey": "sha256:-MD0kr5_gEjF9y5x2x8d04I9irXpSYnS0YAX1x9Pe08",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:rXoP7FutSAe4mpG_5z7NDxxMPKjjsojDc5pJPvhCsRY",
+                    "compact": {
+                      "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                      "cardMask": "****5678",
+                      "consumeDate": "2025-09-25",
+                      "postingDate": "2025-09-25",
+                      "amount": {
+                        "coefficient": "112",
+                        "scale": 0
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "Synthetic purchase 12"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY\",\"cardMask\":\"****5678\",\"consumeDate\":\"2025-09-25\",\"postingDate\":\"2025-09-25\",\"amount\":{\"coefficient\":\"112\",\"scale\":0},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"Synthetic purchase 12\"}",
+                    "sequenceLexeme": "observed-source-order:12",
+                    "description": "Synthetic purchase 12",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:2e0Y4vV_CUNbX3XaHOeE2z51Owe7Plp8zjw6IOYxYhA",
+                      "fingerprint": "sha256:x05i0gYubA4xEc8Gv6BdVk6hP6cdDnvn7ad3n9eacIw",
+                      "partitionDate": "2025-09-25",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"partial-month\",\"month\":\"2025/09\",\"queriedOn\":\"2026-09-25\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:OIlfVlL8b-utQVE5TiW4rEC0tuzX2WEXWgILM2J2MYU",
+                    "collisionKey": "sha256:OIlfVlL8b-utQVE5TiW4rEC0tuzX2WEXWgILM2J2MYU",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:0a9e27402ec658a54a67dc5916905f40574155c6d9a290a5d3060e20289aa232",
+                    "compact": {
+                      "statementKey": "sha256:aMis4elq0CnOcE0jBwj4AMiv_LFvGyWaVHLDo2xLt6s",
+                      "cycleStart": "2026-08-01",
+                      "cycleEnd": "2026-08-31",
+                      "issueDate": "2026-08-31",
+                      "dueDate": "2026-09-20",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "3200",
+                        "scale": 0
+                      },
+                      "minimumPayment": {
+                        "coefficient": "200",
+                        "scale": 0
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"sha256:aMis4elq0CnOcE0jBwj4AMiv_LFvGyWaVHLDo2xLt6s\",\"cycleStart\":\"2026-08-01\",\"cycleEnd\":\"2026-08-31\",\"issueDate\":\"2026-08-31\",\"dueDate\":\"2026-09-20\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"3200\",\"scale\":0},\"minimumPayment\":{\"coefficient\":\"200\",\"scale\":0}}",
+                    "sequenceLexeme": "statement-summary:sha256:aMis4elq0CnOcE0jBwj4AMiv_LFvGyWaVHLDo2xLt6s",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "identityMethod": "human-attested"
+              },
+              "instruments": [
+                {
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "cardMask": "****5678",
+                  "role": "primary",
+                  "lifecycle": null,
+                  "evidenceSourceOccurrenceKey": "sha256:2yzmWuA3QCCO_RgamJMRsKXYuXrbk9cvUyX9qv930zA"
+                }
+              ],
+              "transactions": [
+                {
+                  "sourceOccurrenceKey": "sha256:2yzmWuA3QCCO_RgamJMRsKXYuXrbk9cvUyX9qv930zA",
+                  "sourceSequence": "sha256:2yzmWuA3QCCO_RgamJMRsKXYuXrbk9cvUyX9qv930zA",
+                  "amount": {
+                    "coefficient": "100",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 0",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-09-25",
+                  "transactionDateTimeLocal": "2026-09-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1790265600000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "100",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "100",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-09-25",
+                  "postingDate": "2026-09-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:OsowWoZ42p6XPgQ-GuEfuVUhr4jVfOwsRZJR1XNJ5_k",
+                  "sourceSequence": "sha256:OsowWoZ42p6XPgQ-GuEfuVUhr4jVfOwsRZJR1XNJ5_k",
+                  "amount": {
+                    "coefficient": "101",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 1",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-08-25",
+                  "transactionDateTimeLocal": "2026-08-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1787587200000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "101",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "101",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-08-25",
+                  "postingDate": "2026-08-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:VljULveiXDAdITRoHs5lB_DRa3Tcv-dUF5-MFQOaKLg",
+                  "sourceSequence": "sha256:VljULveiXDAdITRoHs5lB_DRa3Tcv-dUF5-MFQOaKLg",
+                  "amount": {
+                    "coefficient": "102",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 2",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-07-25",
+                  "transactionDateTimeLocal": "2026-07-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1784908800000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "102",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "102",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-07-25",
+                  "postingDate": "2026-07-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:ENl837b6zarV3uNqd34_ypYkqSCCTwxhgGWkoYmqAaI",
+                  "sourceSequence": "sha256:ENl837b6zarV3uNqd34_ypYkqSCCTwxhgGWkoYmqAaI",
+                  "amount": {
+                    "coefficient": "103",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 3",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-06-25",
+                  "transactionDateTimeLocal": "2026-06-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1782316800000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "103",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "103",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-06-25",
+                  "postingDate": "2026-06-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:LRhqG7purHOK-5fyPrqVTLBjFPWkXMEPxzeM29dfiJo",
+                  "sourceSequence": "sha256:LRhqG7purHOK-5fyPrqVTLBjFPWkXMEPxzeM29dfiJo",
+                  "amount": {
+                    "coefficient": "104",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 4",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-05-25",
+                  "transactionDateTimeLocal": "2026-05-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1779638400000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "104",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "104",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-05-25",
+                  "postingDate": "2026-05-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:G5gTHNDr1tfx7fbPUW3fNPPgUxP1onex4qTCAkr99Fw",
+                  "sourceSequence": "sha256:G5gTHNDr1tfx7fbPUW3fNPPgUxP1onex4qTCAkr99Fw",
+                  "amount": {
+                    "coefficient": "105",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 5",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-04-25",
+                  "transactionDateTimeLocal": "2026-04-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1777046400000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "105",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "105",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-04-25",
+                  "postingDate": "2026-04-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:WDOAkw_1JxHmv9ilt9slFs_FdGZcmuFdyogAP6SpdWg",
+                  "sourceSequence": "sha256:WDOAkw_1JxHmv9ilt9slFs_FdGZcmuFdyogAP6SpdWg",
+                  "amount": {
+                    "coefficient": "106",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 6",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-03-25",
+                  "transactionDateTimeLocal": "2026-03-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1774368000000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "106",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "106",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-03-25",
+                  "postingDate": "2026-03-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:DbmHQ_I9SkChDa6l2gipwIhoLn3lwY7aYjK91fy1lf4",
+                  "sourceSequence": "sha256:DbmHQ_I9SkChDa6l2gipwIhoLn3lwY7aYjK91fy1lf4",
+                  "amount": {
+                    "coefficient": "107",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 7",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-02-25",
+                  "transactionDateTimeLocal": "2026-02-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1771948800000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "107",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "107",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-02-25",
+                  "postingDate": "2026-02-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:8UfOXAvKf94apskVjni2Y6cYYCaq5BrxPzLQ1MJBWfA",
+                  "sourceSequence": "sha256:8UfOXAvKf94apskVjni2Y6cYYCaq5BrxPzLQ1MJBWfA",
+                  "amount": {
+                    "coefficient": "108",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 8",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2026-01-25",
+                  "transactionDateTimeLocal": "2026-01-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1769270400000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "108",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "108",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2026-01-25",
+                  "postingDate": "2026-01-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:xLcuwX-y6pXNYZJi0YUrrF5nynOGfQ1F-3bFbVnj_SU",
+                  "sourceSequence": "sha256:xLcuwX-y6pXNYZJi0YUrrF5nynOGfQ1F-3bFbVnj_SU",
+                  "amount": {
+                    "coefficient": "109",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 9",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2025-12-25",
+                  "transactionDateTimeLocal": "2025-12-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1766592000000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "109",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "109",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2025-12-25",
+                  "postingDate": "2025-12-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:RcjAl0NKL5zZhwFlUfCe07AkkxTHGMEutj-N547ElTQ",
+                  "sourceSequence": "sha256:RcjAl0NKL5zZhwFlUfCe07AkkxTHGMEutj-N547ElTQ",
+                  "amount": {
+                    "coefficient": "110",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 10",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2025-11-25",
+                  "transactionDateTimeLocal": "2025-11-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1764000000000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "110",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "110",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2025-11-25",
+                  "postingDate": "2025-11-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:5YFnStYsxBgJlcxIh-nKUDUc3A0YXxwC4os-xt8lNdg",
+                  "sourceSequence": "sha256:5YFnStYsxBgJlcxIh-nKUDUc3A0YXxwC4os-xt8lNdg",
+                  "amount": {
+                    "coefficient": "111",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 11",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2025-10-25",
+                  "transactionDateTimeLocal": "2025-10-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1761321600000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "111",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "111",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2025-10-25",
+                  "postingDate": "2025-10-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:-MD0kr5_gEjF9y5x2x8d04I9irXpSYnS0YAX1x9Pe08",
+                  "sourceSequence": "sha256:-MD0kr5_gEjF9y5x2x8d04I9irXpSYnS0YAX1x9Pe08",
+                  "amount": {
+                    "coefficient": "112",
+                    "scale": 0
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "esun/credit-card/human-attested-v4",
+                  "description": "Synthetic purchase 12",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "esun/credit-card/human-attested-v4",
+                  "effectiveOn": "2025-09-25",
+                  "transactionDateTimeLocal": "2025-09-25T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/human-attested-v4",
+                  "utcInstantUtcUs": 1758729600000000,
+                  "conversionEvidence": {
+                    "originalAmount": {
+                      "coefficient": "112",
+                      "scale": 0
+                    },
+                    "originalCurrency": "TWD",
+                    "bookedAmount": {
+                      "coefficient": "112",
+                      "scale": 0
+                    },
+                    "bookedCurrency": "TWD",
+                    "sourceReportedRate": null,
+                    "impliedRate": null,
+                    "comparison": "not-comparable",
+                    "feeAmount": null,
+                    "feeCurrency": null,
+                    "evidenceOrigin": "esun-credit-card-source-reported-original-amount"
+                  },
+                  "instrumentKey": "esun_instrument_l_vMlGvg2dPPgw5rBqHWO9eQxYxJmO3eFnwsBfvKBUY",
+                  "billingStatus": "unbilled",
+                  "consumeDate": "2025-09-25",
+                  "postingDate": "2025-09-25",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": null
+                }
+              ],
+              "statements": [
+                {
+                  "statementKey": "sha256:aMis4elq0CnOcE0jBwj4AMiv_LFvGyWaVHLDo2xLt6s",
+                  "revisionKey": "sha256:DGDCwAj6lb2SnlVZukuBhUjF7SqCs0HxT2Y9M8mmL8A",
+                  "cycleStart": "2026-08-01",
+                  "cycleEnd": "2026-08-31",
+                  "issueDate": "2026-08-31",
+                  "dueDate": "2026-09-20",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "3200",
+                    "scale": 0
+                  },
+                  "minimumPayment": {
+                    "coefficient": "200",
+                    "scale": 0
+                  },
+                  "transactionSourceOccurrenceKeys": [],
+                  "evidenceSourceOccurrenceKey": "sha256:OIlfVlL8b-utQVE5TiW4rEC0tuzX2WEXWgILM2J2MYU"
+                }
+              ],
+              "relations": []
+            }
+          },
+          "provider": "esun"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "uuid-1:current-used-credit",
+          "command": {
+            "kind": "financial.creditCard.balance",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1:current-used-credit",
+                "integrationNamespace": "esun",
+                "sourceConnectionKey": "sha256:03gQi6UXEB6CEChWes1Beewxa6J4ib-oyDQYmbcrCrI",
+                "identityEpoch": "sha256:mzAjcdwchjc0FTaGC0A08UXiy-O2cFkkSzn1oxHH6SE",
+                "stream": "credit-card",
+                "recordKind": "credit-card-current-used-credit",
+                "routeKey": "esun/credit-card/current-used-credit-v2",
+                "contractVersion": "esun/credit-card/current-used-credit-v2",
+                "subjectDigest": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "observedAt": "2026-09-25T12:00:00.000Z",
+                "scope": {
+                  "startDate": "2026-09-25",
+                  "endDate": "2026-09-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "esun/credit-card/current-used-credit-v2",
+                  "completenessBasis": "provider-credit-current-used-credit-snapshot",
+                  "sourceAccountKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "sourceField": "usedCreditLimit",
+                      "aggregate": "歸戶",
+                      "queryTime": "2026-09-25 20:00:00",
+                      "resultCode": "0000",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:00 GMT"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:rCjmP3l7amH_QuTBSp-rlo6wV6oJOcx5eDFYAlel3jw",
+                    "collisionKey": "sha256:rCjmP3l7amH_QuTBSp-rlo6wV6oJOcx5eDFYAlel3jw",
+                    "providerKey": "sha256:XJItbtFO5DZ-msifUsn30orOWhCx2-D38TB72cagnW4",
+                    "contentHash": "sha256:2ArnBWZ59iKUq7War3tvi1nAtOqZFxXamJBuMSkBPJ0",
+                    "compact": {
+                      "provider": "esun",
+                      "aggregate": "歸戶",
+                      "usedCredit": "46989",
+                      "available": "53011",
+                      "queryTime": "2026-09-25 20:00:00",
+                      "endpoint": "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+                      "resultCode": "0000",
+                      "httpDate": "Fri, 25 Sep 2026 12:00:00 GMT",
+                      "sourceField": "usedCreditLimit",
+                      "balanceKind": "credit_used",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "46989",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-09-25T12:00:00.000Z",
+                      "effectiveTimeSourceField": "resultTime",
+                      "effectiveTimeSourceValue": "2026-09-25 20:00:00",
+                      "estimateKind": "estimate",
+                      "estimateBasis": "provider-used-credit",
+                      "formula": "provider-reported-used-credit"
+                    },
+                    "sequenceLexeme": "sha256:rCjmP3l7amH_QuTBSp-rlo6wV6oJOcx5eDFYAlel3jw",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:KsMrjvyzi6JYCxQeljxuJ0Waafqmw-auJMOXVBBQrDw",
+                "identityMethod": "human-attested"
+              },
+              "balance": {
+                "observation": {
+                  "observationKey": "issuer-aggregate",
+                  "balanceKind": "credit_used",
+                  "balance": {
+                    "coefficient": "46989",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-09-25T12:00:00.000Z",
+                  "effectiveTimeBasis": "provider-query-time",
+                  "effectiveTimeRuleVersion": "esun/credit-card/current-used-credit-v2",
+                  "evidenceSourceRecordKey": "sha256:rCjmP3l7amH_QuTBSp-rlo6wV6oJOcx5eDFYAlel3jw",
+                  "evidenceSourceField": "resultTime",
+                  "evidenceSourceValue": "2026-09-25 20:00:00",
+                  "evidenceContractVersion": "esun/credit-card/current-used-credit-v2",
+                  "sourceOccurrenceKey": "sha256:rCjmP3l7amH_QuTBSp-rlo6wV6oJOcx5eDFYAlel3jw",
+                  "evidenceEndpoint": "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "provider-contract"
+                },
+                "estimate": {
+                  "kind": "estimate",
+                  "basis": "provider-used-credit",
+                  "formula": "provider-reported-used-credit"
+                }
+              }
+            }
+          },
+          "provider": "esun"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "started",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "completed",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "credit-card-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "collection-started"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "advanced",
+      "code": "timeline-collected",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "bill-summaries-collected",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "source-decoding-completed"
+    },
+    {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "source-validation-started",
+      "counts": {
+        "completed": 13,
+        "total": 13
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "credit-card-collection-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "credit-card-source-decoding-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "credit-card-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    }
+  ]
+}
