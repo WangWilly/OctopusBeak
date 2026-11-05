@@ -62,6 +62,7 @@ async function postPortalInPage(
   } catch {
     return { kind: "network-error" };
   }
+  // The token is read even from a reply rejected outside the page; that reply fails the run before another post.
   try {
     const flowToken = (JSON.parse(new TextDecoder().decode(bytes)) as { txnFlowToken?: unknown } | null)?.txnFlowToken;
     if (typeof flowToken === "string" && flowToken) state.txnFlowToken = flowToken;

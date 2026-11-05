@@ -477,6 +477,19 @@ test("a deposit reply with a malformed UTF-8 byte fails the attached deposit as 
   assert.equal(harness.previewWrites.length, 0);
 }));
 
+test("beside a committed card, a malformed deposit byte fails as integrity and a dropped read as collection", () => withManagedSecret(async () => {
+  const malformed = Buffer.from([0x7b, 0xe8, 0x96, 0x7d]).toString("base64");
+  for (const [reply, errorCode] of [
+    [{ kind: "body", httpStatus: 200, base64: malformed, date: null }, "source-integrity-failed"],
+    [{ kind: "network-error" }, "source-collection-failed"],
+  ] as const) {
+    const harness = createContext(createPage({ portal: depositPortal({ queryTWTransactionDetail: reply }).portal }));
+    const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "failed", errorCode]], errorCode);
+    assert.equal(harness.previewWrites.length, 0, errorCode);
+  }
+}));
+
 test("no attached selection never touches the deposit portal", () => withManagedSecret(async () => {
   const harness = createContext(createPage());
   const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] }));
