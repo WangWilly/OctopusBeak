@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import { z } from "zod";
 import {
   SourceTextIntegrityError,
@@ -8,7 +8,7 @@ import {
   type SourceTextPort,
 } from "../lib/automation/source-text.ts";
 import { withAbort } from "./abort.ts";
-import { frameScope, type FrameScope } from "./frame-scope.ts";
+import type { FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   SINOPAC_CREDENTIAL_FIELDS,
@@ -84,14 +84,19 @@ import {
 } from "./current-state-snapshot-capture.ts";
 import {
   collectSinopacCreditCards,
-  sinopacCardPageTransport,
+  sinopacCardTransport,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
-import { collectSinopacLoans, sinopacLoanPageTransport, type SinopacLoanTransport } from "./sinopac-loan.ts";
+import { collectSinopacLoans, sinopacLoanTransport, type SinopacLoanTransport } from "./sinopac-loan.ts";
+import {
+  SINOPAC_MMA_ORIGIN,
+  sinopacMmaSite,
+  type SinopacMmaReply,
+  type SinopacMmaRoute,
+  type SinopacMmaSite,
+} from "./sinopac-mma-site.ts";
 
 const LOGIN_URL = "https://mma.sinopac.com/MemberPortal/Member/MMALogin.aspx";
-const TRANSACTION_URL =
-  "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx";
 const ACCOUNT_ENDPOINT = "/ws/bank/transdetail/ws_debitacct.ashx";
 const TRANSACTION_ENDPOINT = "/ws/bank/transdetail/ws_transdetailMerge.ashx";
 
@@ -496,35 +501,30 @@ export function sinopacApiRowsToStatementRows(
     });
 }
 
-/** Decode one complete first-party SinoPac JSON response without replacement characters. */
-export function decodeSinopacJsonSource(input: Readonly<{
-  bytes: Uint8Array;
-  response: SinopacJsonSourceResponse;
-  expectedPath: string;
-  text?: SourceTextPort;
-}>): unknown {
+/** Refuse a SinoPac response that is not a complete first-party JSON POST reply from the expected endpoint. */
+function assertSinopacJsonResponse(response: SinopacJsonSourceResponse, expectedPath: string): void {
   let url: URL;
   try {
-    url = new URL(input.response.url);
+    url = new URL(response.url);
   } catch {
     throw new Error("SinoPac source response URL is invalid.");
   }
   if (
     url.protocol !== "https:" ||
     url.hostname !== "mma.sinopac.com" ||
-    url.pathname !== input.expectedPath ||
+    url.pathname !== expectedPath ||
     url.hash !== "" ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== ""
   )
     throw new Error("SinoPac source response endpoint is unexpected.");
-  if (input.response.method.toUpperCase() !== "POST")
+  if (response.method.toUpperCase() !== "POST")
     throw new Error("SinoPac source response method is not POST.");
-  if (input.response.status !== 200)
-    throw new Error(`SinoPac source response status is not 200 (${input.response.status}).`);
+  if (response.status !== 200)
+    throw new Error(`SinoPac source response status is not 200 (${response.status}).`);
 
-  const contentType = input.response.contentType.trim();
+  const contentType = response.contentType.trim();
   const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
   if (mediaType !== "application/json")
     throw new Error("SinoPac source response content type is not JSON.");
@@ -533,15 +533,34 @@ export function decodeSinopacJsonSource(input: Readonly<{
   )?.[1]?.toLowerCase();
   if (charset && charset !== "utf-8" && charset !== "utf8")
     throw new Error("SinoPac source response charset is not UTF-8.");
+}
 
-  const text = input.text ?? strictSourceText;
-  const decoded = text.decode(input.bytes, "utf-8");
-  text.assertIntact(decoded);
+function parseSinopacJson(decoded: string): unknown {
   try {
     return JSON.parse(decoded) as unknown;
   } catch {
     throw new Error("SinoPac source response is not valid JSON.");
   }
+}
+
+/** Decode one complete first-party SinoPac JSON response without replacement characters. */
+export function decodeSinopacJsonSource(input: Readonly<{
+  bytes: Uint8Array;
+  response: SinopacJsonSourceResponse;
+  expectedPath: string;
+  text?: SourceTextPort;
+}>): unknown {
+  assertSinopacJsonResponse(input.response, input.expectedPath);
+  const text = input.text ?? strictSourceText;
+  const decoded = text.decode(input.bytes, "utf-8");
+  text.assertIntact(decoded);
+  return parseSinopacJson(decoded);
+}
+
+/** Parse a SinoPac POST reply the MMA site already decoded strictly. */
+function parseSinopacJsonReply(reply: SinopacMmaReply, expectedPath: string): unknown {
+  assertSinopacJsonResponse({ ...reply, method: "POST" }, expectedPath);
+  return parseSinopacJson(reply.text);
 }
 
 export function sinopacStatementRowsToCsv(rows: SinopacStatementRow[]): string {
@@ -818,60 +837,45 @@ export function sinopacSignInPlan(credentials: SinopacCredentials): FormPlan {
   };
 }
 
-function isSinopacEndpointResponse(response: Response, pathname: string): boolean {
+function isSinopacEndpointResponse(href: string, method: string, pathname: string): boolean {
   try {
-    const url = new URL(response.url());
+    const url = new URL(href);
     return (
-      url.protocol === "https:" &&
-      url.hostname === "mma.sinopac.com" &&
+      url.origin === SINOPAC_MMA_ORIGIN &&
       url.pathname === pathname &&
       url.hash === "" &&
-      url.port === "" &&
       url.username === "" &&
       url.password === "" &&
-      response.request().method().toUpperCase() === "POST"
+      method.toUpperCase() === "POST"
     );
   } catch {
     return false;
   }
 }
 
-async function openTransactionPage(
-  page: Page,
+/** The transaction-details page; its load requests the account list. */
+const SINOPAC_TRANSACTION_ROUTE: SinopacMmaRoute = {
+  url: `${SINOPAC_MMA_ORIGIN}/mma/bank/transdetail/mma_transdetail.aspx`,
+  description: "the SinoPac transaction-details form",
+  response: (url, method) => isSinopacEndpointResponse(url, method, ACCOUNT_ENDPOINT),
+  ready: (scope) => scope.locator("#StartDate").first().isVisible().catch(() => false),
+};
+
+async function listSinopacAccounts(
+  site: SinopacMmaSite,
   text: SourceTextPort,
-  signal: AbortSignal,
   event: ProductCollectionHandle["event"],
 ): Promise<SinopacAccount[]> {
-  const scope = frameScope(page, signal);
-  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
-    (response) => isSinopacEndpointResponse(response, ACCOUNT_ENDPOINT),
-    { timeout: 60_000, signal },
-  ));
-  void responsePromise.catch(() => undefined);
-  const detailLink = page
-    .locator('a[title="往來明細"], a[href*="mma_transdetail"]')
-    .first();
-  if (await scope.race(detailLink.isVisible().catch(() => false))) {
-    await scope.withSignal((signal) => detailLink.click({ signal }));
-  } else {
-    await scope.withSignal((signal) => page.goto(TRANSACTION_URL, { waitUntil: "domcontentloaded", signal }));
-  }
-  await scope.withSignal((signal) =>
-    page.locator("#StartDate").waitFor({ state: "visible", timeout: 60_000, signal }));
-  const response = await responsePromise;
-  const [body, headers] = await Promise.all([
-    scope.race(response.body()),
-    scope.race(response.allHeaders()),
-  ]);
+  const { bytes, response } = await site.open(SINOPAC_TRANSACTION_ROUTE);
   let payload: unknown;
   try {
     payload = decodeSinopacJsonSource({
-      bytes: body,
+      bytes,
       response: {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        contentType: headers["content-type"] ?? "",
+        url: response.url,
+        status: response.status,
+        method: response.method,
+        contentType: response.headers["content-type"] ?? "",
       },
       expectedPath: ACCOUNT_ENDPOINT,
       text,
@@ -893,109 +897,29 @@ async function openTransactionPage(
   return accountListFromResponse(payload as SinopacAccountResponse[]);
 }
 
-class SinopacApiClient {
-  private page: Page;
-  private text: SourceTextPort;
-  private signal?: AbortSignal;
-
-  constructor(
-    page: Page,
-    text: SourceTextPort = strictSourceText,
-    signal?: AbortSignal,
-  ) {
-    this.page = page;
-    this.text = text;
-    this.signal = signal;
-  }
-
-  private async postJson<T>(path: string, body: URLSearchParams): Promise<T> {
-    this.signal?.throwIfAborted();
-    const response = await withAbort(this.page.evaluate(
-      async ({ path, bodyText }) => {
-        type BrowserXhr = {
-          open(method: string, url: string, async: boolean): void;
-          setRequestHeader(name: string, value: string): void;
-          send(body: string): void;
-          onload: (() => void) | null;
-          onerror: (() => void) | null;
-          responseType: string;
-          response: ArrayBuffer | null;
-          responseURL: string;
-          status: number;
-          getResponseHeader(name: string): string | null;
-        };
-        const Xhr = (
-          globalThis as unknown as {
-            XMLHttpRequest: new () => BrowserXhr;
-          }
-        ).XMLHttpRequest;
-        return await new Promise((resolve, reject) => {
-          const request = new Xhr();
-          request.open("POST", path, true);
-          request.setRequestHeader(
-            "Accept",
-            "application/json, text/javascript, */*; q=0.01",
-          );
-          request.setRequestHeader(
-            "Content-Type",
-            "application/x-www-form-urlencoded; charset=UTF-8",
-          );
-          request.setRequestHeader("X-Requested-With", "XMLHttpRequest");
-          request.responseType = "arraybuffer";
-          request.onload = () => {
-            if (!(request.response instanceof ArrayBuffer)) {
-              reject(new Error("SinoPac source response body is unavailable."));
-              return;
-            }
-            resolve({
-              url: request.responseURL,
-              status: request.status,
-              method: "POST",
-              contentType: request.getResponseHeader("content-type") ?? "",
-              bytes: Array.from(new Uint8Array(request.response)),
-            });
-          };
-          request.onerror = () =>
-            reject(new Error("SinoPac source request failed."));
-          request.send(bodyText);
-        });
-      },
-      { path, bodyText: body.toString() },
-    ), this.signal) as SinopacJsonSourceResponse & Readonly<{ bytes: number[] }>;
-    this.signal?.throwIfAborted();
-    const expectedPath = new URL(path, "https://mma.sinopac.com").pathname;
-    const payload = decodeSinopacJsonSource({
-      bytes: Uint8Array.from(response.bytes),
-      response,
-      expectedPath,
-      text: this.text,
-    });
-    return payload as T;
-  }
-
-  async fetchTransactions(
-    account: SinopacAccount,
-    dateRange: DateRange,
-    businessDate: string,
-  ): Promise<SinopacTransactionResponse> {
-    const body = new URLSearchParams({
-      Acct: accountLabel(account),
-      AcctValue: accountId(account),
-      CurrName: "",
-      QueryType: "3",
-      AcctName: "",
-      Curr: accountCurrency(account),
-      TextType: "",
-      BusinessDate: businessDate,
-      StartDate: dateRange.startDate,
-      EndDate: dateRange.endDate,
-    });
-    const payload = await this.postJson<unknown>(
-      `${TRANSACTION_ENDPOINT}?${Date.now()}`,
-      body,
-    );
-    return sinopacSingleEnvelope<SinopacTransactionResponse>(payload, "transaction");
-  }
+async function querySinopacTransactions(
+  site: SinopacMmaSite,
+  account: SinopacAccount,
+  dateRange: DateRange,
+  businessDate: string,
+): Promise<SinopacTransactionResponse> {
+  const body = new URLSearchParams({
+    Acct: accountLabel(account),
+    AcctValue: accountId(account),
+    CurrName: "",
+    QueryType: "3",
+    AcctName: "",
+    Curr: accountCurrency(account),
+    TextType: "",
+    BusinessDate: businessDate,
+    StartDate: dateRange.startDate,
+    EndDate: dateRange.endDate,
+  });
+  const reply = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, { body: body.toString() });
+  return sinopacSingleEnvelope<SinopacTransactionResponse>(
+    parseSinopacJsonReply(reply, TRANSACTION_ENDPOINT),
+    "transaction",
+  );
 }
 
 type SinopacWrapperCategory = "native" | "patched" | "unknown";
@@ -1105,7 +1029,7 @@ function identityValidationOverlapRange(
 }
 
 export async function runSinopacIdentityValidation(
-  page: Page,
+  site: SinopacMmaSite,
   validation: SinopacIdentityValidationInput,
   initialAccounts: SinopacAccount[],
 ): Promise<SinopacIdentityEvidenceSummary> {
@@ -1130,8 +1054,7 @@ export async function runSinopacIdentityValidation(
   if (primaryRange.startDate > primaryRange.endDate)
     throw new Error("identityValidation startDate must be on or before endDate.");
   const overlapRange = identityValidationOverlapRange(validation);
-  const apiClient = new SinopacApiClient(page);
-  const siteAssessment = await assessSinopacSiteSecurity(page);
+  const siteAssessment = await assessSinopacSiteSecurity(site.frames.page);
   const querySets: Array<{
     label: SinopacIdentityCapture["label"];
     range: DateRange;
@@ -1147,7 +1070,8 @@ export async function runSinopacIdentityValidation(
   for (const querySet of querySets) {
     const windows: SinopacIdentityCapture["windows"] = [];
     for (const window of sinopacQueryWindows(querySet.range)) {
-      const response = validateSinopacTransactionRows(await apiClient.fetchTransactions(
+      const response = validateSinopacTransactionRows(await querySinopacTransactions(
+        site,
         accounts[0]!,
         window,
         querySet.range.endDate,
@@ -1270,16 +1194,15 @@ export type SinopacDepositSource = Readonly<{
 }>;
 
 export function sinopacDepositSource(
-  page: Page,
+  site: SinopacMmaSite,
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): SinopacDepositSource {
-  const apiClient = new SinopacApiClient(page, context.text, context.signal);
   return {
-    listAccounts: () => openTransactionPage(page, context.text, context.signal, product.event),
+    listAccounts: () => listSinopacAccounts(site, context.text, product.event),
     queryTransactions: (account, window, businessDate) =>
-      apiClient.fetchTransactions(account, window, businessDate),
-    readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(page, context.signal),
+      querySinopacTransactions(site, account, window, businessDate),
+    readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(site),
   };
 }
 
@@ -1504,14 +1427,14 @@ export async function stageSinopacDeposit(
   };
 }
 
-/** Read SinoPac's deposit source from the signed-in page, then build and stage from it. */
+/** Read SinoPac's deposit source from the signed-in MMA site, then build and stage from it. */
 export async function runSinopacDeposit(
-  page: Page,
+  site: SinopacMmaSite,
   input: SinopacWorkflowInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
-  const source = sinopacDepositSource(page, context, product);
+  const source = sinopacDepositSource(site, context, product);
   const snapshot = await readSinopacDepositSource(source, input, context, product);
   return await stageSinopacDeposit(snapshot, input, context, product, source.readCurrentBalances);
 }
@@ -1556,11 +1479,12 @@ async function runSinopacWorkflow(
     const { assertSession } = await signIn(context, page, SINOPAC_SOURCE, sinopacSignInPlan(input.credentials));
 
     context.signal.throwIfAborted();
+    const site = sinopacMmaSite(page, context);
 
     let deposit: SinopacDepositCollection | null = null;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
-        const { sourceCaptureCount, ...collected } = await collectDeposit(page, input, context, product);
+        const { sourceCaptureCount, ...collected } = await collectDeposit(site, input, context, product);
         deposit = collected;
         return { sourceCaptureCount, rowCount: collected.rowCount };
       },
@@ -1568,12 +1492,12 @@ async function runSinopacWorkflow(
       assertSession,
       attached: {
         collectors: () => {
-          const transport = dependencies.cardTransport ?? sinopacCardPageTransport(page, context.signal);
+          const transport = dependencies.cardTransport ?? sinopacCardTransport(site);
           return {
             // Attached products have no structure report yet, so responses are validated but not kept.
             credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
             loan: () => collectSinopacLoans({
-              transport: dependencies.loanTransport ?? sinopacLoanPageTransport(page, context.signal),
+              transport: dependencies.loanTransport ?? sinopacLoanTransport(site),
               collectedAt: context.now(),
             }),
           };

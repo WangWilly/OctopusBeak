@@ -20,6 +20,8 @@ import {
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,
 } from "./sinopac-current-deposit-balances.ts";
 import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
+import { sinopacMmaSite } from "./sinopac-mma-site.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 
 const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
 const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
@@ -346,21 +348,18 @@ const identityPage = {
       };
     }
     identityQueryCount += 1;
-    const requestOptions = options as { path?: string } | undefined;
+    const requestOptions = options as { url: string };
     return {
-      url: new URL(
-        requestOptions?.path ?? "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-        "https://mma.sinopac.com",
-      ).toString(),
+      url: requestOptions.url,
       status: 200,
-      method: "POST",
       contentType: "application/json; charset=utf-8",
-      bytes: Array.from(new TextEncoder().encode(JSON.stringify([identityResponse]))),
+      date: null,
+      base64: Buffer.from(JSON.stringify([identityResponse]), "utf8").toString("base64"),
     };
   },
 } as never;
 const identitySummary = await runSinopacIdentityValidation(
-  identityPage,
+  sinopacMmaSite(identityPage, { signal: new AbortController().signal, text: strictSourceText }),
   identityInput,
   [{ DataText: "USD account", DataValue: "002", DisplayText: "USD" }],
 );

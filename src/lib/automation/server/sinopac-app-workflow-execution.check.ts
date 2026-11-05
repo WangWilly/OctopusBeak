@@ -51,6 +51,7 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
   const transactionPayload = options.malformedTransactionSource
     ? [{ Header: "SUCCESS", Message: "", SubInfo: [{ DataText1: 42 }] }]
     : [{ Header: "FAIL", Message: "查無資料" }];
+  const mainFrame = {};
   const page = {
     url: () => TRANSACTION_URL,
     context: () => ({ cookies: async () => [] }),
@@ -58,7 +59,7 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
       return {
         first() { return this; },
         async isVisible() {
-          if (selector.includes("user-logout") || selector.includes("MMALogout")) return true;
+          if (selector.includes("user-logout") || selector.includes("MMALogout") || selector === "#StartDate") return true;
           return false;
         },
         async click() { return undefined; },
@@ -71,6 +72,8 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
       };
     },
     getByText: () => ({ async count() { return 0; } }),
+    mainFrame: () => mainFrame,
+    frames: () => [mainFrame],
     async goto() { return undefined; },
     async waitForResponse(predicate: (candidate: Response) => boolean) {
       if (predicate(accountResponse)) return accountResponse;
@@ -78,15 +81,15 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
     },
     async evaluate<T>(
       expression: unknown,
-      argument?: { path?: string; bodyText?: string },
+      argument?: { url?: string },
     ): Promise<T> {
-      if (typeof argument?.path === "string") {
+      if (typeof argument?.url === "string") {
         return {
-          url: argument.path.includes("ws_debitacct") ? ACCOUNT_URL : TRANSACTIONS_URL,
+          url: argument.url.includes("ws_debitacct") ? ACCOUNT_URL : TRANSACTIONS_URL,
           status: 200,
-          method: "POST",
           contentType: "application/json; charset=utf-8",
-          bytes: [...Buffer.from(JSON.stringify(transactionPayload), "utf8")],
+          date: null,
+          base64: Buffer.from(JSON.stringify(transactionPayload), "utf8").toString("base64"),
         } as T;
       }
       if (typeof expression === "string") {

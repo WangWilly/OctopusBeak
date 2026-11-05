@@ -1,4 +1,3 @@
-import type { Page } from "playwright";
 import type { PreviewLoan, PreviewLoanCollection } from "../ledger/pglite/preview-loan.ts";
 import {
   currencyCode,
@@ -13,7 +12,7 @@ import {
   text,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
-import { frameScope } from "./frame-scope.ts";
+import type { SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /*
  * SinoPac loans, after all-set-tw's `sinopac/loan-protocol.ts` (MIT, commit 156e2eb), which calls
@@ -21,7 +20,6 @@ import { frameScope } from "./frame-scope.ts";
  * `mma.sinopac.com`, in the verified workflow's session, is assumed, not observed: a reply that
  * looks like a missing endpoint fails the product with that reason.
  */
-const MMA_ORIGIN = "https://mma.sinopac.com";
 export const SINOPAC_LOAN_ACCOUNT_PATH = "/ws/bank/loan/ws_loanaccount.ashx";
 export const SINOPAC_LOAN_INFO_PATH = "/ws/bank/loan/ws_loaninfo.ashx";
 export const SINOPAC_LOAN_PAY_DETAIL_PATH = "/ws/bank/loan/ws_paydetail.ashx";
@@ -33,27 +31,12 @@ export type SinopacLoanTransport = Readonly<{
   post(path: string, form: Readonly<Record<string, string>>): Promise<SinopacLoanResponse>;
 }>;
 
-export function sinopacLoanPageTransport(page: Page, signal: AbortSignal): SinopacLoanTransport {
-  const scope = frameScope(page, signal);
+/** Form POSTs through the MMA site's one POST. */
+export function sinopacLoanTransport(site: SinopacMmaSite): SinopacLoanTransport {
   return {
     async post(path, form) {
-      signal.throwIfAborted();
-      if (new URL(page.url()).origin !== MMA_ORIGIN) fail("unexpected-response", "the signed-in page is not on the MMA origin");
-      const response = await scope.race(page.evaluate(async ({ url, body }) => {
-        const reply = await fetch(url, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            Accept: "application/json, text/javascript, */*; q=0.01",
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "X-Requested-With": "XMLHttpRequest",
-          },
-          body,
-        });
-        return { status: reply.status, date: reply.headers.get("date"), text: await reply.text() };
-      }, { url: `${MMA_ORIGIN}${path}`, body: new URLSearchParams(form).toString() }));
-      signal.throwIfAborted();
-      return { endpoint: path, ...response };
+      const reply = await site.post(path, { body: new URLSearchParams(form).toString() });
+      return { endpoint: path, status: reply.status, date: reply.date, text: reply.text };
     },
   };
 }
