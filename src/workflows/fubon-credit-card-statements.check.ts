@@ -1731,6 +1731,35 @@ assert.throws(
   /grid-terminal-shape/u,
   "statement period grids keep their paging evidence rules",
 );
+test("a current used-credit snapshot is scoped to its Taipei calendar day", async () => {
+  const { staged, context, product } = cardCollection("2026-08-25T00:00:00.000Z");
+  await stageFubonCreditCard(
+    {
+      statementRows: canonicalStatementRows,
+      statementPeriods: summaries.map((summary) => summary.period),
+      summaries,
+      gridStates: providerNoRecordGridStates,
+      unavailablePeriodOffsets: [],
+      unbilledRows: [],
+      // 01:30 in Taipei is still the previous day in UTC.
+      currentUsedCredit: {
+        limit: "100000",
+        available: "60000",
+        usedCredit: "40000",
+        sourceField: "正卡人信用額度-正卡人可用額度",
+        endpoint: `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201`,
+        httpDate: "Mon, 24 Aug 2026 17:30:00 GMT",
+        cacheControl: "no-store, no-cache",
+      },
+    },
+    { ...canonicalInput, panFingerprintKey: cardFingerprintKey },
+    context,
+    product,
+  );
+  const balance = staged.find((item) => item.product === "current-balance")!;
+  const { scope } = (balance.command.request as { capture: { scope: { startDate: string; endDate: string } } }).capture;
+  assert.deepEqual([scope.startDate, scope.endDate], ["2026-08-25", "2026-08-25"]);
+});
 test("an unbilled grid served as the bank's no-record page collects and commits", async () => {
   const { staged: deferredCommitItems, context, product } = cardCollection("2026-08-25T00:00:00.000Z");
   const result = await stageFubonCreditCard(

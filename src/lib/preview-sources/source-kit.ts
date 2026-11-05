@@ -3,6 +3,7 @@ import { FailureCodeError } from "../automation/workflow-failures.ts";
 import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts";
 import type { PreviewLocalDate } from "../../ledger/pglite/preview-financial-data.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
+import { taipeiDate } from "../time/timezone.ts";
 
 const FAILURE_CODES = {
   "sign-in-rejected": "authentication-failed",
@@ -171,11 +172,6 @@ export function observedAt(reported: string | null | undefined, collectedAt: str
 }
 
 const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
-
-/** The calendar date in Asia/Taipei for an instant, as YYYY-MM-DD. */
-export function taipeiDate(instant: string | number | Date): string {
-  return new Date(new Date(instant).getTime() + TAIPEI_OFFSET_MS).toISOString().slice(0, 10);
-}
 
 /** Taipei calendar dates from `months - 1` whole months before `now` through `now`. */
 export function taipeiMonthWindow(now: string, months: number): Readonly<{ start: string; end: string }> {

@@ -53,6 +53,7 @@ import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import { taipeiDate } from "../lib/time/timezone.ts";
 
 export type FubonStatementPeriodProbe = {
   periodOffset: number;
@@ -532,7 +533,7 @@ async function readFubonCurrentUsedCredit(
 function fubonCreditCurrentSnapshotDate(httpDate: string): string {
   const milliseconds = Date.parse(httpDate);
   if (!Number.isFinite(milliseconds)) throw new Error("Fubon credit current snapshot HTTP Date is invalid.");
-  return new Date(milliseconds).toISOString().slice(0, 10);
+  return taipeiDate(milliseconds);
 }
 
 function fubonCreditCurrentSnapshotCapture(

@@ -131,3 +131,8 @@ export function taipeiInstant(instant: string): string {
     throw new RangeError(`Instant requires an explicit offset: ${instant}`);
   return `${new Date(time + TAIPEI_OFFSET_MS).toISOString().slice(0, 19)}+08:00`;
 }
+
+/** The calendar date in Asia/Taipei for an instant, as YYYY-MM-DD. */
+export function taipeiDate(instant: string | number | Date): string {
+  return new Date(new Date(instant).getTime() + TAIPEI_OFFSET_MS).toISOString().slice(0, 10);
+}

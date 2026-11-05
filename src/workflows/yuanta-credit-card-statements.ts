@@ -76,6 +76,7 @@ import {
   type YuantaCreditCardSummaryTraversal,
   type YuantaCurrentUsedCreditSnapshot,
 } from "./yuanta-credit-card-parser.ts";
+import { taipeiDate } from "../lib/time/timezone.ts";
 
 type MonthOption = YuantaCreditCardMonthOption;
 
@@ -713,7 +714,7 @@ function issuerExactAmount(value: string): CreditCardExactAmount {
 function yuantaCreditCurrentSnapshotDate(httpDate: string): string {
   const milliseconds = Date.parse(httpDate);
   if (!Number.isFinite(milliseconds)) throw new Error("Yuanta credit current snapshot HTTP Date is invalid.");
-  return new Date(milliseconds).toISOString().slice(0, 10);
+  return taipeiDate(milliseconds);
 }
 
 function yuantaCreditCurrentSnapshotCapture(
