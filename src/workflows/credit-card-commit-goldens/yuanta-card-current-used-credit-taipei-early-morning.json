@@ -85,7 +85,7 @@
                   }
                 ],
                 "subjectDigest": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
-                "observedAt": "2026-09-10T03:00:00.000Z",
+                "observedAt": "2026-09-09T17:30:00.000Z",
                 "accountNumber": null,
                 "scope": {
                   "startDate": "2026-01-02",
@@ -1002,7 +1002,7 @@
                 "routeKey": "yuanta/credit-card/current-used-credit-v1",
                 "contractVersion": "yuanta/credit-card/current-used-credit-v1",
                 "subjectDigest": "sha256:zbf_umuYOSVifo-8Rpni9E14oSMJl-kKBV6iBIge7DM",
-                "observedAt": "2026-09-10T03:00:00.000Z",
+                "observedAt": "2026-09-09T17:30:00.000Z",
                 "scope": {
                   "startDate": "2026-09-10",
                   "endDate": "2026-09-10",

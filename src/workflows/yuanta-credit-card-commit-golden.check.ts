@@ -55,11 +55,11 @@ function signedInPage(): Page {
   } as unknown as Page;
 }
 
-function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): WorkflowContextWith<"financialCommit"> {
+function workflowContext(recorder: ReturnType<typeof recordDepositCommit>, now: string): WorkflowContextWith<"financialCommit"> {
   return {
     runId: "yuanta-credit-card-golden",
     signal: new AbortController().signal,
-    now: () => NOW,
+    now: () => now,
     browser: { withPage: async <T>(run: (page: Page) => Promise<T>) => run(signedInPage()) },
     text: strictSourceText,
     verification: { complete: async () => undefined },
@@ -72,11 +72,11 @@ function workflowContext(recorder: ReturnType<typeof recordDepositCommit>): Work
 }
 
 
-async function runGolden(name: string, snapshot: YuantaCreditCardSourceSnapshot): Promise<void> {
-  return withCountedUuids(() => recordGolden(name, snapshot));
+async function runGolden(name: string, snapshot: YuantaCreditCardSourceSnapshot, now = NOW): Promise<void> {
+  return withCountedUuids(() => recordGolden(name, snapshot, now));
 }
 
-async function recordGolden(name: string, snapshot: YuantaCreditCardSourceSnapshot): Promise<void> {
+async function recordGolden(name: string, snapshot: YuantaCreditCardSourceSnapshot, now: string): Promise<void> {
   const recorder = recordDepositCommit();
   const collectCreditCard: NonNullable<YuantaAllWorkflowDependencies["collectCreditCard"]> = async (
     _page, input, context, product,
@@ -93,7 +93,7 @@ async function recordGolden(name: string, snapshot: YuantaCreditCardSourceSnapsh
   const result = await runVerifiedEntry(YUANTA_SOURCE, yuantaWorkflowWith({
     signOut: async () => undefined,
     collectCreditCard,
-  }), withBoundProducts(workflowContext(recorder), YUANTA_SOURCE, input), input);
+  }), withBoundProducts(workflowContext(recorder, now), YUANTA_SOURCE, input), input);
   await assertCreditCardCommitGolden(name, { result, ...recorder.recorded() });
 }
 
@@ -161,12 +161,14 @@ test("a full read with current used credit commits the card and its current bala
   await runGolden("yuanta-card-with-current-used-credit", { ...fullSnapshot, currentUsedCredit });
 });
 
+// 01:30 in Taipei is still the previous day in UTC, for the run clock and the HTTP Date alike.
+const EARLY_MORNING = "2026-09-09T17:30:00.000Z";
 test("current used credit read at 01:30 Taipei is scoped to the Taipei day", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(EARLY_MORNING) });
   await runGolden("yuanta-card-current-used-credit-taipei-early-morning", {
     ...fullSnapshot,
     currentUsedCredit: { ...currentUsedCredit, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" },
-  });
+  }, EARLY_MORNING);
 });
 
 test("a full read without current used credit commits only the card", async (t) => {

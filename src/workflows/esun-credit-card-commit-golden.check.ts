@@ -22,8 +22,13 @@ const redesignedSummary: EsunCardSummaryReply = {
   headers: { date: "Fri, 25 Sep 2026 12:00:00 GMT", "content-type": "application/json" },
 };
 
-async function runGolden(t: test.TestContext, name: string, cardSummary?: EsunCardSummaryReply): Promise<void> {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
+async function runGolden(
+  t: test.TestContext,
+  name: string,
+  cardSummary?: EsunCardSummaryReply,
+  now = NOW,
+): Promise<void> {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(now) });
   const previousSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
   process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = SECRET;
   try {
@@ -32,7 +37,7 @@ async function runGolden(t: test.TestContext, name: string, cardSummary?: EsunCa
     const context: WorkflowContextWith<"financialCommit", "previewWrite"> = {
       runId: "run-esun-credit-card-golden",
       signal: new AbortController().signal,
-      now: () => NOW,
+      now: () => now,
       browser: { withPage: async (run) => run(page) },
       text: strictSourceText,
       verification: { async complete() {} },
@@ -63,6 +68,14 @@ async function runGolden(t: test.TestContext, name: string, cardSummary?: EsunCa
 // the redesigned v2 route is reachable; v1 (the FCM01006 dispatcher page) is not.
 test("E.SUN card with a redesigned current used-credit summary", (t) =>
   runGolden(t, "esun-card-with-current-used-credit", redesignedSummary));
+
+// 01:30 in Taipei is still the previous day in UTC.
+const EARLY_MORNING = "2026-09-25T17:30:00.000Z";
+test("E.SUN current used credit read at 01:30 Taipei is scoped to the Taipei day", (t) =>
+  runGolden(t, "esun-card-current-used-credit-taipei-early-morning", {
+    body: { ...redesignedSummary.body, resultTime: "2026-09-26 01:30:00" },
+    headers: { ...redesignedSummary.headers, date: "Fri, 25 Sep 2026 17:30:00 GMT" },
+  }, EARLY_MORNING));
 
 test("E.SUN card without a current used-credit summary", (t) =>
   runGolden(t, "esun-card-without-current-used-credit"));
