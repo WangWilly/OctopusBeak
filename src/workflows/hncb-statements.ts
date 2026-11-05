@@ -733,7 +733,7 @@ async function queryAccountStatements(
   await selectDate(frames, mainFrame, "E", parseDateString(dateRange.endDate));
   // The result probe cannot tell the previous account's page from the new one,
   // so it starts once the main frame has loaded the query's reply, when it does.
-  await ifFound(site.submit(querySubmitLink(mainFrame)));
+  await site.submit(querySubmitLink(mainFrame));
   await site.settle();
   return await waitForStatementResult(site);
 }

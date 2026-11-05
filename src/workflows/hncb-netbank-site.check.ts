@@ -143,6 +143,7 @@ test("dispatch posts the transaction fields into main and resolves on the dispat
   withHncbShell(async (page, served) => {
     const hncb = site(page);
     const reply = await hncb.dispatch("com.lb.wibc.trx.CrdDetailInq", { state: "result", TYPE: "001", RANGE: "2" });
+    assert.ok(reply, "the main frame loaded the dispatcher reply");
     assert.equal(reply.request().method(), "POST");
     assert.equal(new URL(reply.url()).pathname, HNCB_TRX_DISPATCHER_PATH);
     assert.deepEqual(
@@ -160,6 +161,7 @@ test("submit clicks the main frame's own form control and resolves on its reply"
     const main = await hncb.main();
     await main.goto(hncbTrxUrl("com.lb.wibc.trx.InqMain", "prompt"));
     const reply = await hncb.submit(main.locator('a[href="javascript:doSubmit()"]'));
+    assert.ok(reply, "the main frame loaded the form's reply");
     assert.equal(reply.request().method(), "POST");
     assert.equal(await (await hncb.main()).locator("#result").textContent(), "acct1=0001");
   }));

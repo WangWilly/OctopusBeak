@@ -407,7 +407,7 @@ export function playwrightHncbCardPages(site: HncbNetbankSite): HncbCardPageRead
     };
     page.on("dialog", onDialog);
     try {
-      const response = await ifFound(site.dispatch("com.lb.wibc.trx.CrdDetailInq", { state: "result", TYPE: "001", RANGE: range }));
+      const response = await site.dispatch("com.lb.wibc.trx.CrdDetailInq", { state: "result", TYPE: "001", RANGE: range });
       if (dialog !== null) return { range, status: response?.status() ?? 200, html: "", date: null, dialog };
       if (!response) return fail("unexpected-response", `CrdDetailInq RANGE=${range} did not load`);
       const loaded = await site.main();

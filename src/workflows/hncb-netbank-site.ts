@@ -44,10 +44,10 @@ export type HncbNetbankSite = Readonly<{
   main(options?: Readonly<{ timeoutMs?: number }>): Promise<Frame>;
   /** Open a product's page from any signed-in page. */
   open(route: HncbRoute): Promise<HncbPage>;
-  /** Post a transaction into the main frame and wait for the reply it loads there. */
-  dispatch(trx: string, fields: Readonly<Record<string, string>>): Promise<Response>;
-  /** Click a control that posts the main frame's own form, and wait for the reply it loads there. */
-  submit(control: Locator): Promise<Response>;
+  /** Post a transaction into the main frame and wait for the reply it loads there; null when it loads none. */
+  dispatch(trx: string, fields: Readonly<Record<string, string>>): Promise<Response | null>;
+  /** Click a control that posts the main frame's own form, and wait for the reply it loads there; null when it loads none. */
+  submit(control: Locator): Promise<Response | null>;
   /** Wait for the page, and the main frame, to stop loading. */
   settle(): Promise<void>;
 }>;
@@ -84,15 +84,18 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
     }
   };
 
-  const loadedInMain = async (send: (frame: Frame) => Promise<void>, description: string): Promise<Response> => {
+  // A post the main frame never loads answers null, so the product decides what a missing reply means; only cancellation escapes.
+  const loadedInMain = async (send: (frame: Frame) => Promise<void>): Promise<Response | null> => {
     const frame = await main();
     const navigated = frames.withSignal((signal) =>
-      frame.waitForNavigation({ waitUntil: "domcontentloaded", timeout: FRAME_SCOPE_TIMEOUT_MS, signal }));
+      frame.waitForNavigation({ waitUntil: "domcontentloaded", timeout: FRAME_SCOPE_TIMEOUT_MS, signal }))
+      .catch(() => {
+        frames.signal.throwIfAborted();
+        return null;
+      });
     navigated.catch(() => undefined);
     await send(frame);
-    const response = await waited(navigated, description);
-    if (!response) throw new Error(`HNCB loaded ${description} without a provider reply.`);
-    return response;
+    return await navigated;
   };
 
   const goto = async (url: string, description: string): Promise<Response> => {
@@ -119,7 +122,9 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
   };
 
   const isDispatcherPost = (response: Response) =>
-    response.request().method() === "POST" && isHncbTrxDispatcherUrl(response.url());
+    response.request().method() === "POST" &&
+    response.url().startsWith(`${HNCB_NETBANK_ORIGIN}/`) &&
+    isHncbTrxDispatcherUrl(response.url());
 
   const followMenu = async (
     steps: readonly HncbMenuStep[],
@@ -136,6 +141,7 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
           page.waitForResponse(isDispatcherPost, { timeout: MENU_DISPATCH_TIMEOUT_MS, signal }))
           .catch(() => frames.signal.throwIfAborted())
         : null;
+      dispatched?.catch(() => undefined);
       if (last) {
         reply = frames.withSignal((signal) => page.waitForResponse(isReply, { timeout: FRAME_SCOPE_TIMEOUT_MS, signal }));
         reply.catch(() => undefined);
@@ -187,11 +193,11 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
           // Submitted after evaluate returns, so the navigation cannot cut the evaluation off.
           setTimeout(() => form.submit(), 0);
         }, { action: HNCB_TRX_DISPATCHER_PATH, fields: { trx, ...fields } }));
-      }, `the HNCB ${trx} reply`),
+      }),
     submit: (target) =>
       loadedInMain(async () => {
         await frames.withSignal((signal) => target.click({ signal }));
-      }, "the HNCB reply to the submitted form"),
+      }),
     settle,
   };
   return Object.freeze(site);

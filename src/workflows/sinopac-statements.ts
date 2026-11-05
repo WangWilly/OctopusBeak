@@ -91,7 +91,6 @@ import { collectSinopacLoans, sinopacLoanTransport, type SinopacLoanTransport } 
 import {
   SINOPAC_MMA_ORIGIN,
   sinopacMmaSite,
-  type SinopacMmaReply,
   type SinopacMmaRoute,
   type SinopacMmaSite,
 } from "./sinopac-mma-site.ts";
@@ -558,10 +557,10 @@ export function decodeSinopacJsonSource(input: Readonly<{
 }
 
 /** Parse a SinoPac POST reply the MMA site already decoded strictly. */
-function parseSinopacJsonReply(reply: SinopacMmaReply, expectedPath: string): unknown {
-  assertSinopacJsonResponse({ ...reply, method: "POST" }, expectedPath);
-  return parseSinopacJson(reply.text);
-}
+/** Refuses a reply from the wrong endpoint, or one that is not a 200 JSON reply, before it is decoded. */
+const acceptSinopacJsonReply = (expectedPath: string) =>
+  (reply: Readonly<{ url: string; status: number; contentType: string }>) =>
+    assertSinopacJsonResponse({ ...reply, method: "POST" }, expectedPath);
 
 export function sinopacStatementRowsToCsv(rows: SinopacStatementRow[]): string {
   return rowsToCsv([statementHeaders, ...rows.map((row) => row.values)]);
@@ -915,9 +914,12 @@ async function querySinopacTransactions(
     StartDate: dateRange.startDate,
     EndDate: dateRange.endDate,
   });
-  const reply = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, { body: body.toString() });
+  const reply = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, {
+    body: body.toString(),
+    accept: acceptSinopacJsonReply(TRANSACTION_ENDPOINT),
+  });
   return sinopacSingleEnvelope<SinopacTransactionResponse>(
-    parseSinopacJsonReply(reply, TRANSACTION_ENDPOINT),
+    parseSinopacJson(reply.text),
     "transaction",
   );
 }

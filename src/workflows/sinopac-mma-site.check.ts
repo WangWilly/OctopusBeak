@@ -20,6 +20,10 @@ const ACCOUNT_ENDPOINT = "/ws/bank/transdetail/ws_debitacct.ashx";
 const PROVIDER_DATE = "Wed, 09 Sep 2026 02:01:02 GMT";
 const ACCOUNTS = [{ Header: "SUCCESS", SubInfo: [{ DataText: "活期存款 0012", DataValue: "0012", DisplayText: "TWD" }] }];
 const BALANCES = [{ Header: "SUCCESS", SubInfo: [{ AcctValue: "0012" }] }];
+const TRANSACTION_ENDPOINT = "/ws/bank/transdetail/ws_transdetailMerge.ashx";
+const TRANSACTIONS = [{ Header: "FAIL", Message: "查無資料" }];
+/** Bytes that are not UTF-8, inside an otherwise well-formed JSON reply. */
+const MALFORMED = Buffer.concat([Buffer.from('[{"Header":"SUCCESS","Message":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}]')]);
 
 let browser: Browser;
 before(async () => {
@@ -44,7 +48,10 @@ const requesting = (path: string, then = "") => `<!doctype html><script>
   fetch(${JSON.stringify(path)}, { method: "POST", body: "" }).then(() => { ${then} });
 </script>`;
 
-async function withMma(body: (page: Page, received: Received[]) => Promise<void>): Promise<void> {
+async function withMma(
+  body: (page: Page, received: Received[]) => Promise<void>,
+  options: Readonly<{ transactionStatus?: number }> = {},
+): Promise<void> {
   const page = await browser.newPage();
   const received: Received[] = [];
   try {
@@ -65,6 +72,10 @@ async function withMma(body: (page: Page, received: Received[]) => Promise<void>
           return html(`<p>載入中</p>`);
         case ACCOUNT_ENDPOINT:
           return void route.fulfill(json(ACCOUNTS));
+        case TRANSACTION_ENDPOINT:
+          return void route.fulfill(options.transactionStatus === undefined
+            ? json(TRANSACTIONS)
+            : { status: options.transactionStatus, contentType: "text/html; charset=utf-8", body: MALFORMED });
         case SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH:
           return void route.fulfill(json(BALANCES));
         case "/ws/echo.ashx":
@@ -73,7 +84,7 @@ async function withMma(body: (page: Page, received: Received[]) => Promise<void>
           return void route.fulfill({
             status: 200,
             contentType: "application/json; charset=utf-8",
-            body: Buffer.concat([Buffer.from('[{"Header":"SUCCESS","Message":"'), Buffer.from([0xc3, 0x28]), Buffer.from('"}]')]),
+            body: MALFORMED,
           });
         default:
           return html(`<p>${url.pathname}</p>`);
@@ -98,7 +109,37 @@ test("the transaction route opens by goto from another signed-in page and reads 
     assert.equal(new URL(page.url()).pathname, "/mma/bank/transdetail/mma_transdetail.aspx");
     assert.equal(await page.locator("#StartDate").count(), 1, "the route waited for its form");
     assert.ok(received.some((request) => request.path === ACCOUNT_ENDPOINT));
+    assert.equal(await page.evaluate(() => (window as unknown as { detailClicked?: boolean }).detailClicked), undefined,
+      "the route never clicks the link the signed-in page shows");
   }));
+
+test("the transaction query posts the selected account and window to ws_transdetailMerge and reads its envelope", () =>
+  withMma(async (page, received) => {
+    const site = sinopacMmaSite(page, context());
+    const source = sinopacDepositSource(site, context() as unknown as WorkflowContext, product);
+    const [account] = await source.listAccounts();
+    const reply = await source.queryTransactions(account!, { startDate: "2026/08/01", endDate: "2026/08/31" }, "2026/09/09");
+    assert.deepEqual(reply, TRANSACTIONS[0]);
+    const sent = received.at(-1)!;
+    assert.equal(sent.path, TRANSACTION_ENDPOINT);
+    const form = new URLSearchParams(sent.body ?? "");
+    assert.equal(form.get("AcctValue"), "0012");
+    assert.equal(form.get("Curr"), "TWD");
+    assert.equal(form.get("StartDate"), "2026/08/01");
+    assert.equal(form.get("EndDate"), "2026/08/31");
+    assert.equal(form.get("BusinessDate"), "2026/09/09");
+  }));
+
+test("a transaction reply that is not a 200 JSON reply is refused before its body is decoded", () =>
+  withMma(async (page) => {
+    const site = sinopacMmaSite(page, context());
+    const source = sinopacDepositSource(site, context() as unknown as WorkflowContext, product);
+    const [account] = await source.listAccounts();
+    const error = await source.queryTransactions(account!, { startDate: "2026/08/01", endDate: "2026/08/31" }, "2026/09/09")
+      .then(() => assert.fail("the error page was read"), (rejection: unknown) => rejection);
+    assert.ok(!(error instanceof SourceTextIntegrityError), "the malformed body was decoded before the status was checked");
+    assert.match(String(error), /status is not 200 \(500\)/u);
+  }, { transactionStatus: 500 }));
 
 test("the balance route returns the raw ws_bankbal body and its response headers", () =>
   withMma(async (page) => {
