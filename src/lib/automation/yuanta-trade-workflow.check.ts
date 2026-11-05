@@ -246,9 +246,41 @@ function response(bytes: Uint8Array, headers: Record<string, string> = { "conten
   } as unknown as Response;
 }
 
+test("Yuanta Trade names a report page that does not parse a validation failure", async () => {
+  const harness = createHarness();
+  await assert.rejects(
+    runYuantaTrade(harness.context, selectedInput, async (_page, input, context, product) => {
+      const malformed = new TextEncoder().encode("<script>var accountData = [{\"index\":];</script>");
+      const snapshot = await readYuantaTradeSource({
+        captureReport: () => decodeYuantaTradeReportResponse(
+          response(malformed),
+          { text: context.text, validate: product.validate },
+          "Stock",
+        ),
+      }, input, context, product);
+      return stageYuantaTrade(snapshot, input, context, product);
+    }),
+    assertProductFailure("source-validation-failed", /JSON/u),
+  );
+  assert.equal(harness.committed.length, 0);
+  assert.ok(harness.events.some((event) => event.code === "source-validation-rejected"));
+});
+
+test("Yuanta Trade names a timed-out report read a collection failure", async () => {
+  const harness = createHarness();
+  await assert.rejects(
+    runYuantaTrade(harness.context, selectedInput, readingReports(async () => {
+      throw Object.assign(new Error("page.waitForNavigation: Timeout 60000ms exceeded."), { name: "TimeoutError" });
+    })),
+    assertProductFailure("source-collection-failed", /Timeout/u),
+  );
+  assert.equal(harness.committed.length, 0);
+  assert.ok(!harness.events.some((event) => event.code === "source-validation-rejected"));
+});
+
 test("Yuanta Trade source decoding rejects malformed response bytes", async () => {
   await assert.rejects(
-    decodeYuantaTradeReportResponse(response(Uint8Array.from([0xc3, 0x28])), strictSourceText, "Stock"),
+    decodeYuantaTradeReportResponse(response(Uint8Array.from([0xc3, 0x28])), { text: strictSourceText, validate: async <T>(check: () => T | Promise<T>) => await check() }, "Stock"),
     /encoding|integrity/i,
   );
 });

@@ -44,6 +44,7 @@ export function yuantaStagingHandle(
       activities.push(activity);
     },
     event: async () => undefined,
+    validate: async (check) => await check(),
     collectionPeriod: () => {
       if (!period) throw new Error("This check supplies no collection period.");
       return period;

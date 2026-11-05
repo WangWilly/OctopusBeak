@@ -33,7 +33,7 @@ import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/s
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
@@ -1051,6 +1051,7 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 async function readIssuerStatementSummaries(
   scope: FrameScope,
   readJson: (response: Response) => Promise<unknown>,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
   const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
   const { page } = popup;
@@ -1074,17 +1075,20 @@ async function readIssuerStatementSummaries(
       await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
       const response = await responsePromise;
       if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
-      try {
-        summaries.push(issuerSummaryFromBillResponse(await popup.race(readJson(response))));
-      } catch (error) {
-        popup.signal.throwIfAborted();
-        if (error instanceof SourceTextIntegrityError) throw error;
-        throw new Error("E.SUN bill summary source is malformed or incomplete.");
-      }
+      const raw = await popup.race(readJson(response));
+      summaries.push(await validate(() => {
+        try {
+          return issuerSummaryFromBillResponse(raw);
+        } catch {
+          throw new Error("E.SUN bill summary source is malformed or incomplete.");
+        }
+      }));
     }
-    if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
-      throw new Error("E.SUN bill summary dates are duplicated.");
-    return summaries;
+    return await validate(() => {
+      if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
+        throw new Error("E.SUN bill summary dates are duplicated.");
+      return summaries;
+    });
   } finally {
     await page.close();
   }
@@ -1164,28 +1168,30 @@ export async function authenticateEsunPage(
 
 async function readEsunResponseJson(
   response: Response,
-  context: WorkflowContext,
+  text: SourceTextPort,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<unknown> {
-  try {
-    const decoded = context.text.decode(await response.body(), "utf-8");
-    context.text.assertIntact(decoded);
-    return JSON.parse(decoded) as unknown;
-  } catch (error) {
-    await context.event("decoding", "failed", "source-decoding-failed");
-    if (error instanceof SourceTextIntegrityError) throw error;
-    throw new Error("E.SUN provider response is not valid JSON.");
-  }
+  const body = await response.body();
+  return validate(() => {
+    const decoded = text.decode(body, "utf-8");
+    text.assertIntact(decoded);
+    try {
+      return JSON.parse(decoded) as unknown;
+    } catch {
+      throw new Error("E.SUN provider response is not valid JSON.");
+    }
+  });
 }
 
 async function collectEsunCreditCard(
   page: Page,
   context: WorkflowContext,
   input: EsunWorkflowInput,
-  stage: ProductCollectionHandle["stage"],
+  product: Pick<ProductCollectionHandle, "stage" | "validate">,
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const scope = frameScope(page, context.signal);
-  const readJson = (response: Response) => readEsunResponseJson(response, context);
+  const readJson = (response: Response) => readEsunResponseJson(response, context.text, product.validate);
   const currentCreditResponse = scope.withSignal((signal) => page.waitForResponse(
     (response) => response.url() ===
       "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
@@ -1211,7 +1217,7 @@ async function collectEsunCreditCard(
 
   let issuerSummaries: EsunIssuerStatementSummary[];
   try {
-    issuerSummaries = await readIssuerStatementSummaries(scope, readJson);
+    issuerSummaries = await readIssuerStatementSummaries(scope, readJson, product.validate);
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1225,13 +1231,13 @@ async function collectEsunCreditCard(
   if (response) {
     currentUsedCredit = await scope.race(readEsunCurrentUsedCredit(response, readJson));
   }
-  let settledPeriods: EsunCreditCardSettledPeriod[];
-  try {
-    settledPeriods = buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
-  } catch {
-    await context.event("validation", "failed", "source-validation-rejected");
-    throw new Error("E.SUN bill summary source failed validation.");
-  }
+  const settledPeriods = await product.validate(() => {
+    try {
+      return buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
+    } catch {
+      throw new Error("E.SUN bill summary source failed validation.");
+    }
+  });
   const rowsWithIssuerPeriods = attachEsunIssuerStatementPeriods(rows, settledPeriods);
   const unbilledRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "unbilled");
   const billedRows = rowsWithIssuerPeriods.filter((row) => statementKind(row) === "billed");
@@ -1244,13 +1250,10 @@ async function collectEsunCreditCard(
     timeline.terminal &&
     timeline.terminalCursor === 4 &&
     [...billedRows, ...unbilledRows].every((row) => cardKeyForRow(row).length === 4);
-  if (!isComplete || issuerSummaries.length < 2) {
-    await context.event("validation", "failed", "source-validation-rejected", {
-      completed: timeline.monthCount,
-      total: 12,
-    });
-    throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
-  }
+  await product.validate(() => {
+    if (!isComplete || issuerSummaries.length < 2)
+      throw new Error("E.SUN source is incomplete; Canonical Financial Commit was rejected.");
+  });
   await context.event("validation", "started", "source-validation-started", {
     completed: rows.length,
     total: rows.length,
@@ -1270,41 +1273,40 @@ async function collectEsunCreditCard(
       grid: timeline,
     },
   };
-  let canonicalCapture: EsunCreditCardValidatedCapture | undefined;
-  try {
-    canonicalCapture = buildEsunCanonicalCreditCardCapture({
-      startDate,
-      endDate,
-      identity,
-      statementRows: billedRows,
-      unbilledRows,
-      grid: timeline,
-      capture,
-      instrumentFingerprintSecret: managedSecret,
-      settledPeriods,
-    });
-  } catch {
-    await context.event("validation", "failed", "source-validation-rejected");
-    throw new Error("E.SUN source failed canonical admission validation.");
-  }
-  if (!canonicalCapture) {
-    await context.event("validation", "failed", "source-validation-rejected");
-    throw new Error("E.SUN source failed canonical completeness validation.");
-  }
+  const canonicalCapture: EsunCreditCardValidatedCapture = await product.validate(() => {
+    let admitted: EsunCreditCardValidatedCapture | undefined;
+    try {
+      admitted = buildEsunCanonicalCreditCardCapture({
+        startDate,
+        endDate,
+        identity,
+        statementRows: billedRows,
+        unbilledRows,
+        grid: timeline,
+        capture,
+        instrumentFingerprintSecret: managedSecret,
+        settledPeriods,
+      });
+    } catch {
+      throw new Error("E.SUN source failed canonical admission validation.");
+    }
+    if (!admitted) throw new Error("E.SUN source failed canonical completeness validation.");
+    return admitted;
+  });
   context.signal.throwIfAborted();
 
   const cardRequest = creditCardCommandRequestFromCanonicalCapture(
     esunCanonicalSpineCapture(canonicalCapture),
     esunNeutralCreditCardCapture(canonicalCapture),
   );
-  stage({
+  product.stage({
     product: "credit-card",
     itemKey: canonicalCapture.captureId,
     command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
   });
   if (currentUsedCredit) {
     const balanceCapture = esunCreditCurrentSnapshotCapture(canonicalCapture, currentUsedCredit);
-    stage({
+    product.stage({
       product: "current-balance",
       itemKey: balanceCapture.captureId,
       command: {
@@ -1346,7 +1348,7 @@ async function runEsunCreditCardWorkflow(
     let creditCard: EsunCreditCardCollection | null = null;
     const summary = await context.products.collect({
       credit_card: async (product): Promise<ProductCollectionSummary> => {
-        const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product.stage);
+        const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product);
         creditCard = collected;
         return { sourceCaptureCount: 1, rowCount: collected.count };
       },

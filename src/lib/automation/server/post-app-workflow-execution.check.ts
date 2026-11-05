@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Page, Response } from "playwright";
+import { errors, type Page, type Response } from "playwright";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -140,6 +140,8 @@ function fakePostPage(options: {
   signedIn?: boolean;
   malformed?: boolean;
   incomplete?: boolean;
+  /** iPost never answers the statement query, so its response wait times out. */
+  statementTimeout?: boolean;
 } = {}) {
   let signedIn = options.signedIn ?? false;
   let currentUrl = HOME_URL;
@@ -183,6 +185,8 @@ function fakePostPage(options: {
     waitForTimeout: async () => undefined,
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
       const index = pendingResponses.findIndex(predicate);
+      if (index === 0 && options.statementTimeout)
+        throw new errors.TimeoutError("Timeout 60000ms exceeded while waiting for event \"response\"");
       if (index < 0) throw new Error("No synthetic Post App response matched.");
       return pendingResponses.splice(index, 1)[0]!;
     },
@@ -302,7 +306,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
   }
 });
 
-test("Post App dispatch rejects malformed and incomplete EndBracket sources before commit", async () => {
+test("Post App dispatch names each unread statement's failure before commit", async () => {
   const task = taskById("post-statements");
   assert.ok(task);
   const root = await mkdtemp(join(tmpdir(), "post-app-invalid-source-"));
@@ -312,7 +316,12 @@ test("Post App dispatch rejects malformed and incomplete EndBracket sources befo
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    for (const source of [{ malformed: true }, { incomplete: true }]) {
+    // ADR 0106: only a check of the reply names a validation failure; the response wait stays collection.
+    for (const [source, errorCode] of [
+      [{ malformed: true }, "source-integrity-failed"],
+      [{ incomplete: true }, "source-validation-failed"],
+      [{ statementTimeout: true }, "source-collection-failed"],
+    ] as const) {
       const taskRunId = await createRun(provider);
       const page = fakePostPage({ signedIn: true, ...source });
       const result = await executeTaskRunForCheck(task, provider.automation, {
@@ -324,7 +333,7 @@ test("Post App dispatch rejects malformed and incomplete EndBracket sources befo
       assert.equal(result.status, "failed");
       assert.equal(committed.length, 0);
       const run = await provider.automation.taskRunById(taskRunId);
-      assert.ok(run?.events.some((event) => event.code === "source-response-rejected" || event.code === "source-decode-rejected"));
+      assert.equal(run?.appWorkflowOutcome?.errorCode, errorCode, JSON.stringify(source));
     }
     assert.deepEqual(await readdir(root), []);
   } finally {

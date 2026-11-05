@@ -372,7 +372,8 @@ test("a recoverable HNCB verified failure still collects the attached cards", as
   const cardRows = previewReceipt((await attachedRun(PAGES)).writes[0]!).transactions;
   assert.equal(output.counts.rowCount, cardRows, "only the attached card's transactions count; the failed deposit adds none");
   assert.deepEqual(output.products, [
-    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
+    // ADR 0106: the export read throws outside any check of its reply, so it is a collection failure.
+    { typeId: "deposit", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-collection-failed" },
     succeededCardOutcome,
   ]);
 });

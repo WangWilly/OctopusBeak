@@ -287,7 +287,6 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(committed.length, 1, "undecodable CTBC source is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
     assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
-    assert.ok(malformedRun?.events.some((event) => event.code === "source-decoding-failed"));
 
     let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancellationPage = createPage({ onPoll: async () => {

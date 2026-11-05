@@ -347,6 +347,7 @@ async function stageSnapshot(
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
+    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("Post declares no collection period"),
   };
   const outcome = await stagePostDeposit(
@@ -406,7 +407,7 @@ test("Post deposit build stages nothing when the read or the current balances fa
   }));
   assert.ok(malformed.outcome instanceof SourceTextIntegrityError);
   assert.deepEqual(malformed.staged, []);
-  assert.equal(malformed.codes.at(-1), "current-balance-collection-failed");
+  assert.equal(malformed.codes.at(-1), "current-balance-decoding-started", "bytes that are not intact name their own failure");
 
   const unknown = await stageSnapshot([statement], async () => currentBalanceResponse("99990000000009", "1"));
   assert.match(String(unknown.outcome), /without an existing admitted identity/u);
@@ -478,7 +479,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 
   await assert.rejects(
     runPost(harness.context, workflowInput, depositReading(() => [{ ...statement, rows: [] }])),
-    assertProductFailure("source-collection-failed", /source admission blocked/u),
+    assertProductFailure("source-validation-failed", /source admission blocked/u),
   );
   assert.equal(harness.committed.length, 0);
 

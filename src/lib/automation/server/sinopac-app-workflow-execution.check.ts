@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { Page, Response } from "playwright";
+import { errors, type Page, type Response } from "playwright";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -37,18 +37,26 @@ function response(url: string, value: unknown): Response {
   } as unknown as Response;
 }
 
-function createPage(options: { malformedTransactionSource?: boolean } = {}) {
+type SourceFault =
+  | "malformedTransactionSource"
+  | "malformedAccountList"
+  | "transactionTimeout"
+  | "accountListTimeout";
+
+const timeout = () => new errors.TimeoutError("Timeout 60000ms exceeded.");
+
+function createPage(options: { fault?: SourceFault } = {}) {
   const capturedCredentials = new Map<string, string>();
   const accountResponse = response(ACCOUNT_URL, [{
     Header: "SUCCESS",
     Message: "",
     SubInfo: [{
       DataText: "Synthetic TWD deposit",
-      DataValue: "000000000001",
+      DataValue: options.fault === "malformedAccountList" ? 1 : "000000000001",
       DisplayText: "TWD",
     }],
   }]);
-  const transactionPayload = options.malformedTransactionSource
+  const transactionPayload = options.fault === "malformedTransactionSource"
     ? [{ Header: "SUCCESS", Message: "", SubInfo: [{ DataText1: 42 }] }]
     : [{ Header: "FAIL", Message: "查無資料" }];
   const mainFrame = {};
@@ -76,7 +84,10 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
     frames: () => [mainFrame],
     async goto() { return undefined; },
     async waitForResponse(predicate: (candidate: Response) => boolean) {
-      if (predicate(accountResponse)) return accountResponse;
+      if (predicate(accountResponse)) {
+        if (options.fault === "accountListTimeout") throw timeout();
+        return accountResponse;
+      }
       throw new Error("Unexpected SinoPac App response waiter.");
     },
     async evaluate<T>(
@@ -84,6 +95,7 @@ function createPage(options: { malformedTransactionSource?: boolean } = {}) {
       argument?: { url?: string },
     ): Promise<T> {
       if (typeof argument?.url === "string") {
+        if (options.fault === "transactionTimeout" && argument.url.includes("ws_transdetailMerge")) throw timeout();
         return {
           url: argument.url.includes("ws_debitacct") ? ACCOUNT_URL : TRANSACTIONS_URL,
           status: 200,
@@ -199,21 +211,29 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source, output, or log files");
 
-    const rejectedRunId = await createRun(provider);
-    const invalidPage = createPage({ malformedTransactionSource: true });
-    const invalidBrowser: WorkflowBrowserPort = {
-      async withPage(runPage) { return runPage(invalidPage); },
-    };
-    const rejected = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: rejectedRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
-      workflowBrowserPort: () => invalidBrowser,
-    });
-    assert.equal(rejected.status, "failed");
-    assert.equal(committed.length, 1, "malformed source is rejected before Canonical Financial Commit");
-    const rejectedRun = await provider.automation.taskRunById(rejectedRunId);
-    assert.ok(rejectedRun?.events.some((event) => event.code === "source-response-rejected"));
+    // ADR 0106: only a check of the reply names a validation failure; a wait for it stays collection.
+    for (const [fault, errorCode] of [
+      ["malformedTransactionSource", "source-validation-failed"],
+      ["malformedAccountList", "source-validation-failed"],
+      ["transactionTimeout", "source-collection-failed"],
+      ["accountListTimeout", "source-collection-failed"],
+    ] as const) {
+      const rejectedRunId = await createRun(provider);
+      const invalidPage = createPage({ fault });
+      const invalidBrowser: WorkflowBrowserPort = {
+        async withPage(runPage) { return runPage(invalidPage); },
+      };
+      const rejected = await executeTaskRunForCheck(task, provider.automation, {
+        taskRunId: rejectedRunId,
+        launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+        workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
+        workflowBrowserPort: () => invalidBrowser,
+      });
+      assert.equal(rejected.status, "failed", fault);
+      assert.equal(committed.length, 1, `${fault} is rejected before Canonical Financial Commit`);
+      const rejectedRun = await provider.automation.taskRunById(rejectedRunId);
+      assert.equal(rejectedRun?.appWorkflowOutcome?.errorCode, errorCode, fault);
+    }
     assert.deepEqual(await readdir(root), []);
   } finally {
     process.chdir(previousDirectory);

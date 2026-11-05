@@ -405,30 +405,32 @@ function isCtbcResourceResponse(resource: string) {
   };
 }
 
+/** How the read half checks each provider reply: decoded by `text`, checked inside `validate`. */
+type CtbcReplyCheck = Readonly<{
+  text: SourceTextPort;
+  validate: ProductCollectionHandle["validate"];
+}>;
+
 async function nextCtbcResource<T>(
   scope: FrameScope,
   resource: string,
-  options: { allowNoData?: boolean; context: WorkflowContext },
+  options: { allowNoData?: boolean; reply: CtbcReplyCheck },
 ): Promise<CtbcResourceCapture<T>> {
   const response = await scope.withSignal((signal) => scope.page.waitForResponse(
     isCtbcResourceResponse(resource),
     { timeout: 60_000, signal },
   ));
-  let body: CtbcResourceResponse<T>;
-  try {
-    const bytes = await scope.race(response.body());
-    body = decodeCtbcSourceJson<CtbcResourceResponse<T>>(
+  const bytes = await scope.race(response.body());
+  const body = await options.reply.validate(() => {
+    const value = decodeCtbcSourceJson<CtbcResourceResponse<T>>(
       bytes,
-      options.context.text,
+      options.reply.text,
     );
-  } catch (error) {
-    await options.context.event("decoding", "failed", "source-decoding-failed");
-    throw error;
-  }
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    await options.context.event("validation", "failed", "source-response-rejected");
-    throw new Error("CTBC provider response shape is invalid.");
-  }
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("CTBC provider response shape is invalid.");
+    return value;
+  });
+  // A provider error code is the source refusing the read, not a malformed reply.
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
     requireCtbcOk(body, resource);
   }
@@ -476,17 +478,17 @@ export function ctbcResponseShape(
 
 async function openDomesticDetailsPage(
   scope: FrameScope,
-  context: WorkflowContext,
+  reply: CtbcReplyCheck,
 ) {
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
     scope,
     "/twrbc-deposit/qu002/010",
-    { context },
+    { reply },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
     scope,
     "/twrbc-deposit/qu002/011",
-    { allowNoData: true, context },
+    { allowNoData: true, reply },
   );
   bootstrapPromise.catch(() => undefined);
   initialDetailsPromise.catch(() => undefined);
@@ -573,7 +575,7 @@ export function resolveCtbcAccountScope(
 async function selectDetailAccount(
   scope: FrameScope,
   account: CtbcAccount,
-  context: WorkflowContext,
+  reply: CtbcReplyCheck,
 ) {
   if (account.optionIndex === undefined) {
     throw new Error(`No CTBC page option index for ${account.label}.`);
@@ -586,12 +588,12 @@ async function selectDetailAccount(
   const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
     scope,
     "/twrbc-deposit/qu002/010",
-    { context },
+    { reply },
   );
   const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
     scope,
     "/twrbc-deposit/qu002/011",
-    { allowNoData: true, context },
+    { allowNoData: true, reply },
   );
   bootstrapPromise.catch(() => undefined);
   initialDetailsPromise.catch(() => undefined);
@@ -676,12 +678,12 @@ function monthTabs(page: Page): Locator {
 async function captureVisibleMonthDetails(
   scope: FrameScope,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
-  context: WorkflowContext,
+  reply: CtbcReplyCheck,
 ): Promise<Array<CtbcResourceCapture<CtbcDetailData>>> {
   const tabs = monthTabs(scope.page);
   await scope.withSignal((signal) => tabs.first().waitFor({ state: "visible", timeout: 60_000, signal }));
   const captures = [initialCapture];
-  detailsFromCapture(initialCapture);
+  await reply.validate(() => detailsFromCapture(initialCapture));
 
   const count = await scope.race(tabs.count());
   for (let index = 1; index < count; index += 1) {
@@ -689,12 +691,12 @@ async function captureVisibleMonthDetails(
     const detailPromise = nextCtbcResource<CtbcDetailData>(
       scope,
       "/twrbc-deposit/qu002/011",
-      { allowNoData: true, context },
+      { allowNoData: true, reply },
     );
     detailPromise.catch(() => undefined);
     await scope.withSignal((signal) => tabs.nth(index).click({ signal }));
     const capture = await detailPromise;
-    detailsFromCapture(capture);
+    await reply.validate(() => detailsFromCapture(capture));
     captures.push(capture);
   }
 
@@ -707,16 +709,16 @@ async function accountRowsFromCurrentPage(
   bootstrap: CtbcBootstrapData,
   initialCapture: CtbcResourceCapture<CtbcDetailData>,
   input: CtbcStatementsInput,
-  context: WorkflowContext,
+  reply: CtbcReplyCheck,
 ): Promise<{
   queryPeriods: string[];
   rows: CtbcStatementRow[];
   responses: CtbcObservedRangeResponse[];
 }> {
-  const captures = await captureVisibleMonthDetails(scope, initialCapture, context);
+  const captures = await captureVisibleMonthDetails(scope, initialCapture, reply);
   const ranges = bootstrap.dateRanges ?? [];
   const queryPeriods = queryPeriodsForBootstrap(bootstrap, input);
-  const responses = captures.map((capture, rangeOrdinal) => {
+  const responses = await reply.validate(() => captures.map((capture, rangeOrdinal) => {
     const code = capture.body.code === NO_DATA_CODE ? NO_DATA_CODE : "0000";
     const nextKey = cleanText(capture.body.rsData?.nextKey) || null;
     const range = ranges[rangeOrdinal];
@@ -730,7 +732,7 @@ async function accountRowsFromCurrentPage(
       rows: ctbcDetailRowsToStatementRows(detailsFromCapture(capture)),
       responseShape: ctbcResponseShape(capture.body),
     } satisfies CtbcObservedRangeResponse;
-  });
+  }));
   const rows = responses
     .flatMap((response) => response.rows)
     .filter((row) => rowWithinDateRange(row, input));
@@ -746,10 +748,11 @@ export async function readCtbcDepositSource(
   page: Page,
   input: CtbcStatementsInput,
   context: WorkflowContext,
-  _product: ProductCollectionHandle,
+  product: ProductCollectionHandle,
 ): Promise<CtbcDepositSourceSnapshot> {
   const scope = frameScope(page, context.signal);
-  const opened = await openDomesticDetailsPage(scope, context);
+  const reply: CtbcReplyCheck = { text: context.text, validate: product.validate };
+  const opened = await openDomesticDetailsPage(scope, reply);
   const allAccounts = await readDetailAccountOptions(
     scope,
     accountsFromBootstrap(opened.data),
@@ -778,7 +781,7 @@ export async function readCtbcDepositSource(
       const selected = await selectDetailAccount(
         scope,
         account,
-        context,
+        reply,
       );
       bootstrap = selected.data;
       initialCapture = selected.initialCapture;
@@ -791,7 +794,7 @@ export async function readCtbcDepositSource(
       bootstrap,
       initialCapture,
       input,
-      context,
+      reply,
     );
     rowCount += rows.length;
     captures.push({
@@ -1072,14 +1075,11 @@ export async function stageCtbcDeposit(
   readCurrentBalanceResponse: CtbcReadCurrentDepositBalanceResponse,
 ): Promise<ProductCollectionSummary> {
   context.signal.throwIfAborted();
-  if (snapshot.captures.length === 0 ||
-    snapshot.output.count !== snapshot.captures.length) {
-    await product.event("validation", "failed", "source-validation-rejected", {
-      completed: snapshot.captures.length,
-      total: snapshot.output.count,
-    });
-    throw new Error("CTBC source has no complete selected account capture.");
-  }
+  await product.validate(() => {
+    if (snapshot.captures.length === 0 ||
+      snapshot.output.count !== snapshot.captures.length)
+      throw new Error("CTBC source has no complete selected account capture.");
+  });
   await product.event("validation", "started", "source-validation-started", {
     completed: 0,
     total: snapshot.captures.length,
@@ -1088,19 +1088,17 @@ export async function stageCtbcDeposit(
   const validatedCaptures: CtbcDomesticDepositValidatedEvidence[] = [];
   for (const observed of snapshot.captures) {
     context.signal.throwIfAborted();
-    const admission = admitCtbcDomesticDepositCaptureEvidence(
-      buildCtbcCapture(observed, observedAt),
-    );
-    if (admission.status !== "admissible" || !admission.capture) {
-      await product.event("validation", "failed", "source-validation-rejected", {
-        completed: validatedCaptures.length,
-        total: snapshot.captures.length,
-      });
-      throw new Error(
-        `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+    validatedCaptures.push(await product.validate(() => {
+      const admission = admitCtbcDomesticDepositCaptureEvidence(
+        buildCtbcCapture(observed, observedAt),
       );
-    }
-    validatedCaptures.push(admission.capture);
+      if (admission.status !== "admissible" || !admission.capture) {
+        throw new Error(
+          `CTBC domestic deposit source admission blocked: ${admission.diagnostics.join(", ")}`,
+        );
+      }
+      return admission.capture;
+    }));
   }
 
   const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
@@ -1122,21 +1120,20 @@ export async function stageCtbcDeposit(
       });
       continue;
     }
-    const admission = admitCtbcDomesticDepositFinancialCapture({
-      capture,
-      captureId: `ctbc-financial-${captureId}`,
-      humanAttestation: manifest,
-    });
-    if (admission.status !== "admitted" || !admission.capture) {
-      await product.event("validation", "failed", "canonical-admission-rejected", {
-        completed: financialCaptures.length,
-        total: validatedCaptures.length,
+    const admitted = await product.validate(() => {
+      const admission = admitCtbcDomesticDepositFinancialCapture({
+        capture,
+        captureId: `ctbc-financial-${captureId}`,
+        humanAttestation: manifest,
       });
-      throw new Error(
-        `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-      );
-    }
-    financialCaptures.push(admission.capture);
+      if (admission.status !== "admitted" || !admission.capture) {
+        throw new Error(
+          `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
+        );
+      }
+      return admission.capture;
+    });
+    financialCaptures.push(admitted);
     items.push({
       product: "domestic-deposit",
       itemKey: captureId,
@@ -1144,7 +1141,7 @@ export async function stageCtbcDeposit(
         kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
         request: { steps: [
           { kind: "source", request: source },
-          { kind: "deposit", request: { capture: admission.capture } },
+          { kind: "deposit", request: { capture: admitted } },
         ] },
       },
     });

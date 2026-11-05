@@ -27,14 +27,14 @@ export function playwrightFubonAttachedPreviewPort(
   const site = fubonEbankSite(page, context);
   return {
     async balances() {
-      // The preview stages nothing, so it reports no current-balance events.
+      // The preview stages nothing and names no Failure code, so it reports no current-balance events.
       return await readCurrentStateSnapshot({
         response: FUBON_CURRENT_DEPOSIT_RESPONSE,
         parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
       }, {
         acquire: () => readFubonCurrentDepositBalanceTable(site),
         now: () => context.now(),
-        product: { event: async () => undefined },
+        product: { event: async () => undefined, validate: async (check) => await check() },
         text: context.text,
         signal: context.signal,
       });

@@ -84,6 +84,7 @@ function response(resource: string, value: unknown): Response {
 function createPage(options: {
   expectedRanges?: number;
   detailResponse?: Response;
+  detailTimeout?: boolean;
   signedIn?: boolean;
   signInAfterProbes?: number;
   precedingEmptyRange?: boolean;
@@ -104,7 +105,7 @@ function createPage(options: {
     ...(options.precedingEmptyRange ? [response(detailsResource, {
       code: "0000", rsData: { detailList: [], nextKey: "" },
     })] : []),
-    options.detailResponse ?? response(detailsResource, {
+    ...options.detailTimeout ? [] : [options.detailResponse ?? response(detailsResource, {
       code: "0000",
       rsData: {
         detailList: [{
@@ -119,7 +120,7 @@ function createPage(options: {
         }],
         nextKey: "",
       },
-    }),
+    })],
   ];
   let signedIn = options.signedIn ?? true;
   let probes = 0;
@@ -151,6 +152,8 @@ function createPage(options: {
     waitForTimeout: async () => undefined,
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
       const index = responses.findIndex(predicate);
+      if (index < 0 && options.detailTimeout)
+        throw Object.assign(new Error("page.waitForResponse: Timeout 60000ms exceeded."), { name: "TimeoutError" });
       if (index < 0) throw new Error("No synthetic CTBC response matched.");
       return responses.splice(index, 1)[0]!;
     },
@@ -369,7 +372,6 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
     (error: unknown) => error instanceof ProductCollectionInterruptedError
     && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.committed.length, 0);
-  assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ expectedRanges: 2 }) });
   await assert.rejects(runCtbc(incomplete.context, input, withCurrentBalances(async () => currentBalanceResponse())),
@@ -378,6 +380,27 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
     && /source admission blocked/u.test(String((error as { cause?: unknown }).cause)));
   assert.equal(incomplete.committed.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
+});
+
+test("CTBC names malformed JSON a validation failure and a timed-out read a collection failure", async () => {
+  const invalidJson = createContext({
+    page: createPage({ detailResponse: {
+      ...response(detailsResource, {}),
+      body: async () => Buffer.from('{"code":'),
+    } as Response }),
+  });
+  await assert.rejects(runCtbc(invalidJson.context, input, withCurrentBalances(async () => currentBalanceResponse())),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError
+    && error.errorCode === "source-validation-failed");
+  assert.equal(invalidJson.committed.length, 0);
+  assert.ok(invalidJson.events.some((event) => event.code === "source-validation-rejected"));
+
+  const timedOut = createContext({ page: createPage({ detailTimeout: true }) });
+  await assert.rejects(runCtbc(timedOut.context, input, withCurrentBalances(async () => currentBalanceResponse())),
+    (error: unknown) => error instanceof ProductCollectionInterruptedError
+    && error.errorCode === "source-collection-failed");
+  assert.equal(timedOut.committed.length, 0);
+  assert.ok(!timedOut.events.some((event) => event.code === "source-validation-rejected"));
 });
 
 test("CTBC current-balance failures keep their thrown error and its failure code", async () => {

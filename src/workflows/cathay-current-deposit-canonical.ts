@@ -266,7 +266,7 @@ type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
   acquire: () => Promise<CathayCurrentDepositResponse>;
   /** The run clock, an RFC3339 instant. */
   now: () => string;
-  product: Pick<ProductCollectionHandle, "event">;
+  product: Pick<ProductCollectionHandle, "event" | "validate">;
   text: SourceTextPort;
   signal: AbortSignal;
 }>;

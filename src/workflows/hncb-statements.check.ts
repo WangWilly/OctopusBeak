@@ -560,6 +560,7 @@ function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
+    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("the build half reads no collection period"),
   };
 }

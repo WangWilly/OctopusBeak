@@ -32,7 +32,7 @@ export type SinopacMmaPostInit = Readonly<{
   headers?: Readonly<Record<string, string>>;
   referrer?: string;
   /** Checks the reply's URL, status and content type before its body is decoded; throws to refuse it. */
-  accept?(reply: Readonly<{ url: string; status: number; contentType: string }>): void;
+  accept?(reply: Readonly<{ url: string; status: number; contentType: string }>): void | Promise<void>;
 }>;
 
 /** A POST's reply, its body decoded strictly as UTF-8. */
@@ -124,7 +124,7 @@ export function sinopacMmaSite(page: Page, context: SiteContext): SinopacMmaSite
           ...(init.referrer === undefined ? {} : { referrer: init.referrer }),
         },
       }));
-      init.accept?.({ url: reply.url, status: reply.status, contentType: reply.contentType });
+      await init.accept?.({ url: reply.url, status: reply.status, contentType: reply.contentType });
       const text = context.text.decode(Buffer.from(reply.base64, "base64"), "utf-8");
       context.text.assertIntact(text);
       return { url: reply.url, status: reply.status, contentType: reply.contentType, date: reply.date, text };

@@ -99,7 +99,10 @@ async function withMma(
 
 const context = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
 
-const product = { event: async () => undefined } as unknown as ProductCollectionHandle;
+const product = {
+  event: async () => undefined,
+  validate: async (check: () => unknown) => await check(),
+} as unknown as ProductCollectionHandle;
 
 test("the transaction route opens by goto from another signed-in page and reads the account list its load requests", () =>
   withMma(async (page, received) => {

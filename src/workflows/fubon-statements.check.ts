@@ -366,6 +366,7 @@ async function collectDeposit(
       stage: (...requests) => { stagedItems.push(...requests); },
       reportActivity: async () => undefined,
       event: async (_stage, _outcome, code) => { events.push(code); },
+      validate: async (check) => await check(),
       collectionPeriod: () => assert.fail("the staging half reads no collection period"),
     },
     readCurrentBalances ?? (async () => currentTable(currentRows)),

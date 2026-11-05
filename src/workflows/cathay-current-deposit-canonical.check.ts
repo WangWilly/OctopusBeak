@@ -33,6 +33,7 @@ import {
   cathayForeignOverviewBody,
   cathayOverviewAcquired,
 } from "./cathay-current-deposit-balances.fixtures.ts";
+import { validationReporter, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
 
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 const observedAt = "2026-09-08T21:20:10+08:00";
@@ -193,7 +194,10 @@ const domesticOverview = {
 
 function snapshotHarness(events: string[] = []) {
   return {
-    product: { event: async (_stage: string, outcome: string, code: string) => void events.push(`${code} ${outcome}`) },
+    product: (() => {
+      const event: ProductCollectionStageEvent = async (_stage, outcome, code) => void events.push(`${code} ${outcome}`);
+      return { event, validate: validationReporter(event, new AbortController().signal) };
+    })(),
     text: strictSourceText,
     signal: new AbortController().signal,
     now: () => observedAt,
@@ -245,7 +249,7 @@ type StagedBalance = Readonly<{
     domesticBalances([admittedStatement], domesticOverview, events),
     /^Error: Cathay domestic current balance source omitted a selected account\.$/u,
   );
-  assert.equal(events.at(-1), "current-balance-validation-rejected failed", "an incomplete overview rejects validation");
+  assert.equal(events.at(-1), "source-validation-rejected failed", "an incomplete overview rejects validation");
   assert.ok(!events.includes("current-balance-validation-completed completed"));
 }
 await assert.rejects(
@@ -259,7 +263,7 @@ await assert.rejects(
   const events: string[] = [];
   const truncated = { ...domesticOverview, body: domesticOverview.body.replace(/\}$/u, "") };
   await assert.rejects(domesticBalances([admittedForRows], truncated, events), /not valid JSON/u);
-  assert.deepEqual(events.slice(-2), ["current-balance-decoding-failed failed", "current-balance-collection-failed failed"]);
+  assert.equal(events.at(-1), "source-validation-rejected failed", "a reply that is not JSON rejects validation");
 }
 
 // Foreign balances key by the admitted account number; each account stages

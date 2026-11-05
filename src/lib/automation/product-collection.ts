@@ -7,7 +7,7 @@ import type {
 import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
 import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
 import { strictSourceText } from "./source-text.ts";
-import { classifyFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
+import { classifyFailure, namesItsFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
 import {
   FailureCodeError,
   TYPED_WORKFLOW_ERROR_CODES,
@@ -195,6 +195,15 @@ export type ProductCollectionHandle = Readonly<{
    */
   event: ProductCollectionStageEvent;
   /**
+   * Runs one check of what the source returned: a shape check, a parse or an
+   * admission, never a browser or network wait (ADR 0106). An untyped error it
+   * throws is reported as this product's validation failure and thrown on, so
+   * the product fails as `source-validation-failed`; a wait that fails outside
+   * it stays a collection failure. A typed error, an absence or a cancellation
+   * is thrown on unreported.
+   */
+  validate: <T>(check: () => T | Promise<T>) => Promise<T>;
+  /**
    * ADR 0077: the dates this product queries, from its declaration and the
    * Taipei date when the product first asks, the same for every call for
    * this product. Throws
@@ -202,6 +211,27 @@ export type ProductCollectionHandle = Readonly<{
    */
   collectionPeriod: () => CollectionPeriod;
 }>;
+
+/**
+ * The handle's `validate` (ADR 0106), reporting through `event`: an untyped
+ * error from the check becomes a validation failure, unless the run was
+ * cancelled or the error names its own outcome. Checks that drive a collector
+ * outside a run build the same one.
+ */
+export function validationReporter(
+  event: ProductCollectionStageEvent,
+  signal: AbortSignal,
+): ProductCollectionHandle["validate"] {
+  return async (check) => {
+    try {
+      return await check();
+    } catch (error) {
+      if (!signal.aborted && !namesItsFailure(error) && !(error instanceof StatementComponentAbsentError))
+        await event("validation", "failed", "source-validation-rejected");
+      throw error;
+    }
+  };
+}
 
 /** Explicit evidence classification for a selected product with no records. */
 export class StatementComponentAbsentError extends Error {
@@ -426,6 +456,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         stage: productStager(options.provider, stagedItems),
         reportActivity,
         event: collectorEvent,
+        validate: validationReporter(collectorEvent, options.signal),
         collectionPeriod: () => {
           if (!options.collectionPeriod) throw new FailureCodeError("workflow-failed");
           return options.collectionPeriod(typeId);

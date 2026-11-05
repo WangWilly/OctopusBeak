@@ -91,6 +91,8 @@ function transactionResponse(options: {
 function createPage(options: {
   signedIn?: boolean;
   malformedTransactions?: boolean;
+  invalidJsonTransactions?: boolean;
+  transactionTimeout?: boolean;
   incompleteTransactions?: boolean;
   noTransactions?: boolean;
   onSourceRead?: () => void;
@@ -181,6 +183,8 @@ function createPage(options: {
       options.onSourceRead?.();
       const isAccount = argument.path.includes("/v1/account/common/payables");
       if (!isAccount) options.onTransactionQuery?.(argument.body ?? {});
+      if (!isAccount && options.transactionTimeout)
+        throw Object.assign(new Error("page.evaluate: Timeout 30000ms exceeded."), { name: "TimeoutError" });
       const body = isAccount
         ? accountBody
         : JSON.stringify(transactionResponse({
@@ -188,9 +192,9 @@ function createPage(options: {
             incomplete: options.incompleteTransactions,
             empty: options.noTransactions,
           }));
-      const bytes = isAccount || !options.malformedTransactions
+      const bytes = isAccount || !(options.malformedTransactions || options.invalidJsonTransactions)
         ? [...new TextEncoder().encode(body)]
-        : [0xc3, 0x28];
+        : options.malformedTransactions ? [0xc3, 0x28] : [...new TextEncoder().encode("{\"code\":")];
       return {
         bodyBytes: bytes,
         url: isAccount
@@ -365,13 +369,26 @@ test("LINE Bank rejects malformed and incomplete sources before any commit", asy
   await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, malformed.context, input), (error: unknown) =>
     error instanceof ProductCollectionInterruptedError && error.errorCode === "source-integrity-failed");
   assert.equal(malformed.commits.length, 0);
-  assert.ok(malformed.events.some((event) => event.code === "source-decoding-failed"));
 
   const incomplete = createContext({ page: createPage({ incompleteTransactions: true }) });
   await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, incomplete.context, input), (error: unknown) =>
     error instanceof ProductCollectionInterruptedError && error.errorCode === "source-validation-failed");
   assert.equal(incomplete.commits.length, 0);
   assert.ok(incomplete.events.some((event) => event.code === "source-validation-rejected"));
+});
+
+test("LINE Bank names malformed JSON a validation failure and a timed-out read a collection failure", async () => {
+  const invalidJson = createContext({ page: createPage({ invalidJsonTransactions: true }) });
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, invalidJson.context, input), (error: unknown) =>
+    error instanceof ProductCollectionInterruptedError && error.errorCode === "source-validation-failed");
+  assert.equal(invalidJson.commits.length, 0);
+  assert.ok(invalidJson.events.some((event) => event.code === "source-validation-rejected"));
+
+  const timedOut = createContext({ page: createPage({ transactionTimeout: true }) });
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, timedOut.context, input), (error: unknown) =>
+    error instanceof ProductCollectionInterruptedError && error.errorCode === "source-collection-failed");
+  assert.equal(timedOut.commits.length, 0);
+  assert.ok(!timedOut.events.some((event) => event.code === "source-validation-rejected"));
 });
 
 for (const { stop, errorCode } of STOPPED_COMMITS) {

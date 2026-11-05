@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
-import type { ProductCollectionSummary, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import type {
+  ProductCollectionHandle,
+  ProductCollectionSummary,
+  ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
@@ -822,10 +826,16 @@ function responseCharset(contentType: string): string {
 export class LineBankApiClient {
   private scope: FrameScope;
   private text: SourceTextPort;
+  private validate: ProductCollectionHandle["validate"];
 
-  constructor(scope: FrameScope, options: { text: SourceTextPort }) {
+  /** `validate` runs each check of a reply; the reads themselves run outside it. */
+  constructor(
+    scope: FrameScope,
+    options: { text: SourceTextPort; validate: ProductCollectionHandle["validate"] },
+  ) {
     this.scope = scope;
     this.text = options.text;
+    this.validate = options.validate;
   }
 
   private async apiResponse(
@@ -897,9 +907,11 @@ export class LineBankApiClient {
     const response = await this.apiResponse(path, options);
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${path}`);
-    const value = parseLinebankApiJson<T>(response.body);
-    this.text.assertIntact(JSON.stringify(value));
-    return value;
+    return this.validate(() => {
+      const value = parseLinebankApiJson<T>(response.body);
+      this.text.assertIntact(JSON.stringify(value));
+      return value;
+    });
   }
 
   /** One account-list read drives both the statements and the current balances. */
@@ -910,17 +922,24 @@ export class LineBankApiClient {
     const response = await this.apiResponse(ACCOUNTS_ENDPOINT);
     if (response.status < 200 || response.status >= 300)
       throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
-    const payload = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
-    this.text.assertIntact(JSON.stringify(payload));
+    const payload = await this.validate(() => {
+      const value = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
+      this.text.assertIntact(JSON.stringify(value));
+      return value;
+    });
+    // A provider error code is the source refusing the read, not a malformed reply.
     if (payload.code !== "200") {
       throw new Error(
         `LINE Bank account list failed: ${payload.message ?? "unknown"}`,
       );
     }
-    if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
-      throw new Error("LINE Bank account list is incomplete.");
+    const accounts = await this.validate(() => {
+      if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
+        throw new Error("LINE Bank account list is incomplete.");
+      return payload.content.dpstAcctList;
+    });
     return {
-      accounts: payload.content.dpstAcctList,
+      accounts,
       currentBalance: {
         evidence: { kind: "json", bytes: response.bytes },
         response: {
@@ -961,37 +980,43 @@ export class LineBankApiClient {
           },
         },
       );
-      const page = linebankTransactionPageFromResponse(response);
-      if (page.pageNbr !== pageNbr) {
-        throw new Error(
-          "LINE Bank transaction page metadata does not match the requested page.",
-        );
-      }
-      if (page.totTxCnt < rows.length + page.rows.length) {
-        throw new Error(
-          "LINE Bank transaction page rows exceed the reported total.",
-        );
-      }
-      pages.push(page);
-      linebankValidateTransactionPageSequence(pages, {
-        expectedAccount: account,
+      // A provider error code is the source refusing the read, not a malformed reply.
+      if (response.code !== "200") throw new Error("LINE Bank transactions failed.");
+      await this.validate(() => {
+        const page = linebankTransactionPageFromResponse(response);
+        if (page.pageNbr !== pageNbr) {
+          throw new Error(
+            "LINE Bank transaction page metadata does not match the requested page.",
+          );
+        }
+        if (page.totTxCnt < rows.length + page.rows.length) {
+          throw new Error(
+            "LINE Bank transaction page rows exceed the reported total.",
+          );
+        }
+        pages.push(page);
+        linebankValidateTransactionPageSequence(pages, {
+          expectedAccount: account,
+        });
+        rows.push(...page.rows);
+        total = page.totTxCnt;
+        if (page.rows.length === 0 && rows.length < total) {
+          throw new Error(
+            "LINE Bank transaction pagination ended before the reported total.",
+          );
+        }
       });
-      rows.push(...page.rows);
-      total = page.totTxCnt;
-      if (page.rows.length === 0 && rows.length < total) {
-        throw new Error(
-          "LINE Bank transaction pagination ended before the reported total.",
-        );
-      }
       if (rows.length >= total) break;
       pageNbr += 1;
     }
 
-    linebankValidateTransactionPageSequence(pages, {
-      requireComplete: true,
-      expectedAccount: account,
+    return this.validate(() => {
+      linebankValidateTransactionPageSequence(pages, {
+        requireComplete: true,
+        expectedAccount: account,
+      });
+      return pages;
     });
-    return pages;
   }
 
 }
@@ -1074,17 +1099,6 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
   };
 }
 
-function sourceDecodeError(error: unknown): boolean {
-  return error instanceof Error && (
-    error.name === "SourceTextIntegrityError" ||
-    /API response body is not valid JSON/u.test(error.message)
-  );
-}
-
-function sourceValidationError(error: unknown): boolean {
-  return error instanceof Error && /pagination|page metadata|pageCnt|totTxCnt|transaction page|source account identity|total row count|transaction source/u.test(error.message);
-}
-
 /**
  * Keep the balance rows of the selected accounts, and require exactly one
  * for each selected TWD account, each of which this run admitted.
@@ -1148,31 +1162,22 @@ async function runLineBankWorkflow(
     await linebankAutoDismissApprovedAlert(scope);
     await linebankEnsureTransactionPage(scope);
 
-    const client = new LineBankApiClient(scope, { text: context.text });
     let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const windows = linebankQueryWindows(product.collectionPeriod());
         const productContext: WorkflowContext = { ...context, event: product.event };
+        const client = new LineBankApiClient(scope, { text: context.text, validate: product.validate });
         await productContext.event("decoding", "started", "source-decoding-started");
-        let accountSnapshot: Awaited<ReturnType<LineBankApiClient["fetchAccountSnapshot"]>>;
-        let accountSnapshotAt: string;
-        let accounts: LineBankAccount[];
-        try {
-          accountSnapshot = await client.fetchAccountSnapshot();
-          accountSnapshotAt = context.now();
-          accounts = filterAccounts(
-            accountSnapshot.accounts,
-            input.accountFilters,
-            input.currencyFilters,
-          );
-          if (accounts.length === 0)
-            throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
-        } catch (error) {
-          if (sourceDecodeError(error))
-            await productContext.event("decoding", "failed", "source-decoding-failed");
-          throw error;
-        }
+        const accountSnapshot = await client.fetchAccountSnapshot();
+        const accountSnapshotAt = context.now();
+        const accounts = filterAccounts(
+          accountSnapshot.accounts,
+          input.accountFilters,
+          input.currencyFilters,
+        );
+        if (accounts.length === 0)
+          throw new Error("No LINE Bank accounts matched accountFilters/currencyFilters.");
 
         const selectedSources: Array<{
           account: LineBankAccount;
@@ -1181,40 +1186,25 @@ async function runLineBankWorkflow(
         }> = [];
         let statementRowCount = 0;
         const expectedSourceCount = accounts.length * windows.length;
-        try {
-          for (const account of accounts) {
-            for (const window of windows) {
-              context.signal.throwIfAborted();
-              const pages = await client.fetchTransactionPages(account, window);
-              selectedSources.push({ account, dateRange: window, pages });
-              statementRowCount += linebankApiRowsToStatementRows(
-                pages.flatMap((page) => page.rows),
-              ).length;
-            }
-            await productContext.event("collection", "advanced", "account-collected", {
-              completed: selectedSources.length,
-              total: expectedSourceCount,
-            });
+        for (const account of accounts) {
+          for (const window of windows) {
+            context.signal.throwIfAborted();
+            const pages = await client.fetchTransactionPages(account, window);
+            selectedSources.push({ account, dateRange: window, pages });
+            statementRowCount += await product.validate(() => linebankApiRowsToStatementRows(
+              pages.flatMap((page) => page.rows),
+            ).length);
           }
-        } catch (error) {
-          if (sourceDecodeError(error))
-            await productContext.event("decoding", "failed", "source-decoding-failed");
-          else if (sourceValidationError(error)) {
-            await productContext.event("validation", "failed", "source-validation-rejected", {
-              completed: selectedSources.length,
-              total: expectedSourceCount,
-            });
-          }
-          throw error;
-        }
-        context.signal.throwIfAborted();
-        if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0) {
-          await productContext.event("validation", "failed", "source-validation-rejected", {
+          await productContext.event("collection", "advanced", "account-collected", {
             completed: selectedSources.length,
             total: expectedSourceCount,
           });
-          throw new Error("LINE Bank source does not contain every selected account and date window.");
         }
+        context.signal.throwIfAborted();
+        await product.validate(() => {
+          if (selectedSources.length !== expectedSourceCount || selectedSources.length === 0)
+            throw new Error("LINE Bank source does not contain every selected account and date window.");
+        });
 
         await productContext.event("validation", "started", "source-validation-started", {
           completed: 0,
@@ -1231,9 +1221,9 @@ async function runLineBankWorkflow(
           completed: 0,
           total: selectedSources.length,
         });
-        try {
-          for (const [index, selected] of selectedSources.entries()) {
-            context.signal.throwIfAborted();
+        for (const [index, selected] of selectedSources.entries()) {
+          context.signal.throwIfAborted();
+          await product.validate(async () => {
             const captureId = `linebank-${randomUUID()}`;
             if (linebankAccountCurrency(selected.account) === "TWD") {
               const capture = await linebankHumanAttestedCapture({
@@ -1273,17 +1263,11 @@ async function runLineBankWorkflow(
                 },
               });
             }
-            await productContext.event("validation", "advanced", "account-source-admitted", {
-              completed: index + 1,
-              total: selectedSources.length,
-            });
-          }
-        } catch (error) {
-          await productContext.event("validation", "failed", "source-validation-rejected", {
-            completed: statementItems.length,
+          });
+          await productContext.event("validation", "advanced", "account-source-admitted", {
+            completed: index + 1,
             total: selectedSources.length,
           });
-          throw error;
         }
 
         await productContext.event("validation", "completed", "canonical-admission-completed", {

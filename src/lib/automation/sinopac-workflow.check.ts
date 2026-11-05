@@ -233,6 +233,7 @@ function productHandle(staged: ProductStageRequest[], codes: string[]): ProductC
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
+    validate: async (check) => await check(),
     collectionPeriod: () => salaryDay,
   };
 }
@@ -299,13 +300,13 @@ test("SinoPac queries twelve months inclusive in one-month-and-one-day windows e
   ].map((window) => `${window} 20260925`));
 });
 
-test("the SinoPac read half reports an undecodable window before it fails", async () => {
+test("the SinoPac read half leaves an undecodable window to name its own failure", async () => {
   const codes: string[] = [];
   const context = makeContext({ page: pageFixture(), financialCommit: financialCommitStub([]) });
   await assert.rejects(readSinopacDepositSource(fakeSource({
     queryTransactions: async () => { throw new SourceTextIntegrityError("invalid-encoding"); },
   }), input, context, productHandle([], codes)), SourceTextIntegrityError);
-  assert.equal(codes.at(-1), "source-decode-rejected");
+  assert.equal(codes.at(-1), "source-decoding-started", "the integrity error names the failure; no stage is reported");
 });
 
 test("a SinoPac snapshot of provider no-data stages source only and never reads current balances", async () => {

@@ -85,7 +85,10 @@ test("cancelling the run stops a deposit read clicking the account selector", ()
       text: strictSourceText,
       event: async () => undefined,
     } as unknown as WorkflowContext;
-    const product = { stage: (...requests: ProductStageRequest[]) => { staged.push(...requests); } } as unknown as ProductCollectionHandle;
+    const product = {
+      stage: (...requests: ProductStageRequest[]) => { staged.push(...requests); },
+      validate: async <T>(check: () => T | Promise<T>) => await check(),
+    } as unknown as ProductCollectionHandle;
     await assertStopped(page, readCtbcDepositSource(page, {
       credentials: { ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password" },
       statementTypes: ["deposit"],

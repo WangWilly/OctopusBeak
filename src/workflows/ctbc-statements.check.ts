@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { namesItsFailure } from "../lib/automation/failure-classification.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -228,6 +229,16 @@ function stagingHarness(signal = new AbortController().signal) {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: context.event,
+    // As the run's handle: an untyped error from a check is reported as rejected, then thrown on.
+    validate: async (check) => {
+      try {
+        return await check();
+      } catch (error) {
+        if (!signal.aborted && !namesItsFailure(error))
+          await context.event("validation", "failed", "source-validation-rejected");
+        throw error;
+      }
+    },
     collectionPeriod: () => assert.fail("CTBC declares no collection period"),
   };
   return {
@@ -318,7 +329,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
     harness.stage(financialSnapshot, [{ ...currentBalance, accountId: conflictingCtbcAccountNumber }]),
     /no admitted account identity/u,
   );
-  assert.ok(harness.events.includes("current-balance-validation-rejected"));
+  assert.ok(harness.events.includes("source-validation-rejected"));
   assert.deepEqual(harness.staged, []);
 }
 
@@ -329,7 +340,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
     harness.stage(financialSnapshot, new Error("synthetic balance page failure")),
     /synthetic balance page failure/u,
   );
-  assert.deepEqual(harness.events.slice(-2), ["current-balance-decoding-failed", "current-balance-collection-failed"]);
+  assert.equal(harness.events.at(-1), "current-balance-collection-failed", "a failed read is a collection failure");
   assert.deepEqual(harness.staged, []);
 }
 

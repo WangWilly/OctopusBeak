@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
-import {
-  SourceTextIntegrityError,
-  type SourceTextPort,
-} from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
@@ -738,17 +735,64 @@ async function queryAccountStatements(
   return await waitForStatementResult(site);
 }
 
+const HNCB_EXPORT_MEDIA_TYPES = [
+  "application/vnd.ms-excel",
+  "application/x-excel",
+  "application/xls",
+  "application/octet-stream",
+  "text/html",
+];
+const HNCB_MAX_EXPORT_BYTES = 64 * 1024 * 1024;
+
+/** Refuses an export reply that is not HNCB's terminal Big5 attachment, before its body is read. */
+function acceptHncbExportResponse(status: number, headers: Readonly<Record<string, string>>): void {
+  if (status !== 200)
+    throw new Error("HNCB export response was not terminal.");
+  const contentType = headers["content-type"]?.trim() ?? "";
+  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (!HNCB_EXPORT_MEDIA_TYPES.includes(mediaType))
+    throw new Error("HNCB export response has an unexpected content type.");
+  if (!/\battachment\b/iu.test(headers["content-disposition"] ?? ""))
+    throw new Error("HNCB export response is missing terminal attachment evidence.");
+  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
+    contentType,
+  )?.[1]?.toLowerCase();
+  if (
+    charset &&
+    !["big5", "cp950", "windows-950"].includes(charset)
+  )
+    throw new Error("HNCB export response charset contradicts the Big5 contract.");
+  const declaredLength = Number(headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > HNCB_MAX_EXPORT_BYTES)
+    throw new Error("HNCB export response exceeds the in-memory size limit.");
+}
+
+/** Decode and parse one export body as HNCB's Big5 statement workbook. */
+function readHncbExportBody(bytes: Uint8Array, text: SourceTextPort, fallbackAccount: string): ParsedStatement {
+  if (bytes.byteLength === 0 || bytes.byteLength > HNCB_MAX_EXPORT_BYTES)
+    throw new Error("HNCB export response is empty or exceeds the in-memory size limit.");
+  const content = text.decode(bytes, "big5");
+  text.assertIntact(content);
+  const parsed = parseStatementExport(content, fallbackAccount);
+  if (!parsed.queryPeriod || !parsed.currency)
+    throw new Error("HNCB export workbook is incomplete.");
+  return parsed;
+}
+
 /**
  * Capture HNCB's export response through Playwright routing so Chromium never
  * creates its managed download artifact. The paused browser request is fetched
  * exactly once with the page's cookies, decoded from the returned bytes, then
  * fulfilled with an empty response so attachment handling cannot write a file.
+ * The reply's headers and body are checked through `validate`; the popup and
+ * the fetch are waits outside it.
  */
 export async function downloadCurrentStatementInMemory(
   scope: FrameScope,
   fallbackAccount: string,
   resultFrame: Frame,
   text: SourceTextPort,
+  validate: ProductCollectionHandle["validate"],
   timeoutMs = 60_000,
 ): Promise<HncbStatementDownload> {
   const { page, signal } = scope;
@@ -787,50 +831,17 @@ export async function downloadCurrentStatementInMemory(
     intercepted = true;
     try {
       const response = await route.fetch();
-      if (response.status() !== 200)
-        throw new Error("HNCB export response was not terminal.");
       const headers = response.headers();
-      const contentType = headers["content-type"]?.trim() ?? "";
-      const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-      if (
-        ![
-          "application/vnd.ms-excel",
-          "application/x-excel",
-          "application/xls",
-          "application/octet-stream",
-          "text/html",
-        ].includes(mediaType)
-      )
-        throw new Error("HNCB export response has an unexpected content type.");
-      if (!/\battachment\b/iu.test(headers["content-disposition"] ?? ""))
-        throw new Error("HNCB export response is missing terminal attachment evidence.");
-      const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-        contentType,
-      )?.[1]?.toLowerCase();
-      if (
-        charset &&
-        !["big5", "cp950", "windows-950"].includes(charset)
-      )
-        throw new Error("HNCB export response charset contradicts the Big5 contract.");
-      const declaredLength = Number(headers["content-length"]);
-      const maxExportBytes = 64 * 1024 * 1024;
-      if (Number.isFinite(declaredLength) && declaredLength > maxExportBytes)
-        throw new Error("HNCB export response exceeds the in-memory size limit.");
+      await validate(() => acceptHncbExportResponse(response.status(), headers));
       const bytes = new Uint8Array(await response.body());
-      if (bytes.byteLength === 0 || bytes.byteLength > maxExportBytes)
-        throw new Error("HNCB export response is empty or exceeds the in-memory size limit.");
-      const content = text.decode(bytes, "big5");
-      text.assertIntact(content);
-      const parsed = parseStatementExport(content, fallbackAccount);
-      if (!parsed.queryPeriod || !parsed.currency)
-        throw new Error("HNCB export workbook is incomplete.");
+      const parsed = await validate(() => readHncbExportBody(bytes, text, fallbackAccount));
       await route.fulfill({ status: 204, body: "" });
       resolveCapture({
         ...parsed,
         filename: "hncb-domestic-deposit-export.xls",
         byteLength: bytes.byteLength,
         contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-        sourceResponse: { status: response.status(), contentType },
+        sourceResponse: { status: response.status(), contentType: headers["content-type"]?.trim() ?? "" },
       });
     } catch (error) {
       const failure = captureError(error);
@@ -942,11 +953,16 @@ function hncbCaptureId(observedAt: string): string {
 export type HncbDepositSource = Readonly<{
   /** The selectable accounts that match the filters; throws when none does. */
   accounts(filters: readonly string[]): Promise<readonly HncbDepositAccount[]>;
-  /** One account's statement query; null when HNCB answers with explicit no data. */
+  /**
+   * One account's statement query; null when HNCB answers with explicit no
+   * data. Its download checks the export reply through `validate`.
+   */
   query(
     account: HncbDepositAccount,
     dateRange: HncbDateRange,
-  ): Promise<Readonly<{ download(): Promise<HncbStatementDownload> }> | null>;
+  ): Promise<Readonly<{
+    download(validate: ProductCollectionHandle["validate"]): Promise<HncbStatementDownload>;
+  }> | null>;
 }>;
 
 export type HncbDepositSourceSnapshot = Readonly<{
@@ -992,11 +1008,12 @@ function hncbDepositSource(site: HncbNetbankSite, context: HncbDepositContext): 
     query: async (account, dateRange) => {
       const resultFrame = await queryAccountStatements(site, account, dateRange);
       return resultFrame && {
-        download: () => downloadCurrentStatementInMemory(
+        download: (validate) => downloadCurrentStatementInMemory(
           site.frames,
           account.label,
           resultFrame,
           context.text,
+          validate,
         ),
       };
     },
@@ -1031,15 +1048,17 @@ export async function readHncbDepositSource(
   const dateRange = hncbDateRange(product.collectionPeriod());
   const observedAt = taipeiInstant(context.now());
   const captures: HncbDomesticDepositValidatedEvidence[] = [];
-  const admit = (account: HncbDepositAccount, statement?: HncbStatementDownload) => {
-    const structural = admitHncbDomesticDepositCaptureEvidence(
-      buildHncbCapture(account, dateRange, observedAt, statement),
-    );
-    if (structural.status !== "admissible" || !structural.capture)
-      throw new Error(
-        `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+  const admit = async (account: HncbDepositAccount, statement?: HncbStatementDownload) => {
+    captures.push(await product.validate(() => {
+      const structural = admitHncbDomesticDepositCaptureEvidence(
+        buildHncbCapture(account, dateRange, observedAt, statement),
       );
-    captures.push(structural.capture);
+      if (structural.status !== "admissible" || !structural.capture)
+        throw new Error(
+          `HNCB domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+        );
+      return structural.capture;
+    }));
   };
 
   const accounts = await source.accounts(input.accountFilters);
@@ -1055,7 +1074,7 @@ export async function readHncbDepositSource(
         completed: accountIndex + 1,
         total: accounts.length,
       });
-      admit(account);
+      await admit(account);
       await product.event("validation", "advanced", "source-validation-completed", {
         completed: accountIndex + 1,
         total: accounts.length,
@@ -1066,26 +1085,13 @@ export async function readHncbDepositSource(
       completed: accountIndex,
       total: accounts.length,
     });
-    let statement: HncbStatementDownload;
-    try {
-      statement = await result.download();
-    } catch (error) {
-      await product.event(
-        error instanceof SourceTextIntegrityError ? "decoding" : "validation",
-        "failed",
-        error instanceof SourceTextIntegrityError
-          ? "source-decode-rejected"
-          : "source-export-rejected",
-        { completed: accountIndex, total: accounts.length },
-      );
-      throw error;
-    }
+    const statement = await result.download(product.validate);
     context.signal.throwIfAborted();
     await product.event("decoding", "advanced", "source-decoding-completed", {
       completed: accountIndex + 1,
       total: accounts.length,
     });
-    admit(account, statement);
+    await admit(account, statement);
     await product.event("validation", "advanced", "source-validation-completed", {
       completed: accountIndex + 1,
       total: accounts.length,
@@ -1126,14 +1132,16 @@ export async function stageHncbDeposit(
       captureId: `hncb-financial-${captureId}-${index}`,
       humanAttestation: manifest,
     };
-    const admission = admitHncbDomesticDepositFinancialCapture(input);
+    const admission = await product.validate(() => {
+      const admitted = admitHncbDomesticDepositFinancialCapture(input);
+      if (admitted.status !== "admitted" && !admitted.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic))
+        throw new Error(
+          `HNCB domestic deposit financial admission failed: ${admitted.diagnostics.join(", ")}`,
+        );
+      return admitted;
+    });
     const sourceCaptureId = `hncb-source-${captureId}-${index}`;
     if (admission.status !== "admitted") {
-      const allowedSourceOnly = admission.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic);
-      if (!allowedSourceOnly)
-        throw new Error(
-          `HNCB domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-        );
       sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
       continue;
     }

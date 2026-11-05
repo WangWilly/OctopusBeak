@@ -70,6 +70,7 @@ const accountSnapshotPage = {
 
 const accountSnapshot = await new LineBankApiClient(readScope(accountSnapshotPage as never), {
   text: strictSourceText,
+  validate: async (check) => await check(),
 }).fetchAccountSnapshot();
 assert.deepEqual(
   accountSnapshot.currentBalance.evidence.bytes,
@@ -114,7 +115,7 @@ await assert.rejects(
           };
         },
       } as never),
-      { text: strictSourceText },
+      { text: strictSourceText, validate: async (check) => await check() },
     ).fetchAccountSnapshot(),
   /Source text integrity failed: invalid-encoding/u,
 );

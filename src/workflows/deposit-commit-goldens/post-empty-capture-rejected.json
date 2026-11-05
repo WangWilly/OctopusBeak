@@ -38,6 +38,11 @@
     {
       "stage": "validation",
       "outcome": "failed",
+      "code": "source-validation-rejected"
+    },
+    {
+      "stage": "validation",
+      "outcome": "failed",
       "code": "deposit-source-validation-rejected",
       "counts": {
         "statementType": "deposit"
