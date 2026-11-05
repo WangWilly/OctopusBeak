@@ -19,6 +19,7 @@ import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts"
 import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
 import { productRunResult, type ProductRunResult } from "../automation/workflow-run-result.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
+import { SourceTextIntegrityError } from "../automation/source-text.ts";
 
 /** Explicit provider evidence that the person holds no such product, or that it holds nothing. */
 export type PreviewProductAbsence = Readonly<{ absent: "not_held" | "no_data" }>;
@@ -89,6 +90,7 @@ function fatalCode(error: unknown): TypedWorkflowErrorCode | null {
 function failureCode(error: unknown): TypedWorkflowErrorCode {
   if (error instanceof PreviewSourceFailure) return error.errorCode;
   if (error instanceof PreviewDataRejected) return "source-validation-failed";
+  if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
   return "source-collection-failed";
 }
 
@@ -159,8 +161,10 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
         return interrupted(fatal, error);
       }
       firstFailure ??= error;
-      done.set(product, outcome(product, "failed", 0, { errorCode: failureCode(error) }));
-      await event(product, "validation", "failed", "source-validation-rejected");
+      const errorCode = failureCode(error);
+      done.set(product, outcome(product, "failed", 0, { errorCode }));
+      // A reply whose bytes did not decode never reached validation.
+      if (errorCode !== "source-integrity-failed") await event(product, "validation", "failed", "source-validation-rejected");
       if (options.assertSession) {
         try {
           await options.assertSession();

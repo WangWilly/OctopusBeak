@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import { strictSourceText } from "../../src/lib/automation/source-text.ts";
 import type { PortalTransport } from "./probe.ts";
 import { safeRequestPath } from "../../src/lib/preview-sources/response-shape.ts";
 import {
@@ -12,7 +13,7 @@ const MAX_OBSERVED_REQUESTS = 80;
 export const waitForPortalSession = waitForEsunPortalSession;
 
 export function createPageTransport(page: Page, signal: AbortSignal): PortalTransport {
-  const transport = createEsunPortalTransport(page, signal);
+  const transport = createEsunPortalTransport(page, { signal, text: strictSourceText });
   return async (path, requestBody, resetFlow) => {
     const reply = await transport(path, requestBody, resetFlow);
     return reply.kind === "json" ? { kind: "json", httpStatus: reply.httpStatus, json: JSON.parse(reply.text) } : reply;

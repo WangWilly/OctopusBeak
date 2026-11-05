@@ -54,6 +54,8 @@ async function call(
   resetFlow: boolean,
 ): Promise<Readonly<{ envelope: SourceRecord; date: string | null }>> {
   const reply: EsunPortalReply = await transport(path, requestBody, resetFlow);
+  // A dropped connection is a failed read, not a reply OctopusBeak misreads.
+  if (reply.kind === "network-error") throw new Error(`${path} could not be read from the E.SUN portal`);
   if (reply.kind !== "json") return fail("unexpected-response", `${path} answered ${reply.kind}`);
   if (reply.httpStatus !== 200) return fail("unexpected-response", `${path} answered HTTP ${reply.httpStatus}`);
   return { envelope: record(parseSourceJson(reply.text, path), path), date: reply.date };

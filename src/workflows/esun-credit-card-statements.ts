@@ -1358,7 +1358,7 @@ async function runEsunCreditCardWorkflow(
         collectors: () => ({
           deposit: async () => {
             await waitForEsunPortalSession(page, 30_000, context.signal);
-            return await collectEsunDeposits(createEsunPortalTransport(page, context.signal), context.now());
+            return await collectEsunDeposits(createEsunPortalTransport(page, context), context.now());
           },
         }),
       },

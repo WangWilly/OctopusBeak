@@ -5,14 +5,14 @@ import type { Page, Response } from "playwright";
 import type { WorkflowContext, WorkflowContextWith } from "./workflow-executor.ts";
 import { ProductCollectionInterruptedError } from "./product-collection.ts";
 import type { WorkflowRunResult } from "./workflow-run-result.ts";
-import { strictSourceText } from "./source-text.ts";
+import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { esunCreditCardWorkflow } from "../../workflows/esun-credit-card-statements.ts";
 import { ESUN_SOURCE } from "./server/sources/esun.ts";
 import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
 import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
-import type { EsunPortalReply } from "../preview-sources/esun-portal.ts";
+import type { EsunPortalPageReply, EsunPortalReply } from "../preview-sources/esun-portal.ts";
 
 const timelineEndpoint = "/GW/creditLastYear/getFilterResult";
 const summaryEndpoint = "/GW/creditBill/getSummaryResult";
@@ -90,7 +90,7 @@ function createPage(options: {
   timelineTimeout?: boolean;
   monthCount?: number;
   cursor?: number;
-  portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply;
+  portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply | EsunPortalPageReply;
 } = {}): Page {
   const now = new Date(2026, 8, 25);
   const newestPeriod = monthAtOffset(now, 1);
@@ -159,10 +159,19 @@ function createPage(options: {
     waitForFunction: async () => undefined,
     evaluate: async (_inPage: unknown, call: { path: string; requestBody: Readonly<Record<string, unknown>> }) => {
       if (!options.portal) throw new Error("The E.SUN portal was called without an attached product.");
-      return options.portal(call.path, call.requestBody);
+      return pageReply(options.portal(call.path, call.requestBody));
     },
   };
   return page as unknown as Page;
+}
+
+/** What the signed-in page hands back for a reply the portal fake describes. */
+function pageReply(reply: EsunPortalReply | EsunPortalPageReply): EsunPortalPageReply {
+  if (reply.kind === "json")
+    return { kind: "body", httpStatus: reply.httpStatus, base64: Buffer.from(reply.text, "utf8").toString("base64"), date: reply.date };
+  if (reply.kind === "non-json")
+    return { kind: "body", httpStatus: reply.httpStatus, base64: Buffer.from("<html></html>", "utf8").toString("base64"), date: null };
+  return reply;
 }
 
 /** Runs E.SUN as the executor does: the Product collection run bound to ESUN_SOURCE and this input. */
@@ -341,9 +350,9 @@ const portalOk = (resultBody: unknown): EsunPortalReply =>
 const portalNotHeld = (description: string): EsunPortalReply =>
   ({ kind: "json", httpStatus: 200, text: JSON.stringify({ resultCode: "S001", resultDescription: description }), date: null });
 
-function depositPortal(overrides: Readonly<Record<string, EsunPortalReply>> = {}) {
+function depositPortal(overrides: Readonly<Record<string, EsunPortalReply | EsunPortalPageReply>> = {}) {
   const calls: string[] = [];
-  const portal = (path: string): EsunPortalReply => {
+  const portal = (path: string): EsunPortalReply | EsunPortalPageReply => {
     calls.push(path.split("/").pop()!);
     const override = overrides[path.split("/").pop()!];
     if (override) return override;
@@ -450,6 +459,35 @@ test("an attached-only run fails with the deposit's own error and reports a stat
     (error: unknown) => (error as { errorCode?: string }).errorCode === "collection-scope-changed",
   );
   assert.equal(nothing.withPageCount, 0);
+}));
+
+test("a deposit reply with a malformed UTF-8 byte fails the attached deposit as a source integrity failure", () => withManagedSecret(async () => {
+  const malformed = Buffer.concat([
+    Buffer.from("{\"resultCode\":\"0000\",\"resultBody\":{\"accountAlias\":\"", "utf8"),
+    Buffer.from([0xe8, 0x96]),
+    Buffer.from("\"}}", "utf8"),
+  ]);
+  const harness = createContext(createPage({ portal: depositPortal({
+    preQueryTWTransactionDetail: { kind: "body", httpStatus: 200, base64: malformed.toString("base64"), date: null },
+  }).portal }));
+  await assert.rejects(
+    runEsun(harness.context, workflowInput({ statementTypes: [], attachedPreviewProducts: ["deposit"] })),
+    SourceTextIntegrityError,
+  );
+  assert.equal(harness.previewWrites.length, 0);
+}));
+
+test("beside a committed card, a malformed deposit byte fails as integrity and a dropped read as collection", () => withManagedSecret(async () => {
+  const malformed = Buffer.from([0x7b, 0xe8, 0x96, 0x7d]).toString("base64");
+  for (const [reply, errorCode] of [
+    [{ kind: "body", httpStatus: 200, base64: malformed, date: null }, "source-integrity-failed"],
+    [{ kind: "network-error" }, "source-collection-failed"],
+  ] as const) {
+    const harness = createContext(createPage({ portal: depositPortal({ queryTWTransactionDetail: reply }).portal }));
+    const output = await runEsun(harness.context, workflowInput({ attachedPreviewProducts: ["deposit"] }));
+    assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "failed", errorCode]], errorCode);
+    assert.equal(harness.previewWrites.length, 0, errorCode);
+  }
 }));
 
 test("no attached selection never touches the deposit portal", () => withManagedSecret(async () => {

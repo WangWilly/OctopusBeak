@@ -18,6 +18,14 @@ async function withPortalPage(run, { sessionScript = "window.mibApiService = { u
         return;
       }
       posts.push({ pathname, uniqueKey: request.headers().uniquekey, body: request.postDataJSON() });
+      if (pathname.endsWith("/malformed")) {
+        await route.fulfill({ contentType: "application/json", body: Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0xe8, 0x96, 0x22, 0x7d]) });
+        return;
+      }
+      if (pathname.endsWith("/large")) {
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ resultCode: "0000", resultBody: { note: "玉山".repeat(40_000) } }) });
+        return;
+      }
       if (pathname.endsWith("/broken")) {
         await route.fulfill({ status: 502, contentType: "text/html", body: "<html>gateway</html>" });
         return;
@@ -65,6 +73,16 @@ test("a non-JSON reply returns only its HTTP status", async () => {
   await withPortalPage(async ({ page }) => {
     const reply = await createPageTransport(page, new AbortController().signal)("x/broken", {}, true);
     assert.deepEqual(reply, { kind: "non-json", httpStatus: 502 });
+  });
+});
+
+test("the page hands back bytes, so a malformed byte fails integrity and a large body arrives intact", async () => {
+  await withPortalPage(async ({ page }) => {
+    const transport = createPageTransport(page, new AbortController().signal);
+    await assert.rejects(transport("x/malformed", {}, true), { name: "SourceTextIntegrityError" });
+    const large = await transport("x/large", {}, true);
+    assert.equal(large.kind, "json");
+    assert.equal(large.json.resultBody.note, "玉山".repeat(40_000));
   });
 });
 
