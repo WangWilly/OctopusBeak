@@ -18,7 +18,7 @@ import {
   type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
 import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
-import { frameScope, FrameScopeTimeoutError, type FrameScope } from "./frame-scope.ts";
+import { FrameScopeTimeoutError } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -31,13 +31,13 @@ import {
 } from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
 import { HNCB_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/hncb-human-attestation-contract.ts";
 import {
-  HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   HNCB_CURRENT_DEPOSIT_RESPONSE,
   parseHncbCurrentDepositOverviewSnapshot,
   readHncbCurrentDepositOverviewCells,
   type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
+import { hncbNetbankSite, HNCB_TRX_DISPATCHER_PATH, type HncbNetbankSite } from "./hncb-netbank-site.ts";
 import {
   hncbCurrentDepositDetailRow,
   hncbCurrentDepositDetailTable,
@@ -360,7 +360,7 @@ try {
   const overview = parseHncbCurrentDepositOverviewSnapshot({
     rows: await readHncbCurrentDepositOverviewCells(overviewPage),
     response: verifyProviderResponse(HNCB_CURRENT_DEPOSIT_RESPONSE, {
-      url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
+      url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
       status: 200,
       method: "GET",
       headers: {
@@ -450,7 +450,7 @@ assert.deepEqual(normalizedRows.map((row) => row.slice(0, 3)), [
   ["1900/01/01", "12:34:56", "1900/01/02"],
 ]);
 
-const scope = {} as FrameScope;
+const scope = {} as HncbNetbankSite;
 const currentFrame = {} as Frame;
 const reopenedFrame = {} as Frame;
 
@@ -508,7 +508,7 @@ try {
     <a href='javascript:doSubmit()'>查詢</a>
   "></iframe>`);
   const formFrame = await ensureHncbStatementForm(
-    frameScope(formPage, new AbortController().signal),
+    hncbNetbankSite(formPage, { signal: new AbortController().signal }),
     undefined,
     async () => { throw new Error("the present form must not be reopened"); },
   );
@@ -521,7 +521,7 @@ try {
   setTimeout(() => run.abort(cancellation), 100);
   await assert.rejects(
     ensureHncbStatementForm(
-      frameScope(emptyPage, run.signal),
+      hncbNetbankSite(emptyPage, { signal: run.signal }),
       undefined,
       async () => { throw new Error("a cancelled run must not reopen the form"); },
     ),

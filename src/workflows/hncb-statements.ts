@@ -58,7 +58,8 @@ import type {
   ProductCollectOptions,
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
-import { frameScope, ifFound, type FrameScope } from "./frame-scope.ts";
+import { ifFound, type FrameScope } from "./frame-scope.ts";
+import { hncbNetbankSite, isHncbTrxDispatcherUrl, type HncbNetbankSite, type HncbRoute } from "./hncb-netbank-site.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -69,7 +70,6 @@ import {
 
 const BANK_ENTRY_URL =
   "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.Login&state=prompt&Recognition=private";
-const BANK_BASE_URL = "https://netbank.hncb.com.tw";
 
 const hncbInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
@@ -587,39 +587,19 @@ export function hncbSignInPlan(credentials: HncbCredentials): FormPlan {
 
 const STATEMENT_DETAIL_LINK = 'a[href*="trx=com.lb.wibc.trx.InqMain"][href*="acct="]';
 
-/** Wait until the locator matches an attached element. */
-async function attached(
-  scope: FrameScope,
-  locator: Locator,
-  description: string,
-  timeoutMs: number,
-): Promise<void> {
-  await scope.until(
-    async () => (await locator.count().catch(() => 0)) > 0,
-    `Could not find ${description}.`,
-    { timeoutMs },
-  );
-}
+/** 帳戶總覽, which lists each account's statement detail link. */
+const ACCOUNT_OVERVIEW: HncbRoute = {
+  description: "the HNCB statement detail link",
+  via: { trx: "com.lb.wibc.trx.AcctInfoInq", state: "prompt" },
+  ready: async (scope) => (await scope.locator(STATEMENT_DETAIL_LINK).count().catch(() => 0)) > 0,
+};
 
-async function openAccountOverview(scope: FrameScope): Promise<Frame> {
-  const mainFrame = await scope.frame("main");
-  await scope.withSignal((signal) => mainFrame.goto(
-    new URL(
-      "/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.AcctInfoInq&state=prompt",
-      BANK_BASE_URL,
-    ).toString(),
-    { waitUntil: "domcontentloaded", signal },
-  ));
-  await scope.settle();
-  await attached(scope, mainFrame.locator(STATEMENT_DETAIL_LINK).first(), "the HNCB statement detail link", 60_000);
-  return mainFrame;
-}
-
-async function openFirstStatementDetail(scope: FrameScope): Promise<Frame> {
-  const mainFrame = await openAccountOverview(scope);
-  await scope.withSignal((signal) => mainFrame.locator(STATEMENT_DETAIL_LINK).first().click({ signal }));
-  await scope.settle();
-  return await waitForStatementForm(scope);
+async function openFirstStatementDetail(site: HncbNetbankSite): Promise<Frame> {
+  await site.open(ACCOUNT_OVERVIEW);
+  const mainFrame = await site.main();
+  await site.frames.withSignal((signal) => mainFrame.locator(STATEMENT_DETAIL_LINK).first().click({ signal }));
+  await site.settle();
+  return await waitForStatementForm(site);
 }
 
 function querySubmitLink(mainFrame: Frame): Locator {
@@ -630,25 +610,30 @@ function querySubmitLink(mainFrame: Frame): Locator {
 }
 
 async function waitForStatementForm(
-  scope: FrameScope,
+  site: HncbNetbankSite,
   timeoutMs = 60_000,
 ): Promise<Frame> {
-  const mainFrame = await scope.frame("main");
-  await attached(scope, mainFrame.locator('select[name="acct1"], #acct1').first(), "the HNCB account selector", timeoutMs);
-  await attached(scope, querySubmitLink(mainFrame), "the HNCB statement query link", timeoutMs);
+  const mainFrame = await site.main();
+  const attached = async (locator: Locator) => (await locator.count().catch(() => 0)) > 0;
+  await site.frames.until(
+    async () => await attached(mainFrame.locator('select[name="acct1"], #acct1').first()) &&
+      await attached(querySubmitLink(mainFrame)),
+    "Could not find the HNCB account selector and statement query link.",
+    { timeoutMs },
+  );
   return mainFrame;
 }
 
 /** The statement form already on the page, or the first account's form when it does not appear within 5 s. */
 export async function ensureHncbStatementForm(
-  scope: FrameScope,
+  site: HncbNetbankSite,
   waitForForm: (
-    scope: FrameScope,
+    site: HncbNetbankSite,
     timeoutMs?: number,
   ) => Promise<Frame> = waitForStatementForm,
-  reopenForm: (scope: FrameScope) => Promise<Frame> = openFirstStatementDetail,
+  reopenForm: (site: HncbNetbankSite) => Promise<Frame> = openFirstStatementDetail,
 ): Promise<Frame> {
-  return (await ifFound(waitForForm(scope, 5_000))) ?? await reopenForm(scope);
+  return (await ifFound(waitForForm(site, 5_000))) ?? await reopenForm(site);
 }
 
 export async function prepareHncbStatementQueryForm(
@@ -684,9 +669,9 @@ async function hasNoStatementData(mainFrame: Frame): Promise<boolean> {
 }
 
 /** The result frame once it offers the export, or null when HNCB answers with no data. */
-async function waitForStatementResult(scope: FrameScope): Promise<Frame | null> {
-  const mainFrame = await scope.frame("main");
-  const result = await scope.until(async () => {
+async function waitForStatementResult(site: HncbNetbankSite): Promise<Frame | null> {
+  const mainFrame = await site.main();
+  const result = await site.frames.until(async () => {
     if ((await statementDownloadLink(mainFrame).count().catch(() => 0)) > 0)
       return { frame: mainFrame };
     if (await hasNoStatementData(mainFrame)) return { frame: null };
@@ -732,42 +717,25 @@ async function selectDate(
 }
 
 async function queryAccountStatements(
-  scope: FrameScope,
+  site: HncbNetbankSite,
   account: HncbDepositAccount,
   dateRange: HncbDateRange,
 ): Promise<Frame | null> {
-  const mainFrame = await ensureHncbStatementForm(scope);
-  await scope.race(prepareHncbStatementQueryForm(mainFrame));
-  await scope.withSignal((signal) => mainFrame.locator("#acct1").selectOption(account.value, { signal }));
-  await scope.withSignal((signal) => mainFrame.locator('input[name="inqtype"][value="3"]').check({
+  const { frames } = site;
+  const mainFrame = await ensureHncbStatementForm(site);
+  await frames.race(prepareHncbStatementQueryForm(mainFrame));
+  await frames.withSignal((signal) => mainFrame.locator("#acct1").selectOption(account.value, { signal }));
+  await frames.withSignal((signal) => mainFrame.locator('input[name="inqtype"][value="3"]').check({
     force: true,
     signal,
   }));
-  await selectDate(scope, mainFrame, "S", parseDateString(dateRange.startDate));
-  await selectDate(scope, mainFrame, "E", parseDateString(dateRange.endDate));
-
-  const responded = scope.withSignal((signal) => scope.page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes("/netbank/servlet/TrxDispatcher"),
-    { timeout: 60_000, signal },
-  )).catch(() => scope.signal.throwIfAborted());
-  responded.catch(() => undefined);
-
+  await selectDate(frames, mainFrame, "S", parseDateString(dateRange.startDate));
+  await selectDate(frames, mainFrame, "E", parseDateString(dateRange.endDate));
   // The result probe cannot tell the previous account's page from the new one,
-  // so wait for the main frame to load its next document before probing.
-  const navigated = scope.withSignal((signal) => scope.page.waitForEvent("framenavigated", {
-    predicate: (frame) => frame === mainFrame,
-    timeout: 10_000,
-    signal,
-  })).catch(() => scope.signal.throwIfAborted());
-  navigated.catch(() => undefined);
-
-  await scope.withSignal((signal) => querySubmitLink(mainFrame).click({ signal }));
-  await responded;
-  await navigated;
-  await scope.settle();
-  return await waitForStatementResult(scope);
+  // so it starts once the main frame has loaded the query's reply, when it does.
+  await ifFound(site.submit(querySubmitLink(mainFrame)));
+  await site.settle();
+  return await waitForStatementResult(site);
 }
 
 /**
@@ -777,14 +745,13 @@ async function queryAccountStatements(
  * fulfilled with an empty response so attachment handling cannot write a file.
  */
 export async function downloadCurrentStatementInMemory(
-  page: Page,
+  scope: FrameScope,
   fallbackAccount: string,
   resultFrame: Frame,
   text: SourceTextPort,
-  signal: AbortSignal,
   timeoutMs = 60_000,
 ): Promise<HncbStatementDownload> {
-  const scope = frameScope(page, signal);
+  const { page, signal } = scope;
   const popupPromise = scope.withSignal((signal) => page.waitForEvent("popup", { timeout: 30_000, signal }));
   void popupPromise.catch(() => undefined);
   await scope.withSignal((signal) => statementDownloadLink(resultFrame).click({ signal }));
@@ -801,7 +768,7 @@ export async function downloadCurrentStatementInMemory(
     error instanceof Error ? error : new Error("HNCB export response could not be read.");
   const handleRoute = async (route: Route): Promise<void> => {
     const request = route.request();
-    if (!request.url().includes("/netbank/servlet/TrxDispatcher")) {
+    if (!isHncbTrxDispatcherUrl(request.url())) {
       await route.continue();
       return;
     }
@@ -872,7 +839,7 @@ export async function downloadCurrentStatementInMemory(
     }
   };
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
   try {
     // Include setup and doSubmit() in the deadline: a native dialog or
     // stalled renderer can leave evaluate pending before response capture.
@@ -888,17 +855,14 @@ export async function downloadCurrentStatementInMemory(
         popupWindow.doSubmit();
       });
       return await capturePromise;
-    })();
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error("Timed out waiting for the HNCB export response.")),
-        timeoutMs,
-      );
-      timer.unref?.();
+    })().finally(() => {
+      settled = true;
     });
-    return await scope.race(Promise.race([collection, timeout]));
+    const deadline = scope.until(async () => settled, "Timed out waiting for the HNCB export response.", { timeoutMs });
+    deadline.catch(() => undefined);
+    return await scope.race(Promise.race([collection, deadline.then(() => collection)]));
   } finally {
-    if (timer) clearTimeout(timer);
+    settled = true;
     await popup.unroute("**/*", handleRoute).catch(() => undefined);
     await popup.close().catch(() => undefined);
   }
@@ -1021,19 +985,18 @@ export type HncbDepositRunner = (
   product: ProductCollectionHandle,
 ) => Promise<HncbDepositSummary>;
 
-function hncbDepositSource(scope: FrameScope, context: HncbDepositContext): HncbDepositSource {
+function hncbDepositSource(site: HncbNetbankSite, context: HncbDepositContext): HncbDepositSource {
   return {
     accounts: async (filters) =>
-      await scope.race(readAccountOptions(await openFirstStatementDetail(scope), filters)),
+      await site.frames.race(readAccountOptions(await openFirstStatementDetail(site), filters)),
     query: async (account, dateRange) => {
-      const resultFrame = await queryAccountStatements(scope, account, dateRange);
+      const resultFrame = await queryAccountStatements(site, account, dateRange);
       return resultFrame && {
         download: () => downloadCurrentStatementInMemory(
-          scope.page,
+          site.frames,
           account.label,
           resultFrame,
           context.text,
-          context.signal,
         ),
       };
     },
@@ -1221,24 +1184,24 @@ export async function stageHncbDeposit(
   };
 }
 
-const collectHncbDeposit: HncbDepositRunner = async (page, input, context, product) => {
-  const scope = frameScope(page, context.signal);
-  return await stageHncbDeposit(
-    await readHncbDepositSource(hncbDepositSource(scope, context), input, context, product),
+/** The deposit runner over the run's one HNCB site, shared with the attached card. */
+function hncbDepositRunner(site: HncbNetbankSite): HncbDepositRunner {
+  return async (_page, input, context, product) => await stageHncbDeposit(
+    await readHncbDepositSource(hncbDepositSource(site, context), input, context, product),
     context,
     product,
     hncbCurrentDepositBalanceTable(
-      () => readHncbCurrentDepositOverviewTable(scope),
-      () => readHncbCurrentDepositDetailTable(scope),
+      () => readHncbCurrentDepositOverviewTable(site),
+      () => readHncbCurrentDepositDetailTable(site),
     ),
   );
-};
+}
 
 export type HncbStatementsContext = Pick<WorkflowContextWith<"products">, "signal" | "text" | "now" | "products">;
 
-/** The session check and Attached Preview Product collectors from sign-in, and a check's deposit runner. */
+/** The deposit runner, and the session check and Attached Preview Product collectors from sign-in. */
 export type HncbStatementsRun = ProductCollectOptions & Readonly<{
-  collectDeposit?: HncbDepositRunner;
+  collectDeposit: HncbDepositRunner;
 }>;
 
 /**
@@ -1251,9 +1214,9 @@ export async function runHncbStatements(
   page: Page,
   input: HncbDepositInput,
   context: HncbStatementsContext,
-  run: HncbStatementsRun = {},
+  run: HncbStatementsRun,
 ): Promise<WorkflowRunResult> {
-  const { collectDeposit = collectHncbDeposit, ...collectOptions } = run;
+  const { collectDeposit, ...collectOptions } = run;
   let deposit: HncbDepositSummary | null = null;
   const summary = await context.products.collect({
     deposit: async (product): Promise<ProductCollectionSummary> => {
@@ -1292,11 +1255,13 @@ async function runHncbWorkflow(
 ): Promise<WorkflowRunResult> {
   return await context.browser.withPage(async (page) => {
     const { assertSession } = await signIn(context, page, HNCB_SOURCE, hncbSignInPlan(input.credentials));
+    const site = hncbNetbankSite(page, context);
     return await runHncbStatements(page, input, context, {
+      collectDeposit: hncbDepositRunner(site),
       ...(assertSession ? { assertSession } : {}),
       attached: {
         collectors: () => ({
-          credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(frameScope(page, context.signal)), { now: context.now() }),
+          credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(site), { now: context.now() }),
         }),
         ...(assertSession ? { assertSession } : {}),
       },

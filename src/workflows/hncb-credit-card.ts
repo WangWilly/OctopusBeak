@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Frame } from "playwright";
+import type { Dialog } from "playwright";
 import type {
   PreviewCard,
   PreviewCreditCollection,
@@ -19,7 +19,8 @@ import {
 } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
-import { ifFound, type FrameScope } from "./frame-scope.ts";
+import { ifFound } from "./frame-scope.ts";
+import type { HncbNetbankSite } from "./hncb-netbank-site.ts";
 
 /** `CrdDetailInq` ranges: `0` is the current unbilled page, `1`-`3` the three latest statements. */
 export const HNCB_CARD_RANGES = ["0", "1", "2", "3"] as const;
@@ -390,55 +391,27 @@ export async function collectHncbCreditCards(
   };
 }
 
-const DISPATCHER = "/netbank/servlet/TrxDispatcher";
-
-async function mainFrame(scope: FrameScope): Promise<Frame> {
-  return (await ifFound(scope.frame("main", { timeoutMs: 30_000 })))
-    ?? fail("unexpected-response", "HNCB main frame is missing");
-}
-
 /**
  * Reads one `CrdDetailInq` page in the signed-in frameset by posting the
  * same form all-set-tw posts into the `main` frame. Native dialogs are
  * dismissed and returned, never confirmed.
  */
-export function playwrightHncbCardPages(scope: FrameScope): HncbCardPageReader {
-  const { page } = scope;
+export function playwrightHncbCardPages(site: HncbNetbankSite): HncbCardPageReader {
+  const { page } = site.frames;
   return async (range) => {
-    const frame = await mainFrame(scope);
+    if (!(await ifFound(site.main({ timeoutMs: 30_000 })))) return fail("unexpected-response", "HNCB main frame is missing");
     let dialog: string | null = null;
-    const onDialog = (event: import("playwright").Dialog) => {
+    const onDialog = (event: Dialog) => {
       dialog ??= event.message();
       void event.dismiss().catch(() => undefined);
     };
     page.on("dialog", onDialog);
     try {
-      const navigation = scope.withSignal((signal) =>
-        frame.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 60_000, signal }))
-        .catch(() => {
-          scope.signal.throwIfAborted();
-          return null;
-        });
-      navigation.catch(() => undefined);
-      await scope.race(frame.evaluate(({ action, fields }) => {
-        const form = document.createElement("form");
-        form.method = "POST";
-        form.action = action;
-        for (const [name, value] of Object.entries(fields)) {
-          const input = document.createElement("input");
-          input.type = "hidden";
-          input.name = name;
-          input.value = value;
-          form.appendChild(input);
-        }
-        document.body.appendChild(form);
-        setTimeout(() => form.submit(), 0);
-      }, { action: DISPATCHER, fields: { trx: "com.lb.wibc.trx.CrdDetailInq", state: "result", TYPE: "001", RANGE: range } }));
-      const response = await navigation;
+      const response = await ifFound(site.dispatch("com.lb.wibc.trx.CrdDetailInq", { state: "result", TYPE: "001", RANGE: range }));
       if (dialog !== null) return { range, status: response?.status() ?? 200, html: "", date: null, dialog };
       if (!response) return fail("unexpected-response", `CrdDetailInq RANGE=${range} did not load`);
-      const loaded = await mainFrame(scope);
-      return { range, status: response.status(), html: await scope.race(loaded.content()), date: response.headers().date ?? null, dialog };
+      const loaded = await site.main();
+      return { range, status: response.status(), html: await site.frames.race(loaded.content()), date: response.headers().date ?? null, dialog };
     } finally {
       page.off("dialog", onDialog);
     }
