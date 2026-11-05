@@ -233,6 +233,7 @@ function productHandle(staged: ProductStageRequest[], codes: string[]): ProductC
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
+    validate: async (check) => await check(),
     collectionPeriod: () => salaryDay,
   };
 }

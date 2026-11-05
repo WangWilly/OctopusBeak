@@ -22,6 +22,7 @@ import {
 import { FailureCodeError } from "./workflow-failures.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
+import { SourceTextIntegrityError } from "./source-text.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 import { productRunResult } from "./workflow-run-result.ts";
 
@@ -734,6 +735,58 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
   }), expected);
   assert.equal(summary.products[0]?.errorCode, expected, `a reported ${stage ?? "no"} failure names the product`);
   if (stage) assert.ok(forwarded.includes("source-rejected"), "collector events still reach the run");
+}
+
+// ADR 0106: only a check of what the source returned names a validation failure.
+for (const [name, collect, expected, reported] of [
+  ["a check that rejects the reply", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
+    await validate(() => JSON.parse("{not json"));
+  }, "source-validation-failed", true],
+  ["a wait that fails outside any check", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
+    assert.equal(await validate(() => "parsed"), "parsed", "a passing check returns its value");
+    throw Object.assign(new Error("Timeout 60000ms exceeded"), { name: "TimeoutError" });
+  }, "source-collection-failed", false],
+  ["a check whose text is not intact", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
+    await validate(() => { throw new SourceTextIntegrityError(); });
+  }, "source-integrity-failed", false],
+  ["a check that finds the source unavailable", async (validate: <T>(check: () => T | Promise<T>) => Promise<T>) => {
+    await validate(async () => { throw new SourceUnavailableError(); });
+  }, "source-unavailable", false],
+] as const) {
+  const forwarded: string[] = [];
+  const summary = await failedRunSummary(collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: signal().signal,
+    event: async (stage, outcome, code) => { forwarded.push(`${stage}/${outcome}/${code}`); },
+    collect: async (_typeId, { validate }) => {
+      await collect(validate);
+      throw new Error("unreachable");
+    },
+    financialCommit: commitWith(async () => { throw new Error("a failed product must not commit"); }),
+  }), expected);
+  assert.equal(summary.products[0]?.errorCode, expected, name);
+  assert.equal(forwarded.includes("validation/failed/source-validation-rejected"), reported,
+    `${name} ${reported ? "is" : "is not"} reported as a validation failure`);
+}
+
+{
+  const controller = signal();
+  const forwarded: string[] = [];
+  await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: controller.signal,
+    event: async (stage, outcome) => { forwarded.push(`${stage}/${outcome}`); },
+    collect: async (_typeId, { validate }) => validate(() => {
+      controller.abort(new Error("cancelled by the person"));
+      throw new Error("the check saw a page the cancellation tore down");
+    }),
+    financialCommit: commitWith(async () => { throw new Error("a failed product must not commit"); }),
+  }).catch(() => undefined);
+  assert.equal(forwarded.includes("validation/failed"), false, "a cancelled check is not reported as a validation failure");
 }
 
 {

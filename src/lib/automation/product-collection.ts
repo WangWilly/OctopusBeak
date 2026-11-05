@@ -7,7 +7,7 @@ import type {
 import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
 import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
 import { strictSourceText } from "./source-text.ts";
-import { classifyFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
+import { classifyFailure, namesItsFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
 import {
   FailureCodeError,
   TYPED_WORKFLOW_ERROR_CODES,
@@ -194,6 +194,15 @@ export type ProductCollectionHandle = Readonly<{
    * untyped error.
    */
   event: ProductCollectionStageEvent;
+  /**
+   * Runs one check of what the source returned: a shape check, a parse or an
+   * admission, never a browser or network wait (ADR 0106). An untyped error it
+   * throws is reported as this product's validation failure and thrown on, so
+   * the product fails as `source-validation-failed`; a wait that fails outside
+   * it stays a collection failure. A typed error, an absence or a cancellation
+   * is thrown on unreported.
+   */
+  validate: <T>(check: () => T | Promise<T>) => Promise<T>;
   /**
    * ADR 0077: the dates this product queries, from its declaration and the
    * Taipei date when the product first asks, the same for every call for
@@ -426,6 +435,15 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         stage: productStager(options.provider, stagedItems),
         reportActivity,
         event: collectorEvent,
+        validate: async (check) => {
+          try {
+            return await check();
+          } catch (error) {
+            if (!options.signal.aborted && !namesItsFailure(error) && !(error instanceof StatementComponentAbsentError))
+              await collectorEvent("validation", "failed", "source-validation-rejected");
+            throw error;
+          }
+        },
         collectionPeriod: () => {
           if (!options.collectionPeriod) throw new FailureCodeError("workflow-failed");
           return options.collectionPeriod(typeId);

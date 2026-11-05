@@ -228,6 +228,7 @@ function stagingHarness(signal = new AbortController().signal) {
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: context.event,
+    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("CTBC declares no collection period"),
   };
   return {

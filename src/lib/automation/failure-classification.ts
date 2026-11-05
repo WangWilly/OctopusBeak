@@ -31,6 +31,11 @@ function thrownCode(error: unknown): TypedWorkflowErrorCode | undefined {
   return undefined;
 }
 
+/** Whether the thrown error already names its Failure code, so no reported stage can change it. */
+export function namesItsFailure(error: unknown): boolean {
+  return thrownCode(error) !== undefined;
+}
+
 /** The last operation before the run reported its end. */
 export function lastOperation<E extends Pick<WorkflowRunEvent, "stage">>(events: readonly E[]): E | undefined {
   return events.findLast((event) => event.stage !== "finalization");
