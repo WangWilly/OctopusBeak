@@ -25,6 +25,6 @@ A Spending page action, such as confirming a pairing, returns its exact summary 
 
 ## Consequences
 
-- The publication rule is checked through the module with no registry or database: each reconcile outcome, a commit or Manual write during an action, overlapping actions, and listener failures.
+- The publication rule is checked through the module with no registry or database: each reconcile outcome, a commit or Manual write during an action, overlapping actions, and listener failures. A worker check proves the registry runs its actions through the same actions the views watch.
 - A page newer than a settled action is still read once more, as before.
 - Every caller of `createPGliteFinancialLiveViews` passes the page actions. Views that never see an action pass actions that are never run.

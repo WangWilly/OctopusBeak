@@ -74,33 +74,32 @@ export function spendingPageAfterAction(
 ): Readonly<{ page: SpendingPageDto | null; published: boolean }> {
   if (!previous?.purchaseReport.summary)
     return { page: null, published: previous?.purchaseReport.knowledgeAt === result.knowledgeAt };
-  let reconciliation: ReturnType<typeof reconcileSpendingPageActionSummary>;
   try {
-    reconciliation = reconcileSpendingPageActionSummary(
+    const reconciliation = reconcileSpendingPageActionSummary(
       previous.purchaseReport.summary,
       previous.purchaseReport.knowledgeAt,
       result,
     );
+    if (reconciliation.state === "newer-live-version") return { page: null, published: false };
+    if (reconciliation.state === "already-current") return { page: null, published: true };
+    const { summary } = reconciliation;
+    return {
+      page: Object.freeze({
+        ...previous,
+        canonical: spendingCanonicalAt(previous.canonical, summary, result.knowledgeAt),
+        purchaseReport: Object.freeze({
+          ...previous.purchaseReport,
+          knowledgeAt: result.knowledgeAt,
+          totalsByCurrency: summary.totalsByCurrency,
+          summary,
+        }),
+      }) satisfies SpendingPageDto,
+      published: true,
+    };
   } catch {
-    // The page is not at the action's base version, so the delta does not apply.
+    // The delta does not apply to this page, so the page is read again instead.
     return { page: null, published: false };
   }
-  if (reconciliation.state === "newer-live-version") return { page: null, published: false };
-  if (reconciliation.state === "already-current") return { page: null, published: true };
-  const { summary } = reconciliation;
-  return {
-    page: Object.freeze({
-      ...previous,
-      canonical: spendingCanonicalAt(previous.canonical, summary, result.knowledgeAt),
-      purchaseReport: Object.freeze({
-        ...previous.purchaseReport,
-        knowledgeAt: result.knowledgeAt,
-        totalsByCurrency: summary.totalsByCurrency,
-        summary,
-      }),
-    }) satisfies SpendingPageDto,
-    published: true,
-  };
 }
 
 /**
