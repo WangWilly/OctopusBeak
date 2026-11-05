@@ -1064,6 +1064,12 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       "an undecodable summary response fails the product instead of reading as an empty body",
     );
 
+    await assert.rejects(
+      readThroughShell({ summaryBody: Buffer.from(currentCreditPage.replace("3,741", "N/A"), "utf8") }),
+      /used credit/u,
+      "a summary response whose used credit does not parse fails the card read instead of dropping the balance",
+    );
+
     const afterFormWait = await cancelledWithin((controller, cancelAt) =>
       readThroughShell({
         signal: controller.signal,

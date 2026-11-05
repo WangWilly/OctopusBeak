@@ -70,7 +70,6 @@ import {
   parseYuantaCurrentCreditCardUsedCreditSummaryHtml,
   resolveYuantaSettledStatementCycles,
   traverseYuantaCreditCardSettledStatementSummaryPages,
-  YuantaCreditCardSummaryParseError,
   type YuantaCreditCardHistorySettledSummaryPage,
   type YuantaCreditCardIssuerSummary,
   type YuantaCreditCardMonthOption,
@@ -99,6 +98,14 @@ export type YuantaCreditCardCaptureMetadata =
 type CaptureMetadata = YuantaCreditCardCaptureMetadata;
 
 type StatementRow = YuantaCreditCardStatementRow;
+
+/** The summary's POST response was observed, but its page could not be read. */
+class YuantaCurrentCreditReadError extends Error {
+  constructor(cause: unknown) {
+    super("YuanTa credit-card summary responded, but its current used credit could not be read.", { cause });
+    this.name = "YuantaCurrentCreditReadError";
+  }
+}
 
 class YuantaCreditSummaryNavigationError extends Error {
   constructor() {
@@ -583,7 +590,9 @@ export async function loadYuantaCreditCardSummaryPage(
         frames.page.waitForResponse(
           (candidate) =>
             candidate.url().includes("/nib/tx/creditcardsummary") &&
-            candidate.request().method() === "POST",
+            candidate.request().method() === "POST" &&
+            // A redirect hands the page on; the response that ends it carries the evidence.
+            !(candidate.status() >= 300 && candidate.status() < 400),
           { timeout: 30_000, signal },
         ),
       ),
@@ -595,27 +604,33 @@ export async function loadYuantaCreditCardSummaryPage(
       await frames.settle();
     })(),
   ]);
-  const responseHtml = response ? await site.readHtml(response) : "";
-  if (hasYuantaCurrentCreditTable(responseHtml)) {
-    return {
-      firstHtml: responseHtml,
-      response,
-      currentCredit: yuantaCurrentCreditEvidence(responseHtml, response),
-    };
-  }
-
-  let firstHtml: string;
   try {
-    firstHtml = await readYuantaSummaryHtml(frames);
+    const responseHtml = response ? await site.readHtml(response) : "";
+    if (hasYuantaCurrentCreditTable(responseHtml)) {
+      return {
+        firstHtml: responseHtml,
+        response,
+        currentCredit: yuantaCurrentCreditEvidence(responseHtml, response),
+      };
+    }
+
+    let firstHtml: string;
+    try {
+      firstHtml = await readYuantaSummaryHtml(frames);
+    } catch (error) {
+      if (!(error instanceof FrameScopeTimeoutError)) throw error;
+      throw new YuantaCreditSummaryNavigationError();
+    }
+    return {
+      firstHtml,
+      response,
+      currentCredit: yuantaCurrentCreditEvidence(firstHtml, response),
+    };
   } catch (error) {
-    if (!(error instanceof FrameScopeTimeoutError)) throw error;
-    throw new YuantaCreditSummaryNavigationError();
+    // Without an observed response there is no current used credit to lose.
+    if (!response || error instanceof SourceTextIntegrityError || frames.signal.aborted) throw error;
+    throw new YuantaCurrentCreditReadError(error);
   }
-  return {
-    firstHtml,
-    response,
-    currentCredit: yuantaCurrentCreditEvidence(firstHtml, response),
-  };
 }
 
 /** The settled-summary traversal, with the current-credit evidence its first page carried. */
@@ -653,10 +668,10 @@ async function traverseYuantaSummaryWithCurrentEvidence(
     );
     return { ...traversal, ...current };
   } catch (error) {
-    if (!(error instanceof YuantaCreditCardSummaryParseError)) throw error;
-    // The settled-summary page is an optional cross-check.  Keep a valid
-    // current-used-credit evidence read even when the bank changes that table
-    // independently of the historical statement parser.
+    if (error instanceof SourceTextIntegrityError || frames.signal.aborted) throw error;
+    // The settled-summary pages are an optional cross-check. A failure while
+    // paging them, such as a parse change or a vanished pager, keeps the
+    // current-used-credit evidence the first page already carried.
     return { summaries: [], pages: [], ...current };
   }
 }
@@ -680,6 +695,7 @@ async function submitCreditCardSummary(
   } catch (error) {
     if (
       error instanceof YuantaCreditSummaryNavigationError ||
+      error instanceof YuantaCurrentCreditReadError ||
       error instanceof SourceTextIntegrityError ||
       site.frames.signal.aborted
     )
@@ -1201,9 +1217,11 @@ export async function readYuantaCreditCardSource(
       context.text.assertIntact(JSON.stringify(summaryTraversal));
       currentCredit = evidence;
     } catch (error) {
-      // A summary page that never loads leaves current used credit unread;
-      // only text corruption and cancellation stop the read here.
+      // A summary page that never responds leaves current used credit unread;
+      // a response that cannot be read, text corruption and cancellation stop
+      // the read here.
       if (
+        error instanceof YuantaCurrentCreditReadError ||
         error instanceof SourceTextIntegrityError ||
         context.signal.aborted
       ) {
