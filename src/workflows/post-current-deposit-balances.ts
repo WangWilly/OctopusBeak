@@ -2,16 +2,13 @@ import { randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page, Response } from "playwright";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
 import {
+  assembleCurrentDepositCapture,
   isDeclaredProviderResponse,
   type CurrentBalanceCaptureMatching,
   type ProviderResponse,
@@ -455,72 +452,8 @@ export function buildPostCurrentDepositBalanceCapture(
     coefficient: row.ledger.coefficient,
     scale: row.ledger.scale,
   };
-  const time = {
-    effectiveAt: row.effectiveAt,
-    effectiveTimeBasis: row.effectiveTimeBasis,
-    effectiveTimeRuleVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-    sourceField: row.effectiveTimeSourceField,
-    sourceValue: row.effectiveTimeSourceValue,
-    contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  } as const;
-  const sourceRecordKey = canonicalDigest(
-    "post-current-deposit-source-record-v1",
-    row.sourceAccountKey,
-    row.currency,
-    row.effectiveAt,
-    balance.coefficient,
-    String(balance.scale),
-  );
-  const compact = {
-    source: "post",
-    accountNumber: row.accountNumber,
-    sourceAccountKey: row.sourceAccountKey,
-    currency: row.currency,
-    balanceSourceLexeme: row.ledger.sourceLexeme,
-    effectiveAt: row.effectiveAt,
-    effectiveTimeSourceField: row.effectiveTimeSourceField,
-    effectiveTimeSourceValue: row.effectiveTimeSourceValue,
-    sourceEvidence: { ...row.sourceEvidence },
-    ...(row.providerHttpDate ? { providerHttpDate: row.providerHttpDate } : {}),
-    ...(row.providerServerTimestamp
-      ? { providerServerTimestamp: row.providerServerTimestamp }
-      : {}),
-  } satisfies Record<string, unknown>;
-  const provisional = currentDepositSourceRecord({
-    sourceRecordKey,
-    providerKey: canonicalDigest(
-      "post-current-deposit-provider-record-v1",
-      row.sourceAccountKey,
-      row.currency,
-      row.effectiveAt,
-    ),
-    contentHash: "sha256:placeholder",
-    sourceField: "BAL",
-    balanceKind: "ledger",
-    currency: row.currency,
-    value: balance,
-    time,
-    compact,
-  });
-  const record: CurrentDepositSourceRecordInput = {
-    ...provisional,
-    contentHash: currentDepositSourceRecordContentHash(provisional.compact),
-  };
-  const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: canonicalDigest(
-      "post-current-deposit-observation-v1",
-      row.sourceAccountKey,
-      row.currency,
-    ),
-    balanceKind: "ledger",
-    balance,
-    currency: row.currency,
-    time,
-    sourceRecordKey,
-    sourceField: "BAL",
-  };
   const scopeDate = row.effectiveAt.slice(0, 10);
-  return {
+  return assembleCurrentDepositCapture({
     captureId: `post-current-${randomUUID()}`,
     authorityRoute: "post/domestic-deposit/current-balance-v1",
     contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
@@ -556,35 +489,75 @@ export function buildPostCurrentDepositBalanceCapture(
         pageCount: row.sourceEvidence.pageCount,
       },
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: 1,
-        terminal: true,
-        metadata: {
-          source: "post-current-deposit-overview",
-          endpoint: row.sourceEvidence.endpoint,
-          txnCode: row.sourceEvidence.txnCode,
-          bizCode: row.sourceEvidence.bizCode,
-          pageCount: row.sourceEvidence.pageCount,
-          accountNumber: row.accountNumber,
-          balanceSourceLexeme: row.ledger.sourceLexeme,
-          effectiveAt: row.effectiveAt,
-          effectiveTimeSourceField: row.effectiveTimeSourceField,
-          contractVersion: row.sourceEvidence.contractVersion,
-          ...(row.providerHttpDate
-            ? { providerHttpDate: row.providerHttpDate }
-            : {}),
-          ...(row.providerServerTimestamp
-            ? { providerServerTimestamp: row.providerServerTimestamp }
-            : {}),
-        },
+    page: {
+      metadata: {
+        source: "post-current-deposit-overview",
+        endpoint: row.sourceEvidence.endpoint,
+        txnCode: row.sourceEvidence.txnCode,
+        bizCode: row.sourceEvidence.bizCode,
+        pageCount: row.sourceEvidence.pageCount,
+        accountNumber: row.accountNumber,
+        balanceSourceLexeme: row.ledger.sourceLexeme,
+        effectiveAt: row.effectiveAt,
+        effectiveTimeSourceField: row.effectiveTimeSourceField,
+        contractVersion: row.sourceEvidence.contractVersion,
+        ...(row.providerHttpDate
+          ? { providerHttpDate: row.providerHttpDate }
+          : {}),
+        ...(row.providerServerTimestamp
+          ? { providerServerTimestamp: row.providerServerTimestamp }
+          : {}),
       },
-    ],
-    records: [record],
-    observations: [observation],
-  };
+    },
+  }, [{
+    sourceRecordKey: canonicalDigest(
+      "post-current-deposit-source-record-v1",
+      row.sourceAccountKey,
+      row.currency,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    ),
+    providerKey: canonicalDigest(
+      "post-current-deposit-provider-record-v1",
+      row.sourceAccountKey,
+      row.currency,
+      row.effectiveAt,
+    ),
+    observationKey: canonicalDigest(
+      "post-current-deposit-observation-v1",
+      row.sourceAccountKey,
+      row.currency,
+    ),
+    balanceKind: "ledger",
+    sourceField: "BAL",
+    currency: row.currency,
+    value: balance,
+    time: {
+      effectiveAt: row.effectiveAt,
+      effectiveTimeBasis: row.effectiveTimeBasis,
+      effectiveTimeRuleVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      sourceField: row.effectiveTimeSourceField,
+      sourceValue: row.effectiveTimeSourceValue,
+      contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+    },
+    timeInRecord: true,
+    compact: {
+      source: "post",
+      accountNumber: row.accountNumber,
+      sourceAccountKey: row.sourceAccountKey,
+      currency: row.currency,
+      balanceSourceLexeme: row.ledger.sourceLexeme,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: row.effectiveTimeSourceField,
+      effectiveTimeSourceValue: row.effectiveTimeSourceValue,
+      sourceEvidence: { ...row.sourceEvidence },
+      ...(row.providerHttpDate ? { providerHttpDate: row.providerHttpDate } : {}),
+      ...(row.providerServerTimestamp
+        ? { providerServerTimestamp: row.providerServerTimestamp }
+        : {}),
+    },
+  }]);
 }
 
 /**

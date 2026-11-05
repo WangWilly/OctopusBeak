@@ -38,17 +38,15 @@ import {
   type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
+  type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import {
   deriveYuantaForeignSettlementLinkageKey,
@@ -161,8 +159,6 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
   if (sourceAccountKey !== row.sourceAccountKey)
     throw new Error("Yuanta foreign current-balance row does not match an existing account.");
-  const records: CurrentDepositSourceRecordInput[] = [];
-  const observations: CurrentDepositBalanceObservationInput[] = [];
   const amountPairs: readonly [
     "ledger" | "available",
     string,
@@ -171,27 +167,17 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
     ["ledger", "帳面餘額", row.ledger],
     ["available", "可用餘額", row.available],
   ];
-  for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = canonicalDigest(
-      "yuanta-foreign-current-deposit-source-record-v1",
-      sourceAccountKey,
-      row.currency,
-      balanceKind,
-      row.effectiveAt,
-      balance.coefficient,
-      String(balance.scale),
-    );
-    const compact = {
-      accountNumber: row.accountNumber,
-      sourceAccountKey,
-      currency: row.currency,
-      effectiveAt: row.effectiveAt,
-      effectiveTimeSourceField: "HTTP Date",
-      effectiveTimeSourceValue: row.providerHttpDate,
-      sourceEvidence: { ...row.sourceEvidence },
-    };
-    const record = currentDepositSourceRecord({
-      sourceRecordKey,
+  const entries: CurrentDepositBalanceEntry[] = amountPairs.map(
+    ([balanceKind, sourceField, balance]) => ({
+      sourceRecordKey: canonicalDigest(
+        "yuanta-foreign-current-deposit-source-record-v1",
+        sourceAccountKey,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+        balance.coefficient,
+        String(balance.scale),
+      ),
       providerKey: canonicalDigest(
         "yuanta-foreign-current-deposit-provider-record-v1",
         row.accountNumber,
@@ -199,25 +185,14 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
         balanceKind,
         row.effectiveAt,
       ),
-      contentHash: "sha256:placeholder",
-      sourceField,
-      balanceKind,
-      currency: row.currency,
-      value: balance,
-      compact,
-    });
-    records.push({
-      ...record,
-      contentHash: currentDepositSourceRecordContentHash(record.compact),
-    });
-    observations.push({
       observationKey: canonicalDigest(
         "yuanta-foreign-current-deposit-observation-v1",
         sourceAccountKey,
       ),
       balanceKind,
-      balance,
+      sourceField,
       currency: row.currency,
+      value: balance,
       time: {
         effectiveAt: row.effectiveAt,
         effectiveTimeBasis: "provider-http-date",
@@ -226,12 +201,19 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
         sourceValue: row.providerHttpDate,
         contractVersion: row.sourceEvidence.contractVersion,
       },
-      sourceRecordKey,
-      sourceField,
-    });
-  }
-  const endpoint = `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`;
-  return {
+      timeInRecord: false,
+      compact: {
+        accountNumber: row.accountNumber,
+        sourceAccountKey,
+        currency: row.currency,
+        effectiveAt: row.effectiveAt,
+        effectiveTimeSourceField: "HTTP Date",
+        effectiveTimeSourceValue: row.providerHttpDate,
+        sourceEvidence: { ...row.sourceEvidence },
+      },
+    }),
+  );
+  return assembleCurrentDepositCapture({
     captureId: randomUUID(),
     authorityRoute: "yuanta/foreign-currency/current-balance-v1",
     contractVersion: row.sourceEvidence.contractVersion,
@@ -249,26 +231,18 @@ export function buildYuantaForeignCurrentDepositBalanceCapture(
       endDate: row.effectiveAt.slice(0, 10),
     },
     providerResponse: {
-      endpoint,
+      endpoint: `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: records.length,
-        terminal: true,
-        metadata: {
-          source: "yuanta-current-deposit-summary",
-          sourceRowCount: 1,
-          balanceFieldCount: records.length,
-        },
+    page: {
+      metadata: {
+        source: "yuanta-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceFieldCount: entries.length,
       },
-    ],
-    records,
-    observations,
-  };
+    },
+  }, entries);
 }
 
 /**

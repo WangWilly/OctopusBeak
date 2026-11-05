@@ -1,12 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 
-import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
-  type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
-  type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
+import type {
+  CurrentDepositBalanceCaptureInput,
+  CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
@@ -15,7 +11,10 @@ import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
-import type { CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
+import {
+  assembleCurrentDepositCapture,
+  type CurrentBalanceCaptureMatching,
+} from "./current-state-snapshot-capture.ts";
 
 export const LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "linebank/domestic-deposit/current-balance-v1" as const;
@@ -61,48 +60,7 @@ export function buildLinebankCurrentDepositBalanceCapture(
     coefficient: row.available.coefficient,
     scale: row.available.scale,
   };
-  const sourceField = "wdrwAvblAmt";
   const identity = `${row.sourceAccountKey}|${row.currency}|available|${row.effectiveAt}`;
-  const sourceRecordKey = token("linebank-current-deposit-source-record-v1", identity);
-  const compact = {
-    source: "linebank",
-    accountNumber: row.accountNumber,
-    arrangementId: row.arrangementId,
-    sourceAccountKey: row.sourceAccountKey,
-    currency: row.currency,
-    sourceLexeme: row.available.sourceLexeme,
-    effectiveAt: row.effectiveAt,
-    effectiveTimeSourceField: "HTTP Date",
-    effectiveTimeSourceValue: row.providerHttpDate,
-    sourceEvidence: { ...row.sourceEvidence },
-  };
-  const provisional = currentDepositSourceRecord({
-    sourceRecordKey,
-    providerKey: token("linebank-current-deposit-provider-record-v1", identity),
-    contentHash: "sha256:placeholder",
-    sourceField,
-    balanceKind: "available",
-    currency: row.currency,
-    value: balance,
-    time: timeEvidence(row),
-    compact,
-  });
-  const record: CurrentDepositSourceRecordInput = {
-    ...provisional,
-    contentHash: currentDepositSourceRecordContentHash(provisional.compact),
-  };
-  const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: token(
-      "linebank-current-deposit-observation-v1",
-      row.sourceAccountKey,
-    ),
-    balanceKind: "available",
-    balance,
-    currency: row.currency,
-    time: timeEvidence(row),
-    sourceRecordKey,
-    sourceField,
-  };
   const endpoint = `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=${LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE}`;
   const sourceConnectionKey = token(
     "linebank-connection",
@@ -113,7 +71,15 @@ export function buildLinebankCurrentDepositBalanceCapture(
     financialCapture.sourceConnection,
     String(financialCapture.identityEpoch),
   );
-  return {
+  const contractFingerprint = token(
+    "linebank-current-deposit-contract-v1",
+    LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+  );
+  const preflightFingerprint = token(
+    "linebank-current-deposit-preflight-v1",
+    row.sourceEvidence.responseDigest,
+  );
+  return assembleCurrentDepositCapture({
     captureId: `linebank-current-${randomUUID()}`,
     authorityRoute: LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
     contractVersion: LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
@@ -129,50 +95,55 @@ export function buildLinebankCurrentDepositBalanceCapture(
     scope: {
       startDate: row.effectiveAt.slice(0, 10),
       endDate: row.effectiveAt.slice(0, 10),
-      contractFingerprint: token(
-        "linebank-current-deposit-contract-v1",
-        LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-      ),
-      preflightFingerprint: token(
-        "linebank-current-deposit-preflight-v1",
-        row.sourceEvidence.responseDigest,
-      ),
+      contractFingerprint,
+      preflightFingerprint,
     },
     providerResponse: {
       endpoint,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: 1,
-        terminal: true,
+    page: {
+      responseDigest: row.sourceEvidence.responseDigest,
+      proofKind: "linebank-current-deposit-payables-snapshot",
+      contractFingerprint,
+      preflightFingerprint,
+      metadata: {
+        source: "linebank-current-deposit-payables",
+        endpoint: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        featureTypeCode: LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE,
+        accountNumber: row.accountNumber,
+        arrangementId: row.arrangementId,
+        providerHttpDate: row.providerHttpDate,
         responseDigest: row.sourceEvidence.responseDigest,
-        proofKind: "linebank-current-deposit-payables-snapshot",
-        contractFingerprint: token(
-          "linebank-current-deposit-contract-v1",
-          LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-        ),
-        preflightFingerprint: token(
-          "linebank-current-deposit-preflight-v1",
-          row.sourceEvidence.responseDigest,
-        ),
-        metadata: {
-          source: "linebank-current-deposit-payables",
-          endpoint: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-          featureTypeCode: LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE,
-          accountNumber: row.accountNumber,
-          arrangementId: row.arrangementId,
-          providerHttpDate: row.providerHttpDate,
-          responseDigest: row.sourceEvidence.responseDigest,
-        },
       },
-    ],
-    records: [record],
-    observations: [observation],
-  };
+    },
+  }, [{
+    sourceRecordKey: token("linebank-current-deposit-source-record-v1", identity),
+    providerKey: token("linebank-current-deposit-provider-record-v1", identity),
+    observationKey: token(
+      "linebank-current-deposit-observation-v1",
+      row.sourceAccountKey,
+    ),
+    balanceKind: "available",
+    sourceField: "wdrwAvblAmt",
+    currency: row.currency,
+    value: balance,
+    time: timeEvidence(row),
+    timeInRecord: true,
+    compact: {
+      source: "linebank",
+      accountNumber: row.accountNumber,
+      arrangementId: row.arrangementId,
+      sourceAccountKey: row.sourceAccountKey,
+      currency: row.currency,
+      sourceLexeme: row.available.sourceLexeme,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+    },
+  }]);
 }
 
 /**

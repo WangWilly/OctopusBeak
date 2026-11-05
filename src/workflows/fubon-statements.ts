@@ -65,18 +65,16 @@ import {
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
 import {
+  assembleCurrentDepositCapture,
   readCurrentStateSnapshot,
   stageCurrentStateSnapshot,
   type CurrentBalanceCaptureMatching,
+  type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 
 const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
@@ -283,8 +281,6 @@ export function buildFubonCurrentDepositBalanceCapture(
       "Fubon current deposit account does not match the existing full account-number evidence.",
     );
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-  const records: CurrentDepositSourceRecordInput[] = [];
-  const observations: CurrentDepositBalanceObservationInput[] = [];
   const amountPairs: readonly [
     "ledger" | "available",
     string,
@@ -293,29 +289,17 @@ export function buildFubonCurrentDepositBalanceCapture(
     ["ledger", "即時餘額", row.instantBalance],
     ["available", "可用餘額", row.availableBalance],
   ];
-  for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = canonicalDigest(
-      "fubon-current-deposit-source-record-v1",
-      sourceAccountKey,
-      row.currency,
-      balanceKind,
-      row.effectiveAt,
-      balance.coefficient,
-      String(balance.scale),
-    );
-    const compact = {
-      accountNumber: row.accountNumber,
-      accountNickname: row.accountNickname,
-      depositType: row.depositType,
-      branchName: row.branchName,
-      currencySourceLexeme: row.currencySourceLexeme,
-      effectiveAt: row.effectiveAt,
-      effectiveTimeSourceField: "HTTP Date",
-      effectiveTimeSourceValue: row.providerHttpDate,
-      sourceEvidence: { ...row.sourceEvidence },
-    };
-    const record = currentDepositSourceRecord({
-      sourceRecordKey,
+  const entries: CurrentDepositBalanceEntry[] = amountPairs.map(
+    ([balanceKind, sourceField, balance]) => ({
+      sourceRecordKey: canonicalDigest(
+        "fubon-current-deposit-source-record-v1",
+        sourceAccountKey,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+        balance.coefficient,
+        String(balance.scale),
+      ),
       providerKey: canonicalDigest(
         "fubon-current-deposit-provider-record-v1",
         row.accountNumber,
@@ -323,25 +307,14 @@ export function buildFubonCurrentDepositBalanceCapture(
         balanceKind,
         row.effectiveAt,
       ),
-      contentHash: "sha256:placeholder",
-      sourceField,
-      balanceKind,
-      currency: row.currency,
-      value: balance,
-      compact,
-    });
-    records.push({
-      ...record,
-      contentHash: currentDepositSourceRecordContentHash(record.compact),
-    });
-    observations.push({
       observationKey: canonicalDigest(
         "fubon-current-deposit-observation-v1",
         sourceAccountKey,
       ),
       balanceKind,
-      balance,
+      sourceField,
       currency: row.currency,
+      value: balance,
       time: {
         effectiveAt: row.effectiveAt,
         effectiveTimeBasis: "provider-http-date",
@@ -350,12 +323,21 @@ export function buildFubonCurrentDepositBalanceCapture(
         sourceValue: row.providerHttpDate,
         contractVersion: row.sourceEvidence.contractVersion,
       },
-      sourceRecordKey,
-      sourceField,
-    });
-  }
-  const endpoint = `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`;
-  return {
+      timeInRecord: false,
+      compact: {
+        accountNumber: row.accountNumber,
+        accountNickname: row.accountNickname,
+        depositType: row.depositType,
+        branchName: row.branchName,
+        currencySourceLexeme: row.currencySourceLexeme,
+        effectiveAt: row.effectiveAt,
+        effectiveTimeSourceField: "HTTP Date",
+        effectiveTimeSourceValue: row.providerHttpDate,
+        sourceEvidence: { ...row.sourceEvidence },
+      },
+    }),
+  );
+  return assembleCurrentDepositCapture({
     captureId: randomUUID(),
     authorityRoute: "fubon/domestic-deposit/current-balance-v1",
     contractVersion: row.sourceEvidence.contractVersion,
@@ -373,26 +355,18 @@ export function buildFubonCurrentDepositBalanceCapture(
       endDate: row.effectiveAt.slice(0, 10),
     },
     providerResponse: {
-      endpoint,
+      endpoint: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: records.length,
-        terminal: true,
-        metadata: {
-          source: "fubon-current-deposit-summary",
-          sourceRowCount: 1,
-          balanceFieldCount: records.length,
-        },
+    page: {
+      metadata: {
+        source: "fubon-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceFieldCount: entries.length,
       },
-    ],
-    records,
-    observations,
-  };
+    },
+  }, entries);
 }
 
 /**

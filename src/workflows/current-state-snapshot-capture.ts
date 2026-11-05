@@ -1,14 +1,24 @@
 /**
  * Current-state snapshot capture: turn the evidence a bank acquired for its
  * current deposit balances into staged balance captures. The bank owns
- * acquisition, its row parser, its matching policy, and its capture builder
- * (ADR 0054). This module owns the order between them: strict decoding,
- * parsing, matching rows to the Source Captures this run admitted, admission,
- * the staging item key, and the standard current-balance progress events.
+ * acquisition, its row parser, its matching policy, and the facts its capture
+ * builder hands over (ADR 0054, ADR 0107). This module owns the order between
+ * them: strict decoding, parsing, matching rows to the Source Captures this
+ * run admitted, assembling and admitting each capture, the staging item key,
+ * and the standard current-balance progress events.
  */
+import type { CanonicalSourcePage } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
   admitCurrentDepositBalanceCapture,
+  currentDepositSourceRecord,
+  currentDepositSourceRecordContentHash,
+  type CurrentDepositAccountScope,
   type CurrentDepositBalanceCaptureInput,
+  type CurrentDepositBalanceKind,
+  type CurrentDepositBalanceObservationInput,
+  type CurrentDepositExactAmount,
+  type CurrentDepositSourceRecordInput,
+  type CurrentDepositTimeEvidence,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
@@ -477,4 +487,112 @@ function matchIndexedRows<Row, Matched extends Row, Capture>(
     }
   }
   return { matched, excluded };
+}
+
+/**
+ * What one kind of Current-state provider snapshot builds from each balance
+ * entry: its source record and the observation that cites that record.
+ */
+export type CurrentStateCaptureKind<Entry, SourceRecord, Observation> = Readonly<{
+  record: (entry: Entry) => SourceRecord;
+  observation: (entry: Entry) => Observation;
+}>;
+
+/**
+ * The facts of one single-page capture that the bank decides, including its
+ * page evidence. The module makes that page the one terminal page, counts its
+ * rows, and adds every record and observation.
+ */
+export type CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence> = Readonly<{
+  captureId: string;
+  authorityRoute: string;
+  contractVersion: string;
+  subjectDigest: string;
+  identity: Identity;
+  observedAt: string;
+  scope: Readonly<{
+    startDate: string;
+    endDate: string;
+    contractFingerprint?: string;
+    preflightFingerprint?: string;
+  }>;
+  providerResponse: ProviderResponseEvidence;
+  page: Omit<CanonicalSourcePage, "pageOrdinal" | "responseCode" | "rowCount" | "terminal">;
+}>;
+
+/** Assemble a Current-state provider snapshot capture from its envelope and balance entries. */
+export function assembleCurrentStateCapture<Entry, SourceRecord, Observation, Identity, ProviderResponseEvidence>(
+  kind: CurrentStateCaptureKind<Entry, SourceRecord, Observation>,
+  envelope: CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence>,
+  entries: readonly Entry[],
+): Omit<CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence>, "page"> & Readonly<{
+  pages: readonly CanonicalSourcePage[];
+  records: readonly SourceRecord[];
+  observations: readonly Observation[];
+}> {
+  const { page, ...capture } = envelope;
+  return {
+    ...capture,
+    pages: [{ pageOrdinal: 0, responseCode: "200", rowCount: entries.length, terminal: true, ...page }],
+    records: entries.map(kind.record),
+    observations: entries.map(kind.observation),
+  };
+}
+
+/** One current deposit balance a provider reported, with the keys the bank derives for it. */
+export type CurrentDepositBalanceEntry = Readonly<{
+  sourceRecordKey: string;
+  providerKey: string;
+  observationKey: string;
+  balanceKind: CurrentDepositBalanceKind;
+  sourceField: string;
+  currency: string;
+  value: CurrentDepositExactAmount;
+  time: CurrentDepositTimeEvidence;
+  /**
+   * Whether the record's compact form also gets the effective time and its
+   * source field and value from `time`. A bank may already carry time fields
+   * in `compact`; this flag adds none. Flipping it changes the record's content
+   * hash, so it follows what the bank's records already held.
+   */
+  timeInRecord: boolean;
+  compact: Record<string, unknown>;
+}>;
+
+const CURRENT_DEPOSIT_BALANCE: CurrentStateCaptureKind<
+  CurrentDepositBalanceEntry,
+  CurrentDepositSourceRecordInput,
+  CurrentDepositBalanceObservationInput
+> = {
+  record: (entry) => {
+    const record = currentDepositSourceRecord({
+      sourceRecordKey: entry.sourceRecordKey,
+      providerKey: entry.providerKey,
+      contentHash: "",
+      sourceField: entry.sourceField,
+      balanceKind: entry.balanceKind,
+      currency: entry.currency,
+      value: entry.value,
+      ...(entry.timeInRecord ? { time: entry.time } : {}),
+      compact: entry.compact,
+    });
+    return { ...record, contentHash: currentDepositSourceRecordContentHash(record.compact) };
+  },
+  observation: (entry) => ({
+    observationKey: entry.observationKey,
+    balanceKind: entry.balanceKind,
+    balance: entry.value,
+    currency: entry.currency,
+    time: entry.time,
+    sourceRecordKey: entry.sourceRecordKey,
+    sourceField: entry.sourceField,
+  }),
+};
+
+/** Assemble a current deposit balance capture from its envelope and balance entries. */
+export function assembleCurrentDepositCapture(
+  envelope: CurrentStateCaptureEnvelope<CurrentDepositAccountScope, CurrentDepositBalanceCaptureInput["providerResponse"]>,
+  entries: readonly CurrentDepositBalanceEntry[],
+): CurrentDepositBalanceCaptureInput {
+  return assembleCurrentStateCapture(CURRENT_DEPOSIT_BALANCE, envelope, entries);
 }
