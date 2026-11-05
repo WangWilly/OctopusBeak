@@ -826,6 +826,16 @@ function stageSnapshot(
   assert.deepEqual(products, ["credit-card", "current-balance"]);
   assert.deepEqual(summary, { sourceCaptureCount: 8, rowCount: 7 });
 }
+{
+  // 01:30 in Taipei is still the previous day in UTC.
+  const { staged } = stageSnapshot({
+    ...fullSnapshot,
+    currentUsedCredit: { ...currentUsedCreditEvidence, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" },
+  });
+  const balance = staged.find((item) => item.product === "current-balance")!;
+  const { scope } = (balance.command.request as { capture: { scope: { startDate: string; endDate: string } } }).capture;
+  assert.deepEqual([scope.startDate, scope.endDate], ["2026-09-10", "2026-09-10"]);
+}
 assert.deepEqual(stageSnapshot(fullSnapshot).products, ["credit-card"]);
 for (const [scope, snapshot, input, counts] of [
   [

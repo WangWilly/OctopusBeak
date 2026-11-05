@@ -1,5 +1,6 @@
 import type { AutomationSettingsFile } from "../automation/server/config-files.ts";
 import { automationFlagEnabled } from "../automation/statement-selection.ts";
+import { taipeiDate } from "../time/timezone.ts";
 
 declare const __OCTOPUSBEAK_USAGE_PING_URL__: string | undefined;
 
@@ -25,8 +26,6 @@ export const USAGE_LAST_SENT_DAY_KEY = "USAGE_LAST_SENT_DAY";
 const FIRST_COHORT_WEEK = "2026-W27";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 5_000;
-/** Taiwan has no daylight saving time; the receiver cuts days the same way. */
-const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 /** Exactly the fields ADR 0078 allows, in the order they are sent. */
 export const USAGE_PING_FIELDS = [
@@ -67,10 +66,6 @@ export type UsagePing = {
   failures: UsageFailure[];
 };
 
-export function taipeiDay(instant: Date): string {
-  return new Date(instant.getTime() + TAIPEI_OFFSET_MS).toISOString().slice(0, 10);
-}
-
 /** The ISO 8601 week of a calendar date, as YYYY-Www. */
 export function isoWeek(day: string): string {
   const date = new Date(`${day}T00:00:00Z`);
@@ -84,8 +79,8 @@ export function isoWeek(day: string): string {
 
 /** The week the install first launched, kept inside the range the receiver accepts. */
 export function usageCohortWeek(firstLaunch: Date, now: Date): string {
-  const week = isoWeek(taipeiDay(firstLaunch));
-  const current = isoWeek(taipeiDay(now));
+  const week = isoWeek(taipeiDate(firstLaunch));
+  const current = isoWeek(taipeiDate(now));
   if (week < FIRST_COHORT_WEEK) return FIRST_COHORT_WEEK;
   return week > current ? current : week;
 }
@@ -105,7 +100,7 @@ export function buildUsagePing(input: {
   lastSentDay: string | null;
   failures?: UsageFailure[];
 }): UsagePing {
-  const today = taipeiDay(input.now);
+  const today = taipeiDate(input.now);
   const last = input.lastSentDay;
   return {
     schema: 2,
@@ -230,7 +225,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
       locale: deps.locale(),
       cohortWeek: cohortWeek(settings),
       lastSentDay: typeof lastSentDay === "string" && lastSentDay ? lastSentDay : null,
-      failures: failureEntries(deps.readFailures(), taipeiDay(deps.now())),
+      failures: failureEntries(deps.readFailures(), taipeiDate(deps.now())),
     });
   }
 
@@ -243,7 +238,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
   /** Counts a finished run's failures for the next ping. Nothing is kept unless statistics are on. */
   function recordFailures(failures: readonly { source: string; code: string; stage: string }[]) {
     if (!failures.length || !collecting(deps.readSettings())) return;
-    deps.writeFailures(addFailures(deps.readFailures(), taipeiDay(deps.now()), failures));
+    deps.writeFailures(addFailures(deps.readFailures(), taipeiDate(deps.now()), failures));
   }
 
   async function attempt() {
@@ -254,7 +249,7 @@ export function createUsagePinger(deps: UsagePingerDependencies) {
       if (Object.keys(deps.readFailures()).length) deps.writeFailures({});
       return;
     }
-    const today = taipeiDay(deps.now());
+    const today = taipeiDate(deps.now());
     if (settings[USAGE_LAST_SENT_DAY_KEY] === today || settings[USAGE_REFUSED_DAY_KEY] === today) return;
     const ping = preview();
     let status: number | null;

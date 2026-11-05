@@ -12,7 +12,6 @@ import {
   subtractFailures,
   createUsagePinger,
   isoWeek,
-  taipeiDay,
   usageCohortWeek,
   usageOsVersion,
   usagePingOutcome,
@@ -102,8 +101,6 @@ test("week and month flags follow the last day a ping was sent, in Asia/Taipei",
 });
 
 test("time helpers and bounds match the receiver", () => {
-  assert.equal(taipeiDay(new Date("2026-10-29T15:59:59Z")), "2026-10-29");
-  assert.equal(taipeiDay(new Date("2026-10-29T16:00:00Z")), "2026-10-30");
   assert.equal(isoWeek("2027-01-03"), "2026-W53");
   assert.equal(isoWeek("2027-01-04"), "2027-W01");
   assert.equal(usageCohortWeek(new Date("2025-01-01T00:00:00Z"), new Date("2026-10-29T00:00:00Z")), "2026-W27");

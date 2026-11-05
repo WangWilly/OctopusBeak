@@ -15,8 +15,8 @@ import {
   fail,
   isZeroDecimal,
   observedAt,
-  taipeiDate,
 } from "../lib/preview-sources/source-kit.ts";
+import { taipeiDate } from "../lib/time/timezone.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import { ifFound } from "./frame-scope.ts";
