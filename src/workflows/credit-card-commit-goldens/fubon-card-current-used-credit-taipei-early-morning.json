@@ -1,0 +1,841 @@
+{
+  "result": {
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 7,
+      "rowCount": 2,
+      "itemCount": 2,
+      "committedCount": 2,
+      "skippedProductCount": 2
+    },
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "credit_card",
+        "status": "success",
+        "itemCount": 2,
+        "committedCount": 2
+      },
+      {
+        "typeId": "loan",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      }
+    ]
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "fubon",
+        "product": "credit_card"
+      },
+      "items": [
+        {
+          "product": "credit-card",
+          "itemKey": "uuid-1:portfolio-v2:sha256:QgyW2M-mPov3Cr1JpE84atJGnr6anhC3zPxmp49XmNE",
+          "command": {
+            "kind": "financial.creditCard.commit",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1:portfolio-v2:sha256:QgyW2M-mPov3Cr1JpE84atJGnr6anhC3zPxmp49XmNE",
+                "integrationNamespace": "fubon",
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "identityEpoch": "sha256:msT10-JZyBdrT_xKBVR8fYdjc3bjQxmH4ZhboSo0am4",
+                "stream": "credit-card",
+                "recordKind": "fubon-credit-card-transaction",
+                "routeKey": "fubon/credit-card/human-attested-v2",
+                "contractVersion": "fubon/credit-card/human-attested-v2",
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:MqyZW-pLZ0Fp0jR-njKEWiIqSbnzmDSWkCpiJvboYeA",
+                    "startDate": "2026-01-03",
+                    "endDate": "2026-08-15",
+                    "contractVersion": "fubon/credit-card/human-attested-v2",
+                    "bucketKeys": [
+                      "{\"kind\":\"statement\",\"period\":\"period-1\"}",
+                      "{\"kind\":\"statement\",\"period\":\"period-2\"}",
+                      "{\"kind\":\"statement\",\"period\":\"period-3\"}",
+                      "{\"kind\":\"statement\",\"period\":\"period-4\"}",
+                      "{\"kind\":\"statement\",\"period\":\"period-5\"}",
+                      "{\"kind\":\"statement\",\"period\":\"period-6\"}",
+                      "{\"kind\":\"unbilled\"}"
+                    ]
+                  }
+                ],
+                "subjectDigest": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "observedAt": "2026-08-24T17:30:00.000Z",
+                "accountNumber": null,
+                "scope": {
+                  "startDate": "2026-01-03",
+                  "endDate": "2026-08-15",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "bounded-range",
+                  "completeness": "complete-range",
+                  "ruleVersion": "fubon/credit-card/human-attested-v2",
+                  "completenessBasis": "six-billed-periods-plus-unbilled-terminal-grids",
+                  "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                  "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                  "pageTerminalPolicy": "each",
+                  "sourceAccountKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                  "accountNo": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 2,
+                    "responseDigest": "sha256:TA-NdA1BHiQnt1GDPx60FiPx0UTgyYJhF6ZUM3owCXw",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-1",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 2,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 2,
+                      "sourceDeclaredScopeRowCount": 2
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-1\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":2,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":2,\"sourceDeclaredScopeRowCount\":2}"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:Cg7KMmh1ggTgb6nBsSkZ3HVNt21gfZuTfWFV5JhGwgA",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-2",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 0,
+                      "sourceDeclaredScopeRowCount": 0
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-2\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":0,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":0,\"sourceDeclaredScopeRowCount\":0}"
+                  },
+                  {
+                    "pageOrdinal": 2,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:61eaUWBCO6grBeaf3UX5Xl9OS1KExiR4m-pVDl-BsnQ",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-3",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 0,
+                      "sourceDeclaredScopeRowCount": 0
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-3\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":0,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":0,\"sourceDeclaredScopeRowCount\":0}"
+                  },
+                  {
+                    "pageOrdinal": 3,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:WLh2rL7ZZC5yOLA62W7uqWSLsBG3a_NnHdYvUJWQE7A",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-4",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 0,
+                      "sourceDeclaredScopeRowCount": 0
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-4\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":0,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":0,\"sourceDeclaredScopeRowCount\":0}"
+                  },
+                  {
+                    "pageOrdinal": 4,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:GdNHb_-AFoqU9eRdmKDEpOi8T4puZ5JcNKAuxul5RWg",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-5",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 0,
+                      "sourceDeclaredScopeRowCount": 0
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-5\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":0,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":0,\"sourceDeclaredScopeRowCount\":0}"
+                  },
+                  {
+                    "pageOrdinal": 5,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:1MW_E2JiRunlCEyHvmLh8bbm-Y674uzW2DPz1Yn-C8k",
+                    "proofKind": "source-declared-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "billed",
+                      "period": "period-6",
+                      "currentPage": 1,
+                      "pageSize": 2147483647,
+                      "maximumPageSize": 2147483647,
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "dueDateEvidence": "explicit-date",
+                      "terminalEvidence": "source-declared-total",
+                      "sourceDeclaredRowCount": 0,
+                      "sourceDeclaredScopeRowCount": 0
+                    },
+                    "metadataJson": "{\"kind\":\"billed\",\"period\":\"period-6\",\"currentPage\":1,\"pageSize\":2147_4836_47,\"maximumPageSize\":2147_4836_47,\"capturedRowCount\":0,\"terminal\":true,\"dueDateEvidence\":\"explicit-date\",\"terminalEvidence\":\"source-declared-total\",\"sourceDeclaredRowCount\":0,\"sourceDeclaredScopeRowCount\":0}"
+                  },
+                  {
+                    "pageOrdinal": 6,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 0,
+                    "responseDigest": "sha256:CFglHFGdjlaURodvYdoNrc_lEG6X_7ja9LrF_Se6tFU",
+                    "proofKind": "provider-no-record-terminal-grid",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "kind": "unbilled",
+                      "period": "unbilled",
+                      "capturedRowCount": 0,
+                      "terminal": true,
+                      "terminalEvidence": "provider-no-record"
+                    },
+                    "metadataJson": "{\"kind\":\"unbilled\",\"period\":\"unbilled\",\"capturedRowCount\":0,\"terminal\":true,\"terminalEvidence\":\"provider-no-record\"}"
+                  },
+                  {
+                    "pageOrdinal": 7,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 5,
+                    "responseDigest": "sha256:2JgyMf72MUQF77k2Q4sjoD-SYFkOM7O3nxfMThNMP_s",
+                    "proofKind": "derived-statement-summary-evidence",
+                    "contractFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "preflightFingerprint": "sha256:2IrDDmnHKs7Dkup_5Msq0ccZ4gNfEqYyBZB3DhF4MBk",
+                    "metadata": {
+                      "source": "statement-summary-evidence",
+                      "providerPage": false
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM",
+                    "collisionKey": "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:h-Ae-iMWbwQFZz7emuVAImsmtuThrct5nVCNvnKw18k",
+                    "compact": {
+                      "instrumentKey": "fubon-card-instrument-v2:sha256:HkkX3SeisNmQbrRJbZLu_OQ_FiHS3A34Hxo1sDNCRvo",
+                      "cardMask": "****5678",
+                      "consumeDate": "2026-01-05",
+                      "postingDate": "2026-01-06",
+                      "amount": {
+                        "coefficient": "2000",
+                        "scale": 2
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "SYNTHETIC B"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"fubon-card-instrument-v2:sha256:HkkX3SeisNmQbrRJbZLu_OQ_FiHS3A34Hxo1sDNCRvo\",\"cardMask\":\"****5678\",\"consumeDate\":\"2026-01-05\",\"postingDate\":\"2026-01-06\",\"amount\":{\"coefficient\":\"2000\",\"scale\":2},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"SYNTHETIC B\"}",
+                    "sequenceLexeme": "observed-source-order:0",
+                    "description": "SYNTHETIC B",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:MqyZW-pLZ0Fp0jR-njKEWiIqSbnzmDSWkCpiJvboYeA",
+                      "fingerprint": "sha256:p1PRYaL_kXZZAcq3x7bl3bmZWZzJJEbssYdfWUJxJgQ",
+                      "partitionDate": "2026-01-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"period-1\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA",
+                    "collisionKey": "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:76gJKBJ8UorUajrRAGM_bhiO9PN3d1dhkXsM77GxH90",
+                    "compact": {
+                      "instrumentKey": "fubon-card-instrument-v2:sha256:S2wwrpHJun5SNrFYfa1-0uYNZpSCx3BaPJoqz0hrGB4",
+                      "cardMask": "****1234",
+                      "consumeDate": "2026-01-03",
+                      "postingDate": "2026-01-04",
+                      "amount": {
+                        "coefficient": "1000",
+                        "scale": 2
+                      },
+                      "currency": "TWD",
+                      "direction": "outflow",
+                      "description": "SYNTHETIC A"
+                    },
+                    "compactJson": "{\"instrumentKey\":\"fubon-card-instrument-v2:sha256:S2wwrpHJun5SNrFYfa1-0uYNZpSCx3BaPJoqz0hrGB4\",\"cardMask\":\"****1234\",\"consumeDate\":\"2026-01-03\",\"postingDate\":\"2026-01-04\",\"amount\":{\"coefficient\":\"1000\",\"scale\":2},\"currency\":\"TWD\",\"direction\":\"outflow\",\"description\":\"SYNTHETIC A\"}",
+                    "sequenceLexeme": "observed-source-order:1",
+                    "description": "SYNTHETIC A",
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:MqyZW-pLZ0Fp0jR-njKEWiIqSbnzmDSWkCpiJvboYeA",
+                      "fingerprint": "sha256:N6lHJ1_Q0CxxqA0QyJMT8d8sx7cBGPEj-C7k4u2jfAU",
+                      "partitionDate": "2026-01-03",
+                      "ordinal": 1
+                    },
+                    "occurrenceGroupBucketKey": "{\"kind\":\"statement\",\"period\":\"period-1\"}"
+                  },
+                  {
+                    "occurrenceKey": "sha256:8c9f71usUw01tA2WYs9I8Uuq0Kv-ZNjjRiEv4aPRnZ4",
+                    "collisionKey": "sha256:8c9f71usUw01tA2WYs9I8Uuq0Kv-ZNjjRiEv4aPRnZ4",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:BMHKki_MF08SnoE3Vyxg_GZwEPoh_tmhiiFOZcp23kE",
+                    "compact": {
+                      "statementKey": "fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM",
+                      "cycleStart": "2026-06-29",
+                      "cycleEnd": "2026-07-28",
+                      "issueDate": "2026-07-28",
+                      "dueDate": "2026-08-15",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "100",
+                        "scale": 2
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 2
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM\",\"cycleStart\":\"2026-06-29\",\"cycleEnd\":\"2026-07-28\",\"issueDate\":\"2026-07-28\",\"dueDate\":\"2026-08-15\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"100\",\"scale\":2},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":2}}",
+                    "sequenceLexeme": "statement-summary:fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:iVB1qoCgpkooWPvB8sNGnhQNoJfxnXYWwPPX6t9Xmqc",
+                    "collisionKey": "sha256:iVB1qoCgpkooWPvB8sNGnhQNoJfxnXYWwPPX6t9Xmqc",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:SIaHflhfX712GeUdiMYnKW8WGgYEtb5NC7Ee9wj_SNU",
+                    "compact": {
+                      "statementKey": "fubon-statement-v2:sha256:meG3c0ru9dIvN_x_5OXBXc3kwsywwtHBvMcQE6Ji0O0",
+                      "cycleStart": "2026-05-29",
+                      "cycleEnd": "2026-06-28",
+                      "issueDate": "2026-06-28",
+                      "dueDate": "2026-07-15",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "200",
+                        "scale": 2
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 2
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"fubon-statement-v2:sha256:meG3c0ru9dIvN_x_5OXBXc3kwsywwtHBvMcQE6Ji0O0\",\"cycleStart\":\"2026-05-29\",\"cycleEnd\":\"2026-06-28\",\"issueDate\":\"2026-06-28\",\"dueDate\":\"2026-07-15\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"200\",\"scale\":2},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":2}}",
+                    "sequenceLexeme": "statement-summary:fubon-statement-v2:sha256:meG3c0ru9dIvN_x_5OXBXc3kwsywwtHBvMcQE6Ji0O0",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:NplQwwrwQSbzXW5-1xWWaWAxi8ueWliq9Eyv8CZ65sM",
+                    "collisionKey": "sha256:NplQwwrwQSbzXW5-1xWWaWAxi8ueWliq9Eyv8CZ65sM",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:gEjBS7mZU6xu5Yk0F1UQWEuyfsucYrcF3ybaAosn4Lo",
+                    "compact": {
+                      "statementKey": "fubon-statement-v2:sha256:XmWJWIzaRZDezecMaSSklxv736pHYfeeSAdG7Swczpw",
+                      "cycleStart": "2026-04-29",
+                      "cycleEnd": "2026-05-28",
+                      "issueDate": "2026-05-28",
+                      "dueDate": "2026-06-15",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "300",
+                        "scale": 2
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 2
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"fubon-statement-v2:sha256:XmWJWIzaRZDezecMaSSklxv736pHYfeeSAdG7Swczpw\",\"cycleStart\":\"2026-04-29\",\"cycleEnd\":\"2026-05-28\",\"issueDate\":\"2026-05-28\",\"dueDate\":\"2026-06-15\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"300\",\"scale\":2},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":2}}",
+                    "sequenceLexeme": "statement-summary:fubon-statement-v2:sha256:XmWJWIzaRZDezecMaSSklxv736pHYfeeSAdG7Swczpw",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:5nSfDx9BjW_yapcr1nOEvQHQ3KEJpGJsvcgeHteCP7c",
+                    "collisionKey": "sha256:5nSfDx9BjW_yapcr1nOEvQHQ3KEJpGJsvcgeHteCP7c",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:-HZOrU-RE7ulvaZ6Bxi8ZIVI-nQ0mO6aZ4mM041Fb8M",
+                    "compact": {
+                      "statementKey": "fubon-statement-v2:sha256:i7cdbNtyyruLa8fbF7wjDNpn-Lr_gNRyhBEJwmOlYdA",
+                      "cycleStart": "2026-03-29",
+                      "cycleEnd": "2026-04-28",
+                      "issueDate": "2026-04-28",
+                      "dueDate": "2026-05-15",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "400",
+                        "scale": 2
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 2
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"fubon-statement-v2:sha256:i7cdbNtyyruLa8fbF7wjDNpn-Lr_gNRyhBEJwmOlYdA\",\"cycleStart\":\"2026-03-29\",\"cycleEnd\":\"2026-04-28\",\"issueDate\":\"2026-04-28\",\"dueDate\":\"2026-05-15\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"400\",\"scale\":2},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":2}}",
+                    "sequenceLexeme": "statement-summary:fubon-statement-v2:sha256:i7cdbNtyyruLa8fbF7wjDNpn-Lr_gNRyhBEJwmOlYdA",
+                    "description": null
+                  },
+                  {
+                    "occurrenceKey": "sha256:kR0WDl2RL3HeeFBP9VAZSIDbY4wRKBw6XMrh9p8t8C0",
+                    "collisionKey": "sha256:kR0WDl2RL3HeeFBP9VAZSIDbY4wRKBw6XMrh9p8t8C0",
+                    "providerKey": "human-attested:no-provider-key",
+                    "contentHash": "sha256:8gLW7ChQA1AmlZc6YznN2AoUA-F8ons3wDaINPorfEc",
+                    "compact": {
+                      "statementKey": "fubon-statement-v2:sha256:qf-EmJXpWlfEFUanwWGmfpRMyg1QMijNJPd17Y2Vio8",
+                      "cycleStart": "2026-03-01",
+                      "cycleEnd": "2026-03-28",
+                      "issueDate": "2026-03-28",
+                      "dueDate": "2026-04-15",
+                      "currency": "TWD",
+                      "balance": {
+                        "coefficient": "500",
+                        "scale": 2
+                      },
+                      "minimumPayment": {
+                        "coefficient": "100",
+                        "scale": 2
+                      }
+                    },
+                    "compactJson": "{\"statementKey\":\"fubon-statement-v2:sha256:qf-EmJXpWlfEFUanwWGmfpRMyg1QMijNJPd17Y2Vio8\",\"cycleStart\":\"2026-03-01\",\"cycleEnd\":\"2026-03-28\",\"issueDate\":\"2026-03-28\",\"dueDate\":\"2026-04-15\",\"currency\":\"TWD\",\"balance\":{\"coefficient\":\"500\",\"scale\":2},\"minimumPayment\":{\"coefficient\":\"100\",\"scale\":2}}",
+                    "sequenceLexeme": "statement-summary:fubon-statement-v2:sha256:qf-EmJXpWlfEFUanwWGmfpRMyg1QMijNJPd17Y2Vio8",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "identityMethod": "human-attested"
+              },
+              "instruments": [
+                {
+                  "instrumentKey": "fubon-card-instrument-v2:sha256:HkkX3SeisNmQbrRJbZLu_OQ_FiHS3A34Hxo1sDNCRvo",
+                  "cardMask": "****5678",
+                  "role": "primary",
+                  "lifecycle": null,
+                  "evidenceSourceOccurrenceKey": "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM"
+                },
+                {
+                  "instrumentKey": "fubon-card-instrument-v2:sha256:S2wwrpHJun5SNrFYfa1-0uYNZpSCx3BaPJoqz0hrGB4",
+                  "cardMask": "****1234",
+                  "role": "primary",
+                  "lifecycle": null,
+                  "evidenceSourceOccurrenceKey": "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA"
+                }
+              ],
+              "transactions": [
+                {
+                  "sourceOccurrenceKey": "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM",
+                  "sourceSequence": "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM",
+                  "amount": {
+                    "coefficient": "2000",
+                    "scale": 2
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "description": "SYNTHETIC B",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-01-05",
+                  "transactionDateTimeLocal": "2026-01-05T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1767542400000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "fubon-card-instrument-v2:sha256:HkkX3SeisNmQbrRJbZLu_OQ_FiHS3A34Hxo1sDNCRvo",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-01-05",
+                  "postingDate": "2026-01-06",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM"
+                },
+                {
+                  "sourceOccurrenceKey": "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA",
+                  "sourceSequence": "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA",
+                  "amount": {
+                    "coefficient": "1000",
+                    "scale": 2
+                  },
+                  "balanceAfter": null,
+                  "currency": "TWD",
+                  "direction": "outflow",
+                  "postingStatus": "posted",
+                  "postingOrigin": "human-attested",
+                  "postingBasis": "statement-posted-history",
+                  "postingRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "description": "SYNTHETIC A",
+                  "economicStatus": "normal",
+                  "administrativeState": "active",
+                  "semanticRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "effectiveOn": "2026-01-03",
+                  "transactionDateTimeLocal": "2026-01-03T00:00:00",
+                  "timeZone": "Asia/Taipei",
+                  "timePrecision": "date",
+                  "timeOrigin": "defaulted_local_midnight",
+                  "effectiveTimeBasis": "transaction-time",
+                  "effectiveTimeRuleVersion": "fubon/credit-card/human-attested-v2",
+                  "utcInstantUtcUs": 1767369600000000,
+                  "conversionEvidence": null,
+                  "instrumentKey": "fubon-card-instrument-v2:sha256:S2wwrpHJun5SNrFYfa1-0uYNZpSCx3BaPJoqz0hrGB4",
+                  "billingStatus": "billed",
+                  "consumeDate": "2026-01-03",
+                  "postingDate": "2026-01-04",
+                  "effectiveDateBasis": "consume-date",
+                  "statementKey": "fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM"
+                }
+              ],
+              "statements": [
+                {
+                  "statementKey": "fubon-statement-v2:sha256:j-OpIKNHBFQ2EDlz4kM_nE1rF3raXIH96Yg1bUo_RRM",
+                  "revisionKey": "fubon-statement-revision-v2:sha256:-MztR_-PEIe6zOPJfAf-Q41VyJlbLWkuPnTYi8-DPhc",
+                  "cycleStart": "2026-06-29",
+                  "cycleEnd": "2026-07-28",
+                  "issueDate": "2026-07-28",
+                  "dueDate": "2026-08-15",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "transactionSourceOccurrenceKeys": [
+                    "sha256:WG7XBHyQlKf18ty9YVpP4233k-hyLS7pg2bTgg2kGgM",
+                    "sha256:gHRlAb6L7h4n_U0VjEvT5qkc26Dn4JodTBAmmo6hrIA"
+                  ],
+                  "evidenceSourceOccurrenceKey": "sha256:8c9f71usUw01tA2WYs9I8Uuq0Kv-ZNjjRiEv4aPRnZ4"
+                },
+                {
+                  "statementKey": "fubon-statement-v2:sha256:meG3c0ru9dIvN_x_5OXBXc3kwsywwtHBvMcQE6Ji0O0",
+                  "revisionKey": "fubon-statement-revision-v2:sha256:VQnIXpU88AOrDL9UhC-290vojomKXGOhcAJ9cHZiA6E",
+                  "cycleStart": "2026-05-29",
+                  "cycleEnd": "2026-06-28",
+                  "issueDate": "2026-06-28",
+                  "dueDate": "2026-07-15",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "200",
+                    "scale": 2
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "transactionSourceOccurrenceKeys": [],
+                  "evidenceSourceOccurrenceKey": "sha256:iVB1qoCgpkooWPvB8sNGnhQNoJfxnXYWwPPX6t9Xmqc"
+                },
+                {
+                  "statementKey": "fubon-statement-v2:sha256:XmWJWIzaRZDezecMaSSklxv736pHYfeeSAdG7Swczpw",
+                  "revisionKey": "fubon-statement-revision-v2:sha256:CLvGQhLFYtf5HyHlTb5LitSyc9DdLEHwiqsHh87ox2M",
+                  "cycleStart": "2026-04-29",
+                  "cycleEnd": "2026-05-28",
+                  "issueDate": "2026-05-28",
+                  "dueDate": "2026-06-15",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "300",
+                    "scale": 2
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "transactionSourceOccurrenceKeys": [],
+                  "evidenceSourceOccurrenceKey": "sha256:NplQwwrwQSbzXW5-1xWWaWAxi8ueWliq9Eyv8CZ65sM"
+                },
+                {
+                  "statementKey": "fubon-statement-v2:sha256:i7cdbNtyyruLa8fbF7wjDNpn-Lr_gNRyhBEJwmOlYdA",
+                  "revisionKey": "fubon-statement-revision-v2:sha256:XCUGy7wqyay9aiDr8ukeJI3XVHLmB0kYcPg7CKk35_g",
+                  "cycleStart": "2026-03-29",
+                  "cycleEnd": "2026-04-28",
+                  "issueDate": "2026-04-28",
+                  "dueDate": "2026-05-15",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "400",
+                    "scale": 2
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "transactionSourceOccurrenceKeys": [],
+                  "evidenceSourceOccurrenceKey": "sha256:5nSfDx9BjW_yapcr1nOEvQHQ3KEJpGJsvcgeHteCP7c"
+                },
+                {
+                  "statementKey": "fubon-statement-v2:sha256:qf-EmJXpWlfEFUanwWGmfpRMyg1QMijNJPd17Y2Vio8",
+                  "revisionKey": "fubon-statement-revision-v2:sha256:idPZlFscITaNzb4x2HAspX1N2pqXAlQpSW7vmXhLeZQ",
+                  "cycleStart": "2026-03-01",
+                  "cycleEnd": "2026-03-28",
+                  "issueDate": "2026-03-28",
+                  "dueDate": "2026-04-15",
+                  "currency": "TWD",
+                  "balance": {
+                    "coefficient": "500",
+                    "scale": 2
+                  },
+                  "minimumPayment": {
+                    "coefficient": "100",
+                    "scale": 2
+                  },
+                  "transactionSourceOccurrenceKeys": [],
+                  "evidenceSourceOccurrenceKey": "sha256:kR0WDl2RL3HeeFBP9VAZSIDbY4wRKBw6XMrh9p8t8C0"
+                }
+              ],
+              "relations": []
+            }
+          },
+          "provider": "fubon"
+        },
+        {
+          "product": "current-balance",
+          "itemKey": "uuid-1:portfolio-v2:sha256:QgyW2M-mPov3Cr1JpE84atJGnr6anhC3zPxmp49XmNE:current-used-credit",
+          "command": {
+            "kind": "financial.creditCard.balance",
+            "request": {
+              "capture": {
+                "captureId": "uuid-1:portfolio-v2:sha256:QgyW2M-mPov3Cr1JpE84atJGnr6anhC3zPxmp49XmNE:current-used-credit",
+                "integrationNamespace": "fubon",
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "identityEpoch": "sha256:msT10-JZyBdrT_xKBVR8fYdjc3bjQxmH4ZhboSo0am4",
+                "stream": "credit-card",
+                "recordKind": "credit-card-current-used-credit",
+                "routeKey": "fubon/credit-card/current-used-credit-v1",
+                "contractVersion": "fubon/credit-card/current-used-credit-v1",
+                "subjectDigest": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "observedAt": "2026-08-24T17:30:00.000Z",
+                "scope": {
+                  "startDate": "2026-08-25",
+                  "endDate": "2026-08-25",
+                  "dateFormat": "YYYY-MM-DD",
+                  "kind": "point-in-time",
+                  "completeness": "single-page",
+                  "ruleVersion": "fubon/credit-card/current-used-credit-v1",
+                  "completenessBasis": "provider-credit-current-used-credit-snapshot",
+                  "sourceAccountKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "rowCount": 1,
+                    "terminal": true,
+                    "metadata": {
+                      "sourceField": "正卡人信用額度-正卡人可用額度",
+                      "table": "CBO_totalTb:credit"
+                    }
+                  }
+                ],
+                "records": [
+                  {
+                    "occurrenceKey": "sha256:zwohQD7NjAXqnRAOJJsM092htuNbuD99PLfBjuzhQa8",
+                    "collisionKey": "sha256:zwohQD7NjAXqnRAOJJsM092htuNbuD99PLfBjuzhQa8",
+                    "providerKey": "sha256:pBS8N4J6oX-AzGOIaQvUkq_V5H_LvrlyM6zZxHDNWDg",
+                    "contentHash": "sha256:qqdoewe0bCyCWJ6zHTdJshHtKxuOnxYJ7HI3m3hmBVI",
+                    "compact": {
+                      "provider": "fubon",
+                      "formula": "正卡人信用額度-正卡人可用額度",
+                      "limitText": "100000",
+                      "availableText": "60000",
+                      "sourceField": "正卡人信用額度-正卡人可用額度",
+                      "balanceKind": "credit_used",
+                      "currency": "TWD",
+                      "value": {
+                        "coefficient": "40000",
+                        "scale": 0
+                      },
+                      "effectiveAt": "2026-08-24T17:30:00.000Z",
+                      "effectiveTimeSourceField": "HTTP Date",
+                      "effectiveTimeSourceValue": "Mon, 24 Aug 2026 17:30:00 GMT",
+                      "estimateKind": "estimate",
+                      "estimateBasis": "credit-limit-minus-available",
+                      "limit": {
+                        "coefficient": "100000",
+                        "scale": 0
+                      },
+                      "available": {
+                        "coefficient": "60000",
+                        "scale": 0
+                      }
+                    },
+                    "sequenceLexeme": "sha256:zwohQD7NjAXqnRAOJJsM092htuNbuD99PLfBjuzhQa8",
+                    "description": null
+                  }
+                ]
+              },
+              "account": {
+                "sourceAccountKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "accountType": "credit",
+                "currency": "TWD"
+              },
+              "identity": {
+                "accountNaturalKey": "sha256:yfXVtrSfLKWfs8iI60Y8qEHCu8LmxUXA6W9pgmIputw",
+                "identityMethod": "human-attested"
+              },
+              "balance": {
+                "observation": {
+                  "observationKey": "issuer-aggregate",
+                  "balanceKind": "credit_used",
+                  "balance": {
+                    "coefficient": "40000",
+                    "scale": 0
+                  },
+                  "currency": "TWD",
+                  "effectiveAt": "2026-08-24T17:30:00.000Z",
+                  "effectiveTimeBasis": "provider-http-date",
+                  "effectiveTimeRuleVersion": "fubon/credit-card/current-used-credit-v1",
+                  "evidenceSourceRecordKey": "sha256:zwohQD7NjAXqnRAOJJsM092htuNbuD99PLfBjuzhQa8",
+                  "evidenceSourceField": "HTTP Date",
+                  "evidenceSourceValue": "Mon, 24 Aug 2026 17:30:00 GMT",
+                  "evidenceContractVersion": "fubon/credit-card/current-used-credit-v1",
+                  "sourceOccurrenceKey": "sha256:zwohQD7NjAXqnRAOJJsM092htuNbuD99PLfBjuzhQa8",
+                  "evidenceEndpoint": "https://ebank.taipeifubon.com.tw/B2C/cccqu/cccqu002/CCCQU002_Home.faces?menuId=CCC0201",
+                  "evidenceResponseStatus": 200,
+                  "evidenceCachePolicy": "no-store, no-cache"
+                },
+                "estimate": {
+                  "kind": "estimate",
+                  "basis": "credit-limit-minus-available",
+                  "formula": "正卡人信用額度-正卡人可用額度",
+                  "limit": {
+                    "coefficient": "100000",
+                    "scale": 0
+                  },
+                  "available": {
+                    "coefficient": "60000",
+                    "scale": 0
+                  }
+                }
+              }
+            }
+          },
+          "provider": "fubon"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "credit-card-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "credit-card-collection-completed",
+      "counts": {
+        "completed": 7,
+        "total": 7,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "credit-card-source-decoding-completed",
+      "counts": {
+        "completed": 7,
+        "total": 7,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "credit-card-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "credit_card"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 7,
+        "total": 7
+      }
+    }
+  ]
+}

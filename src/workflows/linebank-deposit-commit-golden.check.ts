@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
-import { syncBuiltinESMExports } from "node:module";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import type { Page } from "playwright";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
 import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
-import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
+import { assertDepositCommitGolden, recordDepositCommit, withCountedUuids } from "./deposit-commit-golden.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
   lineBankWorkflow,
@@ -167,18 +165,6 @@ function signedInPage(holdings: readonly Holding[]): Page {
   } as unknown as Page;
 }
 
-/**
- * The domestic capture hashes its random capture id into each page digest,
- * which the golden's UUID normalization cannot reach, so ids are counted.
- */
-function countedUuids(): void {
-  let next = 0;
-  mock.method(crypto, "randomUUID", () => {
-    next += 1;
-    return `00000000-0000-4000-8000-${next.toString(16).padStart(12, "0")}`;
-  });
-  syncBuiltinESMExports();
-}
 
 type RunOptions = Readonly<{
   now?: () => string;
@@ -187,13 +173,7 @@ type RunOptions = Readonly<{
 }>;
 
 async function run(holdings: readonly Holding[], options: RunOptions = {}) {
-  countedUuids();
-  try {
-    return await runWithCountedUuids(holdings, options);
-  } finally {
-    mock.restoreAll();
-    syncBuiltinESMExports();
-  }
+  return withCountedUuids(() => runWithCountedUuids(holdings, options));
 }
 
 async function runWithCountedUuids(holdings: readonly Holding[], options: RunOptions) {
