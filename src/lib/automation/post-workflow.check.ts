@@ -407,7 +407,7 @@ test("Post deposit build stages nothing when the read or the current balances fa
   }));
   assert.ok(malformed.outcome instanceof SourceTextIntegrityError);
   assert.deepEqual(malformed.staged, []);
-  assert.equal(malformed.codes.at(-1), "current-balance-collection-failed");
+  assert.equal(malformed.codes.at(-1), "current-balance-decoding-started", "bytes that are not intact name their own failure");
 
   const unknown = await stageSnapshot([statement], async () => currentBalanceResponse("99990000000009", "1"));
   assert.match(String(unknown.outcome), /without an existing admitted identity/u);

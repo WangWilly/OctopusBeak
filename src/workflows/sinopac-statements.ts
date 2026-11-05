@@ -1292,26 +1292,24 @@ export async function readSinopacDepositSource(
       completed: reads.length,
       total: accounts.length,
     });
-    const structural = admitSinopacStatementCaptureEvidence(
-      buildSinopacCapture(
-        account,
-        sinopacWindow(period),
-        observedAt,
-        pending,
-        explicitNoData,
-      ),
-    );
-    if (structural.status !== "admissible" || !structural.capture) {
-      await event("validation", "failed", "source-admission-rejected", {
-        completed: reads.length,
-        total: accounts.length,
-      });
-      throw new Error(
-        `SinoPac statement source admission blocked: ${structural.diagnostics.join(", ")}`,
+    const structuralCapture = await product.validate(() => {
+      const admission = admitSinopacStatementCaptureEvidence(
+        buildSinopacCapture(
+          account,
+          sinopacWindow(period),
+          observedAt,
+          pending,
+          explicitNoData,
+        ),
       );
-    }
+      if (admission.status !== "admissible" || !admission.capture)
+        throw new Error(
+          `SinoPac statement source admission blocked: ${admission.diagnostics.join(", ")}`,
+        );
+      return admission.capture;
+    });
     reads.push({
-      capture: structural.capture,
+      capture: structuralCapture,
       rowCount: pending.rows.length,
       providerNoData: explicitNoData,
     });
@@ -1352,23 +1350,20 @@ export async function stageSinopacDeposit(
       });
       continue;
     }
-    const financial = capture.product === "domestic-deposit"
-      ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
-          capture,
-          captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
-        })
-      : buildSinopacForeignCurrencyFinancialCaptureForPGlite(
-          capture,
-          `${captureOccurrenceId}:foreign:${index}`,
-        );
-    if (financial.status !== "admitted" || !financial.capture) {
-      await event("validation", "failed", "financial-admission-rejected", {
-        completed: index,
-        total: snapshot.accounts.length,
-      });
-      throw new Error(`SinoPac ${capture.product} financial admission failed: ${financial.diagnostics.join(", ")}`);
-    }
-    const financialCapture = financial.capture;
+    const financialCapture = await product.validate(() => {
+      const financial = capture.product === "domestic-deposit"
+        ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
+            capture,
+            captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
+          })
+        : buildSinopacForeignCurrencyFinancialCaptureForPGlite(
+            capture,
+            `${captureOccurrenceId}:foreign:${index}`,
+          );
+      if (financial.status !== "admitted" || !financial.capture)
+        throw new Error(`SinoPac ${capture.product} financial admission failed: ${financial.diagnostics.join(", ")}`);
+      return financial.capture;
+    });
     items.push({
       product: capture.product, itemKey: `${capture.product}:${index}`,
       command: {

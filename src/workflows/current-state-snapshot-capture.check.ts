@@ -22,6 +22,11 @@ import {
   type SnapshotAcquisition,
   verifyProviderResponse,
 } from "./current-state-snapshot-capture.ts";
+import { validationReporter, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
+
+/** A product handle's reporting half, with the run's own validate. */
+const reporting = (event: ProductCollectionStageEvent) =>
+  ({ event, validate: validationReporter(event, new AbortController().signal) });
 
 type Capture = Readonly<{
   id: string;
@@ -358,23 +363,23 @@ async function snapshot(
       return acquired;
     },
     now: () => RUN_CLOCK,
-    product: {
-      event: async (stage, outcome, code, counts) => {
-        events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
-      },
-    },
+    product: reporting(async (stage, outcome, code, counts) => {
+      events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
+    }),
     text: strictSourceText,
     signal: new AbortController().signal,
   });
   return { run, events, reads: () => reads };
 }
 
-const decodeFailure = [
+const readStarted = [
   "collection started current-balance-collection-started",
   "decoding started current-balance-decoding-started",
-  "decoding failed current-balance-decoding-failed",
-  "collection failed current-balance-collection-failed",
 ];
+/** A check of the reply that rejects it reports validation (ADR 0106). */
+const checkFailure = [...readStarted, "validation failed source-validation-rejected"];
+/** Bytes that are not intact name their own failure, so nothing more is reported. */
+const integrityFailure = readStarted;
 
 test("with no admitted financial capture nothing is read, reported, or staged", async () => {
   const result = await snapshot(declaration(), [], json([{ account: "A", currencies: ["TWD"], amount: "1" }]));
@@ -431,7 +436,7 @@ test("strict decoding rejects malformed bytes, escaped replacement characters, a
     }, captures, acquired);
     await assert.rejects(result.run, expected, name);
     assert.equal(parsed, false, `${name} never reaches the row parser`);
-    assert.deepEqual(result.events, decodeFailure, name);
+    assert.deepEqual(result.events, expected === SourceTextIntegrityError ? integrityFailure : checkFailure, name);
   }
   const cells = await snapshot(declaration(), captures, { evidence: { kind: "cells", rows: [["A", "TWD", "12"]] }, response: PROVIDER_RESPONSE });
   assert.deepEqual((await cells.run).items.map((item) => item.itemKey), ["current-balance:domestic-deposit:A"]);
@@ -452,10 +457,22 @@ test("JSON evidence hands the parser the decoded body text with its numeric lexe
   assert.equal(seen, body);
 });
 
-test("an acquisition or parse failure reports decoding and collection failure", async () => {
+test("a parse failure reports validation, and a failed read reports collection", async () => {
   const failing = await snapshot({ ...declaration(), parse: () => { throw new Error("bad row"); } }, [capture("a")], json([]));
   await assert.rejects(failing.run, /^Error: bad row$/u);
-  assert.deepEqual(failing.events, decodeFailure);
+  assert.deepEqual(failing.events, checkFailure);
+
+  const events: string[] = [];
+  const timedOut = readCurrentStateSnapshot(declaration(), {
+    acquire: async () => { throw Object.assign(new Error("Timeout 60000ms exceeded"), { name: "TimeoutError" }); },
+    now: () => RUN_CLOCK,
+    product: reporting(async (stage, outcome, code) => { events.push(`${stage} ${outcome} ${code}`); }),
+    text: strictSourceText,
+    signal: new AbortController().signal,
+  });
+  await assert.rejects(timedOut, /Timeout/u);
+  assert.deepEqual(events, [...readStarted, "collection failed current-balance-collection-failed"],
+    "a timed-out read is a collection failure, never decoding or validation");
 });
 
 test("a foreign-currency key names each distinct currency in sorted order", async () => {
@@ -485,14 +502,14 @@ test("two balances under one item key are rejected", async () => {
   await assert.rejects(result.run, /current-balance:foreign-currency-deposit:A:USD more than once/u);
   assert.deepEqual(result.events.slice(-2), [
     "validation started current-balance-validation-started 0/2",
-    "validation failed current-balance-validation-rejected 0/2",
+    "validation failed source-validation-rejected",
   ]);
 });
 
 test("an unmatched row fails validation under a throw policy", async () => {
   const result = await snapshot(declaration(), [capture("a")], json([{ account: "Z", currencies: ["TWD"], amount: "1" }]));
   await assert.rejects(result.run, /^Error: unmatched$/u);
-  assert.equal(result.events.at(-1), "validation failed current-balance-validation-rejected 0/1");
+  assert.equal(result.events.at(-1), "validation failed source-validation-rejected");
 });
 
 test("a validate throw rejects validation after matching and stages nothing", async () => {
@@ -515,18 +532,16 @@ test("a validate throw rejects validation after matching and stages nothing", as
   assert.deepEqual(seen, [[2, ["a"], ["Z"]]]);
   assert.deepEqual(result.events.slice(-2), [
     "validation started current-balance-validation-started 0/2",
-    "validation failed current-balance-validation-rejected 0/2",
+    "validation failed source-validation-rejected",
   ]);
   assert.ok(!result.events.some((event) => event.includes("validation-completed")));
 });
 
 test("the read and stage halves report their own events and stage what the read returned", async () => {
   const events: string[] = [];
-  const product = {
-    event: async (stage: string, outcome: string, code: string, counts?: Readonly<{ completed?: number; total?: number }>) => {
-      events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
-    },
-  };
+  const product = reporting(async (stage, outcome, code, counts) => {
+    events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
+  });
   const signal = new AbortController().signal;
   const declared = declaration("domestic-deposit", { kind: "exclude" });
   const rows = await readCurrentStateSnapshot(declared, {
@@ -565,7 +580,7 @@ test("the stage half throws on ambiguous captures before validation starts", asy
   await assert.rejects(
     stageCurrentStateSnapshot(declaration(), [{ account: "A", currencies: ["TWD"], amount: "1" }], {
       captures: [capture("a"), capture("b", { connection: "c2" })],
-      product: { event: async (_stage, _outcome, code) => { events.push(code); } },
+      product: reporting(async (_stage, _outcome, code) => { events.push(code); }),
       signal: new AbortController().signal,
     }),
     /^Error: ambiguous$/u,
@@ -644,5 +659,5 @@ test("the read stamps observedAt from the run clock and rejects an undeclared re
   }, [capture("a")], { ...json([]), response: { ...PROVIDER_RESPONSE, status: 500 } });
   await assert.rejects(undeclared.run, /status is 500/u);
   assert.equal(parsed, false);
-  assert.deepEqual(undeclared.events, decodeFailure);
+  assert.deepEqual(undeclared.events, checkFailure);
 });

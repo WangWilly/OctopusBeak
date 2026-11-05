@@ -772,6 +772,23 @@ for (const [name, collect, expected, reported] of [
 }
 
 {
+  const forwarded: string[] = [];
+  const summary = await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: signal().signal,
+    event: async (stage, outcome) => { forwarded.push(`${stage}/${outcome}`); },
+    collect: async (_typeId, { validate }) => validate(() => {
+      throw new StatementComponentAbsentError("no deposit account", "not_held");
+    }),
+    financialCommit: commitWith(async () => { throw new Error("an absent product must not commit"); }),
+  }).catch((error: unknown) => (error as ProductCollectionInterruptedError).summary);
+  assert.equal(summary.products[0]?.status, "not_held", "an absence found by a check stays an absence");
+  assert.equal(forwarded.includes("validation/failed"), false, "an absence is not reported as a validation failure");
+}
+
+{
   const controller = signal();
   const forwarded: string[] = [];
   await collectSelectedProducts({

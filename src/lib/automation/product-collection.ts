@@ -212,6 +212,27 @@ export type ProductCollectionHandle = Readonly<{
   collectionPeriod: () => CollectionPeriod;
 }>;
 
+/**
+ * The handle's `validate` (ADR 0106), reporting through `event`: an untyped
+ * error from the check becomes a validation failure, unless the run was
+ * cancelled or the error names its own outcome. Checks that drive a collector
+ * outside a run build the same one.
+ */
+export function validationReporter(
+  event: ProductCollectionStageEvent,
+  signal: AbortSignal,
+): ProductCollectionHandle["validate"] {
+  return async (check) => {
+    try {
+      return await check();
+    } catch (error) {
+      if (!signal.aborted && !namesItsFailure(error) && !(error instanceof StatementComponentAbsentError))
+        await event("validation", "failed", "source-validation-rejected");
+      throw error;
+    }
+  };
+}
+
 /** Explicit evidence classification for a selected product with no records. */
 export class StatementComponentAbsentError extends Error {
   readonly skipReason = "absent" as const;
@@ -435,15 +456,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         stage: productStager(options.provider, stagedItems),
         reportActivity,
         event: collectorEvent,
-        validate: async (check) => {
-          try {
-            return await check();
-          } catch (error) {
-            if (!options.signal.aborted && !namesItsFailure(error) && !(error instanceof StatementComponentAbsentError))
-              await collectorEvent("validation", "failed", "source-validation-rejected");
-            throw error;
-          }
-        },
+        validate: validationReporter(collectorEvent, options.signal),
         collectionPeriod: () => {
           if (!options.collectionPeriod) throw new FailureCodeError("workflow-failed");
           return options.collectionPeriod(typeId);

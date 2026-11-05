@@ -329,7 +329,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
     harness.stage(financialSnapshot, [{ ...currentBalance, accountId: conflictingCtbcAccountNumber }]),
     /no admitted account identity/u,
   );
-  assert.ok(harness.events.includes("current-balance-validation-rejected"));
+  assert.ok(harness.events.includes("source-validation-rejected"));
   assert.deepEqual(harness.staged, []);
 }
 
@@ -340,7 +340,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
     harness.stage(financialSnapshot, new Error("synthetic balance page failure")),
     /synthetic balance page failure/u,
   );
-  assert.deepEqual(harness.events.slice(-2), ["current-balance-decoding-failed", "current-balance-collection-failed"]);
+  assert.equal(harness.events.at(-1), "current-balance-collection-failed", "a failed read is a collection failure");
   assert.deepEqual(harness.staged, []);
 }
 

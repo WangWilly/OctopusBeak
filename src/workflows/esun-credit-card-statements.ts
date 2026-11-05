@@ -33,7 +33,7 @@ import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/s
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import { SourceTextIntegrityError, type SourceTextPort } from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
@@ -1051,6 +1051,7 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 async function readIssuerStatementSummaries(
   scope: FrameScope,
   readJson: (response: Response) => Promise<unknown>,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
   const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
   const { page } = popup;
@@ -1074,17 +1075,20 @@ async function readIssuerStatementSummaries(
       await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
       const response = await responsePromise;
       if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
-      try {
-        summaries.push(issuerSummaryFromBillResponse(await popup.race(readJson(response))));
-      } catch (error) {
-        popup.signal.throwIfAborted();
-        if (error instanceof SourceTextIntegrityError) throw error;
-        throw new Error("E.SUN bill summary source is malformed or incomplete.");
-      }
+      const raw = await popup.race(readJson(response));
+      summaries.push(await validate(() => {
+        try {
+          return issuerSummaryFromBillResponse(raw);
+        } catch {
+          throw new Error("E.SUN bill summary source is malformed or incomplete.");
+        }
+      }));
     }
-    if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
-      throw new Error("E.SUN bill summary dates are duplicated.");
-    return summaries;
+    return await validate(() => {
+      if (new Set(summaries.map((summary) => summary.cycleEnd)).size !== summaries.length)
+        throw new Error("E.SUN bill summary dates are duplicated.");
+      return summaries;
+    });
   } finally {
     await page.close();
   }
@@ -1213,7 +1217,7 @@ async function collectEsunCreditCard(
 
   let issuerSummaries: EsunIssuerStatementSummary[];
   try {
-    issuerSummaries = await readIssuerStatementSummaries(scope, readJson);
+    issuerSummaries = await readIssuerStatementSummaries(scope, readJson, product.validate);
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;

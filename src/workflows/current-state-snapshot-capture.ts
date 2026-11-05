@@ -143,7 +143,7 @@ export async function captureCurrentStateSnapshots<
     acquire: () => Promise<Acquired>;
     /** The run clock, an RFC3339 instant. */
     now: () => string;
-    product: Pick<ProductCollectionHandle, "event">;
+    product: Pick<ProductCollectionHandle, "event" | "validate">;
     text: SourceTextPort;
     signal: AbortSignal;
   }>,
@@ -168,7 +168,7 @@ export async function readCurrentStateSnapshot<
     acquire: () => Promise<Acquired>;
     /** The run clock, an RFC3339 instant. */
     now: () => string;
-    product: Pick<ProductCollectionHandle, "event">;
+    product: Pick<ProductCollectionHandle, "event" | "validate">;
     text: SourceTextPort;
     signal: AbortSignal;
   }>,
@@ -177,20 +177,22 @@ export async function readCurrentStateSnapshot<
   signal.throwIfAborted();
   await product.event("collection", "started", "current-balance-collection-started");
   await product.event("decoding", "started", "current-balance-decoding-started");
-  let rows: readonly Row[];
+  let acquired: Acquired;
   try {
-    const acquired = await input.acquire();
-    const observedAt = taipeiInstant(input.now());
-    signal.throwIfAborted();
-    const response = verifyProviderResponse(declaration.response, acquired.response, observedAt);
-    // Decoding keeps the evidence kind, which the conditional type cannot see.
-    const decoded = decodeEvidence(acquired.evidence, input.text) as DecodedSnapshotEvidence<Acquired["evidence"]>;
-    rows = declaration.parse(decoded, response, acquired);
+    acquired = await input.acquire();
   } catch (error) {
-    await product.event("decoding", "failed", "current-balance-decoding-failed");
+    // A failed read is a collection failure (ADR 0106).
     await product.event("collection", "failed", "current-balance-collection-failed");
     throw error;
   }
+  const observedAt = taipeiInstant(input.now());
+  signal.throwIfAborted();
+  const rows = await product.validate(() => {
+    const response = verifyProviderResponse(declaration.response, acquired.response, observedAt);
+    // Decoding keeps the evidence kind, which the conditional type cannot see.
+    const decoded = decodeEvidence(acquired.evidence, input.text) as DecodedSnapshotEvidence<Acquired["evidence"]>;
+    return declaration.parse(decoded, response, acquired);
+  });
   await product.event("decoding", "completed", "current-balance-decoding-completed");
   await product.event("collection", "completed", "current-balance-collection-completed", {
     completed: rows.length,
@@ -211,7 +213,7 @@ export async function stageCurrentStateSnapshot<Row, Capture>(
   input: Readonly<{
     /** The financial captures this run admitted. */
     captures: readonly Capture[];
-    product: Pick<ProductCollectionHandle, "event">;
+    product: Pick<ProductCollectionHandle, "event" | "validate">;
     signal: AbortSignal;
   }>,
 ): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
@@ -221,10 +223,9 @@ export async function stageCurrentStateSnapshot<Row, Capture>(
     completed: 0,
     total: rows.length,
   });
-  let match: CurrentBalanceCaptureMatch<Row, Capture>;
   const items: ProductStageRequest[] = [];
-  try {
-    match = index.match(rows);
+  const match = await product.validate(() => {
+    const match = index.match(rows);
     const itemKeys = new Set<string>();
     for (const { row, capture } of match.matched) {
       signal.throwIfAborted();
@@ -243,13 +244,8 @@ export async function stageCurrentStateSnapshot<Row, Capture>(
       });
     }
     declaration.validate?.({ rows, ...match });
-  } catch (error) {
-    await product.event("validation", "failed", "current-balance-validation-rejected", {
-      completed: 0,
-      total: rows.length,
-    });
-    throw error;
-  }
+    return match;
+  });
   await product.event("validation", "completed", "current-balance-validation-completed", {
     completed: items.length,
     total: rows.length,
