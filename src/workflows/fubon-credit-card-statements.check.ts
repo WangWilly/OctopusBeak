@@ -15,7 +15,7 @@ import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-commands.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
+import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { FUBON_EBANK_ENTRY_URL } from "./fubon-ebank-site.ts";
 
 registerHooks({
@@ -39,7 +39,6 @@ const {
   parseFubonSettledStatementSummary,
   parseFubonCurrentCreditCardUsedCreditHtml,
   readFubonCreditCardSourceSnapshot,
-  diagnoseFubonCurrentCreditCardUsedCreditHtml,
   resolveFubonSettledStatementCycles,
   stageFubonCreditCard,
 } =
@@ -193,22 +192,6 @@ assert.throws(
     `),
   /ambiguous/u,
 );
-assert.deepEqual(
-  diagnoseFubonCurrentCreditCardUsedCreditHtml(`
-    <table class="decoy"><tr><td>正卡人信用額度</td><td>9,000,000</td></tr></table>
-    <table class="CBO_totalTb">
-      <tr><td>正卡人信用額度</td><td>1,000,000</td></tr>
-      <tr><td>正卡人可用額度</td><td>999,999.50</td></tr>
-    </table>
-  `),
-  {
-    tableCount: 2,
-    approvedRootCount: 1,
-    candidateTableCount: 1,
-    matchingTableCount: 1,
-  },
-);
-
 // The whole source read against a synthetic signed-in frame1/txnFrame frameset
 // served by route interception (ADR 0066): the 信用卡 header menu reveals the
 // three task links, each task renders in txnFrame, the period tabs switch the
@@ -227,7 +210,7 @@ const shellCardHeader = `<a id="menu_CCC" href="javascript:void(0)" onclick="ope
   function openCardMenu() {
     parent.menuOpens = (parent.menuOpens ?? 0) + 1;
     document.getElementById("ccc").innerHTML =
-      '${cardTaskLink("task_CCCQU002 menu_CCC0201", CURRENT_CREDIT_PATH, "帳務查詢")}' +
+      '${cardTaskLink("task_CCCQU002 menu_CCC0201", `${CURRENT_CREDIT_PATH}?menuId=CCC0201`, "帳務查詢")}' +
       '${cardTaskLink("task_CCCQU003 menu_CCC0202", STATEMENT_PATH, "帳單明細查詢")}' +
       '${cardTaskLink("task_CCCQU004 menu_CCC0203", UNBILLED_PATH, "未出帳單消費明細")}';
   }
@@ -271,11 +254,13 @@ async function readCardThroughShell(
     periodOffsets: readonly number[];
     signal?: AbortSignal;
     holdUnbilled?: () => void;
+    currentCreditPage?: string;
   }>,
 ) {
   const browser = await chromium.launch({ headless: true });
   const requested: string[] = [];
   const activities: string[] = [];
+  const events: string[] = [];
   try {
     const page = await browser.newPage();
     await page.route(`${SITE_ORIGIN}/**`, async (route) => {
@@ -289,7 +274,10 @@ async function readCardThroughShell(
         case "/B2C/header.faces":
           return await html(shellCardHeader);
         case CURRENT_CREDIT_PATH:
-          return await html(currentCreditPage, { date: SHELL_HTTP_DATE, "cache-control": "no-cache" });
+          return await html(options.currentCreditPage ?? currentCreditPage, {
+            date: SHELL_HTTP_DATE,
+            "cache-control": "no-store, no-cache",
+          });
         case STATEMENT_PATH: {
           const period = Number(url.searchParams.get("period") ?? "1");
           return await html(statementPage(period, options.modes[period] ?? "no-record"));
@@ -308,15 +296,20 @@ async function readCardThroughShell(
     const snapshot = await readFubonCreditCardSourceSnapshot(
       page,
       fubonCreditCardStatementsInputSchema.parse({ periodOffsets: options.periodOffsets }),
-      { signal: options.signal ?? new AbortController().signal, text: strictSourceText } as unknown as WorkflowContext,
+      {
+        signal: options.signal ?? new AbortController().signal,
+        text: strictSourceText,
+        now: () => "2026-10-27T00:00:00.000Z",
+      } as unknown as WorkflowContext,
       {
         stage: () => {},
         reportActivity: async (activity: string) => { activities.push(activity); },
-        event: async () => {},
+        event: async (_stage: string, _outcome: string, code: string) => { events.push(code); },
+        validate: async <T>(check: () => T | Promise<T>) => await check(),
       } as unknown as ProductCollectionHandle,
     );
     const menuOpens = await page.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
-    return { snapshot, requested, activities, menuOpens };
+    return { snapshot, requested, activities, events, menuOpens };
   } finally {
     await browser.close();
   }
@@ -331,7 +324,7 @@ test("Fubon credit card reads every task through the 信用卡 menu and consumes
   assert.deepEqual(
     read.requested.filter((path) => path.startsWith("/B2C/cccqu/")),
     [
-      CURRENT_CREDIT_PATH,
+      `${CURRENT_CREDIT_PATH}?menuId=CCC0201`,
       STATEMENT_PATH,
       `${STATEMENT_PATH}?period=2`,
       `${STATEMENT_PATH}?period=3`,
@@ -339,15 +332,21 @@ test("Fubon credit card reads every task through the 信用卡 menu and consumes
     ],
     "each task opens once, and only the periods that differ from the shown one are switched",
   );
-  assert.deepEqual(read.snapshot.currentUsedCredit, {
+  assert.deepEqual(read.snapshot.currentUsedCredit, [{
     limit: "100000",
     available: "60000",
     usedCredit: "40000",
     sourceField: "正卡人信用額度-正卡人可用額度",
-    endpoint: `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}`,
+    endpoint: `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201`,
     httpDate: SHELL_HTTP_DATE,
-    cacheControl: "no-cache",
-  });
+    cacheControl: "no-store, no-cache",
+  }]);
+  assert.deepEqual(read.events, [
+    "current-balance-collection-started",
+    "current-balance-decoding-started",
+    "current-balance-decoding-completed",
+    "current-balance-collection-completed",
+  ]);
   assert.deepEqual(read.snapshot.unavailablePeriodOffsets, [1]);
   assert.deepEqual(read.snapshot.statementPeriods, ["115/05"]);
   assert.deepEqual(
@@ -364,6 +363,17 @@ test("Fubon credit card reads every task through the 信用卡 menu and consumes
     { currentPage: undefined, currentPageSize: undefined, sourceDeclaredRowCount: undefined },
   ]);
   assert.deepEqual(read.activities, ["query", "query", "query", "query"]);
+});
+
+test("a current-credit page with replacement characters fails the card read", async () => {
+  await assert.rejects(
+    readCardThroughShell({
+      modes: { 1: "available" },
+      periodOffsets: [1],
+      currentCreditPage: currentCreditPage.replace("60,000", "6\uFFFD,000"),
+    }),
+    SourceTextIntegrityError,
+  );
 });
 
 test("Fubon credit card fails as absent when the statement task opens on the bank's no-record page", async () => {
@@ -1742,7 +1752,7 @@ test("a current used-credit snapshot is scoped to its Taipei calendar day", asyn
       unavailablePeriodOffsets: [],
       unbilledRows: [],
       // 01:30 in Taipei is still the previous day in UTC.
-      currentUsedCredit: {
+      currentUsedCredit: [{
         limit: "100000",
         available: "60000",
         usedCredit: "40000",
@@ -1750,7 +1760,7 @@ test("a current used-credit snapshot is scoped to its Taipei calendar day", asyn
         endpoint: `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201`,
         httpDate: "Mon, 24 Aug 2026 17:30:00 GMT",
         cacheControl: "no-store, no-cache",
-      },
+      }],
     },
     { ...canonicalInput, panFingerprintKey: cardFingerprintKey },
     context,

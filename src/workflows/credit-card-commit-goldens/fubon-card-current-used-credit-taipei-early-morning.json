@@ -799,6 +799,24 @@
       }
     },
     {
+      "stage": "validation",
+      "outcome": "started",
+      "code": "current-balance-validation-started",
+      "counts": {
+        "completed": 0,
+        "total": 1
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "current-balance-validation-completed",
+      "counts": {
+        "completed": 1,
+        "total": 1
+      }
+    },
+    {
       "stage": "collection",
       "outcome": "completed",
       "code": "credit-card-collection-completed",
