@@ -1,11 +1,13 @@
 import type { Page } from "playwright";
-import { withAbort } from "../../workflows/abort.ts";
+import type { SourceTextPort } from "../automation/source-text.ts";
+import { frameScope } from "../../workflows/frame-scope.ts";
 
 export const ESUN_PORTAL_HOST = "ebank.esunbank.com.tw";
 
 /**
- * One `/esb/` portal reply. `text` is the raw body, so amounts can be read as
- * source lexemes; `date` is the HTTP `Date` header when the page can read it.
+ * One `/esb/` portal reply. `text` is the body decoded strictly as UTF-8, so
+ * amounts can be read as source lexemes; `date` is the HTTP `Date` header when
+ * the page can read it.
  */
 export type EsunPortalReply =
   | Readonly<{ kind: "json"; httpStatus: number; text: string; date: string | null }>
@@ -19,15 +21,23 @@ export type EsunPortalTransport = (
   resetFlow: boolean,
 ) => Promise<EsunPortalReply>;
 
+/** What the signed-in page hands back: the reply's bytes, never its text. */
+export type EsunPortalPageReply =
+  | Readonly<{ kind: "body"; httpStatus: number; base64: string; date: string | null }>
+  | Readonly<{ kind: "network-error" }>
+  | Readonly<{ kind: "portal-session-missing" }>;
+
 type PortalState = { uuid?: string; txnFlowToken?: string };
 
 /**
  * Runs inside the signed-in page. The portal threads `txnFlowToken` through a
- * task flow, and `home/init` starts a new flow with an empty token.
+ * task flow, and `home/init` starts a new flow with an empty token. The page
+ * reads the token from a lenient decode of the reply; the reply's data is
+ * decoded strictly outside the page.
  */
 async function postPortalInPage(
   input: Readonly<{ path: string; requestBody: Readonly<Record<string, unknown>>; resetFlow: boolean }>,
-): Promise<EsunPortalReply> {
+): Promise<EsunPortalPageReply> {
   const state = (window as Window & { mibApiService?: PortalState }).mibApiService;
   if (!state?.uuid) return { kind: "portal-session-missing" };
   if (input.resetFlow) state.txnFlowToken = "";
@@ -46,16 +56,23 @@ async function postPortalInPage(
   } catch {
     return { kind: "network-error" };
   }
-  const text = await response.text();
-  let json: unknown;
+  let bytes: Uint8Array;
   try {
-    json = JSON.parse(text);
+    bytes = new Uint8Array(await response.arrayBuffer());
   } catch {
-    return { kind: "non-json", httpStatus: response.status };
+    return { kind: "network-error" };
   }
-  const flowToken = (json as { txnFlowToken?: unknown } | null)?.txnFlowToken;
-  if (typeof flowToken === "string" && flowToken) state.txnFlowToken = flowToken;
-  return { kind: "json", httpStatus: response.status, text, date: response.headers.get("date") };
+  try {
+    const flowToken = (JSON.parse(new TextDecoder().decode(bytes)) as { txnFlowToken?: unknown } | null)?.txnFlowToken;
+    if (typeof flowToken === "string" && flowToken) state.txnFlowToken = flowToken;
+  } catch {
+    // A reply that is not JSON carries no token; it is reported outside the page.
+  }
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return { kind: "body", httpStatus: response.status, base64: btoa(binary), date: response.headers.get("date") };
 }
 
 /** A missing session is left to the transport to report; a cancelled run rejects with its reason. */
@@ -67,11 +84,28 @@ export async function waitForEsunPortalSession(page: Page, timeout = 30_000, sig
   ).catch(() => signal?.throwIfAborted());
 }
 
-/** Posts to the `/esb/` portal from the signed-in page, so the page's own session and cookies apply. */
-export function createEsunPortalTransport(page: Page, signal: AbortSignal): EsunPortalTransport {
+/**
+ * Posts to the `/esb/` portal from the signed-in page, so the page's own
+ * session and cookies apply. A body that does not decode as UTF-8 throws
+ * `SourceTextIntegrityError`; one that decodes but is not JSON is `non-json`.
+ */
+export function createEsunPortalTransport(
+  page: Page,
+  context: Readonly<{ signal: AbortSignal; text: SourceTextPort }>,
+): EsunPortalTransport {
+  const frames = frameScope(page, context.signal);
   return async (path, requestBody, resetFlow) => {
-    signal.throwIfAborted();
+    context.signal.throwIfAborted();
     if (new URL(page.url()).hostname !== ESUN_PORTAL_HOST) return { kind: "portal-session-missing" };
-    return await withAbort(page.evaluate(postPortalInPage, { path, requestBody, resetFlow }), signal);
+    const reply = await frames.race(page.evaluate(postPortalInPage, { path, requestBody, resetFlow }));
+    if (reply.kind !== "body") return reply;
+    const text = context.text.decode(Buffer.from(reply.base64, "base64"), "utf-8");
+    context.text.assertIntact(text);
+    try {
+      JSON.parse(text);
+    } catch {
+      return { kind: "non-json", httpStatus: reply.httpStatus };
+    }
+    return { kind: "json", httpStatus: reply.httpStatus, text, date: reply.date };
   };
 }
