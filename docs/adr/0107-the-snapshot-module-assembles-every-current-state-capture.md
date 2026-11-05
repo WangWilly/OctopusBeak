@@ -19,7 +19,7 @@ The credit-card current used-credit snapshots of Fubon, Yuanta and E.SUN never w
 
 ## Decision
 
-**The snapshot module assembles every Current-state capture from an envelope and its balance entries.** `assembleCurrentStateCapture(kind, envelope, entries)` builds the single terminal page, one source record and one observation per entry, and the capture around them. A capture kind says how one entry becomes a record and its observation. `assembleCurrentDepositCapture` is the deposit kind; it computes each record's content hash from its compact form.
+**The snapshot module assembles every Current-state capture from an envelope and its balance entries.** `assembleCurrentStateCapture(kind, envelope, entries)` builds the single terminal page, one source record and one observation per entry, and the capture around them. A capture kind says how one entry becomes a record and its observation. `assembleCurrentDepositCapture` is the deposit kind and `assembleCurrentCreditCardCapture` the credit-card kind; each computes a record's content hash from its compact form.
 
 **The bank still decides every fact that differs.** The bank keeps its builder, which checks the identity and hands the module:
 
@@ -32,7 +32,9 @@ Admission stays per bank, as ADR 0054 decided.
 
 **The bank still mints the capture id and the scope day.** Capture ids keep their current forms: `randomUUID()`, a bank prefix with a UUID, or SinoPac's digest. The scope day stays the bank's. `taipeiDate` in the time module is the helper for a scope day taken from an instant.
 
-**Credit-card current snapshots follow in a later change.** They will read through the module's strict decoding, be assembled through a credit-card capture kind, and report the standard current-balance events. Their commit goldens, added before that change, will show the new events as its only intended difference.
+**Credit-card current snapshots are assembled the same way.** `assembleCurrentCreditCardCapture` is the credit-card kind. Fubon, Yuanta and E.SUN build their used-credit captures through it, and every credit-card commit golden is unchanged.
+
+**Reading them through the module follows in a later change.** Credit-card current snapshots will read through the module's strict decoding and report the standard current-balance events. Their commit goldens will show the new events as that change's only intended difference.
 
 ## Considered options
 

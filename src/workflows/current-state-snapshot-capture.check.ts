@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import {
+  admitCreditCardCurrentBalanceCapture,
+  creditCardCurrentBalanceSourceRecordContentHash,
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import {
   currentDepositSourceRecord,
   currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
@@ -9,6 +13,7 @@ import {
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import {
+  assembleCurrentCreditCardCapture,
   assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   indexCurrentBalanceCaptures,
@@ -725,4 +730,82 @@ test("a deposit capture is assembled from its envelope and one record and observ
     sourceRecordKey: record.sourceRecordKey,
     sourceField: index === 0 ? "ledger-field" : "available-field",
   })));
+});
+
+test("a credit-card capture is assembled into one the issuer route admits", () => {
+  const route = "fubon/credit-card/current-used-credit-v1";
+  const httpDate = "Fri, 25 Sep 2026 17:30:00 GMT";
+  const time = {
+    effectiveAt: "2026-09-25T17:30:00.000Z",
+    effectiveTimeBasis: "provider-http-date" as const,
+    effectiveTimeRuleVersion: route,
+    sourceField: "HTTP Date" as const,
+    sourceValue: httpDate,
+    contractVersion: route,
+  };
+  const limit = { coefficient: "100000", scale: 0 };
+  const available = { coefficient: "87655", scale: 0 };
+  const estimate = {
+    kind: "estimate" as const,
+    basis: "credit-limit-minus-available" as const,
+    formula: "正卡人信用額度-正卡人可用額度",
+    limit,
+    available,
+  };
+  const capture = assembleCurrentCreditCardCapture({
+    captureId: "capture:current-used-credit",
+    authorityRoute: route,
+    contractVersion: route,
+    subjectDigest: "sha256:subject",
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: "sha256:connection",
+      identityEpochKey: "sha256:epoch",
+      stream: "credit-card",
+      sourceAccountKey: "sha256:account",
+    },
+    observedAt: "2026-09-26T01:30:01+08:00",
+    scope: { startDate: "2026-09-26", endDate: "2026-09-26" },
+    providerResponse: {
+      endpoint: "https://ebank.taipeifubon.com.tw/B2C/cccqu/cccqu002/CCCQU002_Home.faces?menuId=CCC0201",
+      status: 200,
+      cacheControl: "no-store, no-cache",
+    },
+    page: { metadata: { table: "synthetic" } },
+  }, [{
+    sourceRecordKey: "sha256:record",
+    providerKey: "sha256:provider",
+    observationKey: "issuer-aggregate",
+    sourceField: "正卡人信用額度-正卡人可用額度",
+    currency: "TWD",
+    value: { coefficient: "12345", scale: 0 },
+    time,
+    estimate,
+    compact: { provider: "synthetic" },
+  }]);
+
+  assert.doesNotThrow(() => admitCreditCardCurrentBalanceCapture(capture));
+  assert.deepEqual(capture.pages, [{
+    pageOrdinal: 0,
+    responseCode: "200",
+    rowCount: 1,
+    terminal: true,
+    metadata: { table: "synthetic" },
+  }]);
+  const [record] = capture.records;
+  assert.equal(record!.contentHash, creditCardCurrentBalanceSourceRecordContentHash(record!.compact));
+  assert.deepEqual(
+    { limit: record!.compact.limit, available: record!.compact.available, provider: record!.compact.provider },
+    { limit, available, provider: "synthetic" },
+  );
+  assert.deepEqual(capture.observations, [{
+    observationKey: "issuer-aggregate",
+    balanceKind: "credit_used",
+    balance: { coefficient: "12345", scale: 0 },
+    currency: "TWD",
+    time,
+    sourceRecordKey: "sha256:record",
+    sourceField: "正卡人信用額度-正卡人可用額度",
+    estimate,
+  }]);
 });

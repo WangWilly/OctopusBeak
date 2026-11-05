@@ -25,10 +25,9 @@ import type { CreditCardMonthTimeline } from "../ledger/canonical/credit-card-qu
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  creditCardCurrentBalanceSourceRecord,
   type CreditCardExactAmount,
-  type CreditCardCurrentBalanceObservationInput,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import { assembleCurrentCreditCardCapture } from "./current-state-snapshot-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -904,17 +903,7 @@ export function esunCreditCurrentSnapshotCapture(
     basis: "provider-used-credit" as const,
     formula: "provider-reported-used-credit",
   };
-  const observation: CreditCardCurrentBalanceObservationInput = {
-    observationKey: "issuer-aggregate",
-    balanceKind: "credit_used",
-    balance: used,
-    currency: "TWD",
-    time,
-    sourceRecordKey,
-    sourceField: snapshot.sourceField,
-    estimate,
-  };
-  return admitCreditCardCurrentBalanceCapture({
+  return admitCreditCardCurrentBalanceCapture(assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: route,
     contractVersion: route,
@@ -936,40 +925,34 @@ export function esunCreditCurrentSnapshotCapture(
       cacheControl: snapshot.cacheControl,
       httpDate: snapshot.httpDate,
     },
-    pages: [{
-      pageOrdinal: 0,
-      responseCode: "200",
-      rowCount: 1,
-      terminal: true,
+    page: {
       metadata: {
         sourceField: snapshot.sourceField,
         aggregate: "歸戶",
         queryTime: snapshot.queryTime,
         ...(isRedesigned ? { resultCode: "0000", httpDate: snapshot.httpDate } : {}),
       },
-    }],
-    records: [creditCardCurrentBalanceSourceRecord({
-      sourceRecordKey,
-      providerKey,
-      sourceField: snapshot.sourceField,
-      balanceKind: "credit_used",
-      currency: "TWD",
-      value: used,
-      time,
-      estimate,
-      compact: {
-        provider: "esun",
-        aggregate: "歸戶",
-        usedCredit: snapshot.usedCredit,
-        available: snapshot.available,
-        queryTime: snapshot.queryTime,
-        endpoint: snapshot.endpoint,
-        ...(isRedesigned ? { resultCode: "0000" } : {}),
-        ...(snapshot.httpDate ? { httpDate: snapshot.httpDate } : {}),
-      },
-    })],
-    observations: [observation],
-  });
+    },
+  }, [{
+    sourceRecordKey,
+    providerKey,
+    observationKey: "issuer-aggregate",
+    sourceField: snapshot.sourceField,
+    currency: "TWD",
+    value: used,
+    time,
+    estimate,
+    compact: {
+      provider: "esun",
+      aggregate: "歸戶",
+      usedCredit: snapshot.usedCredit,
+      available: snapshot.available,
+      queryTime: snapshot.queryTime,
+      endpoint: snapshot.endpoint,
+      ...(isRedesigned ? { resultCode: "0000" } : {}),
+      ...(snapshot.httpDate ? { httpDate: snapshot.httpDate } : {}),
+    },
+  }]));
 }
 
 export function esunIssuerSummaryFromLabelRows(

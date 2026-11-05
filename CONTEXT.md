@@ -452,8 +452,8 @@ A Balance or Holding Observation returned by a provider endpoint whose verified 
 _Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
 
 **Current-state snapshot capture**:
-The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It verifies the provider response against what the source declares, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence, how to read its rows and their effective time, and how to build its admission input.
-_Avoid_: Current balance reader, per-bank balance staging, index-keyed balance item
+The one step that turns a bank's raw evidence of a Current-state provider snapshot into staged balance items. It verifies the provider response against what the source declares, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, and keys each item by the capture's stream and source account. The bank still decides how to reach the evidence, how to read its rows and their effective time and scope day, its identity check and digest namespaces, and its admission. The module assembles every capture from the bank's envelope and balance entries, including credit-card used-credit captures, which do not yet pass through the rest of this step.
+_Avoid_: Current balance reader, per-bank balance staging, per-bank capture assembly, index-keyed balance item
 
 **Verified provider response**:
 The transport facts of one provider response (address, request method, status, content type, cache policy and provider date) after they match what the source declares for that endpoint, together with the time the run observed the response. A bank's row parser reads these facts only from the verified provider response. The provider date may establish effective time; the observed time never does.

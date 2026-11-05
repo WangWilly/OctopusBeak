@@ -1,6 +1,7 @@
 /**
  * Current-state snapshot capture: turn the evidence a bank acquired for its
- * current deposit balances into staged balance captures. The bank owns
+ * current deposit balances into staged balance captures, and assemble every
+ * Current-state capture, credit-card used credit included. The bank owns
  * acquisition, its row parser, its matching policy, and the facts its capture
  * builder hands over (ADR 0054, ADR 0107). This module owns the order between
  * them: strict decoding, parsing, matching rows to the Source Captures this
@@ -8,6 +9,16 @@
  * and the standard current-balance progress events.
  */
 import type { CanonicalSourcePage } from "../ledger/canonical/canonical-source-evidence.ts";
+import {
+  creditCardCurrentBalanceSourceRecord,
+  type CreditCardCurrentBalanceCaptureInput,
+  type CreditCardCurrentBalanceEstimate,
+  type CreditCardCurrentBalanceIdentity,
+  type CreditCardCurrentBalanceObservationInput,
+  type CreditCardCurrentBalanceSourceRecordInput,
+  type CreditCardCurrentBalanceTimeEvidence,
+  type CreditCardExactAmount,
+} from "../ledger/canonical/credit-card-current-balance-admission.ts";
 import {
   admitCurrentDepositBalanceCapture,
   currentDepositSourceRecord,
@@ -595,4 +606,56 @@ export function assembleCurrentDepositCapture(
   entries: readonly CurrentDepositBalanceEntry[],
 ): CurrentDepositBalanceCaptureInput {
   return assembleCurrentStateCapture(CURRENT_DEPOSIT_BALANCE, envelope, entries);
+}
+
+/** One issuer credit snapshot balance a provider reported, with the keys the bank derives for it. */
+export type CurrentCreditCardBalanceEntry = Readonly<{
+  sourceRecordKey: string;
+  providerKey: string;
+  observationKey: string;
+  sourceField: string;
+  currency: string;
+  value: CreditCardExactAmount;
+  time: CreditCardCurrentBalanceTimeEvidence;
+  estimate: CreditCardCurrentBalanceEstimate;
+  compact: Record<string, unknown>;
+}>;
+
+const CURRENT_CREDIT_CARD_BALANCE: CurrentStateCaptureKind<
+  CurrentCreditCardBalanceEntry,
+  CreditCardCurrentBalanceSourceRecordInput,
+  CreditCardCurrentBalanceObservationInput
+> = {
+  record: (entry) => creditCardCurrentBalanceSourceRecord({
+    sourceRecordKey: entry.sourceRecordKey,
+    providerKey: entry.providerKey,
+    sourceField: entry.sourceField,
+    balanceKind: "credit_used",
+    currency: entry.currency,
+    value: entry.value,
+    time: entry.time,
+    estimate: entry.estimate,
+    compact: entry.compact,
+  }),
+  observation: (entry) => ({
+    observationKey: entry.observationKey,
+    balanceKind: "credit_used",
+    balance: entry.value,
+    currency: entry.currency,
+    time: entry.time,
+    sourceRecordKey: entry.sourceRecordKey,
+    sourceField: entry.sourceField,
+    estimate: entry.estimate,
+  }),
+};
+
+/** Assemble a current credit-card used-credit capture from its envelope and balance entries. */
+export function assembleCurrentCreditCardCapture(
+  envelope: CurrentStateCaptureEnvelope<
+    CreditCardCurrentBalanceIdentity,
+    CreditCardCurrentBalanceCaptureInput["providerResponse"]
+  >,
+  entries: readonly CurrentCreditCardBalanceEntry[],
+): CreditCardCurrentBalanceCaptureInput {
+  return assembleCurrentStateCapture(CURRENT_CREDIT_CARD_BALANCE, envelope, entries);
 }
