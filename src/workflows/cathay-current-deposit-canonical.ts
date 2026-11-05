@@ -13,8 +13,10 @@ import {
 } from "./cathay-current-deposit-balances.ts";
 import { cathayResponseCharset } from "./cathay-statements.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   declaresUtf8,
+  type CurrentDepositBalanceEntry,
   type CurrentBalanceCaptureMatching,
   type DecodedSnapshotEvidence,
   type VerifiedProviderResponse,
@@ -25,13 +27,9 @@ import {
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
-  type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
-  type CurrentDepositSourceRecordInput,
-  type CurrentDepositTimeEvidence,
+import type {
+  CurrentDepositBalanceCaptureInput,
+  CurrentDepositTimeEvidence,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type { PGliteCanonicalFinancialCommitRequest } from "../ledger/pglite/canonical-source-store.ts";
 
@@ -97,59 +95,37 @@ function timeEvidence(
   };
 }
 
-function observationInput(
+function balanceEntry(
   row: CathayCurrentDepositBalanceRow,
   observation: CathayCurrentDepositObservation,
-): CurrentDepositBalanceObservationInput {
+): CurrentDepositBalanceEntry {
   const route = routeFor(row);
   const identity = `${route}|${row.sourceAccountKey}|${observation.currency}|${observation.kind}`;
+  const sourceRecordKey = token(
+    `cathay/current-deposit-source-record/v1|${identity}|${row.sourceEvidence.responseDigest}`,
+  );
   return {
+    sourceRecordKey,
+    providerKey: token(`cathay/current-deposit-provider-record/v1|${sourceRecordKey}`),
     observationKey: token(`cathay/current-deposit-observation/v1|${identity}`),
     balanceKind: observation.kind,
-    balance: {
+    sourceField: sourceField(row, observation.kind),
+    currency: observation.currency,
+    value: {
       coefficient: observation.amount.coefficient,
       scale: observation.amount.scale,
     },
-    currency: observation.currency,
     time: timeEvidence(row),
-    sourceRecordKey: token(
-      `cathay/current-deposit-source-record/v1|${identity}|${row.sourceEvidence.responseDigest}`,
-    ),
-    sourceField: sourceField(row, observation.kind),
-  };
-}
-
-function sourceRecord(
-  row: CathayCurrentDepositBalanceRow,
-  observation: CathayCurrentDepositObservation,
-  sourceObservation: CurrentDepositBalanceObservationInput,
-): CurrentDepositSourceRecordInput {
-  const time = timeEvidence(row);
-  const compactEvidence = {
-    source: "cathay",
-    endpoint: row.sourceEvidence.endpoint,
-    responseDigest: row.sourceEvidence.responseDigest,
-    httpDate: row.httpDate,
-    providerSystemTime: row.providerSystemTime,
-    sourceLexeme: observation.amount.sourceLexeme,
-    ...sourceAccountEvidence(row),
-  };
-  const provisional = currentDepositSourceRecord({
-    sourceRecordKey: sourceObservation.sourceRecordKey,
-    providerKey: token(
-      `cathay/current-deposit-provider-record/v1|${sourceObservation.sourceRecordKey}`,
-    ),
-    contentHash: "pending",
-    sourceField: sourceObservation.sourceField,
-    balanceKind: sourceObservation.balanceKind,
-    currency: sourceObservation.currency,
-    value: sourceObservation.balance,
-    time,
-    compact: compactEvidence,
-  });
-  return {
-    ...provisional,
-    contentHash: currentDepositSourceRecordContentHash(provisional.compact),
+    timeInRecord: true,
+    compact: {
+      source: "cathay",
+      endpoint: row.sourceEvidence.endpoint,
+      responseDigest: row.sourceEvidence.responseDigest,
+      httpDate: row.httpDate,
+      providerSystemTime: row.providerSystemTime,
+      sourceLexeme: observation.amount.sourceLexeme,
+      ...sourceAccountEvidence(row),
+    },
   };
 }
 
@@ -198,18 +174,12 @@ export function buildCathayCurrentDepositBalanceCaptures(
         "Cathay current deposit capture observedAt must be sampled after the provider response.",
       );
     }
-    const observations = group.rows.flatMap((currentRow) =>
-      currentRow.observations.map((entry) => observationInput(currentRow, entry)),
-    );
-    const records = group.rows.flatMap((currentRow) =>
-      currentRow.observations.map((entry) => {
-        const observation = observationInput(currentRow, entry);
-        return sourceRecord(currentRow, entry, observation);
-      }),
+    const entries = group.rows.flatMap((currentRow) =>
+      currentRow.observations.map((observation) => balanceEntry(currentRow, observation)),
     );
     const route = routeFor(row);
     const endpoint = `https://${CATHAY_CURRENT_DEPOSIT_HOST}${row.sourceEvidence.endpoint}`;
-    captures.push({
+    captures.push(assembleCurrentDepositCapture({
       captureId: randomUUID(),
       authorityRoute: route,
       contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
@@ -232,30 +202,22 @@ export function buildCathayCurrentDepositBalanceCaptures(
         endpoint,
         status: 200,
       },
-      pages: [
-        {
-          pageOrdinal: 0,
-          responseCode: "200",
-          rowCount: records.length,
-          terminal: true,
+      page: {
+        responseDigest: row.sourceEvidence.responseDigest,
+        proofKind: "cathay-current-deposit-provider-snapshot",
+        contractFingerprint: route,
+        preflightFingerprint: `${route}/source-page-v1`,
+        metadata: {
+          source: "cathay",
+          endpoint: row.sourceEvidence.endpoint,
+          uiPath: row.sourceEvidence.uiPath,
+          httpDate: row.httpDate,
+          providerSystemTime: row.providerSystemTime,
           responseDigest: row.sourceEvidence.responseDigest,
-          proofKind: "cathay-current-deposit-provider-snapshot",
-          contractFingerprint: route,
-          preflightFingerprint: `${route}/source-page-v1`,
-          metadata: {
-            source: "cathay",
-            endpoint: row.sourceEvidence.endpoint,
-            uiPath: row.sourceEvidence.uiPath,
-            httpDate: row.httpDate,
-            providerSystemTime: row.providerSystemTime,
-            responseDigest: row.sourceEvidence.responseDigest,
-            scopeDate: context.scopeDate,
-          },
+          scopeDate: context.scopeDate,
         },
-      ],
-      records,
-      observations,
-    });
+      },
+    }, entries));
   }
   return captures;
 }

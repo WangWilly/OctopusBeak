@@ -52,12 +52,8 @@ import {
   type SinopacCurrentDepositResponse,
 } from "./sinopac-current-deposit-balances.ts";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
@@ -74,6 +70,7 @@ import {
   type SinopacIdentitySiteAssessment,
 } from "./sinopac-identity-evidence.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
@@ -235,65 +232,8 @@ export function buildSinopacCurrentDepositBalanceCapture(
     sourceValue: row.providerHttpDate,
     contractVersion,
   };
-  const sourceRecordKey = canonicalDigest(
-    "sinopac-current-deposit-source-record-v1",
-    row.stream,
-    sourceAccountKey,
-    row.currency,
-    row.effectiveAt,
-    balance.coefficient,
-    String(balance.scale),
-  );
-  const compact = {
-    source: "sinopac",
-    accountNumber: row.accountNumber,
-    sourceAccountKey,
-    accountText: row.accountText,
-    accountValueFormat: row.accountValueFormat,
-    currencyText: row.currencyText,
-    effectiveAt: row.effectiveAt,
-    effectiveTimeSourceField: "HTTP Date",
-    effectiveTimeSourceValue: row.providerHttpDate,
-    sourceEvidence: { ...row.sourceEvidence },
-    providerFields: { ...row.providerFields },
-  };
-  const provisional = currentDepositSourceRecord({
-    sourceRecordKey,
-    providerKey: canonicalDigest(
-      "sinopac-current-deposit-provider-record-v1",
-      row.stream,
-      row.accountNumber,
-      row.currency,
-      row.effectiveAt,
-    ),
-    contentHash: "sha256:placeholder",
-    sourceField,
-    balanceKind: "ledger",
-    currency: row.currency,
-    value: balance,
-    time,
-    compact,
-  });
-  const record: CurrentDepositSourceRecordInput = {
-    ...provisional,
-    contentHash: currentDepositSourceRecordContentHash(provisional.compact),
-  };
-  const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: canonicalDigest(
-      "sinopac-current-deposit-observation-v1",
-      row.stream,
-      sourceAccountKey,
-      row.currency,
-    ),
-    balanceKind: "ledger",
-    balance,
-    currency: row.currency,
-    time,
-    sourceRecordKey,
-    sourceField,
-  };
   const scopeDate = row.effectiveAt.slice(0, 10);
-  return {
+  return assembleCurrentDepositCapture({
     captureId: `sinopac-current-${canonicalDigest(
       "sinopac-current-deposit-capture-v1",
       row.stream,
@@ -318,24 +258,58 @@ export function buildSinopacCurrentDepositBalanceCapture(
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: 1,
-        terminal: true,
-        metadata: {
-          source: "sinopac-current-deposit-summary",
-          sourceRowCount: 1,
-          balanceField: sourceField,
-          contentType: row.sourceEvidence.contentType,
-          providerHttpDate: row.providerHttpDate,
-        },
+    page: {
+      metadata: {
+        source: "sinopac-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceField: sourceField,
+        contentType: row.sourceEvidence.contentType,
+        providerHttpDate: row.providerHttpDate,
       },
-    ],
-    records: [record],
-    observations: [observation],
-  };
+    },
+  }, [{
+    sourceRecordKey: canonicalDigest(
+      "sinopac-current-deposit-source-record-v1",
+      row.stream,
+      sourceAccountKey,
+      row.currency,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    ),
+    providerKey: canonicalDigest(
+      "sinopac-current-deposit-provider-record-v1",
+      row.stream,
+      row.accountNumber,
+      row.currency,
+      row.effectiveAt,
+    ),
+    observationKey: canonicalDigest(
+      "sinopac-current-deposit-observation-v1",
+      row.stream,
+      sourceAccountKey,
+      row.currency,
+    ),
+    balanceKind: "ledger",
+    sourceField,
+    currency: row.currency,
+    value: balance,
+    time,
+    timeInRecord: true,
+    compact: {
+      source: "sinopac",
+      accountNumber: row.accountNumber,
+      sourceAccountKey,
+      accountText: row.accountText,
+      accountValueFormat: row.accountValueFormat,
+      currencyText: row.currencyText,
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+      providerFields: { ...row.providerFields },
+    },
+  }]);
 }
 
 function sinopacCaptureAccount(capture: ExistingSinopacFinancialCapture): string {

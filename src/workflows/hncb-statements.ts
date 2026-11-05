@@ -42,12 +42,8 @@ import {
   type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type {
   ProductCollectionHandle,
@@ -60,6 +56,7 @@ import { hncbNetbankSite, isHncbTrxDispatcherUrl, type HncbNetbankSite, type Hnc
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
@@ -153,8 +150,6 @@ export function buildHncbCurrentDepositBalanceCapture(
   const currencyResolution = providerCurrency ? "provider" : "canonical-account";
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
   const availableSourceField = isOverview ? "原幣" : "可用餘額";
-  const records: CurrentDepositSourceRecordInput[] = [];
-  const observations: CurrentDepositBalanceObservationInput[] = [];
   const amountPairs: readonly [
     "ledger" | "available",
     string,
@@ -163,8 +158,16 @@ export function buildHncbCurrentDepositBalanceCapture(
     ["ledger", "帳上餘額", row.ledger],
     ["available", availableSourceField, row.available],
   ];
-  for (const [balanceKind, sourceField, balance] of amountPairs) {
-    const sourceRecordKey = canonicalDigest(
+  const time = {
+    effectiveAt: row.effectiveAt,
+    effectiveTimeBasis: "provider-http-date",
+    effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+    sourceField: "HTTP Date",
+    sourceValue: row.providerHttpDate,
+    contractVersion: row.sourceEvidence.contractVersion,
+  } as const;
+  const entries = amountPairs.map(([balanceKind, sourceField, balance]) => ({
+    sourceRecordKey: canonicalDigest(
       "hncb-current-deposit-source-record-v1",
       sourceAccountKey,
       row.sourceEvidence.contractVersion,
@@ -173,8 +176,26 @@ export function buildHncbCurrentDepositBalanceCapture(
       row.effectiveAt,
       balance.coefficient,
       String(balance.scale),
-    );
-    const compact = {
+    ),
+    providerKey: canonicalDigest(
+      "hncb-current-deposit-provider-record-v1",
+      row.accountNumber,
+      row.sourceEvidence.contractVersion,
+      currency,
+      balanceKind,
+      row.effectiveAt,
+    ),
+    observationKey: canonicalDigest(
+      "hncb-current-deposit-observation-v1",
+      sourceAccountKey,
+    ),
+    balanceKind,
+    sourceField,
+    currency,
+    value: balance,
+    time,
+    timeInRecord: false,
+    compact: {
       accountNumber: row.accountNumber,
       currencySourceLexeme: row.currencySourceLexeme,
       currencyResolution,
@@ -183,52 +204,12 @@ export function buildHncbCurrentDepositBalanceCapture(
       effectiveTimeSourceField: "HTTP Date",
       effectiveTimeSourceValue: row.providerHttpDate,
       sourceEvidence: { ...row.sourceEvidence },
-    };
-    const record = currentDepositSourceRecord({
-      sourceRecordKey,
-      providerKey: canonicalDigest(
-        "hncb-current-deposit-provider-record-v1",
-        row.accountNumber,
-        row.sourceEvidence.contractVersion,
-        currency,
-        balanceKind,
-        row.effectiveAt,
-      ),
-      contentHash: "sha256:placeholder",
-      sourceField,
-      balanceKind,
-      currency,
-      value: balance,
-      compact,
-    });
-    records.push({
-      ...record,
-      contentHash: currentDepositSourceRecordContentHash(record.compact),
-    });
-    observations.push({
-      observationKey: canonicalDigest(
-        "hncb-current-deposit-observation-v1",
-        sourceAccountKey,
-      ),
-      balanceKind,
-      balance,
-      currency,
-      time: {
-        effectiveAt: row.effectiveAt,
-        effectiveTimeBasis: "provider-http-date",
-        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
-        sourceField: "HTTP Date",
-        sourceValue: row.providerHttpDate,
-        contractVersion: row.sourceEvidence.contractVersion,
-      },
-      sourceRecordKey,
-      sourceField,
-    });
-  }
+    },
+  }));
   const endpoint =
     row.sourceEvidence.url ??
     `https://${HNCB_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}?trx=${encodeURIComponent(row.sourceEvidence.transaction)}`;
-  return {
+  return assembleCurrentDepositCapture({
     captureId: randomUUID(),
     authorityRoute: isOverview
       ? "hncb/domestic-deposit/current-balance-overview-v1"
@@ -252,25 +233,17 @@ export function buildHncbCurrentDepositBalanceCapture(
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: records.length,
-        terminal: true,
-        metadata: {
-          source: isOverview
-            ? "hncb-current-deposit-account-overview"
-            : "hncb-current-deposit-summary",
-          sourceRowCount: 1,
-          balanceFieldCount: records.length,
-          currencyResolution,
-        },
+    page: {
+      metadata: {
+        source: isOverview
+          ? "hncb-current-deposit-account-overview"
+          : "hncb-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceFieldCount: entries.length,
+        currencyResolution,
       },
-    ],
-    records,
-    observations,
-  };
+    },
+  }, entries);
 }
 
 /**

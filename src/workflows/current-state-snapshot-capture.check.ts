@@ -9,6 +9,7 @@ import {
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   indexCurrentBalanceCaptures,
   readCurrentStateSnapshot,
@@ -660,4 +661,68 @@ test("the read stamps observedAt from the run clock and rejects an undeclared re
   await assert.rejects(undeclared.run, /status is 500/u);
   assert.equal(parsed, false);
   assert.deepEqual(undeclared.events, checkFailure);
+});
+
+test("a deposit capture is assembled from its envelope and one record and observation per balance", () => {
+  const time = {
+    effectiveAt: "2026-09-25T12:00:00.000Z",
+    effectiveTimeBasis: "provider-http-date" as const,
+    effectiveTimeRuleVersion: "synthetic-v1",
+    sourceField: "HTTP Date",
+    sourceValue: "Fri, 25 Sep 2026 12:00:00 GMT",
+    contractVersion: "synthetic-v1",
+  };
+  const entry = (balanceKind: "ledger" | "available", timeInRecord: boolean) => ({
+    sourceRecordKey: `record-${balanceKind}`,
+    providerKey: `provider-${balanceKind}`,
+    observationKey: "observation",
+    balanceKind,
+    sourceField: `${balanceKind}-field`,
+    currency: "TWD",
+    value: { coefficient: balanceKind === "ledger" ? "1000" : "900", scale: 0 },
+    time,
+    timeInRecord,
+    compact: { account: "synthetic" },
+  });
+  const capture = assembleCurrentDepositCapture({
+    captureId: "capture",
+    authorityRoute: "synthetic/domestic-deposit/current-balance-v1",
+    contractVersion: "synthetic-v1",
+    subjectDigest: "subject",
+    identity: {
+      integrationNamespace: "synthetic",
+      sourceConnectionKey: "connection",
+      identityEpochKey: "epoch",
+      stream: "domestic-deposit",
+      sourceAccountKey: "account",
+    },
+    observedAt: "2026-09-25T20:00:01+08:00",
+    scope: { startDate: "2026-09-25", endDate: "2026-09-25" },
+    providerResponse: { endpoint: "https://bank.example/balances", status: 200 },
+    page: { metadata: { source: "synthetic-summary" }, proofKind: "synthetic-snapshot" },
+  }, [entry("ledger", false), entry("available", true)]);
+
+  assert.equal("page" in capture, false);
+  assert.deepEqual(capture.pages, [{
+    pageOrdinal: 0,
+    responseCode: "200",
+    rowCount: 2,
+    terminal: true,
+    metadata: { source: "synthetic-summary" },
+    proofKind: "synthetic-snapshot",
+  }]);
+  assert.deepEqual(capture.records.map((record) => record.sourceRecordKey), ["record-ledger", "record-available"]);
+  for (const record of capture.records)
+    assert.equal(record.contentHash, currentDepositSourceRecordContentHash(record.compact));
+  assert.equal("effectiveAt" in capture.records[0]!.compact, false, "only a record that repeats the time carries it");
+  assert.equal(capture.records[1]!.compact.effectiveTimeSourceValue, time.sourceValue);
+  assert.deepEqual(capture.observations, capture.records.map((record, index) => ({
+    observationKey: "observation",
+    balanceKind: index === 0 ? "ledger" : "available",
+    balance: { coefficient: index === 0 ? "1000" : "900", scale: 0 },
+    currency: "TWD",
+    time,
+    sourceRecordKey: record.sourceRecordKey,
+    sourceField: index === 0 ? "ledger-field" : "available-field",
+  })));
 });

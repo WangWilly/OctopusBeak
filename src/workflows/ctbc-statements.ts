@@ -28,12 +28,8 @@ import {
   type CtbcCurrentDepositResponse,
 } from "./ctbc-current-deposit-balances.ts";
 import {
-  currentDepositSourceRecord,
-  currentDepositSourceRecordContentHash,
   type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositBalanceObservationInput,
   type CurrentDepositExactAmount,
-  type CurrentDepositSourceRecordInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type {
@@ -49,6 +45,7 @@ import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
+  assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
@@ -898,15 +895,6 @@ export function buildCtbcCurrentDepositBalanceCapture(
     coefficient: row.ledger.coefficient,
     scale: row.ledger.scale,
   };
-  const sourceField = "balance";
-  const time = {
-    effectiveAt: row.effectiveAt,
-    effectiveTimeBasis: "provider-system-time" as const,
-    effectiveTimeRuleVersion: contractVersion,
-    sourceField: "serverTime",
-    sourceValue: String(row.providerServerTime),
-    contractVersion,
-  };
   const sourceRecordKey = canonicalDigest(
     "ctbc-current-deposit-source-record-v1",
     sourceAccountKey,
@@ -914,53 +902,9 @@ export function buildCtbcCurrentDepositBalanceCapture(
     balance.coefficient,
     String(balance.scale),
   );
-  const compact = {
-    source: "ctbc",
-    accountId: row.accountNumber,
-    sourceAccountKey,
-    currency: row.currency,
-    sourceLexeme: row.ledger.sourceLexeme,
-    providerFields: { ...row.providerFields },
-    providerServerTime: row.providerServerTime,
-    providerDataTime: row.providerDataTime,
-    providerHttpDate: row.providerHttpDate,
-    requestResource: row.sourceEvidence.requestResource,
-    sourceEvidence: { ...row.sourceEvidence },
-  };
-  const provisional = currentDepositSourceRecord({
-    sourceRecordKey,
-    providerKey: canonicalDigest(
-      "ctbc-current-deposit-provider-record-v1",
-      sourceAccountKey,
-      row.effectiveAt,
-    ),
-    contentHash: "sha256:placeholder",
-    sourceField,
-    balanceKind: "ledger",
-    currency: row.currency,
-    value: balance,
-    time,
-    compact,
-  });
-  const record: CurrentDepositSourceRecordInput = {
-    ...provisional,
-    contentHash: currentDepositSourceRecordContentHash(provisional.compact),
-  };
-  const observation: CurrentDepositBalanceObservationInput = {
-    observationKey: canonicalDigest(
-      "ctbc-current-deposit-observation-v1",
-      sourceAccountKey,
-    ),
-    balanceKind: "ledger",
-    balance,
-    currency: row.currency,
-    time,
-    sourceRecordKey,
-    sourceField,
-  };
   const scopeDate = row.providerDataTime.slice(0, 10).replaceAll("/", "-");
   const route = "ctbc/domestic-deposit/current-balance-v1";
-  return {
+  return assembleCurrentDepositCapture({
     captureId: `ctbc-current-${randomUUID()}`,
     authorityRoute: route,
     contractVersion,
@@ -989,26 +933,52 @@ export function buildCtbcCurrentDepositBalanceCapture(
       cacheControl: row.sourceEvidence.cacheControl,
       requestResource: row.sourceEvidence.requestResource,
     },
-    pages: [
-      {
-        pageOrdinal: 0,
-        responseCode: "200",
-        rowCount: 1,
-        terminal: true,
-        metadata: {
-          source: "ctbc-current-deposit-summary",
-          endpoint: row.sourceEvidence.endpoint,
-          resource: row.sourceEvidence.requestResource,
-          accountId: row.accountNumber,
-          providerServerTime: row.providerServerTime,
-          providerDataTime: row.providerDataTime,
-          providerHttpDate: row.providerHttpDate,
-        },
+    page: {
+      metadata: {
+        source: "ctbc-current-deposit-summary",
+        endpoint: row.sourceEvidence.endpoint,
+        resource: row.sourceEvidence.requestResource,
+        accountId: row.accountNumber,
+        providerServerTime: row.providerServerTime,
+        providerDataTime: row.providerDataTime,
+        providerHttpDate: row.providerHttpDate,
       },
-    ],
-    records: [record],
-    observations: [observation],
-  };
+    },
+  }, [{
+    sourceRecordKey,
+    providerKey: canonicalDigest(
+      "ctbc-current-deposit-provider-record-v1",
+      sourceAccountKey,
+      row.effectiveAt,
+    ),
+    observationKey: canonicalDigest("ctbc-current-deposit-observation-v1", sourceAccountKey),
+    balanceKind: "ledger",
+    sourceField: "balance",
+    currency: row.currency,
+    value: balance,
+    time: {
+      effectiveAt: row.effectiveAt,
+      effectiveTimeBasis: "provider-system-time",
+      effectiveTimeRuleVersion: contractVersion,
+      sourceField: "serverTime",
+      sourceValue: String(row.providerServerTime),
+      contractVersion,
+    },
+    timeInRecord: true,
+    compact: {
+      source: "ctbc",
+      accountId: row.accountNumber,
+      sourceAccountKey,
+      currency: row.currency,
+      sourceLexeme: row.ledger.sourceLexeme,
+      providerFields: { ...row.providerFields },
+      providerServerTime: row.providerServerTime,
+      providerDataTime: row.providerDataTime,
+      providerHttpDate: row.providerHttpDate,
+      requestResource: row.sourceEvidence.requestResource,
+      sourceEvidence: { ...row.sourceEvidence },
+    },
+  }]);
 }
 
 /**
