@@ -43,11 +43,10 @@ import {
 import {
   admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
-  creditCardCurrentBalanceSourceRecord,
   creditCardCurrentUsedAmountFromLimitAndAvailable,
-  type CreditCardCurrentBalanceObservationInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
+import { assembleCurrentCreditCardCapture } from "./current-state-snapshot-capture.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
@@ -567,17 +566,7 @@ function fubonCreditCurrentSnapshotCapture(
     limit,
     available,
   };
-  const observation: CreditCardCurrentBalanceObservationInput = {
-    observationKey: "issuer-aggregate",
-    balanceKind: "credit_used",
-    balance: used,
-    currency: "TWD",
-    time,
-    sourceRecordKey,
-    sourceField: snapshot.sourceField,
-    estimate,
-  };
-  return admitCreditCardCurrentBalanceCapture({
+  return admitCreditCardCurrentBalanceCapture(assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: "fubon/credit-card/current-used-credit-v1",
     contractVersion: "fubon/credit-card/current-used-credit-v1",
@@ -598,31 +587,25 @@ function fubonCreditCurrentSnapshotCapture(
       status: 200,
       cacheControl: snapshot.cacheControl,
     },
-    pages: [{
-      pageOrdinal: 0,
-      responseCode: "200",
-      rowCount: 1,
-      terminal: true,
+    page: {
       metadata: { sourceField: snapshot.sourceField, table: "CBO_totalTb:credit" },
-    }],
-    records: [creditCardCurrentBalanceSourceRecord({
-      sourceRecordKey,
-      providerKey,
-      sourceField: snapshot.sourceField,
-      balanceKind: "credit_used",
-      currency: "TWD",
-      value: used,
-      time,
-      estimate,
-      compact: {
-        provider: "fubon",
-        formula: estimate.formula,
-        limitText: snapshot.limit,
-        availableText: snapshot.available,
-      },
-    })],
-    observations: [observation],
-  });
+    },
+  }, [{
+    sourceRecordKey,
+    providerKey,
+    observationKey: "issuer-aggregate",
+    sourceField: snapshot.sourceField,
+    currency: "TWD",
+    value: used,
+    time,
+    estimate,
+    compact: {
+      provider: "fubon",
+      formula: estimate.formula,
+      limitText: snapshot.limit,
+      availableText: snapshot.available,
+    },
+  }]));
 }
 
 async function openStatementDetailsPage(site: FubonEbankSite): Promise<BrowserScope> {
