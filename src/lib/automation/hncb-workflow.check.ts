@@ -25,6 +25,7 @@ import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "./server/sources/hncb.ts";
 import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-current-deposit-balances.ts";
 import { frameScope } from "../../workflows/frame-scope.ts";
+import { hncbNetbankSite } from "../../workflows/hncb-netbank-site.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -211,11 +212,10 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     const output = await runHncbStatements(page, { accountFilters: [] }, context, {
       collectDeposit: oneAccount(async () => {
         const statement = await downloadCurrentStatementInMemory(
-          page,
+          frameScope(page, context.signal),
           `HNCB ${account}`,
           page.mainFrame(),
           context.text,
-          context.signal,
           5_000,
         );
         statementResponse = statement.sourceResponse;
@@ -286,11 +286,10 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
       await openExportLink();
       await assert.rejects(
         downloadCurrentStatementInMemory(
-          page,
+          frameScope(page, new AbortController().signal),
           account,
           page.mainFrame(),
           strictSourceText,
-          new AbortController().signal,
           5_000,
         ),
         scenario.error,
@@ -433,7 +432,7 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
   };
   const page = { async waitForEvent() { return popup; } } as never;
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
-  const run = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, new AbortController().signal, 20);
+  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, strictSourceText, 20);
   let watchdog: ReturnType<typeof setTimeout>;
   try {
     await assert.rejects(Promise.race([
@@ -463,7 +462,7 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
   const run = new AbortController();
   const reason = new Error("run cancelled");
-  const download = downloadCurrentStatementInMemory(page, account, frame, strictSourceText, run.signal, 60_000);
+  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, 60_000);
   setTimeout(() => run.abort(reason), 10);
   await assert.rejects(download, (error: unknown) => error === reason);
   assert.equal(closed, true);
@@ -486,7 +485,7 @@ test("cancelling the run stops a pending export click in the browser and stages 
       },
     };
     let readError: unknown;
-    const download = () => downloadCurrentStatementInMemory(page, account, frame, strictSourceText, run.signal)
+    const download = () => downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText)
       .catch((error: unknown) => { readError = error; throw error; });
     setTimeout(() => run.abort(cancellation), 300);
     // The export link appears only after the cancellation; an abandoned click would still land on it.
@@ -520,7 +519,7 @@ test("cancelling the run stops the current-balance overview polling for its menu
     setTimeout(() => run.abort(cancellation), 300);
     const started = Date.now();
     await assert.rejects(
-      readHncbCurrentDepositOverviewTable(frameScope(page, run.signal)),
+      readHncbCurrentDepositOverviewTable(hncbNetbankSite(page, { signal: run.signal })),
       (error: unknown) => error === cancellation,
     );
     assert.ok(Date.now() - started < 2_000, "cancellation ends the menu wait well before its 60 s timeout");

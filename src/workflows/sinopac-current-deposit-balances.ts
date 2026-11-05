@@ -1,6 +1,4 @@
-import type { Page } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
-import { frameScope } from "./frame-scope.ts";
 import {
   isDeclaredProviderResponse,
   type ProviderResponse,
@@ -8,6 +6,7 @@ import {
   type SnapshotEvidence,
   type VerifiedProviderResponse,
 } from "./current-state-snapshot-capture.ts";
+import type { SinopacMmaRoute, SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /**
  * SinoPac renders the account-summary HTML shell first and fills its balance
@@ -256,41 +255,15 @@ export type SinopacCurrentDepositResponse = Readonly<{
   response: ProviderResponse;
 }>;
 
-/**
- * Navigate to the authenticated balance page and observe the POST it
- * triggers. The HTML shell is never treated as a balance table or time source.
- */
-export async function readSinopacCurrentDepositBalanceResponse(
-  page: Page,
-  signal: AbortSignal,
-  input: Readonly<{ timeoutMs?: number }> = {},
-): Promise<SinopacCurrentDepositResponse> {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const scope = frameScope(page, signal);
-  const responsePromise = scope.withSignal((signal) =>
-    page.waitForResponse((response) => isDeclaredProviderResponse(
-      SINOPAC_CURRENT_DEPOSIT_RESPONSE,
-      response.url(),
-      response.request().method(),
-    ), { timeout: timeoutMs, signal }));
-  void responsePromise.catch(() => undefined);
-  await scope.withSignal((signal) => page.goto(SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, {
-    waitUntil: "domcontentloaded",
-    timeout: timeoutMs,
-    signal,
-  }));
-  const response = await responsePromise;
-  const [bytes, headers] = await Promise.all([
-    scope.race(response.body()),
-    scope.race(response.allHeaders()),
-  ]);
-  return {
-    evidence: { kind: "json", bytes },
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
-  };
+/** The balance page; its HTML shell is never treated as a balance table or time source. */
+export const SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE: SinopacMmaRoute = {
+  url: SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
+  description: "the SinoPac balance page",
+  response: (url, method) => isDeclaredProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, url, method),
+};
+
+/** Open the authenticated balance page and observe the POST it triggers. */
+export async function readSinopacCurrentDepositBalanceResponse(site: SinopacMmaSite): Promise<SinopacCurrentDepositResponse> {
+  const { bytes, response } = await site.open(SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE);
+  return { evidence: { kind: "json", bytes }, response };
 }

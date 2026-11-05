@@ -49,11 +49,11 @@ const allowedPrivacyFindings = new Set([
   "src/workflows/ctbc-current-deposit-balances.check.ts:57: long account-like number 0000********9100",
   "src/workflows/ctbc-current-deposit-balances.check.ts:77: long account-like number 0000********9100",
   "src/workflows/ctbc-current-deposit-balances.check.ts:189: long account-like number 0000*******8910",
-  "src/workflows/hncb-current-deposit-balances.check.ts:213: long account-like number 0012******9012",
-  "src/workflows/hncb-current-deposit-balances.check.ts:237: long account-like number 0012****7890",
-  "src/workflows/hncb-current-deposit-balances.check.ts:359: long account-like number 1669****5670",
+  "src/workflows/hncb-current-deposit-balances.check.ts:212: long account-like number 0012******9012",
+  "src/workflows/hncb-current-deposit-balances.check.ts:236: long account-like number 0012****7890",
+  "src/workflows/hncb-current-deposit-balances.check.ts:358: long account-like number 1669****5670",
   "src/workflows/linebank-current-deposit-balances.check.ts:69: long account-like number 0123****8901",
-  "src/workflows/sinopac-current-deposit-balances.check.ts:115: long account-like number 1410******5621",
+  "src/workflows/sinopac-current-deposit-balances.check.ts:117: long account-like number 1410******5621",
 ]);
 
 function addFinding(finding) {

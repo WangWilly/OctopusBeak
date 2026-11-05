@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
-  HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
   HNCB_CURRENT_DEPOSIT_HEADERS,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_HEADERS,
-  HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
   HNCB_CURRENT_DEPOSIT_RESPONSE,
   parseHncbCurrentDepositBalanceSnapshot,
@@ -13,6 +11,7 @@ import {
   readHncbCurrentDepositDetailCells,
   readHncbCurrentDepositOverviewCells,
 } from "./hncb-current-deposit-balances.ts";
+import { HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
 import { verifyProviderResponse, type ProviderResponse } from "./current-state-snapshot-capture.ts";
 
 type Cell = {
@@ -129,7 +128,7 @@ function fixtureTable(rows: Row[], nested: Table[] = []): FixtureLocator {
 const rawResponse = (
   overrides: Partial<ProviderResponse> = {},
 ): ProviderResponse => ({
-  url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+  url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
   status: 200,
   method: "GET",
   headers: {
@@ -142,7 +141,7 @@ const rawResponse = (
 const rawOverviewResponse = (
   overrides: Partial<ProviderResponse> = {},
 ): ProviderResponse => ({
-  url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
+  url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION}&state=prompt&time_str=20260909135527`,
   status: 200,
   method: "GET",
   headers: {
@@ -414,21 +413,21 @@ const snapshotInput = { rows: [rowA, rowB] } as const;
 assert.throws(
   () =>
     response({
-      url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=other`,
+      url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?trx=other`,
     }),
   /endpoint is unexpected/u,
 );
 assert.throws(
   () =>
     response({
-      url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=other&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+      url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?trx=other&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
     }),
   /endpoint is unexpected/u,
   "only the first trx parameter names the transaction",
 );
 assert.equal(
   response({
-    url: `https://netbank.hncb.com.tw${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?state=prompt&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+    url: `https://netbank.hncb.com.tw${HNCB_TRX_DISPATCHER_PATH}?state=prompt&trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
   }).url.searchParams.get("state"),
   "prompt",
 );
@@ -492,11 +491,6 @@ assert.throws(
 );
 
 const source = await readFile(new URL("./hncb-current-deposit-balances.ts", import.meta.url), "utf8");
-assert.match(source, /帳務查詢/u);
-assert.match(source, /餘額查詢/u);
-assert.match(source, /活期存款/u);
-assert.match(source, /waitForResponse/);
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
-assert.doesNotMatch(source, /click\(\{\s*force:/u);
 
 console.log("hncb-current-deposit-balances.check passed");

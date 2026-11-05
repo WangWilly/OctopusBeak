@@ -8,11 +8,9 @@ import {
   type SnapshotEvidence,
   type VerifiedProviderResponse,
 } from "./current-state-snapshot-capture.ts";
-import type { FrameScope } from "./frame-scope.ts";
+import type { BrowserScope } from "./frame-scope.ts";
+import { HNCB_TRX_DISPATCHER_PATH, type HncbNetbankSite, type HncbRoute } from "./hncb-netbank-site.ts";
 
-/** HNCB's current deposit balance query is a provider snapshot. */
-export const HNCB_CURRENT_DEPOSIT_BALANCE_PATH =
-  "/netbank/servlet/TrxDispatcher" as const;
 export const HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION =
   "com.lb.wibc.trx.EAccDDSummary" as const;
 export const HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
@@ -23,10 +21,6 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION =
   "com.lb.wibc.trx.AcctInfoInq" as const;
 export const HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION =
   "hncb/current-deposit-balance-overview-v1" as const;
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH =
-  HNCB_CURRENT_DEPOSIT_BALANCE_PATH;
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_HOST =
-  HNCB_CURRENT_DEPOSIT_BALANCE_HOST;
 
 export const HNCB_CURRENT_DEPOSIT_HEADERS = [
   "身份證字號/統一編號",
@@ -71,7 +65,7 @@ function transactionQuery(transaction: string): RegExp {
 
 /** The 帳戶總覽 GET, which must render HTML. */
 export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
-  path: HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
+  path: HNCB_TRX_DISPATCHER_PATH,
   method: "GET",
   contentType: /^text\/html(?:\s*;|$)/iu,
   search: transactionQuery(HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION),
@@ -79,7 +73,7 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
 
 /** The 活期存款 balance-page GET. */
 export const HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT: ProviderEndpoint = {
-  path: HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
+  path: HNCB_TRX_DISPATCHER_PATH,
   method: "GET",
   search: transactionQuery(HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION),
 };
@@ -120,7 +114,7 @@ export type HncbCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof HNCB_CURRENT_DEPOSIT_BALANCE_PATH;
+    endpoint: typeof HNCB_TRX_DISPATCHER_PATH;
     transaction: typeof HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION;
     status: 200;
     cacheControl: string;
@@ -147,7 +141,7 @@ export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH;
+    endpoint: typeof HNCB_TRX_DISPATCHER_PATH;
     transaction: typeof HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION;
     status: 200;
     cacheControl: string;
@@ -160,8 +154,6 @@ export type HncbCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: VerifiedProviderResponse<"required">;
 }>;
-
-type BrowserScope = Page | Frame;
 
 const directTableRowsSelector =
   ":scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr";
@@ -271,7 +263,7 @@ export function parseHncbCurrentDepositBalanceSnapshot(
       providerHttpDate: input.response.providerDate.raw,
       observedAt: input.response.observedAt,
       sourceEvidence: {
-        endpoint: HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
+        endpoint: HNCB_TRX_DISPATCHER_PATH,
         transaction: HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
         status: 200,
         cacheControl: input.response.cacheControl,
@@ -502,7 +494,7 @@ export function parseHncbCurrentDepositOverviewSnapshot(
       providerHttpDate: input.response.providerDate.raw,
       observedAt: input.response.observedAt,
       sourceEvidence: {
-        endpoint: HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH,
+        endpoint: HNCB_TRX_DISPATCHER_PATH,
         transaction: HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
         status: 200,
         cacheControl: input.response.cacheControl,
@@ -589,104 +581,53 @@ export async function readHncbCurrentDepositOverviewCells(
   throw new Error("HNCB current deposit overview table headers are not recognized.");
 }
 
-function findExactControl(
-  scope: FrameScope,
-  text: string,
-  timeoutMs: number,
-): Promise<Locator> {
-  const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  return scope.until(async () => {
-    for (const candidate of scope.scopes()) {
-      const controls = candidate.locator("a, button").filter({ hasText: matcher });
-      const count = await controls.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const control = controls.nth(index);
-        if (await control.isVisible().catch(() => false)) return control;
-      }
-    }
-    return null;
-  }, `Could not find HNCB control "${text}".`, { timeoutMs });
-}
-
-function findResultTable(scope: FrameScope, timeoutMs: number): Promise<{ scope: BrowserScope; table: Locator }> {
-  return scope.until(async () => {
-    for (const candidate of scope.scopes()) {
-      const tables = candidate.locator("table");
-      const count = await tables.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const table = tables.nth(index);
-        if ((await table.locator("table").count().catch(() => 1)) !== 0) continue;
-        const text = await table.innerText().catch(() => "");
-        if (text.includes("帳號(由小到大排序)") && text.includes("帳上餘額")) {
-          return { scope: candidate, table };
-        }
-      }
-    }
-    return null;
-  }, "Could not find HNCB current deposit result table.", { timeoutMs });
-}
-
-function findOverviewResultTable(
-  scope: FrameScope,
-  timeoutMs: number,
-): Promise<{ scope: BrowserScope; table: Locator }> {
-  return scope.until(async () => {
-    for (const candidate of scope.scopes()) {
-      const tables = candidate.locator("table");
-      const count = await tables.count().catch(() => 0);
-      for (let index = 0; index < count; index += 1) {
-        const table = tables.nth(index);
-        const rows = table.locator(directTableRowsSelector);
-        const rowCount = await rows.count().catch(() => 0);
-        for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-          const row = rows.nth(rowIndex);
-          const directCells = row.locator(directRowCellsSelector);
-          if ((await directCells.count().catch(() => 0)) < 10) continue;
-          const text = await row.innerText().catch(() => "");
-          if (
-            text.includes("帳號") &&
-            text.includes("帳上餘額") &&
-            text.includes("可用餘額")
-          )
-            return { scope: candidate, table };
-        }
-      }
-    }
-    return null;
-  }, "Could not find HNCB current deposit overview result table.", { timeoutMs });
-}
-
-function findMenuFrameControl(
-  scope: FrameScope,
-  text: string,
-  timeoutMs: number,
-): Promise<Locator> {
-  const matcher = new RegExp(`^\\s*${text}\\s*$`, "u");
-  return scope.until(async () => {
-    const menuFrame = scope.page.frame({ name: "menu" });
-    if (!menuFrame) return null;
-    const controls = menuFrame.locator("a").filter({ hasText: matcher });
-    const count = await controls.count().catch(() => 0);
-    for (let index = 0; index < count; index += 1) {
-      const control = controls.nth(index);
-      if (await control.isVisible().catch(() => false)) return control;
-    }
-    return null;
-  }, `Could not find HNCB menu-frame control "${text}".`, { timeoutMs });
-}
-
-function accountingNavigationResponseMatches(response: Response): boolean {
-  try {
-    const url = new URL(response.url());
-    return (
-      url.hostname === HNCB_CURRENT_DEPOSIT_OVERVIEW_HOST &&
-      url.pathname === HNCB_CURRENT_DEPOSIT_OVERVIEW_PATH &&
-      response.request().method().toUpperCase() === "POST"
-    );
-  } catch {
-    return false;
+async function hasResultTable(scope: BrowserScope): Promise<boolean> {
+  const tables = scope.locator("table");
+  const count = await tables.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const table = tables.nth(index);
+    if ((await table.locator("table").count().catch(() => 1)) !== 0) continue;
+    const text = await table.innerText().catch(() => "");
+    if (text.includes("帳號(由小到大排序)") && text.includes("帳上餘額")) return true;
   }
+  return false;
 }
+
+async function hasOverviewResultTable(scope: BrowserScope): Promise<boolean> {
+  const tables = scope.locator("table");
+  const count = await tables.count().catch(() => 0);
+  for (let index = 0; index < count; index += 1) {
+    const rows = tables.nth(index).locator(directTableRowsSelector);
+    const rowCount = await rows.count().catch(() => 0);
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+      const row = rows.nth(rowIndex);
+      if ((await row.locator(directRowCellsSelector).count().catch(() => 0)) < 10) continue;
+      const text = await row.innerText().catch(() => "");
+      if (text.includes("帳號") && text.includes("帳上餘額") && text.includes("可用餘額")) return true;
+    }
+  }
+  return false;
+}
+
+/** 帳務查詢 → 餘額查詢 → 活期存款, rendered by the balance-page GET. */
+export const HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE: HncbRoute = {
+  description: "HNCB current deposit result table",
+  via: {
+    menu: [{ label: "帳務查詢" }, { label: "餘額查詢" }, { label: "活期存款" }],
+    reply: (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT, response),
+  },
+  ready: hasResultTable,
+};
+
+/** 帳務查詢 → 帳戶總覽 in the menu frame, rendered by the overview GET. */
+export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: HncbRoute = {
+  description: "HNCB current deposit overview result table",
+  via: {
+    menu: [{ label: "帳務查詢", dispatches: true }, { label: "帳戶總覽", frame: "menu" }],
+    reply: (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, response),
+  },
+  ready: hasOverviewResultTable,
+};
 
 /**
  * One current-state table before decoding: the account overview or the
@@ -707,63 +648,22 @@ async function responseMetadata(response: Response): Promise<ProviderResponse> {
   };
 }
 
-/** Navigate 帳務查詢 → 餘額查詢 → 活期存款, then read the source table. */
-export async function readHncbCurrentDepositDetailTable(
-  scope: FrameScope,
-  input: Readonly<{ timeoutMs?: number }> = {},
-): Promise<HncbCurrentDepositTable> {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const accountingMenu = await findExactControl(scope, "帳務查詢", timeoutMs);
-  await scope.withSignal((signal) => accountingMenu.click({ signal }));
-  const balanceMenu = await findExactControl(scope, "餘額查詢", timeoutMs);
-  await scope.withSignal((signal) => balanceMenu.click({ signal }));
-  const demandDeposit = await findExactControl(scope, "活期存款", timeoutMs);
-  const responded = scope.withSignal((signal) =>
-    scope.page.waitForResponse(
-      (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT, response),
-      { timeout: timeoutMs, signal }));
-  responded.catch(() => undefined);
-  await scope.withSignal((signal) => demandDeposit.click({ signal }));
-  const response = await scope.race(responseMetadata(await responded));
-  const result = await findResultTable(scope, timeoutMs);
+/** Open the 活期存款 balance page, then read the source table. */
+export async function readHncbCurrentDepositDetailTable(site: HncbNetbankSite): Promise<HncbCurrentDepositTable> {
+  const { scope, reply } = await site.open(HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE);
   return {
     view: "detail",
-    evidence: { kind: "cells", rows: await scope.race(readHncbCurrentDepositDetailCells(result.scope)) },
-    response,
+    evidence: { kind: "cells", rows: await site.frames.race(readHncbCurrentDepositDetailCells(scope)) },
+    response: await site.frames.race(responseMetadata(reply)),
   };
 }
 
-/** Navigate 帳務查詢 → 帳戶總覽, then read the authenticated overview table. */
-export async function readHncbCurrentDepositOverviewTable(
-  scope: FrameScope,
-  input: Readonly<{ timeoutMs?: number }> = {},
-): Promise<HncbCurrentDepositTable> {
-  const timeoutMs = input.timeoutMs ?? 60_000;
-  const accountingMenu = await findExactControl(scope, "帳務查詢", timeoutMs);
-  const accountingResponse = scope.withSignal((signal) =>
-    scope.page.waitForResponse(accountingNavigationResponseMatches, {
-      timeout: Math.min(timeoutMs, 10_000),
-      signal,
-    }))
-    .catch(() => scope.signal.throwIfAborted());
-  accountingResponse.catch(() => undefined);
-  await scope.withSignal((signal) => accountingMenu.click({ signal }));
-  // Wait for the bank's accounting POST when it emits one. The menu-frame
-  // locator below supplies the readiness barrier for shells that do not emit
-  // that response or finish rendering it before the response event.
-  await accountingResponse;
-  const overviewMenu = await findMenuFrameControl(scope, "帳戶總覽", timeoutMs);
-  const responded = scope.withSignal((signal) =>
-    scope.page.waitForResponse(
-      (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, response),
-      { timeout: timeoutMs, signal }));
-  responded.catch(() => undefined);
-  await scope.withSignal((signal) => overviewMenu.click({ signal }));
-  const response = await scope.race(responseMetadata(await responded));
-  const result = await findOverviewResultTable(scope, timeoutMs);
+/** Open the account overview, then read the authenticated overview table. */
+export async function readHncbCurrentDepositOverviewTable(site: HncbNetbankSite): Promise<HncbCurrentDepositTable> {
+  const { scope, reply } = await site.open(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE);
   return {
     view: "overview",
-    evidence: { kind: "cells", rows: await scope.race(readHncbCurrentDepositOverviewCells(result.scope)) },
-    response,
+    evidence: { kind: "cells", rows: await site.frames.race(readHncbCurrentDepositOverviewCells(scope)) },
+    response: await site.frames.race(responseMetadata(reply)),
   };
 }

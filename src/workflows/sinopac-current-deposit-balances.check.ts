@@ -6,8 +6,10 @@ import {
   readSinopacCurrentDepositBalanceResponse,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
+  SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE,
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,
 } from "./sinopac-current-deposit-balances.ts";
+import type { SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 const response: ProviderResponse = {
   // Keep the proof URL independent from the implementation constant so a
@@ -226,37 +228,27 @@ test("SinoPac rejects unknown and multiple transport query keys", () => {
   );
 });
 
-function fakeResponse(url: string, method = "POST") {
-  return {
-    url: () => url,
-    status: () => response.status,
-    request: () => ({ method: () => method }),
-    allHeaders: async () => ({ ...response.headers }),
-    body: async () => Buffer.from(JSON.stringify(payload), "utf8"),
-  };
-}
+test("SinoPac's balance route opens the balance page and accepts only the declared ws_bankbal POST", () => {
+  const route = SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE;
+  assert.equal(route.url, SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
+  assert.equal(route.response(response.url, "POST"), true);
+  assert.equal(route.response(`${response.url}?1788926105087=1`, "POST"), true);
+  assert.equal(route.response(response.url, "GET"), false);
+  assert.equal(route.response(`${response.url}?session=unexpected`, "POST"), false);
+  assert.equal(route.response("https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx", "POST"), false);
+});
 
-test("SinoPac reader waits for the balance POST before navigating and returns its raw body", async () => {
-  const steps: string[] = [];
-  let accepts: ((candidate: never) => boolean) | undefined;
-  const page = {
-    waitForResponse: async (predicate: (candidate: never) => boolean) => {
-      steps.push("wait");
-      accepts = predicate;
-      return fakeResponse(`${response.url}?1788926105087=1`);
+test("SinoPac reader returns the balance route's raw body and response", async () => {
+  const bytes = Buffer.from(JSON.stringify(payload), "utf8");
+  const opened: unknown[] = [];
+  const site = {
+    open: async (route: unknown) => {
+      opened.push(route);
+      return { bytes, response };
     },
-    goto: async (url: string) => {
-      steps.push("goto");
-      assert.equal(url, SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
-    },
-  };
-  const read = await readSinopacCurrentDepositBalanceResponse(page as never, new AbortController().signal);
-  assert.deepEqual(steps, ["wait", "goto"]);
+  } as unknown as SinopacMmaSite;
+  const read = await readSinopacCurrentDepositBalanceResponse(site);
+  assert.deepEqual(opened, [SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE]);
   assert.equal(new TextDecoder().decode(read.evidence.bytes), JSON.stringify(payload));
-  assert.equal(read.response.method, "POST");
-  assert.equal(read.response.headers.date, response.headers.date);
-  assert.equal(accepts!(fakeResponse(response.url) as never), true);
-  assert.equal(accepts!(fakeResponse(response.url, "GET") as never), false);
-  assert.equal(accepts!(fakeResponse(`${response.url}?session=unexpected`) as never), false);
-  assert.equal(accepts!(fakeResponse("https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx") as never), false);
+  assert.deepEqual(read.response, response);
 });

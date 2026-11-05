@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import type { Page } from "playwright";
 import type {
   PreviewCard,
   PreviewCreditAccount,
@@ -27,16 +26,15 @@ import {
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
-import { frameScope } from "./frame-scope.ts";
+import { SINOPAC_MMA_ORIGIN, type SinopacMmaPostInit, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
-const MMA_ORIGIN = "https://mma.sinopac.com";
 export const SINOPAC_CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
 export const SINOCARD_SSO_PATH = "/SinoCard/api/security/sso";
 export const SINOCARD_AUTH_PATH = "/SinoCard/api/security/auth";
 export const SINOCARD_LATEST_TX_PATH = "/SinoCard/api/Accounting/LatestTx";
 export const SINOCARD_OUTSTANDING_PATH = "/SinoCard/api/Accounting/OutstandingDetail";
 export const SINOCARD_ACCOUNTING_PATH = "/SinoCard/api/accounting/accountinginfo";
-const SINOCARD_PAGE_URL = `${MMA_ORIGIN}/SinoCard/Account/UnbilledTxInquiry`;
+const SINOCARD_PAGE_URL = `${SINOPAC_MMA_ORIGIN}/SinoCard/Account/UnbilledTxInquiry`;
 /** The desktop SinoCard SPA's `applicationName`; the mobile site sends `MWEB`. */
 const SINOCARD_APPLICATION_NAME = "EWEB2";
 
@@ -54,27 +52,14 @@ export type SinopacCardCollectionInput = Readonly<{
   observe: (response: PreviewResponseObservation) => void;
 }>;
 
-export function sinopacCardPageTransport(page: Page, signal: AbortSignal): SinopacCardTransport {
-  const scope = frameScope(page, signal);
-  const send = async (endpoint: string, init: Readonly<{ headers: Record<string, string>; body: string; referrer?: string }>) => {
-    signal.throwIfAborted();
-    if (new URL(page.url()).origin !== MMA_ORIGIN) fail("unexpected-response", "the signed-in page is not on the MMA origin");
-    const response = await scope.race(page.evaluate(async ({ url, init }) => {
-      const reply = await fetch(url, { method: "POST", credentials: "same-origin", ...init });
-      return { status: reply.status, date: reply.headers.get("date"), text: await reply.text() };
-    }, { url: `${MMA_ORIGIN}${endpoint}`, init }));
-    signal.throwIfAborted();
-    return { endpoint, ...response };
+/** The card's two request shapes, sent through the MMA site's one POST. */
+export function sinopacCardTransport(site: SinopacMmaSite): SinopacCardTransport {
+  const send = async (endpoint: string, init?: SinopacMmaPostInit): Promise<SinopacCardResponse> => {
+    const reply = await site.post(endpoint, init);
+    return { endpoint, status: reply.status, date: reply.date, text: reply.text };
   };
   return {
-    mma: (path) => send(path, {
-      headers: {
-        Accept: "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: "",
-    }),
+    mma: (path) => send(path),
     sinoCard: (path, content, userId) => send(path, {
       headers: { Accept: "application/json, text/plain, */*", "Content-Type": "application/json" },
       referrer: SINOCARD_PAGE_URL,

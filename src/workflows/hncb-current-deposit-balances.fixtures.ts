@@ -1,9 +1,9 @@
 import {
   HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
-  HNCB_CURRENT_DEPOSIT_BALANCE_PATH,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
   type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
+import { HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
 
 /** One 活期存款 result row: available balance in the fourth cell, 帳上餘額 in the eleventh. */
 export function hncbCurrentDepositDetailRow(
@@ -28,7 +28,7 @@ export function hncbCurrentDepositDetailTable(
     view: "detail",
     evidence: { kind: "cells", rows },
     response: {
-      url: `https://${HNCB_CURRENT_DEPOSIT_BALANCE_HOST}${HNCB_CURRENT_DEPOSIT_BALANCE_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+      url: `https://${HNCB_CURRENT_DEPOSIT_BALANCE_HOST}${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
       status: 200,
       method: "GET",
       headers: { date: httpDate, "cache-control": "no-store" },
