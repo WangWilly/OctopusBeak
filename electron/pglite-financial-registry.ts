@@ -1,4 +1,3 @@
-import type { SpendingPageActionResult } from "../src/lib/spending/model.ts";
 import { NO_PREVIEW_VISIBILITY, type PreviewVisibility } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   createPGliteSpendingQuery,
@@ -49,6 +48,7 @@ import {
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
 import { readSpendingPage, readSpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
+import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -60,23 +60,26 @@ import {
 } from "../src/ledger/pglite/financial-pages.ts";
 import type { PGliteFinancialPort, PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
 
-export type PGliteFinancialPageActionEvents = Readonly<{
-  isSpendingPageActionInFlight?(): boolean;
-  onSpendingPageActionSettled?(listener: (result: SpendingPageActionResult | null) => void): () => void;
+export type PGliteFinancialPreviewEvents = Readonly<{
   onPreviewVisibilityChanged?(listener: () => void): () => void;
 }>;
-type PGliteFinancialRegistryWithPageActionEvents = PGliteFinancialRegistry & Required<PGliteFinancialPageActionEvents>;
+type PGliteFinancialRegistryWithPreviewEvents = PGliteFinancialRegistry & Required<PGliteFinancialPreviewEvents>;
 
 export type PGliteFinancialRegistryOptions = Readonly<{
   /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
   today?: () => string;
+  /**
+   * The Spending page actions to run, shared with the live views that publish
+   * their results (ADR 0105). Without it the registry runs its own.
+   */
+  spendingPageActions?: SpendingPageActions;
 }>;
 
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
   previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
   options: PGliteFinancialRegistryOptions = {},
-): PGliteFinancialRegistryWithPageActionEvents {
+): PGliteFinancialRegistryWithPreviewEvents {
   const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
   const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
@@ -84,9 +87,7 @@ export function createPGliteFinancialRegistry(
   const spending = createPGliteSpendingQuery(store);
   const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
-  let spendingPageActionCount = 0;
-  let latestSettledPageAction: SpendingPageActionResult | null = null;
-  const pageActionListeners = new Set<(result: SpendingPageActionResult | null) => void>();
+  const pageActions = options.spendingPageActions ?? createSpendingPageActions(commands.pageAction);
   const previewVisibilityListeners = new Set<() => void>();
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -111,13 +112,6 @@ export function createPGliteFinancialRegistry(
     "financial.spending.pairing"([input]) {
       return spending.pairingCandidates(input);
     },
-    isSpendingPageActionInFlight() {
-      return spendingPageActionCount > 0;
-    },
-    onSpendingPageActionSettled(listener) {
-      pageActionListeners.add(listener);
-      return () => pageActionListeners.delete(listener);
-    },
     onPreviewVisibilityChanged(listener) {
       previewVisibilityListeners.add(listener);
       return () => previewVisibilityListeners.delete(listener);
@@ -125,27 +119,7 @@ export function createPGliteFinancialRegistry(
     async "financial.preview.visibilityChanged"() {
       for (const listener of previewVisibilityListeners) listener();
     },
-    "financial.spending.pageAction"([request]) {
-      if (spendingPageActionCount === 0) latestSettledPageAction = null;
-      spendingPageActionCount += 1;
-      return commands.pageAction(request).then((result) => {
-        if (!latestSettledPageAction || result.knowledgeAt >= latestSettledPageAction.knowledgeAt)
-          latestSettledPageAction = result;
-        return result;
-      }).finally(() => {
-        spendingPageActionCount -= 1;
-        if (spendingPageActionCount !== 0) return;
-        const publication = latestSettledPageAction;
-        latestSettledPageAction = null;
-        for (const listener of pageActionListeners) {
-          try {
-            listener(publication);
-          } catch {
-            // A live view cannot change the action result or other listeners.
-          }
-        }
-      });
-    },
+    "financial.spending.pageAction": ([request]) => pageActions.run(request),
     "financial.spending.setPurchaseCategory"([input]) {
       return commands.setPurchaseCategory(input);
     },
