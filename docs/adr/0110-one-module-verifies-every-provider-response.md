@@ -15,7 +15,7 @@ Statement history reads, which produce most Source Captures, never got that trea
 - Fubon's postback and LINE Bank accept any 2xx reply.
 - A failed history check throws a plain `Error`, so the failure diagnostic of ADR 0109 cannot say which check failed.
 
-A run-ending product failure also dropped its error: the Product collection run threw a new `ProductCollectionInterruptedError` without a `cause`, so a check named anywhere below it never reached the diagnostic.
+When a product's failure ended the run, the Product collection run threw a new `ProductCollectionInterruptedError` without a `cause`, unlike its other interrupted paths, so the diagnostic lost the product's error chain.
 
 ## Decision
 
@@ -33,7 +33,7 @@ A run-ending product failure also dropped its error: the Product collection run 
 
 A new evidence kind or check, such as a declared charset for a Big5 export, is added with the first source that needs it.
 
-**A run-ending product failure keeps its error as its cause**, so a named check reaches the diagnostic on that path too.
+**A product failure that ends the run keeps the product's error as its cause**, as the run's other interrupted paths already do. A provider response check that fails inside product validation does not end the run, so this matters for a check thrown outside it.
 
 ## Considered options
 

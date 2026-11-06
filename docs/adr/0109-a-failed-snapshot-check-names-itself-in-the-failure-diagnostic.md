@@ -1,6 +1,6 @@
 # A failed snapshot check names itself in the failure diagnostic
 
-Status: accepted
+Status: accepted; amended by [ADR 0110](0110-one-module-verifies-every-provider-response.md), which renames the checks to provider response checks and the node field to `responseCheck`
 
 Extends the sanitized failure record of [ADR 0081](0081-error-reports-sent-by-hand.md) for the checks of [ADR 0096](0096-the-snapshot-module-verifies-the-provider-response.md) and [ADR 0108](0108-a-broken-credit-card-current-snapshot-fails-the-card-capture.md).
 

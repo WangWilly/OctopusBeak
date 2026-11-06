@@ -74,7 +74,7 @@ test("actual PGlite constraint failures retain their SQLSTATE despite the librar
   }
 });
 
-test("a snapshot check survives capture and host validation; an unknown check does not", () => {
+test("a provider response check survives capture and host validation; an unknown check does not", () => {
   const parserError = new TypeError("used credit is undefined");
   const rejected = new ProviderResponseCheckError("row-parse", parserError.message, { cause: parserError });
   const captured = captureSafeWorkflowFailureError(rejected, repository);
