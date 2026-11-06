@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { chromium } from "playwright";
+import { classifyFailure } from "../failure-classification.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -116,6 +117,7 @@ test("App runtime identity is available before browser launch fails", async () =
   const root = await mkdtemp(join(tmpdir(), "app-browser-runtime-launch-fail-"));
   const identities: unknown[] = [];
   try {
+    const launchFailure = new Error("browserType.launchPersistentContext: Executable doesn't exist");
     const port = createAppWorkflowBrowserPort({
       taskId: "browser-runtime-launch-fail",
       taskRunId: "run-browser-runtime-launch-fail",
@@ -127,10 +129,20 @@ test("App runtime identity is available before browser launch fails", async () =
         platform: "darwin",
       }),
       onRuntimeIdentity: (identity) => identities.push(identity),
-      launchPersistentContext: async () => { throw new Error("synthetic launch failure"); },
+      launchPersistentContext: async () => { throw launchFailure; },
     });
 
-    await assert.rejects(port.withPage(async () => undefined), /synthetic launch failure/u);
+    await assert.rejects(port.withPage(async () => undefined), (error: unknown) => {
+      assert.ok(error instanceof BrowserRuntimeConfigurationError);
+      assert.equal(error.code, "launch-failed");
+      assert.equal(error.cause, launchFailure, "the launch error stays in the diagnostic chain");
+      assert.equal(
+        classifyFailure({ error, events: [], stopped: false }),
+        "browser-runtime-config-failed",
+        "a browser that does not start names the built-in browser, not an unknown workflow failure",
+      );
+      return true;
+    });
     assert.deepEqual(identities, [
       { profileId: "default", profileRevision: 1, chromiumVersion: "151.0.7922.34" },
     ]);
