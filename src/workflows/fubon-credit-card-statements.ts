@@ -1,10 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { errors, type Locator, type Page, type Response } from "playwright";
 import { z } from "zod";
-import {
-  creditCardBalanceCommandRequest,
-  fubonCreditCardCommandRequest,
-} from "../ledger/pglite/credit-card-adapters.ts";
+import { fubonCreditCardCommandRequest } from "../ledger/pglite/credit-card-adapters.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type {
@@ -13,10 +10,7 @@ import type {
   ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
-import {
-  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-  PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   admitFubonCreditCardCapture,
   buildFubonCreditCardTransactionSourceKey,
@@ -41,14 +35,23 @@ import {
   type FubonCreditCardPanFingerprintKey,
 } from "../ledger/canonical/fubon-credit-card-pan.ts";
 import {
-  admitCreditCardCurrentBalanceCapture,
   canonicalCreditCardCurrentBalanceIdentity,
   creditCardCurrentUsedAmountFromLimitAndAvailable,
+  type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
-import { assembleCurrentCreditCardCapture } from "./current-state-snapshot-capture.ts";
+import {
+  assembleCurrentCreditCardCapture,
+  CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  issuerAggregateMatching,
+  readCurrentStateSnapshot,
+  stageCurrentStateSnapshot,
+  type CurrentCreditCardStagingCapture,
+  type CurrentStateSnapshotDeclaration,
+  type ProviderResponse,
+} from "./current-state-snapshot-capture.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
-import { hasAttachedLocator } from "./browser-interaction.ts";
+import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
@@ -127,7 +130,8 @@ export type FubonCreditCardProductInput = FubonCreditCardStatementsInput & Reado
   panFingerprintKey: FubonCreditCardPanFingerprintKey;
 }>;
 export type FubonCreditCardSourceSnapshot = Readonly<{
-  currentUsedCredit?: FubonCurrentUsedCreditSnapshot;
+  /** Read only when the current-credit page's own GET was observed. */
+  currentUsedCredit?: readonly FubonCurrentUsedCreditSnapshot[];
   statementRows: readonly CsvRow[];
   statementPeriods: readonly string[];
   summaries: readonly IssuerStatementSummary[];
@@ -141,39 +145,17 @@ type StatementRowsResult = {
   summaries: IssuerStatementSummary[];
 };
 
-export type FubonCurrentUsedCreditSnapshot = Readonly<{
+/** The used credit the current-credit table reports, before its response evidence is attached. */
+type FubonCurrentUsedCreditTable = Readonly<{
   limit: string;
   available: string;
   usedCredit: string;
   sourceField: "正卡人信用額度-正卡人可用額度";
-  endpoint?: string;
-  httpDate?: string;
-  cacheControl?: string;
 }>;
-export type FubonCurrentUsedCreditDiagnostic = Readonly<{
-  responseMatched: boolean;
-  responseStatus: number | null;
-  hostname: string | null;
-  path: string | null;
-  queryKeys: readonly string[];
-  publicQuery: Readonly<{ showLogin?: string; menuId?: string }>;
-  hasHttpDate: boolean;
-  hasCacheControl: boolean;
-  tableCount: number;
-  approvedRootCount: number;
-  candidateTableCount: number;
-  matchingTableCount: number;
-  reason:
-    | "ready"
-    | "missing-table"
-    | "missing-response"
-    | "invalid-response-status"
-    | "missing-response-evidence"
-    | "parse-error";
-}>;
-type FubonCurrentUsedCreditReadResult = Readonly<{
-  snapshot?: FubonCurrentUsedCreditSnapshot;
-  diagnostic: FubonCurrentUsedCreditDiagnostic;
+export type FubonCurrentUsedCreditSnapshot = FubonCurrentUsedCreditTable & Readonly<{
+  endpoint: string;
+  httpDate: string;
+  cacheControl: string;
 }>;
 export type StatementSummary = {
   period: string;
@@ -331,111 +313,6 @@ function paymentStatusFromRows(
   };
 }
 
-function fubonEndpointDiagnostic(response: Response | null): Pick<
-  FubonCurrentUsedCreditDiagnostic,
-  | "responseMatched"
-  | "responseStatus"
-  | "hostname"
-  | "path"
-  | "queryKeys"
-  | "publicQuery"
-  | "hasHttpDate"
-  | "hasCacheControl"
-> {
-  if (!response) {
-    return {
-      responseMatched: false,
-      responseStatus: null,
-      hostname: null,
-      path: null,
-      queryKeys: [],
-      publicQuery: {},
-      hasHttpDate: false,
-      hasCacheControl: false,
-    };
-  }
-  let parsed: URL | undefined;
-  try {
-    parsed = new URL(response.url());
-  } catch {
-    parsed = undefined;
-  }
-  const publicQuery: { showLogin?: string; menuId?: string } = {};
-  if (parsed?.searchParams.has("showLogin"))
-    publicQuery.showLogin = parsed.searchParams.get("showLogin") ?? "";
-  if (parsed?.searchParams.has("menuId"))
-    publicQuery.menuId = parsed.searchParams.get("menuId") ?? "";
-  const headers = response.headers();
-  return {
-    responseMatched: true,
-    responseStatus: response.status(),
-    hostname: parsed?.hostname ?? null,
-    path: parsed?.pathname ?? null,
-    queryKeys: parsed ? [...new Set([...parsed.searchParams.keys()])].sort() : [],
-    publicQuery,
-    hasHttpDate: Boolean(headers.date),
-    hasCacheControl: Boolean(headers["cache-control"]),
-  };
-}
-
-/** Shape-only parser telemetry used to distinguish a route mismatch from a
- * page/table mismatch without logging issuer values. */
-export function diagnoseFubonCurrentCreditCardUsedCreditHtml(
-  html: string,
-): Pick<
-  FubonCurrentUsedCreditDiagnostic,
-  "tableCount" | "approvedRootCount" | "candidateTableCount" | "matchingTableCount"
-> {
-  const tables = fubonHtmlTables(html);
-  const approvedRoots = tables.filter((table) =>
-    /(?:^|\s)CBO_totalTb(?:\s|$)/u.test(table.className),
-  );
-  const candidates = tables.filter((table) =>
-    approvedRoots.some(
-      (root) => table.start >= root.start && table.end <= root.end,
-    ),
-  );
-  const matching = candidates.filter((table) => {
-    const rows = fubonDirectTableRows(table, tables);
-    return (
-      rows.some((row) => row[0] === "正卡人信用額度") &&
-      rows.some((row) => row[0] === "正卡人可用額度")
-    );
-  });
-  return {
-    tableCount: tables.length,
-    approvedRootCount: approvedRoots.length,
-    candidateTableCount: candidates.length,
-    matchingTableCount: matching.length,
-  };
-}
-
-function fubonCurrentCreditDiagnostic(
-  html: string,
-  response: Response | null,
-  reason: FubonCurrentUsedCreditDiagnostic["reason"],
-): FubonCurrentUsedCreditDiagnostic {
-  let shape: Pick<
-    FubonCurrentUsedCreditDiagnostic,
-    "tableCount" | "approvedRootCount" | "candidateTableCount" | "matchingTableCount"
-  > = {
-    tableCount: 0,
-    approvedRootCount: 0,
-    candidateTableCount: 0,
-    matchingTableCount: 0,
-  };
-  try {
-    shape = diagnoseFubonCurrentCreditCardUsedCreditHtml(html);
-  } catch {
-    // The caller reports parse-error; keep this diagnostic bounded and safe.
-  }
-  return {
-    ...fubonEndpointDiagnostic(response),
-    ...shape,
-    reason,
-  };
-}
-
 /** A task under the 信用卡 header menu, reached through its task link (ADR 0066). */
 function creditCardRoute(
   description: string,
@@ -473,60 +350,102 @@ const UNBILLED_DETAILS_ROUTE = creditCardRoute(
   isUnbilledDetailsResult,
 );
 
+type FubonCurrentCreditAcquisition = Readonly<{
+  evidence: Readonly<{ kind: "html"; html: string }>;
+  response: ProviderResponse;
+}>;
+
+type FubonCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
+  capture: FubonCreditCardValidatedCapture;
+}>;
+
+const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
+  FubonCurrentCreditAcquisition,
+  FubonCurrentUsedCreditSnapshot,
+  FubonCurrentCreditCapture,
+  "required",
+  CreditCardCurrentBalanceCaptureInput
+> = {
+  product: "current-balance",
+  kind: CURRENT_CREDIT_CARD_BALANCE_STAGING,
+  matching: issuerAggregateMatching("Fubon current used credit"),
+  build: (row, { capture }) => fubonCreditCurrentSnapshotCapture(capture, row),
+  response: {
+    label: "Fubon current used credit",
+    host: "ebank.taipeifubon.com.tw",
+    endpoints: [{
+      path: "/B2C/cccqu/cccqu002/CCCQU002_Home.faces",
+      method: "GET",
+      // The bank's dispatcher redirects here with a trailing separator: `?menuId=CCC0201&`.
+      search: /^\?(?:menuId=CCC0201(?:&showLogin=false)?|showLogin=false&menuId=CCC0201)&?$/u,
+    }],
+    cacheControl: ["no-store", "no-cache"],
+    providerDate: "required",
+  },
+  parse: (decoded, response) => {
+    const table = parseFubonCurrentCreditCardUsedCreditHtml(decoded.html);
+    if (!table) throw new Error("Fubon current credit page has no used-credit table.");
+    return [{
+      ...table,
+      endpoint: response.url.href,
+      httpDate: response.providerDate.raw,
+      cacheControl: response.cacheControl,
+    }];
+  },
+};
+
+/**
+ * Read the current-credit page through the snapshot module. The page's own
+ * GET carries the response evidence: without it there is nothing to read;
+ * with it, any failure to read the page fails the capture.
+ */
 async function readFubonCurrentUsedCredit(
   site: FubonEbankSite,
-  sourceText: SourceTextPort,
-): Promise<FubonCurrentUsedCreditReadResult> {
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<readonly FubonCurrentUsedCreditSnapshot[] | undefined> {
   const { frames } = site;
-  const readBalanceTable = async () => {
-    const scope = await site.open(CURRENT_CREDIT_ROUTE);
-    return await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal }));
-  };
-  // The page's own GET carries the HTTP Date evidence; a page that renders without it reads as missing-response.
-  const [response, html] = await Promise.all([
-    frames
-      .withSignal((signal) =>
-        frames.page.waitForResponse(
-          (response) =>
-            response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
-            response.request().method() === "GET",
-          { timeout: 60_000, signal },
-        ),
-      )
-      .catch((error: unknown) => {
-        if (error instanceof errors.TimeoutError) return null;
-        throw error;
-      }),
-    readBalanceTable(),
-  ]);
-  sourceText.assertIntact(html);
-  let parsed: FubonCurrentUsedCreditSnapshot | undefined;
+  const responseObserved = frames
+    .withSignal((signal) =>
+      frames.page.waitForResponse(
+        (response) => endsRequestChainFrom(response, "/B2C/cccqu/cccqu002/CCCQU002_Home.faces", "GET"),
+        { timeout: 60_000, signal },
+      ),
+    )
+    .catch((error: unknown) => {
+      if (error instanceof errors.TimeoutError) return null;
+      throw error;
+    });
+  // Every exit below either awaits the wait or abandons it on cancellation.
+  responseObserved.catch(() => undefined);
+  let page: Readonly<{ html: string }> | Readonly<{ error: unknown }>;
   try {
-    parsed = parseFubonCurrentCreditCardUsedCreditHtml(html);
-  } catch {
-    return {
-      diagnostic: fubonCurrentCreditDiagnostic(html, response, "parse-error"),
-    };
+    const scope = await site.open(CURRENT_CREDIT_ROUTE);
+    page = { html: await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })) };
+  } catch (error) {
+    if (context.signal.aborted) throw error;
+    page = { error };
   }
-  let reason: FubonCurrentUsedCreditDiagnostic["reason"] = "ready";
-  const endpoint = fubonEndpointDiagnostic(response);
-  if (!parsed) reason = "missing-table";
-  else if (!response) reason = "missing-response";
-  else if (response.status() !== 200) reason = "invalid-response-status";
-  else if (!endpoint.hasHttpDate || !endpoint.hasCacheControl)
-    reason = "missing-response-evidence";
-  const diagnostic = fubonCurrentCreditDiagnostic(html, response, reason);
-  if (reason !== "ready" || !parsed || !response) return { diagnostic };
-  const headers = response.headers();
-  return {
-    snapshot: {
-      ...parsed,
-      endpoint: response.url(),
-      httpDate: headers.date,
-      cacheControl: headers["cache-control"],
+  const response = await responseObserved;
+  if (!response) return undefined;
+  return await readCurrentStateSnapshot(fubonCurrentUsedCreditSnapshot, {
+    acquire: async () => {
+      if ("error" in page) throw page.error;
+      return {
+        evidence: { kind: "html", html: page.html },
+        response: {
+          url: response.url(),
+          status: response.status(),
+          method: response.request().method(),
+          headers: response.headers(),
+        },
+      };
     },
-    diagnostic,
-  };
+    now: () => context.now(),
+    product,
+    text: context.text,
+    signal: context.signal,
+  });
 }
 
 function fubonCreditCurrentSnapshotDate(httpDate: string): string {
@@ -538,9 +457,7 @@ function fubonCreditCurrentSnapshotDate(httpDate: string): string {
 function fubonCreditCurrentSnapshotCapture(
   capture: FubonCreditCardValidatedCapture,
   snapshot: FubonCurrentUsedCreditSnapshot,
-): ReturnType<typeof admitCreditCardCurrentBalanceCapture> {
-  if (!snapshot.endpoint || !snapshot.httpDate || !snapshot.cacheControl)
-    throw new Error("Fubon current credit snapshot is missing response evidence.");
+): CreditCardCurrentBalanceCaptureInput {
   const effectiveAt = new Date(Date.parse(snapshot.httpDate)).toISOString();
   const limit = fubonCreditExactAmount(snapshot.limit);
   const available = fubonCreditExactAmount(snapshot.available);
@@ -566,7 +483,7 @@ function fubonCreditCurrentSnapshotCapture(
     limit,
     available,
   };
-  return admitCreditCardCurrentBalanceCapture(assembleCurrentCreditCardCapture({
+  return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: "fubon/credit-card/current-used-credit-v1",
     contractVersion: "fubon/credit-card/current-used-credit-v1",
@@ -605,7 +522,7 @@ function fubonCreditCurrentSnapshotCapture(
       limitText: snapshot.limit,
       availableText: snapshot.available,
     },
-  }]));
+  }]);
 }
 
 async function openStatementDetailsPage(site: FubonEbankSite): Promise<BrowserScope> {
@@ -950,7 +867,7 @@ function fubonDirectTableRows(table: FubonHtmlTable, allTables: readonly FubonHt
 
 export function parseFubonCurrentCreditCardUsedCreditHtml(
   html: string,
-): FubonCurrentUsedCreditSnapshot | undefined {
+): FubonCurrentUsedCreditTable | undefined {
   const tables = fubonHtmlTables(html);
   const approvedRoots = tables.filter((table) =>
     /(?:^|\s)CBO_totalTb(?:\s|$)/u.test(table.className),
@@ -2210,15 +2127,8 @@ export async function readFubonCreditCardSourceSnapshot(
   product: ProductCollectionHandle,
 ): Promise<FubonCreditCardSourceSnapshot> {
   const site = fubonEbankSite(page, context);
-  let currentUsedCredit: FubonCurrentUsedCreditSnapshot | undefined;
-  try {
-    await product.reportActivity("query");
-    const currentCreditRead = await readFubonCurrentUsedCredit(site, context.text);
-    currentUsedCredit = currentCreditRead.snapshot;
-  } catch (error) {
-    // The current balance is optional evidence; only cancellation stops the read here.
-    if (context.signal.aborted) throw error;
-  }
+  await product.reportActivity("query");
+  const currentUsedCredit = await readFubonCurrentUsedCredit(site, context, product);
   await product.reportActivity("query");
   await openStatementDetailsPage(site);
 
@@ -2383,16 +2293,16 @@ export async function stageFubonCreditCard(
       command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
     })));
     if (currentUsedCredit) {
-      const balanceCapture = fubonCreditCurrentSnapshotCapture(
-        canonicalCaptures[0]!, currentUsedCredit,
-      );
-      items.push({
-        product: "current-balance", itemKey: balanceCapture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
-          request: creditCardBalanceCommandRequest(balanceCapture, requests[0]!.identity),
+      const { items: balanceItems } = await stageCurrentStateSnapshot(
+        fubonCurrentUsedCreditSnapshot,
+        currentUsedCredit,
+        {
+          captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
+          product,
+          signal: context.signal,
         },
-      });
+      );
+      items.push(...balanceItems);
     }
   }
 

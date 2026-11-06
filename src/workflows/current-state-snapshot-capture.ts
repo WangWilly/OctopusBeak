@@ -1,7 +1,7 @@
 /**
  * Current-state snapshot capture: turn the evidence a bank acquired for its
- * current deposit balances into staged balance captures, and assemble every
- * Current-state capture, credit-card used credit included. The bank owns
+ * current deposit balances or credit-card used credit into staged balance
+ * captures (ADR 0108). The bank owns
  * acquisition, its row parser, its matching policy, and the facts its capture
  * builder hands over (ADR 0054, ADR 0107). This module owns the order between
  * them: strict decoding, parsing, matching rows to the Source Captures this
@@ -10,6 +10,7 @@
  */
 import type { CanonicalSourcePage } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
+  admitCreditCardCurrentBalanceCapture,
   creditCardCurrentBalanceSourceRecord,
   type CreditCardCurrentBalanceCaptureInput,
   type CreditCardCurrentBalanceEstimate,
@@ -32,7 +33,12 @@ import {
   type CurrentDepositTimeEvidence,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
+import { creditCardBalanceCommandRequest } from "../ledger/pglite/credit-card-adapters.ts";
+import type { PGliteCanonicalCreditCardIdentity } from "../ledger/pglite/credit-card.ts";
+import {
+  PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+  PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+} from "../ledger/pglite/workflow-commands.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
@@ -42,7 +48,9 @@ export type SnapshotEvidence =
   /** A response body, decoded as UTF-8 JSON. */
   | Readonly<{ kind: "json"; bytes: Uint8Array }>
   /** DOM table text, one array of cell texts per row. */
-  | Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
+  | Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>
+  /** Page markup already read as text, from the DOM or a decoded response body. */
+  | Readonly<{ kind: "html"; html: string }>;
 
 /** The evidence after strict decoding, narrowed to the kind the bank acquires. */
 export type DecodedSnapshotEvidence<Evidence extends SnapshotEvidence = SnapshotEvidence> =
@@ -53,14 +61,18 @@ export type DecodedSnapshotEvidence<Evidence extends SnapshotEvidence = Snapshot
         /** The strictly decoded UTF-8 body, for parsers that must keep numeric lexemes. */
         text: string;
       }>
-    : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
+    : Evidence extends Readonly<{ kind: "html" }>
+      ? Readonly<{ kind: "html"; html: string }>
+      : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
 
 /** How a bank stages the rows it read: matching, building, and labeling. */
-export type CurrentStateSnapshotStaging<Row, Capture> = Readonly<{
+export type CurrentStateSnapshotStaging<Row, Capture, Input = CurrentDepositBalanceCaptureInput> = Readonly<{
   /** The product label each staged balance item carries. */
   product: string;
+  /** How a built capture is admitted, keyed, and committed. */
+  kind: CurrentBalanceStagingKind<Capture, Input>;
   matching: CurrentBalanceCaptureMatching<Row, Capture>;
-  build: (row: Row, capture: Capture) => CurrentDepositBalanceCaptureInput;
+  build: (row: Row, capture: Capture) => Input;
   /**
    * Check the matched snapshot as a whole, such as that it covers every
    * admitted account. A throw rejects validation and stages nothing.
@@ -127,7 +139,8 @@ export type CurrentStateSnapshotDeclaration<
   Row,
   Capture,
   DateRule extends ProviderDateRule = "required",
-> = CurrentStateSnapshotStaging<Row, Capture> & Readonly<{
+  Input = CurrentDepositBalanceCaptureInput,
+> = CurrentStateSnapshotStaging<Row, Capture, Input> & Readonly<{
   response: ProviderResponseDeclaration<DateRule>;
   /**
    * Parse decoded evidence into rows, reading transport facts only from the
@@ -156,8 +169,9 @@ export async function captureCurrentStateSnapshots<
   Row,
   Capture,
   DateRule extends ProviderDateRule,
+  Input,
 >(
-  declaration: CurrentStateSnapshotDeclaration<Acquired, Row, Capture, DateRule>,
+  declaration: CurrentStateSnapshotDeclaration<Acquired, Row, Capture, DateRule, Input>,
   input: Readonly<{
     /** The financial captures this run admitted. */
     captures: readonly Capture[];
@@ -228,8 +242,8 @@ export async function readCurrentStateSnapshot<
  * check, reporting validation. Ambiguous captures throw before validation
  * starts.
  */
-export async function stageCurrentStateSnapshot<Row, Capture>(
-  declaration: CurrentStateSnapshotStaging<Row, Capture>,
+export async function stageCurrentStateSnapshot<Row, Capture, Input>(
+  declaration: CurrentStateSnapshotStaging<Row, Capture, Input>,
   rows: readonly Row[],
   input: Readonly<{
     /** The financial captures this run admitted. */
@@ -250,19 +264,11 @@ export async function stageCurrentStateSnapshot<Row, Capture>(
     const itemKeys = new Set<string>();
     for (const { row, capture } of match.matched) {
       signal.throwIfAborted();
-      const balance = admitCurrentDepositBalanceCapture(declaration.build(row, capture));
-      const itemKey = currentBalanceItemKey(balance);
+      const { itemKey, command } = declaration.kind.stage(declaration.build(row, capture), capture);
       if (itemKeys.has(itemKey))
         throw new Error(`Current-state snapshot stages ${itemKey} more than once.`);
       itemKeys.add(itemKey);
-      items.push({
-        product: declaration.product,
-        itemKey,
-        command: {
-          kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
-          request: currentDepositBalanceCommandRequest(balance),
-        },
-      });
+      items.push({ product: declaration.product, itemKey, command });
     }
     declaration.validate?.({ rows, ...match });
     return match;
@@ -360,6 +366,10 @@ function decodeEvidence(evidence: SnapshotEvidence, text: SourceTextPort): Decod
     for (const row of evidence.rows) for (const cell of row) text.assertIntact(cell);
     return evidence;
   }
+  if (evidence.kind === "html") {
+    text.assertIntact(evidence.html);
+    return evidence;
+  }
   let value: unknown;
   const decoded = text.decode(evidence.bytes, "utf-8");
   try {
@@ -381,16 +391,66 @@ export function declaresUtf8(charset: string): boolean {
   }
 }
 
+/** How one kind of built capture is admitted, keyed, and committed. */
+export type CurrentBalanceStagingKind<Capture, Input> = Readonly<{
+  /** Admit a built capture and name its stage request. A throw rejects validation. */
+  stage: (input: Input, capture: Capture) => Readonly<{ itemKey: string; command: ProductStageRequest["command"] }>;
+}>;
+
 /**
- * A staging and receipt label, not a canonical identity. A foreign-currency
- * account carries one capture per currency, so its key names the currencies.
+ * Current deposit balances. The item key is a staging and receipt label, not
+ * a canonical identity. A foreign-currency account carries one capture per
+ * currency, so its key names the currencies.
  */
-function currentBalanceItemKey(capture: CurrentDepositBalanceCaptureInput): string {
-  const { stream, sourceAccountKey } = capture.identity;
-  const key = `current-balance:${stream}:${sourceAccountKey}`;
-  if (stream !== "foreign-currency-deposit") return key;
-  const currencies = [...new Set(capture.observations.map((observation) => observation.currency))].sort();
-  return `${key}:${currencies.join("+")}`;
+export const CURRENT_DEPOSIT_BALANCE_STAGING: CurrentBalanceStagingKind<unknown, CurrentDepositBalanceCaptureInput> = {
+  stage: (input) => {
+    const balance = admitCurrentDepositBalanceCapture(input);
+    const { stream, sourceAccountKey } = balance.identity;
+    const key = `current-balance:${stream}:${sourceAccountKey}`;
+    const currencies = [...new Set(balance.observations.map((observation) => observation.currency))].sort();
+    return {
+      itemKey: stream === "foreign-currency-deposit" ? `${key}:${currencies.join("+")}` : key,
+      command: {
+        kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
+        request: currentDepositBalanceCommandRequest(balance),
+      },
+    };
+  },
+};
+
+/** The admitted credit-card capture a current used-credit balance belongs to. */
+export type CurrentCreditCardStagingCapture = Readonly<{ cardIdentity: PGliteCanonicalCreditCardIdentity }>;
+
+/** Current credit-card used credit, keyed by its capture id. */
+export const CURRENT_CREDIT_CARD_BALANCE_STAGING: CurrentBalanceStagingKind<
+  CurrentCreditCardStagingCapture,
+  CreditCardCurrentBalanceCaptureInput
+> = {
+  stage: (input, capture) => {
+    const balance = admitCreditCardCurrentBalanceCapture(input);
+    return {
+      itemKey: balance.captureId,
+      command: {
+        kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
+        request: creditCardBalanceCommandRequest(balance, capture.cardIdentity),
+      },
+    };
+  },
+};
+
+/**
+ * Matching for an issuer that reports one used-credit balance for all of a
+ * holder's cards: the one row belongs to the one admitted capture.
+ */
+export function issuerAggregateMatching<Row, Capture>(label: string): CurrentBalanceCaptureMatching<Row, Capture> {
+  return {
+    captureKey: () => "issuer-aggregate",
+    rowKey: () => "issuer-aggregate",
+    duplicates: "first-wins",
+    sameIdentity: () => false,
+    ambiguousMessage: `${label} has more than one admitted capture for its issuer aggregate.`,
+    unmatched: { kind: "throw", message: `${label} has no admitted capture for its issuer aggregate.` },
+  };
 }
 
 // ---------------------------------------------------------------------------

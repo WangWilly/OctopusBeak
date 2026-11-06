@@ -23,7 +23,6 @@ import {
   type GridState,
   type StatementRow,
   isEsunCompleteGrid,
-  parseEsunCurrentCreditCardUsedCreditHtml,
   esunCurrentUsedCreditFromSummaryResponse,
   ESUN_CREDIT_CARD_IDENTITY_EPOCH,
   esunCreditCurrentSnapshotCapture,
@@ -43,6 +42,7 @@ import { creditCardBalanceCommandRequest, creditCardCommandRequestFromCanonicalC
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalCreditCardBalanceCapture, commitPGliteCanonicalCreditCardCapture } from "../ledger/pglite/credit-card.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
+import { admitCreditCardCurrentBalanceCapture } from "../ledger/canonical/credit-card-current-balance-admission.ts";
 
 const workflowSource = await readFile(
   new URL("./esun-credit-card-statements.ts", import.meta.url),
@@ -122,35 +122,11 @@ const credentials = {
 };
 const managedSecret = "synthetic-esun-managed-secret";
 
-assert.deepEqual(
-  parseEsunCurrentCreditCardUsedCreditHtml(`
-    <table class="decoy"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>999</td><td>1</td></tr></table>
-    <p>查詢時間：2026/09/09 10:22:05</p>
-    <table id="fcm01006:grid_DataGridBody">
-      <tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr>
-      <tr><td>正卡</td><td>1,000</td><td>9,000</td></tr>
-      <tr><td>歸戶</td><td>12,345</td><td>87,655</td></tr>
-      <tr><td>指定額度</td><td>8,000</td><td></td></tr>
-    </table>
-  `),
-  {
-    usedCredit: "12345",
-    available: "87655",
-    sourceField: "已用額度",
-    queryTime: "2026/09/09 10:22:05",
-  },
-);
-assert.throws(
-  () =>
-    parseEsunCurrentCreditCardUsedCreditHtml(`
-      <p>查詢時間：2026/09/09 10:22:05</p>
-      <table id="fcm01006:grid_DataGridBody"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>1</td><td>2</td></tr></table>
-      <table id="fcm01006:grid_DataGridBody"><tr><td>信用狀態</td><td>已用額度</td><td>可用餘額</td></tr><tr><td>歸戶</td><td>3</td><td>4</td></tr></table>
-    `),
-  /ambiguous/u,
-);
-
-const redesignedCurrentCredit = esunCurrentUsedCreditFromSummaryResponse({
+const cardSummaryEvidence = {
+  endpoint: "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+  httpDate: "Thu, 24 Sep 2026 07:21:22 GMT",
+};
+const cardSummaryReply = {
   resultCode: "0000",
   resultTime: "2026-09-24 15:21:22",
   resultBody: {
@@ -158,11 +134,24 @@ const redesignedCurrentCredit = esunCurrentUsedCreditFromSummaryResponse({
     usedCreditLimit: "46,989",
     availableCreditLimit: "53,011",
   },
-}, {
-  endpoint: "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
-  httpDate: "Thu, 24 Sep 2026 07:21:22 GMT",
-});
+};
+const [redesignedCurrentCredit] = esunCurrentUsedCreditFromSummaryResponse(cardSummaryReply, cardSummaryEvidence);
 assert(redesignedCurrentCredit);
+assert.deepEqual(
+  esunCurrentUsedCreditFromSummaryResponse(
+    { ...cardSummaryReply, resultBody: { hasCreditCard: false } },
+    cardSummaryEvidence,
+  ),
+  [],
+  "a holder with no credit card reports no used credit",
+);
+for (const reply of [
+  { ...cardSummaryReply, resultCode: "9999" },
+  { ...cardSummaryReply, resultTime: undefined },
+  { ...cardSummaryReply, resultBody: { hasCreditCard: true, usedCreditLimit: "N/A", availableCreditLimit: "1" } },
+  { ...cardSummaryReply, resultBody: {} },
+])
+  assert.throws(() => esunCurrentUsedCreditFromSummaryResponse(reply, cardSummaryEvidence), /E\.SUN card summary/u);
 assert.equal(redesignedCurrentCredit.usedCredit, "46989");
 assert.equal(redesignedCurrentCredit.queryTime, "2026-09-24 15:21:22");
 
@@ -497,14 +486,16 @@ for (const grid of [
   }
   assert.equal(result, undefined);
 }
-const currentCreditCapture = esunCreditCurrentSnapshotCapture(timelineCapture, redesignedCurrentCredit);
+const currentCreditCapture = admitCreditCardCurrentBalanceCapture(
+  esunCreditCurrentSnapshotCapture(timelineCapture, redesignedCurrentCredit),
+);
 assert.equal(currentCreditCapture.authorityRoute, "esun/credit-card/current-used-credit-v2");
 assert.equal(currentCreditCapture.observations[0]?.time.effectiveAt, "2026-09-24T07:21:22.000Z");
 assert.throws(
-  () => esunCreditCurrentSnapshotCapture(timelineCapture, {
+  () => admitCreditCardCurrentBalanceCapture(esunCreditCurrentSnapshotCapture(timelineCapture, {
     ...redesignedCurrentCredit,
     httpDate: "Thu, 24 Sep 2026 07:22:22 GMT",
-  }),
+  })),
   /resultTime and HTTP Date differ/u,
 );
 assert.equal(timelineCapture.scope.completeness.grid.kind, "past-year-timeline");

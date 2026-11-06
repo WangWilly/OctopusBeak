@@ -74,6 +74,7 @@ import {
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 import {
   collectSinopacCreditCards,
@@ -353,6 +354,7 @@ const sinopacCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
   product: "current-balance",
   response: SINOPAC_CURRENT_DEPOSIT_RESPONSE,
   parse: (decoded, response) => parseSinopacCurrentDepositBalanceSnapshot({ payload: decoded.value, response }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: sinopacCurrentBalanceCaptureMatching,
   build: buildSinopacCurrentDepositBalanceCapture,
 };

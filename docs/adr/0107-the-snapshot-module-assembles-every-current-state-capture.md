@@ -34,7 +34,7 @@ Admission stays per bank, as ADR 0054 decided.
 
 **Credit-card current snapshots are assembled the same way.** `assembleCurrentCreditCardCapture` is the credit-card kind. Fubon, Yuanta and E.SUN build their used-credit captures through it, and every credit-card commit golden is unchanged.
 
-**Reading them through the module follows in a later change.** Credit-card current snapshots will read through the module's strict decoding and report the standard current-balance events. Their commit goldens will show the new events as that change's only intended difference.
+**Reading and staging them through the module is [ADR 0108](0108-a-broken-credit-card-current-snapshot-fails-the-card-capture.md).**
 
 ## Considered options
 

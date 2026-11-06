@@ -133,7 +133,7 @@ async function runWithCountedUuids(name: string, now: string, current?: FubonCur
   const collectCreditCard: NonNullable<FubonAllWorkflowDependencies["collectCreditCard"]> = async (
     _page, input, context, product,
   ) => stageFubonCreditCard({
-    ...(current ? { currentUsedCredit: current } : {}),
+    ...(current ? { currentUsedCredit: [current] } : {}),
     statementRows,
     statementPeriods: summaries.map((summary) => summary.period),
     summaries,

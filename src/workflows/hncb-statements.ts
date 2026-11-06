@@ -60,6 +60,7 @@ import {
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 
 const BANK_ENTRY_URL =
@@ -960,6 +961,7 @@ const hncbCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
       ? parseHncbCurrentDepositOverviewSnapshot(snapshot)
       : parseHncbCurrentDepositBalanceSnapshot(snapshot);
   },
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: hncbCurrentBalanceCaptureMatching,
   build: buildHncbCurrentDepositBalanceCapture,
 };

@@ -14,6 +14,7 @@ import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workf
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import {
   assembleCurrentCreditCardCapture,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
   assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   indexCurrentBalanceCaptures,
@@ -338,7 +339,10 @@ function declaration(
     response: RESPONSE,
     parse: (decoded) => decoded.kind === "json"
       ? snapshotRows(decoded.value)
-      : decoded.rows.map(([account = "", currency = "", amount = ""]) => ({ account, currencies: [currency], amount })),
+      : decoded.kind === "cells"
+        ? decoded.rows.map(([account = "", currency = "", amount = ""]) => ({ account, currencies: [currency], amount }))
+        : [],
+    kind: CURRENT_DEPOSIT_BALANCE_STAGING,
     matching: {
       captureKey: (entry) => entry.account,
       rowKey: (row) => row.account,

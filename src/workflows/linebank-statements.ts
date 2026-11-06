@@ -20,7 +20,7 @@ import {
   buildLinebankCurrentDepositBalanceCapture,
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
-import { captureCurrentStateSnapshots, declaresUtf8 } from "./current-state-snapshot-capture.ts";
+import { captureCurrentStateSnapshots, CURRENT_DEPOSIT_BALANCE_STAGING, declaresUtf8 } from "./current-state-snapshot-capture.ts";
 import {
   parseLinebankApiJson,
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
@@ -1292,6 +1292,7 @@ async function runLineBankWorkflow(
               balanceAdmitting = true;
               return rows;
             },
+            kind: CURRENT_DEPOSIT_BALANCE_STAGING,
             matching: linebankCurrentBalanceCaptureMatching,
             build: buildLinebankCurrentDepositBalanceCapture,
             validate: ({ rows }) => {

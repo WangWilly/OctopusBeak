@@ -59,6 +59,7 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
 import {
   type CurrentDepositBalanceCaptureInput,
@@ -749,6 +750,7 @@ const yuantaCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
   product: "current-balance",
   response: YUANTA_CURRENT_DEPOSIT_RESPONSE,
   parse: (decoded, response) => parseYuantaCurrentDepositBalanceSnapshot({ kind: "domestic", rows: decoded.rows, response }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
   matching: yuantaCurrentBalanceCaptureMatching,
   build: buildYuantaCurrentDepositBalanceCapture,
 };

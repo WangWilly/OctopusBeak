@@ -77,17 +77,20 @@ export type YuantaCreditCardSummaryPageEvidence = {
 export type YuantaCreditCardSummaryTraversal = {
   summaries: YuantaCreditCardIssuerSummary[];
   pages: YuantaCreditCardSummaryPageEvidence[];
-  currentUsedCredit?: YuantaCurrentUsedCreditSnapshot;
 };
 
-export type YuantaCurrentUsedCreditSnapshot = Readonly<{
+/** The used credit the current-credit table reports, before its response evidence is attached. */
+export type YuantaCurrentUsedCreditTable = Readonly<{
   limit: string;
   usedCredit: string;
   available: string;
   sourceField: "已使用額度";
-  endpoint?: string;
-  httpDate?: string;
-  cacheControl?: string;
+}>;
+
+export type YuantaCurrentUsedCreditSnapshot = YuantaCurrentUsedCreditTable & Readonly<{
+  endpoint: string;
+  httpDate: string;
+  cacheControl: string;
 }>;
 
 export type YuantaCreditCardHistorySettledSummaryPage = {
@@ -252,7 +255,7 @@ function yuantaCurrentCreditHeaderIndex(row: readonly string[]): number {
  */
 export function parseYuantaCurrentCreditCardUsedCreditSummaryHtml(
   html: string,
-): YuantaCurrentUsedCreditSnapshot | undefined {
+): YuantaCurrentUsedCreditTable | undefined {
   for (const table of parseRwdTablesFromHtml(html)) {
     const headerIndex = table.findIndex(
       (row) => yuantaCurrentCreditHeaderIndex(row) >= 0,

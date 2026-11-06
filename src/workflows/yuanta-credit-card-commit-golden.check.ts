@@ -158,7 +158,7 @@ const currentUsedCredit = {
 
 test("a full read with current used credit commits the card and its current balance", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(NOW) });
-  await runGolden("yuanta-card-with-current-used-credit", { ...fullSnapshot, currentUsedCredit });
+  await runGolden("yuanta-card-with-current-used-credit", { ...fullSnapshot, currentUsedCredit: [currentUsedCredit] });
 });
 
 // 01:30 in Taipei is still the previous day in UTC, for the run clock and the HTTP Date alike.
@@ -167,7 +167,7 @@ test("current used credit read at 01:30 Taipei is scoped to the Taipei day", asy
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse(EARLY_MORNING) });
   await runGolden("yuanta-card-current-used-credit-taipei-early-morning", {
     ...fullSnapshot,
-    currentUsedCredit: { ...currentUsedCredit, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" },
+    currentUsedCredit: [{ ...currentUsedCredit, httpDate: "Wed, 09 Sep 2026 17:30:00 GMT" }],
   }, EARLY_MORNING);
 });
 
