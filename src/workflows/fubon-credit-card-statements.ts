@@ -51,7 +51,7 @@ import {
   type ProviderResponse,
 } from "./current-state-snapshot-capture.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
-import { hasAttachedLocator } from "./browser-interaction.ts";
+import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
@@ -393,11 +393,6 @@ const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   },
 };
 
-/** A redirect hands the page on; the response that ends it carries the evidence. */
-function isRedirect(status: number): boolean {
-  return status >= 300 && status < 400;
-}
-
 /**
  * Read the current-credit page through the snapshot module. The page's own
  * GET carries the response evidence: without it there is nothing to read;
@@ -412,10 +407,7 @@ async function readFubonCurrentUsedCredit(
   const responseObserved = frames
     .withSignal((signal) =>
       frames.page.waitForResponse(
-        (response) =>
-          response.url().includes("/B2C/cccqu/cccqu002/CCCQU002_Home.faces") &&
-          response.request().method() === "GET" &&
-          !isRedirect(response.status()),
+        (response) => endsRequestChainFrom(response, "/B2C/cccqu/cccqu002/CCCQU002_Home.faces", "GET"),
         { timeout: 60_000, signal },
       ),
     )
@@ -423,16 +415,14 @@ async function readFubonCurrentUsedCredit(
       if (error instanceof errors.TimeoutError) return null;
       throw error;
     });
+  // Every exit below either awaits the wait or abandons it on cancellation.
+  responseObserved.catch(() => undefined);
   let page: Readonly<{ html: string }> | Readonly<{ error: unknown }>;
   try {
     const scope = await site.open(CURRENT_CREDIT_ROUTE);
     page = { html: await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })) };
   } catch (error) {
-    if (context.signal.aborted) {
-      // Cancellation also rejects the pending wait; nothing reads it after this throw.
-      responseObserved.catch(() => undefined);
-      throw error;
-    }
+    if (context.signal.aborted) throw error;
     page = { error };
   }
   const response = await responseObserved;

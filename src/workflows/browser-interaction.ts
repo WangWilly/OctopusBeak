@@ -1,4 +1,4 @@
-import type { Locator, Page } from "playwright";
+import type { Locator, Page, Response } from "playwright";
 
 type AttachedLocatorProbe = {
   first(): {
@@ -149,4 +149,17 @@ async function moveBrowserWindowOutOfForeground(
   } finally {
     await withTimeout(client.detach(), timeoutMs).catch(() => undefined);
   }
+}
+
+/**
+ * Whether this response ends a redirect chain that a `method` request to a URL
+ * containing `path` started. A hop that redirects onward is not the end; the
+ * chain's last response matches wherever it landed, so a chain that leaves the
+ * endpoint surfaces as that response instead of as no response at all.
+ */
+export function endsRequestChainFrom(response: Response, path: string, method: string): boolean {
+  if (response.status() >= 300 && response.status() < 400 && response.headers().location !== undefined) return false;
+  let origin = response.request();
+  for (let previous = origin.redirectedFrom(); previous; previous = previous.redirectedFrom()) origin = previous;
+  return origin.url().includes(path) && origin.method() === method;
 }

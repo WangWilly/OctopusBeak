@@ -41,6 +41,6 @@ None of them reported current-balance events. A bank that changed its page there
 
 - A Fubon, Yuanta or E.SUN run whose current-credit page changes now fails instead of committing statements without a current balance.
 - A summary page that never responds, such as Yuanta's summary navigation failing before its POST response, still leaves the current balance unread. Once Yuanta's response is observed, a page that cannot be read fails the card capture. A failure while paging the settled-summary cross-check keeps the current used credit the first page carried.
-- A redirect is not the response: Fubon and Yuanta wait for the response that ends the redirect chain.
+- A redirect is not the response: Fubon and Yuanta wait for the response that ends the redirect chain their request started. A chain that lands off the endpoint, or changes the method, fails the module's endpoint check instead of reading as no response.
 - The module requires each declared Cache-Control directive as a bare token. A qualified directive, such as `no-cache="Set-Cookie"`, does not count. Admission's route contract is looser here.
 - The Fubon and Yuanta commit goldens feed a snapshot that has already been read, so they show only the two staging events. The Fubon shell check covers the read events.

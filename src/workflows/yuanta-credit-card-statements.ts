@@ -36,7 +36,7 @@ import {
   type ProviderResponse,
 } from "./current-state-snapshot-capture.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import { hasAttachedLocator } from "./browser-interaction.ts";
+import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -584,15 +584,11 @@ export async function loadYuantaCreditCardSummaryPage(
   currentCredit?: YuantaCurrentCreditEvidence;
 }> {
   const { frames } = site;
-  const [response] = await Promise.all([
+  const [observed, navigated] = await Promise.allSettled([
     unlessTimedOut(
       frames.withSignal((signal) =>
         frames.page.waitForResponse(
-          (candidate) =>
-            candidate.url().includes("/nib/tx/creditcardsummary") &&
-            candidate.request().method() === "POST" &&
-            // A redirect hands the page on; the response that ends it carries the evidence.
-            !(candidate.status() >= 300 && candidate.status() < 400),
+          (candidate) => endsRequestChainFrom(candidate, "/nib/tx/creditcardsummary", "POST"),
           { timeout: 30_000, signal },
         ),
       ),
@@ -604,6 +600,14 @@ export async function loadYuantaCreditCardSummaryPage(
       await frames.settle();
     })(),
   ]);
+  if (observed.status === "rejected") throw observed.reason;
+  const response = observed.value;
+  // Without an observed response there is no current used credit to lose.
+  const unreadable = (error: unknown): unknown =>
+    !response || error instanceof SourceTextIntegrityError || frames.signal.aborted
+      ? error
+      : new YuantaCurrentCreditReadError(error);
+  if (navigated.status === "rejected") throw unreadable(navigated.reason);
   try {
     const responseHtml = response ? await site.readHtml(response) : "";
     if (hasYuantaCurrentCreditTable(responseHtml)) {
@@ -627,9 +631,7 @@ export async function loadYuantaCreditCardSummaryPage(
       currentCredit: yuantaCurrentCreditEvidence(firstHtml, response),
     };
   } catch (error) {
-    // Without an observed response there is no current used credit to lose.
-    if (!response || error instanceof SourceTextIntegrityError || frames.signal.aborted) throw error;
-    throw new YuantaCurrentCreditReadError(error);
+    throw unreadable(error);
   }
 }
 
