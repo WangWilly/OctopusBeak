@@ -35,6 +35,7 @@ import {
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import {
@@ -59,6 +60,7 @@ import {
   YUANTA_EBANK_ORIGIN,
   yuantaEbankSite,
   type YuantaEbankSite,
+  type YuantaHtmlAcceptance,
   type YuantaRoute,
 } from "./yuanta-ebank-site.ts";
 import {
@@ -339,6 +341,13 @@ const YUANTA_CARD_SUMMARY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   providerDate: "optional",
 };
 
+/** The run's clock and the card product's validation, which each card reply is accepted through (ADR 0106). */
+type CardReplyCheck = Readonly<{ now: () => string; validate: ProductCollectionHandle["validate"] }>;
+
+function cardReplyAcceptance(check: CardReplyCheck): YuantaHtmlAcceptance {
+  return { observedAt: taipeiInstant(check.now()), validate: check.validate };
+}
+
 function isCreditCardBillsPageResponse(response: Response): boolean {
   const request = response.request();
   return (
@@ -360,12 +369,12 @@ type CreditCardBillsPage = Readonly<{
 /** Open the bills route and read the document the provider served for it. */
 async function openCreditCardBillsPage(
   site: YuantaEbankSite,
-  now: () => string,
+  check: CardReplyCheck,
 ): Promise<CreditCardBillsPage> {
   const { frames } = site;
   const [html, scope] = await Promise.all([
     frames.withSignal((signal) => frames.page.waitForResponse(isCreditCardBillsPageResponse, { signal }))
-      .then((response) => site.readHtml(YUANTA_CARD_BILLS_RESPONSE, response, taipeiInstant(now()))),
+      .then((response) => site.readHtml(YUANTA_CARD_BILLS_RESPONSE, response, cardReplyAcceptance(check))),
     site.open(CREDIT_CARD_BILLS_ROUTE),
   ]);
   return { scope, html };
@@ -622,6 +631,24 @@ function yuantaCurrentCreditEvidence(html: string, response: Response | null): Y
   };
 }
 
+/**
+ * The summary reply's HTML, or "" when it fails its provider response check.
+ * The read then falls back to the rendered summary, as it did before the
+ * check, and the current-credit snapshot rejects the reply inside validation
+ * (ADR 0108), so a failed check here is not yet the card's failure.
+ */
+async function readSummaryReplyHtml(site: YuantaEbankSite, response: Response, now: () => string): Promise<string> {
+  try {
+    return await site.readHtml(YUANTA_CARD_SUMMARY_RESPONSE, response, {
+      observedAt: taipeiInstant(now()),
+      validate: async (check) => await check(),
+    });
+  } catch (error) {
+    if (error instanceof ProviderResponseCheckError) return "";
+    throw error;
+  }
+}
+
 export async function loadYuantaCreditCardSummaryPage(
   site: YuantaEbankSite,
   now: () => string,
@@ -658,9 +685,7 @@ export async function loadYuantaCreditCardSummaryPage(
       : new YuantaCurrentCreditReadError(error);
   if (navigated.status === "rejected") throw unreadable(navigated.reason);
   try {
-    const responseHtml = response
-      ? await site.readHtml(YUANTA_CARD_SUMMARY_RESPONSE, response, taipeiInstant(now()))
-      : "";
+    const responseHtml = response ? await readSummaryReplyHtml(site, response, now) : "";
     if (hasYuantaCurrentCreditTable(responseHtml)) {
       return {
         firstHtml: responseHtml,
@@ -1091,7 +1116,7 @@ async function submitCreditCardMonth(
   site: YuantaEbankSite,
   bills: BrowserScope,
   month: MonthOption,
-  now: () => string,
+  check: CardReplyCheck,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
@@ -1121,13 +1146,13 @@ async function submitCreditCardMonth(
       }, month.index),
     ),
   ]);
-  return await site.readHtml(YUANTA_CARD_MONTH_RESPONSE, response, taipeiInstant(now()));
+  return await site.readHtml(YUANTA_CARD_MONTH_RESPONSE, response, cardReplyAcceptance(check));
 }
 
 async function submitCreditCardUnbilled(
   site: YuantaEbankSite,
   bills: BrowserScope,
-  now: () => string,
+  check: CardReplyCheck,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
@@ -1156,7 +1181,7 @@ async function submitCreditCardUnbilled(
       }),
     ),
   ]);
-  return await site.readHtml(YUANTA_CARD_UNBILLED_RESPONSE, response, taipeiInstant(now()));
+  return await site.readHtml(YUANTA_CARD_UNBILLED_RESPONSE, response, cardReplyAcceptance(check));
 }
 
 export async function runYuantaCreditCardStatements(
@@ -1202,7 +1227,8 @@ export async function readYuantaCreditCardSource(
   context.signal.throwIfAborted();
   await product.reportActivity("query");
   const now = () => context.now();
-  const bills = await openCreditCardBillsPage(site, now);
+  const check: CardReplyCheck = { now, validate: product.validate };
+  const bills = await openCreditCardBillsPage(site, check);
   const currentMonthHtml = bills.html;
   context.text.assertIntact(currentMonthHtml);
   context.signal.throwIfAborted();
@@ -1231,7 +1257,7 @@ export async function readYuantaCreditCardSource(
     async (month) => {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      return submitCreditCardMonth(site, bills.scope, month, now);
+      return submitCreditCardMonth(site, bills.scope, month, check);
     },
     async (month, monthHtml, monthPosition) => {
       context.signal.throwIfAborted();
@@ -1253,7 +1279,7 @@ export async function readYuantaCreditCardSource(
   let unbilledRows: StatementRow[] = [];
   if (input.includeUnbilled) {
     await product.reportActivity("query");
-    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope, now);
+    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope, check);
     context.text.assertIntact(unbilledHtml);
     context.signal.throwIfAborted();
     if (hasUntraversedPager(unbilledHtml)) {

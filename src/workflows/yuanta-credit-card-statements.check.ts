@@ -7,7 +7,8 @@ import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
-import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import { StatementComponentAbsentError, validationReporter } from "../lib/automation/product-collection.ts";
+import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 
 registerHooks({
@@ -306,6 +307,39 @@ assert.deepEqual(Object.keys(summaryClickOptions), ["signal"]);
 assert.ok(summaryClickOptions.signal instanceof AbortSignal);
 assert.equal(renderedDomRead, false);
 assert.equal(responseBodyLoaded.currentCredit?.html, responseBodyCurrentCreditHtml);
+
+// A summary reply that fails its provider response check falls back to the
+// rendered summary; the current-credit snapshot rejects its status later.
+{
+  const renderedCurrentCreditHtml = `<p>rendered</p>${responseBodyCurrentCreditHtml}`;
+  let renderedRead = false;
+  const failedReply = { ...responseBodyResponseFixture, status: () => 500 };
+  const page = {
+    mainFrame: () => null,
+    frames: () => [],
+    frame: () => null,
+    async waitForResponse(predicate: (response: typeof failedReply) => boolean) {
+      assert.equal(predicate(failedReply), true);
+      return failedReply;
+    },
+    async waitForLoadState() {},
+    locator: () => ({
+      innerText: async () => {
+        renderedRead = true;
+        return "信用額度 已使用額度";
+      },
+      innerHTML: async () => renderedCurrentCreditHtml,
+    }),
+  };
+  const loaded = await loadYuantaCreditCardSummaryPage(
+    fakeYuantaSite(page),
+    () => "2026-09-10T02:03:04.000Z",
+    responseBodyLinkFixture as never,
+  );
+  assert.equal(renderedRead, true, "a 500 summary reply reaches the rendered-summary fallback");
+  assert.equal(loaded.firstHtml, renderedCurrentCreditHtml);
+  assert.equal(loaded.currentCredit?.response.status, 500, "the fallback keeps the reply the snapshot then rejects");
+}
 
 
 const noPagerResponse = `
@@ -933,7 +967,10 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       billsWithoutForm?: boolean;
       holdMonth?: () => void;
       summaryBody?: Buffer;
+      summaryStatus?: number;
       unbilledStatus?: number;
+      /** Records the validation events of a handle whose `validate` reports as a run's does. */
+      events?: FailureEvidenceEvent[];
       productAbsent?: boolean;
       absentElsewhere?: boolean;
       withoutMonthLinks?: boolean;
@@ -983,16 +1020,26 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
             contentType: "text/html; charset=utf-8",
             headers: { date: "Thu, 10 Sep 2026 02:03:04 GMT", "cache-control": "no-store" },
             body: options.summaryBody ?? Buffer.from(currentCreditPage, "utf8"),
+            status: options.summaryStatus ?? 200,
           });
         }
         return await route.fulfill(html(`<p>${url.pathname}</p>`));
       });
       await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
+      const handle = yuantaStagingHandle(staged);
+      const { events } = options;
       const summary = await runYuantaCreditCardStatements(
         page,
         input,
         yuantaCollectionContext({ signal: options.signal, now: "2026-07-10T00:00:00.000Z" }),
-        yuantaStagingHandle(staged),
+        events
+          ? {
+            ...handle,
+            validate: validationReporter(async (stage, outcome) => {
+              events.push({ stage, outcome });
+            }, options.signal ?? new AbortController().signal),
+          }
+          : handle,
       );
       return { summary, served, posted, staged };
     } finally {
@@ -1086,11 +1133,28 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       "a summary that responds without its table fails the card read instead of reading as absent",
     );
 
-    await assert.rejects(
-      readThroughShell({ unbilledStatus: 500 }),
-      (error) => error instanceof ProviderResponseCheckError && error.check === "response-status",
+    const failedAs = async (options: Parameters<typeof readThroughShell>[0]) => {
+      const events: FailureEvidenceEvent[] = [];
+      const error = await readThroughShell({ ...options, events }).then(
+        () => assert.fail("the card read must fail"),
+        (thrown: unknown) => thrown,
+      );
+      return { error, code: classifyFailure({ error, events, stopped: false }) };
+    };
+
+    const unbilled500 = await failedAs({ unbilledStatus: 500 });
+    assert.ok(
+      unbilled500.error instanceof ProviderResponseCheckError && unbilled500.error.check === "response-status",
       "an unbilled reply that is not 200 fails the card read with the status check",
     );
+    assert.equal(unbilled500.code, "source-validation-failed", "the status check fails inside the card's validation");
+
+    const summary500 = await failedAs({ summaryStatus: 500 });
+    assert.ok(
+      summary500.error instanceof ProviderResponseCheckError && summary500.error.check === "response-status",
+      "a summary reply that is not 200 reaches the rendered summary and the current-credit snapshot rejects its status",
+    );
+    assert.equal(summary500.code, "source-validation-failed");
 
     const afterFormWait = await cancelledWithin((controller, cancelAt) =>
       readThroughShell({

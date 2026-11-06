@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Frame, Locator, Page, Response } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
+import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
@@ -29,6 +30,12 @@ export type YuantaDuration =
   | Readonly<{ label: string }>
   | Readonly<{ customLabel: string; startDate: string; endDate: string }>;
 
+/** When an HTML reply was observed, and the product validation its acceptance runs in (ADR 0106). */
+export type YuantaHtmlAcceptance = Readonly<{
+  observedAt: string;
+  validate: ProductCollectionHandle["validate"];
+}>;
+
 export type YuantaCsvDownload = Readonly<{
   content: string;
   byteLength: number;
@@ -48,8 +55,11 @@ export type YuantaEbankSite = Readonly<{
   open(route: YuantaRoute): Promise<BrowserScope>;
   menuAction(path: string, menuId: string, timeoutMs?: number): Promise<void>;
   chooseDuration(scope: BrowserScope, duration: YuantaDuration): Promise<void>;
-  /** Verify an HTML response against its declaration (ADR 0110) and decode it strictly in the endpoint's charset. */
-  readHtml(declaration: ProviderResponseDeclaration, response: Response, observedAt: string): Promise<string>;
+  /**
+   * Read an HTML response's body, then, inside `acceptance.validate`, verify it
+   * against its declaration (ADR 0110) and decode it strictly in the endpoint's charset.
+   */
+  readHtml(declaration: ProviderResponseDeclaration, response: Response, acceptance: YuantaHtmlAcceptance): Promise<string>;
   /** Fetch a CSV export link's bytes in the page and decode them strictly as Big5. */
   readCsv(link: Locator): Promise<YuantaCsvDownload>;
 }>;
@@ -153,17 +163,19 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
       }
       if (scope !== page) await frames.settle(scope as Frame);
     },
-    readHtml: async (declaration, response, observedAt) => {
+    readHtml: async (declaration, response, { observedAt, validate }) => {
       const bytes = await frames.race(response.body());
-      return acceptProviderResponse(declaration, {
-        evidence: { kind: "text", bytes },
-        response: {
-          url: response.url(),
-          status: response.status(),
-          method: response.request().method(),
-          headers: response.headers(),
-        },
-      }, { observedAt, text: context.text }).evidence.text;
+      const reply = {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        headers: response.headers(),
+      };
+      return await validate(() => acceptProviderResponse(
+        declaration,
+        { evidence: { kind: "text", bytes }, response: reply },
+        { observedAt, text: context.text },
+      ).evidence.text);
     },
     readCsv: (link) => readYuantaBig5CsvFromAnchor(link, context.text, context.signal),
   };

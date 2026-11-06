@@ -209,21 +209,35 @@ const HTML_PAGES: ProviderResponseDeclaration = {
 };
 const OBSERVED_AT = "2026-09-10T10:03:04+08:00";
 
-test("an HTML response is verified against its declaration and decodes strictly, and malformed bytes fail the read", () =>
+test("an HTML response is verified against its declaration inside validation and decodes strictly, and malformed bytes fail the read", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
+    const rejectedInValidation: unknown[] = [];
+    const acceptance = {
+      observedAt: OBSERVED_AT,
+      validate: async <T>(check: () => T | Promise<T>): Promise<T> => {
+        try {
+          return await check();
+        } catch (error) {
+          rejectedInValidation.push(error);
+          throw error;
+        }
+      },
+    };
     const fmain = await site.frames.frame("fmain");
     const good = await fmain.goto(yuantaRouteUrl("summary", CID));
     assert.ok(good);
-    assert.match(await site.readHtml(HTML_PAGES, good, OBSERVED_AT), /帳戶總覽/u);
+    assert.match(await site.readHtml(HTML_PAGES, good, acceptance), /帳戶總覽/u);
+    const refusing = site.readHtml({ ...HTML_PAGES, endpoints: HTML_PAGES.endpoints.slice(1) }, good, acceptance);
     await assert.rejects(
-      site.readHtml({ ...HTML_PAGES, endpoints: HTML_PAGES.endpoints.slice(1) }, good, OBSERVED_AT),
+      refusing,
       (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
       "a response from an endpoint the declaration does not name is refused",
     );
+    assert.equal(rejectedInValidation.length, 1, "the endpoint refusal is thrown inside the product's validation");
     const bad = await fmain.goto(`${YUANTA_EBANK_ORIGIN}/nib/tx/bad.html`);
     assert.ok(bad);
-    await assert.rejects(site.readHtml(HTML_PAGES, bad, OBSERVED_AT), SourceTextIntegrityError);
+    await assert.rejects(site.readHtml(HTML_PAGES, bad, acceptance), SourceTextIntegrityError);
   }));
 
 test("a CSV export link is fetched in the page and decoded as Big5", () =>
