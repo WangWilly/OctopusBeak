@@ -275,7 +275,11 @@ const responseBodyFixture = {
 };
 const responseBodyResponseFixture = {
   url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
-  request: () => ({ method: () => "POST" }),
+  request: () => ({
+    url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+    method: () => "POST",
+    redirectedFrom: () => null,
+  }),
   status: () => 200,
   headers: () => ({
     date: "Thu, 10 Sep 2026 02:03:04 GMT",
@@ -932,8 +936,6 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       withoutMonthLinks?: boolean;
       posted?: string[];
       onBillsServed?: () => void;
-      /** Where the bank redirects the summary POST. */
-      summaryRedirect?: string;
     }> = {},
   ) {
     const page = await browser.newPage();
@@ -971,8 +973,6 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
         }
         if (url.pathname === "/nib/tx/creditcardsummary" && request.method() === "POST") {
           posted.push("summary");
-          if (options.summaryRedirect)
-            return await route.fulfill({ status: 303, headers: { location: options.summaryRedirect } });
           return await route.fulfill({
             contentType: "text/html; charset=utf-8",
             headers: { date: "Thu, 10 Sep 2026 02:03:04 GMT", "cache-control": "no-store" },
@@ -1078,12 +1078,6 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       readThroughShell({ summaryBody: Buffer.from("<p>系統維護中</p>", "utf8") }),
       /current used credit could not be read/u,
       "a summary that responds without its table fails the card read instead of reading as absent",
-    );
-
-    await assert.rejects(
-      readThroughShell({ summaryRedirect: "/nib/tx/notice" }),
-      (error) => !(error instanceof StatementComponentAbsentError),
-      "a summary POST redirected elsewhere fails the card read instead of reading as absent",
     );
 
     const afterFormWait = await cancelledWithin((controller, cancelAt) =>

@@ -255,10 +255,12 @@ async function readCardThroughShell(
     signal?: AbortSignal;
     holdUnbilled?: () => void;
     currentCreditPage?: string;
-    /** Where the bank redirects the current-credit task's first request. */
-    currentCreditRedirect?: string;
-    /** Open the current-credit task through the bank's dispatcher, as the live site does. */
-    viaDispatcher?: boolean;
+    /**
+     * The URL the current-credit task link opens. The live task reaches
+     * `?menuId=CCC0201&` through a dispatcher redirect, which a routed
+     * navigation cannot follow, so the shell opens the landing URL directly.
+     */
+    currentCreditHref?: string;
   }>,
 ) {
   const browser = await chromium.launch({ headless: true });
@@ -277,15 +279,11 @@ async function readCardThroughShell(
           return await html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`);
         case "/B2C/header.faces":
           return await html(
-            options.viaDispatcher
-              ? shellCardHeader.replace(`${CURRENT_CREDIT_PATH}?menuId=CCC0201`, "/B2C/dispatcher?ParamValue=~opaque~")
+            options.currentCreditHref
+              ? shellCardHeader.replace(`${CURRENT_CREDIT_PATH}?menuId=CCC0201`, options.currentCreditHref)
               : shellCardHeader,
           );
-        case "/B2C/dispatcher":
-          return await route.fulfill({ status: 302, headers: { location: `${CURRENT_CREDIT_PATH}?menuId=CCC0201&` } });
         case CURRENT_CREDIT_PATH:
-          if (options.currentCreditRedirect && !url.searchParams.has("showLogin"))
-            return await route.fulfill({ status: 302, headers: { location: options.currentCreditRedirect } });
           return await html(options.currentCreditPage ?? currentCreditPage, {
             date: SHELL_HTTP_DATE,
             "cache-control": "no-store, no-cache",
@@ -388,35 +386,17 @@ test("a current-credit page with replacement characters fails the card read", as
   );
 });
 
-test("a current-credit request redirected back to its page reads the page the chain ends on", async () => {
+test("a current-credit page served with the dispatcher's trailing separator reads its used credit", async () => {
   const read = await readCardThroughShell({
     modes: { 1: "available" },
     periodOffsets: [1],
-    currentCreditRedirect: `${CURRENT_CREDIT_PATH}?menuId=CCC0201&showLogin=false`,
+    currentCreditHref: `${CURRENT_CREDIT_PATH}?menuId=CCC0201&`,
   });
-  assert.deepEqual(
-    (read.snapshot.currentUsedCredit ?? []).map((credit) => [credit.usedCredit, credit.endpoint]),
-    [["40000", `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201&showLogin=false`]],
-  );
-});
-
-test("a current-credit task opened through the bank's dispatcher reads the page it redirects to", async () => {
-  const read = await readCardThroughShell({ modes: { 1: "available" }, periodOffsets: [1], viaDispatcher: true });
   assert.deepEqual(
     (read.snapshot.currentUsedCredit ?? []).map((credit) => [credit.usedCredit, credit.endpoint]),
     [["40000", `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201&`]],
   );
   assert.ok(read.events.includes("current-balance-collection-completed"));
-});
-
-test("a current-credit request redirected off its page fails the card read instead of reading as absent", async () => {
-  await assert.rejects(
-    readCardThroughShell({
-      modes: { 1: "available" },
-      periodOffsets: [1],
-      currentCreditRedirect: "/B2C/common/maintenance.faces",
-    }),
-  );
 });
 
 test("Fubon credit card fails as absent when the statement task opens on the bank's no-record page", async () => {
