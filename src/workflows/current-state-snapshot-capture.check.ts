@@ -12,6 +12,7 @@ import {
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { SnapshotCheckError, type SnapshotCheck } from "../lib/automation/snapshot-check.ts";
 import {
   assembleCurrentCreditCardCapture,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -445,6 +446,8 @@ test("strict decoding rejects malformed bytes, escaped replacement characters, a
       },
     }, captures, acquired);
     await assert.rejects(result.run, expected, name);
+    if (expected !== SourceTextIntegrityError)
+      await assert.rejects(result.run, (error) => error instanceof SnapshotCheckError && error.check === "evidence-json", name);
     assert.equal(parsed, false, `${name} never reaches the row parser`);
     assert.deepEqual(result.events, expected === SourceTextIntegrityError ? integrityFailure : checkFailure, name);
   }
@@ -470,7 +473,21 @@ test("JSON evidence hands the parser the decoded body text with its numeric lexe
 test("a parse failure reports validation, and a failed read reports collection", async () => {
   const failing = await snapshot({ ...declaration(), parse: () => { throw new Error("bad row"); } }, [capture("a")], json([]));
   await assert.rejects(failing.run, /^Error: bad row$/u);
+  await assert.rejects(
+    failing.run,
+    (error) => error instanceof SnapshotCheckError && error.check === "row-parse"
+      && error.cause instanceof Error && error.cause.message === "bad row",
+    "a plain parser error names the row-parse check and keeps its message as the cause",
+  );
   assert.deepEqual(failing.events, checkFailure);
+
+  const typed = await snapshot(
+    { ...declaration(), parse: () => { throw new SourceTextIntegrityError("replacement-character"); } },
+    [capture("a")],
+    json([]),
+  );
+  await assert.rejects(typed.run, (error) => error instanceof SourceTextIntegrityError,
+    "an error with its own type passes through the row parser unchanged");
 
   const events: string[] = [];
   const timedOut = readCurrentStateSnapshot(declaration(), {
@@ -634,6 +651,20 @@ test("every undeclared transport fact rejects the response with the source's lab
   ];
   for (const [name, response, expected] of rejected)
     assert.throws(() => verifyProviderResponse(RESPONSE, response, "x"), expected, name);
+  const checkOf = (name: string): SnapshotCheck => {
+    if (/URL|http|host|port|credentials|fragment|path|query/u.test(name)) return "response-endpoint";
+    if (name === "method") return "response-method";
+    if (name === "status") return "response-status";
+    if (name === "content type") return "response-content-type";
+    if (/cache/u.test(name)) return "response-cache-control";
+    return "response-date";
+  };
+  for (const [name, response] of rejected)
+    assert.throws(
+      () => verifyProviderResponse(RESPONSE, response, "x"),
+      (error) => error instanceof SnapshotCheckError && error.check === checkOf(name),
+      `${name} names its check`,
+    );
 });
 
 test("an optional provider date may be absent but must be valid when present", () => {

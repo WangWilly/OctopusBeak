@@ -11,6 +11,7 @@ import {
   sanitizeSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
 } from "./workflow-failure-diagnostics.ts";
+import { SnapshotCheckError } from "../snapshot-check.ts";
 
 const repository = "/Volumes/projects02/libretto-playground";
 
@@ -71,6 +72,22 @@ test("actual PGlite constraint failures retain their SQLSTATE despite the librar
   } finally {
     await database.close();
   }
+});
+
+test("a snapshot check survives capture and host validation; an unknown check does not", () => {
+  const parserError = new Error("used credit 1,234 does not parse");
+  const rejected = new SnapshotCheckError("row-parse", parserError.message, { cause: parserError });
+  const captured = captureSafeWorkflowFailureError(rejected, repository);
+  assert.deepEqual(captured.chain.map((node) => [node.type, node.snapshotCheck]), [["Error", "row-parse"], ["Error", undefined]]);
+  assert.ok(!JSON.stringify(captured).includes("1,234"), "the parser's message stays out of the record");
+  assert.deepEqual(sanitizeSafeWorkflowFailureError(captured, repository).chain.map((node) => node.snapshotCheck), ["row-parse", undefined]);
+
+  const forged = Object.assign(new Error("x"), { check: "account-1234" });
+  assert.equal(captureSafeWorkflowFailureError(forged, repository).chain[0]?.snapshotCheck, undefined);
+  assert.equal(
+    sanitizeSafeWorkflowFailureError({ chain: [{ type: "Error", snapshotCheck: "account-1234", frames: [] }] }, repository).chain[0]?.snapshotCheck,
+    undefined,
+  );
 });
 
 test("worker diagnostic parsing copies only bounded safe fields", () => {

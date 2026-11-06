@@ -3,6 +3,7 @@ import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
 import { WORKFLOW_STAGES } from "../task-row.ts";
+import { isSnapshotCheck, type SnapshotCheck } from "../snapshot-check.ts";
 import {
   WORKFLOW_PROGRESS_STATEMENT_TYPE_IDS,
   type WorkflowProgressStatementType,
@@ -68,6 +69,8 @@ export type WorkflowFailureErrorNode = Readonly<{
   type: string;
   sqlState?: string;
   httpStatus?: number;
+  /** The current-state snapshot check that rejected the source (ADR 0109). */
+  snapshotCheck?: SnapshotCheck;
   frames: readonly WorkflowFailureStackFrame[];
 }>;
 
@@ -208,12 +211,17 @@ function causeOf(error: Error): unknown {
   return ownDataValue(error, "cause");
 }
 
+function snapshotCheckFor(error: Error): SnapshotCheck | undefined {
+  const check = ownDataValue(error, "check");
+  return isSnapshotCheck(check) ? check : undefined;
+}
+
 function sqlStateFor(error: Error): string | undefined {
   const code = ownDataValue(error, "code");
   return typeof code === "string" && POSTGRES_SQLSTATES.has(code) ? code : undefined;
 }
 
-/** Capture only fixed error labels, known PostgreSQL states, and repo-local frames. */
+/** Capture only fixed error labels, known PostgreSQL states, snapshot checks, and repo-local frames. */
 export function captureSafeWorkflowFailureError(error: unknown, repoRoot: string): SafeWorkflowFailureError {
   const chain: WorkflowFailureErrorNode[] = [];
   const seen = new Set<object>();
@@ -230,10 +238,12 @@ export function captureSafeWorkflowFailureError(error: unknown, repoRoot: string
       const sqlState = sqlStateFor(current);
       const status = ownDataValue(current, "status");
       const httpStatus = typeof status === "number" && HTTP_FAILURE_STATUSES.has(status) ? status : undefined;
+      const snapshotCheck = snapshotCheckFor(current);
       chain.push({
         type,
         ...(sqlState ? { sqlState } : {}),
         ...(httpStatus ? { httpStatus } : {}),
+        ...(snapshotCheck ? { snapshotCheck } : {}),
         frames: framesFor(current, repoRoot),
       });
       current = causeOf(current);
@@ -278,7 +288,14 @@ export function sanitizeSafeWorkflowFailureError(
       : undefined;
     const httpStatus = typeof item.httpStatus === "number" && HTTP_FAILURE_STATUSES.has(item.httpStatus)
       ? item.httpStatus : undefined;
-    chain.push({ type: item.type, ...(sqlState ? { sqlState } : {}), ...(httpStatus ? { httpStatus } : {}), frames });
+    const snapshotCheck = isSnapshotCheck(item.snapshotCheck) ? item.snapshotCheck : undefined;
+    chain.push({
+      type: item.type,
+      ...(sqlState ? { sqlState } : {}),
+      ...(httpStatus ? { httpStatus } : {}),
+      ...(snapshotCheck ? { snapshotCheck } : {}),
+      frames,
+    });
   }
   return { chain };
 }

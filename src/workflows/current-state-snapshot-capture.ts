@@ -41,6 +41,7 @@ import {
 } from "../ledger/pglite/workflow-commands.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { SnapshotCheckError } from "../lib/automation/snapshot-check.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 
 /** The raw evidence a bank's acquisition hands over, before any decoding. */
@@ -226,7 +227,7 @@ export async function readCurrentStateSnapshot<
     const response = verifyProviderResponse(declaration.response, acquired.response, observedAt);
     // Decoding keeps the evidence kind, which the conditional type cannot see.
     const decoded = decodeEvidence(acquired.evidence, input.text) as DecodedSnapshotEvidence<Acquired["evidence"]>;
-    return declaration.parse(decoded, response, acquired);
+    return parseRows(() => declaration.parse(decoded, response, acquired));
   });
   await product.event("decoding", "completed", "current-balance-decoding-completed");
   await product.event("collection", "completed", "current-balance-collection-completed", {
@@ -313,6 +314,20 @@ export function isDeclaredProviderResponse(
   return !!endpoint && (!endpoint.method || endpoint.method === method.toUpperCase());
 }
 
+/**
+ * Run the source's row parser. A plain error it throws names the row-parse
+ * check and keeps its message; an error with its own type keeps its meaning.
+ */
+function parseRows<Row>(parse: () => readonly Row[]): readonly Row[] {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof Error && error.constructor === Error)
+      throw new SnapshotCheckError("row-parse", error.message, { cause: error });
+    throw error;
+  }
+}
+
 function header(headers: Readonly<Record<string, string>>, name: string): string {
   for (const [key, value] of Object.entries(headers))
     if (key.toLowerCase() === name) return value.trim();
@@ -324,7 +339,7 @@ function providerDate(label: string, headers: Readonly<Record<string, string>>):
   if (raw === "") return null;
   const time = Date.parse(raw);
   if (!HTTP_DATE.test(raw) || !Number.isFinite(time) || new Date(time).toUTCString() !== raw)
-    throw new Error(`${label} response HTTP Date is invalid.`);
+    throw new SnapshotCheckError("response-date", `${label} response HTTP Date is invalid.`);
   return { raw, effectiveAt: new Date(time).toISOString() };
 }
 
@@ -339,24 +354,28 @@ export function verifyProviderResponse<DateRule extends ProviderDateRule>(
   try {
     url = new URL(response.url);
   } catch {
-    throw new Error(`${label} response URL is invalid.`);
+    throw new SnapshotCheckError("response-endpoint", `${label} response URL is invalid.`);
   }
   const endpoint = declaredEndpoint(declaration, url);
-  if (!endpoint) throw new Error(`${label} response endpoint is unexpected: ${url.host}${url.pathname}`);
+  if (!endpoint)
+    throw new SnapshotCheckError("response-endpoint", `${label} response endpoint is unexpected: ${url.host}${url.pathname}`);
   if (endpoint.method && response.method.toUpperCase() !== endpoint.method)
-    throw new Error(`${label} response method is not ${endpoint.method}.`);
+    throw new SnapshotCheckError("response-method", `${label} response method is not ${endpoint.method}.`);
   if (response.status !== 200)
-    throw new Error(`${label} response status is ${response.status}, expected 200.`);
+    throw new SnapshotCheckError("response-status", `${label} response status is ${response.status}, expected 200.`);
   const contentType = header(response.headers, "content-type");
   if (endpoint.contentType && !endpoint.contentType.test(contentType))
-    throw new Error(`${label} response content type is unexpected: ${contentType}`);
+    throw new SnapshotCheckError("response-content-type", `${label} response content type is unexpected: ${contentType}`);
   const cacheControl = header(response.headers, "cache-control");
   const directives = new Set(cacheControl.toLowerCase().split(",").map((directive) => directive.trim()));
   if (!declaration.cacheControl.every((directive) => directives.has(directive)))
-    throw new Error(`${label} response must carry Cache-Control: ${declaration.cacheControl.join(", ")}.`);
+    throw new SnapshotCheckError(
+      "response-cache-control",
+      `${label} response must carry Cache-Control: ${declaration.cacheControl.join(", ")}.`,
+    );
   const date = providerDate(label, response.headers);
   if (!date && declaration.providerDate === "required")
-    throw new Error(`${label} response is missing HTTP Date.`);
+    throw new SnapshotCheckError("response-date", `${label} response is missing HTTP Date.`);
   // The declared rule narrows whether the date may be null, which TypeScript cannot follow.
   return { url, endpoint, contentType, cacheControl, providerDate: date, observedAt } as VerifiedProviderResponse<DateRule>;
 }
@@ -375,7 +394,7 @@ function decodeEvidence(evidence: SnapshotEvidence, text: SourceTextPort): Decod
   try {
     value = JSON.parse(decoded);
   } catch {
-    throw new Error("Current-state snapshot response is not valid JSON.");
+    throw new SnapshotCheckError("evidence-json", "Current-state snapshot response is not valid JSON.");
   }
   // JSON may encode U+FFFD as an escape, so check the parsed fields too.
   text.assertIntact(JSON.stringify(value));

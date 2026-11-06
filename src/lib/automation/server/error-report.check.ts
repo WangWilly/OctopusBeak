@@ -114,6 +114,15 @@ test("frames outside the app bundle are left out so the receiver accepts the rep
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain[0].frames, RECORD.error.chain[0].frames);
 });
 
+test("a snapshot check stays out of the report until the receiver accepts it", () => {
+  forgetFailureDiagnostics();
+  rememberFailureDiagnostic(INPUT.taskId, {
+    ...RECORD,
+    error: { chain: [{ ...RECORD.error.chain[0], snapshotCheck: "response-endpoint" }] },
+  });
+  assert.deepEqual(Object.keys(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain[0] ?? {}), ["type", "frames"]);
+});
+
 test("non-string inputs are refused as invalid", () => {
   assert.throws(() => buildErrorReport({ ...INPUT, taskId: null } as never, CONTEXT), InvalidErrorReport);
   assert.throws(() => buildErrorReport({ ...INPUT, stage: 3 } as never, CONTEXT), InvalidErrorReport);
