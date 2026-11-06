@@ -72,6 +72,7 @@ test("cancelling the run abandons an account snapshot whose fetch never answers"
     await page.goto(`${ORIGIN}/transaction`);
     const client = new LineBankApiClient(scopeCancelledAfter(page, 300), {
       text: strictSourceText,
+      now: () => new Date().toISOString(),
       validate: async (check) => await check(),
     });
     assert.ok((await settlesWithin(client.fetchAccountSnapshot())) < 2_000);

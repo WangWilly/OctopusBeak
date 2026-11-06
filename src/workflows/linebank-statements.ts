@@ -22,7 +22,13 @@ import {
 } from "./linebank-current-deposit-canonical.ts";
 import { captureCurrentStateSnapshots, CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
 import {
+  acceptProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
+import {
   parseLinebankApiJson,
+  LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
   type LineBankCurrentDepositAcquired,
@@ -33,10 +39,38 @@ import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 
-const LOGIN_URL = "https://accessibility.linebank.com.tw/login";
-const TRANSACTION_URL = "https://accessibility.linebank.com.tw/transaction";
-const ACCOUNTS_ENDPOINT = "/v1/account/common/payables?featureTypeCode=01";
+const LINEBANK_HOST = "accessibility.linebank.com.tw";
+const LOGIN_URL = `https://${LINEBANK_HOST}/login`;
+const TRANSACTION_URL = `https://${LINEBANK_HOST}/transaction`;
+const ACCOUNTS_ENDPOINT = `${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=01`;
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
+
+/**
+ * The account-list GET. Its Content-Type is the one the current-balance
+ * snapshot already requires of this same response.
+ */
+export const LINEBANK_ACCOUNT_LIST_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "LINE Bank account list",
+  host: LINEBANK_HOST,
+  endpoints: [{
+    path: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: "GET",
+    contentType: /^application\/json(?:\s*;|$)/iu,
+    search: /^\?featureTypeCode=01$/u,
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** The transaction-history POST, sent with no query. */
+export const LINEBANK_TRANSACTIONS_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "LINE Bank transactions",
+  host: LINEBANK_HOST,
+  endpoints: [{ path: TRANSACTIONS_ENDPOINT, method: "POST" }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
 export const LINEBANK_LOGIN_TIMEOUT_MS = 120_000;
 
 const lineBankInputSchema = z.object({
@@ -818,37 +852,27 @@ export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<
   await accountDropdownVisible();
 }
 
-function responseCharset(contentType: string): string {
-  const match = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType);
-  return match?.[1] ?? "utf-8";
-}
-
 export class LineBankApiClient {
   private scope: FrameScope;
   private text: SourceTextPort;
+  private now: () => string;
   private validate: ProductCollectionHandle["validate"];
 
   /** `validate` runs each check of a reply; the reads themselves run outside it. */
   constructor(
     scope: FrameScope,
-    options: { text: SourceTextPort; validate: ProductCollectionHandle["validate"] },
+    options: { text: SourceTextPort; now: () => string; validate: ProductCollectionHandle["validate"] },
   ) {
     this.scope = scope;
     this.text = options.text;
+    this.now = options.now;
     this.validate = options.validate;
   }
 
   private async apiResponse(
     path: string,
     options?: { body?: unknown },
-  ): Promise<{
-    bytes: Uint8Array;
-    body: string;
-    url: string;
-    status: number;
-    method: string;
-    headers: Record<string, string>;
-  }> {
+  ): Promise<{ bytes: Uint8Array; response: ProviderResponse }> {
     const { bodyBytes, ...response } = await this.scope.race(this.scope.page.evaluate<{
       bodyBytes?: number[];
       url: string;
@@ -891,27 +915,19 @@ export class LineBankApiClient {
     ));
     if (!Array.isArray(bodyBytes))
       throw new Error("LINE Bank source response bytes are unavailable.");
-    const bytes = Uint8Array.from(bodyBytes);
-    const contentType = Object.entries(response.headers).find(
-      ([name]) => name.toLowerCase() === "content-type",
-    )?.[1] ?? "";
-    const body = this.text.decode(bytes, responseCharset(contentType));
-    this.text.assertIntact(body);
-    return { ...response, bytes, body };
+    return { bytes: Uint8Array.from(bodyBytes), response };
   }
 
-  private async apiJson<T>(
-    path: string,
-    options?: { body?: unknown },
+  /** Accept one reply and parse it keeping the available amounts' numeric lexemes. */
+  private acceptJson<T>(
+    declaration: ProviderResponseDeclaration<"optional">,
+    acquired: { bytes: Uint8Array; response: ProviderResponse },
   ): Promise<T> {
-    const response = await this.apiResponse(path, options);
-    if (response.status < 200 || response.status >= 300)
-      throw new Error(`${response.status} for ${path}`);
-    return this.validate(() => {
-      const value = parseLinebankApiJson<T>(response.body);
-      this.text.assertIntact(JSON.stringify(value));
-      return value;
-    });
+    return this.validate(() => parseLinebankApiJson<T>(acceptProviderResponse(
+      declaration,
+      { evidence: { kind: "json", bytes: acquired.bytes }, response: acquired.response },
+      { observedAt: this.now(), text: this.text },
+    ).evidence.text));
   }
 
   /** One account-list read drives both the statements and the current balances. */
@@ -919,14 +935,8 @@ export class LineBankApiClient {
     accounts: LineBankAccount[];
     currentBalance: LineBankCurrentDepositAcquired;
   }> {
-    const response = await this.apiResponse(ACCOUNTS_ENDPOINT);
-    if (response.status < 200 || response.status >= 300)
-      throw new Error(`${response.status} for ${ACCOUNTS_ENDPOINT}`);
-    const payload = await this.validate(() => {
-      const value = parseLinebankApiJson<LineBankAccountsResponse>(response.body);
-      this.text.assertIntact(JSON.stringify(value));
-      return value;
-    });
+    const acquired = await this.apiResponse(ACCOUNTS_ENDPOINT);
+    const payload = await this.acceptJson<LineBankAccountsResponse>(LINEBANK_ACCOUNT_LIST_RESPONSE, acquired);
     // A provider error code is the source refusing the read, not a malformed reply.
     if (payload.code !== "200") {
       throw new Error(
@@ -941,13 +951,8 @@ export class LineBankApiClient {
     return {
       accounts,
       currentBalance: {
-        evidence: { kind: "json", bytes: response.bytes },
-        response: {
-          url: response.url,
-          status: response.status,
-          method: response.method,
-          headers: response.headers,
-        },
+        evidence: { kind: "json", bytes: acquired.bytes },
+        response: acquired.response,
       },
     };
   }
@@ -963,23 +968,21 @@ export class LineBankApiClient {
     let total = Number.POSITIVE_INFINITY;
 
     while (rows.length < total) {
-      const response = await this.apiJson<LineBankTransactionsResponse>(
-        TRANSACTIONS_ENDPOINT,
-        {
-          body: {
-            acctNbr: accountId(account),
-            arrId: account.arrId,
-            dpstWdrwDsCd: "",
-            inqrStrtDt: dateRange.startDate,
-            inqrEndDt: dateRange.endDate,
-            sortTpCd: 2,
-            pageNbr,
-            pageCnt,
-            totCnt: pageCnt,
-            txDtlDsCd: "01",
-          },
+      const acquired = await this.apiResponse(TRANSACTIONS_ENDPOINT, {
+        body: {
+          acctNbr: accountId(account),
+          arrId: account.arrId,
+          dpstWdrwDsCd: "",
+          inqrStrtDt: dateRange.startDate,
+          inqrEndDt: dateRange.endDate,
+          sortTpCd: 2,
+          pageNbr,
+          pageCnt,
+          totCnt: pageCnt,
+          txDtlDsCd: "01",
         },
-      );
+      });
+      const response = await this.acceptJson<LineBankTransactionsResponse>(LINEBANK_TRANSACTIONS_RESPONSE, acquired);
       // A provider error code is the source refusing the read, not a malformed reply.
       if (response.code !== "200") throw new Error("LINE Bank transactions failed.");
       await this.validate(() => {
@@ -1167,7 +1170,11 @@ async function runLineBankWorkflow(
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const windows = linebankQueryWindows(product.collectionPeriod());
         const productContext: WorkflowContext = { ...context, event: product.event };
-        const client = new LineBankApiClient(scope, { text: context.text, validate: product.validate });
+        const client = new LineBankApiClient(scope, {
+          text: context.text,
+          now: context.now,
+          validate: product.validate,
+        });
         await productContext.event("decoding", "started", "source-decoding-started");
         const accountSnapshot = await client.fetchAccountSnapshot();
         const accountSnapshotAt = context.now();
