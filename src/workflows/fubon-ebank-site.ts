@@ -54,7 +54,7 @@ export type FubonEbankSite = Readonly<{
   activate(control: Locator, scope?: BrowserScope): Promise<void>;
   waitForMaskToClear(timeoutMs?: number): Promise<void>;
   /** Post a form from inside the page and return the reply as observed, before any check. */
-  postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<FubonReply>;
+  postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<FubonPostbackReply>;
   replaceDocument(scope: BrowserScope, html: string): Promise<void>;
   /** Read a response the page received, before any check. */
   readReply(response: Response): Promise<FubonReply>;
@@ -67,6 +67,9 @@ export type FubonReply = Readonly<{
   evidence: Extract<ProviderEvidence, { kind: "text" }>;
   response: ProviderResponse;
 }>;
+
+/** A postback's reply, with the URL the form was posted to: its action, resolved against the page. */
+export type FubonPostbackReply = FubonReply & Readonly<{ postedTo: string }>;
 
 type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort; now(): string }>;
 
@@ -174,7 +177,8 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           method: "POST",
         };
-        const response = await fetch(new URL(action, window.location.href).toString(), init);
+        const postedTo = new URL(action, window.location.href).toString();
+        const response = await fetch(postedTo, init);
         const bytes = new Uint8Array(await response.arrayBuffer());
         let binary = "";
         for (let index = 0; index < bytes.length; index += 0x8000) {
@@ -182,6 +186,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
         }
         return {
           base64: btoa(binary),
+          postedTo,
           response: {
             url: response.url,
             status: response.status,
@@ -193,6 +198,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
       return {
         evidence: { kind: "text", bytes: new Uint8Array(Buffer.from(reply.base64, "base64")) },
         response: reply.response,
+        postedTo: reply.postedTo,
       };
     },
     replaceDocument: async (scope, html) => {

@@ -25,7 +25,13 @@ import {
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { FUBON_EBANK_HOST, fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import {
+  FUBON_EBANK_HOST,
+  fubonEbankSite,
+  type FubonEbankSite,
+  type FubonPostbackReply,
+  type FubonRoute,
+} from "./fubon-ebank-site.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   StatementComponentAbsentError,
@@ -59,21 +65,32 @@ const LOAN_STATEMENTS_ROUTE: FubonRoute = {
 };
 
 /**
- * The loan query's reply to the in-page postback. The URL is the form's own
- * action, so its query is the page's.
+ * The loan query's reply to the in-page postback, declared at the form action
+ * the postback was sent to: no capture records that action's path (ADR 0110),
+ * so the reply must come back from where it was posted, on the eBank host.
  */
-export const FUBON_LOAN_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
-  label: "Fubon loan statement",
-  host: FUBON_EBANK_HOST,
-  endpoints: [{
-    path: "/B2C/clnqu/clnqu001/CLNQU001_Home.faces",
-    method: "POST",
-    search: /^(?:\?.*)?$/su,
-    charset: { decode: "utf-8" },
-  }],
-  cacheControl: [],
-  providerDate: "optional",
-};
+export function fubonLoanStatementResponse(postedTo: string): ProviderResponseDeclaration<"optional"> {
+  return {
+    label: "Fubon loan statement",
+    host: FUBON_EBANK_HOST,
+    endpoints: [{
+      path: new URL(postedTo).pathname,
+      method: "POST",
+      search: /^(?:\?.*)?$/su,
+      charset: { decode: "utf-8" },
+    }],
+    cacheControl: [],
+    providerDate: "optional",
+  };
+}
+
+function acceptLoanReply(
+  site: FubonEbankSite,
+  reply: FubonPostbackReply,
+  validate: ProductCollectionHandle["validate"],
+): Promise<string> {
+  return validate(() => site.accept(fubonLoanStatementResponse(reply.postedTo), reply));
+}
 
 const queryItemSchema = z.enum([
   "TRANSACTION_DETAIL_QUERY",
@@ -922,12 +939,15 @@ async function parseLoanStatementHtml(
   };
 }
 
-async function fetchLoanQueryHtml(site: FubonEbankSite): Promise<string> {
+async function fetchLoanQueryHtml(
+  site: FubonEbankSite,
+  validate: ProductCollectionHandle["validate"],
+): Promise<string> {
   const scope = await site.frames.scopeWith("#form1\\:doValidate");
-  const html = site.accept(FUBON_LOAN_STATEMENT_RESPONSE, await site.postback(
+  const html = await acceptLoanReply(site, await site.postback(
     scope.locator("form").first(),
     "form1:doValidate",
-  ));
+  ), validate);
   await site.replaceDocument(scope, html);
   await site.frames.scopeWith(loanResultTable, "loan result table");
 
@@ -984,6 +1004,7 @@ async function fetchFubonLoanStatementPages(
   firstHtml: string,
   account: LoanAccountOption,
   query: FubonLoanQuery,
+  validate: ProductCollectionHandle["validate"],
   silent = false,
 ): Promise<ParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
@@ -1006,11 +1027,11 @@ async function fetchFubonLoanStatementPages(
     requests.add(requestKey);
 
     const scope = await site.frames.scopeWith("#form1\\:doValidate");
-    html = site.accept(FUBON_LOAN_STATEMENT_RESPONSE, await site.postback(
+    html = await acceptLoanReply(site, await site.postback(
       scope.locator("form").first(),
       undefined,
       { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
-    ));
+    ), validate);
     await site.replaceDocument(scope, html);
     await site.frames.scopeWith(loanResultTable, "loan result table");
   }
@@ -1024,6 +1045,7 @@ export async function parseFubonLoanStatementForCollection(
   account: LoanAccountOption,
   query: FubonLoanQuery,
   sourceText: SourceTextPort,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<ParsedLoanStatement> {
   sourceText.assertIntact(html);
   const parsed = await fetchFubonLoanStatementPages(
@@ -1031,6 +1053,7 @@ export async function parseFubonLoanStatementForCollection(
     html,
     account,
     query,
+    validate,
     true,
   );
   sourceText.assertIntact(JSON.stringify(parsed));
@@ -1091,13 +1114,14 @@ export async function runFubonLoanStatements(
       context.signal.throwIfAborted();
       scope = await configureLoanQuery(site, query, queryItem);
       await product.reportActivity("query");
-      const html = await fetchLoanQueryHtml(site);
+      const html = await fetchLoanQueryHtml(site, product.validate);
       const parsed = await parseFubonLoanStatementForCollection(
         site,
         html,
         account,
         query,
         context.text,
+        product.validate,
       );
       const completeness = parsed.completeness;
       if (!completeness || parsed.pages.length !== completeness.pageCount)

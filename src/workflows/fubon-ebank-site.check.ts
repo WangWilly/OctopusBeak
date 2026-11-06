@@ -191,6 +191,7 @@ test("a form postback reply is accepted through its declaration and decoded as s
     const form = scope.locator("form#form1");
     const reply = await site.postback(form, "query", { page: "2" });
     assert.equal(reply.response.method, "POST");
+    assert.equal(reply.postedTo, new URL("/B2C/loan.faces", FUBON_EBANK_ENTRY_URL).toString(), "the reply names the form action it was posted to");
     const html = site.accept(LOAN_REPLY, reply);
     assert.match(html, /交易日期/u);
     assert.deepEqual(posted, ["/B2C/loan.faces acct=0012&query=query&page=2"]);

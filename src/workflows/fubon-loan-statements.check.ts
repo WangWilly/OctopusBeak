@@ -23,7 +23,12 @@ import {
 } from "./fubon-loan-statements.fixtures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
-import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
+import {
+  collectSelectedProducts,
+  ProductCollectionInterruptedError,
+  type ProductCollectionHandle,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonEbankSite } from "./fubon-ebank-site.ts";
@@ -120,6 +125,7 @@ const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCo
   account: { label: string; value: string },
   query: { quickMonths?: "1" | "3" | "6"; startDate: string; endDate: string },
   sourceText: { assertIntact(value: string): void },
+  validate: ProductCollectionHandle["validate"],
 ) => Promise<{ completeness: { terminal: true } | null }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   pages: ReadonlyArray<{
@@ -202,6 +208,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
       },
       { startDate: "2026/01/01", endDate: "2026/01/31" },
       { assertIntact: (value) => assert.ok(value.length > 0) },
+      async (check) => await check(),
     );
 
     assert.deepEqual(await readdir(temp), [], "typed loan parsing must not create source, output, or log files");
@@ -685,6 +692,7 @@ async function readLoanThroughShell(
     onHeld?: () => void;
     brokenAccount?: string;
     failAccount?: string;
+    validate?: ProductCollectionHandle["validate"];
   }> = {},
 ) {
   const browser = await chromium.launch({ headless: true });
@@ -757,6 +765,7 @@ async function readLoanThroughShell(
         stage: (...items: readonly ProductStageRequest[]) => { staged.push(...items); },
         reportActivity: async (activity: string) => { activities.push(activity); },
         event: async () => {},
+        validate: options.validate ?? (async (check: () => unknown) => await check()),
         // January matches no quick period, so the query enters its dates.
         collectionPeriod: () => ({
           start: "2026-01-01",
@@ -803,11 +812,20 @@ test("Fubon loan fails a reply with malformed bytes as a source integrity failur
   );
 });
 
-test("Fubon loan fails a query reply with status 500 on its named check", async () => {
-  await assert.rejects(
-    readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value }),
-    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
-  );
+test("Fubon loan fails a query reply with status 500 inside the product's validation", async () => {
+  const failed = await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["loan"],
+    selectedIds: ["loan"],
+    signal: new AbortController().signal,
+    collect: async (_typeId, product) =>
+      (await readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value, validate: product.validate })).summary,
+    financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
+  }).then(() => null, (error: unknown) => error);
+  assert.ok(failed instanceof ProductCollectionInterruptedError);
+  assert.equal(failed.errorCode, "source-validation-failed");
+  const cause = (failed as Error & { cause?: unknown }).cause;
+  assert.ok(cause instanceof ProviderResponseCheckError && cause.check === "response-status");
 });
 
 test("Fubon loan stops inside a held query postback when the run is cancelled", async () => {

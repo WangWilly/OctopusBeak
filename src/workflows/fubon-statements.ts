@@ -2123,6 +2123,7 @@ export async function fetchDepositStatement(
   site: FubonEbankSite,
   query: FubonDepositQuery,
   accountOption: FubonDepositAccountOption,
+  validate: ProductCollectionHandle["validate"],
 ): Promise<FubonParsedDepositStatement> {
   const { page } = site.frames;
   const scope = await site.frames.scopeWith(depositSubmitSelector);
@@ -2130,11 +2131,12 @@ export async function fetchDepositStatement(
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
-  const html = site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.postback(
+  const reply = await site.postback(
     scope.locator("form").first(),
     "form1:doValidateAndSubmit",
     depositDateRangeFields(query),
-  ));
+  );
+  const html = await validate(() => site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, reply));
   const pages = [await parseDepositStatementHtml(page, html, 0, 1)];
   await site.replaceDocument(scope, html);
 
@@ -2148,11 +2150,12 @@ export async function fetchDepositStatement(
     traversalRequests.add(traversalKey);
     if (pages.length >= 10_000)
       throw new Error("Fubon deposit pagination exceeded the safe page limit.");
-    const nextHtml = site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.postback(
+    const nextReply = await site.postback(
       scope.locator("form").first(),
       undefined,
       { [pageFieldName]: nextPage },
-    ));
+    );
+    const nextHtml = await validate(() => site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, nextReply));
     const nextParsed = await parseDepositStatementHtml(
       page,
       nextHtml,
@@ -2695,7 +2698,7 @@ export async function runFubonStatements(
 export async function readFubonDepositSourceSnapshot(
   site: FubonEbankSite,
   context: Pick<FubonDepositProductContext, "signal" | "text">,
-  product: Pick<ProductCollectionHandle, "reportActivity" | "collectionPeriod">,
+  product: Pick<ProductCollectionHandle, "reportActivity" | "collectionPeriod" | "validate">,
 ): Promise<FubonDepositSourceSnapshot> {
   const queries = fubonDepositQueries(product.collectionPeriod());
   await product.reportActivity("query");
@@ -2709,7 +2712,7 @@ export async function readFubonDepositSourceSnapshot(
     for (const query of queries) {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      const statement = await fetchDepositStatement(site, query, account);
+      const statement = await fetchDepositStatement(site, query, account, product.validate);
       context.text.assertIntact(JSON.stringify(statement));
       statements.push(statement);
     }

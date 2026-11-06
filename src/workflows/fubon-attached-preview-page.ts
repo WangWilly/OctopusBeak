@@ -1,4 +1,5 @@
 import type { Page } from "playwright";
+import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
 import { readCurrentStateSnapshot } from "./current-state-snapshot-capture.ts";
@@ -25,16 +26,17 @@ export function playwrightFubonAttachedPreviewPort(
   context: Pick<WorkflowContext, "signal" | "text" | "now">,
 ): FubonAttachedPreviewPort {
   const site = fubonEbankSite(page, context);
+  // The preview stages nothing and names no Failure code, so its checks report no validation events.
+  const validate: ProductCollectionHandle["validate"] = async (check) => await check();
   return {
     async balances() {
-      // The preview stages nothing and names no Failure code, so it reports no current-balance events.
       return await readCurrentStateSnapshot({
         response: FUBON_CURRENT_DEPOSIT_RESPONSE,
         parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
       }, {
         acquire: () => readFubonCurrentDepositBalanceTable(site),
         now: () => context.now(),
-        product: { event: async () => undefined, validate: async (check) => await check() },
+        product: { event: async () => undefined, validate },
         text: context.text,
         signal: context.signal,
       });
@@ -46,7 +48,7 @@ export function playwrightFubonAttachedPreviewPort(
     async statement(option, query) {
       context.signal.throwIfAborted();
       await selectDepositAccount(site, option);
-      const statement = await fetchDepositStatement(site, query, option);
+      const statement = await fetchDepositStatement(site, query, option, validate);
       context.text.assertIntact(JSON.stringify(statement));
       return statement;
     },
