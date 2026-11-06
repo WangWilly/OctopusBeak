@@ -9,14 +9,17 @@ import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { previewReceipt } from "../lib/preview-sources/preview-source-harness.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
   collectSinopacLoans,
+  sinopacLoanTransport,
   SINOPAC_LOAN_ACCOUNT_PATH,
   SINOPAC_LOAN_INFO_PATH,
   SINOPAC_LOAN_PAY_DETAIL_PATH,
   type SinopacLoanResponse,
   type SinopacLoanTransport,
 } from "./sinopac-loan.ts";
+import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 import {
   readSinopacDepositSource,
   sinopacWorkflowWith,
@@ -57,13 +60,13 @@ const bodies = (): Bodies => ({
   }],
 });
 
-function fakeTransport(source: Bodies, statuses: Readonly<Record<string, number>> = {}) {
+function fakeTransport(source: Bodies) {
   const calls: Array<Readonly<{ path: string; form: Readonly<Record<string, string>> }>> = [];
   const transport: SinopacLoanTransport = {
     async post(path, form): Promise<SinopacLoanResponse> {
       calls.push({ path, form });
       const body = source[path];
-      return { endpoint: path, status: statuses[path] ?? 200, date: DATE_HEADER, text: typeof body === "string" ? body : JSON.stringify(body) };
+      return { endpoint: path, date: DATE_HEADER, text: typeof body === "string" ? body : JSON.stringify(body) };
     },
   };
   return { transport, calls };
@@ -80,8 +83,18 @@ async function rejectsWith(promise: Promise<unknown>, reason: PreviewSourceFailu
     error instanceof PreviewSourceFailure && error.reason === reason && (detail === undefined || detail.test(error.message)));
 }
 
-const collect = (source: Bodies, statuses?: Readonly<Record<string, number>>) =>
-  collectSinopacLoans({ transport: fakeTransport(source, statuses).transport, collectedAt: COLLECTED_AT });
+const collect = (source: Bodies) =>
+  collectSinopacLoans({ transport: fakeTransport(source).transport, collectedAt: COLLECTED_AT });
+
+/** An MMA site whose one POST answers from the given URL and status. */
+function replyingSite(reply: (path: string) => Readonly<{ url: string; status: number }>): SinopacMmaSite {
+  return {
+    post: async (path: string) => ({
+      response: { ...reply(path), method: "POST", headers: { "content-type": "application/json; charset=utf-8", date: DATE_HEADER } },
+      bytes: Buffer.from(JSON.stringify(bodies()[path] ?? null)),
+    }),
+  } as unknown as SinopacMmaSite;
+}
 
 test("SinoPac loans map ws_loaninfo and ws_paydetail into an unproven list", async () => {
   const { transport, calls } = fakeTransport(bodies());
@@ -137,8 +150,22 @@ test("a SinoPac account with no loan is an unproven empty list", async () => {
 });
 
 test("a SinoPac loan endpoint that answers like a missing one fails with that reason", async () => {
-  await rejectsWith(collect(bodies(), { [SINOPAC_LOAN_ACCOUNT_PATH]: 404 }), "unexpected-response", /missing endpoint/u);
+  const missing = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 404 })), strictSourceText);
+  await rejectsWith(collectSinopacLoans({ transport: missing, collectedAt: COLLECTED_AT }), "unexpected-response", /missing endpoint/u);
   await rejectsWith(collect(edit((source) => { source[SINOPAC_LOAN_INFO_PATH] = "<!DOCTYPE html><html>找不到網頁</html>"; })), "unexpected-response", /missing endpoint/u);
+});
+
+test("the SinoPac loan transport reads each declared reply and refuses an undeclared endpoint or a non-200 status", async () => {
+  const declared = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), strictSourceText);
+  const collection = await collectSinopacLoans({ transport: declared, collectedAt: COLLECTED_AT });
+  assert.equal(collection.loans[0]!.outstandingBalance.observedAt.at, "2026-09-24T04:00:00.000Z");
+
+  const refused = async (reply: (path: string) => Readonly<{ url: string; status: number }>, check: string) => await assert.rejects(
+    sinopacLoanTransport(replyingSite(reply), strictSourceText).post(SINOPAC_LOAN_ACCOUNT_PATH, {}),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === check,
+  );
+  await refused(() => ({ url: `${SINOPAC_MMA_ORIGIN}/mma/login.aspx`, status: 200 }), "response-endpoint");
+  await refused((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 500 }), "response-status");
 });
 
 test("a SinoPac loan without its full account number, balance, or currency fails the product", async () => {
@@ -229,7 +256,7 @@ test("the SinoPac workflow writes attached loans only through the preview port",
 test("a failing attached loan leaves the verified SinoPac deposit intact", async () => {
   const writes: PreviewWrite[] = [];
   const commits: unknown[][] = [];
-  const output = await runWithLoan(writes, commits, fakeTransport(bodies(), { [SINOPAC_LOAN_ACCOUNT_PATH]: 404 }).transport);
+  const output = await runWithLoan(writes, commits, fakeTransport(edit((source) => { source[SINOPAC_LOAN_ACCOUNT_PATH] = "<!DOCTYPE html><html>找不到網頁</html>"; })).transport);
   assert.equal(output.status, "partial");
   assert.equal(commits.length, 1);
   assert.deepEqual(writes, []);

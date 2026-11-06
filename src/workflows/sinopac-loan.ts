@@ -13,7 +13,9 @@ import {
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import type { SinopacMmaSite } from "./sinopac-mma-site.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
+import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /*
  * SinoPac loans, after all-set-tw's `sinopac/loan-protocol.ts` (MIT, commit 156e2eb), which calls
@@ -25,21 +27,41 @@ export const SINOPAC_LOAN_ACCOUNT_PATH = "/ws/bank/loan/ws_loanaccount.ashx";
 export const SINOPAC_LOAN_INFO_PATH = "/ws/bank/loan/ws_loaninfo.ashx";
 export const SINOPAC_LOAN_PAY_DETAIL_PATH = "/ws/bank/loan/ws_paydetail.ashx";
 
-export type SinopacLoanResponse = Readonly<{ endpoint: string; status: number; date: string | null; text: string }>;
+/**
+ * The loan web services' replies. They are text, not JSON, so that a page that
+ * is not a JSON envelope fails as a missing endpoint rather than as bad JSON.
+ */
+export const SINOPAC_LOAN_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "SinoPac loan",
+  host: new URL(SINOPAC_MMA_ORIGIN).hostname,
+  endpoints: [SINOPAC_LOAN_ACCOUNT_PATH, SINOPAC_LOAN_INFO_PATH, SINOPAC_LOAN_PAY_DETAIL_PATH]
+    .map((path) => ({ path, method: "POST", charset: { decode: "utf-8" } })),
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** An accepted reply: its strictly decoded text and its HTTP Date, if any. */
+export type SinopacLoanResponse = Readonly<{ endpoint: string; date: string | null; text: string }>;
 
 /** Same-origin form POSTs from the signed-in MMA page. */
 export type SinopacLoanTransport = Readonly<{
   post(path: string, form: Readonly<Record<string, string>>): Promise<SinopacLoanResponse>;
 }>;
 
-/** Form POSTs through the MMA site's one POST. */
+const ASSUMED = "the MMA loan endpoint is assumed from all-set-tw's mobile host";
+
+/** Form POSTs through the MMA site's one POST. A 404 is how an endpoint missing from the MMA host answers. */
 export function sinopacLoanTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacLoanTransport {
   return {
     async post(path, form) {
       const { response, bytes } = await site.post(path, { body: new URLSearchParams(form).toString() });
-      const body = sourceText.decode(bytes, "utf-8");
-      sourceText.assertIntact(body);
-      return { endpoint: path, status: response.status, date: response.headers.date ?? null, text: body };
+      if (response.status === 404) fail("unexpected-response", `${path} answered HTTP 404, as a missing endpoint does; ${ASSUMED}`);
+      const accepted = acceptProviderResponse(
+        SINOPAC_LOAN_RESPONSE,
+        { response, evidence: { kind: "text", bytes } },
+        { observedAt: taipeiInstant(new Date().toISOString()), text: sourceText },
+      );
+      return { endpoint: path, date: accepted.response.providerDate?.raw ?? null, text: accepted.evidence.text };
     },
   };
 }
@@ -47,8 +69,6 @@ export function sinopacLoanTransport(site: SinopacMmaSite, sourceText: SourceTex
 const CURRENCY_ALIASES: Readonly<Record<string, string>> = {
   "000": "TWD", NTD: "TWD", "臺幣": "TWD", "台幣": "TWD", "新臺幣": "TWD", "新台幣": "TWD",
 };
-
-const ASSUMED = "the MMA loan endpoint is assumed from all-set-tw's mobile host";
 
 /** Text with SinoPac's inline HTML (`<br />`, `<font>`, entities) reduced to spaces. */
 function plain(value: unknown): string | null {
@@ -58,10 +78,8 @@ function plain(value: unknown): string | null {
 
 type Envelope = Readonly<{ subInfo: readonly SourceRecord[]; raw: SourceRecord }>;
 
-/** A SUCCESS envelope. A 404 or a non-JSON page is how an endpoint missing from the MMA host answers. */
+/** A SUCCESS envelope. A non-JSON page is how an endpoint missing from the MMA host answers. */
 function envelope(response: SinopacLoanResponse): Envelope {
-  if (response.status === 404) fail("unexpected-response", `${response.endpoint} answered HTTP 404, as a missing endpoint does; ${ASSUMED}`);
-  if (response.status !== 200) fail("unexpected-response", `${response.endpoint} answered HTTP ${response.status}`);
   if (!/^\s*\[/u.test(response.text)) fail("unexpected-response", `${response.endpoint} answered with no JSON envelope, as a missing endpoint does; ${ASSUMED}`);
   const body = parseSourceJson(response.text, response.endpoint);
   if (!Array.isArray(body) || body.length !== 1) fail("unexpected-response", `${response.endpoint} is not a single envelope`);
