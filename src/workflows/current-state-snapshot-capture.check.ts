@@ -12,6 +12,8 @@ import {
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { SnapshotCheckError, type SnapshotCheck } from "../lib/automation/snapshot-check.ts";
+import { captureSafeWorkflowFailureError } from "../lib/automation/server/workflow-failure-diagnostics.ts";
 import {
   assembleCurrentCreditCardCapture,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -445,6 +447,8 @@ test("strict decoding rejects malformed bytes, escaped replacement characters, a
       },
     }, captures, acquired);
     await assert.rejects(result.run, expected, name);
+    if (expected !== SourceTextIntegrityError)
+      await assert.rejects(result.run, (error) => error instanceof SnapshotCheckError && error.check === "evidence-json", name);
     assert.equal(parsed, false, `${name} never reaches the row parser`);
     assert.deepEqual(result.events, expected === SourceTextIntegrityError ? integrityFailure : checkFailure, name);
   }
@@ -470,7 +474,32 @@ test("JSON evidence hands the parser the decoded body text with its numeric lexe
 test("a parse failure reports validation, and a failed read reports collection", async () => {
   const failing = await snapshot({ ...declaration(), parse: () => { throw new Error("bad row"); } }, [capture("a")], json([]));
   await assert.rejects(failing.run, /^Error: bad row$/u);
+  await assert.rejects(
+    failing.run,
+    (error) => error instanceof SnapshotCheckError && error.check === "row-parse"
+      && error.cause instanceof Error && error.cause.message === "bad row",
+    "a plain parser error names the row-parse check and keeps its message as the cause",
+  );
   assert.deepEqual(failing.events, checkFailure);
+
+  const dropped = await snapshot(
+    { ...declaration(), parse: () => (undefined as unknown as { rows: readonly SnapshotRow[] }).rows },
+    [capture("a")],
+    json([]),
+  );
+  await assert.rejects(
+    dropped.run,
+    (error) => error instanceof SnapshotCheckError && error.check === "row-parse" && error.cause instanceof TypeError,
+    "a TypeError from reading a field the source dropped also names the row-parse check",
+  );
+
+  const typed = await snapshot(
+    { ...declaration(), parse: () => { throw new SourceTextIntegrityError("replacement-character"); } },
+    [capture("a")],
+    json([]),
+  );
+  await assert.rejects(typed.run, (error) => error instanceof SourceTextIntegrityError,
+    "an error with its own type passes through the row parser unchanged");
 
   const events: string[] = [];
   const timedOut = readCurrentStateSnapshot(declaration(), {
@@ -598,6 +627,18 @@ test("the stage half throws on ambiguous captures before validation starts", asy
   assert.deepEqual(events, []);
 });
 
+test("a rejected snapshot leaves its check, and no message, in the captured failure diagnostic", async () => {
+  const offEndpoint = await snapshot(
+    declaration(),
+    [capture("a")],
+    { ...json([{ account: "A", currencies: ["TWD"], amount: "1" }]), response: { ...PROVIDER_RESPONSE, url: "https://bank.example/other" } },
+  );
+  const rejection = await offEndpoint.run.then(() => assert.fail("the off-endpoint response is admitted"), (error: unknown) => error);
+  const diagnostic = captureSafeWorkflowFailureError(rejection, process.cwd());
+  assert.equal(diagnostic.chain[0]?.snapshotCheck, "response-endpoint");
+  assert.ok(!JSON.stringify(diagnostic).includes("bank.example"), "the rejected URL stays out of the diagnostic");
+});
+
 test("a declared response verifies to its transport facts and the run clock's Taipei second", () => {
   const verified = verifyProviderResponse(RESPONSE, { ...PROVIDER_RESPONSE, url: "https://bank.example/balances?t=1" }, "2026-09-25T20:00:01+08:00");
   assert.equal(verified.endpoint.path, "/balances");
@@ -634,6 +675,20 @@ test("every undeclared transport fact rejects the response with the source's lab
   ];
   for (const [name, response, expected] of rejected)
     assert.throws(() => verifyProviderResponse(RESPONSE, response, "x"), expected, name);
+  const checkOf = (name: string): SnapshotCheck => {
+    if (/URL|http|host|port|credentials|fragment|path|query/u.test(name)) return "response-endpoint";
+    if (name === "method") return "response-method";
+    if (name === "status") return "response-status";
+    if (name === "content type") return "response-content-type";
+    if (/cache/u.test(name)) return "response-cache-control";
+    return "response-date";
+  };
+  for (const [name, response] of rejected)
+    assert.throws(
+      () => verifyProviderResponse(RESPONSE, response, "x"),
+      (error) => error instanceof SnapshotCheckError && error.check === checkOf(name),
+      `${name} names its check`,
+    );
 });
 
 test("an optional provider date may be absent but must be valid when present", () => {
