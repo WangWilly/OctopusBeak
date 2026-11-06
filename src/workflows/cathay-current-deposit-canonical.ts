@@ -11,7 +11,6 @@ import {
   type CathayCurrentDepositObservation,
   type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
-import { cathayResponseCharset } from "./cathay-statements.ts";
 import {
   assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
@@ -19,11 +18,7 @@ import {
   type CurrentBalanceCaptureMatching,
   CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
-import {
-  declaresUtf8,
-  type DecodedProviderEvidence,
-  type VerifiedProviderResponse,
-} from "./provider-response.ts";
+import type { DecodedProviderEvidence, VerifiedProviderResponse } from "./provider-response.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
@@ -246,8 +241,6 @@ function parseOverview(
   response: VerifiedProviderResponse<"required">,
   acquired: CathayCurrentDepositResponse,
 ): readonly CathayCurrentDepositBalanceRow[] {
-  if (!declaresUtf8(cathayResponseCharset(response.contentType)))
-    throw new Error("Cathay source response charset is not UTF-8.");
   return parseCathayCurrentDepositBalanceSnapshot({
     kind,
     response,

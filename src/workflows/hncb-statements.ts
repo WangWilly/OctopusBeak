@@ -52,7 +52,20 @@ import type {
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { ifFound, type FrameScope } from "./frame-scope.ts";
-import { hncbNetbankSite, isHncbTrxDispatcherUrl, type HncbNetbankSite, type HncbRoute } from "./hncb-netbank-site.ts";
+import {
+  HNCB_NETBANK_ORIGIN,
+  HNCB_TRX_DISPATCHER_PATH,
+  hncbNetbankSite,
+  isHncbTrxDispatcherUrl,
+  type HncbNetbankSite,
+  type HncbRoute,
+} from "./hncb-netbank-site.ts";
+import {
+  acceptProviderResponse,
+  verifyProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -709,45 +722,36 @@ async function queryAccountStatements(
   return await waitForStatementResult(site);
 }
 
-const HNCB_EXPORT_MEDIA_TYPES = [
-  "application/vnd.ms-excel",
-  "application/x-excel",
-  "application/xls",
-  "application/octet-stream",
-  "text/html",
-];
-const HNCB_MAX_EXPORT_BYTES = 64 * 1024 * 1024;
+/** HNCB's statement export reply: a Big5 workbook attachment from the TrxDispatcher. */
+const HNCB_EXPORT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "HNCB export",
+  host: new URL(HNCB_NETBANK_ORIGIN).hostname,
+  endpoints: [{
+    path: HNCB_TRX_DISPATCHER_PATH,
+    method: "POST",
+    contentType:
+      /^(?:application\/vnd\.ms-excel|application\/x-excel|application\/xls|application\/octet-stream|text\/html)\s*(?:;|$)/iu,
+    // The export form's query was never captured from a live run, so any query is accepted.
+    search: /^(?:\?.*)?$/u,
+    charset: { decode: "big5", labels: ["cp950", "windows-950"] },
+    attachment: true,
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+  maxBytes: 64 * 1024 * 1024,
+};
 
-/** Refuses an export reply that is not HNCB's terminal Big5 attachment, before its body is read. */
-function acceptHncbExportResponse(status: number, headers: Readonly<Record<string, string>>): void {
-  if (status !== 200)
-    throw new Error("HNCB export response was not terminal.");
-  const contentType = headers["content-type"]?.trim() ?? "";
-  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  if (!HNCB_EXPORT_MEDIA_TYPES.includes(mediaType))
-    throw new Error("HNCB export response has an unexpected content type.");
-  if (!/\battachment\b/iu.test(headers["content-disposition"] ?? ""))
-    throw new Error("HNCB export response is missing terminal attachment evidence.");
-  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-    contentType,
-  )?.[1]?.toLowerCase();
-  if (
-    charset &&
-    !["big5", "cp950", "windows-950"].includes(charset)
-  )
-    throw new Error("HNCB export response charset contradicts the Big5 contract.");
-  const declaredLength = Number(headers["content-length"]);
-  if (Number.isFinite(declaredLength) && declaredLength > HNCB_MAX_EXPORT_BYTES)
-    throw new Error("HNCB export response exceeds the in-memory size limit.");
-}
-
-/** Decode and parse one export body as HNCB's Big5 statement workbook. */
-function readHncbExportBody(bytes: Uint8Array, text: SourceTextPort, fallbackAccount: string): ParsedStatement {
-  if (bytes.byteLength === 0 || bytes.byteLength > HNCB_MAX_EXPORT_BYTES)
-    throw new Error("HNCB export response is empty or exceeds the in-memory size limit.");
-  const content = text.decode(bytes, "big5");
-  text.assertIntact(content);
-  const parsed = parseStatementExport(content, fallbackAccount);
+/** Verify, decode and parse one export reply as HNCB's Big5 statement workbook. */
+function readHncbExport(
+  response: ProviderResponse,
+  bytes: Uint8Array,
+  input: Readonly<{ observedAt: string; text: SourceTextPort }>,
+  fallbackAccount: string,
+): ParsedStatement {
+  if (bytes.byteLength === 0)
+    throw new Error("HNCB export response is empty.");
+  const { evidence } = acceptProviderResponse(HNCB_EXPORT_RESPONSE, { response, evidence: { kind: "text", bytes } }, input);
+  const parsed = parseStatementExport(evidence.text, fallbackAccount);
   if (!parsed.queryPeriod || !parsed.currency)
     throw new Error("HNCB export workbook is incomplete.");
   return parsed;
@@ -765,7 +769,7 @@ export async function downloadCurrentStatementInMemory(
   scope: FrameScope,
   fallbackAccount: string,
   resultFrame: Frame,
-  text: SourceTextPort,
+  context: Pick<WorkflowContext, "text" | "now">,
   validate: ProductCollectionHandle["validate"],
   timeoutMs = 60_000,
 ): Promise<HncbStatementDownload> {
@@ -804,18 +808,26 @@ export async function downloadCurrentStatementInMemory(
     }
     intercepted = true;
     try {
-      const response = await route.fetch();
-      const headers = response.headers();
-      await validate(() => acceptHncbExportResponse(response.status(), headers));
-      const bytes = new Uint8Array(await response.body());
-      const parsed = await validate(() => readHncbExportBody(bytes, text, fallbackAccount));
+      const fetched = await route.fetch();
+      const observedAt = taipeiInstant(context.now());
+      const response: ProviderResponse = {
+        url: fetched.url(),
+        status: fetched.status(),
+        method: request.method(),
+        headers: fetched.headers(),
+      };
+      // The transport checks run before the body is read, so a refused reply's body never reaches the run.
+      const verified = await validate(() => verifyProviderResponse(HNCB_EXPORT_RESPONSE, response, observedAt));
+      const bytes = new Uint8Array(await fetched.body());
+      const parsed = await validate(() =>
+        readHncbExport(response, bytes, { observedAt, text: context.text }, fallbackAccount));
       await route.fulfill({ status: 204, body: "" });
       resolveCapture({
         ...parsed,
         filename: "hncb-domestic-deposit-export.xls",
         byteLength: bytes.byteLength,
         contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-        sourceResponse: { status: response.status(), contentType: headers["content-type"]?.trim() ?? "" },
+        sourceResponse: { status: response.status, contentType: verified.contentType },
       });
     } catch (error) {
       const failure = captureError(error);
@@ -987,7 +999,7 @@ function hncbDepositSource(site: HncbNetbankSite, context: HncbDepositContext): 
           site.frames,
           account.label,
           resultFrame,
-          context.text,
+          context,
           validate,
         ),
       };

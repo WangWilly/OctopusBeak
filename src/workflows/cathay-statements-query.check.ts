@@ -386,6 +386,7 @@ const directSecondAccount = {
   branchName: "Synthetic branch 2",
 };
 
+const uncancelledSource = { text: strictSourceText, signal: new AbortController().signal };
 const injectedClientPage = new Proxy({}, {
   get(_target, property) {
     throw new Error(`Injected-client collection unexpectedly accessed page.${String(property)}.`);
@@ -428,6 +429,7 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
   [],
   { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
   {
+    source: uncancelledSource,
     client: {
       fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
       fetchTransferDetailsRaw: async (_session, accountNo, bounds) => {
@@ -442,26 +444,45 @@ assert.deepEqual(requestedAccounts, ["0001", "20002"]);
 assert.equal(directApiCollection.captureCount, 2);
 assert.equal(directApiCollection.rowCount, 0);
 
-const evaluatedRequests: unknown[] = [];
+const TRANSFER_DETAIL_URL =
+  "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail";
+const evaluatedRequests: { path: string; token: string; body: unknown }[] = [];
+const transferBody = emptyTransferResponse("0001");
 const apiOnlyPage = new Proxy(
   {
-    evaluate: async (_callback: unknown, request: unknown) => {
+    evaluate: async (_callback: unknown, request: { path: string; token: string; body: unknown }) => {
       evaluatedRequests.push(request);
-      return emptyTransferResponse("0001");
+      return 200;
+    },
+    // The page sends its request only after the wait for the response has started.
+    waitForResponse: async (matches: (response: unknown) => boolean) => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const response = {
+        url: () => TRANSFER_DETAIL_URL,
+        status: () => 200,
+        request: () => ({ method: () => "POST", postData: () => JSON.stringify(evaluatedRequests[0]!.body) }),
+        allHeaders: async () => ({ "content-type": "application/json; charset=utf-8" }),
+        body: async () => new TextEncoder().encode(transferBody),
+      };
+      assert.ok(matches(response));
+      return response;
     },
   },
   {
     get(target, property, receiver) {
-      if (property === "evaluate") return Reflect.get(target, property, receiver);
+      if (property === "evaluate" || property === "waitForResponse") return Reflect.get(target, property, receiver);
       throw new Error(`Cathay API client unexpectedly accessed page.${String(property)}.`);
     },
   },
 );
-const apiOnlyClient = new CathayApiClient(apiOnlyPage as never);
-await apiOnlyClient.fetchTransferDetailsRaw(
-  { jwtToken: "synthetic-token", customerId: "synthetic-customer", idType: "id" },
-  "0001",
-  expectedScope,
+const apiOnlyClient = new CathayApiClient(apiOnlyPage as never, uncancelledSource);
+assert.equal(
+  await apiOnlyClient.fetchTransferDetailsRaw(
+    { jwtToken: "synthetic-token", customerId: "synthetic-customer", idType: "id" },
+    "0001",
+    expectedScope,
+  ),
+  transferBody,
 );
 assert.deepEqual(evaluatedRequests, [{
   path: "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
@@ -486,6 +507,7 @@ await assert.rejects(
     [],
     { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
     {
+      source: uncancelledSource,
       client: {
         fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
         fetchTransferDetailsRaw: async (_session, accountNo) => {

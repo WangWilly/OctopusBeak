@@ -99,8 +99,7 @@ function createPage(options: { fault?: SourceFault } = {}) {
         return {
           url: argument.url.includes("ws_debitacct") ? ACCOUNT_URL : TRANSACTIONS_URL,
           status: 200,
-          contentType: "application/json; charset=utf-8",
-          date: null,
+          headers: { "content-type": "application/json; charset=utf-8" },
           base64: Buffer.from(JSON.stringify(transactionPayload), "utf8").toString("base64"),
         } as T;
       }

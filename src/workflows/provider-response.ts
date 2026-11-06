@@ -11,6 +11,8 @@ import type { SourceTextPort } from "../lib/automation/source-text.ts";
 export type ProviderEvidence =
   /** A response body, decoded as UTF-8 JSON. */
   | Readonly<{ kind: "json"; bytes: Uint8Array }>
+  /** A response body, decoded as the endpoint's declared charset. */
+  | Readonly<{ kind: "text"; bytes: Uint8Array }>
   /** DOM table text, one array of cell texts per row. */
   | Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>
   /** Page markup already read as text, from the DOM or a decoded response body. */
@@ -25,9 +27,11 @@ export type DecodedProviderEvidence<Evidence extends ProviderEvidence = Provider
         /** The strictly decoded UTF-8 body, for parsers that must keep numeric lexemes. */
         text: string;
       }>
-    : Evidence extends Readonly<{ kind: "html" }>
-      ? Readonly<{ kind: "html"; html: string }>
-      : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
+    : Evidence extends Readonly<{ kind: "text" }>
+      ? Readonly<{ kind: "text"; text: string }>
+      : Evidence extends Readonly<{ kind: "html" }>
+        ? Readonly<{ kind: "html"; html: string }>
+        : Readonly<{ kind: "cells"; rows: readonly (readonly string[])[] }>;
 
 /** The transport facts of the one provider response an acquisition observed. */
 export type ProviderResponse = Readonly<{
@@ -49,7 +53,17 @@ export type ProviderEndpoint = Readonly<{
   contentType?: RegExp;
   /** The query string the URL may carry, including its "?". Absent allows none. */
   search?: RegExp;
+  /** The charset a text body is in. Text evidence needs one; JSON is always UTF-8. */
+  charset?: ProviderCharset;
+  /** Whether the response must name itself an attachment in Content-Disposition. */
+  attachment?: true;
 }>;
+
+/**
+ * The charset a body decodes as, and the Content-Type labels that may name it
+ * besides its own WHATWG labels, such as "cp950" for Big5.
+ */
+export type ProviderCharset = Readonly<{ decode: string; labels?: readonly string[] }>;
 
 /** Whether the response must carry an HTTP Date, or the body may carry the provider time instead. */
 export type ProviderDateRule = "required" | "optional";
@@ -63,6 +77,8 @@ export type ProviderResponseDeclaration<DateRule extends ProviderDateRule = Prov
   /** Cache-Control directives the response must carry. */
   cacheControl: readonly string[];
   providerDate: DateRule;
+  /** The largest body the source reads, by its declared Content-Length and its bytes. */
+  maxBytes?: number;
 }>;
 
 export type ProviderDate = Readonly<{ raw: string; effectiveAt: string }>;
@@ -103,7 +119,8 @@ export function acceptProviderResponse<Acquired extends ProviderAcquisition, Dat
 ): AcceptedProviderResponse<Acquired, DateRule> {
   const response = verifyProviderResponse(declaration, acquired.response, input.observedAt);
   // Decoding keeps the evidence kind, which the conditional type cannot see.
-  const evidence = decodeEvidence(acquired.evidence, input.text) as DecodedProviderEvidence<Acquired["evidence"]>;
+  const evidence = decodeEvidence(declaration, response, acquired.evidence, input.text) as
+    DecodedProviderEvidence<Acquired["evidence"]>;
   return { response, evidence };
 }
 
@@ -185,6 +202,11 @@ export function verifyProviderResponse<DateRule extends ProviderDateRule>(
       "response-cache-control",
       `${label} response must carry Cache-Control: ${declaration.cacheControl.join(", ")}.`,
     );
+  if (endpoint.attachment && !/\battachment\b/iu.test(header(response.headers, "content-disposition")))
+    throw new ProviderResponseCheckError("response-disposition", `${label} response is not an attachment.`);
+  const declaredLength = Number(header(response.headers, "content-length") || Number.NaN);
+  if (declaration.maxBytes !== undefined && Number.isFinite(declaredLength) && declaredLength > declaration.maxBytes)
+    throw new ProviderResponseCheckError("response-size", `${label} response exceeds ${declaration.maxBytes} bytes.`);
   const date = providerDate(label, response.headers);
   if (!date && declaration.providerDate === "required")
     throw new ProviderResponseCheckError("response-date", `${label} response is missing HTTP Date.`);
@@ -192,7 +214,32 @@ export function verifyProviderResponse<DateRule extends ProviderDateRule>(
   return { url, endpoint, contentType, cacheControl, providerDate: date, observedAt } as VerifiedProviderResponse<DateRule>;
 }
 
-function decodeEvidence(evidence: ProviderEvidence, text: SourceTextPort): DecodedProviderEvidence {
+const UTF_8: ProviderCharset = { decode: "utf-8" };
+
+function encodingOf(label: string): string | undefined {
+  try {
+    return new TextDecoder(label).encoding;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The charset a body decodes as, after its Content-Type label, if any, names that charset. */
+function bodyCharset(label: string, response: VerifiedProviderResponse, charset: ProviderCharset): string {
+  const encoding = encodingOf(charset.decode);
+  if (!encoding) throw new Error(`${label} declares an unknown charset: ${charset.decode}`);
+  const named = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(response.contentType)?.[1]?.toLowerCase();
+  if (named && !charset.labels?.includes(named) && encodingOf(named) !== encoding)
+    throw new ProviderResponseCheckError("response-charset", `${label} response charset is not ${charset.decode}.`);
+  return charset.decode;
+}
+
+function decodeEvidence(
+  declaration: ProviderResponseDeclaration,
+  response: VerifiedProviderResponse,
+  evidence: ProviderEvidence,
+  text: SourceTextPort,
+): DecodedProviderEvidence {
   if (evidence.kind === "cells") {
     for (const row of evidence.rows) for (const cell of row) text.assertIntact(cell);
     return evidence;
@@ -201,8 +248,16 @@ function decodeEvidence(evidence: ProviderEvidence, text: SourceTextPort): Decod
     text.assertIntact(evidence.html);
     return evidence;
   }
+  const { label, maxBytes } = declaration;
+  if (maxBytes !== undefined && evidence.bytes.byteLength > maxBytes)
+    throw new ProviderResponseCheckError("response-size", `${label} response exceeds ${maxBytes} bytes.`);
+  if (evidence.kind === "text") {
+    const charset = response.endpoint.charset;
+    if (!charset) throw new Error(`${label} declares no charset for its text response.`);
+    return { kind: "text", text: text.decode(evidence.bytes, bodyCharset(label, response, charset)) };
+  }
+  const decoded = text.decode(evidence.bytes, bodyCharset(label, response, UTF_8));
   let value: unknown;
-  const decoded = text.decode(evidence.bytes, "utf-8");
   try {
     value = JSON.parse(decoded);
   } catch {
@@ -211,13 +266,4 @@ function decodeEvidence(evidence: ProviderEvidence, text: SourceTextPort): Decod
   // JSON may encode U+FFFD as an escape, so check the parsed fields too.
   text.assertIntact(JSON.stringify(value));
   return { kind: "json", value, text: decoded };
-}
-
-/** Whether a declared charset label names UTF-8, the charset json evidence decodes as. */
-export function declaresUtf8(charset: string): boolean {
-  try {
-    return new TextDecoder(charset).encoding === "utf-8";
-  } catch {
-    return false;
-  }
 }

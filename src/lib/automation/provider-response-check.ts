@@ -11,6 +11,9 @@ export const PROVIDER_RESPONSE_CHECKS = [
   "response-content-type",
   "response-cache-control",
   "response-date",
+  "response-charset",
+  "response-disposition",
+  "response-size",
   "evidence-json",
   "row-parse",
 ] as const;

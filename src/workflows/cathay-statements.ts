@@ -18,8 +18,14 @@ import {
 } from "../ledger/pglite/cathay-domestic-admission.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import {
+  acceptProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
@@ -822,28 +828,16 @@ function accountLabel(account: CathayAccount): string {
 
 export class CathayApiClient {
   private readonly page: Page;
-  private readonly strictSource?: CathayStrictSourceOptions;
+  private readonly source: CathayStrictSourceOptions;
 
-  constructor(page: Page, strictSource?: CathayStrictSourceOptions) {
+  constructor(page: Page, source: CathayStrictSourceOptions) {
     this.page = page;
-    this.strictSource = strictSource;
+    this.source = source;
   }
 
   async createSession(): Promise<CathaySession> {
-    const result = (
-      this.strictSource
-        ? JSON.parse(
-            await fetchCathaySessionSourceText(this.page, this.strictSource),
-          )
-        : await this.page.evaluate(async () => {
-            const response = await fetch("/MyBank/Customized/GetJWT", {
-              method: "POST",
-              credentials: "same-origin",
-              headers: { Accept: "application/json, text/plain, */*" },
-            });
-            if (!response.ok) throw new Error(`${response.status} for GetJWT`);
-            return await response.json();
-          })
+    const result = JSON.parse(
+      await fetchCathaySessionSourceText(this.page, this.source),
     ) as {
       IsSuccess?: boolean;
       Msg?: string | null;
@@ -867,7 +861,8 @@ export class CathayApiClient {
     };
 
     const profile = await this.apiPost<CathayUserProfile>(
-      "/OnlineBankingApi/Common/Api/ClientCommon/G_COMM_Q_UserProfile",
+      CATHAY_SESSION_RESPONSE,
+      CATHAY_USER_PROFILE_PATH,
       tokenSession,
       {
         functionSeqNo: functionSeqNo(),
@@ -890,7 +885,8 @@ export class CathayApiClient {
     filters: string[],
   ): Promise<CathayAccount[]> {
     const response = await this.apiPost<CathayAccount>(
-      "/OnlineBankingApi/Common/Api/ClientCommon/G_CUST_Q_TransAccountList",
+      CATHAY_DOMESTIC_STATEMENT_RESPONSE,
+      CATHAY_ACCOUNT_LIST_PATH,
       session,
       {
         functionSeqNo: functionSeqNo(),
@@ -922,9 +918,11 @@ export class CathayApiClient {
     accountNo: string,
     range: CathayQueryRange,
   ): Promise<string> {
-    return await this.apiPostRaw(
-      "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
-      session,
+    return await fetchCathayApiSourceText(
+      this.page,
+      CATHAY_DOMESTIC_STATEMENT_RESPONSE,
+      CATHAY_TRANSFER_DETAIL_PATH,
+      session.jwtToken,
       {
         functionSeqNo: functionSeqNo(),
         content: {
@@ -938,140 +936,106 @@ export class CathayApiClient {
           ],
         },
       },
+      this.source,
     );
   }
 
   private async apiPost<T>(
+    declaration: CathayApiResponseDeclaration,
     path: string,
     session: Pick<CathaySession, "jwtToken">,
     body: unknown,
   ): Promise<CathayApiResponse<T>> {
-    const raw = await this.apiPostRaw(path, session, body);
+    const raw = await fetchCathayApiSourceText(
+      this.page,
+      declaration,
+      path,
+      session.jwtToken,
+      body,
+      this.source,
+    );
     return JSON.parse(raw) as CathayApiResponse<T>;
   }
-
-  private async apiPostRaw(
-    path: string,
-    session: Pick<CathaySession, "jwtToken">,
-    body: unknown,
-  ): Promise<string> {
-    if (this.strictSource) {
-      return await fetchCathayApiSourceText(
-        this.page,
-        path,
-        session.jwtToken,
-        body,
-        this.strictSource,
-      );
-    }
-    const raw = await this.page.evaluate(
-      async ({ path, token, body }) => {
-        const response = await fetch(path, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: {
-            Accept: "application/json, text/plain, */*",
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) throw new Error(`${response.status} for ${path}`);
-        return await response.text();
-      },
-      { path, token: session.jwtToken, body },
-    );
-    const result = JSON.parse(raw) as CathayApiResponse<unknown>;
-
-    if (!result.success) {
-      throw new Error(
-        `Cathay API failed: ${result.returnCode ?? "unknown"} ${result.returnDesc ?? ""}`.trim(),
-      );
-    }
-
-    return raw;
-  }
 }
-
-export type CathayApiResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method: string;
-  headers: Readonly<Record<string, string>>;
-}>;
 
 const CATHAY_API_HOST = "www.cathaybk.com.tw";
+const CATHAY_SESSION_PATH = "/MyBank/Customized/GetJWT";
+const CATHAY_USER_PROFILE_PATH = "/OnlineBankingApi/Common/Api/ClientCommon/G_COMM_Q_UserProfile";
+const CATHAY_ACCOUNT_LIST_PATH = "/OnlineBankingApi/Common/Api/ClientCommon/G_CUST_Q_TransAccountList";
+const CATHAY_TRANSFER_DETAIL_PATH = "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail";
 
-/** Decode a captured provider response only after checking its endpoint and
- * transport metadata. `text/plain` is accepted because Cathay's JSON APIs
- * have historically used both JSON and plain-text MIME labels. */
-export function decodeCathayApiSourceResponse(
-  metadata: CathayApiResponseMetadata,
-  expectedPath: string,
-  bytes: Uint8Array,
-  text: SourceTextPort,
-): string {
-  const decoded = text.decode(bytes, requireCathayApiSourceResponse(metadata, expectedPath));
-  text.assertIntact(decoded);
-  return decoded;
+export type CathayApiResponseDeclaration = ProviderResponseDeclaration<"optional">;
+
+/**
+ * What a Cathay JSON API sends to the POSTs at the given paths. Its JSON
+ * bodies have been labeled both `application/json` and `text/plain`.
+ */
+export function cathayApiResponse(
+  label: string,
+  paths: readonly string[],
+  search?: RegExp,
+): CathayApiResponseDeclaration {
+  return {
+    label,
+    host: CATHAY_API_HOST,
+    endpoints: paths.map((path) => ({
+      path,
+      method: "POST",
+      contentType: /^(?:application\/json|text\/plain)\s*(?:;|$)/iu,
+      ...(search ? { search } : {}),
+    })),
+    cacheControl: [],
+    providerDate: "optional",
+  };
 }
 
-/** Check a Cathay source response's endpoint, status, and content type; return its declared charset. */
-export function requireCathayApiSourceResponse(
-  metadata: CathayApiResponseMetadata,
-  expectedPath: string,
-): string {
-  let url: URL;
-  try {
-    url = new URL(metadata.url);
-  } catch {
-    throw new Error("Cathay source response URL is invalid.");
-  }
-  if (
-    url.protocol !== "https:" ||
-    url.hostname !== CATHAY_API_HOST ||
-    url.pathname !== expectedPath ||
-    metadata.method.toUpperCase() !== "POST"
-  ) {
-    throw new Error(
-      "Cathay source response did not match the requested endpoint.",
-    );
-  }
-  if (metadata.status !== 200) {
-    throw new Error(
-      `Cathay source response status ${metadata.status} was rejected.`,
-    );
-  }
-  const contentType = Object.entries(metadata.headers)
-    .find(([name]) => name.toLowerCase() === "content-type")?.[1]
-    ?.split(";", 1)[0]
-    ?.trim()
-    .toLowerCase();
-  if (contentType !== "application/json" && contentType !== "text/plain") {
-    throw new Error("Cathay source response content type was rejected.");
-  }
-  return cathayResponseCharset(
-    Object.entries(metadata.headers).find(
-      ([name]) => name.toLowerCase() === "content-type",
-    )?.[1] ?? "",
+/** The JWT and user profile every signed-in Cathay read starts from. */
+const CATHAY_SESSION_RESPONSE = cathayApiResponse("Cathay session", [
+  CATHAY_SESSION_PATH,
+  CATHAY_USER_PROFILE_PATH,
+]);
+
+/** The NT-dollar account list and each account's transfer details. */
+export const CATHAY_DOMESTIC_STATEMENT_RESPONSE = cathayApiResponse("Cathay domestic statement", [
+  CATHAY_ACCOUNT_LIST_PATH,
+  CATHAY_TRANSFER_DETAIL_PATH,
+]);
+
+/** Accept one captured Cathay response against its declaration, reading its body as JSON evidence. */
+export async function acceptCathayResponse(
+  scope: FrameScope,
+  declaration: CathayApiResponseDeclaration,
+  response: Response,
+  text: SourceTextPort,
+) {
+  const transport: ProviderResponse = {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: await scope.race(response.allHeaders()),
+  };
+  const bytes = await scope.race(response.body());
+  return acceptProviderResponse(
+    declaration,
+    { response: transport, evidence: { kind: "json", bytes } },
+    { observedAt: taipeiInstant(new Date().toISOString()), text },
   );
 }
 
-/** The charset a Cathay Content-Type declares, UTF-8 when it names none. */
-export function cathayResponseCharset(contentType: string): string {
-  return /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(contentType)?.[1] ?? "utf-8";
-}
-
-
+/**
+ * POST a JSON body to a Cathay API from the signed-in page, and return the
+ * strictly decoded body of the response Playwright captured for that request.
+ */
 export async function fetchCathayApiSourceText(
   page: Page,
+  declaration: CathayApiResponseDeclaration,
   path: string,
   token: string,
   body: unknown,
-  strictSource: CathayStrictSourceOptions,
+  source: CathayStrictSourceOptions,
 ): Promise<string> {
-  strictSource.signal.throwIfAborted();
-  const scope = frameScope(page, strictSource.signal);
+  source.signal.throwIfAborted();
+  const scope = frameScope(page, source.signal);
   const expectedPostData = JSON.stringify(body);
   const responsePromise = scope.withSignal((signal) => page.waitForResponse(
     (response) => {
@@ -1115,30 +1079,22 @@ export async function fetchCathayApiSourceText(
       "Cathay browser and captured response status did not match.",
     );
   }
-  const metadata = await scope.race(cathayResponseMetadata(response));
-  const bytes = await scope.race(response.body());
-  return decodeCathayApiSourceResponse(
-    metadata,
-    path,
-    bytes,
-    strictSource.text,
-  );
+  return (await acceptCathayResponse(scope, declaration, response, source.text)).evidence.text;
 }
 
 async function fetchCathaySessionSourceText(
   page: Page,
-  strictSource: CathayStrictSourceOptions,
+  source: CathayStrictSourceOptions,
 ): Promise<string> {
-  const path = "/MyBank/Customized/GetJWT";
-  strictSource.signal.throwIfAborted();
-  const scope = frameScope(page, strictSource.signal);
+  source.signal.throwIfAborted();
+  const scope = frameScope(page, source.signal);
   const responsePromise = scope.withSignal((signal) => page.waitForResponse(
     (response) => {
       try {
         const url = new URL(response.url());
         return (
           url.hostname === CATHAY_API_HOST &&
-          url.pathname === path &&
+          url.pathname === CATHAY_SESSION_PATH &&
           response.request().method().toUpperCase() === "POST"
         );
       } catch {
@@ -1147,14 +1103,14 @@ async function fetchCathaySessionSourceText(
     },
     { timeout: 60_000, signal },
   ));
-  const statusPromise = page.evaluate(async () => {
-    const response = await fetch("/MyBank/Customized/GetJWT", {
+  const statusPromise = page.evaluate(async (path) => {
+    const response = await fetch(path, {
       method: "POST",
       credentials: "same-origin",
       headers: { Accept: "application/json, text/plain, */*" },
     });
     return response.status;
-  });
+  }, CATHAY_SESSION_PATH);
   const [browserStatus, response] = await Promise.all([
     scope.race(statusPromise),
     responsePromise,
@@ -1162,25 +1118,7 @@ async function fetchCathaySessionSourceText(
   if (browserStatus !== response.status()) {
     throw new Error("Cathay session response status did not match.");
   }
-  const metadata = await scope.race(cathayResponseMetadata(response));
-  const bytes = await scope.race(response.body());
-  return decodeCathayApiSourceResponse(
-    metadata,
-    path,
-    bytes,
-    strictSource.text,
-  );
-}
-
-export async function cathayResponseMetadata(
-  response: Response,
-): Promise<CathayApiResponseMetadata> {
-  return {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: await response.allHeaders(),
-  };
+  return (await acceptCathayResponse(scope, CATHAY_SESSION_RESPONSE, response, source.text)).evidence.text;
 }
 
 function parseCathayTransferResponse(
@@ -1197,10 +1135,6 @@ function parseCathayTransferResponse(
   return result;
 }
 
-export async function createCathaySession(page: Page): Promise<CathaySession> {
-  return await new CathayApiClient(page).createSession();
-}
-
 export type CathayDomesticFinancialCollection = Readonly<{
   requests: ReturnType<typeof buildCathayDomesticFinancialRequestsForPGlite>;
   captureCount: number;
@@ -1215,16 +1149,16 @@ export async function collectCathayDomesticFinancialRequests(
   accountFilters: string[],
   cathaySession: CathaySession,
   options: Readonly<{
-    source?: CathayStrictSourceOptions;
+    source: CathayStrictSourceOptions;
     observedAt?: string;
     client?: CathayDomesticStatementsClient;
   }>,
 ): Promise<CathayDomesticFinancialCollection> {
-  options.source?.signal.throwIfAborted();
+  options.source.signal.throwIfAborted();
   const client = options.client ?? new CathayApiClient(page, options.source);
   const accounts = await withAbort(
     client.fetchDomesticAccounts(cathaySession, accountFilters),
-    options.source?.signal,
+    options.source.signal,
   );
 
   const sourceConnectionId =
@@ -1240,14 +1174,14 @@ export async function collectCathayDomesticFinancialRequests(
   const stagedPages: CathayStagedCapturePage[] = [];
   const stagedStatements: CathayTransferResult[] = [];
   for (const account of accounts) {
-    options.source?.signal.throwIfAborted();
+    options.source.signal.throwIfAborted();
     const rawResponse = await withAbort(
       client.fetchTransferDetailsRaw(
         cathaySession,
         account.accountNo,
         bounds,
       ),
-      options.source?.signal,
+      options.source.signal,
     );
     const statement = parseCathayTransferResponse(
       rawResponse,

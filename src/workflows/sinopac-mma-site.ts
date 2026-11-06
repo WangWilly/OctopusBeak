@@ -1,5 +1,4 @@
 import type { Page } from "playwright";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { fail } from "../lib/preview-sources/source-kit.ts";
 import type { ProviderResponse } from "./provider-response.ts";
 import { frameScope, type BrowserScope, type FrameScope } from "./frame-scope.ts";
@@ -23,25 +22,14 @@ export type SinopacMmaRoute = Readonly<{
   ready?(scope: BrowserScope): Promise<boolean>;
 }>;
 
-/** The response a route's page requested, with its raw body. */
-export type SinopacMmaPageResponse = Readonly<{ response: ProviderResponse; bytes: Uint8Array }>;
+/** A response the site observed, with its raw body, undecoded. */
+export type SinopacMmaResponse = Readonly<{ response: ProviderResponse; bytes: Uint8Array }>;
 
 /** A POST's body and headers; without headers it is sent as MMA's form-encoded XHR. */
 export type SinopacMmaPostInit = Readonly<{
   body?: string;
   headers?: Readonly<Record<string, string>>;
   referrer?: string;
-  /** Checks the reply's URL, status and content type before its body is decoded; throws to refuse it. */
-  accept?(reply: Readonly<{ url: string; status: number; contentType: string }>): void | Promise<void>;
-}>;
-
-/** A POST's reply, its body decoded strictly as UTF-8. */
-export type SinopacMmaReply = Readonly<{
-  url: string;
-  status: number;
-  contentType: string;
-  date: string | null;
-  text: string;
 }>;
 
 /**
@@ -51,12 +39,12 @@ export type SinopacMmaReply = Readonly<{
 export type SinopacMmaSite = Readonly<{
   frames: FrameScope;
   /** Open a deposit page from any signed-in page and return the response its load requested. */
-  open(route: SinopacMmaRoute): Promise<SinopacMmaPageResponse>;
-  /** POST from inside the signed-in MMA page and decode the reply strictly as UTF-8. */
-  post(path: string, init?: SinopacMmaPostInit): Promise<SinopacMmaReply>;
+  open(route: SinopacMmaRoute): Promise<SinopacMmaResponse>;
+  /** POST from inside the signed-in MMA page and return the response it observed. */
+  post(path: string, init?: SinopacMmaPostInit): Promise<SinopacMmaResponse>;
 }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort }>;
+type SiteContext = Readonly<{ signal: AbortSignal }>;
 
 const originOf = (href: string): string | null => {
   try {
@@ -81,7 +69,7 @@ export function sinopacMmaSite(page: Page, context: SiteContext): SinopacMmaSite
     frames,
     open: async (route) => {
       // MMA answers no-store, so the body is read as soon as the response arrives, before the page settles.
-      const responded = frames.withSignal(async (signal): Promise<SinopacMmaPageResponse> => {
+      const responded = frames.withSignal(async (signal): Promise<SinopacMmaResponse> => {
         const response = await page.waitForResponse(
           (candidate) => route.response(candidate.url(), candidate.request().method()),
           { timeout: ROUTE_TIMEOUT_MS, signal },
@@ -102,32 +90,29 @@ export function sinopacMmaSite(page: Page, context: SiteContext): SinopacMmaSite
     post: async (path, init = {}) => {
       context.signal.throwIfAborted();
       if (originOf(page.url()) !== SINOPAC_MMA_ORIGIN) fail("unexpected-response", "the signed-in page is not on the MMA origin");
+      const request = {
+        method: "POST",
+        headers: { ...(init.headers ?? MMA_FORM_HEADERS) },
+        body: init.body ?? "",
+        ...(init.referrer === undefined ? {} : { referrer: init.referrer }),
+      };
       const reply = await frames.race(page.evaluate(async ({ url, init }) => {
-        const response = await fetch(url, { method: "POST", credentials: "same-origin", ...init });
+        const response = await fetch(url, { credentials: "same-origin", ...init });
         const bytes = new Uint8Array(await response.arrayBuffer());
         let binary = "";
         for (let index = 0; index < bytes.length; index += 0x8000) {
           binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
         }
-        return {
-          url: response.url,
-          status: response.status,
-          contentType: response.headers.get("content-type") ?? "",
-          date: response.headers.get("date"),
-          base64: btoa(binary),
-        };
-      }, {
-        url: `${SINOPAC_MMA_ORIGIN}${path}`,
-        init: {
-          headers: { ...(init.headers ?? MMA_FORM_HEADERS) },
-          body: init.body ?? "",
-          ...(init.referrer === undefined ? {} : { referrer: init.referrer }),
-        },
-      }));
-      await init.accept?.({ url: reply.url, status: reply.status, contentType: reply.contentType });
-      const text = context.text.decode(Buffer.from(reply.base64, "base64"), "utf-8");
-      context.text.assertIntact(text);
-      return { url: reply.url, status: reply.status, contentType: reply.contentType, date: reply.date, text };
+        const headers: Record<string, string> = {};
+        response.headers.forEach((value, name) => {
+          headers[name] = value;
+        });
+        return { url: response.url, status: response.status, headers, base64: btoa(binary) };
+      }, { url: `${SINOPAC_MMA_ORIGIN}${path}`, init: request }));
+      return {
+        bytes: Buffer.from(reply.base64, "base64"),
+        response: { url: reply.url, status: reply.status, method: request.method, headers: reply.headers },
+      };
     },
   };
   return Object.freeze(site);

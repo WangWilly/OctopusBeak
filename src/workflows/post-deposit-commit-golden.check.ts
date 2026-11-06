@@ -54,17 +54,20 @@ function statement(accountId: string, items: PostRawStatementRow[] | undefined):
   };
   const end = { header: { EndBracket: false, OutputType: "EndBracket" }, body: { result: "success" } };
   return parsePostStatementResponse({
-    bytes: new TextEncoder().encode(JSON.stringify([screen, end])),
-    response: {
-      url: "https://ipost.post.gov.tw/pst/EsoafDispatcher",
-      status: 200,
-      method: "POST",
-      contentType: "application/json; charset=UTF-8",
+    acquired: {
+      evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify([screen, end])) },
+      response: {
+        url: "https://ipost.post.gov.tw/pst/EsoafDispatcher",
+        status: 200,
+        method: "POST",
+        headers: { "content-type": "application/json; charset=UTF-8" },
+      },
       requestPostData: JSON.stringify({
         header: { TxnCode: "EB100200", BizCode: "inquire" },
         body: { _USER_ID: accountId, DATE: "20260301", END_DATE: "20260924" },
       }),
     },
+    observedAt: "2026-09-25T20:00:00+08:00",
     text: strictSourceText,
   });
 }

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createServer as createHttpsServer } from "node:https";
+import type { Socket } from "node:net";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -25,7 +28,8 @@ import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "./server/sources/hncb.ts";
 import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-current-deposit-balances.ts";
 import { frameScope } from "../../workflows/frame-scope.ts";
-import { hncbNetbankSite } from "../../workflows/hncb-netbank-site.ts";
+import { HNCB_NETBANK_ORIGIN, hncbNetbankSite } from "../../workflows/hncb-netbank-site.ts";
+import { ProviderResponseCheckError } from "./provider-response-check.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -40,6 +44,28 @@ assert.equal(parsedFixture.currency, "TWD");
 
 /** A check run outside any product, for the export read driven directly. */
 const unreported: ProductCollectionHandle["validate"] = async (check) => await check();
+const exportContext = { text: strictSourceText, now: () => "2026-09-01T04:00:00.000Z" };
+
+/**
+ * A throwaway self-signed certificate for netbank.hncb.com.tw, so the export
+ * check can serve HNCB's https origin locally; the browser context ignores
+ * its issuer. It is made per run so no private key lives in the repository.
+ */
+async function fixtureTls(): Promise<Readonly<{ key: string; cert: string }>> {
+  const directory = await mkdtemp(join(tmpdir(), "hncb-tls-"));
+  try {
+    const key = join(directory, "key.pem");
+    const cert = join(directory, "cert.pem");
+    execFileSync("openssl", [
+      "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+      "-keyout", key, "-out", cert, "-days", "1",
+      "-subj", "/CN=netbank.hncb.com.tw", "-addext", "subjectAltName=DNS:netbank.hncb.com.tw",
+    ], { stdio: "ignore" });
+    return { key: await readFile(key, "utf8"), cert: await readFile(cert, "utf8") };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
 
 /** The real read and build halves over one account whose query opens `download`, with no current balances. */
 function oneAccount(
@@ -123,7 +149,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   let responseStatus = 200;
   let responseContentType = "application/vnd.ms-excel; charset=big5";
   let responseDisposition = 'attachment; filename="bank-export.xls"';
-  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+  const site = createHttpsServer(await fixtureTls(), (request: IncomingMessage, response: ServerResponse) => {
     if (request.url === "/start") {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -155,11 +181,28 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     reply(response, 404, "not found");
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  server.unref();
-  const address = server.address();
+  // The browser and route.fetch() both reach HNCB's origin through this proxy, which tunnels
+  // only netbank.hncb.com.tw to the local site, so no request leaves the machine.
+  const tunnels = new Set<Socket>();
+  const proxy = createServer((_request, response) => {
+    response.writeHead(403);
+    response.end();
+  });
+  proxy.on("connect", (request: IncomingMessage, socket: Socket) => {
+    if (request.url !== `${new URL(HNCB_NETBANK_ORIGIN).hostname}:443`) {
+      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+      return;
+    }
+    tunnels.add(socket);
+    socket.on("close", () => tunnels.delete(socket));
+    socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+    site.emit("connection", socket);
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  proxy.unref();
+  const address = proxy.address();
   assert.ok(address && typeof address !== "string");
-  const origin = `http://127.0.0.1:${address.port}`;
+  const origin = HNCB_NETBANK_ORIGIN;
   const browser = await chromium.launch();
   let downloadEvents = 0;
   let browserSubmissions = 0;
@@ -168,7 +211,11 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   const previousWorkingDirectory = process.cwd();
   try {
     process.chdir(workingDirectory);
-    const page = await browser.newPage();
+    const browserContext = await browser.newContext({
+      proxy: { server: `http://127.0.0.1:${address.port}` },
+      ignoreHTTPSErrors: true,
+    });
+    const page = await browserContext.newPage();
     page.on("popup", (popup) => {
       popup.on("download", () => { downloadEvents += 1; });
       popup.on("console", (message) => {
@@ -220,7 +267,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           frameScope(page, context.signal),
           `HNCB ${account}`,
           page.mainFrame(),
-          context.text,
+          context,
           validate,
           5_000,
         );
@@ -273,7 +320,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
         contentType: "application/vnd.ms-excel; charset=big5",
         disposition: 'attachment; filename="retry.xls"',
         body: exportBytes,
-        error: /not terminal/u,
+        error: (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
       },
       {
         label: "unexpected response type",
@@ -281,7 +328,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
         contentType: "application/json; charset=utf-8",
         disposition: 'attachment; filename="unexpected.json"',
         body: Buffer.from("{}"),
-        error: /unexpected content type/u,
+        error: (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-content-type",
       },
     ] as const;
     for (const scenario of rejectedResponses) {
@@ -295,7 +342,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           frameScope(page, new AbortController().signal),
           account,
           page.mainFrame(),
-          strictSourceText,
+          exportContext,
           unreported,
           5_000,
         ),
@@ -322,7 +369,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           frameScope(page, incompleteContext.signal),
           `HNCB ${account}`,
           page.mainFrame(),
-          incompleteContext.text,
+          incompleteContext,
           validate,
           5_000,
         )),
@@ -338,9 +385,10 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     process.chdir(previousWorkingDirectory);
     await rm(workingDirectory, { recursive: true, force: true });
     await browser.close();
-    server.closeAllConnections();
+    for (const socket of tunnels) socket.destroy();
+    proxy.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
-      server.close((error) => error ? reject(error) : resolve()),
+      proxy.close((error) => error ? reject(error) : resolve()),
     );
   }
 });
@@ -465,7 +513,7 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
   };
   const page = { async waitForEvent() { return popup; } } as never;
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
-  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, strictSourceText, unreported, 20);
+  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, exportContext, unreported, 20);
   let watchdog: ReturnType<typeof setTimeout>;
   try {
     await assert.rejects(Promise.race([
@@ -494,7 +542,7 @@ test("HNCB export that times out fails the product as a collection failure, not 
   await assert.rejects(
     runHncbStatements(page, { accountFilters: [] }, context, {
       collectDeposit: oneAccount((validate) =>
-        downloadCurrentStatementInMemory(frameScope(page, context.signal), account, frame, context.text, validate, 20)),
+        downloadCurrentStatementInMemory(frameScope(page, context.signal), account, frame, context, validate, 20)),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -520,7 +568,7 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
   const run = new AbortController();
   const reason = new Error("run cancelled");
-  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, unreported, 60_000);
+  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, exportContext, unreported, 60_000);
   setTimeout(() => run.abort(reason), 10);
   await assert.rejects(download, (error: unknown) => error === reason);
   assert.equal(closed, true);
@@ -544,7 +592,7 @@ test("cancelling the run stops a pending export click in the browser and stages 
     };
     let readError: unknown;
     const download = (validate: ProductCollectionHandle["validate"]) =>
-      downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, strictSourceText, validate)
+      downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, exportContext, validate)
       .catch((error: unknown) => { readError = error; throw error; });
     setTimeout(() => run.abort(cancellation), 300);
     // The export link appears only after the cancellation; an abandoned click would still land on it.

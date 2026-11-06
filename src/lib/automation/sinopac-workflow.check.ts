@@ -6,16 +6,17 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Page } from "playwright";
 import {
-  decodeSinopacJsonSource,
   readSinopacDepositSource,
+  SINOPAC_TRANSACTION_RESPONSE,
   sinopacWorkflowWith,
   stageSinopacDeposit,
   type SinopacDepositSource,
-  type SinopacJsonSourceResponse,
   type SinopacProviderWorkflowDependencies,
   type SinopacWorkflowInput,
 } from "../../workflows/sinopac-statements.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
+import { acceptProviderResponse, type ProviderResponse } from "../../workflows/provider-response.ts";
+import { ProviderResponseCheckError, type ProviderResponseCheck } from "./provider-response-check.ts";
 import { sinopacCurrentDepositResponse } from "../../workflows/sinopac-current-deposit-balances.fixtures.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../../ledger/pglite/workflow-client.ts";
 import {
@@ -33,11 +34,11 @@ import { SINOPAC_SOURCE } from "./server/sources/sinopac.ts";
 import { runVerifiedEntry } from "./server/verified-entry.ts";
 
 const accountId = ["1410", "1800", "0822", "21"].join("");
-const response: SinopacJsonSourceResponse = {
+const response: ProviderResponse = {
   url: "https://mma.sinopac.com/ws/bank/transdetail/ws_transdetailMerge.ashx?1790000000000",
   status: 200,
   method: "POST",
-  contentType: "application/json; charset=utf-8",
+  headers: { "content-type": "application/json; charset=utf-8" },
 };
 const payload = [{
   Header: "SUCCESS",
@@ -378,39 +379,27 @@ test("a failed SinoPac current-balance read fails the build before anything is s
   assert.equal(codes.at(-1), "current-balance-collection-failed");
 });
 
-test("SinoPac source JSON is decoded strictly after terminal response checks", () => {
+test("SinoPac transaction JSON is decoded strictly after terminal response checks", () => {
+  const accept = (bytes: Uint8Array, candidate: ProviderResponse = response) => acceptProviderResponse(
+    SINOPAC_TRANSACTION_RESPONSE,
+    { evidence: { kind: "json", bytes }, response: candidate },
+    { observedAt: "2026-09-09T10:01:02+08:00", text: strictSourceText },
+  ).evidence.value;
+  const refusedBy = (check: ProviderResponseCheck) => (error: unknown) =>
+    error instanceof ProviderResponseCheckError && error.check === check;
   const bytes = Buffer.from(JSON.stringify(payload), "utf8");
-  assert.deepEqual(decodeSinopacJsonSource({
-    bytes,
-    response,
-    text: strictSourceText,
-    expectedPath: "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-  }), payload);
+  assert.deepEqual(accept(bytes), payload);
 
-  assert.throws(() => decodeSinopacJsonSource({
-    bytes: Uint8Array.of(0x7b, 0x22, 0x6e, 0x22, 0x3a, 0xc3, 0x28, 0x7d),
-    response,
-    text: strictSourceText,
-    expectedPath: "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-  }), SourceTextIntegrityError);
-  assert.throws(() => decodeSinopacJsonSource({
-    bytes,
-    response: { ...response, status: 503 },
-    text: strictSourceText,
-    expectedPath: "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-  }), /status/u);
-  assert.throws(() => decodeSinopacJsonSource({
-    bytes,
-    response: { ...response, contentType: "text/html; charset=utf-8" },
-    text: strictSourceText,
-    expectedPath: "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-  }), /content type/u);
-  assert.throws(() => decodeSinopacJsonSource({
-    bytes,
-    response: { ...response, url: "https://evil.example/ws/bank/transdetail/ws_transdetailMerge.ashx" },
-    text: strictSourceText,
-    expectedPath: "/ws/bank/transdetail/ws_transdetailMerge.ashx",
-  }), /endpoint/u);
+  assert.throws(() => accept(Uint8Array.of(0x7b, 0x22, 0x6e, 0x22, 0x3a, 0xc3, 0x28, 0x7d)), SourceTextIntegrityError);
+  assert.throws(() => accept(bytes, { ...response, status: 503 }), refusedBy("response-status"));
+  assert.throws(
+    () => accept(bytes, { ...response, headers: { "content-type": "text/html; charset=utf-8" } }),
+    refusedBy("response-content-type"),
+  );
+  assert.throws(
+    () => accept(bytes, { ...response, url: "https://evil.example/ws/bank/transdetail/ws_transdetailMerge.ashx" }),
+    refusedBy("response-endpoint"),
+  );
 });
 
 test("typed SinoPac workflow admits all source before one injected commit and creates no files", async () => {

@@ -352,14 +352,14 @@ const identityPage = {
     return {
       url: requestOptions.url,
       status: 200,
-      contentType: "application/json; charset=utf-8",
-      date: null,
+      headers: { "content-type": "application/json; charset=utf-8" },
       base64: Buffer.from(JSON.stringify([identityResponse]), "utf8").toString("base64"),
     };
   },
 } as never;
 const identitySummary = await runSinopacIdentityValidation(
-  sinopacMmaSite(identityPage, { signal: new AbortController().signal, text: strictSourceText }),
+  sinopacMmaSite(identityPage, { signal: new AbortController().signal }),
+  { now: () => "2026-09-09T10:01:02+08:00", text: strictSourceText },
   identityInput,
   [{ DataText: "USD account", DataValue: "002", DisplayText: "USD" }],
 );
