@@ -376,7 +376,8 @@ const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
     endpoints: [{
       path: "/B2C/cccqu/cccqu002/CCCQU002_Home.faces",
       method: "GET",
-      search: /^\?(?:menuId=CCC0201(?:&showLogin=false)?|showLogin=false&menuId=CCC0201)$/u,
+      // The bank's dispatcher redirects here with a trailing separator: `?menuId=CCC0201&`.
+      search: /^\?(?:menuId=CCC0201(?:&showLogin=false)?|showLogin=false&menuId=CCC0201)&?$/u,
     }],
     cacheControl: ["no-store", "no-cache"],
     providerDate: "required",

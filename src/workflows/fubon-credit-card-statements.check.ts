@@ -257,6 +257,8 @@ async function readCardThroughShell(
     currentCreditPage?: string;
     /** Where the bank redirects the current-credit task's first request. */
     currentCreditRedirect?: string;
+    /** Open the current-credit task through the bank's dispatcher, as the live site does. */
+    viaDispatcher?: boolean;
   }>,
 ) {
   const browser = await chromium.launch({ headless: true });
@@ -274,7 +276,13 @@ async function readCardThroughShell(
         case "/B2C/common/Index.faces":
           return await html(`<iframe name="frame1" src="/B2C/header.faces"></iframe><iframe name="txnFrame" src="/B2C/home.faces"></iframe>`);
         case "/B2C/header.faces":
-          return await html(shellCardHeader);
+          return await html(
+            options.viaDispatcher
+              ? shellCardHeader.replace(`${CURRENT_CREDIT_PATH}?menuId=CCC0201`, "/B2C/dispatcher?ParamValue=~opaque~")
+              : shellCardHeader,
+          );
+        case "/B2C/dispatcher":
+          return await route.fulfill({ status: 302, headers: { location: `${CURRENT_CREDIT_PATH}?menuId=CCC0201&` } });
         case CURRENT_CREDIT_PATH:
           if (options.currentCreditRedirect && !url.searchParams.has("showLogin"))
             return await route.fulfill({ status: 302, headers: { location: options.currentCreditRedirect } });
@@ -390,6 +398,15 @@ test("a current-credit request redirected back to its page reads the page the ch
     (read.snapshot.currentUsedCredit ?? []).map((credit) => [credit.usedCredit, credit.endpoint]),
     [["40000", `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201&showLogin=false`]],
   );
+});
+
+test("a current-credit task opened through the bank's dispatcher reads the page it redirects to", async () => {
+  const read = await readCardThroughShell({ modes: { 1: "available" }, periodOffsets: [1], viaDispatcher: true });
+  assert.deepEqual(
+    (read.snapshot.currentUsedCredit ?? []).map((credit) => [credit.usedCredit, credit.endpoint]),
+    [["40000", `${SITE_ORIGIN}${CURRENT_CREDIT_PATH}?menuId=CCC0201&`]],
+  );
+  assert.ok(read.events.includes("current-balance-collection-completed"));
 });
 
 test("a current-credit request redirected off its page fails the card read instead of reading as absent", async () => {

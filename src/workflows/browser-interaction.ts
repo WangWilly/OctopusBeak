@@ -152,14 +152,16 @@ async function moveBrowserWindowOutOfForeground(
 }
 
 /**
- * Whether this response ends a redirect chain that a `method` request to a URL
- * containing `path` started. A hop that redirects onward is not the end; the
- * chain's last response matches wherever it landed, so a chain that leaves the
- * endpoint surfaces as that response instead of as no response at all.
+ * Whether this response ends a redirect chain that reached the endpoint: the
+ * chain either started with a `method` request to a URL containing `path`, or
+ * its final request is one. A hop that redirects onward is not the end; a
+ * chain that leaves the endpoint surfaces as its last response instead of as
+ * no response at all, and a chain that arrives from elsewhere still counts.
  */
 export function endsRequestChainFrom(response: Response, path: string, method: string): boolean {
   if (response.status() >= 300 && response.status() < 400 && response.headers().location !== undefined) return false;
-  let origin = response.request();
+  const final = response.request();
+  let origin = final;
   for (let previous = origin.redirectedFrom(); previous; previous = previous.redirectedFrom()) origin = previous;
-  return origin.url().includes(path) && origin.method() === method;
+  return [origin, final].some((request) => request.url().includes(path) && request.method() === method);
 }
