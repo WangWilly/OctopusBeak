@@ -18,7 +18,14 @@ import {
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
 import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occurrence-groups.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import {
+  acceptProviderResponse,
+  verifyProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -786,12 +793,30 @@ async function openFundDetail(
   );
 }
 
+/** One account history report, posted from the query form to the action the workflow sets. */
+const YUANTA_FUND_HISTORY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Yuanta account fund history",
+  host: new URL(YUANTA_EBANK_ORIGIN).hostname,
+  endpoints: [{ path: "/nib/tx/fundtransactiondetails", method: "POST" }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** The run's clock and the fund product's validation, which each history reply is checked through (ADR 0106). */
+type FundReplyCheck = Readonly<{ now: () => string; validate: ProductCollectionHandle["validate"] }>;
+
+/**
+ * Submit one account history report and return the reply its result page
+ * came from. The reply's transport is checked before the wait for that page,
+ * so a refused reply fails at once instead of timing out.
+ */
 async function queryAccountFundTransactions(
   site: YuantaEbankSite,
   query: YuantaFundAccountHistoryQuery,
   startDate: string,
   endDate: string,
-): Promise<void> {
+  check: FundReplyCheck,
+): Promise<ProviderResponse> {
   // Re-enter the general account query: detail-page fields can retain a lot filter.
   const scope = await site.open(FUND_ACCOUNT_HISTORY_ROUTE);
   for (const name of ["isFromFundDetail", "is_fromFund"]) {
@@ -807,13 +832,21 @@ async function queryAccountFundTransactions(
   const [, response] = await Promise.all([
     submitForm(site, scope, "fundtransactiondetails", queryFields), responsePromise,
   ]);
-  if (!response.ok()) throw new Error("YuanTa account fund history response failed.");
   assertYuantaFundHistoryQueryRequest(new URLSearchParams(response.request().postData() ?? ""), queryFields);
+  const reply: ProviderResponse = {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: response.headers(),
+  };
+  await check.validate(() =>
+    verifyProviderResponse(YUANTA_FUND_HISTORY_RESPONSE, reply, taipeiInstant(check.now())));
   const resultScope = await waitForSubmittedFundTables(site,
     /查詢日期|申購匯率|贖回日期|轉出日期|入帳日期|分配日期|查無資料/,
     "YuanTa account fund history result");
   if (!yuantaFundHistoryResultIsUnpaged(await site.frames.withSignal((signal) => resultScope.locator("body").innerHTML({ signal }))))
     throw new Error("YuanTa account fund history has untraversed pagination.");
+  return reply;
 }
 
 async function submitForm(
@@ -850,16 +883,20 @@ async function submitForm(
     ));
 }
 
+/** Checks the page markup the tables are read from; by default only that its text is intact. */
+type FundMarkupCheck = (html: string) => unknown;
+
 async function parseFundTables(
   site: YuantaEbankSite,
   category: string,
   fund: string | null,
   period: string | null,
   sourceText: SourceTextPort,
+  checkMarkup: FundMarkupCheck = (html) => sourceText.assertIntact(html),
 ): Promise<ParsedTable[]> {
   site.frames.signal.throwIfAborted();
   const scope = await site.frames.scopeWith(FUND_TABLE_SELECTOR);
-  sourceText.assertIntact(await site.frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })));
+  await checkMarkup(await site.frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })));
   const tables = scope.locator(FUND_TABLE_SELECTOR);
   const count = await tables.count();
   const parsed: ParsedTable[] = [];
@@ -1280,8 +1317,9 @@ async function captureTables(
   fund: string | null,
   period: string | null,
   sourceText: SourceTextPort,
+  checkMarkup?: FundMarkupCheck,
 ): Promise<void> {
-  const tables = await parseFundTables(site, category, fund, period, sourceText);
+  const tables = await parseFundTables(site, category, fund, period, sourceText, checkMarkup);
   for (const table of tables) {
     parsedTables.push(table);
   }
@@ -2013,10 +2051,17 @@ export async function readYuantaFundSource(
     for (const query of yuantaFundAccountHistoryQueries) {
       checkCancelled();
       await product.reportActivity("query");
-      await queryAccountFundTransactions(site, query, dateRange.startDate, dateRange.endDate);
+      const reply = await queryAccountFundTransactions(site, query, dateRange.startDate, dateRange.endDate,
+        { now: () => context.now(), validate: product.validate });
       const firstTable = tables.length;
       const key = yuantaFundAccountHistoryKey(query.investmentType);
-      await captureTables(site, tables, "historical-transactions", key, dateRange.label, sourceText);
+      // The rows come from the result page's DOM, which the reply witnesses (ADR 0110, 0106).
+      await captureTables(site, tables, "historical-transactions", key, dateRange.label, sourceText,
+        (html) => product.validate(() => acceptProviderResponse(
+          YUANTA_FUND_HISTORY_RESPONSE,
+          { response: reply, evidence: { kind: "html", html } },
+          { observedAt: taipeiInstant(context.now()), text: sourceText },
+        )));
       for (const table of tables.slice(firstTable)) table.historyQuery = query;
       assertYuantaFundHistoryQueryResult(tables.slice(firstTable), key);
     }
