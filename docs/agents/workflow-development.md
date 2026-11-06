@@ -63,6 +63,8 @@ A Preview Source does not use `financialCommit`. Follow [Building on Preview Sou
 
 Add a focused `*.check.ts` test alongside the provider. Exercise success, malformed or incomplete input before commit, cancellation, event reporting, and that the injected commit port receives the expected items.
 
+Launch Chromium in a check with `launchCheckBrowser` or `launchCheckPersistentContext` from `src/lib/automation/check-browser.fixtures.ts`. That browser answers only from routes and loopback fixture servers. When a request goes past them, closing the browser throws and names the destination. A route sees only the first URL of a redirect chain, so Chromium follows a fulfilled 3xx on the network. Serve the landing page directly or put the redirect on a local fixture server.
+
 ## Run a workflow locally
 
 For a workflow under development, provide its JSON input through an environment variable and point it at a local fixture server where possible:

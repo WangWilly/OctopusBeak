@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { POST_CAPTCHA_INPUT_SELECTOR } from "../lib/automation/post-captcha.ts";
 import { POST_SOURCE } from "../lib/automation/server/sources/post.ts";
@@ -31,7 +32,7 @@ const PIXEL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUw
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

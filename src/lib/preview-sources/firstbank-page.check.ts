@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../automation/check-browser.fixtures.ts";
 import { FIRSTBANK_LOGIN_URL, playwrightFirstbankPage } from "./firstbank-page.ts";
 import { blankPng } from "./preview-source-harness.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
@@ -73,7 +74,7 @@ const QUERY_PAGE = `<html><body><form action="/NetBank/2/010103.html" method="po
 </form></body></html>`;
 
 let browser: Browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await launchCheckBrowser(); });
 after(async () => { await browser?.close(); });
 
 type Site = { requests: string[]; logins: unknown[]; queries: string[] };

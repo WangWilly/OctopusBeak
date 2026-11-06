@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "vite";
@@ -695,7 +696,7 @@ async function readLoanThroughShell(
     validate?: ProductCollectionHandle["validate"];
   }> = {},
 ) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   const shellPage = await browser.newPage();
   const posted: Array<{ account: string; page: string; submit: boolean; period?: string; range?: string }> = [];
   const requested: string[] = [];

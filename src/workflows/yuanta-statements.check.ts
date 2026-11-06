@@ -858,8 +858,8 @@ const browserFixtureOriginalCwd = process.cwd();
 process.chdir(browserFixtureOutputDirectory);
 let observedBrowserDownload = false;
 try {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+  const { launchCheckBrowser } = await import("../lib/automation/check-browser.fixtures.ts");
+  const browser = await launchCheckBrowser();
   try {
     const resultPage = await browser.newPage();
     const resultSite = (signal = new AbortController().signal) =>

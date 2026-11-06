@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildPostDomesticDepositCapture,
@@ -156,7 +156,7 @@ assert.equal(
   false,
 );
 
-const browser = await chromium.launch();
+const browser = await launchCheckBrowser();
 try {
   const racingNoticePage = await browser.newPage();
   await racingNoticePage.setContent(`

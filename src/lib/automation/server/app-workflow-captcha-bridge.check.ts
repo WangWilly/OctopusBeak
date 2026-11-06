@@ -3,7 +3,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after, before } from "node:test";
-import { chromium, type Browser } from "playwright";
+import { type Browser } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import {
   createPgliteOperationalProvider,
@@ -88,7 +89,7 @@ const yuantaTradeImageContract: HumanAssistanceContractInput = {
 };
 
 let browser: Browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await launchCheckBrowser(); });
 after(async () => { await browser.close(); });
 
 /**

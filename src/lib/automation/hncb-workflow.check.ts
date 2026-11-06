@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchCheckBrowser } from "./check-browser.fixtures.ts";
 import {
   downloadCurrentStatementInMemory,
   parseStatementExport,
@@ -203,7 +204,7 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   const address = proxy.address();
   assert.ok(address && typeof address !== "string");
   const origin = HNCB_NETBANK_ORIGIN;
-  const browser = await chromium.launch();
+  const browser = await launchCheckBrowser();
   let downloadEvents = 0;
   let browserSubmissions = 0;
   let submitInvocations = 0;
@@ -384,12 +385,15 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   } finally {
     process.chdir(previousWorkingDirectory);
     await rm(workingDirectory, { recursive: true, force: true });
-    await browser.close();
-    for (const socket of tunnels) socket.destroy();
-    proxy.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      proxy.close((error) => error ? reject(error) : resolve()),
-    );
+    try {
+      await browser.close();
+    } finally {
+      for (const socket of tunnels) socket.destroy();
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => error ? reject(error) : resolve()),
+      );
+    }
   }
 });
 
@@ -575,7 +579,7 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
 });
 
 test("cancelling the run stops a pending export click in the browser and stages nothing", async () => {
-  const browser = await chromium.launch();
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     await page.setContent(`<iframe name="main" srcdoc="<script>function doSubmit() { top.exportClicked = true; }</script><p>查詢結果</p>"></iframe>`);
@@ -617,7 +621,7 @@ test("cancelling the run stops a pending export click in the browser and stages 
 });
 
 test("cancelling the run stops the current-balance overview polling for its menu", async () => {
-  const browser = await chromium.launch();
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     await page.setContent(`<a href="#">帳務查詢</a>`);

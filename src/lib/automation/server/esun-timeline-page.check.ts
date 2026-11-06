@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import { loadNextEsunTimelineResponse } from "../../../workflows/esun-credit-card-statements.ts";
 import { frameScope } from "../../../workflows/frame-scope.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 
 test("E.SUN timeline still loads the next page when content grows after the first scroll", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     let requests = 0;
@@ -45,7 +45,7 @@ test("E.SUN timeline still loads the next page when content grows after the firs
 });
 
 test("cancelling the run stops a timeline scroll still waiting for its container", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     await page.setContent("<p>載入中</p>");

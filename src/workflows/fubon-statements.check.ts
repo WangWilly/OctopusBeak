@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
 import {
   buildFubonLoanPaymentAccountEvidence,
@@ -1022,7 +1022,7 @@ try {
 const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
 const siteContext = (signal = new AbortController().signal) =>
   ({ signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" });
-const browser = await chromium.launch({ headless: true });
+const browser = await launchCheckBrowser();
 try {
   const selectorPage = await browser.newPage();
   const showAccountSelector = (options: Array<{ value: string; label: string }>) =>

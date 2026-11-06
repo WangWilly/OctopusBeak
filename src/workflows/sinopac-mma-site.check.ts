@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { classifyFailure } from "../lib/automation/failure-classification.ts";
 import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
@@ -28,7 +29,7 @@ const MALFORMED = Buffer.concat([Buffer.from('[{"Header":"SUCCESS","Message":"')
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

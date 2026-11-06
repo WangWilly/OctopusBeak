@@ -76,8 +76,8 @@ function fakePage(script: Script = {}) {
 const solveCaptcha = async () => "AB12";
 
 test("Rakuten reports undecodable CAPTCHA media as a typed source failure before OCR or sign-in", async () => {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+  const { launchCheckBrowser } = await import("../automation/check-browser.fixtures.ts");
+  const browser = await launchCheckBrowser();
   const startUrl = "https://rakuten-fixture.invalid/";
   try {
     for (const bytes of [Buffer.from("invalid-image-fixture"), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0])]) {

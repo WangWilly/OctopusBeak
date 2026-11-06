@@ -15,7 +15,7 @@ import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { fixedPeriod, yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 
@@ -583,7 +583,7 @@ test("Yuanta loan source reads every account through the loantransactiondetails 
     ),
   };
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   async function readThroughShell(
     options: Readonly<{ signal?: AbortSignal; holdQuery?: () => void; paymentItem?: string }> = {},
   ) {

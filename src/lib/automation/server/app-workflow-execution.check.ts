@@ -4,7 +4,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import type { BrowserContext } from "playwright";
 import {
   createPgliteOperationalProvider,
@@ -136,7 +136,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
   const root = await mkdtemp(join(tmpdir(), "einvoice-app-workflow-"));
   const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   const contexts = new Map<string, BrowserContext>();
   try {
     const provider = createPgliteOperationalProvider(store);
@@ -237,8 +237,11 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     assert.equal((await provider.automation.taskRunById(shutdownRun.taskRunId))?.status, "interrupted");
   } finally {
     for (const context of contexts.values()) await context.close().catch(() => {});
-    await browser.close();
-    await store.close();
-    await rm(root, { recursive: true, force: true });
+    try {
+      await browser.close();
+    } finally {
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
