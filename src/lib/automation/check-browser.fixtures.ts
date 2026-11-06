@@ -9,12 +9,15 @@ const LOOPBACK_HOSTS = "localhost,127.0.0.1,[::1]";
 
 /** A check sent a request that no route answered to a host that is not loopback. */
 export class UnroutedRequestError extends Error {
-  constructor(readonly destinations: readonly string[]) {
+  readonly destinations: readonly string[];
+
+  constructor(destinations: readonly string[]) {
     super(
       `A browser check sent requests that no route answered to ${destinations.join(", ")}. ` +
         "Answer each with a route or a local fixture server. Chromium follows a fulfilled redirect on the network.",
     );
     this.name = "UnroutedRequestError";
+    this.destinations = destinations;
   }
 }
 
