@@ -237,8 +237,11 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     assert.equal((await provider.automation.taskRunById(shutdownRun.taskRunId))?.status, "interrupted");
   } finally {
     for (const context of contexts.values()) await context.close().catch(() => {});
-    await browser.close();
-    await store.close();
-    await rm(root, { recursive: true, force: true });
+    try {
+      await browser.close();
+    } finally {
+      await store.close();
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });

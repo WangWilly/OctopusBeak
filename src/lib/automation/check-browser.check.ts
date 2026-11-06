@@ -74,8 +74,11 @@ test("a check browser still reaches routes and loopback fixture servers", async 
     assert.equal(await page.textContent("p"), "local fixture");
     assert.equal((await page.context().request.get(local)).status(), 200);
   } finally {
-    await browser.close();
-    await new Promise((resolve) => site.close(resolve));
+    try {
+      await browser.close();
+    } finally {
+      await new Promise((resolve) => site.close(resolve));
+    }
   }
 });
 

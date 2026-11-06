@@ -385,12 +385,15 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
   } finally {
     process.chdir(previousWorkingDirectory);
     await rm(workingDirectory, { recursive: true, force: true });
-    await browser.close();
-    for (const socket of tunnels) socket.destroy();
-    proxy.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      proxy.close((error) => error ? reject(error) : resolve()),
-    );
+    try {
+      await browser.close();
+    } finally {
+      for (const socket of tunnels) socket.destroy();
+      proxy.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        proxy.close((error) => error ? reject(error) : resolve()),
+      );
+    }
   }
 });
 
