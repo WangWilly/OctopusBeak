@@ -386,6 +386,24 @@ test("a timeline reply that is not a 200 fails the card on its response status b
   assert.equal(harness.committed.length, 0);
 }));
 
+test("history replies are declared on the host the card popup opened on", () => withManagedSecret(async () => {
+  const harness = createContext(createPage({
+    popupHost: "card.esunbank.com.tw",
+    timelineUrl: ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "card.esunbank.com.tw"),
+  }));
+  await runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] }));
+  assert.equal(harness.committed.length, 1, "replies from the popup's own host are accepted");
+}));
+
+test("a card popup outside esunbank.com.tw stops the read", () => withManagedSecret(async () => {
+  const harness = createContext(createPage({ popupHost: "esunbank.com.tw.example" }));
+  await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
+    assert.match(String((error as Error & { cause?: unknown }).cause), /popup opened outside esunbank\.com\.tw/u);
+    return true;
+  });
+  assert.equal(harness.committed.length, 0);
+}));
+
 test("a timeline reply from a host other than the card popup's fails as an endpoint check", () => withManagedSecret(async () => {
   const lookalike = ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "ebank.esunbank.com.tw.example");
   const harness = createContext(createPage({ timelineUrl: lookalike }));

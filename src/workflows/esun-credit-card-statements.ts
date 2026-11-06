@@ -622,6 +622,9 @@ async function openCardPopup(scope: FrameScope, label: string, path: string): Pr
   const popup = await popupPromise;
   await scope.withSignal((signal) =>
     popup.waitForURL((url) => url.pathname === path, { timeout: 60_000, signal }));
+  // The popup's host names the host its history replies must come from, so it must be E.SUN's own.
+  if (!/(?:^|\.)esunbank\.com\.tw$/u.test(new URL(popup.url()).hostname))
+    throw new Error("E.SUN card popup opened outside esunbank.com.tw.");
   return frameScope(popup, scope.signal);
 }
 

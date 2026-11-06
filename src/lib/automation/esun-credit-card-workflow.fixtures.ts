@@ -104,6 +104,8 @@ export function createPage(options: {
   /** Serves the first timeline page at this URL and status instead of a 200 from ESUN_TIMELINE_URL. */
   timelineUrl?: string;
   timelineStatus?: number;
+  /** The host the card popups open on, and so the host their history replies are declared on. */
+  popupHost?: string;
   portal?: (path: string, requestBody: Readonly<Record<string, unknown>>) => EsunPortalReply | EsunPortalPageReply;
   /** Serves getCardSummary as HTTP 200 with this reply; without it the summary answers 204. */
   cardSummary?: EsunCardSummaryReply;
@@ -115,6 +117,7 @@ export function createPage(options: {
     `${newestPeriod.year}/${newestPeriod.month}`,
     `${oldestPeriod.year}/${oldestPeriod.month}`,
   ];
+  const summaryUrl = summaryEndpoint.replace("ebank.esunbank.com.tw", options.popupHost ?? "ebank.esunbank.com.tw");
   const responses = [
     ...options.timelineTimeout ? [] : [options.timelineBytes
       ? byteResponse(options.timelineBytes, options.timelineUrl ?? ESUN_TIMELINE_URL, options.timelineStatus)
@@ -123,8 +126,8 @@ export function createPage(options: {
         options.timelineUrl ?? ESUN_TIMELINE_URL,
         options.timelineStatus,
       )],
-    jsonResponse(issuerSummary(periods[1]!), summaryEndpoint),
-    jsonResponse(issuerSummary(periods[0]!), summaryEndpoint),
+    jsonResponse(issuerSummary(periods[1]!), summaryUrl),
+    jsonResponse(issuerSummary(periods[0]!), summaryUrl),
   ];
   const inputValues = new Map<string, string>();
   const makeLocator = (selector: string) => ({
@@ -141,7 +144,7 @@ export function createPage(options: {
     boundingBox: async () => ({ x: 1, y: 1, width: 640, height: 480 }),
   });
   const popup = {
-    url: () => "https://ebank.esunbank.com.tw/IESC/cardTrans",
+    url: () => `https://${options.popupHost ?? "ebank.esunbank.com.tw"}/IESC/cardTrans`,
     waitForURL: async () => undefined,
     waitForResponse: async (predicate: (response: Response) => boolean) => {
       const index = responses.findIndex((response) => predicate(response));
