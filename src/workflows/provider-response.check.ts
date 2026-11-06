@@ -182,3 +182,21 @@ test("text evidence from an endpoint with no declared charset is a declaration e
     /declares no charset/u,
   );
 });
+
+test("a declared charset is taken from the Content-Type, or else from the page's meta tag", () => {
+  const declared: ProviderResponseDeclaration<"optional"> = {
+    ...EXPORT,
+    endpoints: [{ path: "/export", method: "POST", charset: "declared" }],
+    maxBytes: undefined,
+  };
+  const read = (contentType: string, bytes: Uint8Array) => acceptProviderResponse(
+    declared,
+    { evidence: { kind: "text", bytes }, response: { ...EXPORT_RESPONSE, headers: { "content-type": contentType } } },
+    { observedAt: "x", text: strictSourceText },
+  ).evidence;
+  assert.deepEqual(read("text/html; charset=big5", BIG5_TAI), { kind: "text", text: "台" });
+  const page = Uint8Array.from([...new TextEncoder().encode('<meta charset="big5">'), ...BIG5_TAI]);
+  assert.deepEqual(read("text/html", page), { kind: "text", text: '<meta charset="big5">台' });
+  assert.throws(() => read("text/html", new TextEncoder().encode("<p>no charset</p>")), checked("response-charset"));
+  assert.throws(() => read("text/html; charset=x-unknown", BIG5_TAI), checked("response-charset"));
+});

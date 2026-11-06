@@ -6,9 +6,14 @@ import {
   decodeYuantaTradeReportResponse,
   type YuantaReportReader,
 } from "../../../workflows/yuanta-trade-statements.ts";
+import { ProviderResponseCheckError } from "../provider-response-check.ts";
 import { strictSourceText } from "../source-text.ts";
 
-const reader: YuantaReportReader = { text: strictSourceText, validate: async (check) => await check() };
+const reader: YuantaReportReader = {
+  text: strictSourceText,
+  now: () => "2026-09-25T12:00:00.000Z",
+  validate: async (check) => await check(),
+};
 
 test("Yuanta report retries a lost browser navigation body with a validated raw POST", async () => {
   const url = "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock";
@@ -53,7 +58,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
       request: redirectedRequest,
       params: { index: -1 },
     }),
-    /did not match the requested source/u,
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
   );
 });
 

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { FrameScopeTimeoutError, type BrowserScope } from "./frame-scope.ts";
+import { HNCB_CARD_RESPONSE, playwrightHncbCardPages } from "./hncb-credit-card.ts";
+import { acceptProviderResponse } from "./provider-response.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE,
@@ -153,6 +156,20 @@ test("dispatch posts the transaction fields into main and resolves on the dispat
     assert.equal(reply.request().frame().name(), "main");
     assert.equal(await (await hncb.main()).locator("#card").textContent(), "RANGE=2 TYPE=001 state=result");
     assert.equal(served.requests.filter((line) => line.startsWith("POST")).length, 1);
+  }));
+
+test("a dispatched card page carries the reply its declaration accepts and the main frame's markup", () =>
+  withHncbShell(async (page) => {
+    const card = await playwrightHncbCardPages(site(page))("2");
+    assert.ok(card.dialog === null, "the dispatch raised no dialog");
+    const accepted = acceptProviderResponse(
+      HNCB_CARD_RESPONSE,
+      { response: card.response, evidence: { kind: "html", html: card.html } },
+      { observedAt: "2026-10-15T10:00:00+08:00", text: strictSourceText },
+    );
+    assert.equal(accepted.response.url.pathname, HNCB_TRX_DISPATCHER_PATH);
+    assert.equal(card.response.method, "POST");
+    assert.match(accepted.evidence.html, /RANGE=2 TYPE=001 state=result/u);
   }));
 
 test("submit clicks the main frame's own form control and resolves on its reply", () =>

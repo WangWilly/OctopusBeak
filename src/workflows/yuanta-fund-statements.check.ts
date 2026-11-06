@@ -24,6 +24,9 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { validationReporter } from "../lib/automation/product-collection.ts";
+import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -984,6 +987,12 @@ type FundShellOptions = Readonly<{
   summaryNeedsMenu?: boolean;
   holdHistoryQuery?: () => void;
   detailNav?: string;
+  /** The status each account history reply carries. */
+  historyStatus?: number;
+  /** The page each account history reply serves in place of its result. */
+  historyBody?: string;
+  /** Records the validation events of a handle whose `validate` reports as a run's does. */
+  events?: FailureEvidenceEvent[];
 }>;
 
 async function readFundThroughShell(browser: import("playwright").Browser, options: FundShellOptions) {
@@ -1026,7 +1035,7 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
             options.holdHistoryQuery();
             return;
           }
-          return await route.fulfill(html(historyResult));
+          return await route.fulfill({ ...html(options.historyBody ?? historyResult), status: options.historyStatus ?? 200 });
         }
         if (url.pathname === "/nib/tx/offhourqueryandcancel") return await late().then(() => route.fulfill(html(offHourResult)));
       }
@@ -1059,11 +1068,20 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
       return await route.fulfill(html(`<p>${url.pathname}</p>`));
     });
     await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp`, { waitUntil: "load" });
+    const handle = yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31"));
+    const { events } = options;
     const snapshot = await yuantaFundModule.readYuantaFundSource(
       page,
       yuantaFundStatementsInputSchema.parse(options.input),
       yuantaCollectionContext({ signal: options.signal }),
-      yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31")),
+      events
+        ? {
+          ...handle,
+          validate: validationReporter(async (stage, outcome) => {
+            events.push({ stage, outcome });
+          }, options.signal ?? new AbortController().signal),
+        }
+        : handle,
     );
     const menuCalls = await page.evaluate(() => (window as { menuCalls?: unknown }).menuCalls);
     return { snapshot, served, posted, activities, menuCalls };
@@ -1143,6 +1161,28 @@ test("Yuanta fund source reads every page through the fund routes and submits ea
       "a run cancelled mid-query stops inside its wait",
     );
     assert.ok(Date.now() - started < 10_000, "the cancelled query does not wait out its response timeout");
+
+    const failedAs = async (options: Omit<FundShellOptions, "input" | "events">) => {
+      const events: FailureEvidenceEvent[] = [];
+      const error = await readFundThroughShell(browser, { input, ...options, events }).then(
+        () => assert.fail("the fund read must fail"),
+        (thrown: unknown) => thrown,
+      );
+      return { error, code: classifyFailure({ error, events, stopped: false }) };
+    };
+    for (const [historyBody, why] of [
+      [undefined, "a rendered result"],
+      ["<p>系統忙碌中</p>", "an error page without result markers"],
+    ] as const) {
+      const startedAt = Date.now();
+      const failed = await failedAs({ historyStatus: 500, historyBody });
+      assert.ok(
+        failed.error instanceof ProviderResponseCheckError && failed.error.check === "response-status",
+        `an account history reply that is not 200 fails with the status check, with ${why}`,
+      );
+      assert.equal(failed.code, "source-validation-failed", "the status check fails inside the fund's validation");
+      assert.ok(Date.now() - startedAt < 10_000, "a refused reply fails before waiting out the result page");
+    }
   } finally {
     await browser.close();
   }

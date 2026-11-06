@@ -1256,7 +1256,7 @@ async function runHncbWorkflow(
       ...(assertSession ? { assertSession } : {}),
       attached: {
         collectors: () => ({
-          credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(site), { now: context.now() }),
+          credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(site), { now: context.now(), text: context.text }),
         }),
         ...(assertSession ? { assertSession } : {}),
       },

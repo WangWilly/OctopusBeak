@@ -53,8 +53,12 @@ export type ProviderEndpoint = Readonly<{
   contentType?: RegExp;
   /** The query string the URL may carry, including its "?". Absent allows none. */
   search?: RegExp;
-  /** The charset a text body is in. Text evidence needs one; JSON is always UTF-8. */
-  charset?: ProviderCharset;
+  /**
+   * The charset a text body is in. Text evidence needs one; JSON is always
+   * UTF-8. "declared" takes whatever the response names, in its Content-Type
+   * or else an HTML `<meta charset>`, for a source whose pages differ.
+   */
+  charset?: ProviderCharset | "declared";
   /** Whether the response must name itself an attachment in Content-Disposition. */
   attachment?: true;
 }>;
@@ -228,10 +232,25 @@ function encodingOf(label: string): string | undefined {
 function bodyCharset(label: string, response: VerifiedProviderResponse, charset: ProviderCharset): string {
   const encoding = encodingOf(charset.decode);
   if (!encoding) throw new Error(`${label} declares an unknown charset: ${charset.decode}`);
-  const named = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(response.contentType)?.[1]?.toLowerCase();
+  const named = NAMED_CHARSET.exec(response.contentType)?.[1]?.toLowerCase();
   if (named && !charset.labels?.includes(named) && encodingOf(named) !== encoding)
     throw new ProviderResponseCheckError("response-charset", `${label} response charset is not ${charset.decode}.`);
   return charset.decode;
+}
+
+const NAMED_CHARSET = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu;
+
+/**
+ * The charset a response names for itself: its Content-Type label, or else a
+ * `<meta charset>` in the first 4 KiB. Charset declarations are ASCII, so
+ * reading that prefix as Latin-1 decodes none of the payload.
+ */
+function declaredCharset(label: string, response: VerifiedProviderResponse, bytes: Uint8Array): string {
+  const named = NAMED_CHARSET.exec(response.contentType)?.[1]
+    ?? /<meta\b[^>]*\bcharset\s*=\s*["']?([^\s;"'/>]+)/iu.exec(new TextDecoder("latin1").decode(bytes.subarray(0, 4096)))?.[1];
+  if (!named || !encodingOf(named))
+    throw new ProviderResponseCheckError("response-charset", `${label} response declares no known charset.`);
+  return named;
 }
 
 function decodeEvidence(
@@ -254,7 +273,10 @@ function decodeEvidence(
   if (evidence.kind === "text") {
     const charset = response.endpoint.charset;
     if (!charset) throw new Error(`${label} declares no charset for its text response.`);
-    return { kind: "text", text: text.decode(evidence.bytes, bodyCharset(label, response, charset)) };
+    const decodeAs = charset === "declared"
+      ? declaredCharset(label, response, evidence.bytes)
+      : bodyCharset(label, response, charset);
+    return { kind: "text", text: text.decode(evidence.bytes, decodeAs) };
   }
   const decoded = text.decode(evidence.bytes, bodyCharset(label, response, UTF_8));
   let value: unknown;
