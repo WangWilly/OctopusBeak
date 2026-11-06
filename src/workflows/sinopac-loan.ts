@@ -12,6 +12,7 @@ import {
   text,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /*
@@ -32,11 +33,13 @@ export type SinopacLoanTransport = Readonly<{
 }>;
 
 /** Form POSTs through the MMA site's one POST. */
-export function sinopacLoanTransport(site: SinopacMmaSite): SinopacLoanTransport {
+export function sinopacLoanTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacLoanTransport {
   return {
     async post(path, form) {
-      const reply = await site.post(path, { body: new URLSearchParams(form).toString() });
-      return { endpoint: path, status: reply.status, date: reply.date, text: reply.text };
+      const { response, bytes } = await site.post(path, { body: new URLSearchParams(form).toString() });
+      const body = sourceText.decode(bytes, "utf-8");
+      sourceText.assertIntact(body);
+      return { endpoint: path, status: response.status, date: response.headers.date ?? null, text: body };
     },
   };
 }

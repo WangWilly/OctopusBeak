@@ -6,6 +6,7 @@ import type { ProductCollectionHandle } from "../lib/automation/product-collecti
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { sinopacCardTransport } from "./sinopac-credit-card.ts";
 import {
   readSinopacCurrentDepositBalanceResponse,
@@ -97,7 +98,8 @@ async function withMma(
   }
 }
 
-const context = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
+const context = (signal = new AbortController().signal) =>
+  ({ signal, text: strictSourceText, now: () => "2026-09-09T10:01:02+08:00" });
 
 const product = {
   event: async () => undefined,
@@ -141,7 +143,7 @@ test("a transaction reply that is not a 200 JSON reply is refused before its bod
     const error = await source.queryTransactions(account!, { startDate: "2026/08/01", endDate: "2026/08/31" }, "2026/09/09")
       .then(() => assert.fail("the error page was read"), (rejection: unknown) => rejection);
     assert.ok(!(error instanceof SourceTextIntegrityError), "the malformed body was decoded before the status was checked");
-    assert.match(String(error), /status is not 200 \(500\)/u);
+    assert.ok(error instanceof ProviderResponseCheckError && error.check === "response-status", String(error));
   }, { transactionStatus: 500 }));
 
 test("the balance route returns the raw ws_bankbal body and its response headers", () =>
@@ -154,15 +156,16 @@ test("the balance route returns the raw ws_bankbal body and its response headers
     assert.equal(read.response.headers.date, PROVIDER_DATE);
   }));
 
-test("post sends MMA's form XHR by default, or the caller's headers, and decodes the reply as UTF-8", () =>
+test("post sends MMA's form XHR by default, or the caller's headers, and returns the response it observed", () =>
   withMma(async (page, received) => {
     const site = sinopacMmaSite(page, context());
     const form = await site.post("/ws/echo.ashx?1", { body: "AcctValue=0012" });
-    assert.deepEqual(JSON.parse(form.text), [{ Header: "SUCCESS", Message: "查詢成功" }]);
-    assert.equal(form.status, 200);
-    assert.equal(form.url, `${SINOPAC_MMA_ORIGIN}/ws/echo.ashx?1`);
-    assert.equal(form.contentType, "application/json; charset=utf-8");
-    assert.equal(form.date, PROVIDER_DATE);
+    assert.deepEqual(JSON.parse(Buffer.from(form.bytes).toString("utf8")), [{ Header: "SUCCESS", Message: "查詢成功" }]);
+    assert.equal(form.response.method, "POST");
+    assert.equal(form.response.status, 200);
+    assert.equal(form.response.url, `${SINOPAC_MMA_ORIGIN}/ws/echo.ashx?1`);
+    assert.equal(form.response.headers["content-type"], "application/json; charset=utf-8");
+    assert.equal(form.response.headers.date, PROVIDER_DATE);
     const sent = received.at(-1)!;
     assert.equal(sent.method, "POST");
     assert.equal(sent.body, "AcctValue=0012");
@@ -177,7 +180,7 @@ test("post sends MMA's form XHR by default, or the caller's headers, and decodes
 test("a reply with invalid UTF-8 fails the product as source-integrity-failed", () =>
   withMma(async (page) => {
     const site = sinopacMmaSite(page, context());
-    const error = await sinopacCardTransport(site).mma("/ws/card/cardqry/ws_cardsum.ashx").then(
+    const error = await sinopacCardTransport(site, strictSourceText).mma("/ws/card/cardqry/ws_cardsum.ashx").then(
       () => assert.fail("the malformed reply was read"),
       (rejection: unknown) => rejection,
     );

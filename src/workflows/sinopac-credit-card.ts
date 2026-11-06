@@ -25,6 +25,7 @@ import {
   unsignedDecimal,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaPostInit, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
@@ -53,10 +54,12 @@ export type SinopacCardCollectionInput = Readonly<{
 }>;
 
 /** The card's two request shapes, sent through the MMA site's one POST. */
-export function sinopacCardTransport(site: SinopacMmaSite): SinopacCardTransport {
+export function sinopacCardTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacCardTransport {
   const send = async (endpoint: string, init?: SinopacMmaPostInit): Promise<SinopacCardResponse> => {
-    const reply = await site.post(endpoint, init);
-    return { endpoint, status: reply.status, date: reply.date, text: reply.text };
+    const { response, bytes } = await site.post(endpoint, init);
+    const body = sourceText.decode(bytes, "utf-8");
+    sourceText.assertIntact(body);
+    return { endpoint, status: response.status, date: response.headers.date ?? null, text: body };
   };
   return {
     mma: (path) => send(path),
