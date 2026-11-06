@@ -1010,8 +1010,12 @@ try {
      * provider response checks on the declared host. Redirects go back to the
      * page, which follows them itself.
      */
+    let browserExportCookie: string | null = null;
+    const EXPORT_PATHS = new Set(["/export.csv", "/transactiondetails", "/fxtransactiondetails"]);
     const forwardToFixtureServer = async (route: Route) => {
       const url = new URL(route.request().url());
+      // route.fetch adds the context's cookies itself, so only the browser's own request shows the page sent them.
+      if (EXPORT_PATHS.has(url.pathname)) browserExportCookie = await route.request().headerValue("cookie");
       try {
         const response = await route.fetch({ url: `${browserFixtureBaseUrl}${url.pathname}${url.search}`, maxRedirects: 0 });
         await route.fulfill({ response });
@@ -1034,6 +1038,7 @@ try {
       runOrdinal += 1;
       observedBrowserDownload = false;
       fixtureCookie = undefined;
+      browserExportCookie = null;
       const signal = controller.signal;
       const browserPort = createAppWorkflowBrowserPort({
         taskId: "yuanta-domestic-fixture",
@@ -1077,6 +1082,8 @@ try {
     const result = success.result;
     const browserFixtureItems = success.items;
     assert.equal(result.sourceCaptureCount, 1);
+    const authenticated = "the in-memory export request must carry the authenticated same-origin cookie";
+    assert.equal(browserExportCookie, "yuanta-fixture-session=present", authenticated);
     assert.ok(browserFixtureItems.length > 0);
     const typedCommandPayload = JSON.stringify(browserFixtureItems);
     const expectedFilenameDigest = createHash("sha256")
@@ -1116,12 +1123,14 @@ try {
     const formExport = await collectFixture();
     assert.equal(formExport.result.sourceCaptureCount, 1);
     assert.equal(fixturePostCount, 1);
+    assert.equal(browserExportCookie, "yuanta-fixture-session=present", authenticated);
     assert.equal(observedBrowserDownload, false);
     fixtureJavaScriptExport = false;
     fixtureForeignJavaScriptExport = true;
     const foreignFormExport = await collectFixture();
     assert.equal(foreignFormExport.result.sourceCaptureCount, 1);
     assert.equal(fixturePostCount, 2);
+    assert.equal(browserExportCookie, "yuanta-fixture-session=present", authenticated);
     assert.equal(observedBrowserDownload, false);
     fixtureForeignJavaScriptExport = false;
 
