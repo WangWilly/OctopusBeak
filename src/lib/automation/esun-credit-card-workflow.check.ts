@@ -386,13 +386,14 @@ test("a timeline reply that is not a 200 fails the card on its response status b
   assert.equal(harness.committed.length, 0);
 }));
 
-test("a timeline reply from an undeclared host is never taken as the timeline", () => withManagedSecret(async () => {
+test("a timeline reply from a host other than the card popup's fails as an endpoint check", () => withManagedSecret(async () => {
   const lookalike = ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "ebank.esunbank.com.tw.example");
   const harness = createContext(createPage({ timelineUrl: lookalike }));
   await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
     assert.ok(error instanceof ProductCollectionInterruptedError, String(error));
-    assert.equal(error.errorCode, "source-collection-failed");
-    assert.match(String((error as Error & { cause?: unknown }).cause), /Unexpected E\.SUN response waiter/u);
+    assert.equal(error.errorCode, "source-validation-failed");
+    const cause = (error as Error & { cause?: unknown }).cause;
+    assert.ok(cause instanceof ProviderResponseCheckError && cause.check === "response-endpoint", String(cause));
     return true;
   });
   assert.equal(harness.committed.length, 0);

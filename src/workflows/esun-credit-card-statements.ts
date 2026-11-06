@@ -32,7 +32,6 @@ import {
 } from "./current-state-snapshot-capture.ts";
 import {
   acceptProviderResponse,
-  isDeclaredProviderResponse,
   verifyProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
@@ -53,20 +52,37 @@ import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
-/** The page sends these history POSTs itself, so any query is allowed. */
-const esunHistoryResponse = (label: string, path: string): ProviderResponseDeclaration<"optional"> => ({
+/** Each page of the card-transactions popup's past-year timeline. */
+const ESUN_TIMELINE_PATH = "/GW/creditLastYear/getFilterResult";
+
+/** The card-bill popup's summary of one statement period. */
+const ESUN_BILL_SUMMARY_PATH = "/GW/creditBill/getSummaryResult";
+
+/**
+ * A history reply's declaration. No capture records the host that answers
+ * these POSTs, so the card popup's own observed host names it. The page sends
+ * them itself, so any query is allowed.
+ */
+const esunHistoryResponse = (label: string, path: string, popup: FrameScope): ProviderResponseDeclaration<"optional"> => ({
   label,
-  host: "ebank.esunbank.com.tw",
+  host: new URL(popup.page.url()).hostname,
   endpoints: [{ path, method: "POST", search: /^(?:\?.*)?$/su }],
   cacheControl: [],
   providerDate: "optional",
 });
 
-/** Each page of the card-transactions popup's past-year timeline. */
-const ESUN_TIMELINE_RESPONSE = esunHistoryResponse("E.SUN timeline", "/GW/creditLastYear/getFilterResult");
-
-/** The card-bill popup's summary of one statement period. */
-const ESUN_BILL_SUMMARY_RESPONSE = esunHistoryResponse("E.SUN bill summary", "/GW/creditBill/getSummaryResult");
+/**
+ * A POST to a history path from any host. The declaration then refuses a reply
+ * from another host by name, where a host-bound wait would only time out.
+ */
+const isEsunHistoryReply = (path: string) => (response: Response): boolean => {
+  if (response.request().method() !== "POST") return false;
+  try {
+    return new URL(response.url()).pathname === path;
+  } catch {
+    return false;
+  }
+};
 
 /** Reads one history reply's JSON once it passes its declaration. */
 type EsunHistoryRead = (declaration: ProviderResponseDeclaration<"optional">, response: Response) => Promise<unknown>;
@@ -662,7 +678,7 @@ export async function loadNextEsunTimelineResponse(
   timeoutMs = 15_000,
 ): Promise<Response> {
   const response = popup.withSignal((signal) => popup.page.waitForResponse(
-    (candidate) => isDeclaredProviderResponse(ESUN_TIMELINE_RESPONSE, candidate.url(), candidate.request().method()),
+    isEsunHistoryReply(ESUN_TIMELINE_PATH),
     { timeout: timeoutMs, signal },
   ));
   void response.catch(() => undefined);
@@ -687,9 +703,10 @@ async function queryStatements(
   const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
   const popup = await openCardPopup(scope, "刷卡明細", "/IESC/cardTrans");
+  const timeline = esunHistoryResponse("E.SUN timeline", ESUN_TIMELINE_PATH, popup);
   try {
     const responsePromise = popup.withSignal((signal) => popup.page.waitForResponse(
-      (response) => isDeclaredProviderResponse(ESUN_TIMELINE_RESPONSE, response.url(), response.request().method()),
+      isEsunHistoryReply(ESUN_TIMELINE_PATH),
       { timeout: 30_000, signal },
     ));
     responsePromise.catch(() => undefined);
@@ -701,7 +718,7 @@ async function queryStatements(
     let pageCount = 0;
     let lastCursor = 0;
     while (pageCount < 4) {
-      const raw = await popup.race(readJson(ESUN_TIMELINE_RESPONSE, response));
+      const raw = await popup.race(readJson(timeline, response));
       let parsed: ReturnType<typeof rowsFromTimelineResponse>;
       try {
         parsed = rowsFromTimelineResponse(raw);
@@ -987,6 +1004,7 @@ async function readIssuerStatementSummaries(
   validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
   const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
+  const billSummary = esunHistoryResponse("E.SUN bill summary", ESUN_BILL_SUMMARY_PATH, popup);
   const { page } = popup;
   try {
     await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
@@ -998,7 +1016,7 @@ async function readIssuerStatementSummaries(
     const summaries: EsunIssuerStatementSummary[] = [];
     for (const period of [...periods].reverse()) {
       const responsePromise = popup.withSignal((signal) => page.waitForResponse(
-        (response) => isDeclaredProviderResponse(ESUN_BILL_SUMMARY_RESPONSE, response.url(), response.request().method()),
+        isEsunHistoryReply(ESUN_BILL_SUMMARY_PATH),
         { timeout: 30_000, signal },
       ));
       responsePromise.catch(() => undefined);
@@ -1006,7 +1024,7 @@ async function readIssuerStatementSummaries(
         await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
       await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
       const response = await responsePromise;
-      const raw = await popup.race(readJson(ESUN_BILL_SUMMARY_RESPONSE, response));
+      const raw = await popup.race(readJson(billSummary, response));
       summaries.push(await validate(() => {
         try {
           return issuerSummaryFromBillResponse(raw);

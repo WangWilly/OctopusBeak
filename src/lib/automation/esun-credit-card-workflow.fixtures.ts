@@ -141,6 +141,7 @@ export function createPage(options: {
     boundingBox: async () => ({ x: 1, y: 1, width: 640, height: 480 }),
   });
   const popup = {
+    url: () => "https://ebank.esunbank.com.tw/IESC/cardTrans",
     waitForURL: async () => undefined,
     waitForResponse: async (predicate: (response: Response) => boolean) => {
       const index = responses.findIndex((response) => predicate(response));
