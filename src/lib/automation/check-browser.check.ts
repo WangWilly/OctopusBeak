@@ -5,38 +5,56 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import type { Browser } from "playwright";
 import { launchCheckBrowser, UnroutedRequestError } from "./check-browser.fixtures.ts";
 
 const BANK = "https://global.yuanta.com.tw";
 
-const refused = (destination: string) => (error: unknown) =>
-  error instanceof UnroutedRequestError && error.destinations.includes(destination);
+/** Runs `use`, then closes the browser whatever happened, and expects the close to name the bank. */
+async function assertRefusedOnClose(use: (browser: Browser) => Promise<void>) {
+  const browser = await launchCheckBrowser();
+  let closed: Promise<void>;
+  try {
+    await use(browser);
+  } finally {
+    closed = browser.close();
+    // When `use` throws, its error is the one to report.
+    closed.catch(() => undefined);
+  }
+  await assert.rejects(
+    closed,
+    (error: unknown) =>
+      error instanceof UnroutedRequestError && error.destinations.includes("https://global.yuanta.com.tw:443"),
+  );
+}
 
 test("a check browser refuses an unrouted bank host and names it on close", async () => {
-  const browser = await launchCheckBrowser();
-  const page = await browser.newPage();
-  await assert.rejects(page.goto(`${BANK}/NexusWebTrade/Main/Index`));
-  await assert.rejects(browser.close(), refused("https://global.yuanta.com.tw:443"));
+  await assertRefusedOnClose(async (browser) => {
+    const page = await browser.newPage();
+    await assert.rejects(page.goto(`${BANK}/NexusWebTrade/Main/Index`));
+  });
 });
 
 test("a check browser refuses the redirect that a fulfilled 302 starts", async () => {
-  const browser = await launchCheckBrowser();
-  const page = await browser.newPage();
-  let routed = 0;
-  await page.route(`${BANK}/**`, (route) => {
-    routed += 1;
-    return route.fulfill({ status: 302, headers: { location: "/NexusWebTrade/AssetReport/Error" } });
+  await assertRefusedOnClose(async (browser) => {
+    const page = await browser.newPage();
+    let routed = 0;
+    await page.route(`${BANK}/**`, (route) => {
+      routed += 1;
+      return route.fulfill({ status: 302, headers: { location: "/NexusWebTrade/AssetReport/Error" } });
+    });
+    await page.goto(`${BANK}/NexusWebTrade/AssetReport/Stock`).catch(() => undefined);
+    assert.equal(routed, 1, "the route sees only the first URL of the redirect chain");
   });
-  await page.goto(`${BANK}/NexusWebTrade/AssetReport/Stock`).catch(() => undefined);
-  assert.equal(routed, 1, "the route sees only the first URL of the redirect chain");
-  await assert.rejects(browser.close(), refused("https://global.yuanta.com.tw:443"));
 });
 
 test("a check browser refuses the context's request API", async () => {
-  const browser = await launchCheckBrowser();
-  const page = await browser.newPage();
-  await assert.rejects(page.context().request.post(`${BANK}/NexusWebTrade/AssetReport/Stock`));
-  await assert.rejects(browser.close(), refused("https://global.yuanta.com.tw:443"));
+  await assertRefusedOnClose(async (browser) => {
+    const page = await browser.newPage();
+    // Playwright reports the proxy's refused tunnel as the reply's status.
+    const reply = await page.context().request.post(`${BANK}/NexusWebTrade/AssetReport/Stock`);
+    assert.equal(reply.status(), 403);
+  });
 });
 
 test("a check browser still reaches routes and loopback fixture servers", async () => {
