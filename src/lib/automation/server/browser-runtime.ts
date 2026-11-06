@@ -40,13 +40,15 @@ export type BrowserRuntimeConfigurationErrorCode =
   | "unsupported-profile"
   | "chromium-version-unavailable"
   | "unsupported-platform"
-  | "request-header-rewrite-failed";
+  | "request-header-rewrite-failed"
+  /** The built-in browser did not start, for example because its executable is missing. */
+  | "launch-failed";
 
 export class BrowserRuntimeConfigurationError extends Error {
   readonly code: BrowserRuntimeConfigurationErrorCode;
 
-  constructor(code: BrowserRuntimeConfigurationErrorCode) {
-    super(`browser-runtime/${code}`);
+  constructor(code: BrowserRuntimeConfigurationErrorCode, options?: ErrorOptions) {
+    super(`browser-runtime/${code}`, options);
     this.name = "BrowserRuntimeConfigurationError";
     this.code = code;
   }

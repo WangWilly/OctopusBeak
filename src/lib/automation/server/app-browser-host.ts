@@ -10,6 +10,7 @@ import {
 } from "./config-files.ts";
 import {
   browserRuntime,
+  BrowserRuntimeConfigurationError,
   cookieResetForBrowserProfile,
   type BrowserRuntime,
   type BrowserRuntimeIdentity,
@@ -378,11 +379,16 @@ export function createAppWorkflowBrowserPort(
         await ensureDirectory(browserRuntimeTaskDirectory);
         await rm(browserRuntimeDirectory, { recursive: true, force: true });
         await ensureDirectory(browserRuntimeDirectory);
-        context = await launch(browserRuntimeDirectory, {
-          ...launchOptions,
-          args: [...launchOptions.args, ...profileConfiguration.args],
-          userAgent: profileConfiguration.userAgent,
-        });
+        try {
+          context = await launch(browserRuntimeDirectory, {
+            ...launchOptions,
+            args: [...launchOptions.args, ...profileConfiguration.args],
+            userAgent: profileConfiguration.userAgent,
+          });
+        } catch (error) {
+          if (input.signal.aborted) throw error;
+          throw new BrowserRuntimeConfigurationError("launch-failed", { cause: error });
+        }
         input.signal.throwIfAborted();
         const page = context.pages()[0] ?? await context.newPage();
         const cookiesToRestore = cookiesForAppWorkflowBrowserProfile(retainedCookies, input.browserProfile);
