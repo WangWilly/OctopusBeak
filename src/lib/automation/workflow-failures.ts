@@ -161,8 +161,8 @@ const explanations = {
     en: "The verification step did not complete successfully, so this run stopped.",
   },
   "browser-runtime-config-failed": {
-    zh: "內建瀏覽器無法完成這次同步所需的設定，同步已停止。這不是登入資料或來源服務的問題。",
-    en: "The built-in browser could not be set up the way this sync requires, so the run stopped. This is not a problem with your sign-in details or the source service.",
+    zh: "內建瀏覽器無法啟動，或無法完成這次同步所需的設定，同步已停止。這不是登入資料或來源服務的問題。",
+    en: "The built-in browser did not start, or could not be set up the way this sync requires, so the run stopped. This is not a problem with your sign-in details or the source service.",
   },
   "device-registration-required": {
     zh: "這個來源尚未信任或不再信任這台裝置，因此需要驗證碼。請到登入設定註冊這台裝置，再執行同步。",
