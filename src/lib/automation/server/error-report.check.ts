@@ -114,7 +114,7 @@ test("frames outside the app bundle are left out so the receiver accepts the rep
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain[0].frames, RECORD.error.chain[0].frames);
 });
 
-test("a snapshot check stays out of the report until the receiver accepts it", () => {
+test("the report carries each node's snapshot check beside the fields the receiver accepts", () => {
   forgetFailureDiagnostics();
   const frames = RECORD.error.chain[0].frames;
   rememberFailureDiagnostic(INPUT.taskId, {
@@ -125,9 +125,9 @@ test("a snapshot check stays out of the report until the receiver accepts it", (
     ] },
   });
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain, [
-    { type: "Error", frames },
+    { type: "Error", snapshotCheck: "response-endpoint", frames },
     { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
-  ], "the report keeps every field the receiver accepts and drops only the snapshot check");
+  ], "the report keeps every field the receiver accepts, and only those");
 });
 
 test("non-string inputs are refused as invalid", () => {

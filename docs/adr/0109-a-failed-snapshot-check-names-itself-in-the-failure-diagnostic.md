@@ -29,7 +29,7 @@ An unnamed parser error is a plain `Error` or a built-in one, such as the `TypeE
 
 **The diagnostic carries the check, not the message.** A node of the diagnostic error chain gains an optional `snapshotCheck`, read from the error and accepted only from the fixed set. This follows the existing `sqlState` and `httpStatus` fields.
 
-**The Error report leaves it out for now.** The receiver accepts only `type`, `sqlState`, `httpStatus` and `frames` on a chain node, so the App drops `snapshotCheck` when it builds a report. A receiver change that accepts it comes first; a later App change then sends it.
+**The Error report carries it, after the receiver accepts it.** The receiver refuses any unknown key on a chain node, so it learned `snapshotCheck` first (OctopusBeak-Telemetry #6, which stores a well-formed check it does not know yet as `other`). Until that Worker was deployed, the App dropped the field from reports; it now sends it.
 
 **A development run writes the diagnostic by default.** `npm run desktop:dev` sets `OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE` to `octopusbeak-workflow-failures.jsonl` in the per-user temporary folder (`os.tmpdir()`, `$TMPDIR` on macOS) unless the variable is already set, and prints the path. A shared folder such as `/private/tmp` would let another account create the file or a link in its place first. Setting the variable to an empty string turns the file off. A packaged App is unchanged.
 
@@ -44,4 +44,4 @@ An unnamed parser error is a plain `Error` or a built-in one, such as the `TypeE
 
 - A rejected snapshot in a development run leaves a diagnostic line that names the check, for example `"snapshotCheck":"response-endpoint"`.
 - The stage half of the snapshot module still reports without a check: a duplicate item key, an ambiguous match, and errors from the declaration's own `validate`, `build` and staging kind. So does statement validation outside the module.
-- The Error report payload is unchanged until the receiver accepts `snapshotCheck`.
+- An Error report from a failed snapshot names the check too, and the receiver's dashboard shows it in the error chain.
