@@ -55,6 +55,13 @@ import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
+import {
+  acceptProviderResponse,
+  verifyProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -773,28 +780,31 @@ export async function fillTradeLoginForm(
   await page.locator("#loginPWD").blur({ signal });
 }
 
-function responseCharset(headers: Record<string, string>, bytes: Uint8Array): string {
-  const contentType = headers["content-type"] ?? headers["Content-Type"] ?? "";
-  const headerCharset = contentType.match(/\bcharset\s*=\s*["']?([^\s;"']+)/i)?.[1];
-  if (headerCharset) return headerCharset;
-
-  // Charset declarations are ASCII, so inspecting a small byte prefix does
-  // not decode or normalize the provider's financial payload.
-  const asciiPrefix = Buffer.from(bytes.subarray(0, 4096)).toString("latin1");
-  const metaCharset = asciiPrefix.match(
-    /<meta\b[^>]*\bcharset\s*=\s*["']?([^\s;"'/>]+)/i,
-  )?.[1];
-  if (metaCharset) return metaCharset;
-  throw new Error("Yuanta Trade source response did not declare a text encoding.");
-}
-
 type YuantaReportResponse = Pick<Response, "url" | "status" | "headers" | "body">;
 
-/** How a report is read: decoded by `text`, its page parsed inside `validate`. */
+/** How a report is read: decoded by `text`, its reply checked and its page parsed inside `validate`. */
 export type YuantaReportReader = Readonly<{
   text: SourceTextPort;
+  now: () => string;
   validate: ProductCollectionHandle["validate"];
 }>;
+
+/** The provider decides the report URL's query, and each page names its own charset. */
+function yuantaTradeReportResponse(reportType: string): ProviderResponseDeclaration<"optional"> {
+  return {
+    label: "Yuanta Trade report",
+    host: new URL(YUANTA_TRADE_LOGIN_URL).hostname,
+    endpoints: [{
+      path: `/NexusWebTrade/AssetReport/${reportType}`,
+      method: "POST",
+      contentType: /^text\/html\b/iu,
+      search: /^(?:\?.*)?$/su,
+      charset: "declared",
+    }],
+    cacheControl: [],
+    providerDate: "optional",
+  };
+}
 
 function isUnavailableBrowserResponseBody(error: unknown): boolean {
   return error instanceof Error &&
@@ -808,35 +818,25 @@ async function decodeYuantaReportSource(
   reader: YuantaReportReader,
   reportType: string,
 ): Promise<ReportPage> {
-  const expectedUrl = new URL(
-    `/NexusWebTrade/AssetReport/${reportType}`,
-    YUANTA_TRADE_LOGIN_URL,
-  );
-  let actualUrl: URL;
-  try {
-    actualUrl = new URL(response.url());
-  } catch {
-    throw new Error("Yuanta Trade report response URL is invalid.");
-  }
-  if (
-    response.status() < 200 ||
-    response.status() >= 300 ||
-    method.toUpperCase() !== "POST" ||
-    actualUrl.origin !== expectedUrl.origin ||
-    actualUrl.pathname !== expectedUrl.pathname
-  ) {
-    throw new Error("Yuanta Trade report response did not match the requested source.");
-  }
-
-  const headers = response.headers();
-  const contentType = headers["content-type"] ?? headers["Content-Type"] ?? "";
-  if (!/^text\/html\b/i.test(contentType)) {
-    throw new Error("Yuanta Trade report response was not HTML.");
-  }
+  const declaration = yuantaTradeReportResponse(reportType);
+  const observedAt = taipeiInstant(reader.now());
+  const observed: ProviderResponse = {
+    url: response.url(),
+    status: response.status(),
+    method,
+    headers: response.headers(),
+  };
+  // The transport checks run first, so a refused reply's body is never read.
+  await reader.validate(() => verifyProviderResponse(declaration, observed, observedAt));
   const bytes = await response.body();
-  const html = reader.text.decode(bytes, responseCharset(headers, bytes));
-  reader.text.assertIntact(html);
-  return reader.validate(() => parseReportPage(html, response.url(), reportType));
+  return reader.validate(() => {
+    const { evidence } = acceptProviderResponse(
+      declaration,
+      { response: observed, evidence: { kind: "text", bytes } },
+      { observedAt, text: reader.text },
+    );
+    return parseReportPage(evidence.text, observed.url, reportType);
+  });
 }
 
 /** Validate and strictly decode the report. If CDP loses a navigation body,
@@ -1825,7 +1825,12 @@ export type YuantaTradeProductRunner = (
 
 const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, input, context, product) => {
   const snapshot = await readYuantaTradeSource(
-    yuantaTradeSource(page, { signal: context.signal, text: context.text, validate: product.validate }),
+    yuantaTradeSource(page, {
+      signal: context.signal,
+      text: context.text,
+      now: () => context.now(),
+      validate: product.validate,
+    }),
     input,
     context,
     product,

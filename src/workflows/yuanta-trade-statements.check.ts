@@ -43,6 +43,7 @@ import { readFile } from "node:fs/promises";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { assertProductFailure } from "../lib/automation/single-product-run.fixtures.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
@@ -1023,7 +1024,7 @@ test("fails a Yuanta report that keeps redirecting to the provider error page", 
   const fake = fakeReportPage([]);
   await assert.rejects(
     captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportContext()),
-    /did not match the requested source/,
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
   );
   assert.equal(fake.submissions(), 3);
 });
