@@ -120,7 +120,7 @@ test("a snapshot check stays out of the report until the receiver accepts it", (
   rememberFailureDiagnostic(INPUT.taskId, {
     ...RECORD,
     error: { chain: [
-      { type: "Error", snapshotCheck: "response-endpoint", frames },
+      { type: "Error", responseCheck: "response-endpoint", frames },
       { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
     ] },
   });

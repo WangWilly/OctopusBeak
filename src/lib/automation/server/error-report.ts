@@ -112,8 +112,8 @@ export function buildErrorReport(
           ...(matching.statementType ? { statementType: matching.statementType } : {}),
           ...(matching.operation ? { operation: matching.operation } : {}),
           ...(matching.reason ? { reason: matching.reason } : {}),
-          // The report receiver accepts only these node keys; a snapshot check
-          // stays in the local diagnostic until it accepts one (ADR 0109).
+          // The App sends only these node keys; a provider response check stays
+          // in the local diagnostic for now (ADR 0109, ADR 0110).
           chain: matching.error.chain.map(({ type, sqlState, httpStatus, frames }) => ({
             type,
             ...(sqlState === undefined ? {} : { sqlState }),

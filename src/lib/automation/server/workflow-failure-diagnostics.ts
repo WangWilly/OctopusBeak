@@ -69,11 +69,8 @@ export type WorkflowFailureErrorNode = Readonly<{
   type: string;
   sqlState?: string;
   httpStatus?: number;
-  /**
-   * The provider response check that rejected the source (ADR 0109, ADR 0110).
-   * The field keeps its first name, which the report receiver already accepts.
-   */
-  snapshotCheck?: ProviderResponseCheck;
+  /** The provider response check that rejected the source (ADR 0109, ADR 0110). */
+  responseCheck?: ProviderResponseCheck;
   frames: readonly WorkflowFailureStackFrame[];
 }>;
 
@@ -241,12 +238,12 @@ export function captureSafeWorkflowFailureError(error: unknown, repoRoot: string
       const sqlState = sqlStateFor(current);
       const status = ownDataValue(current, "status");
       const httpStatus = typeof status === "number" && HTTP_FAILURE_STATUSES.has(status) ? status : undefined;
-      const snapshotCheck = responseCheckFor(current);
+      const responseCheck = responseCheckFor(current);
       chain.push({
         type,
         ...(sqlState ? { sqlState } : {}),
         ...(httpStatus ? { httpStatus } : {}),
-        ...(snapshotCheck ? { snapshotCheck } : {}),
+        ...(responseCheck ? { responseCheck } : {}),
         frames: framesFor(current, repoRoot),
       });
       current = causeOf(current);
@@ -291,12 +288,12 @@ export function sanitizeSafeWorkflowFailureError(
       : undefined;
     const httpStatus = typeof item.httpStatus === "number" && HTTP_FAILURE_STATUSES.has(item.httpStatus)
       ? item.httpStatus : undefined;
-    const snapshotCheck = isProviderResponseCheck(item.snapshotCheck) ? item.snapshotCheck : undefined;
+    const responseCheck = isProviderResponseCheck(item.responseCheck) ? item.responseCheck : undefined;
     chain.push({
       type: item.type,
       ...(sqlState ? { sqlState } : {}),
       ...(httpStatus ? { httpStatus } : {}),
-      ...(snapshotCheck ? { snapshotCheck } : {}),
+      ...(responseCheck ? { responseCheck } : {}),
       frames,
     });
   }

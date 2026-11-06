@@ -78,13 +78,13 @@ test("a snapshot check survives capture and host validation; an unknown check do
   const parserError = new TypeError("used credit is undefined");
   const rejected = new ProviderResponseCheckError("row-parse", parserError.message, { cause: parserError });
   const captured = captureSafeWorkflowFailureError(rejected, repository);
-  assert.deepEqual(captured.chain.map((node) => [node.type, node.snapshotCheck]), [["Error", "row-parse"], ["TypeError", undefined]]);
-  assert.deepEqual(sanitizeSafeWorkflowFailureError(captured, repository).chain.map((node) => node.snapshotCheck), ["row-parse", undefined]);
+  assert.deepEqual(captured.chain.map((node) => [node.type, node.responseCheck]), [["Error", "row-parse"], ["TypeError", undefined]]);
+  assert.deepEqual(sanitizeSafeWorkflowFailureError(captured, repository).chain.map((node) => node.responseCheck), ["row-parse", undefined]);
 
   const forged = Object.assign(new Error("x"), { check: "account-1234" });
-  assert.equal(captureSafeWorkflowFailureError(forged, repository).chain[0]?.snapshotCheck, undefined);
+  assert.equal(captureSafeWorkflowFailureError(forged, repository).chain[0]?.responseCheck, undefined);
   assert.equal(
-    sanitizeSafeWorkflowFailureError({ chain: [{ type: "Error", snapshotCheck: "account-1234", frames: [] }] }, repository).chain[0]?.snapshotCheck,
+    sanitizeSafeWorkflowFailureError({ chain: [{ type: "Error", responseCheck: "account-1234", frames: [] }] }, repository).chain[0]?.responseCheck,
     undefined,
   );
 });

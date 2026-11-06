@@ -636,7 +636,7 @@ test("a rejected snapshot leaves its check, and no message, in the captured fail
   );
   const rejection = await offEndpoint.run.then(() => assert.fail("the off-endpoint response is admitted"), (error: unknown) => error);
   const diagnostic = captureSafeWorkflowFailureError(rejection, process.cwd());
-  assert.equal(diagnostic.chain[0]?.snapshotCheck, "response-endpoint");
+  assert.equal(diagnostic.chain[0]?.responseCheck, "response-endpoint");
   assert.ok(!JSON.stringify(diagnostic).includes("bank.example"), "the rejected URL stays out of the diagnostic");
 });
 
