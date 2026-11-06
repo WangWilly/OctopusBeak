@@ -17,14 +17,17 @@ assert.doesNotMatch(
 
 assert.match(domesticSource, /export async function signInCathayForApp/);
 assert.match(domesticSource, /export async function collectCathayDomesticFinancialRequests/);
-assert.match(domesticSource, /decodeCathayApiSourceResponse/);
+// Every Cathay reply is accepted by the provider response module; none is read straight from an in-page fetch.
+assert.match(domesticSource, /acceptProviderResponse\(/);
+assert.doesNotMatch(domesticSource, /response\.(?:text|json)\(\)/);
 assert.doesNotMatch(
   domesticSource,
   /from "libretto"|from "node:fs|writeFile\(|console\.|requirePGliteChildRpcClient|executePGliteWorkflowRun|export default workflow|downloadCathayStatements/,
 );
 
 assert.match(foreignSource, /export async function collectCathayForeignFinancialCaptures/);
-assert.match(foreignSource, /fetchCathayApiSourceText/);
+assert.match(foreignSource, /fetchCathayApiSourceText\(/);
+assert.doesNotMatch(foreignSource, /\bfetch\(|response\.(?:text|json)\(\)/);
 assert.doesNotMatch(
   foreignSource,
   /from "libretto"|from "node:fs|writeFile\(|console\.|requirePGliteChildRpcClient|executePGliteWorkflowRun|commitCathayForeignAndCurrentCanonicalCaptures|downloadCathayForeignStatements|export default workflow/,

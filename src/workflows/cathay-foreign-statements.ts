@@ -5,6 +5,7 @@ import { frameScope } from "./frame-scope.ts";
 import {
   type CathayStrictSourceOptions,
   type CathaySession,
+  cathayApiResponse,
   fetchCathayApiSourceText,
 } from "./cathay-statements.ts";
 import {
@@ -395,16 +396,27 @@ export function createCathayForeignCanonicalCaptureCollector(
   };
 }
 
+const CATHAY_FOREIGN_ACCOUNT_PATH =
+  "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_DetailAccount";
+const CATHAY_FOREIGN_TRANSFER_DETAIL_PATH =
+  "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_TransferDetail";
+
+/** The foreign account list and each account's transfer details. */
+const CATHAY_FOREIGN_STATEMENT_RESPONSE = cathayApiResponse("Cathay foreign statement", [
+  CATHAY_FOREIGN_ACCOUNT_PATH,
+  CATHAY_FOREIGN_TRANSFER_DETAIL_PATH,
+]);
+
 /** Execute foreign statements and current balances through one child RPC
  * client. Only foreign captures that committed may feed current-balance items.
  */
 class CathayForeignApiClient {
   private readonly page: Page;
-  private readonly strictSource?: CathayStrictSourceOptions;
+  private readonly source: CathayStrictSourceOptions;
 
-  constructor(page: Page, strictSource?: CathayStrictSourceOptions) {
+  constructor(page: Page, source: CathayStrictSourceOptions) {
     this.page = page;
-    this.strictSource = strictSource;
+    this.source = source;
   }
 
   async fetchForeignAccounts(
@@ -413,7 +425,7 @@ class CathayForeignApiClient {
     currencyFilters: string[],
   ): Promise<CathayForeignAccount[]> {
     const response = await this.apiPost<CathayForeignAccount>(
-      "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_DetailAccount",
+      CATHAY_FOREIGN_ACCOUNT_PATH,
       session,
       {
         functionSeqNo: functionSeqNo(),
@@ -460,7 +472,7 @@ class CathayForeignApiClient {
     }
 
     const response = await this.apiPost<CathayForeignTransferResult>(
-      "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_TransferDetail",
+      CATHAY_FOREIGN_TRANSFER_DETAIL_PATH,
       session,
       {
         functionSeqNo: functionSeqNo(),
@@ -487,31 +499,14 @@ class CathayForeignApiClient {
     session: Pick<CathaySession, "jwtToken">,
     body: unknown,
   ): Promise<CathayApiResponse<T>> {
-    const responseText = this.strictSource
-      ? await fetchCathayApiSourceText(
-          this.page,
-          path,
-          session.jwtToken,
-          body,
-          this.strictSource,
-        )
-      : ((await this.page.evaluate(
-          async ({ path, token, body }) => {
-            const response = await fetch(path, {
-              method: "POST",
-              credentials: "same-origin",
-              headers: {
-                Accept: "application/json, text/plain, */*",
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(body),
-            });
-            if (!response.ok) throw new Error(`${response.status} for ${path}`);
-            return await response.text();
-          },
-          { path, token: session.jwtToken, body },
-        )) as string);
+    const responseText = await fetchCathayApiSourceText(
+      this.page,
+      CATHAY_FOREIGN_STATEMENT_RESPONSE,
+      path,
+      session.jwtToken,
+      body,
+      this.source,
+    );
     const result = parseCathayApiJson<CathayApiResponse<T>>(responseText);
 
     if (!result.success) {

@@ -1,9 +1,10 @@
 import type { Page, Response } from "playwright";
 import {
-  cathayResponseMetadata,
-  decodeCathayApiSourceResponse,
+  acceptCathayResponse,
+  cathayApiResponse,
   fetchCathayApiSourceText,
   functionSeqNo,
+  type CathayApiResponseDeclaration,
   type CathaySession,
   type CathayStrictSourceOptions,
 } from "./cathay-statements.ts";
@@ -12,11 +13,12 @@ import {
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_DOMESTIC_UI_PATH,
 } from "./cathay-current-deposit-balances.ts";
-import type {
-  CathayAttachedPreviewPort,
-  CathayLoanOverview,
-  CathayLoanRow,
-  CathayPreviewResponse,
+import {
+  CATHAY_CARD_ENDPOINTS,
+  type CathayAttachedPreviewPort,
+  type CathayLoanOverview,
+  type CathayLoanRow,
+  type CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 
@@ -27,6 +29,28 @@ const CARD_API_PATH = "/OnlineBankingApi/ClientCard/Api/ClientCard/";
 const TIMEOUT_MS = 60_000;
 const LATEST_BILL_TIMEOUT_MS = 15_000;
 const LOAN_SETTLE_TIMEOUT_MS = 15_000;
+
+/** The card bills the collectors POST to themselves. */
+const CATHAY_CARD_RESPONSE = cathayApiResponse(
+  "Cathay credit card",
+  Object.values(CATHAY_CARD_ENDPOINTS).map((endpoint) => `${CARD_API_PATH}${endpoint}`),
+);
+
+/** The NT-dollar account overview's own request, whose query string Cathay has never constrained. */
+const CATHAY_DOMESTIC_OVERVIEW_RESPONSE = cathayApiResponse(
+  "Cathay domestic overview",
+  [CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH],
+  /^.*$/su,
+);
+
+/**
+ * The card overview's own card-status or latest-bill response. Only the
+ * endpoint name is known, not its full path, so the waiter matches the path
+ * by suffix and the declaration takes the path it observed.
+ */
+function cardOverviewResponse(response: Response): CathayApiResponseDeclaration {
+  return cathayApiResponse("Cathay card overview", [new URL(response.url()).pathname], /^.*$/su);
+}
 
 /** The overview has settled once it lists a loan or says it holds none. */
 function loanOverviewSettled(): boolean {
@@ -123,14 +147,17 @@ function isPost(response: Response, matches: (path: string) => boolean): boolean
 
 async function captured(
   scope: FrameScope,
+  declaration: CathayApiResponseDeclaration,
   response: Response,
   source: CathayStrictSourceOptions,
 ): Promise<CathayPreviewResponse> {
-  const metadata = await scope.race(cathayResponseMetadata(response));
-  const endpoint = new URL(metadata.url).pathname;
-  const text = decodeCathayApiSourceResponse(metadata, endpoint, await scope.race(response.body()), source.text);
-  const date = Object.entries(metadata.headers).find(([name]) => name.toLowerCase() === "date")?.[1] ?? null;
-  return { endpoint, status: metadata.status, text, date };
+  const accepted = await acceptCathayResponse(scope, declaration, response, source.text);
+  return {
+    endpoint: accepted.response.url.pathname,
+    status: 200,
+    text: accepted.evidence.text,
+    date: accepted.response.providerDate?.raw ?? null,
+  };
 }
 
 /**
@@ -162,7 +189,8 @@ export function playwrightCathayAttachedPreviewPort(
         .catch(() => null);
       status.catch(() => undefined);
       await open(CARD_OVERVIEW_URL);
-      const cardStatus = await captured(scope, await status, source);
+      const statusResponse = await status;
+      const cardStatus = await captured(scope, cardOverviewResponse(statusResponse), statusResponse, source);
       const latestResponse = await latest;
       await settled(
         () => /卡片末四碼[：:]\s*\d{4}|立即(?:線上)?辦卡/u.test(document.body?.innerText ?? ""),
@@ -170,14 +198,16 @@ export function playwrightCathayAttachedPreviewPort(
       );
       return {
         cardStatus,
-        latestBill: latestResponse ? await captured(scope, latestResponse, source) : null,
+        latestBill: latestResponse
+          ? await captured(scope, cardOverviewResponse(latestResponse), latestResponse, source)
+          : null,
         text: await scope.race(page.evaluate(() => document.body?.innerText ?? "")),
       };
     },
     async cardApi(endpoint, content = {}) {
       const path = `${CARD_API_PATH}${endpoint}`;
       const current = session();
-      const text = await fetchCathayApiSourceText(page, path, current.jwtToken, {
+      const text = await fetchCathayApiSourceText(page, CATHAY_CARD_RESPONSE, path, current.jwtToken, {
         functionSeqNo: functionSeqNo(),
         content: { customerId: current.customerId, ...content },
       }, source);
@@ -187,7 +217,7 @@ export function playwrightCathayAttachedPreviewPort(
       const response = responseTo((path) => path === CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH, TIMEOUT_MS);
       response.catch(() => undefined);
       await open(`${ORIGIN}${CATHAY_CURRENT_DOMESTIC_UI_PATH}`);
-      return await captured(scope, await response, source);
+      return await captured(scope, CATHAY_DOMESTIC_OVERVIEW_RESPONSE, await response, source);
     },
     async loanOverview() {
       const response = await open(LOAN_OVERVIEW_URL);

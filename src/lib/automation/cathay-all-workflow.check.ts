@@ -21,9 +21,11 @@ import type {
   WorkflowContextWith,
 } from "./workflow-executor.ts";
 import {
-  decodeCathayApiSourceResponse,
+  CATHAY_DOMESTIC_STATEMENT_RESPONSE,
   type CathayDomesticFinancialCollection,
 } from "../../workflows/cathay-statements.ts";
+import { acceptProviderResponse, type ProviderResponse } from "../../workflows/provider-response.ts";
+import { ProviderResponseCheckError } from "./provider-response-check.ts";
 import type { CathayForeignFinancialCollection } from "../../workflows/cathay-foreign-statements.ts";
 import {
   cathayDomesticOverviewBody,
@@ -105,50 +107,29 @@ const DOMESTIC_REQUESTS = buildCathayDomesticFinancialRequestsForPGlite(
 );
 
 test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response metadata", () => {
-  const metadata = {
+  const response: ProviderResponse = {
     url: "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
     status: 200,
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8" },
   };
-  assert.equal(
-    decodeCathayApiSourceResponse(
-      metadata,
-      "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
-      new TextEncoder().encode('{"success":true}'),
-      strictSourceText,
-    ),
-    '{"success":true}',
+  const accept = (transport: ProviderResponse, bytes: Uint8Array) =>
+    acceptProviderResponse(
+      CATHAY_DOMESTIC_STATEMENT_RESPONSE,
+      { response: transport, evidence: { kind: "json", bytes } },
+      { observedAt: "2026-10-29T12:00:00+08:00", text: strictSourceText },
+    ).evidence.text;
+  const failsCheck = (check: string) => (error: unknown) =>
+    error instanceof ProviderResponseCheckError && error.check === check;
+  assert.equal(accept(response, new TextEncoder().encode('{"success":true}')), '{"success":true}');
+  assert.throws(() => accept(response, Uint8Array.from([0xc3, 0x28])), SourceTextIntegrityError);
+  assert.throws(
+    () => accept({ ...response, status: 302 }, new TextEncoder().encode("{}")),
+    failsCheck("response-status"),
   );
   assert.throws(
-    () =>
-      decodeCathayApiSourceResponse(
-        metadata,
-        "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
-        Uint8Array.from([0xc3, 0x28]),
-        strictSourceText,
-      ),
-    SourceTextIntegrityError,
-  );
-  assert.throws(
-    () =>
-      decodeCathayApiSourceResponse(
-        { ...metadata, status: 302 },
-        "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
-        new TextEncoder().encode("{}"),
-        strictSourceText,
-      ),
-    /status 302/u,
-  );
-  assert.throws(
-    () =>
-      decodeCathayApiSourceResponse(
-        { ...metadata, headers: { "content-type": "text/html" } },
-        "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail",
-        new TextEncoder().encode("{}"),
-        strictSourceText,
-      ),
-    /content type/u,
+    () => accept({ ...response, headers: { "content-type": "text/html" } }, new TextEncoder().encode("{}")),
+    failsCheck("response-content-type"),
   );
 });
 
