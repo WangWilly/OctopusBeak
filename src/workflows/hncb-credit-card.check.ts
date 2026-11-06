@@ -20,6 +20,9 @@ import {
   type HncbCardRange,
 } from "./hncb-credit-card.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import { HNCB_NETBANK_ORIGIN, HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
+import type { ProviderResponse } from "./provider-response.ts";
 import {
   readHncbDepositSource,
   hncbWorkflow,
@@ -56,19 +59,36 @@ const NO_BILL = "<html><body><p>查無資料</p></body></html>";
 type Pages = Record<HncbCardRange, string>;
 const PAGES: Pages = { 0: CURRENT, 1: BILL_SEP, 2: BILL_AUG, 3: NO_BILL };
 
-function reader(pages: Pages, dialog: string | null = null) {
+/** Changes to the dispatcher reply of a range, such as a redirected URL or another status. */
+type Replies = Partial<Record<HncbCardRange, Partial<ProviderResponse>>>;
+
+const dispatcherReply = (overrides: Partial<ProviderResponse> = {}): ProviderResponse => ({
+  url: `${HNCB_NETBANK_ORIGIN}${HNCB_TRX_DISPATCHER_PATH}`,
+  status: 200,
+  method: "POST",
+  headers: { "content-type": "text/html", date: DATE },
+  ...overrides,
+});
+
+function reader(pages: Pages, dialog: string | null = null, replies: Replies = {}) {
   const reads: HncbCardRange[] = [];
   const read = async (range: HncbCardRange): Promise<HncbCardPage> => {
     reads.push(range);
-    return { range, status: 200, html: pages[range], date: DATE, dialog: range === "0" ? dialog : null };
+    if (range === "0" && dialog !== null) return { range, dialog, status: 200 };
+    return { range, dialog: null, response: dispatcherReply(replies[range]), html: pages[range] };
   };
   return { read, reads };
 }
 
-async function attachedRun(pages: Pages, dialog: string | null = null, selected: readonly ("credit_card")[] = ["credit_card"]) {
+async function attachedRun(
+  pages: Pages,
+  dialog: string | null = null,
+  selected: readonly ("credit_card")[] = ["credit_card"],
+  replies: Replies = {},
+) {
   const writes: PreviewWrite[] = [];
   const observations: PreviewResponseObservation[] = [];
-  const { read, reads } = reader(pages, dialog);
+  const { read, reads } = reader(pages, dialog, replies);
   const run = await collectAttachedPreviewProducts({
     context: {
       previewWrite: { write: async (input) => { writes.push(input); return previewReceipt(input); } },
@@ -77,7 +97,9 @@ async function attachedRun(pages: Pages, dialog: string | null = null, selected:
     },
     source: ATTACHED_PREVIEW_PRODUCTS.hncb,
     selected,
-    collectors: { credit_card: () => collectHncbCreditCards(read, { now: NOW, observe: (response) => observations.push(response) }) },
+    collectors: {
+      credit_card: () => collectHncbCreditCards(read, { now: NOW, text: strictSourceText, observe: (response) => observations.push(response) }),
+    },
   });
   return { run, writes, observations, reads };
 }
@@ -195,6 +217,20 @@ test("an incomplete list fails before write", async () => {
   await failsBeforeWrite({ ...PAGES, 2: BILL_AUG.replace("</table>", "</table><a href=\"#\">下一頁</a>") }, "source-collection-failed", /incomplete-data.*RANGE=2/u);
 });
 
+test("a statement reply from an undeclared endpoint or with status 500 fails the card as a validation failure", async () => {
+  const refused = async (replies: Replies, check: string) => {
+    const { run, writes } = await attachedRun(PAGES, null, ["credit_card"], replies);
+    assert.equal(writes.length, 0, `${check}: nothing written`);
+    assert.deepEqual(run.products, [
+      { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" },
+    ], check);
+    assert.ok(run.firstFailure instanceof ProviderResponseCheckError && run.firstFailure.check === check, check);
+  };
+  await refused({ 2: { url: `${HNCB_NETBANK_ORIGIN}/netbank/servlet/Logout` } }, "response-endpoint");
+  await refused({ 2: { url: `https://example.test${HNCB_TRX_DISPATCHER_PATH}` } }, "response-endpoint");
+  await refused({ 1: { status: 500 } }, "response-status");
+});
+
 test("not_held only on an explicit no-card signal", async () => {
   const message = await attachedRun({ ...PAGES, 0: "<html><body><div>您目前沒有本行信用卡。</div></body></html>" });
   assert.equal(message.run.products[0]?.status, "not_held");
@@ -226,7 +262,9 @@ test("attachedPreviewProducts [] collects nothing", async () => {
 const failedCard: PreviewProductCollectors = { credit_card: async () => { throw new PreviewDataRejected("card page changed"); } };
 const failedCardOutcome = { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" };
 /** Attached card collectors over the full card pages: one account written. */
-const succeededCard: PreviewProductCollectors = { credit_card: () => collectHncbCreditCards(reader(PAGES).read, { now: NOW }) };
+const succeededCard: PreviewProductCollectors = {
+  credit_card: () => collectHncbCreditCards(reader(PAGES).read, { now: NOW, text: strictSourceText }),
+};
 const succeededCardOutcome = { typeId: "credit_card", status: "success", itemCount: 1, committedCount: 1 };
 
 const depositAccount = "123456";
