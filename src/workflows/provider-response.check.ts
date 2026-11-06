@@ -125,3 +125,60 @@ test("acceptance rejects evidence that does not decode strictly", () => {
   for (const [name, evidence, expected] of rejected)
     assert.throws(() => accept(evidence), expected, name);
 });
+
+const EXPORT: ProviderResponseDeclaration<"optional"> = {
+  label: "Check bank export",
+  host: "bank.example",
+  endpoints: [{ path: "/export", method: "POST", charset: { decode: "big5", labels: ["cp950"] }, attachment: true }],
+  cacheControl: [],
+  providerDate: "optional",
+  maxBytes: 8,
+};
+const EXPORT_RESPONSE: ProviderResponse = {
+  url: "https://bank.example/export",
+  status: 200,
+  method: "POST",
+  headers: { "content-type": "application/vnd.ms-excel; charset=cp950", "content-disposition": "attachment; filename=x.xls" },
+};
+const BIG5_TAI = Uint8Array.of(0xa5, 0x78);
+const acceptExport = (headers: Readonly<Record<string, string>>, bytes = BIG5_TAI) =>
+  acceptProviderResponse(EXPORT, { evidence: { kind: "text", bytes }, response: { ...EXPORT_RESPONSE, headers } }, {
+    observedAt: "2026-09-25T20:00:01+08:00",
+    text: strictSourceText,
+  });
+const checked = (check: ProviderResponseCheck) => (error: unknown) =>
+  error instanceof ProviderResponseCheckError && error.check === check;
+
+test("a text response decodes as its endpoint's charset under any label that names it", () => {
+  assert.deepEqual(acceptExport(EXPORT_RESPONSE.headers).evidence, { kind: "text", text: "台" });
+  for (const contentType of ["application/vnd.ms-excel; charset=big5", "application/vnd.ms-excel"])
+    assert.deepEqual(acceptExport({ ...EXPORT_RESPONSE.headers, "content-type": contentType }).evidence, { kind: "text", text: "台" });
+});
+
+test("a body in another charset than declared is refused before it decodes", () => {
+  assert.throws(() => acceptExport({ ...EXPORT_RESPONSE.headers, "content-type": "text/csv; charset=utf-8" }), checked("response-charset"));
+  assert.throws(() => accept(json("[]"), { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "Content-Type": "application/json; charset=big5" } }), checked("response-charset"));
+  assert.doesNotThrow(() => accept(json("[]"), { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "Content-Type": "application/json; charset=UTF8" } }));
+});
+
+test("an attachment endpoint refuses an inline response, and a size limit refuses a larger one", () => {
+  const { "content-disposition": _disposition, ...inline } = EXPORT_RESPONSE.headers;
+  assert.throws(() => acceptExport(inline), checked("response-disposition"));
+  assert.throws(() => acceptExport({ ...EXPORT_RESPONSE.headers, "content-length": "9" }), checked("response-size"));
+  assert.throws(() => acceptExport(EXPORT_RESPONSE.headers, new Uint8Array(9)), checked("response-size"));
+  assert.throws(
+    () => verifyProviderResponse(EXPORT, { ...EXPORT_RESPONSE, headers: { ...EXPORT_RESPONSE.headers, "content-length": "9" } }, "x"),
+    checked("response-size"),
+    "a declared length over the limit is refused before the body is read",
+  );
+});
+
+test("text evidence from an endpoint with no declared charset is a declaration error", () => {
+  assert.throws(
+    () => acceptProviderResponse(RESPONSE, { evidence: { kind: "text", bytes: BIG5_TAI }, response: PROVIDER_RESPONSE }, {
+      observedAt: "x",
+      text: strictSourceText,
+    }),
+    /declares no charset/u,
+  );
+});
