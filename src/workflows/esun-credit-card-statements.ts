@@ -30,12 +30,18 @@ import {
   type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import type { ProviderResponse } from "./provider-response.ts";
+import {
+  acceptProviderResponse,
+  isDeclaredProviderResponse,
+  verifyProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
@@ -46,6 +52,24 @@ import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
+
+/** The page sends these history POSTs itself, so any query is allowed. */
+const esunHistoryResponse = (label: string, path: string): ProviderResponseDeclaration<"optional"> => ({
+  label,
+  host: "ebank.esunbank.com.tw",
+  endpoints: [{ path, method: "POST", search: /^(?:\?.*)?$/su }],
+  cacheControl: [],
+  providerDate: "optional",
+});
+
+/** Each page of the card-transactions popup's past-year timeline. */
+const ESUN_TIMELINE_RESPONSE = esunHistoryResponse("E.SUN timeline", "/GW/creditLastYear/getFilterResult");
+
+/** The card-bill popup's summary of one statement period. */
+const ESUN_BILL_SUMMARY_RESPONSE = esunHistoryResponse("E.SUN bill summary", "/GW/creditBill/getSummaryResult");
+
+/** Reads one history reply's JSON once it passes its declaration. */
+type EsunHistoryRead = (declaration: ProviderResponseDeclaration<"optional">, response: Response) => Promise<unknown>;
 
 type EsunVerifiedInput = VerifiedRunInput<typeof ESUN_CREDENTIAL_FIELDS, typeof ESUN_PRODUCTS>;
 export type EsunCredentials = EsunVerifiedInput["credentials"];
@@ -638,8 +662,7 @@ export async function loadNextEsunTimelineResponse(
   timeoutMs = 15_000,
 ): Promise<Response> {
   const response = popup.withSignal((signal) => popup.page.waitForResponse(
-    (candidate) => candidate.url().includes("/GW/creditLastYear/getFilterResult") &&
-      candidate.request().method() === "POST",
+    (candidate) => isDeclaredProviderResponse(ESUN_TIMELINE_RESPONSE, candidate.url(), candidate.request().method()),
     { timeout: timeoutMs, signal },
   ));
   void response.catch(() => undefined);
@@ -659,15 +682,14 @@ export async function loadNextEsunTimelineResponse(
 async function queryStatements(
   scope: FrameScope,
   input: Readonly<{ startDate: string; endDate: string }>,
-  readJson: (response: Response) => Promise<unknown>,
+  readJson: EsunHistoryRead,
 ): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
   const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
   const popup = await openCardPopup(scope, "刷卡明細", "/IESC/cardTrans");
   try {
     const responsePromise = popup.withSignal((signal) => popup.page.waitForResponse(
-      (response) => response.url().includes("/GW/creditLastYear/getFilterResult") &&
-        response.request().method() === "POST",
+      (response) => isDeclaredProviderResponse(ESUN_TIMELINE_RESPONSE, response.url(), response.request().method()),
       { timeout: 30_000, signal },
     ));
     responsePromise.catch(() => undefined);
@@ -679,8 +701,7 @@ async function queryStatements(
     let pageCount = 0;
     let lastCursor = 0;
     while (pageCount < 4) {
-      if (response.status() !== 200) throw new Error("E.SUN timeline request failed.");
-      const raw = await popup.race(readJson(response));
+      const raw = await popup.race(readJson(ESUN_TIMELINE_RESPONSE, response));
       let parsed: ReturnType<typeof rowsFromTimelineResponse>;
       try {
         parsed = rowsFromTimelineResponse(raw);
@@ -962,7 +983,7 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 
 async function readIssuerStatementSummaries(
   scope: FrameScope,
-  readJson: (response: Response) => Promise<unknown>,
+  readJson: EsunHistoryRead,
   validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
   const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
@@ -977,8 +998,7 @@ async function readIssuerStatementSummaries(
     const summaries: EsunIssuerStatementSummary[] = [];
     for (const period of [...periods].reverse()) {
       const responsePromise = popup.withSignal((signal) => page.waitForResponse(
-        (response) => response.url().includes("/GW/creditBill/getSummaryResult") &&
-          response.request().method() === "POST",
+        (response) => isDeclaredProviderResponse(ESUN_BILL_SUMMARY_RESPONSE, response.url(), response.request().method()),
         { timeout: 30_000, signal },
       ));
       responsePromise.catch(() => undefined);
@@ -986,8 +1006,7 @@ async function readIssuerStatementSummaries(
         await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
       await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
       const response = await responsePromise;
-      if (response.status() !== 200) throw new Error("E.SUN bill summary request failed.");
-      const raw = await popup.race(readJson(response));
+      const raw = await popup.race(readJson(ESUN_BILL_SUMMARY_RESPONSE, response));
       summaries.push(await validate(() => {
         try {
           return issuerSummaryFromBillResponse(raw);
@@ -1078,21 +1097,27 @@ export async function authenticateEsunPage(
   throw new Error("E.SUN sign-in verification is not supported by the automatic solver.");
 }
 
-async function readEsunResponseJson(
+async function readEsunHistoryJson(
+  declaration: ProviderResponseDeclaration<"optional">,
   response: Response,
-  text: SourceTextPort,
+  context: Pick<WorkflowContext, "now" | "text">,
   validate: ProductCollectionHandle["validate"],
 ): Promise<unknown> {
-  const body = await response.body();
-  return validate(() => {
-    const decoded = text.decode(body, "utf-8");
-    text.assertIntact(decoded);
-    try {
-      return JSON.parse(decoded) as unknown;
-    } catch {
-      throw new Error("E.SUN provider response is not valid JSON.");
-    }
-  });
+  const observedAt = taipeiInstant(context.now());
+  const observed: ProviderResponse = {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: response.headers(),
+  };
+  // The transport checks run first, so a refused reply's body is never read.
+  await validate(() => verifyProviderResponse(declaration, observed, observedAt));
+  const bytes = await response.body();
+  return validate(() => acceptProviderResponse(
+    declaration,
+    { response: observed, evidence: { kind: "json", bytes } },
+    { observedAt, text: context.text },
+  ).evidence.value);
 }
 
 async function collectEsunCreditCard(
@@ -1103,7 +1128,8 @@ async function collectEsunCreditCard(
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const scope = frameScope(page, context.signal);
-  const readJson = (response: Response) => readEsunResponseJson(response, context.text, product.validate);
+  const readJson: EsunHistoryRead = (declaration, response) =>
+    readEsunHistoryJson(declaration, response, context, product.validate);
   const currentCreditResponse = scope.withSignal((signal) => page.waitForResponse(
     (response) => response.url() ===
       "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
