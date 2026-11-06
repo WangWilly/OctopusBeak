@@ -3,6 +3,7 @@ import type { Frame, Locator, Page, Response } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
 
 export const YUANTA_EBANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const YUANTA_CSV_MAX_BYTES = 25 * 1024 * 1024;
@@ -47,8 +48,8 @@ export type YuantaEbankSite = Readonly<{
   open(route: YuantaRoute): Promise<BrowserScope>;
   menuAction(path: string, menuId: string, timeoutMs?: number): Promise<void>;
   chooseDuration(scope: BrowserScope, duration: YuantaDuration): Promise<void>;
-  /** Decode an HTML response strictly as UTF-8. */
-  readHtml(response: Response): Promise<string>;
+  /** Verify an HTML response against its declaration (ADR 0110) and decode it strictly in the endpoint's charset. */
+  readHtml(declaration: ProviderResponseDeclaration, response: Response, observedAt: string): Promise<string>;
   /** Fetch a CSV export link's bytes in the page and decode them strictly as Big5. */
   readCsv(link: Locator): Promise<YuantaCsvDownload>;
 }>;
@@ -152,7 +153,18 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
       }
       if (scope !== page) await frames.settle(scope as Frame);
     },
-    readHtml: async (response) => context.text.decode(await frames.race(response.body()), "utf-8"),
+    readHtml: async (declaration, response, observedAt) => {
+      const bytes = await frames.race(response.body());
+      return acceptProviderResponse(declaration, {
+        evidence: { kind: "text", bytes },
+        response: {
+          url: response.url(),
+          status: response.status(),
+          method: response.request().method(),
+          headers: response.headers(),
+        },
+      }, { observedAt, text: context.text }).evidence.text;
+    },
     readCsv: (link) => readYuantaBig5CsvFromAnchor(link, context.text, context.signal),
   };
   return Object.freeze(site);

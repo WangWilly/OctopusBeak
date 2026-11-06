@@ -34,7 +34,7 @@ import {
   type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import type { ProviderResponse } from "./provider-response.ts";
+import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import {
@@ -56,6 +56,7 @@ import {
   type FrameScope,
 } from "./frame-scope.ts";
 import {
+  YUANTA_EBANK_ORIGIN,
   yuantaEbankSite,
   type YuantaEbankSite,
   type YuantaRoute,
@@ -77,7 +78,7 @@ import {
   type YuantaCreditCardSummaryTraversal,
   type YuantaCurrentUsedCreditSnapshot,
 } from "./yuanta-credit-card-parser.ts";
-import { taipeiDate } from "../lib/time/timezone.ts";
+import { taipeiDate, taipeiInstant } from "../lib/time/timezone.ts";
 
 type MonthOption = YuantaCreditCardMonthOption;
 
@@ -292,6 +293,52 @@ const CREDIT_CARD_BILLS_ROUTE: YuantaRoute = {
   ready: isCreditCardBillsPage,
 };
 
+const YUANTA_EBANK_HOST = new URL(YUANTA_EBANK_ORIGIN).hostname;
+const UTF_8: ProviderCharset = { decode: "utf-8" };
+/** A query the page's own request chooses, which the workflow does not set. */
+const ANY_QUERY = /^(?:\?.*)?$/su;
+
+/** The bills page the route opens; it may land there through a redirect whose query the workflow does not set. */
+const YUANTA_CARD_BILLS_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Yuanta credit-card bills page",
+  host: YUANTA_EBANK_HOST,
+  endpoints: [{ path: "/nib/tx/creditcardbillsquery", method: "GET", search: ANY_QUERY, charset: UTF_8 }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** One billed month, posted from the bills form to the action the workflow sets. */
+const YUANTA_CARD_MONTH_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Yuanta credit-card billed month",
+  host: YUANTA_EBANK_HOST,
+  endpoints: [{
+    path: "/nib/tx/creditcardbillsquery",
+    method: "POST",
+    search: /^\?method=queryHistoryDetail$/u,
+    charset: UTF_8,
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** The unbilled grid, posted from the bills form to the action the workflow sets. */
+const YUANTA_CARD_UNBILLED_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Yuanta credit-card unbilled",
+  host: YUANTA_EBANK_HOST,
+  endpoints: [{ path: "/nib/tx/creditcardunbilled", method: "POST", charset: UTF_8 }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** The summary page's own POST, whose first page also carries current used credit. */
+const YUANTA_CARD_SUMMARY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Yuanta credit-card summary",
+  host: YUANTA_EBANK_HOST,
+  endpoints: [{ path: "/nib/tx/creditcardsummary", method: "POST", search: ANY_QUERY, charset: UTF_8 }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
 function isCreditCardBillsPageResponse(response: Response): boolean {
   const request = response.request();
   return (
@@ -313,11 +360,12 @@ type CreditCardBillsPage = Readonly<{
 /** Open the bills route and read the document the provider served for it. */
 async function openCreditCardBillsPage(
   site: YuantaEbankSite,
+  now: () => string,
 ): Promise<CreditCardBillsPage> {
   const { frames } = site;
   const [html, scope] = await Promise.all([
     frames.withSignal((signal) => frames.page.waitForResponse(isCreditCardBillsPageResponse, { signal }))
-      .then((response) => site.readHtml(response)),
+      .then((response) => site.readHtml(YUANTA_CARD_BILLS_RESPONSE, response, taipeiInstant(now()))),
     site.open(CREDIT_CARD_BILLS_ROUTE),
   ]);
   return { scope, html };
@@ -576,6 +624,7 @@ function yuantaCurrentCreditEvidence(html: string, response: Response | null): Y
 
 export async function loadYuantaCreditCardSummaryPage(
   site: YuantaEbankSite,
+  now: () => string,
   link?: Locator,
 ): Promise<{
   firstHtml: string;
@@ -609,7 +658,9 @@ export async function loadYuantaCreditCardSummaryPage(
       : new YuantaCurrentCreditReadError(error);
   if (navigated.status === "rejected") throw unreadable(navigated.reason);
   try {
-    const responseHtml = response ? await site.readHtml(response) : "";
+    const responseHtml = response
+      ? await site.readHtml(YUANTA_CARD_SUMMARY_RESPONSE, response, taipeiInstant(now()))
+      : "";
     if (hasYuantaCurrentCreditTable(responseHtml)) {
       return {
         firstHtml: responseHtml,
@@ -680,7 +731,7 @@ async function traverseYuantaSummaryWithCurrentEvidence(
 
 async function submitCreditCardSummary(
   site: YuantaEbankSite,
-  sourceText: SourceTextPort,
+  context: Pick<WorkflowContext, "now" | "text">,
 ): Promise<YuantaSummaryRead> {
   let link = await findYuantaCreditCardSummaryLink(site);
   if (!link) {
@@ -693,7 +744,7 @@ async function submitCreditCardSummary(
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
-    loaded = await loadYuantaCreditCardSummaryPage(site, link ?? undefined);
+    loaded = await loadYuantaCreditCardSummaryPage(site, () => context.now(), link ?? undefined);
   } catch (error) {
     if (
       error instanceof YuantaCreditSummaryNavigationError ||
@@ -708,7 +759,7 @@ async function submitCreditCardSummary(
     site,
     loaded.firstHtml,
     loaded.currentCredit,
-    sourceText,
+    context.text,
   );
 }
 
@@ -1040,6 +1091,7 @@ async function submitCreditCardMonth(
   site: YuantaEbankSite,
   bills: BrowserScope,
   month: MonthOption,
+  now: () => string,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
@@ -1069,12 +1121,13 @@ async function submitCreditCardMonth(
       }, month.index),
     ),
   ]);
-  return await site.readHtml(response);
+  return await site.readHtml(YUANTA_CARD_MONTH_RESPONSE, response, taipeiInstant(now()));
 }
 
 async function submitCreditCardUnbilled(
   site: YuantaEbankSite,
   bills: BrowserScope,
+  now: () => string,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
@@ -1103,7 +1156,7 @@ async function submitCreditCardUnbilled(
       }),
     ),
   ]);
-  return await site.readHtml(response);
+  return await site.readHtml(YUANTA_CARD_UNBILLED_RESPONSE, response, taipeiInstant(now()));
 }
 
 export async function runYuantaCreditCardStatements(
@@ -1148,7 +1201,8 @@ export async function readYuantaCreditCardSource(
 ): Promise<YuantaCreditCardSourceSnapshot> {
   context.signal.throwIfAborted();
   await product.reportActivity("query");
-  const bills = await openCreditCardBillsPage(site);
+  const now = () => context.now();
+  const bills = await openCreditCardBillsPage(site, now);
   const currentMonthHtml = bills.html;
   context.text.assertIntact(currentMonthHtml);
   context.signal.throwIfAborted();
@@ -1177,7 +1231,7 @@ export async function readYuantaCreditCardSource(
     async (month) => {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      return submitCreditCardMonth(site, bills.scope, month);
+      return submitCreditCardMonth(site, bills.scope, month, now);
     },
     async (month, monthHtml, monthPosition) => {
       context.signal.throwIfAborted();
@@ -1199,7 +1253,7 @@ export async function readYuantaCreditCardSource(
   let unbilledRows: StatementRow[] = [];
   if (input.includeUnbilled) {
     await product.reportActivity("query");
-    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope);
+    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope, now);
     context.text.assertIntact(unbilledHtml);
     context.signal.throwIfAborted();
     if (hasUntraversedPager(unbilledHtml)) {
@@ -1215,7 +1269,7 @@ export async function readYuantaCreditCardSource(
   if (input.includeSummary) {
     try {
       await product.reportActivity("query");
-      const { currentCredit: evidence, ...summaryTraversal } = await submitCreditCardSummary(site, context.text);
+      const { currentCredit: evidence, ...summaryTraversal } = await submitCreditCardSummary(site, context);
       context.text.assertIntact(JSON.stringify(summaryTraversal));
       currentCredit = evidence;
     } catch (error) {
@@ -1239,7 +1293,7 @@ export async function readYuantaCreditCardSource(
           evidence: { kind: "html", html: currentCredit.html },
           response: currentCredit.response,
         }),
-        now: () => context.now(),
+        now,
         product,
         text: context.text,
         signal: context.signal,

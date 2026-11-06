@@ -8,6 +8,7 @@ import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collectio
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -296,6 +297,7 @@ const responseBodyLinkFixture = {
 };
 const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
   fakeYuantaSite(responseBodyFixture),
+  () => "2026-09-10T02:03:04.000Z",
   responseBodyLinkFixture as never,
 );
 assert.equal(summaryClickArguments?.length, 1);
@@ -931,6 +933,7 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       billsWithoutForm?: boolean;
       holdMonth?: () => void;
       summaryBody?: Buffer;
+      unbilledStatus?: number;
       productAbsent?: boolean;
       absentElsewhere?: boolean;
       withoutMonthLinks?: boolean;
@@ -969,7 +972,10 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
         }
         if (url.pathname === "/nib/tx/creditcardunbilled") {
           posted.push(`unbilled ${fields.get("menutype")} ${fields.get("iconid")}`);
-          return await route.fulfill(html(`${summaryLink}${cardBlock("UNBILLED", "2026-07-02")}`));
+          return await route.fulfill({
+            ...html(`${summaryLink}${cardBlock("UNBILLED", "2026-07-02")}`),
+            status: options.unbilledStatus ?? 200,
+          });
         }
         if (url.pathname === "/nib/tx/creditcardsummary" && request.method() === "POST") {
           posted.push("summary");
@@ -1078,6 +1084,12 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
       readThroughShell({ summaryBody: Buffer.from("<p>系統維護中</p>", "utf8") }),
       /current used credit could not be read/u,
       "a summary that responds without its table fails the card read instead of reading as absent",
+    );
+
+    await assert.rejects(
+      readThroughShell({ unbilledStatus: 500 }),
+      (error) => error instanceof ProviderResponseCheckError && error.check === "response-status",
+      "an unbilled reply that is not 200 fails the card read with the status check",
     );
 
     const afterFormWait = await cancelledWithin((controller, cancelAt) =>
