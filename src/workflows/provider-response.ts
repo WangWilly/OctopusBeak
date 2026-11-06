@@ -226,8 +226,10 @@ function encodingOf(label: string): string | undefined {
 
 /** The charset a body decodes as, after its Content-Type label, if any, names that charset. */
 function bodyCharset(label: string, response: VerifiedProviderResponse, charset: ProviderCharset): string {
+  const encoding = encodingOf(charset.decode);
+  if (!encoding) throw new Error(`${label} declares an unknown charset: ${charset.decode}`);
   const named = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(response.contentType)?.[1]?.toLowerCase();
-  if (named && !charset.labels?.includes(named) && encodingOf(named) !== encodingOf(charset.decode))
+  if (named && !charset.labels?.includes(named) && encodingOf(named) !== encoding)
     throw new ProviderResponseCheckError("response-charset", `${label} response charset is not ${charset.decode}.`);
   return charset.decode;
 }

@@ -1,3 +1,4 @@
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import { createHash } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
@@ -784,7 +785,7 @@ async function listSinopacAccounts(
     const payload = acceptProviderResponse(
       SINOPAC_ACCOUNT_LIST_RESPONSE,
       { evidence: { kind: "json", bytes }, response },
-      { observedAt: context.now(), text: context.text },
+      { observedAt: taipeiInstant(context.now()), text: context.text },
     ).evidence.value;
     if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0]))
       throw new Error("SinoPac account source response is incomplete.");
@@ -817,7 +818,7 @@ async function querySinopacTransactions(
     acceptProviderResponse(
       SINOPAC_TRANSACTION_RESPONSE,
       { evidence: { kind: "json", bytes }, response },
-      { observedAt: context.now(), text: context.text },
+      { observedAt: taipeiInstant(context.now()), text: context.text },
     ).evidence.value,
     "transaction",
   ));
