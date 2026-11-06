@@ -15,7 +15,9 @@ import {
   type PostCurrentDepositBalanceRow,
 } from "./post-current-deposit-balances.ts";
 import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
-import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { acceptProviderResponse, type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00+08:00";
@@ -290,14 +292,15 @@ test("Post reader ignores earlier dispatcher responses until exact overview requ
   assert.doesNotMatch(JSON.stringify(rows), /AUTH-MUST-NOT-BE-RETAINED/u);
 });
 
-test("Post reader refuses a response that declares a charset other than UTF-8", async () => {
+test("Post current deposit refuses a response that declares a charset other than UTF-8", async () => {
   const page = new SequencedPostPage({ "content-type": "application/json; charset=Big5" });
-  await assert.rejects(
-    readPostCurrentDepositBalanceResponse(page as never, {
-      signal: new AbortController().signal,
-      timeoutMs: 100,
-    }),
-    /^Error: Post current deposit response charset is not UTF-8\.$/u,
+  const read = await readPostCurrentDepositBalanceResponse(page as never, {
+    signal: new AbortController().signal,
+    timeoutMs: 100,
+  });
+  assert.throws(
+    () => acceptProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, read, { observedAt, text: strictSourceText }),
+    (error) => error instanceof ProviderResponseCheckError && error.check === "response-charset",
   );
 });
 

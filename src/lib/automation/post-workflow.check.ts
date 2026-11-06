@@ -12,10 +12,12 @@ import {
   stagePostDeposit,
   type PostQueriedStatement,
   type PostReadCurrentDepositBalanceResponse,
-  type PostStatementResponseMetadata,
+  type PostStatementResponse,
   type PostWorkflowDependencies,
 } from "../../workflows/post-statements.ts";
 import { postCurrentDepositResponse } from "../../workflows/post-current-deposit-balances.fixtures.ts";
+import type { ProviderResponse } from "../../workflows/provider-response.ts";
+import { ProviderResponseCheckError, type ProviderResponseCheck } from "./provider-response-check.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "./product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
@@ -79,13 +81,21 @@ const successEnvelope = {
   header: { EndBracket: false, OutputType: "EndBracket" },
   body: { result: "success" },
 };
-const responseMetadata: PostStatementResponseMetadata = {
+const statementObservedAt = "2026-08-24T10:00:00+08:00";
+const providerResponse: ProviderResponse = {
   url: "https://ipost.post.gov.tw/pst/EsoafDispatcher",
   status: 200,
   method: "POST",
-  contentType: "application/json; charset=utf-8",
-  requestPostData,
+  headers: { "content-type": "application/json; charset=utf-8" },
 };
+
+function statementResponse(bytes: Uint8Array, response: Partial<ProviderResponse> = {}): PostStatementResponse {
+  return { evidence: { kind: "json", bytes }, response: { ...providerResponse, ...response }, requestPostData };
+}
+
+function failedCheck(check: ProviderResponseCheck) {
+  return (error: unknown) => error instanceof ProviderResponseCheckError && error.check === check;
+}
 
 const statement: PostQueriedStatement = {
   accountId,
@@ -102,8 +112,8 @@ test("Post statement source decode validates the endpoint and complete response 
     "utf8",
   );
   const parsed = parsePostStatementResponse({
-    bytes: completeBytes,
-    response: responseMetadata,
+    acquired: statementResponse(completeBytes),
+    observedAt: statementObservedAt,
     text: strictSourceText,
   });
 
@@ -130,55 +140,55 @@ test("Post statement source decode validates the endpoint and complete response 
   ]);
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: malformedBytes,
-      response: responseMetadata,
+      acquired: statementResponse(malformedBytes),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
     SourceTextIntegrityError,
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: completeBytes,
-      response: { ...responseMetadata, status: 503 },
+      acquired: statementResponse(completeBytes, { status: 503 }),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
-    /not terminal/u,
+    failedCheck("response-status"),
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: Buffer.from(JSON.stringify([screenEnvelope]), "utf8"),
-      response: responseMetadata,
+      acquired: statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8")),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
     /incomplete/u,
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: completeBytes,
-      response: { ...responseMetadata, contentType: "text/html; charset=utf-8" },
+      acquired: statementResponse(completeBytes, { headers: { "content-type": "text/html; charset=utf-8" } }),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
-    /content type/u,
+    failedCheck("response-content-type"),
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: completeBytes,
-      response: { ...responseMetadata, url: "https://example.test/pst/EsoafDispatcher" },
+      acquired: statementResponse(completeBytes, { url: "https://example.test/pst/EsoafDispatcher" }),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
-    /endpoint/u,
+    failedCheck("response-endpoint"),
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: completeBytes,
-      response: { ...responseMetadata, method: "GET" },
+      acquired: statementResponse(completeBytes, { method: "GET" }),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
-    /method/u,
+    failedCheck("response-method"),
   );
   assert.throws(
     () => parsePostStatementResponse({
-      bytes: Buffer.from(JSON.stringify([
+      acquired: statementResponse(Buffer.from(JSON.stringify([
         {
           ...screenEnvelope,
           body: {
@@ -188,8 +198,8 @@ test("Post statement source decode validates the endpoint and complete response 
           },
         },
         successEnvelope,
-      ]), "utf8"),
-      response: responseMetadata,
+      ]), "utf8")),
+      observedAt: statementObservedAt,
       text: strictSourceText,
     }),
     /unsupported transaction direction/u,
@@ -459,8 +469,8 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   const malformedBytes = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28]);
   await assert.rejects(
     runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      bytes: malformedBytes,
-      response: responseMetadata,
+      acquired: statementResponse(malformedBytes),
+      observedAt: statementObservedAt,
       text,
     })])),
     assertProductFailure("source-integrity-failed", SourceTextIntegrityError),
@@ -469,8 +479,8 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 
   await assert.rejects(
     runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      bytes: Buffer.from(JSON.stringify([screenEnvelope]), "utf8"),
-      response: responseMetadata,
+      acquired: statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8")),
+      observedAt: statementObservedAt,
       text,
     })])),
     assertProductFailure("source-collection-failed", /incomplete/u),
@@ -485,7 +495,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
 
   await assert.rejects(
     runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      bytes: Buffer.from(JSON.stringify([
+      acquired: statementResponse(Buffer.from(JSON.stringify([
         {
           ...screenEnvelope,
           body: {
@@ -495,8 +505,8 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
           },
         },
         successEnvelope,
-      ]), "utf8"),
-      response: responseMetadata,
+      ]), "utf8")),
+      observedAt: statementObservedAt,
       text,
     })])),
     assertProductFailure("source-collection-failed", /unsupported transaction direction/u),

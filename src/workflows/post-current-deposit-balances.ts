@@ -378,8 +378,6 @@ export type PostCurrentDepositResponse = Readonly<{
 
 /**
  * Enter the authenticated asset-overview page and passively observe its POST.
- * The snapshot module decodes the body as UTF-8, so a response declaring any
- * other charset is refused here, before its bytes are decoded.
  */
 export async function readPostCurrentDepositBalanceResponse(
   page: Page,
@@ -405,11 +403,6 @@ export async function readPostCurrentDepositBalanceResponse(
   await scope.withSignal((signal) => overview.click({ signal }));
   const response = await responsePromise;
   const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
-  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-    headers["content-type"] ?? "",
-  )?.[1]?.toLowerCase();
-  if (charset && charset !== "utf-8" && charset !== "utf8")
-    throw new Error("Post current deposit response charset is not UTF-8.");
   return {
     evidence: { kind: "json", bytes },
     response: {

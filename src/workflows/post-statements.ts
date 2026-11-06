@@ -8,7 +8,7 @@ import { POST_CREDENTIAL_FIELDS, POST_PRODUCTS, POST_SOURCE } from "../lib/autom
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ElementHandle, Locator, Page, Response } from "playwright";
-import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
+import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -41,6 +41,12 @@ import {
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponse,
 } from "./post-current-deposit-balances.ts";
+import {
+  acceptProviderResponse,
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
@@ -78,12 +84,24 @@ export type PostQueriedStatement = {
   rows: PostStatementRow[];
 };
 
-export type PostStatementResponseMetadata = Readonly<{
-  url: string;
-  status: number;
-  method: string;
-  contentType: string;
-  requestPostData?: string | null;
+/** The EsoafDispatcher POST that answers one account's statement inquiry. */
+export const POST_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Post statement",
+  host: "ipost.post.gov.tw",
+  endpoints: [{
+    path: DISPATCHER_PATH,
+    method: "POST",
+    contentType: /^application\/json(?:\s*;|$)/iu,
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** The statement inquiry response as observed, with the request body that names its account and range. */
+export type PostStatementResponse = Readonly<{
+  evidence: Readonly<{ kind: "json"; bytes: Uint8Array }>;
+  response: ProviderResponse;
+  requestPostData: string | null;
 }>;
 
 export type PostWorkflowInput = PostVerifiedInput;
@@ -216,8 +234,7 @@ function isEsoafResponse(txnCode: string, bizCode: string) {
     const request = response.request();
     const body = request.postData() ?? "";
     return (
-      request.method() === "POST" &&
-      response.url().includes(DISPATCHER_PATH) &&
+      isDeclaredProviderResponse(POST_STATEMENT_RESPONSE, response.url(), request.method()) &&
       body.includes(`"TxnCode":"${txnCode}"`) &&
       body.includes(`"BizCode":"${bizCode}"`)
     );
@@ -450,50 +467,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 
 export function parsePostStatementResponse(input: Readonly<{
-  bytes: Uint8Array;
-  response: PostStatementResponseMetadata;
-  text?: SourceTextPort;
+  acquired: PostStatementResponse;
+  observedAt: string;
+  text: SourceTextPort;
 }>): PostQueriedStatement {
-  let responseUrl: URL;
-  try {
-    responseUrl = new URL(input.response.url);
-  } catch {
-    throw new Error("Post statement response URL is invalid.");
-  }
-  if (
-    responseUrl.protocol !== "https:" ||
-    responseUrl.hostname !== "ipost.post.gov.tw" ||
-    responseUrl.pathname !== DISPATCHER_PATH ||
-    responseUrl.search !== "" ||
-    responseUrl.hash !== "" ||
-    responseUrl.port !== "" ||
-    responseUrl.username !== "" ||
-    responseUrl.password !== ""
-  )
-    throw new Error("Post statement response endpoint is unexpected.");
-  if (input.response.method.toUpperCase() !== "POST")
-    throw new Error("Post statement response method is not POST.");
-  if (input.response.status !== 200)
-    throw new Error("Post statement response was not terminal.");
-  const contentType = input.response.contentType.trim();
-  const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  if (mediaType !== "application/json")
-    throw new Error("Post statement response content type is not JSON.");
-  const charset = /(?:^|;)\s*charset\s*=\s*["']?([^;"'\s]+)/iu.exec(
-    contentType,
-  )?.[1]?.toLowerCase();
-  if (charset && charset !== "utf-8" && charset !== "utf8")
-    throw new Error("Post statement response charset is not UTF-8.");
-
-  const text = input.text ?? strictSourceText;
-  const decoded = text.decode(input.bytes, "utf-8");
-  text.assertIntact(decoded);
-  let payload: unknown;
-  try {
-    payload = JSON.parse(decoded);
-  } catch {
-    throw new Error("Post statement response is not valid JSON.");
-  }
+  const { acquired } = input;
+  const payload = acceptProviderResponse(POST_STATEMENT_RESPONSE, acquired, input).evidence.value;
   if (!Array.isArray(payload) || payload.length !== 2)
     throw new Error("Post statement response is incomplete.");
   const [screen, endBracket] = payload;
@@ -509,7 +488,7 @@ export function parsePostStatementResponse(input: Readonly<{
 
   let request: unknown;
   try {
-    request = JSON.parse(input.response.requestPostData ?? "");
+    request = JSON.parse(acquired.requestPostData ?? "");
   } catch {
     throw new Error("Post statement request metadata is invalid.");
   }
@@ -534,7 +513,7 @@ export function parsePostStatementResponse(input: Readonly<{
     accountId,
     queryPeriods: [`${startDate}~${endDate}`],
     queryRange: { startDate, endDate },
-    httpStatus: input.response.status,
+    httpStatus: acquired.response.status,
     itemShape:
       items === undefined
         ? "absent"
@@ -550,6 +529,7 @@ export function parsePostStatementResponse(input: Readonly<{
 
 async function queryCurrentStatement(
   scope: FrameScope,
+  observedAt: string,
   text: SourceTextPort,
   validate: ProductCollectionHandle["validate"],
 ): Promise<PostQueriedStatement> {
@@ -563,16 +543,19 @@ async function queryCurrentStatement(
   await scope.withSignal((signal) =>
     page.locator("a.css_btn_class:visible").filter({ hasText: "查詢" }).first().click({ signal }));
   const response = await responsePromise;
-  const [body, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
+  const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
   return await validate(() => parsePostStatementResponse({
-    bytes: body,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      contentType: headers["content-type"] ?? "",
+    acquired: {
+      evidence: { kind: "json", bytes },
+      response: {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        headers,
+      },
       requestPostData: response.request().postData(),
     },
+    observedAt,
     text,
   }));
 }
@@ -587,6 +570,7 @@ export async function readPostDepositSource(
   const observedAt = taipeiInstant(context.now());
   const statements = await collectPostStatementSources(
     frameScope(page, context.signal),
+    observedAt,
     context.text,
     product,
   );
@@ -595,6 +579,7 @@ export async function readPostDepositSource(
 
 async function collectPostStatementSources(
   scope: FrameScope,
+  observedAt: string,
   text: SourceTextPort,
   { event, validate }: Pick<ProductCollectionHandle, "event" | "validate">,
 ): Promise<PostQueriedStatement[]> {
@@ -617,7 +602,7 @@ async function collectPostStatementSources(
       completed: index,
       total: accountCount,
     });
-    const statement = await queryCurrentStatement(scope, text, validate);
+    const statement = await queryCurrentStatement(scope, observedAt, text, validate);
     signal.throwIfAborted();
     await event("decoding", "advanced", "source-decoding-completed", {
       completed: index + 1,
