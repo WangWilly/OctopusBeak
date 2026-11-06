@@ -7,8 +7,14 @@ import { validationReporter } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, yuantaRouteUrl, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import {
+  YUANTA_EBANK_ORIGIN,
+  yuantaCsvExportResponse,
+  yuantaEbankSite,
+  yuantaRouteUrl,
+  type YuantaRoute,
+} from "./yuanta-ebank-site.ts";
 
 const CID = "synthetic-cid";
 const CANCELLED = new Error("synthetic cancellation");
@@ -83,8 +89,6 @@ async function withYuantaShell(
             headers: { "content-disposition": "attachment; filename=deposit.csv" },
             body: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]),
           });
-        case "/nib/tx/moved.csv":
-          return void route.fulfill({ status: 302, headers: { location: "/nib/tx/export.csv" } });
         case "/nib/tx/bad.html":
           return void route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xff, 0xfe]) });
         default:
@@ -287,8 +291,19 @@ test("a CSV reply that is not 200, or names another charset, fails the product's
     const utf8 = await failedAs("/nib/tx/utf8.csv");
     assert.ok(utf8.error instanceof ProviderResponseCheckError && utf8.error.check === "response-charset");
     assert.equal(utf8.code, "source-validation-failed");
-
-    await link.evaluate((anchor) => anchor.setAttribute("href", "/nib/tx/moved.csv"));
-    const moved = await site.readCsv(link, { observedAt: OBSERVED_AT, validate: async (check) => await check() });
-    assert.equal(moved.content, "帳號,1\r\n", "a redirect within the eBank origin is followed and accepted");
   }));
+
+// A fulfilled 302 under page routing is followed on the real network, so redirect acceptance is checked on the declaration.
+test("a CSV reply that a same-origin redirect moved is accepted where it landed, on the eBank host only", () => {
+  const reply = (url: string) => acceptProviderResponse(
+    yuantaCsvExportResponse({ url, method: "GET" }),
+    {
+      evidence: { kind: "text", bytes: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]) },
+      response: { url, status: 200, method: "GET", headers: { "content-type": "text/csv" } },
+    },
+    { observedAt: OBSERVED_AT, text: strictSourceText },
+  );
+  assert.equal(reply(`${YUANTA_EBANK_ORIGIN}/nib/tx/export.csv?after=redirect`).evidence.text, "帳號,1\r\n");
+  for (const url of ["http://ebank.yuantabank.com.tw/nib/tx/export.csv", "https://elsewhere.example/nib/tx/export.csv"])
+    assert.throws(() => reply(url), (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint", url);
+});

@@ -695,7 +695,6 @@ type FixtureBodyMode =
   | "declared-oversize"
   | "streamed-oversize"
   | "redirect-cross-origin"
-  | "redirect-same-origin"
   | "unsafe-filename"
   | "slow";
 let fixtureHref: string | null = "/export.csv";
@@ -751,7 +750,7 @@ const browserFixtureServer = createServer((request, response) => {
     });
     return;
   }
-  if (request.url === "/export.csv" || request.url === "/export-final.csv") {
+  if (request.url === "/export.csv") {
     fixtureCookie = request.headers.cookie;
     if (fixtureBodyMode === "forbidden") {
       response.writeHead(403, { "content-length": "0" });
@@ -814,11 +813,6 @@ const browserFixtureServer = createServer((request, response) => {
     }
     if (request.url === "/export.csv" && fixtureBodyMode === "redirect-cross-origin") {
       response.writeHead(302, { location: crossOriginFixtureUrl, "content-length": "0" });
-      response.end();
-      return;
-    }
-    if (request.url === "/export.csv" && fixtureBodyMode === "redirect-same-origin") {
-      response.writeHead(302, { location: "/export-final.csv", "content-length": "0" });
       response.end();
       return;
     }
@@ -1181,14 +1175,6 @@ try {
       "the browser response body reader must cancel before the oversized fixture finishes",
     );
     assert.ok(streamedFixtureBytes < streamedFixtureTotal);
-
-    fixtureHref = "/export.csv";
-    fixtureBaseHref = null;
-    fixtureBodyMode = "redirect-same-origin";
-    const redirectedSuccess = await collectFixture();
-    assert.equal(redirectedSuccess.result.sourceCaptureCount, 1, "a redirect within the eBank origin is followed and accepted");
-    assert.ok(redirectedSuccess.items.length > 0);
-    assert.equal(observedBrowserDownload, false);
 
     fixtureHref = "/export.csv";
     fixtureBaseHref = null;
