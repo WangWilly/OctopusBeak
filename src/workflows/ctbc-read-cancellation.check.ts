@@ -83,6 +83,7 @@ test("cancelling the run stops a deposit read clicking the account selector", ()
     const context = {
       signal: cancelledAfter(ABORT_AFTER_MS),
       text: strictSourceText,
+      now: () => new Date().toISOString(),
       event: async () => undefined,
     } as unknown as WorkflowContext;
     const product = {

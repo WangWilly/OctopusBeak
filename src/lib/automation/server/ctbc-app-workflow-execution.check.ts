@@ -33,6 +33,7 @@ function sourceResponse(resource: string, value: unknown): Response {
   return {
     url: () => RESOURCE_URL,
     status: () => 200,
+    allHeaders: async () => ({ "content-type": "application/json;charset=UTF-8" }),
     request: () => ({
       method: () => "POST",
       url: () => RESOURCE_URL,

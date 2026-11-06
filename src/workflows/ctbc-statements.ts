@@ -20,6 +20,7 @@ import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import {
+  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
   CTBC_CURRENT_DEPOSIT_RESPONSE,
   parseCtbcCurrentDepositBalanceSnapshot,
@@ -43,6 +44,12 @@ import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import {
+  acceptProviderResponse,
+  isDeclaredProviderResponse,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   assembleCurrentDepositCapture,
@@ -55,8 +62,21 @@ import {
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
   "https://www.ctbcbank.com/twrbc/twrbc-deposit/qu002/010";
-const EBMW_RESOURCE_PATH = "/IB/api/adapters/IB_Adapter/resource/ebmwResource";
 const NO_DATA_CODE = "9201";
+
+/** The page's own ebmwResource POSTs; the page builds their query, so any is allowed. */
+const CTBC_DEPOSIT_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "CTBC deposit statement",
+  host: CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  endpoints: [{
+    path: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    method: "POST",
+    contentType: /^application\/json(?:\s*;|$)/iu,
+    search: /^(?:\?.*)?$/su,
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+};
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
@@ -191,24 +211,6 @@ export type CtbcStatementRow = {
   transactionDate: string;
   values: string[];
 };
-
-
-/** Decode provider JSON through the injected strict text port before use. */
-export function decodeCtbcSourceJson<T>(
-  bytes: Uint8Array,
-  text: SourceTextPort,
-): T {
-  const decoded = text.decode(bytes, "utf-8");
-  let value: unknown;
-  try {
-    value = JSON.parse(decoded) as unknown;
-  } catch {
-    throw new Error("CTBC provider response is not valid JSON.");
-  }
-  // JSON may encode U+FFFD as an escape, so check the parsed source fields too.
-  text.assertIntact(JSON.stringify(value));
-  return value as T;
-}
 
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
@@ -394,19 +396,18 @@ function requireCtbcOk<T>(
 function isCtbcResourceResponse(resource: string) {
   return (response: Response): boolean => {
     const request = response.request();
-    const postData = request.postData() ?? "";
     return (
-      request.method() === "POST" &&
-      response.url().includes(EBMW_RESOURCE_PATH) &&
-      postData.includes(`"resource":"${resource}"`)
+      isDeclaredProviderResponse(CTBC_DEPOSIT_STATEMENT_RESPONSE, response.url(), request.method()) &&
+      (request.postData() ?? "").includes(`"resource":"${resource}"`)
     );
   };
 }
 
-/** How the read half checks each provider reply: decoded by `text`, checked inside `validate`. */
+/** How the read half checks each provider reply: accepted with `text` inside `validate`, observed at `now`. */
 type CtbcReplyCheck = Readonly<{
   text: SourceTextPort;
   validate: ProductCollectionHandle["validate"];
+  now: WorkflowContext["now"];
 }>;
 
 async function nextCtbcResource<T>(
@@ -418,15 +419,23 @@ async function nextCtbcResource<T>(
     isCtbcResourceResponse(resource),
     { timeout: 60_000, signal },
   ));
+  const transport: ProviderResponse = {
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: await scope.race(response.allHeaders()),
+  };
   const bytes = await scope.race(response.body());
+  const observedAt = taipeiInstant(options.reply.now());
   const body = await options.reply.validate(() => {
-    const value = decodeCtbcSourceJson<CtbcResourceResponse<T>>(
-      bytes,
-      options.reply.text,
-    );
+    const { value } = acceptProviderResponse(
+      CTBC_DEPOSIT_STATEMENT_RESPONSE,
+      { response: transport, evidence: { kind: "json", bytes } },
+      { observedAt, text: options.reply.text },
+    ).evidence;
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("CTBC provider response shape is invalid.");
-    return value;
+    return value as CtbcResourceResponse<T>;
   });
   // A provider error code is the source refusing the read, not a malformed reply.
   if (!(body.code === NO_DATA_CODE && options.allowNoData)) {
@@ -749,7 +758,7 @@ export async function readCtbcDepositSource(
   product: ProductCollectionHandle,
 ): Promise<CtbcDepositSourceSnapshot> {
   const scope = frameScope(page, context.signal);
-  const reply: CtbcReplyCheck = { text: context.text, validate: product.validate };
+  const reply: CtbcReplyCheck = { text: context.text, validate: product.validate, now: () => context.now() };
   const opened = await openDomesticDetailsPage(scope, reply);
   const allAccounts = await readDetailAccountOptions(
     scope,
