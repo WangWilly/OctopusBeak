@@ -11,6 +11,7 @@ import {
   sendErrorReport,
 } from "./error-report.ts";
 import type { WorkflowFailureDiagnostic } from "./workflow-failure-diagnostics.ts";
+import { SNAPSHOT_CHECKS } from "../snapshot-check.ts";
 
 const CONTEXT = { appVersion: "0.9.5", osVersion: "15.4", locale: "zh-TW" as const };
 const RECORD: WorkflowFailureDiagnostic = {
@@ -121,13 +122,22 @@ test("the report carries each node's snapshot check beside the fields the receiv
     ...RECORD,
     error: { chain: [
       { type: "Error", snapshotCheck: "response-endpoint", frames },
-      { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
+      // A key the receiver does not accept, as a later record field would arrive.
+      { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames, futureField: "x" } as never,
     ] },
   });
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain, [
     { type: "Error", snapshotCheck: "response-endpoint", frames },
     { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
   ], "the report keeps every field the receiver accepts, and only those");
+});
+
+test("every snapshot check has the token shape the receiver accepts", () => {
+  // OctopusBeak-Telemetry src/vocabulary.ts known(): a check outside this
+  // shape is refused with a 400, so the report would be lost instead of
+  // stored as "other".
+  const RECEIVER_TOKEN = /^[a-z][a-z0-9-]{0,63}$/u;
+  for (const check of SNAPSHOT_CHECKS) assert.match(check, RECEIVER_TOKEN, check);
 });
 
 test("non-string inputs are refused as invalid", () => {
