@@ -1,3 +1,4 @@
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
@@ -926,7 +927,7 @@ export class LineBankApiClient {
     return this.validate(() => parseLinebankApiJson<T>(acceptProviderResponse(
       declaration,
       { evidence: { kind: "json", bytes: acquired.bytes }, response: acquired.response },
-      { observedAt: this.now(), text: this.text },
+      { observedAt: taipeiInstant(this.now()), text: this.text },
     ).evidence.text));
   }
 

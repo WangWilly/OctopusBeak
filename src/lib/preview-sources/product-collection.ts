@@ -7,6 +7,7 @@ import type {
   PreviewWriteReceipt,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { PreviewDataRejected } from "./source-id.ts";
+import { ProviderResponseCheckError } from "../automation/provider-response-check.ts";
 import type { InstitutionKey } from "../institutions/institutions.ts";
 import {
   ProductCollectionInterruptedError,
@@ -89,7 +90,7 @@ function fatalCode(error: unknown): TypedWorkflowErrorCode | null {
 
 function failureCode(error: unknown): TypedWorkflowErrorCode {
   if (error instanceof PreviewSourceFailure) return error.errorCode;
-  if (error instanceof PreviewDataRejected) return "source-validation-failed";
+  if (error instanceof PreviewDataRejected || error instanceof ProviderResponseCheckError) return "source-validation-failed";
   if (error instanceof SourceTextIntegrityError) return "source-integrity-failed";
   return "source-collection-failed";
 }
