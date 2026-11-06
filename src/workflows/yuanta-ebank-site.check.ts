@@ -3,7 +3,9 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { BrowserScope } from "./frame-scope.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, yuantaRouteUrl, type YuantaRoute } from "./yuanta-ebank-site.ts";
 
 const CID = "synthetic-cid";
@@ -195,16 +197,47 @@ test("cancelling the run stops a pending date fill instead of letting it fill on
     assert.equal(await scope.locator("#sdate").inputValue(), "", "the cancelled fill never ran");
   }));
 
-test("an HTML response decodes as strict UTF-8, and malformed bytes fail the read", () =>
+const HTML_PAGES: ProviderResponseDeclaration = {
+  label: "Yuanta synthetic page",
+  host: new URL(YUANTA_EBANK_ORIGIN).hostname,
+  endpoints: [
+    { path: "/nib/tx/summary", method: "GET", search: /^\?type=page&cid=[^&]+$/u, charset: { decode: "utf-8" } },
+    { path: "/nib/tx/bad.html", method: "GET", charset: { decode: "utf-8" } },
+  ],
+  cacheControl: [],
+  providerDate: "optional",
+};
+const OBSERVED_AT = "2026-09-10T10:03:04+08:00";
+
+test("an HTML response is verified against its declaration inside validation and decodes strictly, and malformed bytes fail the read", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
+    const rejectedInValidation: unknown[] = [];
+    const acceptance = {
+      observedAt: OBSERVED_AT,
+      validate: async <T>(check: () => T | Promise<T>): Promise<T> => {
+        try {
+          return await check();
+        } catch (error) {
+          rejectedInValidation.push(error);
+          throw error;
+        }
+      },
+    };
     const fmain = await site.frames.frame("fmain");
     const good = await fmain.goto(yuantaRouteUrl("summary", CID));
     assert.ok(good);
-    assert.match(await site.readHtml(good), /帳戶總覽/u);
+    assert.match(await site.readHtml(HTML_PAGES, good, acceptance), /帳戶總覽/u);
+    const refusing = site.readHtml({ ...HTML_PAGES, endpoints: HTML_PAGES.endpoints.slice(1) }, good, acceptance);
+    await assert.rejects(
+      refusing,
+      (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
+      "a response from an endpoint the declaration does not name is refused",
+    );
+    assert.equal(rejectedInValidation.length, 1, "the endpoint refusal is thrown inside the product's validation");
     const bad = await fmain.goto(`${YUANTA_EBANK_ORIGIN}/nib/tx/bad.html`);
     assert.ok(bad);
-    await assert.rejects(site.readHtml(bad), SourceTextIntegrityError);
+    await assert.rejects(site.readHtml(HTML_PAGES, bad, acceptance), SourceTextIntegrityError);
   }));
 
 test("a CSV export link is fetched in the page and decoded as Big5", () =>

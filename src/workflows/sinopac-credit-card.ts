@@ -27,6 +27,8 @@ import {
 } from "../lib/preview-sources/source-kit.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
+import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaPostInit, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 export const SINOPAC_CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
@@ -39,7 +41,24 @@ const SINOCARD_PAGE_URL = `${SINOPAC_MMA_ORIGIN}/SinoCard/Account/UnbilledTxInqu
 /** The desktop SinoCard SPA's `applicationName`; the mobile site sends `MWEB`. */
 const SINOCARD_APPLICATION_NAME = "EWEB2";
 
-export type SinopacCardResponse = Readonly<{ endpoint: string; status: number; date: string | null; text: string }>;
+/** The card summary and SinoCard API replies, all POSTed by the card transport. */
+export const SINOPAC_CARD_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "SinoPac credit card",
+  host: new URL(SINOPAC_MMA_ORIGIN).hostname,
+  endpoints: [
+    SINOPAC_CARD_SUMMARY_PATH,
+    SINOCARD_SSO_PATH,
+    SINOCARD_AUTH_PATH,
+    SINOCARD_LATEST_TX_PATH,
+    SINOCARD_OUTSTANDING_PATH,
+    SINOCARD_ACCOUNTING_PATH,
+  ].map((path) => ({ path, method: "POST" })),
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+/** An accepted reply: its strictly decoded JSON text and its HTTP Date, if any. */
+export type SinopacCardResponse = Readonly<{ endpoint: string; date: string | null; text: string }>;
 
 /** Same-origin requests from the signed-in MMA page. */
 export type SinopacCardTransport = Readonly<{
@@ -57,9 +76,12 @@ export type SinopacCardCollectionInput = Readonly<{
 export function sinopacCardTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacCardTransport {
   const send = async (endpoint: string, init?: SinopacMmaPostInit): Promise<SinopacCardResponse> => {
     const { response, bytes } = await site.post(endpoint, init);
-    const body = sourceText.decode(bytes, "utf-8");
-    sourceText.assertIntact(body);
-    return { endpoint, status: response.status, date: response.headers.date ?? null, text: body };
+    const accepted = acceptProviderResponse(
+      SINOPAC_CARD_RESPONSE,
+      { response, evidence: { kind: "json", bytes } },
+      { observedAt: taipeiInstant(new Date().toISOString()), text: sourceText },
+    );
+    return { endpoint, date: accepted.response.providerDate?.raw ?? null, text: accepted.evidence.text };
   };
   return {
     mma: (path) => send(path),
@@ -97,10 +119,10 @@ const CURRENCY_ALIASES: Readonly<Record<string, string>> = {
 
 const sinopacCurrency = (value: unknown, field: string) => currencyCode(value, field, CURRENCY_ALIASES);
 
+/** The reply's JSON with each number kept as its lexeme. */
 function readJson(response: SinopacCardResponse, observe: SinopacCardCollectionInput["observe"]): unknown {
-  if (response.status !== 200) return fail("unexpected-response", `${response.endpoint} answered HTTP ${response.status}`);
   const body = parseSourceJson(response.text, response.endpoint);
-  observe({ endpoint: response.endpoint, status: response.status, body });
+  observe({ endpoint: response.endpoint, status: 200, body });
   return body;
 }
 

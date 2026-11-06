@@ -20,10 +20,10 @@ import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { SourceUnavailableError } from "./source-access.ts";
-import { ProductCollectionInterruptedError } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, type ProductCollectionHandle } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
+import { ProviderResponseCheckError } from "./provider-response-check.ts";
 import {
-  decodeCtbcSourceJson,
   readCtbcDepositSource,
   ctbcWorkflowWith,
   stageCtbcDeposit,
@@ -66,12 +66,13 @@ const bootstrapResource = "/twrbc-deposit/qu002/010";
 const detailsResource = "/twrbc-deposit/qu002/011";
 const endpoint = "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource";
 
-function response(resource: string, value: unknown): Response {
+function response(resource: string, value: unknown, status = 200): Response {
   const requestBody = JSON.stringify({ resource });
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   return {
     url: () => endpoint,
-    status: () => 200,
+    status: () => status,
+    allHeaders: async () => ({ "content-type": "application/json;charset=UTF-8" }),
     request: () => ({
       method: () => "POST",
       url: () => endpoint,
@@ -353,25 +354,18 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
 });
 
 test("CTBC typed workflow rejects malformed and incomplete sources before commit", async () => {
-  assert.throws(
-    () => decodeCtbcSourceJson(new Uint8Array([0xc3, 0x28]), strictSourceText),
-    /Source text integrity failed/u,
-  );
-  assert.throws(
-    () => decodeCtbcSourceJson(new TextEncoder().encode('{"memo":"\\uFFFD"}'), strictSourceText),
-    /Source text integrity failed/u,
-  );
-
-  const malformed = createContext({
-    page: createPage({ detailResponse: {
-      ...response(detailsResource, {}),
-      body: async () => Buffer.from([0xc3, 0x28]),
-    } as Response }),
-  });
-  await assert.rejects(runCtbc(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
-    (error: unknown) => error instanceof ProductCollectionInterruptedError
-    && error.errorCode === "source-integrity-failed");
-  assert.equal(malformed.committed.length, 0);
+  for (const body of [Buffer.from([0xc3, 0x28]), Buffer.from('{"memo":"\\uFFFD"}')]) {
+    const malformed = createContext({
+      page: createPage({ detailResponse: {
+        ...response(detailsResource, {}),
+        body: async () => body,
+      } as Response }),
+    });
+    await assert.rejects(runCtbc(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
+      (error: unknown) => error instanceof ProductCollectionInterruptedError
+      && error.errorCode === "source-integrity-failed");
+    assert.equal(malformed.committed.length, 0);
+  }
 
   const incomplete = createContext({ page: createPage({ expectedRanges: 2 }) });
   await assert.rejects(runCtbc(incomplete.context, input, withCurrentBalances(async () => currentBalanceResponse())),
@@ -401,6 +395,22 @@ test("CTBC names malformed JSON a validation failure and a timed-out read a coll
     && error.errorCode === "source-collection-failed");
   assert.equal(timedOut.committed.length, 0);
   assert.ok(!timedOut.events.some((event) => event.code === "source-validation-rejected"));
+});
+
+test("CTBC refuses a deposit statement reply whose status is not 200", async () => {
+  const { context } = createContext();
+  const product = {
+    validate: async <T>(check: () => T | Promise<T>) => await check(),
+  } as unknown as ProductCollectionHandle;
+  await assert.rejects(
+    readCtbcDepositSource(
+      createPage({ detailResponse: response(detailsResource, { code: "0000", rsData: { detailList: [], nextKey: "" } }, 500) }),
+      { ...input, statementTypes: ["deposit"], attachedPreviewProducts: [] },
+      context,
+      product,
+    ),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
+  );
 });
 
 test("CTBC current-balance failures keep their thrown error and its failure code", async () => {

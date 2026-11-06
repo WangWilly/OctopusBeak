@@ -12,8 +12,10 @@ import { SINOPAC_SOURCE } from "../lib/automation/server/sources/sinopac.ts";
 import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
   collectSinopacCreditCards,
+  sinopacCardTransport,
   SINOCARD_ACCOUNTING_PATH,
   SINOCARD_AUTH_PATH,
   SINOCARD_LATEST_TX_PATH,
@@ -22,6 +24,7 @@ import {
   SINOPAC_CARD_SUMMARY_PATH,
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
+import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 import {
   readSinopacDepositSource,
   sinopacWorkflowWith,
@@ -81,7 +84,7 @@ function fakeTransport(source: Bodies) {
   const answer = (path: string) => {
     if (!(path in source)) throw new Error(`Unrouted fake request: ${path}`);
     const body = source[path];
-    return { endpoint: path, status: 200, date: DATE_HEADER, text: typeof body === "string" ? body : JSON.stringify(body) };
+    return { endpoint: path, date: DATE_HEADER, text: typeof body === "string" ? body : JSON.stringify(body) };
   };
   const transport: SinopacCardTransport = {
     mma: async (path) => { calls.push({ path }); return answer(path); },
@@ -258,6 +261,34 @@ test("SinoPac card statements are not written when the due date is only a status
   const collection = await written(edit((source) => { source[SINOCARD_ACCOUNTING_PATH].Result.BaseData.DUEDATE = "自動扣繳"; }));
   assert.deepEqual(collection.accounts[0]!.statements, []);
   assert.equal(collection.accounts[0]!.balances[0]!.amount, "3412");
+});
+
+/** An MMA site whose one POST answers from the given URL and status. */
+function replyingSite(reply: (path: string) => Readonly<{ url: string; status: number }>): SinopacMmaSite {
+  return {
+    post: async (path: string) => ({
+      response: { ...reply(path), method: "POST", headers: { "content-type": "application/json; charset=utf-8", date: DATE_HEADER } },
+      bytes: Buffer.from(JSON.stringify({ ResultCode: "00", Result: { ID: "SYNTHETIC-ID" } })),
+    }),
+  } as unknown as SinopacMmaSite;
+}
+
+test("the SinoPac card transport accepts each declared reply and refuses an undeclared endpoint or a non-200 status", async () => {
+  const declared = sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), strictSourceText);
+  assert.deepEqual(await declared.mma(SINOPAC_CARD_SUMMARY_PATH), {
+    endpoint: SINOPAC_CARD_SUMMARY_PATH,
+    date: DATE_HEADER,
+    text: '{"ResultCode":"00","Result":{"ID":"SYNTHETIC-ID"}}',
+  });
+  for (const path of [SINOCARD_SSO_PATH, SINOCARD_AUTH_PATH, SINOCARD_LATEST_TX_PATH, SINOCARD_OUTSTANDING_PATH, SINOCARD_ACCOUNTING_PATH])
+    assert.equal((await declared.sinoCard(path, {}, null)).endpoint, path);
+
+  const refused = async (transport: SinopacCardTransport, check: string) => await assert.rejects(
+    transport.sinoCard(SINOCARD_SSO_PATH, {}, null),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === check,
+  );
+  await refused(sinopacCardTransport(replyingSite(() => ({ url: `${SINOPAC_MMA_ORIGIN}/SinoCard/Account/Login`, status: 200 })), strictSourceText), "response-endpoint");
+  await refused(sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 500 })), strictSourceText), "response-status");
 });
 
 const accountId = ["1410", "1800", "0822", "21"].join("");

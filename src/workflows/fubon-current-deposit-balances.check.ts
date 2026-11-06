@@ -415,7 +415,7 @@ async function withDepositShell(
 }
 
 const siteFor = (page: Page, signal = new AbortController().signal) =>
-  fubonEbankSite(page, { signal, text: strictSourceText });
+  fubonEbankSite(page, { signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" });
 
 test("the balance page is reached through 存款交易查詢 and 我的存款, and its response is the evidence", () =>
   withDepositShell({}, async (page, requested) => {

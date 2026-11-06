@@ -34,10 +34,17 @@ import {
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
-import { StatementComponentAbsentError, type ProductStageRequest } from "../lib/automation/product-collection.ts";
+import {
+  collectSelectedProducts,
+  ProductCollectionInterruptedError,
+  StatementComponentAbsentError,
+  type ProductCollectionHandle,
+  type ProductStageRequest,
+} from "../lib/automation/product-collection.ts";
 import { collectionPeriod, taipeiToday, type CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type {
   AccountIdentityContinuity,
   AccountIdentityContinuityRequest,
@@ -1013,7 +1020,8 @@ try {
 // The read half against real Chromium. The account selector and a synthetic
 // signed-in frameset are served by route interception (ADR 0066).
 const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
-const siteContext = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
+const siteContext = (signal = new AbortController().signal) =>
+  ({ signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" });
 const browser = await chromium.launch({ headless: true });
 try {
   const selectorPage = await browser.newPage();
@@ -1107,7 +1115,13 @@ try {
   };
 
   async function readThroughShell(
-    options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void }> = {},
+    options: Readonly<{
+      signal?: AbortSignal;
+      holdAccount?: string;
+      onHeld?: () => void;
+      failAccount?: string;
+      validate?: ProductCollectionHandle["validate"];
+    }> = {},
   ) {
     const shellPage = await browser.newPage();
     const posted: Array<{ account: string; page: string; submit: boolean }> = [];
@@ -1127,6 +1141,9 @@ try {
           if (account === options.holdAccount) {
             options.onHeld?.();
             return;
+          }
+          if (account === options.failAccount) {
+            return await route.fulfill({ ...html(queryForm(account, resultFor(account, page))), status: 500 });
           }
           return await route.fulfill(html(queryForm(account, resultFor(account, page))));
         }
@@ -1154,6 +1171,7 @@ try {
         {
           reportActivity: async (activity) => { activities.push(activity); },
           collectionPeriod: () => january,
+          validate: options.validate ?? (async (check) => await check()),
         },
       );
       return { snapshot, posted, clicks, activities };
@@ -1189,6 +1207,26 @@ try {
   );
   assert.equal(shellRead.snapshot.accounts[0]!.statements[0]!.pages[0]!.selectedAccount.value, shellAccounts[0]!.value);
   assert.deepEqual(shellRead.activities, ["query", "query", "query"]);
+
+  const failedDepositRun = await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["deposit"],
+    selectedIds: ["deposit"],
+    signal: new AbortController().signal,
+    collect: async (_typeId, product) => {
+      await readThroughShell({ failAccount: shellAccounts[1]!.value, validate: product.validate });
+      throw new Error("a deposit read with a failed reply must not finish");
+    },
+    financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
+  }).then(() => null, (error: unknown) => error);
+  assert.ok(failedDepositRun instanceof ProductCollectionInterruptedError);
+  assert.equal(
+    failedDepositRun.errorCode,
+    "source-validation-failed",
+    "a deposit query reply with status 500 fails inside the product's validation",
+  );
+  const failedDepositCause = (failedDepositRun as Error & { cause?: unknown }).cause;
+  assert.ok(failedDepositCause instanceof ProviderResponseCheckError && failedDepositCause.check === "response-status");
 
   const cancelledShell = new AbortController();
   await assert.rejects(

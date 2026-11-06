@@ -11,7 +11,7 @@ test("E.SUN timeline still loads the next page when content grows after the firs
   try {
     const page = await browser.newPage();
     let requests = 0;
-    await page.route("https://timeline.example/**", async (route) => {
+    await page.route("https://ebank.esunbank.com.tw/GW/**", async (route) => {
       requests += 1;
       await route.fulfill({ contentType: "application/json", body: "{}" });
     });
@@ -31,7 +31,7 @@ test("E.SUN timeline still loads the next page when content grows after the firs
           }
           if (!requested && container.scrollTop + container.clientHeight >= container.scrollHeight) {
             requested = true;
-            fetch('https://timeline.example/GW/creditLastYear/getFilterResult', {method: 'POST'});
+            fetch('https://ebank.esunbank.com.tw/GW/creditLastYear/getFilterResult', {method: 'POST'});
           }
         });
       </script>

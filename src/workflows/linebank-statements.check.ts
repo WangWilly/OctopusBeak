@@ -5,6 +5,7 @@ import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
@@ -68,10 +69,13 @@ const accountSnapshotPage = {
   },
 };
 
-const accountSnapshot = await new LineBankApiClient(readScope(accountSnapshotPage as never), {
+const readClient = (page: unknown) => new LineBankApiClient(readScope(page as never), {
   text: strictSourceText,
+  now: () => "2026-09-25T20:00:00+08:00",
   validate: async (check) => await check(),
-}).fetchAccountSnapshot();
+});
+
+const accountSnapshot = await readClient(accountSnapshotPage).fetchAccountSnapshot();
 assert.deepEqual(
   accountSnapshot.currentBalance.evidence.bytes,
   new TextEncoder().encode(accountSnapshotBody),
@@ -103,21 +107,56 @@ assert.doesNotMatch(
 
 await assert.rejects(
   () =>
-    new LineBankApiClient(
-      readScope({
-        async evaluate() {
-          return {
-            bodyBytes: [0xff],
-            url: accountSnapshotEndpoint,
-            status: 200,
-            method: "GET",
-            headers: accountSnapshotHeaders,
-          };
-        },
-      } as never),
-      { text: strictSourceText, validate: async (check) => await check() },
-    ).fetchAccountSnapshot(),
+    readClient({
+      async evaluate() {
+        return {
+          bodyBytes: [0xff],
+          url: accountSnapshotEndpoint,
+          status: 200,
+          method: "GET",
+          headers: accountSnapshotHeaders,
+        };
+      },
+    }).fetchAccountSnapshot(),
   /Source text integrity failed: invalid-encoding/u,
+);
+
+await assert.rejects(
+  () =>
+    readClient({
+      async evaluate() {
+        return {
+          bodyBytes: Array.from(new TextEncoder().encode(accountSnapshotBody)),
+          url: accountSnapshotEndpoint,
+          status: 500,
+          method: "GET",
+          headers: accountSnapshotHeaders,
+        };
+      },
+    }).fetchAccountSnapshot(),
+  (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
+  "an account list that is not a 200 reply is refused",
+);
+
+await assert.rejects(
+  () =>
+    readClient({
+      async evaluate(_expression: unknown, argument: { path: string }) {
+        assert.equal(argument.path, "/v1/account/history/transactions");
+        return {
+          bodyBytes: Array.from(new TextEncoder().encode(JSON.stringify({ code: "200", content: {} }))),
+          url: "https://accessibility.linebank.com.tw/v1/account/history/other",
+          status: 200,
+          method: "POST",
+          headers: accountSnapshotHeaders,
+        };
+      },
+    }).fetchTransactionPages(
+      { acctNbr: "012345678901", arrId: "arr-main" },
+      { startDate: "20260701", endDate: "20260731" },
+    ),
+  (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
+  "a transaction reply from an undeclared endpoint is refused",
 );
 
 assert.equal(linebankAccountCurrency({ acctNbr: "1" }), "TWD");

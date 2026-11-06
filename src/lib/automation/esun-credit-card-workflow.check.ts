@@ -9,7 +9,8 @@ import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./server/config-files.ts";
 import type { PreviewWrite } from "../../ledger/pglite/preview-financial-data.ts";
 import type { EsunPortalPageReply, EsunPortalReply } from "../preview-sources/esun-portal.ts";
-import { createPage, runEsun } from "./esun-credit-card-workflow.fixtures.ts";
+import { ProviderResponseCheckError } from "./provider-response-check.ts";
+import { createPage, ESUN_TIMELINE_URL, runEsun } from "./esun-credit-card-workflow.fixtures.ts";
 
 function createContext(page: Page) {
   const events: Array<{ stage: string; code: string; counts?: unknown }> = [];
@@ -371,6 +372,49 @@ test("a card failure with no deposit data fails the run with the card's own erro
     cardFailure,
   );
   assert.equal(cardOnly.previewWrites.length, 0);
+}));
+
+test("a timeline reply that is not a 200 fails the card on its response status before the body is read", () => withManagedSecret(async () => {
+  const harness = createContext(createPage({ timelineStatus: 500, timelineBytes: new Uint8Array([0xc3, 0x28]) }));
+  await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError, String(error));
+    assert.equal(error.errorCode, "source-validation-failed");
+    const cause = (error as Error & { cause?: unknown }).cause;
+    assert.ok(cause instanceof ProviderResponseCheckError && cause.check === "response-status", String(cause));
+    return true;
+  });
+  assert.equal(harness.committed.length, 0);
+}));
+
+test("history replies are declared on the host the card popup opened on", () => withManagedSecret(async () => {
+  const harness = createContext(createPage({
+    popupHost: "card.esunbank.com.tw",
+    timelineUrl: ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "card.esunbank.com.tw"),
+  }));
+  await runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] }));
+  assert.equal(harness.committed.length, 1, "replies from the popup's own host are accepted");
+}));
+
+test("a card popup outside esunbank.com.tw stops the read", () => withManagedSecret(async () => {
+  const harness = createContext(createPage({ popupHost: "esunbank.com.tw.example" }));
+  await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
+    assert.match(String((error as Error & { cause?: unknown }).cause), /popup opened outside esunbank\.com\.tw/u);
+    return true;
+  });
+  assert.equal(harness.committed.length, 0);
+}));
+
+test("a timeline reply from a host other than the card popup's fails as an endpoint check", () => withManagedSecret(async () => {
+  const lookalike = ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "ebank.esunbank.com.tw.example");
+  const harness = createContext(createPage({ timelineUrl: lookalike }));
+  await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError, String(error));
+    assert.equal(error.errorCode, "source-validation-failed");
+    const cause = (error as Error & { cause?: unknown }).cause;
+    assert.ok(cause instanceof ProviderResponseCheckError && cause.check === "response-endpoint", String(cause));
+    return true;
+  });
+  assert.equal(harness.committed.length, 0);
 }));
 
 test("a refused E.SUN card commit names the run collection-scope-changed and skips the attached deposit", () => withManagedSecret(async () => {

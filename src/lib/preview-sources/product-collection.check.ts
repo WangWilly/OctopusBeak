@@ -7,6 +7,7 @@ import type {
   PreviewWrite,
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionInterruptedError } from "../automation/product-collection.ts";
+import { ProviderResponseCheckError } from "../automation/provider-response-check.ts";
 import { createWorkflowExecutor, type WorkflowDefinition } from "../automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "./attached-products.ts";
 import {
@@ -75,6 +76,15 @@ test("a product's failure stays with that product, and the others still write", 
   assert.ok(events.includes("deposit-source-validation-rejected"));
   const output = previewRunOutput(result);
   assert.deepEqual([output.status, output.counts.accountCount], ["partial", 1]);
+});
+
+test("a refused provider response fails its product as a validation failure", async () => {
+  const { run } = harness({
+    deposit: async () => { throw new ProviderResponseCheckError("response-status", "Bank deposit response status is 500, expected 200."); },
+    credit_card: async () => creditCollection,
+    time_deposit: async () => emptyTimeDeposits,
+  });
+  assert.equal(statuses(await run())[0], "deposit:failed:source-validation-failed");
 });
 
 test("a session loss ends the run and leaves later products unattempted and unwritten", async () => {
