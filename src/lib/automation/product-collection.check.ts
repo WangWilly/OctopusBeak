@@ -275,6 +275,7 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
 
 {
   const controller = signal();
+  const refused = new FailureCodeError("authentication-failed");
   await assert.rejects(
     collectSelectedProducts({
       provider: "fubon",
@@ -287,12 +288,13 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       },
       financialCommit: commitWith(async (_typeId, staged) => result("completed", staged.map(committed))),
       prepare: async (typeId) => {
-        if (typeId === "credit_card") throw new FailureCodeError("authentication-failed");
+        if (typeId === "credit_card") throw refused;
       },
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
       assert.equal(error.errorCode, "authentication-failed");
+      assert.equal(error.cause, refused, "a run-ending failure keeps the product's error as its cause");
       assert.equal(error.summary.products.find(({ typeId }) => typeId === "deposit")?.committedCount, 1);
       assert.deepEqual(error.summary.products.map(({ typeId, status, skipReason }) => [typeId, status, skipReason]), [
         ["deposit", "success", undefined],

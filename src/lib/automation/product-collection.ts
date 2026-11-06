@@ -620,7 +620,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         }
         await endOnLostSession();
         const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
-        throw new ProductCollectionInterruptedError(errorCode, summary);
+        throw withCause(new ProductCollectionInterruptedError(errorCode, summary), error);
       }
 
       if (error instanceof StatementComponentAbsentError && error.disposition) {
