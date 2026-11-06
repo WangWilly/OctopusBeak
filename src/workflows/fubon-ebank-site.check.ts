@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
@@ -13,7 +14,7 @@ const CANCELLED = new Error("synthetic cancellation");
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

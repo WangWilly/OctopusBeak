@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { chromium } from "playwright";
+import type { BrowserContext } from "playwright";
+import { launchCheckPersistentContext } from "../check-browser.fixtures.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -205,6 +206,13 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     decrypt: (value: string) => Buffer.from(value.replace(/^sealed:/u, ""), "base64").toString("utf8"),
   };
   let runtimeProfile: string | null = null;
+  // The browser port swallows close errors, so the test closes these again to report an unrouted request.
+  const launched: BrowserContext[] = [];
+  const launchGuarded = async (userDataDirectory: string, options: Parameters<typeof launchCheckPersistentContext>[1]) => {
+    const context = await launchCheckPersistentContext(userDataDirectory, { ...options, headless: true });
+    launched.push(context);
+    return context;
+  };
   const browserPort = createAppWorkflowBrowserPort({
     taskId: "browser-host-check",
     taskRunId: runId,
@@ -215,10 +223,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     launchPersistentContext: async (userDataDirectory, options) => {
       assert.equal(options.headless, true, "App workflow browser must default to headless");
       runtimeProfile = userDataDirectory;
-      return await chromium.launchPersistentContext(userDataDirectory, {
-        ...options,
-        headless: true,
-      });
+      return await launchGuarded(userDataDirectory, options);
     },
   });
 
@@ -289,11 +294,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
       signal: new AbortController().signal,
       userDataDirectory: root,
       credentialCodec,
-      launchPersistentContext: async (userDataDirectory, options) =>
-        await chromium.launchPersistentContext(userDataDirectory, {
-          ...options,
-          headless: true,
-        }),
+      launchPersistentContext: launchGuarded,
     });
     await restorePort.withPage(async (restoredPage) => {
       const restored = await restoredPage.context().cookies("http://127.0.0.1/");
@@ -305,7 +306,11 @@ test("App worker attaches to its exact hosted page without creating workflow fil
       ["authentication", join("authentication", "cookies.safeStorage.json")],
     );
   } finally {
-    await rm(root, { recursive: true, force: true });
+    try {
+      for (const context of launched) await context.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 

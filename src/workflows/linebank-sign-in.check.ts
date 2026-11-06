@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import {
   assertUsable,
@@ -22,7 +23,7 @@ const CREDENTIALS = { linebank_user_id: "synthetic-id", linebank_account: "synth
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

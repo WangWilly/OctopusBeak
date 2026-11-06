@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../automation/check-browser.fixtures.ts";
 import { blankPng } from "./preview-source-harness.ts";
 import { taishinBrowserSession } from "./taishin-login-form.ts";
 import type { PreviewWorkflowContext } from "./workflow.ts";
@@ -36,7 +37,7 @@ const LOGIN_FRAME = `<html><body>
 </body></html>`;
 
 let browser: Browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await launchCheckBrowser(); });
 after(async () => { await browser?.close(); });
 
 type Site = { logins: unknown[]; reminderOpen: () => Promise<boolean> };

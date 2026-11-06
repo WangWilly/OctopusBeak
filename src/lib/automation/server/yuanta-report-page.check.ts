@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium, type APIRequestContext, type Response as BrowserResponse } from "playwright";
+import type { APIRequestContext, Page, Response as BrowserResponse } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import {
   captureTypedReport,
   decodeYuantaTradeReportResponse,
@@ -63,7 +64,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
 });
 
 test("Yuanta report submission uses the report route when login ends on a different controller", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     await page.route("https://global.yuanta.com.tw/**", (route) => route.fulfill({
@@ -83,22 +84,9 @@ test("Yuanta report submission uses the report route when login ends on a differ
 });
 
 test("cancelling the run stops a Yuanta report read at each of its waits", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   const cancelled = new Error("synthetic cancellation");
-  const readCancelledAfter = async (landing: "hang" | "error" | "no-logout") => {
-    const page = await browser.newPage();
-    await page.route("https://global.yuanta.com.tw/**", (route) => {
-      const { pathname } = new URL(route.request().url());
-      if (pathname === "/NexusWebTrade/Main/Index" || pathname === "/NexusWebTrade/AssetReport/Error") {
-        return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<p>signed in</p>" });
-      }
-      if (landing === "hang") return;
-      if (landing === "error") {
-        return route.fulfill({ status: 302, headers: { location: "/NexusWebTrade/AssetReport/Error" } });
-      }
-      return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<script>var currAssetType = 'Stock';</script>" });
-    });
-    await page.goto("https://global.yuanta.com.tw/NexusWebTrade/Main/Index");
+  const assertCancelledPromptly = async (landing: string, page: Page) => {
     const controller = new AbortController();
     setTimeout(() => controller.abort(cancelled), 500);
     const started = Date.now();
@@ -108,11 +96,30 @@ test("cancelling the run stops a Yuanta report read at each of its waits", async
       landing,
     );
     assert.ok(Date.now() - started < 2_000, `${landing} stopped promptly`);
+  };
+  const readCancelledAfter = async (landing: "hang" | "no-logout") => {
+    const page = await browser.newPage();
+    await page.route("https://global.yuanta.com.tw/**", (route) => {
+      const { pathname } = new URL(route.request().url());
+      if (pathname === "/NexusWebTrade/Main/Index") {
+        return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<p>signed in</p>" });
+      }
+      if (landing === "hang") return;
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<script>var currAssetType = 'Stock';</script>" });
+    });
+    await page.goto("https://global.yuanta.com.tw/NexusWebTrade/Main/Index");
+    await assertCancelledPromptly(landing, page);
     await page.close();
   };
+  // Yuanta redirects a failed report query to its error page. Chromium follows a
+  // fulfilled redirect on the network, so this page lands there without one.
+  const errorLanding = {
+    waitForNavigation: async () => ({ url: () => "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Error" }),
+    evaluate: async () => undefined,
+  } as unknown as Page;
   try {
     await readCancelledAfter("hang");
-    await readCancelledAfter("error");
+    await assertCancelledPromptly("error", errorLanding);
     await readCancelledAfter("no-logout");
   } finally {
     await browser.close();

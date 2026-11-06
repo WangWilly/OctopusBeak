@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { parsePreviewWrite, type PreviewDepositCollection, type PreviewWrite } from "../ledger/pglite/preview-financial-data.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { withBoundProducts } from "../lib/automation/product-collection.fixtures.ts";
@@ -32,7 +33,7 @@ import {
 } from "./fubon-attached-preview.fixtures.ts";
 import { FUBON_EBANK_ENTRY_URL } from "./fubon-ebank-site.ts";
 
-const browser = await chromium.launch({ headless: true });
+const browser = await launchCheckBrowser();
 after(() => browser.close());
 
 const ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;

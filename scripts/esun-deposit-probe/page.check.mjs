@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../../src/lib/automation/check-browser.fixtures.ts";
 import { createPageTransport, observePortalRequests, waitForPortalSession } from "./page.ts";
 
 const PORTAL = "https://ebank.esunbank.com.tw";
 
 async function withPortalPage(run, { sessionScript = "window.mibApiService = { uuid: 'session-key' };" } = {}) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     const posts = [];

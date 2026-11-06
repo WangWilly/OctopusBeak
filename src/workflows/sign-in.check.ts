@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, errors, type Browser, type Dialog, type Page } from "playwright";
+import { errors, type Browser, type Dialog, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { CaptchaProviderRejectedError } from "../lib/automation/captcha-rejection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { RejectionEvidence, TakeoverPrompt } from "../lib/automation/sign-in-prompt.ts";
@@ -42,7 +43,7 @@ const UNRELATED = "系統維護中";
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

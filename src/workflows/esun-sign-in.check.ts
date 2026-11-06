@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { chromium, errors, type Browser, type Page } from "playwright";
+import { errors, type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import {
   dialogListeners,
   DONE,
@@ -23,7 +24,7 @@ const noStage: Assist = async () => assert.fail("E.SUN has no Verification stage
 
 let browser: Browser;
 before(async () => {
-  browser = await chromium.launch({ headless: true });
+  browser = await launchCheckBrowser();
 });
 after(async () => {
   await browser.close();

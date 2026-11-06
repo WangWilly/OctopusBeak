@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { registerCathayTrustedDevice } from "./cathay-device-registration.ts";
 
-const browser = await chromium.launch();
+const browser = await launchCheckBrowser();
 try {
   const page = await browser.newPage();
   await page.route("https://www.cathaybk.com.tw/**", async (route) => {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   captureFubonDepositTelemetry,
@@ -167,7 +167,7 @@ const queryForm = (result: string) => `<form id="form1" method="post" action="${
 const resultTable = `<table><tr><th>帳務日期</th><th>交易時間</th><th>即時餘額</th></tr></table>`;
 const siteContext = { signal: new AbortController().signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" };
 
-const browser = await chromium.launch({ headless: true });
+const browser = await launchCheckBrowser();
 try {
   const overridePage = await browser.newPage();
   await overridePage.setContent(queryForm(""));

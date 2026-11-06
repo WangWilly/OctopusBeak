@@ -21,7 +21,7 @@ import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { test } from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { validationReporter } from "../lib/automation/product-collection.ts";
@@ -1091,7 +1091,7 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
 }
 
 test("Yuanta fund source reads every page through the fund routes and submits each query from its page", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   const input = {
     includeOffHourOrders: true,
   };
@@ -1189,7 +1189,7 @@ test("Yuanta fund source reads every page through the fund routes and submits ea
 });
 
 test("Yuanta fund summary falls back to the fund menu's menuaction() when its route renders no tables", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const read = await readFundThroughShell(browser, {
       input: { includePortfolioSummary: true, includeHistoricalTransactions: false },

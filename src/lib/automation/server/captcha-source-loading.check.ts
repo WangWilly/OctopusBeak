@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import { PNG } from "pngjs";
 import { createLoadedCaptchaSourceOwner } from "./captcha-source-freshness.ts";
 import type { HumanAssistanceContract } from "../human-assistance.ts";
 
 test("provider capture waits for a visible CAPTCHA image's pending network response", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     let release!: () => void;
@@ -54,7 +54,7 @@ function solidPngDataUrl(red: number) {
 }
 
 test("refresh clicks the declared control and confirms new challenge pixels", async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage();
     const first = solidPngDataUrl(10);

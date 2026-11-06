@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
@@ -960,7 +960,7 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
     instrumentFingerprintSecret: "synthetic-managed-secret",
   };
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   async function readThroughShell(
     options: Readonly<{
       signal?: AbortSignal;
