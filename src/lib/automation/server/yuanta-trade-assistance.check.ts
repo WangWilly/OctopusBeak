@@ -20,7 +20,8 @@ import {
 } from "./yuanta-trade-assistance.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { after, before } from "node:test";
-import { chromium, type Browser, type Page } from "playwright";
+import { type Browser, type Page } from "playwright";
+import { launchCheckBrowser } from "../check-browser.fixtures.ts";
 import { openSyntheticPage, scriptedSolver } from "./verification-page-check-support.ts";
 
 const noHostedPage = () => null;
@@ -45,7 +46,7 @@ function loginPage(options: { checkboxSticks?: boolean } = {}) {
 }
 
 let browser: Browser;
-before(async () => { browser = await chromium.launch({ headless: true }); });
+before(async () => { browser = await launchCheckBrowser(); });
 after(async () => { await browser.close(); });
 
 async function openLoginPage(options: { audio?: boolean; checkboxSticks?: boolean } = {}) {

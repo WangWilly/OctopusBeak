@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { recordedRun } from "./sign-in-check-harness.ts";
 import { cathaySignInPlan, signInCathayForApp } from "./cathay-statements.ts";
 
@@ -36,7 +37,7 @@ async function signInPast(page: Page, loginBody: string): Promise<Readonly<{ log
   }));
 }
 
-const browser = await chromium.launch();
+const browser = await launchCheckBrowser();
 try {
   assert.deepEqual(
     await signInPast(await browser.newPage(), `

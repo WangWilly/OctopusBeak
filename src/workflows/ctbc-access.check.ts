@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -15,7 +15,7 @@ const input = {
   statementTypes: ["deposit"],
 };
 
-const browser = await chromium.launch();
+const browser = await launchCheckBrowser();
 try {
   const page = await browser.newPage();
   await page.route("https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010", async (route) => {

@@ -211,8 +211,8 @@ test("O-Bank calibrated disagreement stops before credentials, while agreement s
 });
 
 test("O-Bank's default Node transport decodes a JPEG challenge to PNG before solving", async (t) => {
-  const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+  const { launchCheckBrowser } = await import("../automation/check-browser.fixtures.ts");
+  const browser = await launchCheckBrowser();
   try {
     const page = await browser.newPage({ viewport: { width: 152, height: 60 } });
     const jpeg = await page.screenshot({ type: "jpeg" });

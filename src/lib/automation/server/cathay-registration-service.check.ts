@@ -6,6 +6,7 @@ import test from "node:test";
 import type { BrowserContext, Page } from "playwright";
 import { cathaySignInPlan, signInCathayForApp } from "../../../workflows/cathay-statements.ts";
 import { recordedRun } from "../../../workflows/sign-in-check-harness.ts";
+import { launchCheckPersistentContext } from "../check-browser.fixtures.ts";
 import { FailureCodeError } from "../workflow-failures.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import {
@@ -174,6 +175,7 @@ async function withFixture(
       userDataDirectory: root,
       credentialCodec: codec,
       browserProfile: "cathay-login",
+      launchPersistentContext: launchCheckPersistentContext,
     }).withPage(async (page) => {
       await installCathayFixture(page.context(), options, log);
       return await run(page);

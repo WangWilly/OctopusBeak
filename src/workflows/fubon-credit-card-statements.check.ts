@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { registerHooks } from "node:module";
-import { chromium } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -263,7 +263,7 @@ async function readCardThroughShell(
     currentCreditHref?: string;
   }>,
 ) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchCheckBrowser();
   const requested: string[] = [];
   const activities: string[] = [];
   const events: string[] = [];

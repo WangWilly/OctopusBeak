@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import { chromium } from "playwright";
+import { launchCheckPersistentContext } from "../check-browser.fixtures.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -215,7 +215,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     launchPersistentContext: async (userDataDirectory, options) => {
       assert.equal(options.headless, true, "App workflow browser must default to headless");
       runtimeProfile = userDataDirectory;
-      return await chromium.launchPersistentContext(userDataDirectory, {
+      return await launchCheckPersistentContext(userDataDirectory, {
         ...options,
         headless: true,
       });
@@ -290,7 +290,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
       userDataDirectory: root,
       credentialCodec,
       launchPersistentContext: async (userDataDirectory, options) =>
-        await chromium.launchPersistentContext(userDataDirectory, {
+        await launchCheckPersistentContext(userDataDirectory, {
           ...options,
           headless: true,
         }),

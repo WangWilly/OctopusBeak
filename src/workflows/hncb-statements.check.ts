@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { readFileSync } from "node:fs";
-import { chromium, type Frame } from "playwright";
+import { type Frame } from "playwright";
+import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildHncbCapture,
@@ -338,7 +339,7 @@ assert.deepEqual(browserCompatibleStatement.rows[0]?.slice(0, 8), [
   "入帳",
 ]);
 
-const browser = await chromium.launch();
+const browser = await launchCheckBrowser();
 try {
   const overviewPage = await browser.newPage();
   await overviewPage.setContent(`
@@ -501,7 +502,7 @@ assert.equal(reopened, false, "only a timed-out form wait reopens the statement 
 // The statement form lives in HNCB's `main` frame; the frame scope finds it
 // there, and a cancelled run stops the wait with its reason instead of
 // reopening the form after the 5 s probe.
-const formBrowser = await chromium.launch();
+const formBrowser = await launchCheckBrowser();
 try {
   const formPage = await formBrowser.newPage();
   await formPage.setContent(`<iframe name="main" srcdoc="
