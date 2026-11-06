@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { superviseProcess } from "./desktop-process-supervisor.mjs";
@@ -7,7 +8,8 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const electron = createRequire(import.meta.url)("electron");
 // A development run records sanitized workflow failure diagnostics by default
 // (ADR 0109); set the variable to another path to move them, or to "" to stop.
-const DEFAULT_WORKFLOW_DIAGNOSTICS_FILE = "/private/tmp/octopusbeak-workflow-failures.jsonl";
+// The per-user temporary folder keeps the file out of a directory other accounts can write.
+const DEFAULT_WORKFLOW_DIAGNOSTICS_FILE = join(tmpdir(), "octopusbeak-workflow-failures.jsonl");
 const env = {
   ...process.env,
   OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE:

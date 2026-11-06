@@ -315,14 +315,22 @@ export function isDeclaredProviderResponse(
 }
 
 /**
- * Run the source's row parser. A plain error it throws names the row-parse
+ * The parser errors that name no failure of their own: a plain `Error`, or a
+ * built-in one such as the `TypeError` of reading a field the source dropped.
+ */
+const UNNAMED_PARSER_ERRORS: ReadonlySet<unknown> = new Set([
+  Error, TypeError, RangeError, SyntaxError, ReferenceError, URIError, EvalError,
+]);
+
+/**
+ * Run the source's row parser. An unnamed error it throws names the row-parse
  * check and keeps its message; an error with its own type keeps its meaning.
  */
 function parseRows<Row>(parse: () => readonly Row[]): readonly Row[] {
   try {
     return parse();
   } catch (error) {
-    if (error instanceof Error && error.constructor === Error)
+    if (error instanceof Error && UNNAMED_PARSER_ERRORS.has(error.constructor))
       throw new SnapshotCheckError("row-parse", error.message, { cause: error });
     throw error;
   }

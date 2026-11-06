@@ -12,7 +12,7 @@ When Fubon started serving its current-credit page at `?menuId=CCC0201&`, the ru
 
 ## Decision
 
-**Each snapshot check names itself.** The snapshot module throws `SnapshotCheckError` with one of a fixed set of checks:
+**Each check of the read names itself.** When `readCurrentStateSnapshot` rejects a source, it throws `SnapshotCheckError` with one of a fixed set of checks:
 
 | Check | Rejects |
 |---|---|
@@ -23,15 +23,15 @@ When Fubon started serving its current-credit page at `?menuId=CCC0201&`, the ru
 | `response-cache-control` | a missing declared Cache-Control directive |
 | `response-date` | a missing required HTTP Date, or an invalid one |
 | `evidence-json` | a JSON body that does not parse |
-| `row-parse` | a plain error from the source's row parser |
+| `row-parse` | an unnamed error from the source's row parser |
 
-The row parser's plain error becomes the `cause` of a `row-parse` error and keeps its message. An error with its own type, such as `SourceTextIntegrityError`, passes through unchanged, so its classification does not change.
+An unnamed parser error is a plain `Error` or a built-in one, such as the `TypeError` of reading a field the source dropped. It becomes the `cause` of a `row-parse` error, which keeps its message. An error with its own type, such as `SourceTextIntegrityError`, passes through unchanged, so its classification does not change.
 
 **The diagnostic carries the check, not the message.** A node of the diagnostic error chain gains an optional `snapshotCheck`, read from the error and accepted only from the fixed set. This follows the existing `sqlState` and `httpStatus` fields.
 
 **The Error report leaves it out for now.** The receiver accepts only `type`, `sqlState`, `httpStatus` and `frames` on a chain node, so the App drops `snapshotCheck` when it builds a report. A receiver change that accepts it comes first; a later App change then sends it.
 
-**A development run writes the diagnostic by default.** `npm run desktop:dev` sets `OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE` to `/private/tmp/octopusbeak-workflow-failures.jsonl` unless the variable is already set. Setting it to an empty string turns the file off. A packaged App is unchanged.
+**A development run writes the diagnostic by default.** `npm run desktop:dev` sets `OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE` to `octopusbeak-workflow-failures.jsonl` in the per-user temporary folder (`os.tmpdir()`, `$TMPDIR` on macOS) unless the variable is already set, and prints the path. A shared folder such as `/private/tmp` would let another account create the file or a link in its place first. Setting the variable to an empty string turns the file off. A packaged App is unchanged.
 
 ## Considered options
 
@@ -43,5 +43,5 @@ The row parser's plain error becomes the `cause` of a `row-parse` error and keep
 ## Consequences
 
 - A rejected snapshot in a development run leaves a diagnostic line that names the check, for example `"snapshotCheck":"response-endpoint"`.
-- Statement validation outside the snapshot module still reports without a check.
+- The stage half of the snapshot module still reports without a check: a duplicate item key, an ambiguous match, and errors from the declaration's own `validate`, `build` and staging kind. So does statement validation outside the module.
 - The Error report payload is unchanged until the receiver accepts `snapshotCheck`.

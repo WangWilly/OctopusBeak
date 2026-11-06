@@ -13,6 +13,7 @@ import {
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { SnapshotCheckError, type SnapshotCheck } from "../lib/automation/snapshot-check.ts";
+import { captureSafeWorkflowFailureError } from "../lib/automation/server/workflow-failure-diagnostics.ts";
 import {
   assembleCurrentCreditCardCapture,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -481,6 +482,17 @@ test("a parse failure reports validation, and a failed read reports collection",
   );
   assert.deepEqual(failing.events, checkFailure);
 
+  const dropped = await snapshot(
+    { ...declaration(), parse: () => (undefined as unknown as { rows: readonly SnapshotRow[] }).rows },
+    [capture("a")],
+    json([]),
+  );
+  await assert.rejects(
+    dropped.run,
+    (error) => error instanceof SnapshotCheckError && error.check === "row-parse" && error.cause instanceof TypeError,
+    "a TypeError from reading a field the source dropped also names the row-parse check",
+  );
+
   const typed = await snapshot(
     { ...declaration(), parse: () => { throw new SourceTextIntegrityError("replacement-character"); } },
     [capture("a")],
@@ -613,6 +625,18 @@ test("the stage half throws on ambiguous captures before validation starts", asy
     /^Error: ambiguous$/u,
   );
   assert.deepEqual(events, []);
+});
+
+test("a rejected snapshot leaves its check, and no message, in the captured failure diagnostic", async () => {
+  const offEndpoint = await snapshot(
+    declaration(),
+    [capture("a")],
+    { ...json([{ account: "A", currencies: ["TWD"], amount: "1" }]), response: { ...PROVIDER_RESPONSE, url: "https://bank.example/other" } },
+  );
+  const rejection = await offEndpoint.run.then(() => assert.fail("the off-endpoint response is admitted"), (error: unknown) => error);
+  const diagnostic = captureSafeWorkflowFailureError(rejection, process.cwd());
+  assert.equal(diagnostic.chain[0]?.snapshotCheck, "response-endpoint");
+  assert.ok(!JSON.stringify(diagnostic).includes("bank.example"), "the rejected URL stays out of the diagnostic");
 });
 
 test("a declared response verifies to its transport facts and the run clock's Taipei second", () => {
