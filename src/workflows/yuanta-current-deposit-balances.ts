@@ -6,9 +6,9 @@ import {
   isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
 
@@ -405,7 +405,7 @@ function findCurrentDepositTable(
 
 /** The current-state table the summary card opens, before decoding. */
 export type YuantaCurrentDepositTable = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  evidence: Extract<ProviderEvidence, { kind: "cells" }>;
   response: ProviderResponse;
 }>;
 

@@ -17,7 +17,8 @@ import {
   stageHncbDeposit,
   type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
-import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse } from "./provider-response.ts";
 import { FrameScopeTimeoutError } from "./frame-scope.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {

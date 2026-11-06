@@ -29,8 +29,8 @@ import {
   stageCurrentStateSnapshot,
   type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
-  type ProviderResponse,
 } from "./current-state-snapshot-capture.ts";
+import type { ProviderResponse } from "./provider-response.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";

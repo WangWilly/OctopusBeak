@@ -4,9 +4,9 @@ import { parseProviderDecimal } from "../lib/shared-money/exact-money.ts";
 import type {
   ProviderResponse,
   ProviderResponseDeclaration,
-  SnapshotEvidence,
+  ProviderEvidence,
   VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import type { LineBankAccount } from "./linebank-statements.ts";
 
 /**
@@ -82,7 +82,7 @@ export type LineBankCurrentDepositSnapshotInput = Readonly<{
  * numeric `wdrwAvblAmt` tokens.
  */
 export type LineBankCurrentDepositAcquired = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  evidence: Extract<ProviderEvidence, { kind: "json" }>;
   response: ProviderResponse;
 }>;
 

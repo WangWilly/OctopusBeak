@@ -3,9 +3,9 @@ import {
   isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import type { SinopacMmaRoute, SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /**
@@ -251,7 +251,7 @@ export function parseSinopacCurrentDepositBalanceSnapshot(input: Readonly<{
 
 /** The ws_bankbal response SinoPac's balance page triggers, before decoding. */
 export type SinopacCurrentDepositResponse = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  evidence: Extract<ProviderEvidence, { kind: "json" }>;
   response: ProviderResponse;
 }>;
 

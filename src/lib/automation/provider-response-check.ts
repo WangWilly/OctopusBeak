@@ -1,9 +1,10 @@
 /**
- * The checks a current-state snapshot makes before it reads a row (ADR 0109).
- * A failed check names itself with one of these, so a failure diagnostic can
- * say which check rejected the source without carrying its message.
+ * The checks a source's provider response passes before a parser reads it
+ * (ADR 0109, ADR 0110). A failed check names itself with one of these, so a
+ * failure diagnostic can say which check rejected the source without
+ * carrying its message.
  */
-export const SNAPSHOT_CHECKS = [
+export const PROVIDER_RESPONSE_CHECKS = [
   "response-endpoint",
   "response-method",
   "response-status",
@@ -14,22 +15,22 @@ export const SNAPSHOT_CHECKS = [
   "row-parse",
 ] as const;
 
-export type SnapshotCheck = (typeof SNAPSHOT_CHECKS)[number];
+export type ProviderResponseCheck = (typeof PROVIDER_RESPONSE_CHECKS)[number];
 
-const snapshotChecks: ReadonlySet<string> = new Set(SNAPSHOT_CHECKS);
+const providerResponseChecks: ReadonlySet<string> = new Set(PROVIDER_RESPONSE_CHECKS);
 
-export function isSnapshotCheck(value: unknown): value is SnapshotCheck {
-  return typeof value === "string" && snapshotChecks.has(value);
+export function isProviderResponseCheck(value: unknown): value is ProviderResponseCheck {
+  return typeof value === "string" && providerResponseChecks.has(value);
 }
 
 /**
- * A current-state snapshot check that rejected its source. It keeps the name
+ * A provider response check that rejected its source. It keeps the name
  * `Error`: the check names the failure, and the message reads as before.
  */
-export class SnapshotCheckError extends Error {
-  readonly check: SnapshotCheck;
+export class ProviderResponseCheckError extends Error {
+  readonly check: ProviderResponseCheck;
 
-  constructor(check: SnapshotCheck, message: string, options?: ErrorOptions) {
+  constructor(check: ProviderResponseCheck, message: string, options?: ErrorOptions) {
     super(message, options);
     this.check = check;
   }

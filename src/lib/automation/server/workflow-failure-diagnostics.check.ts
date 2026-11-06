@@ -11,7 +11,7 @@ import {
   sanitizeSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,
 } from "./workflow-failure-diagnostics.ts";
-import { SnapshotCheckError } from "../snapshot-check.ts";
+import { ProviderResponseCheckError } from "../provider-response-check.ts";
 
 const repository = "/Volumes/projects02/libretto-playground";
 
@@ -76,7 +76,7 @@ test("actual PGlite constraint failures retain their SQLSTATE despite the librar
 
 test("a snapshot check survives capture and host validation; an unknown check does not", () => {
   const parserError = new TypeError("used credit is undefined");
-  const rejected = new SnapshotCheckError("row-parse", parserError.message, { cause: parserError });
+  const rejected = new ProviderResponseCheckError("row-parse", parserError.message, { cause: parserError });
   const captured = captureSafeWorkflowFailureError(rejected, repository);
   assert.deepEqual(captured.chain.map((node) => [node.type, node.snapshotCheck]), [["Error", "row-parse"], ["TypeError", undefined]]);
   assert.deepEqual(sanitizeSafeWorkflowFailureError(captured, repository).chain.map((node) => node.snapshotCheck), ["row-parse", undefined]);

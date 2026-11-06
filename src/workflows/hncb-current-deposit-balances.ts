@@ -5,9 +5,9 @@ import {
   type ProviderEndpoint,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import { HNCB_TRX_DISPATCHER_PATH, type HncbNetbankSite, type HncbRoute } from "./hncb-netbank-site.ts";
 
@@ -635,7 +635,7 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: HncbRoute = {
  */
 export type HncbCurrentDepositTable = Readonly<{
   view: "overview" | "detail";
-  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  evidence: Extract<ProviderEvidence, { kind: "cells" }>;
   response: ProviderResponse;
 }>;
 

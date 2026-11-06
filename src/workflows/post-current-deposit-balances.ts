@@ -7,15 +7,14 @@ import {
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
+import { assembleCurrentDepositCapture, type CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
 import {
-  assembleCurrentDepositCapture,
   isDeclaredProviderResponse,
-  type CurrentBalanceCaptureMatching,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
@@ -371,7 +370,7 @@ function isPostIndexUrl(href: string): boolean {
 
 /** The asset-overview response iPost's page triggers, before decoding. */
 export type PostCurrentDepositResponse = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  evidence: Extract<ProviderEvidence, { kind: "json" }>;
   response: ProviderResponse;
   /** The request body is parsed for its discriminants and never returned. */
   requestPostData: string | null;

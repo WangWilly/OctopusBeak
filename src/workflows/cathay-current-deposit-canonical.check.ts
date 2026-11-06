@@ -27,7 +27,8 @@ import {
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse } from "./provider-response.ts";
 import {
   cathayDomesticOverviewBody,
   cathayForeignOverviewBody,

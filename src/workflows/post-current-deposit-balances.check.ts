@@ -14,11 +14,8 @@ import {
   readPostCurrentDepositBalanceResponse,
   type PostCurrentDepositBalanceRow,
 } from "./post-current-deposit-balances.ts";
-import {
-  indexCurrentBalanceCaptures,
-  type ProviderResponse,
-  verifyProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00+08:00";

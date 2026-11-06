@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import {
   LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,

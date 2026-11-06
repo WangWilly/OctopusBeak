@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   readSinopacCurrentDepositBalanceResponse,
