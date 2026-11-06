@@ -21,6 +21,7 @@ import {
   FUBON_LOAN_PAGINATION_FIXTURES_V1,
   FUBON_LOAN_PAGINATION_FIXTURES_V2,
 } from "./fubon-loan-statements.fixtures.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
@@ -193,7 +194,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
     } as unknown as Page;
     const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
     const result = await parseFubonLoanStatementForCollection(
-      fubonEbankSite(page, { signal: new AbortController().signal, text: strictSourceText }),
+      fubonEbankSite(page, { signal: new AbortController().signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" }),
       fixtureHtml,
       {
         label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
@@ -678,7 +679,13 @@ const loanQueryForm = (selected: string, result: string) => `<form id="form1" me
   </script>`;
 
 async function readLoanThroughShell(
-  options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void; brokenAccount?: string }> = {},
+  options: Readonly<{
+    signal?: AbortSignal;
+    holdAccount?: string;
+    onHeld?: () => void;
+    brokenAccount?: string;
+    failAccount?: string;
+  }> = {},
 ) {
   const browser = await chromium.launch({ headless: true });
   const shellPage = await browser.newPage();
@@ -715,6 +722,9 @@ async function readLoanThroughShell(
         }
         if (account === options.brokenAccount) {
           return await route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xc3, 0x28]) });
+        }
+        if (account === options.failAccount) {
+          return await route.fulfill({ ...html(loanQueryForm(account, loanResultFor(account, page))), status: 500 });
         }
         return await route.fulfill(html(loanQueryForm(account, loanResultFor(account, page))));
       }
@@ -790,6 +800,13 @@ test("Fubon loan fails a reply with malformed bytes as a source integrity failur
   await assert.rejects(
     readLoanThroughShell({ brokenAccount: shellLoanAccounts[1]!.value }),
     SourceTextIntegrityError,
+  );
+});
+
+test("Fubon loan fails a query reply with status 500 on its named check", async () => {
+  await assert.rejects(
+    readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value }),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
   );
 });
 

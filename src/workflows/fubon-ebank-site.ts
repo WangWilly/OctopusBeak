@@ -1,10 +1,18 @@
 import type { Frame, Locator, Page, Response } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
+import {
+  acceptProviderResponse,
+  type ProviderEvidence,
+  type ProviderResponse,
+  type ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
 export const FUBON_EBANK_ENTRY_URL = "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
+export const FUBON_EBANK_HOST = new URL(FUBON_EBANK_ENTRY_URL).hostname;
 const HEADER_FRAME = "frame1";
 const SHELL_TIMEOUT_MS = 5_000;
 /** How long a task link already on the page may take to appear before the header menu is opened. */
@@ -45,14 +53,22 @@ export type FubonEbankSite = Readonly<{
   /** Click a control without the pointer, following a real href in its own scope. */
   activate(control: Locator, scope?: BrowserScope): Promise<void>;
   waitForMaskToClear(timeoutMs?: number): Promise<void>;
-  /** Post a form from inside the page and decode the reply strictly as UTF-8. */
-  postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<string>;
+  /** Post a form from inside the page and return the reply as observed, before any check. */
+  postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<FubonReply>;
   replaceDocument(scope: BrowserScope, html: string): Promise<void>;
-  /** Decode an HTML response strictly as UTF-8. */
-  readHtml(response: Response): Promise<string>;
+  /** Read a response the page received, before any check. */
+  readReply(response: Response): Promise<FubonReply>;
+  /** Verify a reply against the source's declaration, then decode its HTML strictly. */
+  accept(declaration: ProviderResponseDeclaration, reply: FubonReply): string;
 }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort }>;
+/** One HTML reply the site observed: its body bytes and the response that carried them. */
+export type FubonReply = Readonly<{
+  evidence: Extract<ProviderEvidence, { kind: "text" }>;
+  response: ProviderResponse;
+}>;
+
+type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort; now(): string }>;
 
 const isFollowableHref = (href: string | null): href is string =>
   !!href && href !== "#" && !href.startsWith("javascript:");
@@ -146,27 +162,38 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
       }, "Timed out waiting for the bank loading mask to clear.", { timeoutMs });
     },
     postback: async (form, submitFieldName, fields = {}) => {
-      const base64 = await frames.race(form.evaluate(async (element, options) => {
+      const reply = await frames.race(form.evaluate(async (element, options) => {
         if (!(element instanceof HTMLFormElement)) throw new Error("Postback target is not a form element.");
         const body = new URLSearchParams();
         for (const [key, value] of new FormData(element)) body.append(key, String(value));
         if (options.submitFieldName) body.set(options.submitFieldName, options.submitFieldName);
         for (const [key, value] of Object.entries(options.fields)) body.set(key, value);
         const action = element.getAttribute("action") || window.location.href;
-        const response = await fetch(new URL(action, window.location.href).toString(), {
+        const init = {
           body: body.toString(),
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           method: "POST",
-        });
-        if (!response.ok) throw new Error(`${response.status} for ${response.url}`);
+        };
+        const response = await fetch(new URL(action, window.location.href).toString(), init);
         const bytes = new Uint8Array(await response.arrayBuffer());
         let binary = "";
         for (let index = 0; index < bytes.length; index += 0x8000) {
           binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
         }
-        return btoa(binary);
+        return {
+          base64: btoa(binary),
+          response: {
+            url: response.url,
+            status: response.status,
+            method: init.method,
+            headers: Object.fromEntries(response.headers.entries()),
+          },
+        };
       }, { fields, submitFieldName }));
-      return context.text.decode(Buffer.from(base64, "base64"), "utf-8");
+      return {
+        evidence: { kind: "text", bytes: new Uint8Array(Buffer.from(reply.base64, "base64")) },
+        response: reply.response,
+      };
     },
     replaceDocument: async (scope, html) => {
       await frames.race(scope.evaluate((nextHtml) => {
@@ -175,7 +202,20 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
         document.close();
       }, html));
     },
-    readHtml: async (response) => context.text.decode(await frames.race(response.body()), "utf-8"),
+    readReply: async (response) => ({
+      evidence: { kind: "text", bytes: new Uint8Array(await frames.race(response.body())) },
+      response: {
+        url: response.url(),
+        status: response.status(),
+        method: response.request().method(),
+        headers: await frames.race(response.allHeaders()),
+      },
+    }),
+    accept: (declaration, reply) => acceptProviderResponse(
+      declaration,
+      reply,
+      { observedAt: taipeiInstant(context.now()), text: context.text },
+    ).evidence.text,
   };
   return Object.freeze(site);
 }

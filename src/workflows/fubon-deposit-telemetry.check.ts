@@ -165,7 +165,7 @@ const queryForm = (result: string) => `<form id="form1" method="post" action="${
   <a id="form1:doValidateAndSubmit" href="javascript:void(0)" onclick="document.getElementById('form1').submit()">查詢</a>
 </form>${result}`;
 const resultTable = `<table><tr><th>帳務日期</th><th>交易時間</th><th>即時餘額</th></tr></table>`;
-const siteContext = { signal: new AbortController().signal, text: strictSourceText };
+const siteContext = { signal: new AbortController().signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" };
 
 const browser = await chromium.launch({ headless: true });
 try {

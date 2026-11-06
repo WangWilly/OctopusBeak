@@ -25,7 +25,8 @@ import {
   selectOptionWithoutPointer,
 } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import { FUBON_EBANK_HOST, fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -55,6 +56,23 @@ const LOAN_STATEMENTS_ROUTE: FubonRoute = {
   ready: async (scope) =>
     (await attached(scope.locator(LOAN_ACCOUNT_SELECTOR))) &&
     (await attached(scope.locator(LOAN_FORM_SELECTOR))),
+};
+
+/**
+ * The loan query's reply to the in-page postback. The URL is the form's own
+ * action, so its query is the page's.
+ */
+export const FUBON_LOAN_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Fubon loan statement",
+  host: FUBON_EBANK_HOST,
+  endpoints: [{
+    path: "/B2C/clnqu/clnqu001/CLNQU001_Home.faces",
+    method: "POST",
+    search: /^(?:\?.*)?$/su,
+    charset: { decode: "utf-8" },
+  }],
+  cacheControl: [],
+  providerDate: "optional",
 };
 
 const queryItemSchema = z.enum([
@@ -906,10 +924,10 @@ async function parseLoanStatementHtml(
 
 async function fetchLoanQueryHtml(site: FubonEbankSite): Promise<string> {
   const scope = await site.frames.scopeWith("#form1\\:doValidate");
-  const html = await site.postback(
+  const html = site.accept(FUBON_LOAN_STATEMENT_RESPONSE, await site.postback(
     scope.locator("form").first(),
     "form1:doValidate",
-  );
+  ));
   await site.replaceDocument(scope, html);
   await site.frames.scopeWith(loanResultTable, "loan result table");
 
@@ -988,11 +1006,11 @@ async function fetchFubonLoanStatementPages(
     requests.add(requestKey);
 
     const scope = await site.frames.scopeWith("#form1\\:doValidate");
-    html = await site.postback(
+    html = site.accept(FUBON_LOAN_STATEMENT_RESPONSE, await site.postback(
       scope.locator("form").first(),
       undefined,
       { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
-    );
+    ));
     await site.replaceDocument(scope, html);
     await site.frames.scopeWith(loanResultTable, "loan result table");
   }

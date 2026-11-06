@@ -38,6 +38,7 @@ import { StatementComponentAbsentError, type ProductStageRequest } from "../lib/
 import { collectionPeriod, taipeiToday, type CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type {
   AccountIdentityContinuity,
   AccountIdentityContinuityRequest,
@@ -1013,7 +1014,8 @@ try {
 // The read half against real Chromium. The account selector and a synthetic
 // signed-in frameset are served by route interception (ADR 0066).
 const SITE_ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
-const siteContext = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
+const siteContext = (signal = new AbortController().signal) =>
+  ({ signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" });
 const browser = await chromium.launch({ headless: true });
 try {
   const selectorPage = await browser.newPage();
@@ -1107,7 +1109,7 @@ try {
   };
 
   async function readThroughShell(
-    options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void }> = {},
+    options: Readonly<{ signal?: AbortSignal; holdAccount?: string; onHeld?: () => void; failAccount?: string }> = {},
   ) {
     const shellPage = await browser.newPage();
     const posted: Array<{ account: string; page: string; submit: boolean }> = [];
@@ -1127,6 +1129,9 @@ try {
           if (account === options.holdAccount) {
             options.onHeld?.();
             return;
+          }
+          if (account === options.failAccount) {
+            return await route.fulfill({ ...html(queryForm(account, resultFor(account, page))), status: 500 });
           }
           return await route.fulfill(html(queryForm(account, resultFor(account, page))));
         }
@@ -1189,6 +1194,12 @@ try {
   );
   assert.equal(shellRead.snapshot.accounts[0]!.statements[0]!.pages[0]!.selectedAccount.value, shellAccounts[0]!.value);
   assert.deepEqual(shellRead.activities, ["query", "query", "query"]);
+
+  await assert.rejects(
+    readThroughShell({ failAccount: shellAccounts[1]!.value }),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-status",
+    "a deposit query reply with status 500 fails the read instead of being parsed",
+  );
 
   const cancelledShell = new AbortController();
   await assert.rejects(

@@ -3,8 +3,10 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
-import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import { FUBON_EBANK_ENTRY_URL, FUBON_EBANK_HOST, fubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import type { BrowserScope } from "./frame-scope.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 
 const ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
 const CANCELLED = new Error("synthetic cancellation");
@@ -46,6 +48,9 @@ async function withFubonShell(
         if (request.postData()?.includes("broken=1")) {
           return await route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xc3, 0x28]) });
         }
+        if (request.postData()?.includes("failed=1")) {
+          return await route.fulfill({ status: 500, contentType: "text/html; charset=utf-8", body: "<p>系統忙碌</p>" });
+        }
         return await html(`<table id="result"><tr><td>交易日期</td></tr></table>`);
       }
       switch (pathname) {
@@ -86,7 +91,8 @@ async function withFubonShell(
   }
 }
 
-const context = (signal = new AbortController().signal) => ({ signal, text: strictSourceText });
+const context = (signal = new AbortController().signal) =>
+  ({ signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" });
 const attached = (selector: string) => async (scope: BrowserScope) =>
   (await scope.locator(selector).count().catch(() => 0)) > 0;
 const counters = (page: Page) => page.evaluate((): Counters => {
@@ -168,19 +174,45 @@ test("cancelling the run interrupts a task that never renders", () =>
     assert.ok(Date.now() - started < 2_000);
   }));
 
-test("a form postback decodes its reply as strict UTF-8, and malformed bytes fail the read", () =>
+const LOAN_REPLY: ProviderResponseDeclaration = {
+  label: "Fubon synthetic loan",
+  host: FUBON_EBANK_HOST,
+  endpoints: [{ path: "/B2C/loan.faces", method: "POST", charset: { decode: "utf-8" } }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+const failsCheck = (check: string) => (error: unknown) =>
+  error instanceof ProviderResponseCheckError && error.check === check;
+
+test("a form postback reply is accepted through its declaration and decoded as strict UTF-8", () =>
   withFubonShell(async (page, posted) => {
     const site = fubonEbankSite(page, context());
     const scope = await site.open(LOAN);
     const form = scope.locator("form#form1");
-    const html = await site.postback(form, "query", { page: "2" });
+    const reply = await site.postback(form, "query", { page: "2" });
+    assert.equal(reply.response.method, "POST");
+    const html = site.accept(LOAN_REPLY, reply);
     assert.match(html, /交易日期/u);
     assert.deepEqual(posted, ["/B2C/loan.faces acct=0012&query=query&page=2"]);
     await site.replaceDocument(scope, html);
     assert.equal(await scope.locator("#result").count(), 1);
 
     const reloaded = await site.open(LOAN);
-    await assert.rejects(site.postback(reloaded.locator("form#form1"), undefined, { broken: "1" }), SourceTextIntegrityError);
+    const broken = await site.postback(reloaded.locator("form#form1"), undefined, { broken: "1" });
+    assert.throws(() => site.accept(LOAN_REPLY, broken), SourceTextIntegrityError);
+  }));
+
+test("a form postback reply with status 500 or from an undeclared endpoint fails its named check", () =>
+  withFubonShell(async (page) => {
+    const site = fubonEbankSite(page, context());
+    const form = (await site.open(LOAN)).locator("form#form1");
+    const failed = await site.postback(form, undefined, { failed: "1" });
+    assert.throws(() => site.accept(LOAN_REPLY, failed), failsCheck("response-status"));
+    const elsewhere = await site.postback(form, undefined, { page: "2" });
+    assert.throws(
+      () => site.accept({ ...LOAN_REPLY, endpoints: [{ ...LOAN_REPLY.endpoints[0]!, path: "/B2C/other.faces" }] }, elsewhere),
+      failsCheck("response-endpoint"),
+    );
   }));
 
 test("a task class link wins over an earlier link that only shares its text", () =>

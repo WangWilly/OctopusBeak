@@ -11,7 +11,8 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import { selectOptionWithoutPointer } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope } from "./frame-scope.ts";
-import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import { FUBON_EBANK_HOST, fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
+import { isDeclaredProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
@@ -81,7 +82,22 @@ import {
 const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
 const depositFastFunctionSelector = "a.input_sel.fastFunctionLinks";
 const depositSubmitSelector = 'a[id="form1:doValidateAndSubmit"]';
-const depositQueryPath = "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces";
+/**
+ * The deposit query's reply, to both the in-page postback and the visible
+ * form. The URL is the form's own action, so its query is the page's.
+ */
+export const FUBON_DEPOSIT_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Fubon deposit statement",
+  host: FUBON_EBANK_HOST,
+  endpoints: [{
+    path: "/B2C/cdsqu/cdsqu001/CDSQU001_Home.faces",
+    method: "POST",
+    search: /^(?:\?.*)?$/su,
+    charset: { decode: "utf-8" },
+  }],
+  cacheControl: [],
+  providerDate: "optional",
+};
 /**
  * How long the date-range radio's handler gets before the query. No captured
  * page shows what the handler changes, so there is no condition to wait for.
@@ -2114,11 +2130,11 @@ export async function fetchDepositStatement(
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
-  const html = await site.postback(
+  const html = site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.postback(
     scope.locator("form").first(),
     "form1:doValidateAndSubmit",
     depositDateRangeFields(query),
-  );
+  ));
   const pages = [await parseDepositStatementHtml(page, html, 0, 1)];
   await site.replaceDocument(scope, html);
 
@@ -2132,11 +2148,11 @@ export async function fetchDepositStatement(
     traversalRequests.add(traversalKey);
     if (pages.length >= 10_000)
       throw new Error("Fubon deposit pagination exceeded the safe page limit.");
-    const nextHtml = await site.postback(
+    const nextHtml = site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.postback(
       scope.locator("form").first(),
       undefined,
       { [pageFieldName]: nextPage },
-    );
+    ));
     const nextParsed = await parseDepositStatementHtml(
       page,
       nextHtml,
@@ -2212,8 +2228,7 @@ function isFubonDepositQueryResponse(response: Response): boolean {
   try {
     const postData = response.request().postData() ?? "";
     return (
-      response.request().method().toUpperCase() === "POST" &&
-      new URL(response.url()).pathname === depositQueryPath &&
+      isDeclaredProviderResponse(FUBON_DEPOSIT_STATEMENT_RESPONSE, response.url(), response.request().method()) &&
       (postData.includes("doValidateAndSubmit") ||
         postData.includes("dataGridCurrentPage"))
     );
@@ -2237,7 +2252,7 @@ async function clickAndReadFubonDepositQuery(
     site.frames.withSignal((signal) => control.click({ timeout: 30_000, signal })),
   ]);
   await site.frames.race(response.finished());
-  return await site.readHtml(response);
+  return site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.readReply(response));
 }
 
 async function findFubonDepositNextPage(
