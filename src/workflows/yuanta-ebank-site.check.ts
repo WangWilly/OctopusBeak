@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
+import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
+import { validationReporter } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { BrowserScope } from "./frame-scope.ts";
@@ -73,6 +75,16 @@ async function withYuantaShell(
             headers: { "content-disposition": "attachment; filename=deposit.csv" },
             body: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]),
           });
+        case "/nib/tx/failing.csv":
+          return void route.fulfill({ status: 500, contentType: "text/csv", body: "error" });
+        case "/nib/tx/utf8.csv":
+          return void route.fulfill({
+            contentType: "text/csv; charset=utf-8",
+            headers: { "content-disposition": "attachment; filename=deposit.csv" },
+            body: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]),
+          });
+        case "/nib/tx/moved.csv":
+          return void route.fulfill({ status: 302, headers: { location: "/nib/tx/export.csv" } });
         case "/nib/tx/bad.html":
           return void route.fulfill({ contentType: "text/html", body: Buffer.from([0x3c, 0x70, 0x3e, 0xff, 0xfe]) });
         default:
@@ -244,8 +256,39 @@ test("a CSV export link is fetched in the page and decoded as Big5", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
     const scope = await site.open(DEPOSIT);
-    const download = await site.readCsv(scope.locator("#csv"));
+    const download = await site.readCsv(scope.locator("#csv"), { observedAt: OBSERVED_AT, validate: async (check) => await check() });
     assert.equal(download.content, "帳號,1\r\n");
     assert.equal(download.byteLength, BIG5_ACCOUNT_HEADER.byteLength + 4);
     assert.equal(download.contentDisposition, "attachment; filename=deposit.csv");
+  }));
+
+test("a CSV reply that is not 200, or names another charset, fails the product's validation with its named check", () =>
+  withYuantaShell(async (page) => {
+    const site = yuantaEbankSite(page, context());
+    const scope = await site.open(DEPOSIT);
+    const link = scope.locator("#csv");
+    const failedAs = async (href: string) => {
+      await link.evaluate((anchor, value) => anchor.setAttribute("href", value), href);
+      const events: FailureEvidenceEvent[] = [];
+      const validate = validationReporter(async (stage, outcome) => {
+        events.push({ stage, outcome });
+      }, new AbortController().signal);
+      const error = await site.readCsv(link, { observedAt: OBSERVED_AT, validate }).then(
+        () => assert.fail("the CSV read must fail"),
+        (thrown: unknown) => thrown,
+      );
+      return { error, code: classifyFailure({ error, events, stopped: false }) };
+    };
+
+    const failing = await failedAs("/nib/tx/failing.csv");
+    assert.ok(failing.error instanceof ProviderResponseCheckError && failing.error.check === "response-status");
+    assert.equal(failing.code, "source-validation-failed", "the status check fails inside the product's validation");
+
+    const utf8 = await failedAs("/nib/tx/utf8.csv");
+    assert.ok(utf8.error instanceof ProviderResponseCheckError && utf8.error.check === "response-charset");
+    assert.equal(utf8.code, "source-validation-failed");
+
+    await link.evaluate((anchor) => anchor.setAttribute("href", "/nib/tx/moved.csv"));
+    const moved = await site.readCsv(link, { observedAt: OBSERVED_AT, validate: async (check) => await check() });
+    assert.equal(moved.content, "帳號,1\r\n", "a redirect within the eBank origin is followed and accepted");
   }));

@@ -15,7 +15,8 @@ import {
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
-import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { yuantaEbankSite, type YuantaCsvAcceptance, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { taipeiInstant } from "../lib/time/timezone.ts";
 import { yuantaQuickRange } from "./yuanta-statements.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
@@ -2299,6 +2300,7 @@ async function downloadTransactionRowsInMemory(
   currencyValue: string,
   requery: () => Promise<void>,
   sourceText: SourceTextPort,
+  acceptance: YuantaCsvAcceptance,
 ): Promise<{ rows: ForeignCurrencyTransactionRow[] }> {
   const { frames } = site;
   let target: YuantaForeignCurrencyCsvControlTarget;
@@ -2326,7 +2328,7 @@ async function downloadTransactionRowsInMemory(
   if (controlOrigin !== new URL(YUANTA_ENTRY_URL).origin)
     throw new Error("Yuanta foreign-currency export left the bank origin.");
   frames.signal.throwIfAborted();
-  const content = (await site.readCsv(control)).content;
+  const content = (await site.readCsv(control, acceptance)).content;
   sourceText.assertIntact(content);
   const rows = transactionRowsFromDownloadedCsv(
     content,
@@ -2384,6 +2386,7 @@ export async function readYuantaForeignCurrencySource(
         currency.value,
         () => queryAccountCurrency(site, input, account, currency),
         sourceText,
+        { observedAt: taipeiInstant(context.now()), validate: product.validate },
       );
       sourceText.assertIntact(JSON.stringify(download));
       downloads.push({ account, currency, rows: download.rows });

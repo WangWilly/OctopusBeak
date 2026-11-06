@@ -36,6 +36,9 @@ export type YuantaHtmlAcceptance = Readonly<{
   validate: ProductCollectionHandle["validate"];
 }>;
 
+/** When a CSV export was fetched, and the product validation its acceptance runs in (ADR 0106). */
+export type YuantaCsvAcceptance = YuantaHtmlAcceptance;
+
 export type YuantaCsvDownload = Readonly<{
   content: string;
   byteLength: number;
@@ -60,8 +63,11 @@ export type YuantaEbankSite = Readonly<{
    * against its declaration (ADR 0110) and decode it strictly in the endpoint's charset.
    */
   readHtml(declaration: ProviderResponseDeclaration, response: Response, acceptance: YuantaHtmlAcceptance): Promise<string>;
-  /** Fetch a CSV export link's bytes in the page and decode them strictly as Big5. */
-  readCsv(link: Locator): Promise<YuantaCsvDownload>;
+  /**
+   * Fetch a CSV export link's bytes in the page, then, inside `acceptance.validate`,
+   * verify the reply against where it was requested (ADR 0110) and decode it strictly as Big5.
+   */
+  readCsv(link: Locator, acceptance: YuantaCsvAcceptance): Promise<YuantaCsvDownload>;
 }>;
 
 type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort }>;
@@ -177,24 +183,57 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
         { observedAt, text: context.text },
       ).evidence.text);
     },
-    readCsv: (link) => readYuantaBig5CsvFromAnchor(link, context.text, context.signal),
+    readCsv: (link, acceptance) => readYuantaBig5CsvFromAnchor(link, acceptance, context),
   };
   return Object.freeze(site);
 }
 
+/** The request the page's export link or form made for its CSV. */
+type CsvExportRequest = Readonly<{ url: string; method: "GET" | "POST" }>;
+
 type BrowserCsvResponse = Readonly<{
+  requested: CsvExportRequest;
+  url: string;
   status: number;
+  headers: Record<string, string>;
   byteLength: number;
   base64: string;
-  contentDisposition: string;
-  exportUrl: string;
 }>;
 
-/** Fetch an export link's CSV bytes inside the signed-in page and decode them strictly as Big5. */
+const regExpLiteral = (text: string) => text.replace(/[\\^$.*+?()[\]{}|]/gu, "\\$&");
+
+/**
+ * The CSV export's reply, declared at the URL it was answered from with the
+ * method the page's link or form used. No capture records the export path
+ * (ADR 0110), and the reader follows a redirect within the eBank origin by
+ * design, so the path is the one the reply landed on; the host, status,
+ * charset and size are still checked.
+ */
+export function yuantaCsvExportResponse(landed: CsvExportRequest): ProviderResponseDeclaration<"optional"> {
+  const url = new URL(landed.url);
+  return {
+    label: "Yuanta CSV export",
+    host: new URL(YUANTA_EBANK_ORIGIN).hostname,
+    endpoints: [{
+      path: url.pathname,
+      method: landed.method,
+      search: new RegExp(`^${regExpLiteral(url.search)}$`, "u"),
+      charset: { decode: "big5" },
+    }],
+    cacheControl: [],
+    providerDate: "optional",
+    maxBytes: YUANTA_CSV_MAX_BYTES,
+  };
+}
+
+/**
+ * Fetch an export link's CSV bytes inside the signed-in page, then accept the
+ * reply inside the product's validation and decode it strictly as Big5.
+ */
 export async function readYuantaBig5CsvFromAnchor(
   exportLink: Locator,
-  text: SourceTextPort,
-  signal: AbortSignal,
+  { observedAt, validate }: YuantaCsvAcceptance,
+  { signal, text }: SiteContext,
 ): Promise<YuantaCsvDownload> {
   signal.throwIfAborted();
   let onAbort: (() => void) | undefined;
@@ -267,8 +306,10 @@ export async function readYuantaBig5CsvFromAnchor(
           throw new Error("Yuanta CSV link left the authenticated origin.");
         }
 
+        const method = requestBody ? "POST" : "GET";
         const fetched = await fetch(url.href, {
-          ...(requestBody ? { method: "POST", body: requestBody } : {}),
+          method,
+          ...(requestBody ? { body: requestBody } : {}),
           mode: "same-origin",
           credentials: "same-origin",
           cache: "no-store",
@@ -276,9 +317,6 @@ export async function readYuantaBig5CsvFromAnchor(
         });
         if (new URL(fetched.url).origin !== pageOrigin) {
           throw new Error("Yuanta CSV redirected outside the authenticated origin.");
-        }
-        if (fetched.status !== 200 || !fetched.ok) {
-          throw new Error("Yuanta CSV request did not return a complete response.");
         }
         const contentLength = fetched.headers.get("content-length");
         if (contentLength !== null) {
@@ -320,11 +358,12 @@ export async function readYuantaBig5CsvFromAnchor(
           binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
         }
         return {
+          requested: { url: url.href, method },
+          url: fetched.url,
           status: fetched.status,
+          headers: Object.fromEntries(fetched.headers),
           byteLength,
           base64: btoa(binary),
-          contentDisposition: fetched.headers.get("content-disposition") ?? "",
-          exportUrl: fetched.url,
         };
       },
       YUANTA_CSV_MAX_BYTES,
@@ -338,11 +377,19 @@ export async function readYuantaBig5CsvFromAnchor(
   if (bytes.byteLength !== response.byteLength) {
     throw new Error("Yuanta CSV response was incomplete in memory.");
   }
+  const content = await validate(() => acceptProviderResponse(
+    yuantaCsvExportResponse({ url: response.url, method: response.requested.method }),
+    {
+      evidence: { kind: "text", bytes },
+      response: { url: response.url, status: response.status, method: response.requested.method, headers: response.headers },
+    },
+    { observedAt, text },
+  ).evidence.text);
   return {
-    content: text.decode(bytes, "big5"),
+    content,
     byteLength: bytes.byteLength,
     contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-    contentDisposition: response.contentDisposition,
-    exportUrl: response.exportUrl,
+    contentDisposition: response.headers["content-disposition"] ?? "",
+    exportUrl: response.url,
   };
 }

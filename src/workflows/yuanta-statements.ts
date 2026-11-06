@@ -13,7 +13,7 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { yuantaEbankSite, type YuantaCsvAcceptance, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -593,11 +593,12 @@ function yuantaExplicitNoDataDownload(): YuantaStatementDownload {
 export async function downloadYuantaStatementRows(
   site: YuantaEbankSite,
   account: { label: string; value: string },
+  acceptance: YuantaCsvAcceptance,
 ): Promise<YuantaStatementDownload> {
   const scope = await site.frames.scopeWith(csvDownloadLink, "YuanTa CSV download link");
   const exportLink = csvDownloadLink(scope).first();
   await site.frames.withSignal((signal) => exportLink.waitFor({ state: "attached", timeout: 60_000, signal }));
-  const downloaded = await site.readCsv(exportLink);
+  const downloaded = await site.readCsv(exportLink, acceptance);
   const filename = filenameFromCsvResponse(
     downloaded.contentDisposition,
     downloaded.exportUrl,
@@ -781,7 +782,10 @@ export async function readYuantaDepositSource(
       continue;
     }
     await product.reportActivity("download");
-    const download = await downloadYuantaStatementRows(site, account);
+    const download = await downloadYuantaStatementRows(site, account, {
+      observedAt: taipeiInstant(context.now()),
+      validate: product.validate,
+    });
     context.text.assertIntact(JSON.stringify(download));
     accounts.push({ account, query, download });
   }

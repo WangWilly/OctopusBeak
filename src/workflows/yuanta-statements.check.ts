@@ -28,6 +28,8 @@ import { collectionPeriod, taipeiToday, type CollectionSpan } from "../lib/autom
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import type { Route } from "playwright";
 
 const stableConnectionScope = "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001";
 const stableConnectionKey = deriveSourceConnectionIdentityKey(
@@ -1009,10 +1011,31 @@ try {
     });
     await assert.rejects(cancelledShellRead, /deposit read cancelled/u, "a run cancelled mid-query stops inside its wait");
 
+    /**
+     * Serve the eBank origin from the fixture server, so a reply reaches the
+     * provider response checks on the declared host. Redirects go back to the
+     * page, which follows them itself.
+     */
+    const forwardToFixtureServer = async (route: Route) => {
+      const url = new URL(route.request().url());
+      try {
+        const response = await route.fetch({ url: `${browserFixtureBaseUrl}${url.pathname}${url.search}`, maxRedirects: 0 });
+        await route.fulfill({ response });
+      } catch {
+        await route.abort().catch(() => undefined);
+      }
+    };
+
     let runOrdinal = 0;
+    /**
+     * Collect one account's CSV. "provider" serves the page from the eBank
+     * origin; "fixture-server" serves it from the fixture's own origin, for
+     * failures the page refuses before any reply reaches Node.
+     */
     async function collectFixture(
       controller = new AbortController(),
       items: PGliteWorkflowRunItem[] = [],
+      origin: "provider" | "fixture-server" = "provider",
     ): Promise<{ result: Awaited<ReturnType<typeof stageYuantaDeposit>>; items: PGliteWorkflowRunItem[] }> {
       runOrdinal += 1;
       observedBrowserDownload = false;
@@ -1022,10 +1045,13 @@ try {
         taskId: "yuanta-domestic-fixture",
         taskRunId: `yuanta-domestic-run-${runOrdinal}`,
         userDataDirectory: browserFixtureDirectory,
-        startUrl: `${browserFixtureBaseUrl}/start`,
+        startUrl: `${origin === "provider" ? YUANTA_EBANK_ORIGIN : browserFixtureBaseUrl}/start`,
         signal,
-        launchPersistentContext: async () =>
-          await browser.newContext({ acceptDownloads: false }),
+        launchPersistentContext: async () => {
+          const browserContext = await browser.newContext({ acceptDownloads: false });
+          if (origin === "provider") await browserContext.route(`${YUANTA_EBANK_ORIGIN}/**`, forwardToFixtureServer);
+          return browserContext;
+        },
       });
       const context = checkContext(signal);
       const result = await browserPort.withPage(async (page) => {
@@ -1033,6 +1059,7 @@ try {
         const download = await downloadYuantaStatementRows(
           yuantaEbankSite(page, { signal, text: context.text }),
           workflowAccount,
+          { observedAt: taipeiInstant(context.now()), validate: async (check) => await check() },
         );
         return await stageYuantaDeposit(
           {
@@ -1073,11 +1100,6 @@ try {
       "the raw export bytes must retain their content digest",
     );
     assert.equal(
-      fixtureCookie,
-      "yuanta-fixture-session=present",
-      "the in-memory request must carry the authenticated same-origin cookie",
-    );
-    assert.equal(
       observedBrowserDownload,
       false,
       "App acceptDownloads:false collection must not trigger a browser download",
@@ -1100,7 +1122,6 @@ try {
     const formExport = await collectFixture();
     assert.equal(formExport.result.sourceCaptureCount, 1);
     assert.equal(fixturePostCount, 1);
-    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
     assert.equal(observedBrowserDownload, false);
     fixtureJavaScriptExport = false;
     fixtureForeignJavaScriptExport = true;
@@ -1110,29 +1131,33 @@ try {
     assert.equal(observedBrowserDownload, false);
     fixtureForeignJavaScriptExport = false;
 
+    const failedCheck = (check: string) => (error: unknown) =>
+      error instanceof ProviderResponseCheckError && error.check === check;
+    const inPage = "fixture-server" as const;
     for (const testCase of [
-      { href: null, mode: "success" as const, error: /no fetchable URL/u },
-      { href: "javascript:void(0)", mode: "success" as const, error: /no fetchable URL/u },
-      { href: crossOriginFixtureUrl, mode: "success" as const, error: /left the authenticated origin/u },
+      { href: null, mode: "success" as const, origin: inPage, error: /no fetchable URL/u },
+      { href: "javascript:void(0)", mode: "success" as const, origin: inPage, error: /no fetchable URL/u },
+      { href: crossOriginFixtureUrl, mode: "success" as const, origin: inPage, error: /left the authenticated origin/u },
       {
         href: "/export.csv",
         base: `${new URL(crossOriginFixtureUrl).origin}/`,
         mode: "success" as const,
+        origin: inPage,
         error: /left the authenticated origin/u,
       },
-      { href: "/export.csv", mode: "redirect-cross-origin" as const, error: /same-origin|Failed to fetch|redirect/u },
-      { href: "/export.csv", mode: "forbidden" as const, error: /did not return a complete response/u },
+      { href: "/export.csv", mode: "redirect-cross-origin" as const, origin: inPage, error: /same-origin|Failed to fetch|redirect/u },
+      { href: "/export.csv", mode: "forbidden" as const, error: failedCheck("response-status") },
       { href: "/export.csv", mode: "unsafe-filename" as const, error: /filename is unsafe/u },
       { href: "/export.csv", mode: "invalid-big5" as const, error: /Source text integrity failed/u },
-      { href: "/export.csv", mode: "declared-oversize" as const, error: /in-memory size limit/u },
-      { href: "/export.csv", mode: "streamed-oversize" as const, error: /in-memory size limit/u },
+      { href: "/export.csv", mode: "declared-oversize" as const, origin: inPage, error: /in-memory size limit/u },
+      { href: "/export.csv", mode: "streamed-oversize" as const, origin: inPage, error: /in-memory size limit/u },
     ]) {
       fixtureHref = testCase.href;
       fixtureBaseHref = "base" in testCase ? testCase.base ?? null : null;
       fixtureBodyMode = testCase.mode;
       const rejectedItems: PGliteWorkflowRunItem[] = [];
       await assert.rejects(
-        () => collectFixture(new AbortController(), rejectedItems),
+        () => collectFixture(new AbortController(), rejectedItems, "origin" in testCase ? testCase.origin : "provider"),
         testCase.error,
       );
       assert.deepEqual(
@@ -1161,9 +1186,8 @@ try {
     fixtureBaseHref = null;
     fixtureBodyMode = "redirect-same-origin";
     const redirectedSuccess = await collectFixture();
-    assert.equal(redirectedSuccess.result.sourceCaptureCount, 1);
+    assert.equal(redirectedSuccess.result.sourceCaptureCount, 1, "a redirect within the eBank origin is followed and accepted");
     assert.ok(redirectedSuccess.items.length > 0);
-    assert.equal(fixtureCookie, "yuanta-fixture-session=present");
     assert.equal(observedBrowserDownload, false);
 
     fixtureHref = "/export.csv";
@@ -1174,8 +1198,13 @@ try {
     const exportStarted = new Promise<void>((resolve) => {
       slowExportStarted = resolve;
     });
-    const pending = collectFixture(cancellation, canceledItems);
+    const pending = collectFixture(cancellation, canceledItems, inPage);
     await exportStarted;
+    assert.equal(
+      fixtureCookie,
+      "yuanta-fixture-session=present",
+      "the in-memory request must carry the authenticated same-origin cookie",
+    );
     cancellation.abort(new Error("fixture run canceled"));
     await assert.rejects(pending, /fixture run canceled/u);
     assert.deepEqual(canceledItems, [], "canceled retrieval must return no Canonical Financial Commit items");
