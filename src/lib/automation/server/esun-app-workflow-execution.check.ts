@@ -117,6 +117,7 @@ function fakePage(now: Date, options: { signInWithCredentials?: boolean } = {}) 
     boundingBox: async () => ({ x: 0, y: 0, width: 900, height: 700 }),
   });
   const popup = (bill: boolean) => ({
+    url: () => `https://ebank.esunbank.com.tw/IESC/${bill ? "cardBill" : "cardTrans"}`,
     waitForURL: async () => undefined,
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
       const candidates = bill ? summaryResponses : [timeline];
