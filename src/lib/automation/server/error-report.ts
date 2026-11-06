@@ -112,12 +112,12 @@ export function buildErrorReport(
           ...(matching.statementType ? { statementType: matching.statementType } : {}),
           ...(matching.operation ? { operation: matching.operation } : {}),
           ...(matching.reason ? { reason: matching.reason } : {}),
-          // The report receiver accepts only these node keys; a snapshot check
-          // stays in the local diagnostic until it accepts one (ADR 0109).
-          chain: matching.error.chain.map(({ type, sqlState, httpStatus, frames }) => ({
+          // The report receiver refuses any other node key (ADR 0081, ADR 0109).
+          chain: matching.error.chain.map(({ type, sqlState, httpStatus, snapshotCheck, frames }) => ({
             type,
             ...(sqlState === undefined ? {} : { sqlState }),
             ...(httpStatus === undefined ? {} : { httpStatus }),
+            ...(snapshotCheck === undefined ? {} : { snapshotCheck }),
             frames: frames.filter((frame) => BUNDLE_FRAME.test(frame.file)),
           })),
         }
