@@ -112,12 +112,12 @@ export function buildErrorReport(
           ...(matching.statementType ? { statementType: matching.statementType } : {}),
           ...(matching.operation ? { operation: matching.operation } : {}),
           ...(matching.reason ? { reason: matching.reason } : {}),
-          // The App sends only these node keys; a provider response check stays
-          // in the local diagnostic for now (ADR 0109, ADR 0110).
-          chain: matching.error.chain.map(({ type, sqlState, httpStatus, frames }) => ({
+          // The report receiver refuses any other node key (ADR 0081, ADR 0109, ADR 0110).
+          chain: matching.error.chain.map(({ type, sqlState, httpStatus, responseCheck, frames }) => ({
             type,
             ...(sqlState === undefined ? {} : { sqlState }),
             ...(httpStatus === undefined ? {} : { httpStatus }),
+            ...(responseCheck === undefined ? {} : { responseCheck }),
             frames: frames.filter((frame) => BUNDLE_FRAME.test(frame.file)),
           })),
         }

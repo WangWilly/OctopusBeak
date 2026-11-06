@@ -11,6 +11,7 @@ import {
   sendErrorReport,
 } from "./error-report.ts";
 import type { WorkflowFailureDiagnostic } from "./workflow-failure-diagnostics.ts";
+import { PROVIDER_RESPONSE_CHECKS } from "../provider-response-check.ts";
 
 const CONTEXT = { appVersion: "0.9.5", osVersion: "15.4", locale: "zh-TW" as const };
 const RECORD: WorkflowFailureDiagnostic = {
@@ -114,20 +115,29 @@ test("frames outside the app bundle are left out so the receiver accepts the rep
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain[0].frames, RECORD.error.chain[0].frames);
 });
 
-test("a snapshot check stays out of the report until the receiver accepts it", () => {
+test("the report carries each node's provider response check beside the fields the receiver accepts", () => {
   forgetFailureDiagnostics();
   const frames = RECORD.error.chain[0].frames;
   rememberFailureDiagnostic(INPUT.taskId, {
     ...RECORD,
     error: { chain: [
       { type: "Error", responseCheck: "response-endpoint", frames },
-      { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
+      // A key the receiver does not accept, as a later record field would arrive.
+      { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames, futureField: "x" } as never,
     ] },
   });
   assert.deepEqual(buildErrorReport(INPUT, CONTEXT).diagnostic?.chain, [
-    { type: "Error", frames },
+    { type: "Error", responseCheck: "response-endpoint", frames },
     { type: "PostgresError", sqlState: "23505", httpStatus: 503, frames },
-  ], "the report keeps every field the receiver accepts and drops only the snapshot check");
+  ], "the report keeps every field the receiver accepts, and only those");
+});
+
+test("every provider response check has the token shape the receiver accepts", () => {
+  // OctopusBeak-Telemetry src/vocabulary.ts known(): a check outside this
+  // shape is refused with a 400, so the report would be lost instead of
+  // stored as "other".
+  const RECEIVER_TOKEN = /^[a-z][a-z0-9-]{0,63}$/u;
+  for (const check of PROVIDER_RESPONSE_CHECKS) assert.match(check, RECEIVER_TOKEN, check);
 });
 
 test("non-string inputs are refused as invalid", () => {
