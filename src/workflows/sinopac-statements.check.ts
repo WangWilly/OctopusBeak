@@ -14,7 +14,7 @@ import {
   SINOPAC_LOGIN_URL,
   buildSinopacCurrentDepositBalanceCapture,
 } from "./sinopac-statements.ts";
-import { verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse } from "./provider-response.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,

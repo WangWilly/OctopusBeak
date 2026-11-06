@@ -48,8 +48,8 @@ import {
   stageCurrentStateSnapshot,
   type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
-  type ProviderResponse,
 } from "./current-state-snapshot-capture.ts";
+import type { ProviderResponse } from "./provider-response.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
 import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";

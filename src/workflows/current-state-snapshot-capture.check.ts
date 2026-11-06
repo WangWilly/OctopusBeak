@@ -12,7 +12,7 @@ import {
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
-import { SnapshotCheckError, type SnapshotCheck } from "../lib/automation/snapshot-check.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { captureSafeWorkflowFailureError } from "../lib/automation/server/workflow-failure-diagnostics.ts";
 import {
   assembleCurrentCreditCardCapture,
@@ -26,11 +26,12 @@ import {
   type CurrentBalanceCaptureMatching,
   type CurrentBalanceUnmatchedPolicy,
   type CurrentStateSnapshotDeclaration,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-  type SnapshotAcquisition,
-  verifyProviderResponse,
 } from "./current-state-snapshot-capture.ts";
+import type {
+  ProviderAcquisition,
+  ProviderResponse,
+  ProviderResponseDeclaration,
+} from "./provider-response.ts";
 import { validationReporter, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
 
 /** A product handle's reporting half, with the run's own validate. */
@@ -245,7 +246,7 @@ test("indexing checks ambiguity before any row is matched", () => {
 
 type SnapshotRow = Readonly<{ account: string; currencies: readonly string[]; amount: string }>;
 type Stream = "domestic-deposit" | "foreign-currency-deposit";
-type Acquired = SnapshotAcquisition;
+type Acquired = ProviderAcquisition;
 
 const HTTP_DATE = "Fri, 25 Sep 2026 11:59:00 GMT";
 const RUN_CLOCK = "2026-09-25T12:00:01.234Z";
@@ -448,7 +449,7 @@ test("strict decoding rejects malformed bytes, escaped replacement characters, a
     }, captures, acquired);
     await assert.rejects(result.run, expected, name);
     if (expected !== SourceTextIntegrityError)
-      await assert.rejects(result.run, (error) => error instanceof SnapshotCheckError && error.check === "evidence-json", name);
+      await assert.rejects(result.run, (error) => error instanceof ProviderResponseCheckError && error.check === "evidence-json", name);
     assert.equal(parsed, false, `${name} never reaches the row parser`);
     assert.deepEqual(result.events, expected === SourceTextIntegrityError ? integrityFailure : checkFailure, name);
   }
@@ -476,7 +477,7 @@ test("a parse failure reports validation, and a failed read reports collection",
   await assert.rejects(failing.run, /^Error: bad row$/u);
   await assert.rejects(
     failing.run,
-    (error) => error instanceof SnapshotCheckError && error.check === "row-parse"
+    (error) => error instanceof ProviderResponseCheckError && error.check === "row-parse"
       && error.cause instanceof Error && error.cause.message === "bad row",
     "a plain parser error names the row-parse check and keeps its message as the cause",
   );
@@ -489,7 +490,7 @@ test("a parse failure reports validation, and a failed read reports collection",
   );
   await assert.rejects(
     dropped.run,
-    (error) => error instanceof SnapshotCheckError && error.check === "row-parse" && error.cause instanceof TypeError,
+    (error) => error instanceof ProviderResponseCheckError && error.check === "row-parse" && error.cause instanceof TypeError,
     "a TypeError from reading a field the source dropped also names the row-parse check",
   );
 
@@ -635,70 +636,8 @@ test("a rejected snapshot leaves its check, and no message, in the captured fail
   );
   const rejection = await offEndpoint.run.then(() => assert.fail("the off-endpoint response is admitted"), (error: unknown) => error);
   const diagnostic = captureSafeWorkflowFailureError(rejection, process.cwd());
-  assert.equal(diagnostic.chain[0]?.snapshotCheck, "response-endpoint");
+  assert.equal(diagnostic.chain[0]?.responseCheck, "response-endpoint");
   assert.ok(!JSON.stringify(diagnostic).includes("bank.example"), "the rejected URL stays out of the diagnostic");
-});
-
-test("a declared response verifies to its transport facts and the run clock's Taipei second", () => {
-  const verified = verifyProviderResponse(RESPONSE, { ...PROVIDER_RESPONSE, url: "https://bank.example/balances?t=1" }, "2026-09-25T20:00:01+08:00");
-  assert.equal(verified.endpoint.path, "/balances");
-  assert.equal(verified.contentType, "application/json; charset=utf-8");
-  assert.equal(verified.cacheControl, "private, no-cache, no-store");
-  assert.deepEqual(verified.providerDate, { raw: HTTP_DATE, effectiveAt: "2026-09-25T11:59:00.000Z" });
-  assert.equal(verified.observedAt, "2026-09-25T20:00:01+08:00");
-  const fallback = verifyProviderResponse(RESPONSE, { ...PROVIDER_RESPONSE, url: "https://bank.example/fallback", method: "get", headers: { ...PROVIDER_RESPONSE.headers, "content-type": "text/html" } }, "x");
-  assert.equal(fallback.endpoint.path, "/fallback");
-  const anyMethod: ProviderResponseDeclaration = { ...RESPONSE, endpoints: [{ path: "/balances" }] };
-  assert.equal(verifyProviderResponse(anyMethod, { ...PROVIDER_RESPONSE, method: "PUT" }, "x").endpoint.path, "/balances");
-});
-
-test("every undeclared transport fact rejects the response with the source's label", () => {
-  const rejected: readonly [string, ProviderResponse, RegExp][] = [
-    ["unparseable URL", { ...PROVIDER_RESPONSE, url: "not a url" }, /^Error: Check bank current deposit response URL is invalid\.$/u],
-    ["plain http", { ...PROVIDER_RESPONSE, url: "http://bank.example/balances" }, /endpoint is unexpected/u],
-    ["other host", { ...PROVIDER_RESPONSE, url: "https://evil.example/balances" }, /endpoint is unexpected/u],
-    ["explicit port", { ...PROVIDER_RESPONSE, url: "https://bank.example:8443/balances" }, /endpoint is unexpected/u],
-    ["credentials", { ...PROVIDER_RESPONSE, url: "https://u:p@bank.example/balances" }, /endpoint is unexpected/u],
-    ["fragment", { ...PROVIDER_RESPONSE, url: "https://bank.example/balances#x" }, /endpoint is unexpected/u],
-    ["other path", { ...PROVIDER_RESPONSE, url: "https://bank.example/other" }, /endpoint is unexpected/u],
-    ["undeclared query", { ...PROVIDER_RESPONSE, url: "https://bank.example/balances?session=1" }, /endpoint is unexpected/u],
-    ["query on a query-free endpoint", { ...PROVIDER_RESPONSE, url: "https://bank.example/fallback?t=1", method: "GET" }, /endpoint is unexpected/u],
-    ["method", { ...PROVIDER_RESPONSE, method: "GET" }, /response method is not POST/u],
-    ["status", { ...PROVIDER_RESPONSE, status: 302 }, /response status is 302, expected 200/u],
-    ["content type", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "Content-Type": "text/html" } }, /content type is unexpected/u],
-    ["one cache directive", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "cache-control": "no-store" } }, /must carry Cache-Control: no-store, no-cache/u],
-    ["cache directive as a value", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, "cache-control": "no-store, x=no-cache" } }, /must carry Cache-Control/u],
-    ["missing Date", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "" } }, /response is missing HTTP Date/u],
-    ["Date without GMT", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Fri, 25 Sep 2026 11:59:00" } }, /HTTP Date is invalid/u],
-    ["impossible Date", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Thu, 31 Sep 2026 11:59:00 GMT" } }, /HTTP Date is invalid/u],
-    ["wrong weekday", { ...PROVIDER_RESPONSE, headers: { ...PROVIDER_RESPONSE.headers, date: "Mon, 25 Sep 2026 11:59:00 GMT" } }, /HTTP Date is invalid/u],
-  ];
-  for (const [name, response, expected] of rejected)
-    assert.throws(() => verifyProviderResponse(RESPONSE, response, "x"), expected, name);
-  const checkOf = (name: string): SnapshotCheck => {
-    if (/URL|http|host|port|credentials|fragment|path|query/u.test(name)) return "response-endpoint";
-    if (name === "method") return "response-method";
-    if (name === "status") return "response-status";
-    if (name === "content type") return "response-content-type";
-    if (/cache/u.test(name)) return "response-cache-control";
-    return "response-date";
-  };
-  for (const [name, response] of rejected)
-    assert.throws(
-      () => verifyProviderResponse(RESPONSE, response, "x"),
-      (error) => error instanceof SnapshotCheckError && error.check === checkOf(name),
-      `${name} names its check`,
-    );
-});
-
-test("an optional provider date may be absent but must be valid when present", () => {
-  const optional: ProviderResponseDeclaration<"optional"> = { ...RESPONSE, providerDate: "optional" };
-  const { date: _date, ...headers } = PROVIDER_RESPONSE.headers;
-  assert.equal(verifyProviderResponse(optional, { ...PROVIDER_RESPONSE, headers }, "x").providerDate, null);
-  assert.throws(
-    () => verifyProviderResponse(optional, { ...PROVIDER_RESPONSE, headers: { ...headers, date: "yesterday" } }, "x"),
-    /HTTP Date is invalid/u,
-  );
 });
 
 test("the read stamps observedAt from the run clock and rejects an undeclared response before parsing", async () => {

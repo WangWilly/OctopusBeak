@@ -13,7 +13,7 @@ import {
   postProviderDateShape,
   postRowsToStatementRows,
 } from "./post-statements.ts";
-import { verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse } from "./provider-response.ts";
 import { frameScope } from "./frame-scope.ts";
 import {
   parsePostCurrentDepositBalanceSnapshot,

@@ -12,7 +12,7 @@ import {
   readHncbCurrentDepositOverviewCells,
 } from "./hncb-current-deposit-balances.ts";
 import { HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
-import { verifyProviderResponse, type ProviderResponse } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse, type ProviderResponse } from "./provider-response.ts";
 
 type Cell = {
   kind: "cell";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { cathayDomesticOverviewBody, cathayOverviewPage } from "./cathay-current-deposit-balances.fixtures.ts";
 import { registerHooks } from "node:module";
 

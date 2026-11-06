@@ -452,12 +452,16 @@ A Balance or Holding Observation returned by a provider endpoint whose verified 
 _Avoid_: Collection-time snapshot, historical statement, delayed-settlement effective time
 
 **Current-state snapshot capture**:
-The one step that turns a bank's raw evidence of a Current-state provider snapshot, deposit balance or credit-card used credit, into staged balance items. It verifies the provider response, records when the run observed it, decodes the evidence strictly, parses it with the bank's row parser, matches each row to an admitted financial capture, assembles the capture envelope and its content hash, and admits and keys each item through its staging kind: a deposit by the capture's stream and source account, credit-card used credit by its capture id. The bank still decides how to reach the evidence, how to read its rows and their effective time and scope day, and its identity check and digest namespaces.
+The one step that turns a bank's raw evidence of a Current-state provider snapshot, deposit balance or credit-card used credit, into staged balance items. It records when the run observed the provider response, accepts it as a Verified provider response with strictly decoded evidence, parses it with the bank's row parser, matches each row to an admitted financial capture, assembles the capture envelope and its content hash, and admits and keys each item through its staging kind: a deposit by the capture's stream and source account, credit-card used credit by its capture id. The bank still decides how to reach the evidence, how to read its rows and their effective time and scope day, and its identity check and digest namespaces.
 _Avoid_: Current balance reader, per-bank balance staging, per-bank capture assembly, index-keyed balance item
 
 **Verified provider response**:
-The transport facts of one provider response (address, request method, status, content type, cache policy and provider date) after they match what the source declares for that endpoint, together with the time the run observed the response. A bank's row parser reads these facts only from the verified provider response. The provider date may establish effective time; the observed time never does.
-_Avoid_: Provider response envelope, per-bank header check, provider-supplied observed time
+The transport facts of one provider response (address, request method, status, content type, cache policy and provider date) after they match what the source declares for that endpoint, together with the time the run observed the response. One module accepts every provider response a Source Capture is read from, Current-state snapshots and statement history alike: it verifies the response, then strictly decodes its evidence, and a source's parser receives the evidence only from it. A bank's row parser reads these facts only from the verified provider response. The provider date may establish effective time; the observed time never does. Reads with no HTTP response, such as DOM scraping or an app protocol's own transport, are outside it.
+_Avoid_: Provider response envelope, per-bank header check, per-bank reply checker, provider-supplied observed time
+
+**Provider response check**:
+One named check a provider response must pass before a parser reads it, such as `response-endpoint` or `evidence-json`. A failed check names itself, so the failure diagnostic says which check rejected the source without carrying the message.
+_Avoid_: Snapshot check (for a check that also covers history reads), validation failure message
 
 **Measurement history**:
 The append-only sequence of Balance or Holding Observations created for distinct source-side measurement evidence with a contract-established effective time. Reprocessing the same Source Capture does not create another observation, while a measurement whose effective time cannot be established fails integration admission rather than entering history.

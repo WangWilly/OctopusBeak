@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser } from "playwright";
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import {
   YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,

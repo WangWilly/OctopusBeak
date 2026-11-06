@@ -5,9 +5,9 @@ import {
   isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
@@ -511,7 +511,7 @@ function responseMatches(
 
 /** The overview response Cathay's page triggers, before decoding. */
 export type CathayCurrentDepositResponse = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "json" }>;
+  evidence: Extract<ProviderEvidence, { kind: "json" }>;
   response: ProviderResponse;
   /** Domestic only: the account buttons the overview renders, which bind each row to its UI account. */
   uiAccountNumbers?: readonly string[];

@@ -11,7 +11,8 @@ import {
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
-import { indexCurrentBalanceCaptures, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { verifyProviderResponse } from "./provider-response.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 

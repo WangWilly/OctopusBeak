@@ -1,7 +1,7 @@
 import type { Page } from "playwright";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { fail } from "../lib/preview-sources/source-kit.ts";
-import type { ProviderResponse } from "./current-state-snapshot-capture.ts";
+import type { ProviderResponse } from "./provider-response.ts";
 import { frameScope, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
 export const SINOPAC_MMA_ORIGIN = "https://mma.sinopac.com";

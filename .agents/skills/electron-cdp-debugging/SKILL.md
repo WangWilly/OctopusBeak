@@ -23,7 +23,7 @@ DevTools listening on ws://127.0.0.1:9222/devtools/browser/...
 4. Connect to the CDP endpoint at `http://127.0.0.1:9222`.
 5. Use the live CDP page state, screenshots, accessibility tree, DOM, console errors, and network state to identify the real target screen.
 6. If the user uploaded a screenshot, compare it with the current Electron window before changing code. Confirm the target route, panel, dialog, or component from the live app rather than guessing from file names.
-7. When a run fails, read the workflow failure diagnostics before adding any logging. `npm run desktop:dev` prints their path (by default `octopusbeak-workflow-failures.jsonl` in the per-user temporary folder, `$TMPDIR` on macOS). Each line names the Failure code, stage, product, error chain and, for a rejected current-state snapshot, the `snapshotCheck` that rejected it. The UI and run events show only the Failure code.
+7. When a run fails, read the workflow failure diagnostics before adding any logging. `npm run desktop:dev` prints their path (by default `octopusbeak-workflow-failures.jsonl` in the per-user temporary folder, `$TMPDIR` on macOS). Each line names the Failure code, stage, product, error chain and, for a rejected provider response, the `responseCheck` that rejected it. The UI and run events show only the Failure code.
 8. Discuss blockers or ambiguous product questions using what CDP shows: current screen, visible text, element states, console output, and reproduction steps.
 9. For final validation, interact with the Electron app through CDP and confirm the changed behavior or visual result in the live window.
 

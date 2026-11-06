@@ -1,6 +1,6 @@
 # The snapshot module verifies the provider response and stamps observed time
 
-Status: accepted
+Status: accepted; amended by [ADR 0110](0110-one-module-verifies-every-provider-response.md), which moves response verification and strict decoding into a module that statement history reads also use
 
 Builds on [ADR 0092](0092-one-module-captures-every-current-state-snapshot.md) and reverses its one clause that kept "the endpoint and header checks" with each bank's row parser.
 

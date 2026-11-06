@@ -5,9 +5,9 @@ import {
   isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
-  type SnapshotEvidence,
+  type ProviderEvidence,
   type VerifiedProviderResponse,
-} from "./current-state-snapshot-capture.ts";
+} from "./provider-response.ts";
 import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
@@ -314,7 +314,7 @@ async function findCurrentDepositTable(frames: FrameScope, timeoutMs: number): P
 
 /** The current-state table 我的存款 renders, before decoding. */
 export type FubonCurrentDepositTable = Readonly<{
-  evidence: Extract<SnapshotEvidence, { kind: "cells" }>;
+  evidence: Extract<ProviderEvidence, { kind: "cells" }>;
   response: ProviderResponse;
 }>;
 

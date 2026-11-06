@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { type ProviderResponse, verifyProviderResponse } from "./current-state-snapshot-capture.ts";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { frameScope } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 

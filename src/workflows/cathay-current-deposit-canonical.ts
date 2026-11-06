@@ -15,13 +15,15 @@ import { cathayResponseCharset } from "./cathay-statements.ts";
 import {
   assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
-  declaresUtf8,
   type CurrentDepositBalanceEntry,
   type CurrentBalanceCaptureMatching,
-  type DecodedSnapshotEvidence,
-  type VerifiedProviderResponse,
   CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
+import {
+  declaresUtf8,
+  type DecodedProviderEvidence,
+  type VerifiedProviderResponse,
+} from "./provider-response.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
@@ -240,7 +242,7 @@ type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
  */
 function parseOverview(
   kind: CathayCurrentDepositKind,
-  decoded: DecodedSnapshotEvidence<CathayCurrentDepositResponse["evidence"]>,
+  decoded: DecodedProviderEvidence<CathayCurrentDepositResponse["evidence"]>,
   response: VerifiedProviderResponse<"required">,
   acquired: CathayCurrentDepositResponse,
 ): readonly CathayCurrentDepositBalanceRow[] {
