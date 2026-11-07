@@ -31,6 +31,8 @@ assert.match(
   "financial page requests use the worker-owned PGlite port",
 );
 assert.match(source, /registerPGliteViewIpc/);
+assert.match(source, /const ipc = trustedIpcMain\(ipcMain, rendererUrl\)/, "every channel goes through the sender check");
+assert.doesNotMatch(source, /ipcMain\.(handle|on|once|handleOnce)\(/, "no channel bypasses the sender check");
 assert.doesNotMatch(source, /financial-page-worker|createFinancialPageWorkerClient/);
 assert.match(source, /pgliteWorker: Pick</);
 assert.match(source, /pgliteFinancial: PGliteFinancialPort/);
