@@ -25,10 +25,9 @@ import {
   unsignedDecimal,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
-import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaPostInit, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 export const SINOPAC_CARD_SUMMARY_PATH = "/ws/card/cardqry/ws_cardsum.ashx";
@@ -72,15 +71,15 @@ export type SinopacCardCollectionInput = Readonly<{
   observe: (response: PreviewResponseObservation) => void;
 }>;
 
-/** The card's two request shapes, sent through the MMA site's one POST. */
-export function sinopacCardTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacCardTransport {
+/**
+ * The card's two request shapes, sent through the MMA site's one POST. The
+ * reader accepts each reply at the run clock; the card is an Attached Preview
+ * Product, so no product validation owns it.
+ */
+export function sinopacCardTransport(site: SinopacMmaSite, reader: ProviderResponseReader): SinopacCardTransport {
   const send = async (endpoint: string, init?: SinopacMmaPostInit): Promise<SinopacCardResponse> => {
     const { response, bytes } = await site.post(endpoint, init);
-    const accepted = acceptProviderResponse(
-      SINOPAC_CARD_RESPONSE,
-      { response, evidence: { kind: "json", bytes } },
-      { observedAt: taipeiInstant(new Date().toISOString()), text: sourceText },
-    );
+    const accepted = await reader.accept(SINOPAC_CARD_RESPONSE, { response, evidence: { kind: "json", bytes } });
     return { endpoint, date: accepted.response.providerDate?.raw ?? null, text: accepted.evidence.text };
   };
   return {

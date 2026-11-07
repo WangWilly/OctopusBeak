@@ -1,6 +1,6 @@
 # One module verifies every provider response
 
-Status: accepted
+Status: accepted; amended by [ADR 0112](0112-one-reader-acquires-every-provider-response.md), which moves acquisition into one reader that calls this module
 
 Amends [ADR 0096](0096-the-snapshot-module-verifies-the-provider-response.md) and [ADR 0109](0109-a-failed-snapshot-check-names-itself-in-the-failure-diagnostic.md), which verify and name the checks of Current-state snapshot responses only. Keeps product validation in the product handle ([ADR 0106](0106-the-product-handle-decides-what-is-a-validation-failure.md)).
 

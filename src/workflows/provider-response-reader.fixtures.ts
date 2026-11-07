@@ -1,8 +1,8 @@
 /**
  * The one fake Playwright `Response` a check hands a scripted page, carrying
  * only what the Provider response reader reads (ADR 0112): the URL, status,
- * request, headers and body. A check that drives a real browser routes
- * synthetic replies instead.
+ * request, headers and body. Its request was never redirected. A check that
+ * drives a real browser routes synthetic replies instead.
  */
 import type { Response } from "playwright";
 
@@ -23,11 +23,13 @@ export function fakeProviderReply(reply: FakeProviderReply): Response {
     url: () => reply.url,
     method: () => method,
     postData: () => reply.postData ?? null,
+    redirectedFrom: () => null,
   };
   const fake = {
     url: () => reply.url,
     status: () => reply.status ?? 200,
     request: () => request,
+    headers: () => ({ ...reply.headers }),
     allHeaders: async () => ({ ...reply.headers }),
     body: async () => {
       reply.onBodyRead?.();

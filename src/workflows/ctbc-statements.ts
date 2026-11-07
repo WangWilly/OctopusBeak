@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
@@ -42,14 +42,9 @@ import { productRunResult, type WorkflowRunResult } from "../lib/automation/work
 import { CTBC_CREDENTIAL_FIELDS, CTBC_PRODUCTS, CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
-import {
-  acceptProviderResponse,
-  isDeclaredProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   assembleCurrentDepositCapture,
@@ -393,46 +388,31 @@ function requireCtbcOk<T>(
   throw new Error(`CTBC resource ${resource} returned ${code}.`);
 }
 
-function isCtbcResourceResponse(resource: string) {
-  return (response: Response): boolean => {
-    const request = response.request();
-    return (
-      isDeclaredProviderResponse(CTBC_DEPOSIT_STATEMENT_RESPONSE, response.url(), request.method()) &&
-      (request.postData() ?? "").includes(`"resource":"${resource}"`)
-    );
-  };
-}
-
-/** How the read half checks each provider reply: accepted with `text` inside `validate`, observed at `now`. */
+/** How the read half reads each provider reply: through the product's reader, failing inside its `validate`. */
 type CtbcReplyCheck = Readonly<{
-  text: SourceTextPort;
+  reader: ProviderResponseReader;
   validate: ProductCollectionHandle["validate"];
-  now: WorkflowContext["now"];
 }>;
 
+/**
+ * Read the next reply to `resource` that `trigger` causes. Every resource
+ * shares one endpoint, so only the request body tells them apart; a page
+ * that fires several at once arms the others with a trigger that does
+ * nothing before the one that acts.
+ */
 async function nextCtbcResource<T>(
   scope: FrameScope,
   resource: string,
-  options: { allowNoData?: boolean; reply: CtbcReplyCheck },
+  options: Readonly<{ allowNoData?: boolean; reply: CtbcReplyCheck; trigger: () => Promise<unknown> }>,
 ): Promise<CtbcResourceCapture<T>> {
-  const response = await scope.withSignal((signal) => scope.page.waitForResponse(
-    isCtbcResourceResponse(resource),
-    { timeout: 60_000, signal },
-  ));
-  const transport: ProviderResponse = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: await scope.race(response.allHeaders()),
-  };
-  const bytes = await scope.race(response.body());
-  const observedAt = taipeiInstant(options.reply.now());
+  const { evidence } = await options.reply.reader.capture(scope, CTBC_DEPOSIT_STATEMENT_RESPONSE, {
+    evidence: "json",
+    request: (request) => (request.postData ?? "").includes(`"resource":"${resource}"`),
+    timeoutMs: 60_000,
+    trigger: options.trigger,
+  });
   const body = await options.reply.validate(() => {
-    const { value } = acceptProviderResponse(
-      CTBC_DEPOSIT_STATEMENT_RESPONSE,
-      { response: transport, evidence: { kind: "json", bytes } },
-      { observedAt, text: options.reply.text },
-    ).evidence;
+    const { value } = evidence;
     if (!value || typeof value !== "object" || Array.isArray(value))
       throw new Error("CTBC provider response shape is invalid.");
     return value as CtbcResourceResponse<T>;
@@ -483,28 +463,31 @@ export function ctbcResponseShape(
   };
 }
 
+/** The bootstrap and first-month replies one page action fires together; the details read is armed first. */
+async function bootstrapAndInitialDetails(
+  scope: FrameScope,
+  reply: CtbcReplyCheck,
+  trigger: () => Promise<unknown>,
+): Promise<readonly [CtbcResourceCapture<CtbcBootstrapData>, CtbcResourceCapture<CtbcDetailData>]> {
+  const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
+    scope,
+    "/twrbc-deposit/qu002/011",
+    { allowNoData: true, reply, trigger: async () => undefined },
+  );
+  const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
+    scope,
+    "/twrbc-deposit/qu002/010",
+    { reply, trigger },
+  );
+  return await Promise.all([bootstrapPromise, initialDetailsPromise]);
+}
+
 async function openDomesticDetailsPage(
   scope: FrameScope,
   reply: CtbcReplyCheck,
 ) {
-  const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
-    scope,
-    "/twrbc-deposit/qu002/010",
-    { reply },
-  );
-  const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
-    scope,
-    "/twrbc-deposit/qu002/011",
-    { allowNoData: true, reply },
-  );
-  bootstrapPromise.catch(() => undefined);
-  initialDetailsPromise.catch(() => undefined);
-
-  await scope.withSignal((signal) => scope.page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded", signal }));
-  const [bootstrap, initialDetails] = await Promise.all([
-    bootstrapPromise,
-    initialDetailsPromise,
-  ]);
+  const [bootstrap, initialDetails] = await bootstrapAndInitialDetails(scope, reply, () =>
+    scope.withSignal((signal) => scope.page.goto(DOMESTIC_DETAILS_URL, { waitUntil: "domcontentloaded", signal })));
   return {
     data: bootstrap.body.rsData ?? {},
     initialCapture: initialDetails,
@@ -592,23 +575,8 @@ async function selectDetailAccount(
   const option = detailAccountOptions(scope.page).nth(account.optionIndex);
   await scope.withSignal((signal) => option.waitFor({ state: "visible", timeout: 60_000, signal }));
 
-  const bootstrapPromise = nextCtbcResource<CtbcBootstrapData>(
-    scope,
-    "/twrbc-deposit/qu002/010",
-    { reply },
-  );
-  const initialDetailsPromise = nextCtbcResource<CtbcDetailData>(
-    scope,
-    "/twrbc-deposit/qu002/011",
-    { allowNoData: true, reply },
-  );
-  bootstrapPromise.catch(() => undefined);
-  initialDetailsPromise.catch(() => undefined);
-  await scope.withSignal((signal) => option.click({ signal }));
-  const [bootstrap, initialDetails] = await Promise.all([
-    bootstrapPromise,
-    initialDetailsPromise,
-  ]);
+  const [bootstrap, initialDetails] = await bootstrapAndInitialDetails(scope, reply, () =>
+    scope.withSignal((signal) => option.click({ signal })));
 
   return {
     data: bootstrap.body.rsData ?? {},
@@ -695,14 +663,11 @@ async function captureVisibleMonthDetails(
   const count = await scope.race(tabs.count());
   for (let index = 1; index < count; index += 1) {
     scope.signal.throwIfAborted();
-    const detailPromise = nextCtbcResource<CtbcDetailData>(
+    const capture = await nextCtbcResource<CtbcDetailData>(
       scope,
       "/twrbc-deposit/qu002/011",
-      { allowNoData: true, reply },
+      { allowNoData: true, reply, trigger: () => scope.withSignal((signal) => tabs.nth(index).click({ signal })) },
     );
-    detailPromise.catch(() => undefined);
-    await scope.withSignal((signal) => tabs.nth(index).click({ signal }));
-    const capture = await detailPromise;
     await reply.validate(() => detailsFromCapture(capture));
     captures.push(capture);
   }
@@ -758,7 +723,10 @@ export async function readCtbcDepositSource(
   product: ProductCollectionHandle,
 ): Promise<CtbcDepositSourceSnapshot> {
   const scope = frameScope(page, context.signal);
-  const reply: CtbcReplyCheck = { text: context.text, validate: product.validate, now: () => context.now() };
+  const reply: CtbcReplyCheck = {
+    reader: providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+    validate: product.validate,
+  };
   const opened = await openDomesticDetailsPage(scope, reply);
   const allAccounts = await readDetailAccountOptions(
     scope,
@@ -1156,7 +1124,11 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
     input,
     context,
     product,
-    () => readCtbcCurrentDepositBalanceResponse(page, context.signal),
+    () => readCtbcCurrentDepositBalanceResponse(
+      page,
+      context.signal,
+      providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+    ),
   );
 };
 

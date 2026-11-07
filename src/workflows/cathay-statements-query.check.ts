@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
+import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import {
   CathayApiClient,
@@ -386,7 +388,13 @@ const directSecondAccount = {
   branchName: "Synthetic branch 2",
 };
 
-const uncancelledSource = { text: strictSourceText, signal: new AbortController().signal };
+const sourceUntil = (signal: AbortSignal) => ({
+  now: () => "2026-10-29T04:00:00.000Z",
+  text: strictSourceText,
+  validate: WITHOUT_PRODUCT_VALIDATION,
+  signal,
+});
+const uncancelledSource = sourceUntil(new AbortController().signal);
 const injectedClientPage = new Proxy({}, {
   get(_target, property) {
     throw new Error(`Injected-client collection unexpectedly accessed page.${String(property)}.`);
@@ -457,13 +465,13 @@ const apiOnlyPage = new Proxy(
     // The page sends its request only after the wait for the response has started.
     waitForResponse: async (matches: (response: unknown) => boolean) => {
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const response = {
-        url: () => TRANSFER_DETAIL_URL,
-        status: () => 200,
-        request: () => ({ method: () => "POST", postData: () => JSON.stringify(evaluatedRequests[0]!.body) }),
-        allHeaders: async () => ({ "content-type": "application/json; charset=utf-8" }),
-        body: async () => new TextEncoder().encode(transferBody),
-      };
+      const response = fakeProviderReply({
+        url: TRANSFER_DETAIL_URL,
+        method: "POST",
+        postData: JSON.stringify(evaluatedRequests[0]!.body),
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: transferBody,
+      });
       assert.ok(matches(response));
       return response;
     },
@@ -534,7 +542,7 @@ await assert.rejects(
     [],
     { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
     {
-      source: { text: strictSourceText, signal: cancellation.signal },
+      source: sourceUntil(cancellation.signal),
       client: {
         fetchDomesticAccounts: async () => [directFirstAccount, directSecondAccount],
         fetchTransferDetailsRaw: async (_session, accountNo) => {

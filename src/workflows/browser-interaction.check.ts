@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   activateControlWithoutPointer,
-  endsRequestChainFrom,
   hasAttachedLocator,
 } from "./browser-interaction.ts";
 
@@ -65,64 +64,3 @@ const seenDispatchOptions = dispatchOptions as unknown as {
 };
 assert.equal(seenDispatchOptions.signal, dispatchSignal);
 assert.equal(seenDispatchOptions.timeout, 0);
-
-// A redirect chain reaches the endpoint when it starts or ends there; the hops
-// that redirect onward are never the response (ADR 0108).
-type FakeRequest = Readonly<{ url(): string; method(): string; redirectedFrom(): FakeRequest | null }>;
-const fakeRequest = (url: string, method: string, from: FakeRequest | null = null): FakeRequest => ({
-  url: () => url,
-  method: () => method,
-  redirectedFrom: () => from,
-});
-const fakeResponse = (status: number, request: FakeRequest, location?: string) =>
-  ({
-    status: () => status,
-    request: () => request,
-    headers: () => (location === undefined ? {} : { location }),
-  }) as never;
-const endpointPath = "/B2C/cccqu/cccqu002/CCCQU002_Home.faces";
-const dispatcher = fakeRequest("https://bank.test/B2C/dispatcher?ParamValue=~opaque~", "GET");
-const endpoint = `https://bank.test${endpointPath}?menuId=CCC0201`;
-assert.equal(
-  endsRequestChainFrom(fakeResponse(200, fakeRequest(`${endpoint}&`, "GET", dispatcher)), endpointPath, "GET"),
-  true,
-  "a chain that arrives at the endpoint from a dispatcher ends on the endpoint's response",
-);
-assert.equal(
-  endsRequestChainFrom(fakeResponse(302, fakeRequest(endpoint, "GET"), "/elsewhere"), endpointPath, "GET"),
-  false,
-  "a hop that redirects onward is not the response",
-);
-assert.equal(
-  endsRequestChainFrom(
-    fakeResponse(200, fakeRequest("https://bank.test/maintenance", "GET", fakeRequest(endpoint, "GET"))),
-    endpointPath,
-    "GET",
-  ),
-  true,
-  "a chain that leaves the endpoint surfaces as its last response, for the endpoint check to reject",
-);
-assert.equal(
-  endsRequestChainFrom(
-    fakeResponse(200, fakeRequest("https://bank.test/notice", "GET", fakeRequest(endpoint, "POST"))),
-    endpointPath,
-    "POST",
-  ),
-  true,
-  "a POST redirected to a GET elsewhere still counts as the POST's response",
-);
-assert.equal(
-  endsRequestChainFrom(fakeResponse(304, fakeRequest(endpoint, "GET")), endpointPath, "GET"),
-  true,
-  "a 304 without a location is a final response, for the status check to reject",
-);
-assert.equal(
-  endsRequestChainFrom(fakeResponse(200, fakeRequest(endpoint, "POST")), endpointPath, "GET"),
-  false,
-  "a request with another method is a different endpoint",
-);
-assert.equal(
-  endsRequestChainFrom(fakeResponse(200, dispatcher), endpointPath, "GET"),
-  false,
-  "a response that never touches the endpoint is not its response",
-);

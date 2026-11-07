@@ -15,8 +15,8 @@ import {
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
-import { yuantaEbankSite, type YuantaCsvAcceptance, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import { yuantaQuickRange } from "./yuanta-statements.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
@@ -2300,7 +2300,7 @@ async function downloadTransactionRowsInMemory(
   currencyValue: string,
   requery: () => Promise<void>,
   sourceText: SourceTextPort,
-  acceptance: YuantaCsvAcceptance,
+  reader: ProviderResponseReader,
 ): Promise<{ rows: ForeignCurrencyTransactionRow[] }> {
   const { frames } = site;
   let target: YuantaForeignCurrencyCsvControlTarget;
@@ -2328,7 +2328,7 @@ async function downloadTransactionRowsInMemory(
   if (controlOrigin !== new URL(YUANTA_ENTRY_URL).origin)
     throw new Error("Yuanta foreign-currency export left the bank origin.");
   frames.signal.throwIfAborted();
-  const content = (await site.readCsv(control, acceptance)).content;
+  const content = (await site.readCsv(control, reader)).content;
   sourceText.assertIntact(content);
   const rows = transactionRowsFromDownloadedCsv(
     content,
@@ -2364,6 +2364,7 @@ export async function readYuantaForeignCurrencySource(
   const { signal, text: sourceText } = context;
   signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
+  const reader = providerResponseReader({ now: () => context.now(), text: sourceText, validate: product.validate });
   await site.open(FX_TRANSACTION_DETAILS_ROUTE);
   const accounts = await readYuantaForeignCurrencyAccountOptions(site, input.accountFilters);
   const downloads: YuantaForeignCurrencyDownload[] = [];
@@ -2386,7 +2387,7 @@ export async function readYuantaForeignCurrencySource(
         currency.value,
         () => queryAccountCurrency(site, input, account, currency),
         sourceText,
-        { observedAt: taipeiInstant(context.now()), validate: product.validate },
+        reader,
       );
       sourceText.assertIntact(JSON.stringify(download));
       downloads.push({ account, currency, rows: download.rows });
@@ -2397,7 +2398,7 @@ export async function readYuantaForeignCurrencySource(
   // Every account is admitted or the build throws, so a non-empty account
   // list is exactly when the build has financial captures to join balances to.
   const currentBalances = accounts.length > 0
-    ? await readYuantaCurrentDepositBalanceTable(site, "foreign")
+    ? await readYuantaCurrentDepositBalanceTable(site, "foreign", reader)
     : null;
   return { accounts, downloads, currentBalances };
 }

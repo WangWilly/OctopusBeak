@@ -14,6 +14,7 @@ import { taskById } from "./tasks.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
 const TRANSACTION_URL = "https://mma.sinopac.com/mma/bank/transdetail/mma_transdetail.aspx";
 const ACCOUNT_URL = "https://mma.sinopac.com/ws/bank/transdetail/ws_debitacct.ashx?1";
@@ -27,14 +28,12 @@ const syntheticEnvironment = () => ({
 });
 
 function response(url: string, value: unknown): Response {
-  const bytes = Buffer.from(JSON.stringify(value), "utf8");
-  return {
-    url: () => url,
-    status: () => 200,
-    request: () => ({ method: () => "POST" }),
-    body: async () => bytes,
-    allHeaders: async () => ({ "content-type": "application/json; charset=utf-8" }),
-  } as unknown as Response;
+  return fakeProviderReply({
+    url,
+    method: "POST",
+    headers: { "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify(value),
+  });
 }
 
 type SourceFault =

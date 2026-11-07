@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { errors, type Locator, type Page, type Response } from "playwright";
+import { errors, type Locator, type Page } from "playwright";
 import { z } from "zod";
 import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
 import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
@@ -35,9 +35,16 @@ import {
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import {
+  endsRequestChainFrom,
+  providerResponseReader,
+  WITHOUT_PRODUCT_VALIDATION,
+  type ProviderBodyAcquisition,
+  type ProviderResponseReader,
+} from "./provider-response-reader.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
-import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -60,7 +67,6 @@ import {
   YUANTA_EBANK_ORIGIN,
   yuantaEbankSite,
   type YuantaEbankSite,
-  type YuantaHtmlAcceptance,
   type YuantaRoute,
 } from "./yuanta-ebank-site.ts";
 import {
@@ -80,7 +86,7 @@ import {
   type YuantaCreditCardSummaryTraversal,
   type YuantaCurrentUsedCreditSnapshot,
 } from "./yuanta-credit-card-parser.ts";
-import { taipeiDate, taipeiInstant } from "../lib/time/timezone.ts";
+import { taipeiDate } from "../lib/time/timezone.ts";
 
 type MonthOption = YuantaCreditCardMonthOption;
 
@@ -341,24 +347,6 @@ const YUANTA_CARD_SUMMARY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   providerDate: "optional",
 };
 
-/** The run's clock and the card product's validation, which each card reply is accepted through (ADR 0106). */
-type CardReplyCheck = Readonly<{ now: () => string; validate: ProductCollectionHandle["validate"] }>;
-
-function cardReplyAcceptance(check: CardReplyCheck): YuantaHtmlAcceptance {
-  return { observedAt: taipeiInstant(check.now()), validate: check.validate };
-}
-
-function isCreditCardBillsPageResponse(response: Response): boolean {
-  const request = response.request();
-  return (
-    request.method() === "GET" &&
-    request.isNavigationRequest() &&
-    // A redirect carries no body; the bills read is the document it lands on.
-    response.status() < 300 &&
-    new URL(response.url()).pathname === "/nib/tx/creditcardbillsquery"
-  );
-}
-
 type CreditCardBillsPage = Readonly<{
   /** The scope that shows the bills page and holds its month form. */
   scope: BrowserScope;
@@ -366,18 +354,15 @@ type CreditCardBillsPage = Readonly<{
   html: string;
 }>;
 
-/** Open the bills route and read the document the provider served for it. */
+/**
+ * Open the bills route and read the document its navigation landed on; a
+ * redirect on the way carries no body.
+ */
 async function openCreditCardBillsPage(
   site: YuantaEbankSite,
-  check: CardReplyCheck,
+  reader: ProviderResponseReader,
 ): Promise<CreditCardBillsPage> {
-  const { frames } = site;
-  const [html, scope] = await Promise.all([
-    frames.withSignal((signal) => frames.page.waitForResponse(isCreditCardBillsPageResponse, { signal }))
-      .then((response) => site.readHtml(YUANTA_CARD_BILLS_RESPONSE, response, cardReplyAcceptance(check))),
-    site.open(CREDIT_CARD_BILLS_ROUTE),
-  ]);
-  return { scope, html };
+  return await site.openDocument(CREDIT_CARD_BILLS_ROUTE, YUANTA_CARD_BILLS_RESPONSE, reader);
 }
 
 /**
@@ -401,16 +386,6 @@ async function firstVisibleYuantaScopedLocator(
   return await ifFound(
     frames.firstVisible(locatorFor, description, { timeoutMs }),
   );
-}
-
-/** Resolve a Playwright wait that ran out of time to null; cancellation and every other failure still reject. */
-async function unlessTimedOut<T>(wait: Promise<T>): Promise<T | null> {
-  try {
-    return await wait;
-  } catch (error) {
-    if (error instanceof errors.TimeoutError) return null;
-    throw error;
-  }
 }
 
 function selectMonthOptions(
@@ -612,86 +587,95 @@ async function openYuantaFeatureOverview(site: YuantaEbankSite): Promise<boolean
 }
 
 /**
- * Keep the current-used-credit read only when the reviewed table parsed and
- * the provider response carries its date and cache evidence.
+ * The summary page markup that carries current used credit, and the POST
+ * response it came with; or the refusal of a summary reply whose transport
+ * failed its check, which the reader never read a body for. The refusal is
+ * not the card's failure until the read has fallen back to the rendered
+ * summary: the card then fails it inside validation (ADR 0108).
  */
-/** The summary page markup that carries current used credit, and the POST response it came with. */
-type YuantaCurrentCreditEvidence = Readonly<{ html: string; response: ProviderResponse }>;
+type YuantaCurrentCreditEvidence =
+  | Readonly<{ html: string; response: ProviderResponse }>
+  | Readonly<{ refused: ProviderResponseCheckError }>;
 
-function yuantaCurrentCreditEvidence(html: string, response: Response | null): YuantaCurrentCreditEvidence | undefined {
-  if (!response) return undefined;
-  return {
-    html,
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers: response.headers(),
-    },
-  };
-}
+/** What the summary's POST reply gave the read: nothing, a refused transport, or a body. */
+type YuantaSummaryReply =
+  | null
+  | Readonly<{ refused: ProviderResponseCheckError }>
+  | ProviderBodyAcquisition<"text">;
 
 /**
  * The summary reply's HTML, or "" when it fails its provider response check.
  * The read then falls back to the rendered summary, as it did before the
- * check, and the current-credit snapshot rejects the reply inside validation
- * (ADR 0108), so a failed check here is not yet the card's failure.
+ * check, and the current-credit snapshot rejects the reply inside validation.
  */
-async function readSummaryReplyHtml(site: YuantaEbankSite, response: Response, now: () => string): Promise<string> {
+async function summaryReplyHtml(reader: ProviderResponseReader, reply: ProviderBodyAcquisition<"text">): Promise<string> {
   try {
-    return await site.readHtml(YUANTA_CARD_SUMMARY_RESPONSE, response, {
-      observedAt: taipeiInstant(now()),
-      validate: async (check) => await check(),
-    });
+    return (await reader.accept(YUANTA_CARD_SUMMARY_RESPONSE, reply)).evidence.text;
   } catch (error) {
     if (error instanceof ProviderResponseCheckError) return "";
     throw error;
   }
 }
 
+/**
+ * Open the credit-card summary and read the reply its POST got.
+ * `reader` is one without product validation: a refused summary reply is not
+ * yet the card's failure.
+ */
 export async function loadYuantaCreditCardSummaryPage(
   site: YuantaEbankSite,
-  now: () => string,
+  reader: ProviderResponseReader,
   link?: Locator,
 ): Promise<{
   firstHtml: string;
-  response: Response | null;
   /** Absent when the summary's POST response was never observed. */
   currentCredit?: YuantaCurrentCreditEvidence;
 }> {
   const { frames } = site;
-  const [observed, navigated] = await Promise.allSettled([
-    unlessTimedOut(
-      frames.withSignal((signal) =>
-        frames.page.waitForResponse(
-          (candidate) => endsRequestChainFrom(candidate, "/nib/tx/creditcardsummary", "POST"),
-          { timeout: 30_000, signal },
-        ),
-      ),
-    ),
-    (async () => {
-      if (link) await frames.withSignal((signal) => link.click({ signal }));
-      else
-        await site.menuAction("creditcardsummary", "menu_creditcardsummary", 60_000);
-      await frames.settle();
-    })(),
-  ]);
-  if (observed.status === "rejected") throw observed.reason;
-  const response = observed.value;
+  const navigate = async () => {
+    if (link) await frames.withSignal((signal) => link.click({ signal }));
+    else
+      await site.menuAction("creditcardsummary", "menu_creditcardsummary", 60_000);
+    await frames.settle();
+  };
+  // The navigation's own failure is judged once the reply's fate is known, so it never fails the read.
+  let navigated: Promise<PromiseSettledResult<void>> = Promise.resolve({ status: "fulfilled", value: undefined });
+  let reply: YuantaSummaryReply;
+  try {
+    reply = await reader.acquire(frames, YUANTA_CARD_SUMMARY_RESPONSE, {
+      evidence: "text",
+      timeoutMs: 30_000,
+      // A redirect hop is skipped: the reply read is the one that ends the summary POST's chain.
+      waitFor: endsRequestChainFrom("/nib/tx/creditcardsummary", "POST"),
+      trigger: async () => {
+        navigated = navigate().then(
+          (value) => ({ status: "fulfilled", value }),
+          (reason: unknown) => ({ status: "rejected", reason }),
+        );
+        await navigated;
+      },
+    });
+  } catch (error) {
+    await navigated;
+    if (frames.signal.aborted) throw error;
+    if (error instanceof errors.TimeoutError) reply = null;
+    else if (error instanceof ProviderResponseCheckError) reply = { refused: error };
+    // The reply arrived, so its body could not be read.
+    else throw new YuantaCurrentCreditReadError(error);
+  }
+  const settled = await navigated;
   // Without an observed response there is no current used credit to lose.
   const unreadable = (error: unknown): unknown =>
-    !response || error instanceof SourceTextIntegrityError || frames.signal.aborted
+    !reply || error instanceof SourceTextIntegrityError || frames.signal.aborted
       ? error
       : new YuantaCurrentCreditReadError(error);
-  if (navigated.status === "rejected") throw unreadable(navigated.reason);
+  if (settled.status === "rejected") throw unreadable(settled.reason);
+  const evidence = (html: string): YuantaCurrentCreditEvidence | undefined =>
+    !reply ? undefined : "refused" in reply ? reply : { html, response: reply.response };
   try {
-    const responseHtml = response ? await readSummaryReplyHtml(site, response, now) : "";
+    const responseHtml = reply && "evidence" in reply ? await summaryReplyHtml(reader, reply) : "";
     if (hasYuantaCurrentCreditTable(responseHtml)) {
-      return {
-        firstHtml: responseHtml,
-        response,
-        currentCredit: yuantaCurrentCreditEvidence(responseHtml, response),
-      };
+      return { firstHtml: responseHtml, currentCredit: evidence(responseHtml) };
     }
 
     let firstHtml: string;
@@ -701,11 +685,7 @@ export async function loadYuantaCreditCardSummaryPage(
       if (!(error instanceof FrameScopeTimeoutError)) throw error;
       throw new YuantaCreditSummaryNavigationError();
     }
-    return {
-      firstHtml,
-      response,
-      currentCredit: yuantaCurrentCreditEvidence(firstHtml, response),
-    };
+    return { firstHtml, currentCredit: evidence(firstHtml) };
   } catch (error) {
     throw unreadable(error);
   }
@@ -769,7 +749,12 @@ async function submitCreditCardSummary(
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
-    loaded = await loadYuantaCreditCardSummaryPage(site, () => context.now(), link ?? undefined);
+    const reader = providerResponseReader({
+      now: () => context.now(),
+      text: context.text,
+      validate: WITHOUT_PRODUCT_VALIDATION,
+    });
+    loaded = await loadYuantaCreditCardSummaryPage(site, reader, link ?? undefined);
   } catch (error) {
     if (
       error instanceof YuantaCreditSummaryNavigationError ||
@@ -1116,22 +1101,14 @@ async function submitCreditCardMonth(
   site: YuantaEbankSite,
   bills: BrowserScope,
   month: MonthOption,
-  check: CardReplyCheck,
+  reader: ProviderResponseReader,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
-  const [response] = await Promise.all([
-    frames.withSignal((signal) =>
-      frames.page.waitForResponse(
-        (response) =>
-          response
-            .url()
-            .includes("/nib/tx/creditcardbillsquery?method=queryHistoryDetail") &&
-          response.request().method() === "POST",
-        { timeout: 120_000, signal },
-      ),
-    ),
-    frames.race(
+  const { evidence } = await reader.capture(frames, YUANTA_CARD_MONTH_RESPONSE, {
+    evidence: "text",
+    timeoutMs: 120_000,
+    trigger: () =>
       bills.evaluate((monthIndex) => {
         const form = document.forms.namedItem("mform");
         if (!form) throw new Error("YuanTa credit card form was not found.");
@@ -1144,28 +1121,21 @@ async function submitCreditCardMonth(
         form.action = "../tx/creditcardbillsquery?method=queryHistoryDetail";
         form.submit();
       }, month.index),
-    ),
-  ]);
-  return await site.readHtml(YUANTA_CARD_MONTH_RESPONSE, response, cardReplyAcceptance(check));
+  });
+  return evidence.text;
 }
 
 async function submitCreditCardUnbilled(
   site: YuantaEbankSite,
   bills: BrowserScope,
-  check: CardReplyCheck,
+  reader: ProviderResponseReader,
 ): Promise<string> {
   const { frames } = site;
   await waitForCreditCardForm(frames, bills);
-  const [response] = await Promise.all([
-    frames.withSignal((signal) =>
-      frames.page.waitForResponse(
-        (response) =>
-          response.url().includes("/nib/tx/creditcardunbilled") &&
-          response.request().method() === "POST",
-        { timeout: 120_000, signal },
-      ),
-    ),
-    frames.race(
+  const { evidence } = await reader.capture(frames, YUANTA_CARD_UNBILLED_RESPONSE, {
+    evidence: "text",
+    timeoutMs: 120_000,
+    trigger: () =>
       bills.evaluate(() => {
         const form = document.forms.namedItem("mform");
         if (!form) throw new Error("YuanTa credit card form was not found.");
@@ -1179,9 +1149,8 @@ async function submitCreditCardUnbilled(
         form.action = "../tx/creditcardunbilled";
         form.submit();
       }),
-    ),
-  ]);
-  return await site.readHtml(YUANTA_CARD_UNBILLED_RESPONSE, response, cardReplyAcceptance(check));
+  });
+  return evidence.text;
 }
 
 export async function runYuantaCreditCardStatements(
@@ -1227,8 +1196,8 @@ export async function readYuantaCreditCardSource(
   context.signal.throwIfAborted();
   await product.reportActivity("query");
   const now = () => context.now();
-  const check: CardReplyCheck = { now, validate: product.validate };
-  const bills = await openCreditCardBillsPage(site, check);
+  const reader = providerResponseReader({ now, text: context.text, validate: product.validate });
+  const bills = await openCreditCardBillsPage(site, reader);
   const currentMonthHtml = bills.html;
   context.text.assertIntact(currentMonthHtml);
   context.signal.throwIfAborted();
@@ -1257,7 +1226,7 @@ export async function readYuantaCreditCardSource(
     async (month) => {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      return submitCreditCardMonth(site, bills.scope, month, check);
+      return submitCreditCardMonth(site, bills.scope, month, reader);
     },
     async (month, monthHtml, monthPosition) => {
       context.signal.throwIfAborted();
@@ -1279,7 +1248,7 @@ export async function readYuantaCreditCardSource(
   let unbilledRows: StatementRow[] = [];
   if (input.includeUnbilled) {
     await product.reportActivity("query");
-    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope, check);
+    const unbilledHtml = await submitCreditCardUnbilled(site, bills.scope, reader);
     context.text.assertIntact(unbilledHtml);
     context.signal.throwIfAborted();
     if (hasUntraversedPager(unbilledHtml)) {
@@ -1313,7 +1282,13 @@ export async function readYuantaCreditCardSource(
   }
   // Once the summary's POST response is observed, any failure to read its
   // current used credit fails the card capture.
-  const currentUsedCredit = currentCredit
+  if (currentCredit && "refused" in currentCredit) {
+    const { refused } = currentCredit;
+    await product.validate(() => {
+      throw refused;
+    });
+  }
+  const currentUsedCredit = currentCredit && "html" in currentCredit
     ? await readCurrentStateSnapshot(yuantaCurrentUsedCreditSnapshot, {
         acquire: async () => ({
           evidence: { kind: "html", html: currentCredit.html },

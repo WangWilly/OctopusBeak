@@ -23,6 +23,7 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { HNCB_NETBANK_ORIGIN, HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
 import type { ProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import {
   readHncbDepositSource,
   hncbWorkflow,
@@ -33,6 +34,7 @@ import { hncbCurrentDepositDetailTable, hncbCurrentDepositUnavailableRow } from 
 
 const NOW = "2026-10-15T02:00:00.000Z";
 const DATE = "Thu, 15 Oct 2026 02:00:00 GMT";
+const READER = providerResponseReader({ now: () => NOW, text: strictSourceText, validate: WITHOUT_PRODUCT_VALIDATION });
 
 const currentHeader = "<tr><th>No.</th><th>消費日</th><th>入帳日</th><th>說明</th><th>國別</th><th>幣別</th><th>外幣金額</th><th>台幣金額</th><th>卡號</th></tr>";
 const currentRow = (no: number, consume: string, post: string, description: string, amount: string, card: string) =>
@@ -98,7 +100,7 @@ async function attachedRun(
     source: ATTACHED_PREVIEW_PRODUCTS.hncb,
     selected,
     collectors: {
-      credit_card: () => collectHncbCreditCards(read, { now: NOW, text: strictSourceText, observe: (response) => observations.push(response) }),
+      credit_card: () => collectHncbCreditCards(read, { now: NOW, reader: READER, observe: (response) => observations.push(response) }),
     },
   });
   return { run, writes, observations, reads };
@@ -263,7 +265,7 @@ const failedCard: PreviewProductCollectors = { credit_card: async () => { throw 
 const failedCardOutcome = { typeId: "credit_card", status: "failed", itemCount: 0, committedCount: 0, errorCode: "source-validation-failed" };
 /** Attached card collectors over the full card pages: one account written. */
 const succeededCard: PreviewProductCollectors = {
-  credit_card: () => collectHncbCreditCards(reader(PAGES).read, { now: NOW, text: strictSourceText }),
+  credit_card: () => collectHncbCreditCards(reader(PAGES).read, { now: NOW, reader: READER }),
 };
 const succeededCardOutcome = { typeId: "credit_card", status: "success", itemCount: 1, committedCount: 1 };
 

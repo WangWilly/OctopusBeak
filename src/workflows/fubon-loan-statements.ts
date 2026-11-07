@@ -84,12 +84,12 @@ export function fubonLoanStatementResponse(postedTo: string): ProviderResponseDe
   };
 }
 
-function acceptLoanReply(
+async function acceptLoanReply(
   site: FubonEbankSite,
   reply: FubonPostbackReply,
   validate: ProductCollectionHandle["validate"],
 ): Promise<string> {
-  return validate(() => site.accept(fubonLoanStatementResponse(reply.postedTo), reply));
+  return (await site.reader(validate).accept(fubonLoanStatementResponse(reply.postedTo), reply)).evidence.text;
 }
 
 const queryItemSchema = z.enum([

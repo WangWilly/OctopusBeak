@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowAccountIdentityPort, WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { AccountIdentityContinuity } from "../ledger/pglite/account-identity-continuity.ts";
@@ -11,8 +11,15 @@ import {
 } from "../ledger/pglite/workflow-client.ts";
 import { selectOptionWithoutPointer } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope } from "./frame-scope.ts";
-import { FUBON_EBANK_HOST, fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
-import { isDeclaredProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import {
+  FUBON_EBANK_HOST,
+  fubonEbankSite,
+  type FubonEbankSite,
+  type FubonPostbackReply,
+  type FubonRoute,
+} from "./fubon-ebank-site.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { WITHOUT_PRODUCT_VALIDATION, type ProviderRequest } from "./provider-response-reader.ts";
 import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
@@ -2131,12 +2138,14 @@ export async function fetchDepositStatement(
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
-  const reply = await site.postback(
+  const reader = site.reader(validate);
+  const accept = async (reply: FubonPostbackReply) =>
+    (await reader.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, reply)).evidence.text;
+  const html = await accept(await site.postback(
     scope.locator("form").first(),
     "form1:doValidateAndSubmit",
     depositDateRangeFields(query),
-  );
-  const html = await validate(() => site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, reply));
+  ));
   const pages = [await parseDepositStatementHtml(page, html, 0, 1)];
   await site.replaceDocument(scope, html);
 
@@ -2150,12 +2159,11 @@ export async function fetchDepositStatement(
     traversalRequests.add(traversalKey);
     if (pages.length >= 10_000)
       throw new Error("Fubon deposit pagination exceeded the safe page limit.");
-    const nextReply = await site.postback(
+    const nextHtml = await accept(await site.postback(
       scope.locator("form").first(),
       undefined,
       { [pageFieldName]: nextPage },
-    );
-    const nextHtml = await validate(() => site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, nextReply));
+    ));
     const nextParsed = await parseDepositStatementHtml(
       page,
       nextHtml,
@@ -2227,35 +2235,26 @@ function assembleFubonParsedDepositStatement(
   };
 }
 
-function isFubonDepositQueryResponse(response: Response): boolean {
-  try {
-    const postData = response.request().postData() ?? "";
-    return (
-      isDeclaredProviderResponse(FUBON_DEPOSIT_STATEMENT_RESPONSE, response.url(), response.request().method()) &&
-      (postData.includes("doValidateAndSubmit") ||
-        postData.includes("dataGridCurrentPage"))
-    );
-  } catch {
-    return false;
-  }
-}
+/** The deposit query's own POST: its submit or a page of its grid, not another postback to the same page. */
+const isFubonDepositQueryRequest = ({ postData }: ProviderRequest): boolean =>
+  !!postData && (postData.includes("doValidateAndSubmit") || postData.includes("dataGridCurrentPage"));
 
-/** Click a control that posts the deposit query and decode the bank's reply strictly. */
+/**
+ * Click a control that posts the deposit query and decode the bank's reply
+ * strictly. The UI observation runs outside any product, so a refused reply
+ * fails the observation without a validation failure.
+ */
 async function clickAndReadFubonDepositQuery(
   site: FubonEbankSite,
   control: Locator,
 ): Promise<string> {
-  const [response] = await Promise.all([
-    site.frames.withSignal((signal) =>
-      site.frames.page.waitForResponse(isFubonDepositQueryResponse, {
-        timeout: 60_000,
-        signal,
-      }),
-    ),
-    site.frames.withSignal((signal) => control.click({ timeout: 30_000, signal })),
-  ]);
-  await site.frames.race(response.finished());
-  return site.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, await site.readReply(response));
+  const captured = await site.reader(WITHOUT_PRODUCT_VALIDATION).capture(site.frames, FUBON_DEPOSIT_STATEMENT_RESPONSE, {
+    evidence: "text",
+    request: isFubonDepositQueryRequest,
+    timeoutMs: 60_000,
+    trigger: () => site.frames.withSignal((signal) => control.click({ timeout: 30_000, signal })),
+  });
+  return captured.evidence.text;
 }
 
 async function findFubonDepositNextPage(
@@ -2690,7 +2689,7 @@ export async function runFubonStatements(
   const snapshot = await readFubonDepositSourceSnapshot(site, context, product);
   return stageFubonDeposit(snapshot, input, context, product, async () => {
     await product.reportActivity("query");
-    return await readFubonCurrentDepositBalanceTable(site);
+    return await readFubonCurrentDepositBalanceTable(site, product.validate);
   });
 }
 

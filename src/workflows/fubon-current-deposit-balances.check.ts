@@ -8,6 +8,7 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { frameScope } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
+import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 
 import {
   FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -420,7 +421,7 @@ const siteFor = (page: Page, signal = new AbortController().signal) =>
 
 test("the balance page is reached through 存款交易查詢 and 我的存款, and its response is the evidence", () =>
   withDepositShell({}, async (page, requested) => {
-    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), { timeoutMs: 10_000 });
+    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), WITHOUT_PRODUCT_VALIDATION, { timeoutMs: 10_000 });
     const rows = parseFubonCurrentDepositBalanceSnapshot({ rows: table.evidence.rows, response: verified(table.response) });
     assert.deepEqual(rows.map((row) => [row.accountNumber, row.currency, row.instantBalance.sourceLexeme]), [
       ["00123456789012", "TWD", "0"],
@@ -433,7 +434,7 @@ test("the balance page is reached through 存款交易查詢 and 我的存款, a
 
 test("a header row that renders after the table is waited for before the table is parsed", () =>
   withDepositShell({ headerRowDelayMs: 600 }, async (page) => {
-    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), { timeoutMs: 10_000 });
+    const table = await readFubonCurrentDepositBalanceTable(siteFor(page), WITHOUT_PRODUCT_VALIDATION, { timeoutMs: 10_000 });
     assert.equal(table.evidence.rows.length, 2);
   }));
 
@@ -441,7 +442,7 @@ test("a run cancelled while the bank holds the balance response rejects with its
   withDepositShell({ balanceHangs: true }, async (page, requested) => {
     const controller = new AbortController();
     const cancelled = new Error("synthetic cancellation");
-    const read = readFubonCurrentDepositBalanceTable(siteFor(page, controller.signal));
+    const read = readFubonCurrentDepositBalanceTable(siteFor(page, controller.signal), WITHOUT_PRODUCT_VALIDATION);
     const startedAt = Date.now();
     while (!requested.includes(FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH)) {
       assert.ok(Date.now() - startedAt < 10_000, "the balance page was never requested");

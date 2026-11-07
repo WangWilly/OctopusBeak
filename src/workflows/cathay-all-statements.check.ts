@@ -17,8 +17,8 @@ assert.doesNotMatch(
 
 assert.match(domesticSource, /export async function signInCathayForApp/);
 assert.match(domesticSource, /export async function collectCathayDomesticFinancialRequests/);
-// Every Cathay reply is accepted by the provider response module; none is read straight from an in-page fetch.
-assert.match(domesticSource, /acceptProviderResponse\(/);
+// Every Cathay reply is read by the provider response reader; none is read straight from an in-page fetch.
+assert.match(domesticSource, /providerResponseReader\(/);
 assert.doesNotMatch(domesticSource, /response\.(?:text|json)\(\)/);
 assert.doesNotMatch(
   domesticSource,

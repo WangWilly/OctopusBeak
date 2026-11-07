@@ -54,8 +54,33 @@ export type CapturedProviderResponse<
   triggered: Triggered;
 }>;
 
-export type ProviderCaptureOptions<Kind extends ProviderBodyKind, Triggered> = Readonly<{
-  evidence: Kind;
+/** A response the reader sees while it waits, for a source whose wait is wider than its declared endpoint. */
+export type ProviderReply = Readonly<{
+  url: string;
+  status: number;
+  /** Whether this hop redirects onward, so a later response ends its chain. */
+  redirectsOnward: boolean;
+  request: ProviderRequest;
+  /** The first request of the redirect chain this response ends; the request itself when it was not redirected. */
+  chainStart: ProviderRequest;
+}>;
+
+/** Which responses the reader waits for. */
+export type ProviderWaitOptions = Readonly<{
+  /** Which request the response must answer, beyond the endpoint it is waited for at. */
+  request?: (request: ProviderRequest) => boolean;
+  /**
+   * Wait for more than the declared endpoint, such as any host on the
+   * history path or the end of a redirect chain, so the declaration refuses
+   * the reply by name instead of the wait running out. Absent waits for the
+   * declared endpoint and method.
+   */
+  waitFor?: (reply: ProviderReply) => boolean;
+  /** How long to wait for the response. A response that never arrives is a collection failure. */
+  timeoutMs?: number;
+}>;
+
+export type ProviderTriggerOptions<Triggered> = ProviderWaitOptions & Readonly<{
   /**
    * The source's action that makes the provider send the response: a click, a
    * navigation or an in-page fetch. The reader arms its wait first. `replied`
@@ -64,11 +89,47 @@ export type ProviderCaptureOptions<Kind extends ProviderBodyKind, Triggered> = R
    * waits for the trigger to settle and a trigger that throws fails the read.
    */
   trigger: (replied: AbortSignal) => Promise<Triggered>;
-  /** Which request the response must answer, beyond the declared endpoint and method. */
-  request?: (request: ProviderRequest) => boolean;
-  /** How long to wait for the response. A response that never arrives is a collection failure. */
-  timeoutMs?: number;
 }>;
+
+export type ProviderCaptureOptions<Kind extends ProviderBodyKind, Triggered> = ProviderTriggerOptions<Triggered> &
+  Readonly<{ evidence: Kind }>;
+
+/** A response whose transport facts passed, for a source whose evidence is the page it witnesses. */
+export type ProviderWitness<Triggered> = Readonly<{
+  response: ProviderResponse;
+  request: ProviderRequest;
+  triggered: Triggered;
+}>;
+
+/** A response the source may or may not receive while it does other reads. */
+export type ProviderWatch<Kind extends ProviderBodyKind> = Readonly<{
+  /**
+   * The response, once the source is done with its other reads: waits up to
+   * `graceMs` more for one that has not arrived, and resolves to null when
+   * none does or its status is the declared absent one. A refused transport
+   * still fails inside validation.
+   */
+  settle(graceMs: number): Promise<(ProviderBodyAcquisition<Kind> & Readonly<{ request: ProviderRequest }>) | null>;
+}>;
+
+export type ProviderWatchOptions<Kind extends ProviderBodyKind> = ProviderWaitOptions & Readonly<{
+  evidence: Kind;
+  /** A status that means the provider has nothing to send, such as 204. */
+  absentStatus?: number;
+}>;
+
+/**
+ * Waits for the response that ends a redirect chain that reached the
+ * endpoint: the chain either started with a `method` request to a URL
+ * containing `path`, or its final request is one. A hop that redirects onward
+ * is not the end; a chain that leaves the endpoint surfaces as its last
+ * response, for the declaration to refuse, and a chain that arrives from
+ * elsewhere still counts.
+ */
+export function endsRequestChainFrom(path: string, method: string): (reply: ProviderReply) => boolean {
+  return (reply) => !reply.redirectsOnward &&
+    [reply.chainStart, reply.request].some((request) => request.url.includes(path) && request.method === method);
+}
 
 /** What the reader needs from the run, a product's handle or a source's own read. */
 export type ProviderResponsePorts = Readonly<{
@@ -104,6 +165,24 @@ export type ProviderResponseReader = Readonly<{
     options: ProviderCaptureOptions<Kind, Triggered>,
   ): Promise<ProviderCapture<Kind, Triggered>>;
   /**
+   * Wait for the response and check its transport facts without reading its
+   * body, for a source that reads its evidence from the page the response
+   * carried, then accepts it with `accept`.
+   */
+  witness<Triggered = void>(
+    scope: FrameScope,
+    declaration: ProviderResponseDeclaration,
+    options: ProviderTriggerOptions<Triggered>,
+  ): Promise<ProviderWitness<Triggered>>;
+  /** Check the transport of a response the source already holds, without reading its body. */
+  witnessFrom(scope: FrameScope, declaration: ProviderResponseDeclaration, response: Response): Promise<ProviderResponse>;
+  /** Start waiting now for a response the provider may send while the source does other reads. */
+  watch<Kind extends ProviderBodyKind>(
+    scope: FrameScope,
+    declaration: ProviderResponseDeclaration,
+    options: ProviderWatchOptions<Kind>,
+  ): ProviderWatch<Kind>;
+  /**
    * Read a response the source already holds: one a navigation returned, a
    * routed request's `route.fetch()`, or an `APIRequestContext` reply, which
    * has no request, so its method is passed.
@@ -129,10 +208,36 @@ function requestFacts(request: Request): ProviderRequest {
   return { url: request.url(), method: request.method(), postData: request.postData() };
 }
 
+function replyFacts(response: Response): ProviderReply {
+  const request = response.request();
+  let start = request;
+  for (let previous = start.redirectedFrom(); previous; previous = previous.redirectedFrom()) start = previous;
+  const status = response.status();
+  return {
+    url: response.url(),
+    status,
+    redirectsOnward: status >= 300 && status < 400 && response.headers().location !== undefined,
+    request: requestFacts(request),
+    chainStart: requestFacts(start),
+  };
+}
+
 export function providerResponseReader(ports: ProviderResponsePorts): ProviderResponseReader {
   const observedAt = () => taipeiInstant(ports.now());
 
+  const transportOf = async (scope: FrameScope, response: Response): Promise<ProviderResponse> => ({
+    url: response.url(),
+    status: response.status(),
+    method: response.request().method(),
+    headers: await scope.race(response.allHeaders()),
+  });
+
   // A refused transport is a validation failure, and its body is never read.
+  const checkTransport = async (declaration: ProviderResponseDeclaration, response: ProviderResponse) => {
+    const at = observedAt();
+    await ports.validate(() => verifyProviderResponse(declaration, response, at));
+  };
+
   const readBody = async <Kind extends ProviderBodyKind>(
     scope: FrameScope,
     declaration: ProviderResponseDeclaration,
@@ -140,45 +245,77 @@ export function providerResponseReader(ports: ProviderResponsePorts): ProviderRe
     body: () => Promise<Buffer>,
     kind: Kind,
   ): Promise<ProviderBodyAcquisition<Kind>> => {
-    const at = observedAt();
-    await ports.validate(() => verifyProviderResponse(declaration, response, at));
+    await checkTransport(declaration, response);
     const bytes = new Uint8Array(await scope.race(body()));
     // The kind is the caller's own, which the distributive type cannot see.
     return { response, evidence: { kind, bytes } as ProviderBodyEvidence<Kind> };
   };
 
-  const acquire: ProviderResponseReader["acquire"] = async (scope, declaration, options) => {
+  const waitFor = (
+    scope: FrameScope,
+    declaration: ProviderResponseDeclaration,
+    options: ProviderWaitOptions,
+    stop: AbortSignal,
+  ): Promise<Response> => scope.withSignal((signal) => scope.page.waitForResponse(
+    (response) => {
+      const reply = replyFacts(response);
+      const waited = options.waitFor
+        ? options.waitFor(reply)
+        : isDeclaredProviderResponse(declaration, reply.url, reply.request.method);
+      return waited && (options.request?.(reply.request) ?? true);
+    },
+    { timeout: options.timeoutMs ?? FRAME_SCOPE_TIMEOUT_MS, signal: AbortSignal.any([signal, stop]) },
+  ));
+
+  /**
+   * Arm the wait, run the trigger, and read the response as soon as it
+   * arrives, while the trigger may still be settling: a no-store body, such
+   * as SinoPac MMA's, is gone once its page moves on.
+   */
+  const triggered = async <Triggered, Read>(
+    scope: FrameScope,
+    declaration: ProviderResponseDeclaration,
+    options: ProviderTriggerOptions<Triggered>,
+    read: (response: Response) => Promise<Read>,
+  ): Promise<readonly [Triggered, Read]> => {
     scope.signal.throwIfAborted();
     const settled = new AbortController();
     const replied = new AbortController();
     try {
-      const waiting = scope.withSignal((signal) => scope.page.waitForResponse(
-        (response) => {
-          const request = response.request();
-          return isDeclaredProviderResponse(declaration, response.url(), request.method()) &&
-            (options.request?.(requestFacts(request)) ?? true);
-        },
-        { timeout: options.timeoutMs ?? FRAME_SCOPE_TIMEOUT_MS, signal: AbortSignal.any([signal, settled.signal]) },
-      )).then((response) => {
+      const reading = waitFor(scope, declaration, options, settled.signal).then((response) => {
         replied.abort();
-        return response;
+        return read(response);
       });
       // A trigger that throws first fails the read; the wait is then abandoned, not left unhandled.
-      waiting.catch(() => undefined);
-      const [triggered, response] = await Promise.all([scope.race(options.trigger(replied.signal)), waiting]);
-      const transport: ProviderResponse = {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers: await scope.race(response.allHeaders()),
-      };
-      const acquired = await readBody(scope, declaration, transport, () => response.body(), options.evidence);
-      return { ...acquired, request: requestFacts(response.request()), triggered };
+      reading.catch(() => undefined);
+      return await Promise.all([scope.race(options.trigger(replied.signal)), reading]);
     } finally {
       // A read that timed out or failed also ends a trigger that repeats until the reply.
       replied.abort();
       settled.abort();
     }
+  };
+
+  const readCaptured = async <Kind extends ProviderBodyKind>(
+    scope: FrameScope,
+    declaration: ProviderResponseDeclaration,
+    response: Response,
+    kind: Kind,
+  ) => ({
+    ...(await readBody(scope, declaration, await transportOf(scope, response), () => response.body(), kind)),
+    request: requestFacts(response.request()),
+  });
+
+  const witnessed = async (scope: FrameScope, declaration: ProviderResponseDeclaration, response: Response) => {
+    const transport = await transportOf(scope, response);
+    await checkTransport(declaration, transport);
+    return { response: transport, request: requestFacts(response.request()) };
+  };
+
+  const acquire: ProviderResponseReader["acquire"] = async (scope, declaration, options) => {
+    const [value, acquired] = await triggered(
+      scope, declaration, options, (response) => readCaptured(scope, declaration, response, options.evidence));
+    return { ...acquired, triggered: value };
   };
 
   const accept: ProviderResponseReader["accept"] = async (declaration, acquired) => {
@@ -189,6 +326,37 @@ export function providerResponseReader(ports: ProviderResponsePorts): ProviderRe
   return Object.freeze({
     acquire,
     accept,
+    witness: async (scope, declaration, options) => {
+      const [value, seen] = await triggered(scope, declaration, options, (response) => witnessed(scope, declaration, response));
+      return { ...seen, triggered: value };
+    },
+    witnessFrom: async (scope, declaration, response) => {
+      scope.signal.throwIfAborted();
+      return (await witnessed(scope, declaration, response)).response;
+    },
+    watch: (scope, declaration, options) => {
+      const stop = new AbortController();
+      const arrived = waitFor(scope, declaration, options, stop.signal).then(
+        (response) => response,
+        (error: unknown) => {
+          // A cancelled run still stops the source; a reply that never came is absent.
+          if (scope.signal.aborted) throw error;
+          return null;
+        },
+      );
+      arrived.catch(() => undefined);
+      return Object.freeze({
+        settle: async (graceMs) => {
+          try {
+            const response = await scope.race(Promise.race([arrived, scope.pause(graceMs).then(() => null)]));
+            if (!response || response.status() === options.absentStatus) return null;
+            return await readCaptured(scope, declaration, response, options.evidence);
+          } finally {
+            stop.abort();
+          }
+        },
+      });
+    },
     acquireFrom: async (scope, declaration, held, evidence) => {
       scope.signal.throwIfAborted();
       if ("reply" in held) {
@@ -196,17 +364,11 @@ export function providerResponseReader(ports: ProviderResponsePorts): ProviderRe
         const transport = { url: reply.url(), status: reply.status(), method, headers: reply.headers() };
         return await readBody(scope, declaration, transport, () => reply.body(), evidence);
       }
-      const transport: ProviderResponse = {
-        url: held.url(),
-        status: held.status(),
-        method: held.request().method(),
-        headers: await scope.race(held.allHeaders()),
-      };
-      return await readBody(scope, declaration, transport, () => held.body(), evidence);
+      return await readBody(scope, declaration, await transportOf(scope, held), () => held.body(), evidence);
     },
     capture: async (scope, declaration, options) => {
-      const { request, triggered, ...acquired } = await acquire(scope, declaration, options);
-      return { ...(await accept(declaration, acquired)), request, triggered };
+      const { request, triggered: value, ...acquired } = await acquire(scope, declaration, options);
+      return { ...(await accept(declaration, acquired)), request, triggered: value };
     },
   });
 }

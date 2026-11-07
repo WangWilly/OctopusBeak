@@ -1,5 +1,7 @@
 import { errors, type Frame, type Locator, type Page, type Response } from "playwright";
 import { FRAME_SCOPE_TIMEOUT_MS, frameScope, FrameScopeTimeoutError, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 export const HNCB_NETBANK_ORIGIN = "https://netbank.hncb.com.tw";
 /** The servlet every HNCB transaction is requested through. */
@@ -17,22 +19,32 @@ export type HncbMenuStep = Readonly<{
   dispatches?: boolean;
 }>;
 
-/** Where one product's page lives on the HNCB netbank site. */
+/** A page on the HNCB netbank site: a transaction opened in the main frame. */
 export type HncbRoute = Readonly<{
   description: string;
-  /**
-   * A transaction opened in the main frame, or menu labels clicked in order;
-   * a menu route names the reply its last click must produce.
-   */
-  via:
-    | Readonly<{ trx: string; state: string }>
-    | Readonly<{ menu: readonly HncbMenuStep[]; reply(response: Response): boolean }>;
+  via: Readonly<{ trx: string; state: string }>;
+  /** Whether this scope shows the product's page. */
+  ready(scope: BrowserScope): Promise<boolean>;
+}>;
+
+/**
+ * A product's page reached by clicking menu labels in order, whose last
+ * click must produce the declared reply. The page's evidence is its DOM, so
+ * the reply only witnesses the request that rendered it.
+ */
+export type HncbMenuRoute = Readonly<{
+  description: string;
+  menu: readonly HncbMenuStep[];
+  reply: ProviderResponseDeclaration;
   /** Whether this scope shows the product's page. */
   ready(scope: BrowserScope): Promise<boolean>;
 }>;
 
 /** A page the site opened: the scope that shows it and the provider reply that rendered it. */
 export type HncbPage = Readonly<{ scope: BrowserScope; reply: Response }>;
+
+/** A page a menu route read: the scope that shows it and the reply's transport, which the reader checked. */
+export type HncbReadPage = Readonly<{ scope: BrowserScope; response: ProviderResponse }>;
 
 /**
  * The signed-in HNCB netbank site (ADR 0104): a frameset whose `main` frame
@@ -42,8 +54,10 @@ export type HncbNetbankSite = Readonly<{
   frames: FrameScope;
   /** The frame that shows each transaction; a missing frame times out after 60 s unless the caller says otherwise. */
   main(options?: Readonly<{ timeoutMs?: number }>): Promise<Frame>;
-  /** Open a product's page from any signed-in page. */
+  /** Open a transaction's page from any signed-in page. */
   open(route: HncbRoute): Promise<HncbPage>;
+  /** Follow a menu route from any signed-in page, reading its reply through the reader. */
+  read(route: HncbMenuRoute, reader: ProviderResponseReader): Promise<HncbReadPage>;
   /** Post a transaction into the main frame and wait for the reply it loads there; null when it loads none. */
   dispatch(trx: string, fields: Readonly<Record<string, string>>): Promise<Response | null>;
   /** Click a control that posts the main frame's own form, and wait for the reply it loads there; null when it loads none. */
@@ -126,34 +140,26 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
     response.url().startsWith(`${HNCB_NETBANK_ORIGIN}/`) &&
     isHncbTrxDispatcherUrl(response.url());
 
-  const followMenu = async (
-    steps: readonly HncbMenuStep[],
-    isReply: (response: Response) => boolean,
-    description: string,
-  ): Promise<Response> => {
-    let reply: Promise<Response> | null = null;
-    for (const [index, step] of steps.entries()) {
+  /**
+   * Click every label but the last. A dispatching menu reloads the frames, so
+   * the next label is searched only once its dispatcher POST answers, when it
+   * does; that reply is never read, only awaited.
+   */
+  const walkMenu = async (steps: readonly HncbMenuStep[]): Promise<void> => {
+    for (const step of steps) {
       const link = await control(step);
-      const last = index === steps.length - 1;
-      // A dispatching menu reloads the frames; the next label is searched only once it answers, when it does.
-      const dispatched = !last && step.dispatches
+      const dispatched = step.dispatches
         ? frames.withSignal((signal) =>
           page.waitForResponse(isDispatcherPost, { timeout: MENU_DISPATCH_TIMEOUT_MS, signal }))
           .catch(() => frames.signal.throwIfAborted())
         : null;
       dispatched?.catch(() => undefined);
-      if (last) {
-        reply = frames.withSignal((signal) => page.waitForResponse(isReply, { timeout: FRAME_SCOPE_TIMEOUT_MS, signal }));
-        reply.catch(() => undefined);
-      }
       await frames.withSignal((signal) => link.click({ signal }));
       await dispatched;
     }
-    if (!reply) throw new Error(`HNCB route to ${description} names no menu.`);
-    return await waited(reply, `the HNCB reply that renders ${description}`);
   };
 
-  const showing = (route: HncbRoute) =>
+  const showing = (route: Pick<HncbRoute, "description" | "ready">) =>
     frames.until(async () => {
       for (const scope of frames.scopes()) {
         if (await route.ready(scope)) return scope;
@@ -169,12 +175,21 @@ export function hncbNetbankSite(page: Page, context: SiteContext): HncbNetbankSi
     frames,
     main,
     open: async (route) => {
-      const { via } = route;
-      const reply = "trx" in via
-        ? await goto(hncbTrxUrl(via.trx, via.state), route.description)
-        : await followMenu(via.menu, via.reply, route.description);
+      const reply = await goto(hncbTrxUrl(route.via.trx, route.via.state), route.description);
       await settle();
       return { scope: await showing(route), reply };
+    },
+    read: async (route, reader) => {
+      const last = route.menu.at(-1);
+      if (!last) throw new Error(`HNCB route to ${route.description} names no menu.`);
+      await walkMenu(route.menu.slice(0, -1));
+      // Only the last click is the trigger, so an earlier step's page cannot stand in for the reply.
+      const link = await control(last);
+      const { response } = await waited(reader.witness(frames, route.reply, {
+        trigger: () => frames.withSignal((signal) => link.click({ signal })),
+      }), `the HNCB reply that renders ${route.description}`);
+      await settle();
+      return { scope: await showing(route), response };
     },
     dispatch: (trx, fields) =>
       loadedInMain(async (frame) => {

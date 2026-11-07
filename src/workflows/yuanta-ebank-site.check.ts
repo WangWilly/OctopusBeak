@@ -4,11 +4,12 @@ import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
-import { validationReporter } from "../lib/automation/product-collection.ts";
+import { validationReporter, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import {
   YUANTA_EBANK_ORIGIN,
   yuantaCsvExportResponse,
@@ -227,49 +228,48 @@ const HTML_PAGES: ProviderResponseDeclaration = {
   host: new URL(YUANTA_EBANK_ORIGIN).hostname,
   endpoints: [
     { path: "/nib/tx/summary", method: "GET", search: /^\?type=page&cid=[^&]+$/u, charset: { decode: "utf-8" } },
-    { path: "/nib/tx/bad.html", method: "GET", charset: { decode: "utf-8" } },
+    { path: "/nib/tx/bad.html", method: "GET", search: /^\?type=page&cid=[^&]+$/u, charset: { decode: "utf-8" } },
   ],
   cacheControl: [],
   providerDate: "optional",
 };
-const OBSERVED_AT = "2026-09-10T10:03:04+08:00";
+const RUN_CLOCK = "2026-09-10T02:03:04.000Z";
 
-test("an HTML response is verified against its declaration inside validation and decodes strictly, and malformed bytes fail the read", () =>
+const reader = (validate: ProductCollectionHandle["validate"] = WITHOUT_PRODUCT_VALIDATION) =>
+  providerResponseReader({ now: () => RUN_CLOCK, text: strictSourceText, validate });
+
+test("a route's own document is verified against its declaration inside validation and decodes strictly, and malformed bytes fail the read", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
     const rejectedInValidation: unknown[] = [];
-    const acceptance = {
-      observedAt: OBSERVED_AT,
-      validate: async <T>(check: () => T | Promise<T>): Promise<T> => {
-        try {
-          return await check();
-        } catch (error) {
-          rejectedInValidation.push(error);
-          throw error;
-        }
-      },
-    };
-    const fmain = await site.frames.frame("fmain");
-    const good = await fmain.goto(yuantaRouteUrl("summary", CID));
-    assert.ok(good);
-    assert.match(await site.readHtml(HTML_PAGES, good, acceptance), /帳戶總覽/u);
-    const refusing = site.readHtml({ ...HTML_PAGES, endpoints: HTML_PAGES.endpoints.slice(1) }, good, acceptance);
+    const recording = reader(async (check) => {
+      try {
+        return await check();
+      } catch (error) {
+        rejectedInValidation.push(error);
+        throw error;
+      }
+    });
+    const SUMMARY: YuantaRoute = { path: "summary", description: "summary", ready: attached("#summary") };
+    const opened = await site.openDocument(SUMMARY, HTML_PAGES, recording);
+    assert.match(opened.html, /帳戶總覽/u);
+    assert.equal(frameName(opened.scope), "fmain");
+    const refusing = site.openDocument(SUMMARY, { ...HTML_PAGES, endpoints: HTML_PAGES.endpoints.slice(1) }, recording);
     await assert.rejects(
       refusing,
       (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
       "a response from an endpoint the declaration does not name is refused",
     );
     assert.equal(rejectedInValidation.length, 1, "the endpoint refusal is thrown inside the product's validation");
-    const bad = await fmain.goto(`${YUANTA_EBANK_ORIGIN}/nib/tx/bad.html`);
-    assert.ok(bad);
-    await assert.rejects(site.readHtml(HTML_PAGES, bad, acceptance), SourceTextIntegrityError);
+    const BAD: YuantaRoute = { path: "bad.html", description: "bad page", ready: attached("body") };
+    await assert.rejects(site.openDocument(BAD, HTML_PAGES, recording), SourceTextIntegrityError);
   }));
 
 test("a CSV export link is fetched in the page and decoded as Big5", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
     const scope = await site.open(DEPOSIT);
-    const download = await site.readCsv(scope.locator("#csv"), { observedAt: OBSERVED_AT, validate: async (check) => await check() });
+    const download = await site.readCsv(scope.locator("#csv"), reader());
     assert.equal(download.content, "帳號,1\r\n");
     assert.equal(download.byteLength, BIG5_ACCOUNT_HEADER.byteLength + 4);
     assert.equal(download.contentDisposition, "attachment; filename=deposit.csv");
@@ -286,7 +286,7 @@ test("a CSV reply that is not 200, or names an unrelated charset, fails the prod
       const validate = validationReporter(async (stage, outcome) => {
         events.push({ stage, outcome });
       }, new AbortController().signal);
-      const error = await site.readCsv(link, { observedAt: OBSERVED_AT, validate }).then(
+      const error = await site.readCsv(link, reader(validate)).then(
         () => assert.fail("the CSV read must fail"),
         (thrown: unknown) => thrown,
       );
@@ -309,7 +309,7 @@ test("a CSV reply carrying the eBank's wrong utf-8 or iso-8859-1 label still dec
     const link = scope.locator("#csv");
     for (const href of ["/nib/tx/utf8.csv", "/nib/tx/latin1.csv"]) {
       await link.evaluate((anchor, value) => anchor.setAttribute("href", value), href);
-      const download = await site.readCsv(link, { observedAt: OBSERVED_AT, validate: async (check) => await check() });
+      const download = await site.readCsv(link, reader());
       assert.equal(download.content, "帳號,1\r\n", `${href} is read as the Big5 it carries`);
     }
     // The label is accepted, never trusted: a body that really is UTF-8 is not Big5 and fails.
@@ -318,7 +318,7 @@ test("a CSV reply carrying the eBank's wrong utf-8 or iso-8859-1 label still dec
     const validate = validationReporter(async (stage, outcome) => {
       events.push({ stage, outcome });
     }, new AbortController().signal);
-    const error = await site.readCsv(link, { observedAt: OBSERVED_AT, validate }).then(
+    const error = await site.readCsv(link, reader(validate)).then(
       () => assert.fail("a UTF-8 body must not be read as Big5"),
       (thrown: unknown) => thrown,
     );
@@ -327,16 +327,15 @@ test("a CSV reply carrying the eBank's wrong utf-8 or iso-8859-1 label still dec
   }));
 
 // A fulfilled 302 under page routing is followed on the real network, so redirect acceptance is checked on the declaration.
-test("a CSV reply that a same-origin redirect moved is accepted where it landed, on the eBank host only", () => {
-  const reply = (url: string) => acceptProviderResponse(
+test("a CSV reply that a same-origin redirect moved is accepted where it landed, on the eBank host only", async () => {
+  const reply = (url: string) => reader().accept(
     yuantaCsvExportResponse({ url, method: "GET" }),
     {
       evidence: { kind: "text", bytes: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]) },
       response: { url, status: 200, method: "GET", headers: { "content-type": "text/csv" } },
     },
-    { observedAt: OBSERVED_AT, text: strictSourceText },
   );
-  assert.equal(reply(`${YUANTA_EBANK_ORIGIN}/nib/tx/export.csv?after=redirect`).evidence.text, "帳號,1\r\n");
+  assert.equal((await reply(`${YUANTA_EBANK_ORIGIN}/nib/tx/export.csv?after=redirect`)).evidence.text, "帳號,1\r\n");
   for (const url of ["http://ebank.yuantabank.com.tw/nib/tx/export.csv", "https://elsewhere.example/nib/tx/export.csv"])
-    assert.throws(() => reply(url), (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint", url);
+    await assert.rejects(reply(url), (error) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint", url);
 });

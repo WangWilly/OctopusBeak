@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Frame, Locator, Page } from "playwright";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
-import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import { isDeclaredProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 export const YUANTA_EBANK_ORIGIN = "https://ebank.yuantabank.com.tw";
 const YUANTA_CSV_MAX_BYTES = 25 * 1024 * 1024;
@@ -30,15 +30,6 @@ export type YuantaDuration =
   | Readonly<{ label: string }>
   | Readonly<{ customLabel: string; startDate: string; endDate: string }>;
 
-/** When an HTML reply was observed, and the product validation its acceptance runs in (ADR 0106). */
-export type YuantaHtmlAcceptance = Readonly<{
-  observedAt: string;
-  validate: ProductCollectionHandle["validate"];
-}>;
-
-/** When a CSV export was fetched, and the product validation its acceptance runs in (ADR 0106). */
-export type YuantaCsvAcceptance = YuantaHtmlAcceptance;
-
 export type YuantaCsvDownload = Readonly<{
   content: string;
   byteLength: number;
@@ -59,15 +50,22 @@ export type YuantaEbankSite = Readonly<{
   menuAction(path: string, menuId: string, timeoutMs?: number): Promise<void>;
   chooseDuration(scope: BrowserScope, duration: YuantaDuration): Promise<void>;
   /**
-   * Read an HTML response's body, then, inside `acceptance.validate`, verify it
-   * against its declaration (ADR 0110) and decode it strictly in the endpoint's charset.
+   * Open a route that its own navigation renders, and read the document that
+   * navigation served through `reader` (ADR 0112). The navigation's response is
+   * the one Playwright lands on, so a redirect on the way is never read as the
+   * page, and the route's readiness, which may throw a typed absence, is
+   * decided before the reply is checked against its declaration.
    */
-  readHtml(declaration: ProviderResponseDeclaration, response: Response, acceptance: YuantaHtmlAcceptance): Promise<string>;
+  openDocument(
+    route: YuantaRoute,
+    declaration: ProviderResponseDeclaration,
+    reader: ProviderResponseReader,
+  ): Promise<Readonly<{ scope: BrowserScope; html: string }>>;
   /**
-   * Fetch a CSV export link's bytes in the page, then, inside `acceptance.validate`,
-   * verify the reply against where it was requested (ADR 0110) and decode it strictly as Big5.
+   * Fetch a CSV export link's bytes in the page, then accept the reply through
+   * `reader` against where it was requested (ADR 0110) and decode it strictly as Big5.
    */
-  readCsv(link: Locator, acceptance: YuantaCsvAcceptance): Promise<YuantaCsvDownload>;
+  readCsv(link: Locator, reader: ProviderResponseReader): Promise<YuantaCsvDownload>;
 }>;
 
 type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort }>;
@@ -169,21 +167,28 @@ export function yuantaEbankSite(page: Page, context: SiteContext): YuantaEbankSi
       }
       if (scope !== page) await frames.settle(scope as Frame);
     },
-    readHtml: async (declaration, response, { observedAt, validate }) => {
-      const bytes = await frames.race(response.body());
-      const reply = {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers: response.headers(),
-      };
-      return await validate(() => acceptProviderResponse(
-        declaration,
-        { evidence: { kind: "text", bytes }, response: reply },
-        { observedAt, text: context.text },
-      ).evidence.text);
+    openDocument: async (route, declaration, reader) => {
+      // menuaction() renders in a later navigation whose document this one is not.
+      if (route.menuId) throw new Error(`${route.description} is not rendered by its own route.`);
+      const content = await fmain();
+      const sessionCid = await cid();
+      if (!sessionCid && route.cid !== "optional") throw new FailureCodeError("authentication-failed");
+      const url = yuantaRouteUrl(route.path, sessionCid);
+      const served = await frames.withSignal((signal) => content.goto(url, { waitUntil: "domcontentloaded", signal }));
+      // The declared document is read at once, before a later navigation in fmain can evict its body;
+      // any other landing is read only after readiness, so a typed absence it shows wins.
+      const read = (response: NonNullable<typeof served>) => reader.acquireFrom(frames, declaration, response, "text");
+      const early = served && isDeclaredProviderResponse(declaration, served.url(), served.request().method())
+        ? read(served)
+        : null;
+      early?.catch(() => undefined);
+      await frames.settle(content);
+      const scope = await showing(route);
+      if (!served) throw new Error(`${route.description} navigation served no document.`);
+      const acquired = await (early ?? read(served));
+      return { scope, html: (await reader.accept(declaration, acquired)).evidence.text };
     },
-    readCsv: (link, acceptance) => readYuantaBig5CsvFromAnchor(link, acceptance, context),
+    readCsv: (link, reader) => readYuantaBig5CsvFromAnchor(link, reader, context),
   };
   return Object.freeze(site);
 }
@@ -232,12 +237,12 @@ export function yuantaCsvExportResponse(landed: CsvExportRequest): ProviderRespo
 
 /**
  * Fetch an export link's CSV bytes inside the signed-in page, then accept the
- * reply inside the product's validation and decode it strictly as Big5.
+ * reply through the reader and decode it strictly as Big5.
  */
 export async function readYuantaBig5CsvFromAnchor(
   exportLink: Locator,
-  { observedAt, validate }: YuantaCsvAcceptance,
-  { signal, text }: SiteContext,
+  reader: ProviderResponseReader,
+  { signal }: Pick<SiteContext, "signal">,
 ): Promise<YuantaCsvDownload> {
   signal.throwIfAborted();
   let onAbort: (() => void) | undefined;
@@ -381,16 +386,15 @@ export async function readYuantaBig5CsvFromAnchor(
   if (bytes.byteLength !== response.byteLength) {
     throw new Error("Yuanta CSV response was incomplete in memory.");
   }
-  const content = await validate(() => acceptProviderResponse(
+  const { evidence } = await reader.accept(
     yuantaCsvExportResponse({ url: response.url, method: response.requested.method }),
     {
       evidence: { kind: "text", bytes },
       response: { url: response.url, status: response.status, method: response.requested.method, headers: response.headers },
     },
-    { observedAt, text },
-  ).evidence.text);
+  );
   return {
-    content,
+    content: evidence.text,
     byteLength: bytes.byteLength,
     contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
     contentDisposition: response.headers["content-disposition"] ?? "",

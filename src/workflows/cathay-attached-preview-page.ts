@@ -1,6 +1,5 @@
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import {
-  acceptCathayResponse,
   cathayApiResponse,
   fetchCathayApiSourceText,
   functionSeqNo,
@@ -20,7 +19,9 @@ import {
   type CathayLoanRow,
   type CathayPreviewResponse,
 } from "./cathay-attached-preview.ts";
-import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { frameScope } from "./frame-scope.ts";
+import type { AcceptedProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderBodyAcquisition } from "./provider-response-reader.ts";
 
 const ORIGIN = `https://${CATHAY_CURRENT_DEPOSIT_HOST}`;
 const CARD_OVERVIEW_URL = `${ORIGIN}/OnlineBanking/CQuery/C0101_BillOverview`;
@@ -43,14 +44,22 @@ const CATHAY_DOMESTIC_OVERVIEW_RESPONSE = cathayApiResponse(
   /^.*$/su,
 );
 
+/** The loan overview page, whose HTTP Date is when its balances were shown. */
+const CATHAY_LOAN_OVERVIEW_RESPONSE: ProviderResponseDeclaration<"optional"> = {
+  label: "Cathay loan overview",
+  host: CATHAY_CURRENT_DEPOSIT_HOST,
+  endpoints: [{ path: new URL(LOAN_OVERVIEW_URL).pathname, method: "GET", search: /^.*$/su }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
 /**
- * The card overview's own card-status or latest-bill response. Only the
- * endpoint name is known, not its full path, so the waiter matches the path
- * by suffix and the declaration takes the path it observed.
+ * The card overview's own card-status and latest-bill responses. Only their
+ * endpoint names are known, not their full paths, so each path is matched
+ * by its suffix, as all-set-tw matches them.
  */
-function cardOverviewResponse(response: Response): CathayApiResponseDeclaration {
-  return cathayApiResponse("Cathay card overview", [new URL(response.url()).pathname], /^.*$/su);
-}
+const CATHAY_CARD_STATUS_RESPONSE = cathayApiResponse("Cathay card overview", [/\/C_COM_Q_CardStatus$/u], /^.*$/su);
+const CATHAY_LATEST_BILL_RESPONSE = cathayApiResponse("Cathay card overview", [/\/C_CardInfo_Q_LatestBill$/u], /^.*$/su);
 
 /** The overview has settled once it lists a loan or says it holds none. */
 function loanOverviewSettled(): boolean {
@@ -135,23 +144,9 @@ function extractLoanOverview(): Omit<CathayLoanOverview, "date"> {
   };
 }
 
-function isPost(response: Response, matches: (path: string) => boolean): boolean {
-  try {
-    const url = new URL(response.url());
-    return url.hostname === CATHAY_CURRENT_DEPOSIT_HOST && matches(url.pathname)
-      && response.request().method().toUpperCase() === "POST";
-  } catch {
-    return false;
-  }
-}
-
-async function captured(
-  scope: FrameScope,
-  declaration: CathayApiResponseDeclaration,
-  response: Response,
-  source: CathayStrictSourceOptions,
-): Promise<CathayPreviewResponse> {
-  const accepted = await acceptCathayResponse(scope, declaration, response, source.text);
+function previewResponse(
+  accepted: AcceptedProviderResponse<ProviderBodyAcquisition<"json">, "optional">,
+): CathayPreviewResponse {
   return {
     endpoint: accepted.response.url.pathname,
     status: 200,
@@ -172,10 +167,9 @@ export function playwrightCathayAttachedPreviewPort(
   source: CathayStrictSourceOptions,
 ): CathayAttachedPreviewPort {
   const scope = frameScope(page, source.signal);
+  const reader = providerResponseReader(source);
   // An optional wait that times out or fails leaves the read to decide; a cancellation still stops it.
   const unlessCancelled = () => source.signal.throwIfAborted();
-  const responseTo = (matches: (path: string) => boolean, timeout: number) =>
-    scope.withSignal((signal) => page.waitForResponse((response) => isPost(response, matches), { timeout, signal }));
   const open = (url: string) =>
     scope.withSignal((signal) => page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS, signal }));
   const settled = (settles: () => boolean, timeout: number) =>
@@ -184,22 +178,28 @@ export function playwrightCathayAttachedPreviewPort(
 
   return {
     async cardOverview() {
-      const status = responseTo((path) => path.endsWith("/C_COM_Q_CardStatus"), TIMEOUT_MS);
-      const latest = responseTo((path) => path.endsWith("/C_CardInfo_Q_LatestBill"), LATEST_BILL_TIMEOUT_MS)
-        .catch(() => null);
-      status.catch(() => undefined);
-      await open(CARD_OVERVIEW_URL);
-      const statusResponse = await status;
-      const cardStatus = await captured(scope, cardOverviewResponse(statusResponse), statusResponse, source);
-      const latestResponse = await latest;
+      // Both waits are armed before the navigation that sends both requests.
+      const latest = reader.watch(scope, CATHAY_LATEST_BILL_RESPONSE, {
+        evidence: "json",
+        timeoutMs: LATEST_BILL_TIMEOUT_MS,
+      });
+      const cardStatus = previewResponse(await reader.capture(scope, CATHAY_CARD_STATUS_RESPONSE, {
+        evidence: "json",
+        trigger: async () => {
+          await open(CARD_OVERVIEW_URL);
+        },
+        timeoutMs: TIMEOUT_MS,
+      }));
+      // The watch's own timeout ends the wait LATEST_BILL_TIMEOUT_MS after it was armed; the grace never outlasts it.
+      const latestBill = await latest.settle(LATEST_BILL_TIMEOUT_MS);
       await settled(
         () => /卡片末四碼[：:]\s*\d{4}|立即(?:線上)?辦卡/u.test(document.body?.innerText ?? ""),
         LATEST_BILL_TIMEOUT_MS,
       );
       return {
         cardStatus,
-        latestBill: latestResponse
-          ? await captured(scope, cardOverviewResponse(latestResponse), latestResponse, source)
+        latestBill: latestBill
+          ? previewResponse(await reader.accept(CATHAY_LATEST_BILL_RESPONSE, latestBill))
           : null,
         text: await scope.race(page.evaluate(() => document.body?.innerText ?? "")),
       };
@@ -214,16 +214,26 @@ export function playwrightCathayAttachedPreviewPort(
       return { endpoint: path, status: 200, text, date: null };
     },
     async domesticOverview() {
-      const response = responseTo((path) => path === CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH, TIMEOUT_MS);
-      response.catch(() => undefined);
-      await open(`${ORIGIN}${CATHAY_CURRENT_DOMESTIC_UI_PATH}`);
-      return await captured(scope, CATHAY_DOMESTIC_OVERVIEW_RESPONSE, await response, source);
+      return previewResponse(await reader.capture(scope, CATHAY_DOMESTIC_OVERVIEW_RESPONSE, {
+        evidence: "json",
+        trigger: async () => {
+          await open(`${ORIGIN}${CATHAY_CURRENT_DOMESTIC_UI_PATH}`);
+        },
+        timeoutMs: TIMEOUT_MS,
+      }));
     },
     async loanOverview() {
-      const response = await open(LOAN_OVERVIEW_URL);
+      const { response } = await reader.witness(scope, CATHAY_LOAN_OVERVIEW_RESPONSE, {
+        trigger: async () => {
+          await open(LOAN_OVERVIEW_URL);
+        },
+        timeoutMs: TIMEOUT_MS,
+      });
       await settled(loanOverviewSettled, LOAN_SETTLE_TIMEOUT_MS);
-      const date = response ? (await scope.race(response.allHeaders()))["date"] ?? null : null;
-      return { ...await scope.race(page.evaluate(extractLoanOverview)), date };
+      // The rows are read from the rendered page, which is the evidence the response's Date dates.
+      const html = await scope.race(page.content());
+      const accepted = await reader.accept(CATHAY_LOAN_OVERVIEW_RESPONSE, { response, evidence: { kind: "html", html } });
+      return { ...await scope.race(page.evaluate(extractLoanOverview)), date: accepted.response.providerDate?.raw ?? null };
     },
   };
 }

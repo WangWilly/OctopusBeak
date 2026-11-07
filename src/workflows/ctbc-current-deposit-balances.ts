@@ -1,13 +1,14 @@
 import type { Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
+import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
   type ProviderEvidence,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 /**
  * CTBC renders the summary shell first and fills it with this authenticated
@@ -357,8 +358,7 @@ function safePath(value: unknown): string | null {
     : null;
 }
 
-function requestResource(response: Response): string | null {
-  const postData = response.request().postData();
+function requestResource(postData: string | null): string | null {
   if (!postData) return null;
   try {
     const parsed: unknown = JSON.parse(postData);
@@ -383,18 +383,11 @@ function responseDiagnostic(response: Response): CtbcResponseDiagnostic | null {
       pathname: url.pathname,
       queryKeys: [...new Set([...url.searchParams.keys()]
         .filter((key) => /^[A-Za-z0-9_.-]+$/u.test(key)))].sort(),
-      requestResource: requestResource(response),
+      requestResource: requestResource(response.request().postData()),
     };
   } catch {
     return null;
   }
-}
-
-function responseMatches(response: Response): boolean {
-  return (
-    isDeclaredProviderResponse(CTBC_CURRENT_DEPOSIT_RESPONSE, response.url(), response.request().method()) &&
-    requestResource(response) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
-  );
 }
 
 /** Any summary POST to the endpoint, whatever its query: more than one is ambiguous. */
@@ -403,7 +396,7 @@ function summaryResponseCandidate(response: Response): boolean {
   return (
     request.method() === CTBC_CURRENT_DEPOSIT_BALANCE_METHOD &&
     response.url().startsWith(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`) &&
-    requestResource(response) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
+    requestResource(request.postData()) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
   );
 }
 
@@ -437,13 +430,15 @@ export type CtbcCurrentDepositResponse = Readonly<{
 
 /**
  * Enter CTBC's current-summary page through the normal authenticated menu and
- * passively observe the one POST it triggers. The request body is used only
+ * passively observe the one POST it triggers, read through `reader` so a
+ * refused reply fails inside its validation. The request body is used only
  * for the resource discriminant and is never returned beyond the metadata the
  * parser validates.
  */
 export async function readCtbcCurrentDepositBalanceResponse(
   page: Page,
   signal: AbortSignal,
+  reader: ProviderResponseReader,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<CtbcCurrentDepositResponse> {
   const scope = frameScope(page, signal);
@@ -457,30 +452,23 @@ export async function readCtbcCurrentDepositBalanceResponse(
   };
   page.on("response", listener);
   try {
-    const responsePromise = scope.withSignal((signal) =>
-      page.waitForResponse(responseMatches, { timeout: timeoutMs, signal }));
-    responsePromise.catch(() => undefined);
-    await clickExactText(scope, "臺幣/轉帳", timeoutMs);
-    await clickExactText(scope, "臺幣存款概要", timeoutMs);
-    await scope.withSignal((signal) =>
-      page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs, signal }));
-    const response = await responsePromise;
-    const bytes = await scope.race(response.body());
-    const headers = await scope.race(response.allHeaders());
+    const captured = await reader.acquire(scope, CTBC_CURRENT_DEPOSIT_RESPONSE, {
+      evidence: "json",
+      request: (request) => requestResource(request.postData) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
+      timeoutMs,
+      trigger: async () => {
+        await clickExactText(scope, "臺幣/轉帳", timeoutMs);
+        await clickExactText(scope, "臺幣存款概要", timeoutMs);
+        await scope.withSignal((signal) =>
+          page.waitForURL(CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL, { timeout: timeoutMs, signal }));
+      },
+    });
     if (matching !== 1)
       throw new Error("CTBC current balance source response was missing or ambiguous.");
-    return {
-      evidence: { kind: "json", bytes },
-      response: {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers,
-      },
-      requestPostData: response.request().postData(),
-    };
+    return { evidence: captured.evidence, response: captured.response, requestPostData: captured.request.postData };
   } catch (error) {
-    if (signal.aborted || diagnostics.length === 0) throw error;
+    // A refused reply is the reader's validation failure; the candidates only explain a missing one.
+    if (signal.aborted || diagnostics.length === 0 || error instanceof ProviderResponseCheckError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
       `${message} CTBC balance response candidates: ${formatResponseDiagnostics(diagnostics)}`,

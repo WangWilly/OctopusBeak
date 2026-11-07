@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { launchCheckBrowser } from "../check-browser.fixtures.ts";
-import { loadNextEsunTimelineResponse } from "../../../workflows/esun-credit-card-statements.ts";
+import { strictSourceText } from "../source-text.ts";
+import { loadNextEsunTimelinePage } from "../../../workflows/esun-credit-card-statements.ts";
 import { frameScope } from "../../../workflows/frame-scope.ts";
+import type { ProviderResponseDeclaration } from "../../../workflows/provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "../../../workflows/provider-response-reader.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
+
+const TIMELINE: ProviderResponseDeclaration<"optional"> = {
+  label: "E.SUN timeline",
+  host: "ebank.esunbank.com.tw",
+  endpoints: [{ path: "/GW/creditLastYear/getFilterResult", method: "POST", search: /^(?:\?.*)?$/su }],
+  cacheControl: [],
+  providerDate: "optional",
+};
+
+const reader = providerResponseReader({
+  now: () => new Date().toISOString(),
+  text: strictSourceText,
+  validate: WITHOUT_PRODUCT_VALIDATION,
+});
 
 test("E.SUN timeline still loads the next page when content grows after the first scroll", async () => {
   const browser = await launchCheckBrowser();
@@ -13,7 +30,7 @@ test("E.SUN timeline still loads the next page when content grows after the firs
     let requests = 0;
     await page.route("https://ebank.esunbank.com.tw/GW/**", async (route) => {
       requests += 1;
-      await route.fulfill({ contentType: "application/json", body: "{}" });
+      await route.fulfill({ contentType: "application/json", body: "{\"page\":2}" });
     });
     await page.setContent(`
       <div class="timeline-query-continer" style="height:100px;overflow:auto">
@@ -36,8 +53,8 @@ test("E.SUN timeline still loads the next page when content grows after the firs
         });
       </script>
     `);
-    const response = await loadNextEsunTimelineResponse(frameScope(page, new AbortController().signal), 1_000);
-    assert.equal(response.status(), 200);
+    const next = await loadNextEsunTimelinePage(frameScope(page, new AbortController().signal), reader, TIMELINE, 1_000);
+    assert.deepEqual(next, { page: 2 });
     assert.equal(requests, 1);
   } finally {
     await browser.close();
@@ -53,7 +70,7 @@ test("cancelling the run stops a timeline scroll still waiting for its container
     setTimeout(() => controller.abort(CANCELLED), 300);
     const started = Date.now();
     await assert.rejects(
-      loadNextEsunTimelineResponse(frameScope(page, controller.signal)),
+      loadNextEsunTimelinePage(frameScope(page, controller.signal), reader, TIMELINE),
       (error: unknown) => error === CANCELLED,
     );
     assert.ok(Date.now() - started < 2_000);

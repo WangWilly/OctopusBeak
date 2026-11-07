@@ -17,6 +17,7 @@ import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 const TIMELINE_URL = "https://ebank.esunbank.com.tw/GW/creditLastYear/getFilterResult";
@@ -39,14 +40,7 @@ function monthAtOffset(now: Date, offset: number) {
 }
 
 function response(value: unknown, url: string): Response {
-  const bytes = Buffer.from(JSON.stringify(value), "utf8");
-  return {
-    status: () => 200,
-    url: () => url,
-    request: () => ({ method: () => "POST" }),
-    body: async () => bytes,
-    headers: () => ({}),
-  } as unknown as Response;
+  return fakeProviderReply({ url, method: "POST", body: JSON.stringify(value) });
 }
 
 function timelineResponse(now: Date) {
@@ -145,10 +139,12 @@ function fakePage(now: Date, options: { signInWithCredentials?: boolean } = {}) 
       return popup(popupRequestCount === 2);
     },
     waitForResponse: async (predicate: (candidate: Response) => boolean) => {
-      const optionalResponse = {
-        status: () => 204,
-        url: () => "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
-      } as unknown as Response;
+      const optionalResponse = fakeProviderReply({
+        url: "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
+        status: 204,
+        method: "POST",
+        body: "",
+      });
       if (predicate(optionalResponse)) return optionalResponse;
       throw new Error("Unexpected E.SUN App workflow response waiter.");
     },

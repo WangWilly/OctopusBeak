@@ -149,8 +149,10 @@ export async function readCurrentStateSnapshot<
   try {
     acquired = await input.acquire();
   } catch (error) {
-    // A failed read is a collection failure (ADR 0106).
-    await product.event("collection", "failed", "current-balance-collection-failed");
+    // A failed read is a collection failure (ADR 0106). A transport the reader
+    // refused while acquiring was already reported as a validation failure.
+    if (!(error instanceof ProviderResponseCheckError))
+      await product.event("collection", "failed", "current-balance-collection-failed");
     throw error;
   }
   signal.throwIfAborted();

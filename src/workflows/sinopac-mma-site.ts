@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import { fail } from "../lib/preview-sources/source-kit.ts";
-import type { ProviderResponse } from "./provider-response.ts";
+import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderBodyAcquisition, ProviderResponseReader } from "./provider-response-reader.ts";
 import { frameScope, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
 export const SINOPAC_MMA_ORIGIN = "https://mma.sinopac.com";
@@ -16,13 +17,13 @@ const MMA_FORM_HEADERS: Readonly<Record<string, string>> = {
 export type SinopacMmaRoute = Readonly<{
   url: string;
   description: string;
-  /** Whether a response is the one the page requests as it loads; the site waits for it from before navigating. */
-  response(url: string, method: string): boolean;
+  /** The web-service response the page requests as it loads; the site waits for it from before navigating. */
+  response: ProviderResponseDeclaration;
   /** Whether this scope shows the page. A route without one is ready once its response arrives. */
   ready?(scope: BrowserScope): Promise<boolean>;
 }>;
 
-/** A response the site observed, with its raw body, undecoded. */
+/** A response an in-page POST observed, with its raw body, undecoded. */
 export type SinopacMmaResponse = Readonly<{ response: ProviderResponse; bytes: Uint8Array }>;
 
 /** A POST's body and headers; without headers it is sent as MMA's form-encoded XHR. */
@@ -38,8 +39,11 @@ export type SinopacMmaPostInit = Readonly<{
  */
 export type SinopacMmaSite = Readonly<{
   frames: FrameScope;
-  /** Open a deposit page from any signed-in page and return the response its load requested. */
-  open(route: SinopacMmaRoute): Promise<SinopacMmaResponse>;
+  /**
+   * Open a deposit page from any signed-in page and return the JSON response
+   * its load requested, read through the reader but not yet accepted.
+   */
+  open(route: SinopacMmaRoute, reader: ProviderResponseReader): Promise<ProviderBodyAcquisition<"json">>;
   /** POST from inside the signed-in MMA page and return the response it observed. */
   post(path: string, init?: SinopacMmaPostInit): Promise<SinopacMmaResponse>;
 }>;
@@ -67,25 +71,19 @@ export function sinopacMmaSite(page: Page, context: SiteContext): SinopacMmaSite
 
   const site: SinopacMmaSite = {
     frames,
-    open: async (route) => {
-      // MMA answers no-store, so the body is read as soon as the response arrives, before the page settles.
-      const responded = frames.withSignal(async (signal): Promise<SinopacMmaResponse> => {
-        const response = await page.waitForResponse(
-          (candidate) => route.response(candidate.url(), candidate.request().method()),
-          { timeout: ROUTE_TIMEOUT_MS, signal },
-        );
-        const [bytes, headers] = await Promise.all([response.body(), response.allHeaders()]);
-        return {
-          bytes,
-          response: { url: response.url(), status: response.status(), method: response.request().method(), headers },
-        };
+    open: async (route, reader) => {
+      // MMA answers no-store; the reader reads the body as soon as the response arrives, before the page settles.
+      const { response, evidence } = await reader.acquire(frames, route.response, {
+        evidence: "json",
+        timeoutMs: ROUTE_TIMEOUT_MS,
+        trigger: async () => {
+          await frames.withSignal((signal) =>
+            page.goto(route.url, { waitUntil: "domcontentloaded", timeout: ROUTE_TIMEOUT_MS, signal }));
+        },
       });
-      void responded.catch(() => undefined);
-      await frames.withSignal((signal) =>
-        page.goto(route.url, { waitUntil: "domcontentloaded", timeout: ROUTE_TIMEOUT_MS, signal }));
       await frames.settle();
       if (route.ready) await showing(route.ready, route.description);
-      return await responded;
+      return { response, evidence };
     },
     post: async (path, init = {}) => {
       context.signal.throwIfAborted();

@@ -32,6 +32,7 @@ import {
   type CtbcReadCurrentDepositBalanceResponse,
 } from "../../workflows/ctbc-statements.ts";
 import { ctbcCurrentDepositResponse } from "../../workflows/ctbc-current-deposit-balances.fixtures.ts";
+import { fakeProviderReply } from "../../workflows/provider-response-reader.fixtures.ts";
 
 /** The real deposit runner over the synthetic page, with current balances replaced. */
 function runCtbc(
@@ -66,20 +67,20 @@ const bootstrapResource = "/twrbc-deposit/qu002/010";
 const detailsResource = "/twrbc-deposit/qu002/011";
 const endpoint = "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource";
 
-function response(resource: string, value: unknown, status = 200): Response {
-  const requestBody = JSON.stringify({ resource });
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  return {
-    url: () => endpoint,
-    status: () => status,
-    allHeaders: async () => ({ "content-type": "application/json;charset=UTF-8" }),
-    request: () => ({
-      method: () => "POST",
-      url: () => endpoint,
-      postData: () => requestBody,
-    }),
-    body: async () => Buffer.from(bytes),
-  } as unknown as Response;
+function response(
+  resource: string,
+  value: unknown,
+  status = 200,
+  body: string | Uint8Array = JSON.stringify(value),
+): Response {
+  return fakeProviderReply({
+    url: endpoint,
+    status,
+    method: "POST",
+    postData: JSON.stringify({ resource }),
+    headers: { "content-type": "application/json;charset=UTF-8" },
+    body,
+  });
 }
 
 function createPage(options: {
@@ -356,10 +357,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
 test("CTBC typed workflow rejects malformed and incomplete sources before commit", async () => {
   for (const body of [Buffer.from([0xc3, 0x28]), Buffer.from('{"memo":"\\uFFFD"}')]) {
     const malformed = createContext({
-      page: createPage({ detailResponse: {
-        ...response(detailsResource, {}),
-        body: async () => body,
-      } as Response }),
+      page: createPage({ detailResponse: response(detailsResource, {}, 200, body) }),
     });
     await assert.rejects(runCtbc(malformed.context, input, withCurrentBalances(async () => currentBalanceResponse())),
       (error: unknown) => error instanceof ProductCollectionInterruptedError
@@ -378,10 +376,7 @@ test("CTBC typed workflow rejects malformed and incomplete sources before commit
 
 test("CTBC names malformed JSON a validation failure and a timed-out read a collection failure", async () => {
   const invalidJson = createContext({
-    page: createPage({ detailResponse: {
-      ...response(detailsResource, {}),
-      body: async () => Buffer.from('{"code":'),
-    } as Response }),
+    page: createPage({ detailResponse: response(detailsResource, {}, 200, '{"code":') }),
   });
   await assert.rejects(runCtbc(invalidJson.context, input, withCurrentBalances(async () => currentBalanceResponse())),
     (error: unknown) => error instanceof ProductCollectionInterruptedError

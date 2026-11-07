@@ -1,5 +1,6 @@
 import type { Page, Response } from "playwright";
 import type { WorkflowContextWith } from "./workflow-executor.ts";
+import { fakeProviderReply } from "../../workflows/provider-response-reader.fixtures.ts";
 import { esunCreditCardWorkflow } from "../../workflows/esun-credit-card-statements.ts";
 import { ESUN_SOURCE } from "./server/sources/esun.ts";
 import { runVerifiedEntry } from "./server/verified-entry.ts";
@@ -28,29 +29,7 @@ function monthAtOffset(now: Date, offset: number): { year: string; month: string
 }
 
 function jsonResponse(value: unknown, url: string, status = 200): Response {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  return byteResponse(bytes, url, status);
-}
-
-function cardSummaryResponse(reply: EsunCardSummaryReply): Response {
-  const bytes = new TextEncoder().encode(JSON.stringify(reply.body));
-  return {
-    status: () => 200,
-    url: () => ESUN_CARD_SUMMARY_URL,
-    request: () => ({ method: () => "POST" }),
-    body: async () => Buffer.from(bytes),
-    headers: () => ({ ...reply.headers }),
-  } as unknown as Response;
-}
-
-function byteResponse(bytes: Uint8Array, url: string, status = 200): Response {
-  return {
-    status: () => status,
-    url: () => url,
-    request: () => ({ method: () => "POST" }),
-    body: async () => Buffer.from(bytes),
-    headers: () => ({}),
-  } as unknown as Response;
+  return fakeProviderReply({ url, status, method: "POST", body: JSON.stringify(value) });
 }
 
 function timelineValue(now: Date, monthCount = 13, cursor = 4): unknown {
@@ -120,7 +99,12 @@ export function createPage(options: {
   const summaryUrl = summaryEndpoint.replace("ebank.esunbank.com.tw", options.popupHost ?? "ebank.esunbank.com.tw");
   const responses = [
     ...options.timelineTimeout ? [] : [options.timelineBytes
-      ? byteResponse(options.timelineBytes, options.timelineUrl ?? ESUN_TIMELINE_URL, options.timelineStatus)
+      ? fakeProviderReply({
+        url: options.timelineUrl ?? ESUN_TIMELINE_URL,
+        status: options.timelineStatus,
+        method: "POST",
+        body: options.timelineBytes,
+      })
       : jsonResponse(
         timelineValue(now, options.monthCount, options.cursor),
         options.timelineUrl ?? ESUN_TIMELINE_URL,
@@ -167,8 +151,13 @@ export function createPage(options: {
     waitForEvent: async () => popup,
     waitForResponse: async (predicate: (response: Response) => boolean) => {
       const response = options.cardSummary
-        ? cardSummaryResponse(options.cardSummary)
-        : { url: () => ESUN_CARD_SUMMARY_URL, status: () => 204 } as unknown as Response;
+        ? fakeProviderReply({
+          url: ESUN_CARD_SUMMARY_URL,
+          method: "POST",
+          headers: options.cardSummary.headers,
+          body: JSON.stringify(options.cardSummary.body),
+        })
+        : fakeProviderReply({ url: ESUN_CARD_SUMMARY_URL, status: 204, method: "POST", body: "" });
       if (predicate(response)) return response;
       throw new Error("Optional current-credit response not present.");
     },

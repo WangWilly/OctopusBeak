@@ -15,12 +15,20 @@ import {
   type PostCurrentDepositBalanceRow,
 } from "./post-current-deposit-balances.ts";
 import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
-import { acceptProviderResponse, type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import type { Response } from "playwright";
+import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00+08:00";
+const reader = providerResponseReader({
+  now: () => "2026-09-09T02:14:00.000Z",
+  text: strictSourceText,
+  validate: WITHOUT_PRODUCT_VALIDATION,
+});
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 const conflictingPostAccountNumber = ["0311", "5240", "5293", "96"].join("");
 const response: ProviderResponse = {
@@ -169,43 +177,15 @@ test("Post parser requires the exact request discriminants and generic endpoint"
   );
 });
 
-class FakePostResponse {
-  private readonly bodyText: string;
-  private readonly requestBody: string;
-  private readonly headers: Record<string, string>;
-
-  constructor(
-    bodyText: string,
-    requestBody: string,
-    headers: Record<string, string> = {},
-  ) {
-    this.bodyText = bodyText;
-    this.requestBody = requestBody;
-    this.headers = headers;
-  }
-
-  url(): string {
-    return response.url;
-  }
-
-  status(): number {
-    return response.status;
-  }
-
-  request(): { method(): string; postData(): string } {
-    return {
-      method: () => "POST",
-      postData: () => this.requestBody,
-    };
-  }
-
-  async allHeaders(): Promise<Record<string, string>> {
-    return { ...response.headers, ...this.headers };
-  }
-
-  async body(): Promise<Buffer> {
-    return Buffer.from(this.bodyText, "utf8");
-  }
+function postReply(bodyText: string, requestBody: string, headers: Record<string, string> = {}): Response {
+  return fakeProviderReply({
+    url: response.url,
+    status: response.status,
+    method: "POST",
+    postData: requestBody,
+    headers: { ...response.headers, ...headers },
+    body: bodyText,
+  });
 }
 
 class SequencedPostPage extends EventEmitter {
@@ -216,10 +196,8 @@ class SequencedPostPage extends EventEmitter {
     super();
     this.headers = headers;
   }
-  private responsePredicate:
-    | ((candidate: FakePostResponse) => boolean)
-    | undefined;
-  private responseResolve: ((candidate: FakePostResponse) => void) | undefined;
+  private responsePredicate: ((candidate: Response) => boolean) | undefined;
+  private responseResolve: ((candidate: Response) => void) | undefined;
 
   url(): string {
     return "https://ipost.post.gov.tw/pst/index.html";
@@ -250,11 +228,11 @@ class SequencedPostPage extends EventEmitter {
             body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
           });
           for (const candidate of [
-            new FakePostResponse(JSON.stringify(payload), wrongRequest, this.headers),
-            new FakePostResponse(JSON.stringify(payload), correctRequest, this.headers),
+            postReply(JSON.stringify(payload), wrongRequest, this.headers),
+            postReply(JSON.stringify(payload), correctRequest, this.headers),
           ]) {
             if (!this.responsePredicate?.(candidate)) continue;
-            this.selectedRequestBody = candidate.request().postData();
+            this.selectedRequestBody = candidate.request().postData() ?? undefined;
             this.responseResolve?.(candidate);
             return;
           }
@@ -264,8 +242,8 @@ class SequencedPostPage extends EventEmitter {
   }
 
   waitForResponse(
-    predicate: (candidate: FakePostResponse) => boolean,
-  ): Promise<FakePostResponse> {
+    predicate: (candidate: Response) => boolean,
+  ): Promise<Response> {
     this.responsePredicate = predicate;
     return new Promise((resolve) => {
       this.responseResolve = resolve;
@@ -277,6 +255,7 @@ test("Post reader ignores earlier dispatcher responses until exact overview requ
   const page = new SequencedPostPage();
   const read = await readPostCurrentDepositBalanceResponse(page as never, {
     signal: new AbortController().signal,
+    reader,
     timeoutMs: 100,
   });
   const selected = JSON.parse(page.selectedRequestBody ?? "{}");
@@ -296,10 +275,11 @@ test("Post current deposit refuses a response that declares a charset other than
   const page = new SequencedPostPage({ "content-type": "application/json; charset=Big5" });
   const read = await readPostCurrentDepositBalanceResponse(page as never, {
     signal: new AbortController().signal,
+    reader,
     timeoutMs: 100,
   });
-  assert.throws(
-    () => acceptProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, read, { observedAt, text: strictSourceText }),
+  await assert.rejects(
+    reader.accept(POST_CURRENT_DEPOSIT_RESPONSE, read),
     (error) => error instanceof ProviderResponseCheckError && error.check === "response-charset",
   );
 });

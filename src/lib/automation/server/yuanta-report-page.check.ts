@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { APIRequestContext, Page, Response as BrowserResponse } from "playwright";
+import type { APIRequestContext, Page } from "playwright";
 import { launchCheckBrowser } from "../check-browser.fixtures.ts";
+import { frameScope } from "../../../workflows/frame-scope.ts";
+import type { ProviderResponsePorts } from "../../../workflows/provider-response-reader.ts";
+import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 import {
   captureTypedReport,
   decodeYuantaTradeReportResponse,
-  type YuantaReportReader,
 } from "../../../workflows/yuanta-trade-statements.ts";
 import { ProviderResponseCheckError } from "../provider-response-check.ts";
 import { strictSourceText } from "../source-text.ts";
 
-const reader: YuantaReportReader = {
+const reader: ProviderResponsePorts = {
   text: strictSourceText,
   now: () => "2026-09-25T12:00:00.000Z",
   validate: async (check) => await check(),
@@ -18,13 +20,16 @@ const reader: YuantaReportReader = {
 
 test("Yuanta report retries a lost browser navigation body with a validated raw POST", async () => {
   const url = "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock";
-  const browserResponse = {
-    url: () => url,
-    status: () => 200,
-    request: () => ({ method: () => "POST" }),
-    headers: () => ({ "content-type": "text/html; charset=utf-8" }),
-    body: async () => { throw new Error("response.body: Protocol error (Network.getResponseBody): No resource with given identifier found"); },
-  } as unknown as BrowserResponse;
+  const scope = frameScope({} as Page, new AbortController().signal);
+  const browserResponse = fakeProviderReply({
+    url,
+    method: "POST",
+    headers: { "content-type": "text/html; charset=utf-8" },
+    body: "",
+    onBodyRead: () => {
+      throw new Error("response.body: Protocol error (Network.getResponseBody): No resource with given identifier found");
+    },
+  });
   let posts = 0;
   const request = {
     post: async (requestedUrl: string, options: { form: Record<string, string> }) => {
@@ -39,7 +44,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
       };
     },
   } as unknown as APIRequestContext;
-  const report = await decodeYuantaTradeReportResponse(browserResponse, reader, "Stock", {
+  const report = await decodeYuantaTradeReportResponse(scope, browserResponse, reader, "Stock", {
     request,
     params: { index: -1 },
   });
@@ -55,7 +60,7 @@ test("Yuanta report retries a lost browser navigation body with a validated raw 
     }),
   } as unknown as APIRequestContext;
   await assert.rejects(
-    decodeYuantaTradeReportResponse(browserResponse, reader, "Stock", {
+    decodeYuantaTradeReportResponse(scope, browserResponse, reader, "Stock", {
       request: redirectedRequest,
       params: { index: -1 },
     }),

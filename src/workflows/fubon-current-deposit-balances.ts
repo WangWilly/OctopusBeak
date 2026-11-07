@@ -1,8 +1,8 @@
 import type { Locator } from "playwright";
+import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
   type ProviderEvidence,
@@ -318,9 +318,13 @@ export type FubonCurrentDepositTable = Readonly<{
   response: ProviderResponse;
 }>;
 
-/** Navigate through 存款交易查詢 → 我的存款 and read the current table. */
+/**
+ * Navigate through 存款交易查詢 → 我的存款 and read the current table. A
+ * refused page response fails inside `validate`.
+ */
 export async function readFubonCurrentDepositBalanceTable(
   site: FubonEbankSite,
+  validate: ProductCollectionHandle["validate"],
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<FubonCurrentDepositTable> {
   const { frames } = site;
@@ -328,24 +332,14 @@ export async function readFubonCurrentDepositBalanceTable(
   const depositMenu = await findExactControl(frames, "存款交易查詢", timeoutMs);
   await frames.withSignal((signal) => depositMenu.click({ signal }));
   const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
-  // The page's own response carries the HTTP Date and Cache-Control evidence, so it is paired with the click that requests it.
-  const [response] = await Promise.all([
-    frames.withSignal((signal) => frames.page.waitForResponse((response) => isDeclaredProviderResponse(
-      FUBON_CURRENT_DEPOSIT_RESPONSE,
-      response.url(),
-      response.request().method(),
-    ), { timeout: timeoutMs, signal })),
-    frames.withSignal((signal) => myDeposit.click({ signal })),
-  ]);
-  const headers = await frames.race(response.allHeaders());
+  // The page's own response carries the HTTP Date and Cache-Control evidence; the rendered table is the evidence.
+  const { response } = await site.reader(validate).witness(frames, FUBON_CURRENT_DEPOSIT_RESPONSE, {
+    timeoutMs,
+    trigger: () => frames.withSignal((signal) => myDeposit.click({ signal })),
+  });
   const table = await findCurrentDepositTable(frames, timeoutMs);
   return {
     evidence: { kind: "cells", rows: await readFubonCurrentDepositTableCells(frames, table) },
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
+    response,
   };
 }

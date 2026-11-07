@@ -23,6 +23,7 @@ import {
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -86,16 +87,14 @@ function statementResponse(options: { malformed?: boolean; incomplete?: boolean;
   const bytes = options.malformed
     ? Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28])
     : Buffer.from(JSON.stringify(options.incomplete ? [screen] : [screen, terminal]), "utf8");
-  return {
-    url: () => DISPATCHER_URL,
-    status: () => 200,
-    request: () => ({ method: () => "POST", postData: () => requestPostData }),
-    body: async () => {
-      options.onRead();
-      return bytes;
-    },
-    allHeaders: async () => ({ "content-type": "application/json; charset=utf-8" }),
-  } as unknown as Response;
+  return fakeProviderReply({
+    url: DISPATCHER_URL,
+    method: "POST",
+    postData: requestPostData,
+    headers: { "content-type": "application/json; charset=utf-8" },
+    body: bytes,
+    onBodyRead: options.onRead,
+  });
 }
 
 function balanceResponse(onRead: () => void): Response {
@@ -120,20 +119,18 @@ function balanceResponse(onRead: () => void): Response {
       body: { result: "success" },
     },
   ];
-  return {
-    url: () => DISPATCHER_URL,
-    status: () => 200,
-    request: () => ({ method: () => "POST", postData: () => requestPostData }),
-    body: async () => {
-      onRead();
-      return Buffer.from(JSON.stringify(payload), "utf8");
-    },
-    allHeaders: async () => ({
+  return fakeProviderReply({
+    url: DISPATCHER_URL,
+    method: "POST",
+    postData: requestPostData,
+    headers: {
       "content-type": "application/json; charset=UTF-8",
       "cache-control": "no-store,private,max-age=900",
       date: "Wed, 09 Sep 2026 02:13:03 GMT",
-    }),
-  } as unknown as Response;
+    },
+    body: JSON.stringify(payload),
+    onBodyRead: onRead,
+  });
 }
 
 function fakePostPage(options: {

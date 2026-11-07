@@ -7,7 +7,12 @@ import type { ProductCollectionHandle } from "../lib/automation/product-collecti
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { frameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import {
+  endsRequestChainFrom,
+  providerResponseReader,
+  WITHOUT_PRODUCT_VALIDATION,
+  type ProviderReply,
+} from "./provider-response-reader.ts";
 
 const ORIGIN = "https://bank.example";
 const PROVIDER_DATE = "Wed, 09 Sep 2026 02:01:02 GMT";
@@ -233,4 +238,74 @@ test("a read no product owns refuses the response without product validation", a
     }),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
   );
+});
+
+test("a wider wait lets the declaration refuse a lookalike endpoint by name", async () => {
+  await withBank(() => ({ body: "{}" }), async (page) => {
+    const { validate, refused } = recordingValidation();
+    const elsewhere: ProviderResponseDeclaration<"required"> = { ...RESPONSE, host: "other.example" };
+    await assert.rejects(
+      readerWith(validate).capture(frameScope(page, new AbortController().signal), elsewhere, {
+        evidence: "json",
+        waitFor: (reply) => new URL(reply.url).pathname === "/history",
+        trigger: () => post(page, "q"),
+      }),
+      (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
+    );
+    assert.equal(refused.length, 1);
+  });
+});
+
+test("a witness checks the transport and leaves the body to the page", async () => {
+  await withBank(() => ({ body: "{}" }), async (page) => {
+    const { validate } = recordingValidation();
+    const witnessed = await readerWith(validate).witness(frameScope(page, new AbortController().signal), RESPONSE, {
+      trigger: () => post(page, "q"),
+    });
+    assert.equal(witnessed.response.status, 200);
+    assert.equal(witnessed.request.postData, "q");
+  });
+});
+
+test("a watched response is read when it arrived, and absent when it never did or had nothing", async () => {
+  await withBank((postData) => postData === "none" ? { status: 204, body: "" } : { body: '{"watched":1}' }, async (page) => {
+    const scope = frameScope(page, new AbortController().signal);
+    const reader = readerWith(recordingValidation().validate);
+    const arrives = reader.watch(scope, RESPONSE, { evidence: "json", absentStatus: 204 });
+    await post(page, "q");
+    const read = await arrives.settle(1_000);
+    assert.ok(read);
+    assert.deepEqual((await reader.accept(RESPONSE, read)).evidence.value, { watched: 1 });
+
+    assert.equal(await reader.watch(scope, RESPONSE, { evidence: "json" }).settle(100), null);
+
+    const empty = reader.watch(scope, RESPONSE, { evidence: "json", absentStatus: 204 });
+    await post(page, "none");
+    assert.equal(await empty.settle(1_000), null);
+  });
+});
+
+test("a redirect chain ends at the response that does not redirect onward", () => {
+  const request = (url: string, method: string) => ({ url, method, postData: null });
+  const endpointPath = "/B2C/cccqu/cccqu002/CCCQU002_Home.faces";
+  const endpoint = `https://bank.test${endpointPath}?menuId=CCC0201`;
+  const dispatcher = request("https://bank.test/B2C/dispatcher?ParamValue=~opaque~", "GET");
+  const reply = (status: number, final: ProviderReply["request"], start = final, redirectsOnward = false): ProviderReply =>
+    ({ url: final.url, status, redirectsOnward, request: final, chainStart: start });
+  const endsAtGet = endsRequestChainFrom(endpointPath, "GET");
+  assert.equal(endsAtGet(reply(200, request(`${endpoint}&`, "GET"), dispatcher)), true,
+    "a chain that arrives at the endpoint from a dispatcher ends on the endpoint's response");
+  assert.equal(endsAtGet(reply(302, request(endpoint, "GET"), undefined, true)), false,
+    "a hop that redirects onward is not the response");
+  assert.equal(endsAtGet(reply(200, request("https://bank.test/maintenance", "GET"), request(endpoint, "GET"))), true,
+    "a chain that leaves the endpoint surfaces as its last response, for the declaration to refuse");
+  assert.equal(
+    endsRequestChainFrom(endpointPath, "POST")(reply(200, request("https://bank.test/notice", "GET"), request(endpoint, "POST"))),
+    true,
+    "a POST redirected to a GET elsewhere still counts as the POST's response",
+  );
+  assert.equal(endsAtGet(reply(304, request(endpoint, "GET"))), true,
+    "a 304 without a location is a final response, for the status check to refuse");
+  assert.equal(endsAtGet(reply(200, request(endpoint, "POST"))), false, "a request with another method is a different endpoint");
+  assert.equal(endsAtGet(reply(200, dispatcher)), false, "a response that never touches the endpoint is not its response");
 });

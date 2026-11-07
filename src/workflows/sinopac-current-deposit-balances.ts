@@ -1,11 +1,11 @@
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
   type ProviderEvidence,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { SinopacMmaRoute, SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /**
@@ -259,11 +259,13 @@ export type SinopacCurrentDepositResponse = Readonly<{
 export const SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE: SinopacMmaRoute = {
   url: SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   description: "the SinoPac balance page",
-  response: (url, method) => isDeclaredProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, url, method),
+  response: SINOPAC_CURRENT_DEPOSIT_RESPONSE,
 };
 
-/** Open the authenticated balance page and observe the POST it triggers. */
-export async function readSinopacCurrentDepositBalanceResponse(site: SinopacMmaSite): Promise<SinopacCurrentDepositResponse> {
-  const { bytes, response } = await site.open(SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE);
-  return { evidence: { kind: "json", bytes }, response };
+/** Open the authenticated balance page and read the POST it triggers; the snapshot module accepts it. */
+export async function readSinopacCurrentDepositBalanceResponse(
+  site: SinopacMmaSite,
+  reader: ProviderResponseReader,
+): Promise<SinopacCurrentDepositResponse> {
+  return await site.open(SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE, reader);
 }
