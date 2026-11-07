@@ -25,6 +25,7 @@ import {
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import {
   readSinopacDepositSource,
   sinopacWorkflowWith,
@@ -36,6 +37,7 @@ import { sinopacCurrentDepositResponse } from "./sinopac-current-deposit-balance
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
+const READER = providerResponseReader({ now: () => COLLECTED_AT, text: strictSourceText, validate: WITHOUT_PRODUCT_VALIDATION });
 
 type Bodies = Record<string, unknown>;
 
@@ -274,7 +276,7 @@ function replyingSite(reply: (path: string) => Readonly<{ url: string; status: n
 }
 
 test("the SinoPac card transport accepts each declared reply and refuses an undeclared endpoint or a non-200 status", async () => {
-  const declared = sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), strictSourceText);
+  const declared = sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), READER);
   assert.deepEqual(await declared.mma(SINOPAC_CARD_SUMMARY_PATH), {
     endpoint: SINOPAC_CARD_SUMMARY_PATH,
     date: DATE_HEADER,
@@ -287,8 +289,8 @@ test("the SinoPac card transport accepts each declared reply and refuses an unde
     transport.sinoCard(SINOCARD_SSO_PATH, {}, null),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === check,
   );
-  await refused(sinopacCardTransport(replyingSite(() => ({ url: `${SINOPAC_MMA_ORIGIN}/SinoCard/Account/Login`, status: 200 })), strictSourceText), "response-endpoint");
-  await refused(sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 500 })), strictSourceText), "response-status");
+  await refused(sinopacCardTransport(replyingSite(() => ({ url: `${SINOPAC_MMA_ORIGIN}/SinoCard/Account/Login`, status: 200 })), READER), "response-endpoint");
+  await refused(sinopacCardTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 500 })), READER), "response-status");
 });
 
 const accountId = ["1410", "1800", "0822", "21"].join("");

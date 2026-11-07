@@ -1,14 +1,14 @@
-import { taipeiInstant } from "../lib/time/timezone.ts";
 import { createHash } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import { withAbort } from "./abort.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
-  acceptProviderResponse,
-  isDeclaredProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+  providerResponseReader,
+  WITHOUT_PRODUCT_VALIDATION,
+  type ProviderResponseReader,
+} from "./provider-response-reader.ts";
 import type { FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -771,22 +771,18 @@ export function sinopacSignInPlan(credentials: SinopacCredentials): FormPlan {
 const SINOPAC_TRANSACTION_ROUTE: SinopacMmaRoute = {
   url: `${SINOPAC_MMA_ORIGIN}/mma/bank/transdetail/mma_transdetail.aspx`,
   description: "the SinoPac transaction-details form",
-  response: (url, method) => isDeclaredProviderResponse(SINOPAC_ACCOUNT_LIST_RESPONSE, url, method),
+  response: SINOPAC_ACCOUNT_LIST_RESPONSE,
   ready: (scope) => scope.locator("#StartDate").first().isVisible().catch(() => false),
 };
 
 async function listSinopacAccounts(
   site: SinopacMmaSite,
-  context: SinopacReadContext,
+  reader: ProviderResponseReader,
   validate: ProductCollectionHandle["validate"],
 ): Promise<SinopacAccount[]> {
-  const { bytes, response } = await site.open(SINOPAC_TRANSACTION_ROUTE);
+  const { evidence } = await reader.accept(SINOPAC_ACCOUNT_LIST_RESPONSE, await site.open(SINOPAC_TRANSACTION_ROUTE, reader));
   return await validate(() => {
-    const payload = acceptProviderResponse(
-      SINOPAC_ACCOUNT_LIST_RESPONSE,
-      { evidence: { kind: "json", bytes }, response },
-      { observedAt: taipeiInstant(context.now()), text: context.text },
-    ).evidence.value;
+    const payload = evidence.value;
     if (!Array.isArray(payload) || payload.length !== 1 || !isJsonRecord(payload[0]))
       throw new Error("SinoPac account source response is incomplete.");
     return accountListFromResponse(payload as SinopacAccountResponse[]);
@@ -795,7 +791,7 @@ async function listSinopacAccounts(
 
 async function querySinopacTransactions(
   site: SinopacMmaSite,
-  context: SinopacReadContext,
+  reader: ProviderResponseReader,
   account: SinopacAccount,
   dateRange: DateRange,
   businessDate: string,
@@ -814,14 +810,8 @@ async function querySinopacTransactions(
     EndDate: dateRange.endDate,
   });
   const { bytes, response } = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, { body: body.toString() });
-  return await validate(() => sinopacSingleEnvelope<SinopacTransactionResponse>(
-    acceptProviderResponse(
-      SINOPAC_TRANSACTION_RESPONSE,
-      { evidence: { kind: "json", bytes }, response },
-      { observedAt: taipeiInstant(context.now()), text: context.text },
-    ).evidence.value,
-    "transaction",
-  ));
+  const { evidence } = await reader.accept(SINOPAC_TRANSACTION_RESPONSE, { evidence: { kind: "json", bytes }, response });
+  return await validate(() => sinopacSingleEnvelope<SinopacTransactionResponse>(evidence.value, "transaction"));
 }
 
 type SinopacWrapperCategory = "native" | "patched" | "unknown";
@@ -967,6 +957,8 @@ export async function runSinopacIdentityValidation(
     { label: "overlap", range: overlapRange },
   ];
   const captures: SinopacIdentityCapture[] = [];
+  // An identity validation runs outside any product, so nothing owns its validation.
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: WITHOUT_PRODUCT_VALIDATION });
 
   // Query exactly three sequential sets.  Monthly windows remain the normal
   // provider boundary so the validation does not introduce a new request shape.
@@ -975,11 +967,11 @@ export async function runSinopacIdentityValidation(
     for (const window of sinopacQueryWindows(querySet.range)) {
       const response = validateSinopacTransactionRows(await querySinopacTransactions(
         site,
-        context,
+        reader,
         accounts[0]!,
         window,
         querySet.range.endDate,
-        async (check) => await check(),
+        WITHOUT_PRODUCT_VALIDATION,
       ));
       windows.push({
         window,
@@ -1103,11 +1095,12 @@ export function sinopacDepositSource(
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): SinopacDepositSource {
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
   return {
-    listAccounts: () => listSinopacAccounts(site, context, product.validate),
+    listAccounts: () => listSinopacAccounts(site, reader, product.validate),
     queryTransactions: (account, window, businessDate) =>
-      querySinopacTransactions(site, context, account, window, businessDate, product.validate),
-    readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(site),
+      querySinopacTransactions(site, reader, account, window, businessDate, product.validate),
+    readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(site, reader),
   };
 }
 
@@ -1380,12 +1373,17 @@ async function runSinopacWorkflow(
       assertSession,
       attached: {
         collectors: () => {
-          const transport = dependencies.cardTransport ?? sinopacCardTransport(site, context.text);
+          const reader = providerResponseReader({
+            now: () => context.now(),
+            text: context.text,
+            validate: WITHOUT_PRODUCT_VALIDATION,
+          });
+          const transport = dependencies.cardTransport ?? sinopacCardTransport(site, reader);
           return {
             // Attached products have no structure report yet, so responses are validated but not kept.
             credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
             loan: () => collectSinopacLoans({
-              transport: dependencies.loanTransport ?? sinopacLoanTransport(site, context.text),
+              transport: dependencies.loanTransport ?? sinopacLoanTransport(site, reader),
               collectedAt: context.now(),
             }),
           };

@@ -20,6 +20,7 @@ import {
   type SinopacLoanTransport,
 } from "./sinopac-loan.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import {
   readSinopacDepositSource,
   sinopacWorkflowWith,
@@ -30,6 +31,7 @@ import { sinopacCurrentDepositResponse } from "./sinopac-current-deposit-balance
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
+const READER = providerResponseReader({ now: () => COLLECTED_AT, text: strictSourceText, validate: WITHOUT_PRODUCT_VALIDATION });
 const LOAN_NUMBER = "300400501";
 
 /*
@@ -150,18 +152,18 @@ test("a SinoPac account with no loan is an unproven empty list", async () => {
 });
 
 test("a SinoPac loan endpoint that answers like a missing one fails with that reason", async () => {
-  const missing = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 404 })), strictSourceText);
+  const missing = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 404 })), READER);
   await rejectsWith(collectSinopacLoans({ transport: missing, collectedAt: COLLECTED_AT }), "unexpected-response", /missing endpoint/u);
   await rejectsWith(collect(edit((source) => { source[SINOPAC_LOAN_INFO_PATH] = "<!DOCTYPE html><html>找不到網頁</html>"; })), "unexpected-response", /missing endpoint/u);
 });
 
 test("the SinoPac loan transport reads each declared reply and refuses an undeclared endpoint or a non-200 status", async () => {
-  const declared = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), strictSourceText);
+  const declared = sinopacLoanTransport(replyingSite((path) => ({ url: `${SINOPAC_MMA_ORIGIN}${path}`, status: 200 })), READER);
   const collection = await collectSinopacLoans({ transport: declared, collectedAt: COLLECTED_AT });
   assert.equal(collection.loans[0]!.outstandingBalance.observedAt.at, "2026-09-24T04:00:00.000Z");
 
   const refused = async (reply: (path: string) => Readonly<{ url: string; status: number }>, check: string) => await assert.rejects(
-    sinopacLoanTransport(replyingSite(reply), strictSourceText).post(SINOPAC_LOAN_ACCOUNT_PATH, {}),
+    sinopacLoanTransport(replyingSite(reply), READER).post(SINOPAC_LOAN_ACCOUNT_PATH, {}),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === check,
   );
   await refused(() => ({ url: `${SINOPAC_MMA_ORIGIN}/mma/login.aspx`, status: 200 }), "response-endpoint");

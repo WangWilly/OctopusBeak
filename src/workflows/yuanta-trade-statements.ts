@@ -54,14 +54,8 @@ import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
-import {
-  acceptProviderResponse,
-  verifyProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderResponsePorts } from "./provider-response-reader.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -780,15 +774,6 @@ export async function fillTradeLoginForm(
   await page.locator("#loginPWD").blur({ signal });
 }
 
-type YuantaReportResponse = Pick<Response, "url" | "status" | "headers" | "body">;
-
-/** How a report is read: decoded by `text`, its reply checked and its page parsed inside `validate`. */
-export type YuantaReportReader = Readonly<{
-  text: SourceTextPort;
-  now: () => string;
-  validate: ProductCollectionHandle["validate"];
-}>;
-
 /** The provider decides the report URL's query, and each page names its own charset. */
 function yuantaTradeReportResponse(reportType: string): ProviderResponseDeclaration<"optional"> {
   return {
@@ -812,49 +797,34 @@ function isUnavailableBrowserResponseBody(error: unknown): boolean {
     error.message.includes("No resource with given identifier found");
 }
 
-async function decodeYuantaReportSource(
-  response: YuantaReportResponse,
-  method: string,
-  reader: YuantaReportReader,
-  reportType: string,
-): Promise<ReportPage> {
-  const declaration = yuantaTradeReportResponse(reportType);
-  const observedAt = taipeiInstant(reader.now());
-  const observed: ProviderResponse = {
-    url: response.url(),
-    status: response.status(),
-    method,
-    headers: response.headers(),
-  };
-  // The transport checks run first, so a refused reply's body is never read.
-  await reader.validate(() => verifyProviderResponse(declaration, observed, observedAt));
-  const bytes = await response.body();
-  return reader.validate(() => {
-    const { evidence } = acceptProviderResponse(
-      declaration,
-      { response: observed, evidence: { kind: "text", bytes } },
-      { observedAt, text: reader.text },
-    );
-    return parseReportPage(evidence.text, observed.url, reportType);
-  });
-}
-
-/** Validate and strictly decode the report. If CDP loses a navigation body,
- * make one fresh, authenticated POST and validate that response independently. */
+/**
+ * Validate and strictly decode the report: its reply is read through the
+ * reader, which checks the transport before the body, and its page is parsed
+ * inside `ports.validate`. If CDP loses a navigation body, make one fresh,
+ * authenticated POST and validate that response independently.
+ */
 export async function decodeYuantaTradeReportResponse(
+  scope: FrameScope,
   response: Response,
-  reader: YuantaReportReader,
+  ports: ProviderResponsePorts,
   reportType: string,
   retryRequest?: { request: APIRequestContext; params: Record<string, string | number> },
 ): Promise<ReportPage> {
+  const declaration = yuantaTradeReportResponse(reportType);
+  const reader = providerResponseReader(ports);
+  const decode = async (held: Parameters<typeof reader.acquireFrom>[2]): Promise<ReportPage> => {
+    const acquired = await reader.acquireFrom(scope, declaration, held, "text");
+    const { evidence } = await reader.accept(declaration, acquired);
+    return await ports.validate(() => parseReportPage(evidence.text, acquired.response.url, reportType));
+  };
   try {
-    return await decodeYuantaReportSource(response, response.request().method(), reader, reportType);
+    return await decode(response);
   } catch (error) {
     if (!retryRequest || !isUnavailableBrowserResponseBody(error)) throw error;
     const reportUrl = new URL(`/NexusWebTrade/AssetReport/${reportType}`, YUANTA_TRADE_LOGIN_URL).href;
     const form = Object.fromEntries(Object.entries(retryRequest.params).map(([key, value]) => [key, String(value)]));
     const retried = await retryRequest.request.post(reportUrl, { form, failOnStatusCode: false });
-    return await decodeYuantaReportSource(retried, "POST", reader, reportType);
+    return await decode({ reply: retried, method: "POST" });
   }
 }
 
@@ -898,7 +868,7 @@ export async function captureTypedReport(
   page: Page,
   reportType: string,
   params: Record<string, string | number>,
-  context: YuantaReportReader & Readonly<{ signal: AbortSignal }>,
+  context: ProviderResponsePorts & Readonly<{ signal: AbortSignal }>,
 ): Promise<ReportPage> {
   const scope = frameScope(page, context.signal);
   const reportUrl = new URL(
@@ -916,6 +886,7 @@ export async function captureTypedReport(
     throw new Error("Yuanta Trade report navigation returned no source response.");
   }
   const captured = await scope.race(decodeYuantaTradeReportResponse(
+    scope,
     response,
     context,
     reportType,
@@ -1679,7 +1650,7 @@ export type YuantaTradeSource = Readonly<{
 
 export function yuantaTradeSource(
   page: Page,
-  context: YuantaReportReader & Readonly<{ signal: AbortSignal }>,
+  context: ProviderResponsePorts & Readonly<{ signal: AbortSignal }>,
 ): YuantaTradeSource {
   return {
     captureReport: (reportType, params) => captureTypedReport(page, reportType, params, context),

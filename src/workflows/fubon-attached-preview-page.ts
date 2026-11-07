@@ -34,7 +34,7 @@ export function playwrightFubonAttachedPreviewPort(
         response: FUBON_CURRENT_DEPOSIT_RESPONSE,
         parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
       }, {
-        acquire: () => readFubonCurrentDepositBalanceTable(site),
+        acquire: () => readFubonCurrentDepositBalanceTable(site, validate),
         now: () => context.now(),
         product: { event: async () => undefined, validate },
         text: context.text,

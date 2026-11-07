@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import { z } from "zod";
 import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
 import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
@@ -30,17 +30,17 @@ import {
   type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
-  acceptProviderResponse,
-  verifyProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+  providerResponseReader,
+  type ProviderBodyAcquisition,
+  type ProviderReply,
+  type ProviderResponseReader,
+} from "./provider-response-reader.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { collectEsunDeposits } from "../lib/preview-sources/esun-deposit.ts";
 import { createEsunPortalTransport, waitForEsunPortalSession } from "../lib/preview-sources/esun-portal.ts";
@@ -75,17 +75,14 @@ const esunHistoryResponse = (label: string, path: string, popup: FrameScope): Pr
  * A POST to a history path from any host. The declaration then refuses a reply
  * from another host by name, where a host-bound wait would only time out.
  */
-const isEsunHistoryReply = (path: string) => (response: Response): boolean => {
-  if (response.request().method() !== "POST") return false;
+const isEsunHistoryReply = (path: string) => (reply: ProviderReply): boolean => {
+  if (reply.request.method !== "POST") return false;
   try {
-    return new URL(response.url()).pathname === path;
+    return new URL(reply.url).pathname === path;
   } catch {
     return false;
   }
 };
-
-/** Reads one history reply's JSON once it passes its declaration. */
-type EsunHistoryRead = (declaration: ProviderResponseDeclaration<"optional">, response: Response) => Promise<unknown>;
 
 type EsunVerifiedInput = VerifiedRunInput<typeof ESUN_CREDENTIAL_FIELDS, typeof ESUN_PRODUCTS>;
 export type EsunCredentials = EsunVerifiedInput["credentials"];
@@ -493,17 +490,12 @@ export function esunCurrentUsedCreditFromSummaryResponse(
   }];
 }
 
-type EsunCardSummaryAcquisition = Readonly<{
-  evidence: Readonly<{ kind: "json"; bytes: Uint8Array }>;
-  response: ProviderResponse;
-}>;
-
 type EsunCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
   capture: EsunCreditCardValidatedCapture;
 }>;
 
 const esunCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
-  EsunCardSummaryAcquisition,
+  ProviderBodyAcquisition<"json">,
   EsunCurrentUsedCreditSnapshot,
   EsunCurrentCreditCapture,
   "required",
@@ -533,25 +525,6 @@ async function isSignedIn(scope: FrameScope): Promise<boolean> {
     .catch(() => false));
 }
 
-
-function waitForOptionalResponse(
-  response: Promise<Response | undefined>,
-  timeoutMs: number,
-): Promise<Response | undefined> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(undefined), timeoutMs);
-    response.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      () => {
-        clearTimeout(timer);
-        resolve(undefined);
-      },
-    );
-  });
-}
 
 async function enterLoginCredentials(scope: FrameScope, credentials: EsunCredentials): Promise<void> {
   const { page } = scope;
@@ -682,52 +655,58 @@ export function rowsFromTimelineResponse(raw: unknown): {
   return { rows, months, cursor: response.body.cursor };
 }
 
-export async function loadNextEsunTimelineResponse(
+/** Scroll the popup's timeline until the bank answers with its next page, and read that page's JSON. */
+export async function loadNextEsunTimelinePage(
   popup: FrameScope,
+  reader: ProviderResponseReader,
+  timeline: ProviderResponseDeclaration<"optional">,
   timeoutMs = 15_000,
-): Promise<Response> {
-  const response = popup.withSignal((signal) => popup.page.waitForResponse(
-    isEsunHistoryReply(ESUN_TIMELINE_PATH),
-    { timeout: timeoutMs, signal },
-  ));
-  void response.catch(() => undefined);
-  // Timeline content can grow after the response but before layout settles.
-  // Follow the current bottom until the bank emits the next page response.
-  while (true) {
-    await popup.withSignal((signal) => popup.page.locator(".timeline-query-continer").evaluate(
-      (element) => { element.scrollTop = element.scrollHeight; },
-      undefined,
-      { signal },
-    ));
-    const next = await Promise.race([response, popup.pause(150).then(() => null)]);
-    if (next) return next;
-  }
+): Promise<unknown> {
+  const captured = await reader.capture(popup, timeline, {
+    evidence: "json",
+    timeoutMs,
+    waitFor: isEsunHistoryReply(ESUN_TIMELINE_PATH),
+    trigger: async (replied) => {
+      // Timeline content can grow after the response but before layout settles.
+      // Follow the current bottom until the bank emits the next page response.
+      while (!replied.aborted) {
+        await popup.withSignal((signal) => popup.page.locator(".timeline-query-continer").evaluate(
+          (element) => { element.scrollTop = element.scrollHeight; },
+          undefined,
+          { signal },
+        ));
+        await popup.pause(150);
+      }
+    },
+  });
+  return captured.evidence.value;
 }
 
 async function queryStatements(
   scope: FrameScope,
   input: Readonly<{ startDate: string; endDate: string }>,
-  readJson: EsunHistoryRead,
+  reader: ProviderResponseReader,
 ): Promise<{ rows: StatementRow[]; timeline: CreditCardMonthTimeline; startDate: string; endDate: string }> {
   const { startDate, endDate } = input;
   if (startDate > endDate) throw new Error("E.SUN start date must not exceed end date.");
   const popup = await openCardPopup(scope, "刷卡明細", "/IESC/cardTrans");
   const timeline = esunHistoryResponse("E.SUN timeline", ESUN_TIMELINE_PATH, popup);
   try {
-    const responsePromise = popup.withSignal((signal) => popup.page.waitForResponse(
-      isEsunHistoryReply(ESUN_TIMELINE_PATH),
-      { timeout: 30_000, signal },
-    ));
-    responsePromise.catch(() => undefined);
-    await popup.withSignal((signal) => popup.page.locator('input[name="comboFilter"]').click({ signal }));
-    await popup.withSignal((signal) => popup.page.getByText("近一年刷卡明細", { exact: true }).click({ signal }));
-    let response = await responsePromise;
+    const first = await reader.capture(popup, timeline, {
+      evidence: "json",
+      timeoutMs: 30_000,
+      waitFor: isEsunHistoryReply(ESUN_TIMELINE_PATH),
+      trigger: async () => {
+        await popup.withSignal((signal) => popup.page.locator('input[name="comboFilter"]').click({ signal }));
+        await popup.withSignal((signal) => popup.page.getByText("近一年刷卡明細", { exact: true }).click({ signal }));
+      },
+    });
+    let raw = first.evidence.value;
     const rows: StatementRow[] = [];
     const months: string[] = [];
     let pageCount = 0;
     let lastCursor = 0;
     while (pageCount < 4) {
-      const raw = await popup.race(readJson(timeline, response));
       let parsed: ReturnType<typeof rowsFromTimelineResponse>;
       try {
         parsed = rowsFromTimelineResponse(raw);
@@ -745,7 +724,7 @@ async function queryStatements(
       rows.push(...parsed.rows);
       pageCount += 1;
       if (lastCursor === 4) break;
-      response = await loadNextEsunTimelineResponse(popup);
+      raw = await loadNextEsunTimelinePage(popup, reader, timeline);
     }
     const oldestMonth = months.at(-1);
     const anniversaryMonth = startDate.slice(0, 7);
@@ -1009,7 +988,7 @@ export function issuerSummaryFromBillResponse(raw: unknown): EsunIssuerStatement
 
 async function readIssuerStatementSummaries(
   scope: FrameScope,
-  readJson: EsunHistoryRead,
+  reader: ProviderResponseReader,
   validate: ProductCollectionHandle["validate"],
 ): Promise<EsunIssuerStatementSummary[]> {
   const popup = await openCardPopup(scope, "帳單明細", "/IESC/cardBill");
@@ -1024,16 +1003,17 @@ async function readIssuerStatementSummaries(
       throw new Error("E.SUN needs at least two available statement periods.");
     const summaries: EsunIssuerStatementSummary[] = [];
     for (const period of [...periods].reverse()) {
-      const responsePromise = popup.withSignal((signal) => page.waitForResponse(
-        isEsunHistoryReply(ESUN_BILL_SUMMARY_PATH),
-        { timeout: 30_000, signal },
-      ));
-      responsePromise.catch(() => undefined);
-      if (!(await popup.race(page.locator(".info-scrollable li").first().isVisible())))
-        await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
-      await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
-      const response = await responsePromise;
-      const raw = await popup.race(readJson(billSummary, response));
+      const { evidence } = await reader.capture(popup, billSummary, {
+        evidence: "json",
+        timeoutMs: 30_000,
+        waitFor: isEsunHistoryReply(ESUN_BILL_SUMMARY_PATH),
+        trigger: async () => {
+          if (!(await popup.race(page.locator(".info-scrollable li").first().isVisible())))
+            await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
+          await popup.withSignal((signal) => page.getByText(period, { exact: true }).click({ signal }));
+        },
+      });
+      const raw = evidence.value;
       summaries.push(await validate(() => {
         try {
           return issuerSummaryFromBillResponse(raw);
@@ -1124,29 +1104,6 @@ export async function authenticateEsunPage(
   throw new Error("E.SUN sign-in verification is not supported by the automatic solver.");
 }
 
-async function readEsunHistoryJson(
-  declaration: ProviderResponseDeclaration<"optional">,
-  response: Response,
-  context: Pick<WorkflowContext, "now" | "text">,
-  validate: ProductCollectionHandle["validate"],
-): Promise<unknown> {
-  const observedAt = taipeiInstant(context.now());
-  const observed: ProviderResponse = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: response.headers(),
-  };
-  // The transport checks run first, so a refused reply's body is never read.
-  await validate(() => verifyProviderResponse(declaration, observed, observedAt));
-  const bytes = await response.body();
-  return validate(() => acceptProviderResponse(
-    declaration,
-    { response: observed, evidence: { kind: "json", bytes } },
-    { observedAt, text: context.text },
-  ).evidence.value);
-}
-
 async function collectEsunCreditCard(
   page: Page,
   context: WorkflowContext,
@@ -1155,13 +1112,13 @@ async function collectEsunCreditCard(
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const scope = frameScope(page, context.signal);
-  const readJson: EsunHistoryRead = (declaration, response) =>
-    readEsunHistoryJson(declaration, response, context, product.validate);
-  const currentCreditResponse = scope.withSignal((signal) => page.waitForResponse(
-    (response) => response.url() ===
-      "https://ebank.esunbank.com.tw/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary",
-    { timeout: 120_000, signal },
-  )).catch(() => undefined);
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  // The landing page may send the card summary at any point during the history reads, or never.
+  const currentCredit = reader.watch(scope, esunCurrentUsedCreditSnapshot.response, {
+    evidence: "json",
+    timeoutMs: 120_000,
+    absentStatus: 204,
+  });
   await context.event("collection", "started", "collection-started");
   await context.event("decoding", "started", "source-decoding-started");
   const { endDate, startDate: anniversaryDate } = esunTimelineQueryDates(context.now());
@@ -1169,7 +1126,7 @@ async function collectEsunCreditCard(
   let rows: StatementRow[];
   let timeline: CreditCardMonthTimeline;
   try {
-    ({ rows, timeline, startDate } = await queryStatements(scope, { startDate, endDate }, readJson));
+    ({ rows, timeline, startDate } = await queryStatements(scope, { startDate, endDate }, reader));
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1182,7 +1139,7 @@ async function collectEsunCreditCard(
 
   let issuerSummaries: EsunIssuerStatementSummary[];
   try {
-    issuerSummaries = await readIssuerStatementSummaries(scope, readJson, product.validate);
+    issuerSummaries = await readIssuerStatementSummaries(scope, reader, product.validate);
   } catch (error) {
     await context.event("collection", "failed", "collection-failed");
     throw error;
@@ -1193,18 +1150,10 @@ async function collectEsunCreditCard(
   });
   // No reply, or 204 with nothing to report, leaves current used credit unread.
   let currentUsedCredit: readonly EsunCurrentUsedCreditSnapshot[] | undefined;
-  const response = await scope.race(waitForOptionalResponse(currentCreditResponse, 5_000));
-  if (response && response.status() !== 204) {
+  const watched = await currentCredit.settle(5_000);
+  if (watched) {
     currentUsedCredit = await readCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, {
-      acquire: async () => ({
-        evidence: { kind: "json", bytes: await scope.race(response.body()) },
-        response: {
-          url: response.url(),
-          status: response.status(),
-          method: response.request().method(),
-          headers: response.headers(),
-        },
-      }),
+      acquire: async () => watched,
       now: () => context.now(),
       product,
       text: context.text,

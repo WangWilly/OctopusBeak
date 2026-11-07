@@ -6,6 +6,7 @@ import {
   type CathayCurrentDepositKind,
   type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
+import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 
 /** A recorded Cathay overview response: the body as the provider sent it. */
 export type CathayRecordedOverview = Readonly<{
@@ -62,15 +63,12 @@ export function cathayOverviewAcquired(
 }
 
 function recordedResponse(path: string, overview: CathayRecordedOverview): Response {
-  const bytes = Buffer.from(overview.body, "utf8");
-  return {
-    url: () => `https://${CATHAY_CURRENT_DEPOSIT_HOST}${path}`,
-    status: () => 200,
-    request: () => ({ method: () => "POST", postData: () => null }),
-    allHeaders: async () => ({ "content-type": "application/json; charset=utf-8", date: overview.date }),
-    body: async () => bytes,
-    text: async () => overview.body,
-  } as unknown as Response;
+  return fakeProviderReply({
+    url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${path}`,
+    method: "POST",
+    headers: { "content-type": "application/json; charset=utf-8", date: overview.date },
+    body: overview.body,
+  });
 }
 
 /**

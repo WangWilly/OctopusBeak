@@ -4,7 +4,7 @@ import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FrameScopeTimeoutError, type BrowserScope } from "./frame-scope.ts";
 import { HNCB_CARD_RESPONSE, playwrightHncbCardPages } from "./hncb-credit-card.ts";
-import { acceptProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE,
@@ -55,7 +55,7 @@ async function withHncbShell(
       const trx = posted.get("trx") ?? url.searchParams.get("trx");
       served.requests.push(`${request.method()} ${url.pathname}${url.search}${request.postData() ? ` ${request.postData()}` : ""}`);
       const html = (content: string) =>
-        route.fulfill({ contentType: "text/html; charset=utf-8", headers: { "cache-control": "no-store" }, body: content });
+        route.fulfill({ contentType: "text/html; charset=utf-8", headers: { "cache-control": "no-store", date: "Thu, 15 Oct 2026 02:00:00 GMT" }, body: content });
       if (url.pathname === "/netbank/shell") {
         return await html(options.shell === "no-main"
           ? `<p>signed out</p>`
@@ -94,6 +94,12 @@ async function withHncbShell(
 }
 
 const site = (page: Page, signal = new AbortController().signal) => hncbNetbankSite(page, { signal });
+// The site reads each reply it waits for through the reader, outside any product.
+const reader = providerResponseReader({
+  now: () => "2026-10-15T02:00:00.000Z",
+  text: strictSourceText,
+  validate: WITHOUT_PRODUCT_VALIDATION,
+});
 const attached = (selector: string) => async (scope: BrowserScope) =>
   (await scope.locator(selector).count().catch(() => 0)) > 0;
 const frameName = (scope: BrowserScope) => ("name" in scope ? scope.name() : "page");
@@ -129,18 +135,18 @@ test("a transaction route opens in main from another signed-in page and returns 
 
 test("the overview menu route waits for the accounting POST, then clicks 帳戶總覽 in the menu frame", () =>
   withHncbShell(async (page, served) => {
-    const { scope, reply } = await site(page).open(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE);
+    const { scope, response } = await site(page).read(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE, reader);
     assert.equal(frameName(scope), "main");
-    assert.equal(new URL(reply.url()).searchParams.get("trx"), "com.lb.wibc.trx.AcctInfoInq");
-    assert.equal(reply.request().method(), "GET");
+    assert.equal(new URL(response.url).searchParams.get("trx"), "com.lb.wibc.trx.AcctInfoInq");
+    assert.equal(response.method, "GET");
     assert.ok(served.requests.some((line) => line.startsWith(`POST ${HNCB_TRX_DISPATCHER_PATH} trx=com.lb.wibc.trx.Menu`)));
   }));
 
 test("the balance menu route clicks 帳務查詢, 餘額查詢 and 活期存款 and returns the balance-page reply", () =>
   withHncbShell(async (page) => {
-    const { scope, reply } = await site(page).open(HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE);
+    const { scope, response } = await site(page).read(HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE, reader);
     assert.equal(frameName(scope), "main");
-    assert.equal(new URL(reply.url()).searchParams.get("trx"), "com.lb.wibc.trx.EAccDDSummary");
+    assert.equal(new URL(response.url).searchParams.get("trx"), "com.lb.wibc.trx.EAccDDSummary");
   }));
 
 test("dispatch posts the transaction fields into main and resolves on the dispatcher reply", () =>
@@ -161,12 +167,11 @@ test("dispatch posts the transaction fields into main and resolves on the dispat
 
 test("a dispatched card page carries the reply its declaration accepts and the main frame's markup", () =>
   withHncbShell(async (page) => {
-    const card = await playwrightHncbCardPages(site(page))("2");
+    const card = await playwrightHncbCardPages(site(page), reader)("2");
     assert.ok(card.dialog === null, "the dispatch raised no dialog");
-    const accepted = acceptProviderResponse(
+    const accepted = await reader.accept(
       HNCB_CARD_RESPONSE,
       { response: card.response, evidence: { kind: "html", html: card.html } },
-      { observedAt: "2026-10-15T10:00:00+08:00", text: strictSourceText },
     );
     assert.equal(accepted.response.url.pathname, HNCB_TRX_DISPATCHER_PATH);
     assert.equal(card.response.method, "POST");

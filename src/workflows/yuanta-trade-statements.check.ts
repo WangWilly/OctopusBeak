@@ -27,7 +27,6 @@ import {
   yuantaTradeWorkflow,
   stageYuantaTrade,
   type YuantaTradeCollectionInput,
-  type YuantaReportReader,
   type YuantaTradeReportPage,
   yuantaTradeCaptchaCheckbox,
   yuantaTradeCaptchaImages,
@@ -39,6 +38,8 @@ import {
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
+import type { ProviderResponsePorts } from "./provider-response-reader.ts";
+import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 import { readFile } from "node:fs/promises";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
@@ -970,13 +971,12 @@ function fakeReportPage(landings: readonly ("report" | "error")[]) {
   const response = (landing: "report" | "error", reportType: string) => {
     const path = landing === "error" ? "Error" : reportType;
     const html = `<html><head><title>${path}</title></head><body><script>var currTradeType = '${reportType}';</script></body></html>`;
-    return {
-      url: () => `https://global.yuanta.com.tw/NexusWebTrade/AssetReport/${path}`,
-      status: () => 200,
-      headers: () => ({ "content-type": "text/html; charset=utf-8" }),
-      body: async () => Buffer.from(html, "utf8"),
-      request: () => ({ method: () => (landing === "error" ? "GET" : "POST") }),
-    };
+    return fakeProviderReply({
+      url: `https://global.yuanta.com.tw/NexusWebTrade/AssetReport/${path}`,
+      method: landing === "error" ? "GET" : "POST",
+      headers: { "content-type": "text/html; charset=utf-8" },
+      body: html,
+    });
   };
   let pending: ((value: unknown) => void) | null = null;
   const page = {
@@ -997,7 +997,7 @@ function fakeReportPage(landings: readonly ("report" | "error")[]) {
   return { page, submissions: () => submissions };
 }
 
-function reportContext(): WorkflowContext & YuantaReportReader {
+function reportContext(): WorkflowContext & ProviderResponsePorts {
   return {
     validate: async (check) => await check(),
     runId: "yuanta-trade-report-error-fixture",

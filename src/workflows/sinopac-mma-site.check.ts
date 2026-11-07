@@ -14,6 +14,7 @@ import {
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
 } from "./sinopac-current-deposit-balances.ts";
 import { SINOPAC_MMA_ORIGIN, sinopacMmaSite } from "./sinopac-mma-site.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { sinopacDepositSource } from "./sinopac-statements.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
@@ -102,6 +103,8 @@ async function withMma(
 const context = (signal = new AbortController().signal) =>
   ({ signal, text: strictSourceText, now: () => "2026-09-09T10:01:02+08:00" });
 
+const reader = providerResponseReader({ ...context(), validate: WITHOUT_PRODUCT_VALIDATION });
+
 const product = {
   event: async () => undefined,
   validate: async (check: () => unknown) => await check(),
@@ -147,14 +150,17 @@ test("a transaction reply that is not a 200 JSON reply is refused before its bod
     assert.ok(error instanceof ProviderResponseCheckError && error.check === "response-status", String(error));
   }, { transactionStatus: 500 }));
 
-test("the balance route returns the raw ws_bankbal body and its response headers", () =>
+// ws_bankbal's declaration requires no-store, which a synthetic reply cannot carry (see
+// `json`), so the reader refuses the reply before reading its body; the account-list
+// route covers a body the site reads.
+test("the balance route waits for its ws_bankbal POST and checks the transport before the body", () =>
   withMma(async (page) => {
     const site = sinopacMmaSite(page, context());
-    const read = await readSinopacCurrentDepositBalanceResponse(site);
-    assert.deepEqual(JSON.parse(Buffer.from(read.evidence.bytes).toString("utf8")), BALANCES);
-    assert.equal(read.response.method, "POST");
-    assert.equal(read.response.status, 200);
-    assert.equal(read.response.headers.date, PROVIDER_DATE);
+    await assert.rejects(
+      readSinopacCurrentDepositBalanceResponse(site, reader),
+      (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-cache-control",
+    );
+    assert.equal(new URL(page.url()).pathname, "/mma/bank/bankbal/mma_bankbal.aspx");
   }));
 
 test("post sends MMA's form XHR by default, or the caller's headers, and returns the response it observed", () =>
@@ -181,7 +187,7 @@ test("post sends MMA's form XHR by default, or the caller's headers, and returns
 test("a reply with invalid UTF-8 fails the product as source-integrity-failed", () =>
   withMma(async (page) => {
     const site = sinopacMmaSite(page, context());
-    const error = await sinopacCardTransport(site, strictSourceText).mma("/ws/card/cardqry/ws_cardsum.ashx").then(
+    const error = await sinopacCardTransport(site, reader).mma("/ws/card/cardqry/ws_cardsum.ashx").then(
       () => assert.fail("the malformed reply was read"),
       (rejection: unknown) => rejection,
     );
@@ -207,9 +213,15 @@ test("cancelling the run interrupts a route whose page never requests its respon
     const opening = site.open({
       url: `${SINOPAC_MMA_ORIGIN}/mma/never.aspx`,
       description: "a page that never loads",
-      response: (url) => url.endsWith("/ws/never.ashx"),
+      response: {
+        label: "never",
+        host: new URL(SINOPAC_MMA_ORIGIN).hostname,
+        endpoints: [{ path: "/ws/never.ashx", method: "POST" }],
+        cacheControl: [],
+        providerDate: "optional",
+      },
       ready: async (scope) => (await scope.locator("#never").count()) > 0,
-    });
+    }, providerResponseReader({ ...context(controller.signal), validate: WITHOUT_PRODUCT_VALIDATION }));
     setTimeout(() => controller.abort(CANCELLED), 300);
     const started = Date.now();
     await assert.rejects(opening, (error: unknown) => error === CANCELLED);

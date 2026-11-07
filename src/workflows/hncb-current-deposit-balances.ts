@@ -1,7 +1,6 @@
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Frame, Locator, Page } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderEndpoint,
   type ProviderResponse,
   type ProviderResponseDeclaration,
@@ -9,7 +8,8 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { HNCB_TRX_DISPATCHER_PATH, type HncbNetbankSite, type HncbRoute } from "./hncb-netbank-site.ts";
+import { HNCB_TRX_DISPATCHER_PATH, type HncbMenuRoute, type HncbNetbankSite } from "./hncb-netbank-site.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 export const HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION =
   "com.lb.wibc.trx.EAccDDSummary" as const;
@@ -95,12 +95,9 @@ function requireEndpoint(
     throw new Error("HNCB current deposit response transaction is unexpected.");
 }
 
-function isEndpointResponse(endpoint: ProviderEndpoint, response: Response): boolean {
-  return isDeclaredProviderResponse(
-    { ...HNCB_CURRENT_DEPOSIT_RESPONSE, endpoints: [endpoint] },
-    response.url(),
-    response.request().method(),
-  );
+/** The current-deposit declaration narrowed to one page's endpoint, the reply its menu route waits for. */
+function endpointResponse(endpoint: ProviderEndpoint): ProviderResponseDeclaration<"required"> {
+  return { ...HNCB_CURRENT_DEPOSIT_RESPONSE, endpoints: [endpoint] };
 }
 
 export type HncbCurrentDepositBalanceRow = Readonly<{
@@ -610,22 +607,18 @@ async function hasOverviewResultTable(scope: BrowserScope): Promise<boolean> {
 }
 
 /** 帳務查詢 → 餘額查詢 → 活期存款, rendered by the balance-page GET. */
-export const HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE: HncbRoute = {
+export const HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE: HncbMenuRoute = {
   description: "HNCB current deposit result table",
-  via: {
-    menu: [{ label: "帳務查詢" }, { label: "餘額查詢" }, { label: "活期存款" }],
-    reply: (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT, response),
-  },
+  menu: [{ label: "帳務查詢" }, { label: "餘額查詢" }, { label: "活期存款" }],
+  reply: endpointResponse(HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT),
   ready: hasResultTable,
 };
 
 /** 帳務查詢 → 帳戶總覽 in the menu frame, rendered by the overview GET. */
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: HncbRoute = {
+export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: HncbMenuRoute = {
   description: "HNCB current deposit overview result table",
-  via: {
-    menu: [{ label: "帳務查詢", dispatches: true }, { label: "帳戶總覽", frame: "menu" }],
-    reply: (response) => isEndpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, response),
-  },
+  menu: [{ label: "帳務查詢", dispatches: true }, { label: "帳戶總覽", frame: "menu" }],
+  reply: endpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT),
   ready: hasOverviewResultTable,
 };
 
@@ -639,31 +632,28 @@ export type HncbCurrentDepositTable = Readonly<{
   response: ProviderResponse;
 }>;
 
-async function responseMetadata(response: Response): Promise<ProviderResponse> {
-  return {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: await response.allHeaders(),
-  };
-}
-
 /** Open the 活期存款 balance page, then read the source table. */
-export async function readHncbCurrentDepositDetailTable(site: HncbNetbankSite): Promise<HncbCurrentDepositTable> {
-  const { scope, reply } = await site.open(HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE);
+export async function readHncbCurrentDepositDetailTable(
+  site: HncbNetbankSite,
+  reader: ProviderResponseReader,
+): Promise<HncbCurrentDepositTable> {
+  const { scope, response } = await site.read(HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE, reader);
   return {
     view: "detail",
     evidence: { kind: "cells", rows: await site.frames.race(readHncbCurrentDepositDetailCells(scope)) },
-    response: await site.frames.race(responseMetadata(reply)),
+    response,
   };
 }
 
 /** Open the account overview, then read the authenticated overview table. */
-export async function readHncbCurrentDepositOverviewTable(site: HncbNetbankSite): Promise<HncbCurrentDepositTable> {
-  const { scope, reply } = await site.open(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE);
+export async function readHncbCurrentDepositOverviewTable(
+  site: HncbNetbankSite,
+  reader: ProviderResponseReader,
+): Promise<HncbCurrentDepositTable> {
+  const { scope, response } = await site.read(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE, reader);
   return {
     view: "overview",
     evidence: { kind: "cells", rows: await site.frames.race(readHncbCurrentDepositOverviewCells(scope)) },
-    response: await site.frames.race(responseMetadata(reply)),
+    response,
   };
 }

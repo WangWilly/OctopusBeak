@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
-import type { Page, Response } from "playwright";
+import type { Page } from "playwright";
 import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
@@ -8,8 +8,8 @@ import {
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
 import { assembleCurrentDepositCapture, type CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
   type ProviderEvidence,
@@ -337,8 +337,7 @@ export function parsePostCurrentDepositBalanceSnapshot(input: Readonly<{
   return rows;
 }
 
-function requestMatchesCurrentBalanceDiscriminants(response: Response): boolean {
-  const postData = response.request().postData();
+function requestMatchesCurrentBalanceDiscriminants(postData: string | null): boolean {
   if (!postData) return false;
   try {
     const request: unknown = JSON.parse(postData);
@@ -377,11 +376,12 @@ export type PostCurrentDepositResponse = Readonly<{
 }>;
 
 /**
- * Enter the authenticated asset-overview page and passively observe its POST.
+ * Enter the authenticated asset-overview page and passively observe its POST,
+ * read through `reader` so a refused reply fails inside its validation.
  */
 export async function readPostCurrentDepositBalanceResponse(
   page: Page,
-  input: Readonly<{ signal: AbortSignal; timeoutMs?: number }>,
+  input: Readonly<{ signal: AbortSignal; reader: ProviderResponseReader; timeoutMs?: number }>,
 ): Promise<PostCurrentDepositResponse> {
   const scope = frameScope(page, input.signal);
   const timeoutMs = input.timeoutMs ?? 60_000;
@@ -395,24 +395,13 @@ export async function readPostCurrentDepositBalanceResponse(
   }
   const overview = page.getByText("資產總覽", { exact: true }).first();
   await scope.withSignal((signal) => overview.waitFor({ state: "visible", timeout: timeoutMs, signal }));
-  const responsePromise = scope.withSignal((signal) =>
-    page.waitForResponse((response) =>
-      isDeclaredProviderResponse(POST_CURRENT_DEPOSIT_RESPONSE, response.url(), response.request().method()) &&
-      requestMatchesCurrentBalanceDiscriminants(response), { timeout: timeoutMs, signal }));
-  void responsePromise.catch(() => undefined);
-  await scope.withSignal((signal) => overview.click({ signal }));
-  const response = await responsePromise;
-  const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
-  return {
-    evidence: { kind: "json", bytes },
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
-    requestPostData: response.request().postData(),
-  };
+  const captured = await input.reader.acquire(scope, POST_CURRENT_DEPOSIT_RESPONSE, {
+    evidence: "json",
+    request: (request) => requestMatchesCurrentBalanceDiscriminants(request.postData),
+    timeoutMs,
+    trigger: () => scope.withSignal((signal) => overview.click({ signal })),
+  });
+  return { evidence: captured.evidence, response: captured.response, requestPostData: captured.request.postData };
 }
 
 /**

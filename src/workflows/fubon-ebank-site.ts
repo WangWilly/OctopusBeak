@@ -1,13 +1,9 @@
-import type { Frame, Locator, Page, Response } from "playwright";
+import type { Frame, Locator, Page } from "playwright";
+import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
-import {
-  acceptProviderResponse,
-  type ProviderEvidence,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderEvidence, ProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
@@ -56,10 +52,11 @@ export type FubonEbankSite = Readonly<{
   /** Post a form from inside the page and return the reply as observed, before any check. */
   postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<FubonPostbackReply>;
   replaceDocument(scope: BrowserScope, html: string): Promise<void>;
-  /** Read a response the page received, before any check. */
-  readReply(response: Response): Promise<FubonReply>;
-  /** Verify a reply against the source's declaration, then decode its HTML strictly. */
-  accept(declaration: ProviderResponseDeclaration, reply: FubonReply): string;
+  /**
+   * The Provider response reader on the run's clock and text port, refusing
+   * inside `validate`: a product's own, or `WITHOUT_PRODUCT_VALIDATION`.
+   */
+  reader(validate: ProductCollectionHandle["validate"]): ProviderResponseReader;
 }>;
 
 /** One HTML reply the site observed: its body bytes and the response that carried them. */
@@ -208,20 +205,7 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
         document.close();
       }, html));
     },
-    readReply: async (response) => ({
-      evidence: { kind: "text", bytes: new Uint8Array(await frames.race(response.body())) },
-      response: {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers: await frames.race(response.allHeaders()),
-      },
-    }),
-    accept: (declaration, reply) => acceptProviderResponse(
-      declaration,
-      reply,
-      { observedAt: taipeiInstant(context.now()), text: context.text },
-    ).evidence.text,
+    reader: (validate) => providerResponseReader({ now: () => context.now(), text: context.text, validate }),
   };
   return Object.freeze(site);
 }

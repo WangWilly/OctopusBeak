@@ -4,6 +4,7 @@ import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
+import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { CATHAY_CURRENT_DEPOSIT_HOST } from "./cathay-current-deposit-balances.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
@@ -32,7 +33,12 @@ const portCancelledAfter = (page: Page, ms: number) => {
   const controller = new AbortController();
   setTimeout(() => controller.abort(CANCELLED), ms);
   const session = () => ({ jwtToken: "synthetic", customerId: "synthetic", idType: "synthetic" });
-  return playwrightCathayAttachedPreviewPort(page, session, { text: strictSourceText, signal: controller.signal });
+  return playwrightCathayAttachedPreviewPort(page, session, {
+    now: () => "2026-09-25T01:00:00.000Z",
+    text: strictSourceText,
+    validate: WITHOUT_PRODUCT_VALIDATION,
+    signal: controller.signal,
+  });
 };
 
 const settlesWithin = async (read: Promise<unknown>) => {

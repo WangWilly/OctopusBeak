@@ -10,6 +10,8 @@ import { runVerifiedEntry } from "./server/verified-entry.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { ProviderResponseCheckError } from "./provider-response-check.ts";
+import { frameScope } from "../../workflows/frame-scope.ts";
+import { fakeProviderReply } from "../../workflows/provider-response-reader.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { resolveVerificationStage } from "./verification-stage.ts";
 import {
@@ -242,14 +244,16 @@ function response(
   headers: Record<string, string> = { "content-type": "text/html; charset=utf-8" },
   status = 200,
 ): Response {
-  return {
-    url: () => "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
-    status: () => status,
-    headers: () => headers,
-    request: () => ({ method: () => "POST" }),
-    body: async () => Buffer.from(bytes),
-  } as unknown as Response;
+  return fakeProviderReply({
+    url: "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/Stock",
+    method: "POST",
+    status,
+    headers,
+    body: bytes,
+  });
 }
+
+const reportScope = (signal: AbortSignal) => frameScope({} as Page, signal);
 
 test("Yuanta Trade names a report page that does not parse a validation failure", async () => {
   const harness = createHarness();
@@ -258,6 +262,7 @@ test("Yuanta Trade names a report page that does not parse a validation failure"
       const malformed = new TextEncoder().encode("<script>var accountData = [{\"index\":];</script>");
       const snapshot = await readYuantaTradeSource({
         captureReport: () => decodeYuantaTradeReportResponse(
+          reportScope(context.signal),
           response(malformed),
           { text: context.text, now: () => context.now(), validate: product.validate },
           "Stock",
@@ -290,6 +295,7 @@ test("Yuanta Trade names a refused report reply a validation failure", async () 
       const html = new TextEncoder().encode("<script>var currAssetType = 'Stock';</script>");
       const snapshot = await readYuantaTradeSource({
         captureReport: () => decodeYuantaTradeReportResponse(
+          reportScope(context.signal),
           response(html, undefined, 500),
           { text: context.text, now: () => context.now(), validate: product.validate },
           "Stock",
@@ -313,11 +319,16 @@ test("Yuanta Trade source decoding rejects malformed response bytes", async () =
     validate: async <T>(check: () => T | Promise<T>) => await check(),
   };
   await assert.rejects(
-    decodeYuantaTradeReportResponse(response(Uint8Array.from([0xc3, 0x28])), reader, "Stock"),
+    decodeYuantaTradeReportResponse(reportScope(new AbortController().signal), response(Uint8Array.from([0xc3, 0x28])), reader, "Stock"),
     (error: unknown) => error instanceof SourceTextIntegrityError && /invalid-encoding/u.test(error.message),
   );
   await assert.rejects(
-    decodeYuantaTradeReportResponse(response(Uint8Array.from([0x3c, 0x70, 0x3e]), { "content-type": "text/html" }), reader, "Stock"),
+    decodeYuantaTradeReportResponse(
+      reportScope(new AbortController().signal),
+      response(Uint8Array.from([0x3c, 0x70, 0x3e]), { "content-type": "text/html" }),
+      reader,
+      "Stock",
+    ),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-charset",
   );
 });

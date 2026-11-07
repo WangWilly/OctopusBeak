@@ -15,6 +15,7 @@ import { executeTaskRunForCheck } from "./task-run-check-support.ts";
 import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const RESOURCE_URL = "https://www.ctbcbank.com/IB/api/adapters/IB_Adapter/resource/ebmwResource";
@@ -27,20 +28,14 @@ const syntheticEnvironment = () => ({
   [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
 });
 
-function sourceResponse(resource: string, value: unknown): Response {
-  const postData = JSON.stringify({ resource });
-  const bytes = Buffer.from(JSON.stringify(value), "utf8");
-  return {
-    url: () => RESOURCE_URL,
-    status: () => 200,
-    allHeaders: async () => ({ "content-type": "application/json;charset=UTF-8" }),
-    request: () => ({
-      method: () => "POST",
-      url: () => RESOURCE_URL,
-      postData: () => postData,
-    }),
-    body: async () => bytes,
-  } as unknown as Response;
+function sourceResponse(resource: string, value: unknown, body: string | Uint8Array = JSON.stringify(value)): Response {
+  return fakeProviderReply({
+    url: RESOURCE_URL,
+    method: "POST",
+    postData: JSON.stringify({ resource }),
+    headers: { "content-type": "application/json;charset=UTF-8" },
+    body,
+  });
 }
 
 function createPage(options: {
@@ -62,10 +57,7 @@ function createPage(options: {
       rsData: { accountInfoList: [{ accountId }], dateRanges: ranges },
     }),
     options.malformedSource
-      ? {
-          ...sourceResponse(detailsResource, {}),
-          body: async () => Buffer.from([0xc3, 0x28]),
-        } as Response
+      ? sourceResponse(detailsResource, {}, Buffer.from([0xc3, 0x28]))
       : sourceResponse(detailsResource, {
           code: "0000",
           rsData: { detailList: [], nextKey: "" },

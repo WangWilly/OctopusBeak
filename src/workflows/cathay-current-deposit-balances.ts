@@ -9,6 +9,8 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import { providerResponseReader } from "./provider-response-reader.ts";
+import type { CathayStrictSourceOptions } from "./cathay-statements.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
   "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview" as const;
@@ -524,11 +526,11 @@ export type CathayCurrentDepositResponse = Readonly<{
 export async function readCathayCurrentDepositBalanceResponse(
   page: Page,
   kind: CathayCurrentDepositKind,
-  signal: AbortSignal,
+  source: CathayStrictSourceOptions,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<CathayCurrentDepositResponse> {
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const scope = frameScope(page, signal);
+  const scope = frameScope(page, source.signal);
   let matching = 0;
   const listener = (candidate: Response) => {
     if (responseMatches(kind, candidate)) matching += 1;
@@ -542,15 +544,15 @@ export async function readCathayCurrentDepositBalanceResponse(
       kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
       timeoutMs,
     );
-    const responsePromise = scope.withSignal((signal) => page.waitForResponse(
-      (response) => responseMatches(kind, response),
-      { timeout: timeoutMs, signal },
-    ));
-    responsePromise.catch(() => undefined);
-    await scope.withSignal((signal) => overview.click({ signal }));
-    const response = await responsePromise;
-    const bytes = await scope.race(response.body());
-    const headers = await scope.race(response.allHeaders());
+    const { response, evidence } = await providerResponseReader(source).acquire(
+      scope,
+      cathayCurrentDepositResponseDeclaration(kind),
+      {
+        evidence: "json",
+        trigger: () => scope.withSignal((signal) => overview.click({ signal })),
+        timeoutMs,
+      },
+    );
     const uiAccountNumbers =
       kind === "domestic"
         ? await readDomesticUiAccountNumbers(scope, timeoutMs)
@@ -558,16 +560,7 @@ export async function readCathayCurrentDepositBalanceResponse(
     if (matching !== 1) {
       throw new Error("Cathay current balance source response was missing or ambiguous.");
     }
-    return {
-      evidence: { kind: "json", bytes },
-      response: {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers,
-      },
-      ...(uiAccountNumbers ? { uiAccountNumbers } : {}),
-    };
+    return { evidence, response, ...(uiAccountNumbers ? { uiAccountNumbers } : {}) };
   } finally {
     page.off("response", listener);
   }

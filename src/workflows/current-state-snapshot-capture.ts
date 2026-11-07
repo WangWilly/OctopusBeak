@@ -42,15 +42,14 @@ import {
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
 import {
-  acceptProviderResponse,
   type DecodedProviderEvidence,
   type ProviderAcquisition,
   type ProviderDateRule,
   type ProviderResponseDeclaration,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
+import { providerResponseReader } from "./provider-response-reader.ts";
 
 /** How a bank stages the rows it read: matching, building, and labeling. */
 export type CurrentStateSnapshotStaging<Row, Capture, Input = CurrentDepositBalanceCaptureInput> = Readonly<{
@@ -150,16 +149,16 @@ export async function readCurrentStateSnapshot<
   try {
     acquired = await input.acquire();
   } catch (error) {
-    // A failed read is a collection failure (ADR 0106).
-    await product.event("collection", "failed", "current-balance-collection-failed");
+    // A failed read is a collection failure (ADR 0106). A transport the reader
+    // refused while acquiring was already reported as a validation failure.
+    if (!(error instanceof ProviderResponseCheckError))
+      await product.event("collection", "failed", "current-balance-collection-failed");
     throw error;
   }
-  const observedAt = taipeiInstant(input.now());
   signal.throwIfAborted();
-  const rows = await product.validate(() => {
-    const { response, evidence } = acceptProviderResponse(declaration.response, acquired, { observedAt, text: input.text });
-    return parseRows(() => declaration.parse(evidence, response, acquired));
-  });
+  const reader = providerResponseReader({ now: input.now, text: input.text, validate: product.validate });
+  const { response, evidence } = await reader.accept(declaration.response, acquired);
+  const rows = await product.validate(() => parseRows(() => declaration.parse(evidence, response, acquired)));
   await product.event("decoding", "completed", "current-balance-decoding-completed");
   await product.event("collection", "completed", "current-balance-collection-completed", {
     completed: rows.length,

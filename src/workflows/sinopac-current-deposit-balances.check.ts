@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { isDeclaredProviderResponse, type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   readSinopacCurrentDepositBalanceResponse,
@@ -231,24 +233,30 @@ test("SinoPac rejects unknown and multiple transport query keys", () => {
 test("SinoPac's balance route opens the balance page and accepts only the declared ws_bankbal POST", () => {
   const route = SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE;
   assert.equal(route.url, SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL);
-  assert.equal(route.response(response.url, "POST"), true);
-  assert.equal(route.response(`${response.url}?1788926105087=1`, "POST"), true);
-  assert.equal(route.response(response.url, "GET"), false);
-  assert.equal(route.response(`${response.url}?session=unexpected`, "POST"), false);
-  assert.equal(route.response("https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx", "POST"), false);
+  const waitsFor = (url: string, method: string) => isDeclaredProviderResponse(route.response, url, method);
+  assert.equal(waitsFor(response.url, "POST"), true);
+  assert.equal(waitsFor(`${response.url}?1788926105087=1`, "POST"), true);
+  assert.equal(waitsFor(response.url, "GET"), false);
+  assert.equal(waitsFor(`${response.url}?session=unexpected`, "POST"), false);
+  assert.equal(waitsFor("https://alt.sinopac.example/ws/bank/bankbal/ws_bankbal.ashx", "POST"), false);
 });
 
 test("SinoPac reader returns the balance route's raw body and response", async () => {
   const bytes = Buffer.from(JSON.stringify(payload), "utf8");
+  const reader = providerResponseReader({
+    now: () => "2026-09-09T02:01:02.000Z",
+    text: strictSourceText,
+    validate: WITHOUT_PRODUCT_VALIDATION,
+  });
   const opened: unknown[] = [];
   const site = {
-    open: async (route: unknown) => {
-      opened.push(route);
-      return { bytes, response };
+    open: async (route: unknown, through: unknown) => {
+      opened.push(route, through);
+      return { response, evidence: { kind: "json", bytes } };
     },
   } as unknown as SinopacMmaSite;
-  const read = await readSinopacCurrentDepositBalanceResponse(site);
-  assert.deepEqual(opened, [SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE]);
+  const read = await readSinopacCurrentDepositBalanceResponse(site, reader);
+  assert.deepEqual(opened, [SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE, reader]);
   assert.equal(new TextDecoder().decode(read.evidence.bytes), JSON.stringify(payload));
   assert.deepEqual(read.response, response);
 });

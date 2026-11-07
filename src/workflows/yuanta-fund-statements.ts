@@ -19,13 +19,8 @@ import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-co
 import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occurrence-groups.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
-import {
-  acceptProviderResponse,
-  verifyProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
+import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -802,20 +797,18 @@ const YUANTA_FUND_HISTORY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   providerDate: "optional",
 };
 
-/** The run's clock and the fund product's validation, which each history reply is checked through (ADR 0106). */
-type FundReplyCheck = Readonly<{ now: () => string; validate: ProductCollectionHandle["validate"] }>;
-
 /**
  * Submit one account history report and return the reply its result page
- * came from. The reply's transport is checked before the wait for that page,
- * so a refused reply fails at once instead of timing out.
+ * came from. The reader checks the reply's transport before the wait for that
+ * page, inside the fund product's validation, so a refused reply fails at
+ * once instead of timing out.
  */
 async function queryAccountFundTransactions(
   site: YuantaEbankSite,
   query: YuantaFundAccountHistoryQuery,
   startDate: string,
   endDate: string,
-  check: FundReplyCheck,
+  reader: ProviderResponseReader,
 ): Promise<ProviderResponse> {
   // Re-enter the general account query: detail-page fields can retain a lot filter.
   const scope = await site.open(FUND_ACCOUNT_HISTORY_ROUTE);
@@ -826,21 +819,11 @@ async function queryAccountFundTransactions(
   }
   const queryFields = yuantaFundAccountHistoryQueryFields(query, startDate, endDate);
   await markShownDocuments(site);
-  const responsePromise = site.frames.withSignal((signal) => site.frames.page.waitForResponse(response =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === "/nib/tx/fundtransactiondetails", { timeout: 30_000, signal }));
-  const [, response] = await Promise.all([
-    submitForm(site, scope, "fundtransactiondetails", queryFields), responsePromise,
-  ]);
-  assertYuantaFundHistoryQueryRequest(new URLSearchParams(response.request().postData() ?? ""), queryFields);
-  const reply: ProviderResponse = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: response.headers(),
-  };
-  await check.validate(() =>
-    verifyProviderResponse(YUANTA_FUND_HISTORY_RESPONSE, reply, taipeiInstant(check.now())));
+  const { response: reply, request } = await reader.witness(site.frames, YUANTA_FUND_HISTORY_RESPONSE, {
+    timeoutMs: 30_000,
+    trigger: () => submitForm(site, scope, "fundtransactiondetails", queryFields),
+  });
+  assertYuantaFundHistoryQueryRequest(new URLSearchParams(request.postData ?? ""), queryFields);
   const resultScope = await waitForSubmittedFundTables(site,
     /查詢日期|申購匯率|贖回日期|轉出日期|入帳日期|分配日期|查無資料/,
     "YuanTa account fund history result");
@@ -1991,6 +1974,7 @@ export async function readYuantaFundSource(
 ): Promise<YuantaFundSourceSnapshot> {
   const site = yuantaEbankSite(page, context);
   const sourceText = context.text;
+  const reader = providerResponseReader({ now: () => context.now(), text: sourceText, validate: product.validate });
   const dateRange = yuantaFundQueryRange(product.collectionPeriod());
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
   const historyEndDate = canonicalSourceDate(dateRange.endDate);
@@ -2051,17 +2035,12 @@ export async function readYuantaFundSource(
     for (const query of yuantaFundAccountHistoryQueries) {
       checkCancelled();
       await product.reportActivity("query");
-      const reply = await queryAccountFundTransactions(site, query, dateRange.startDate, dateRange.endDate,
-        { now: () => context.now(), validate: product.validate });
+      const reply = await queryAccountFundTransactions(site, query, dateRange.startDate, dateRange.endDate, reader);
       const firstTable = tables.length;
       const key = yuantaFundAccountHistoryKey(query.investmentType);
       // The rows come from the result page's DOM, which the reply witnesses (ADR 0110, 0106).
       await captureTables(site, tables, "historical-transactions", key, dateRange.label, sourceText,
-        (html) => product.validate(() => acceptProviderResponse(
-          YUANTA_FUND_HISTORY_RESPONSE,
-          { response: reply, evidence: { kind: "html", html } },
-          { observedAt: taipeiInstant(context.now()), text: sourceText },
-        )));
+        (html) => reader.accept(YUANTA_FUND_HISTORY_RESPONSE, { response: reply, evidence: { kind: "html", html } }));
       for (const table of tables.slice(firstTable)) table.historyQuery = query;
       assertYuantaFundHistoryQueryResult(tables.slice(firstTable), key);
     }

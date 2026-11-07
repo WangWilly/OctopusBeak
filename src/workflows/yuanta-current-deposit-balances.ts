@@ -3,13 +3,13 @@ import type { Locator } from "playwright";
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
-  isDeclaredProviderResponse,
   type ProviderResponse,
   type ProviderResponseDeclaration,
   type ProviderEvidence,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
 
 /**
@@ -411,12 +411,15 @@ export type YuantaCurrentDepositTable = Readonly<{
 
 /**
  * Open the authenticated summary page, follow the kind's summary card and
- * read the resulting current-state table. The response is observed through
- * Playwright only; this function never fetches or replays the provider request.
+ * read the resulting current-state table. The card's POST is observed through
+ * `reader`, which checks its transport; this function never fetches or replays
+ * the provider request. The evidence is the rendered table's cells, accepted
+ * later with that reply's transport by the current-state snapshot.
  */
 export async function readYuantaCurrentDepositBalanceTable(
   site: YuantaEbankSite,
   kind: YuantaCurrentDepositKind,
+  reader: ProviderResponseReader,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<YuantaCurrentDepositTable> {
   const timeoutMs = input.timeoutMs ?? 60_000;
@@ -438,23 +441,13 @@ export async function readYuantaCurrentDepositBalanceTable(
     }
     return null;
   }, `Could not find Yuanta ${kind} current deposit details link.`, { timeoutMs });
-  const [response] = await Promise.all([
-    frames.withSignal((signal) => frames.page.waitForResponse((response) => isDeclaredProviderResponse(
-      YUANTA_CURRENT_DEPOSIT_RESPONSE,
-      response.url(),
-      response.request().method(),
-    ), { timeout: timeoutMs, signal })),
-    frames.withSignal((signal) => link.click({ signal })),
-  ]);
-  const headers = await frames.race(response.allHeaders());
+  const { response } = await reader.witness(frames, YUANTA_CURRENT_DEPOSIT_RESPONSE, {
+    timeoutMs,
+    trigger: () => frames.withSignal((signal) => link.click({ signal })),
+  });
   const table = await findCurrentDepositTable(frames, kind, timeoutMs);
   return {
     evidence: { kind: "cells", rows: await frames.race(readYuantaCurrentDepositTableCells(table, kind)) },
-    response: {
-      url: response.url(),
-      status: response.status(),
-      method: response.request().method(),
-      headers,
-    },
+    response,
   };
 }

@@ -27,6 +27,7 @@ import { yuantaCurrentDepositTable } from "./yuanta-current-deposit-balances.fix
 import { collectionPeriod, taipeiToday, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { Route } from "playwright";
@@ -1058,7 +1059,7 @@ try {
         const download = await downloadYuantaStatementRows(
           yuantaEbankSite(page, { signal, text: context.text }),
           workflowAccount,
-          { observedAt: taipeiInstant(context.now()), validate: async (check) => await check() },
+          providerResponseReader({ now: () => context.now(), text: context.text, validate: WITHOUT_PRODUCT_VALIDATION }),
         );
         return await stageYuantaDeposit(
           {

@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
@@ -60,12 +59,8 @@ import {
   type HncbNetbankSite,
   type HncbRoute,
 } from "./hncb-netbank-site.ts";
-import {
-  acceptProviderResponse,
-  verifyProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -741,17 +736,11 @@ const HNCB_EXPORT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   maxBytes: 64 * 1024 * 1024,
 };
 
-/** Verify, decode and parse one export reply as HNCB's Big5 statement workbook. */
-function readHncbExport(
-  response: ProviderResponse,
-  bytes: Uint8Array,
-  input: Readonly<{ observedAt: string; text: SourceTextPort }>,
-  fallbackAccount: string,
-): ParsedStatement {
+/** Parse one accepted export reply, its raw bytes and its Big5-decoded text, as HNCB's statement workbook. */
+function parseHncbExport(bytes: Uint8Array, text: string, fallbackAccount: string): ParsedStatement {
   if (bytes.byteLength === 0)
     throw new Error("HNCB export response is empty.");
-  const { evidence } = acceptProviderResponse(HNCB_EXPORT_RESPONSE, { response, evidence: { kind: "text", bytes } }, input);
-  const parsed = parseStatementExport(evidence.text, fallbackAccount);
+  const parsed = parseStatementExport(text, fallbackAccount);
   if (!parsed.queryPeriod || !parsed.currency)
     throw new Error("HNCB export workbook is incomplete.");
   return parsed;
@@ -762,8 +751,8 @@ function readHncbExport(
  * creates its managed download artifact. The paused browser request is fetched
  * exactly once with the page's cookies, decoded from the returned bytes, then
  * fulfilled with an empty response so attachment handling cannot write a file.
- * The reply's headers and body are checked through `validate`; the popup and
- * the fetch are waits outside it.
+ * The reader checks the reply's transport before its body and accepts it
+ * through `validate`; the popup and the fetch are waits outside it.
  */
 export async function downloadCurrentStatementInMemory(
   scope: FrameScope,
@@ -774,6 +763,7 @@ export async function downloadCurrentStatementInMemory(
   timeoutMs = 60_000,
 ): Promise<HncbStatementDownload> {
   const { page, signal } = scope;
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate });
   const popupPromise = scope.withSignal((signal) => page.waitForEvent("popup", { timeout: 30_000, signal }));
   void popupPromise.catch(() => undefined);
   await scope.withSignal((signal) => statementDownloadLink(resultFrame).click({ signal }));
@@ -809,25 +799,17 @@ export async function downloadCurrentStatementInMemory(
     intercepted = true;
     try {
       const fetched = await route.fetch();
-      const observedAt = taipeiInstant(context.now());
-      const response: ProviderResponse = {
-        url: fetched.url(),
-        status: fetched.status(),
-        method: request.method(),
-        headers: fetched.headers(),
-      };
-      // The transport checks run before the body is read, so a refused reply's body never reaches the run.
-      const verified = await validate(() => verifyProviderResponse(HNCB_EXPORT_RESPONSE, response, observedAt));
-      const bytes = new Uint8Array(await fetched.body());
-      const parsed = await validate(() =>
-        readHncbExport(response, bytes, { observedAt, text: context.text }, fallbackAccount));
+      const acquired = await reader.acquireFrom(scope, HNCB_EXPORT_RESPONSE, { reply: fetched, method: request.method() }, "text");
+      const { response, evidence } = await reader.accept(HNCB_EXPORT_RESPONSE, acquired);
+      const { bytes } = acquired.evidence;
+      const parsed = await validate(() => parseHncbExport(bytes, evidence.text, fallbackAccount));
       await route.fulfill({ status: 204, body: "" });
       resolveCapture({
         ...parsed,
         filename: "hncb-domestic-deposit-export.xls",
         byteLength: bytes.byteLength,
         contentDigest: `sha256:${createHash("sha256").update(bytes).digest("base64url")}`,
-        sourceResponse: { status: response.status, contentType: verified.contentType },
+        sourceResponse: { status: acquired.response.status, contentType: response.contentType },
       });
     } catch (error) {
       const failure = captureError(error);
@@ -1181,15 +1163,18 @@ export async function stageHncbDeposit(
 
 /** The deposit runner over the run's one HNCB site, shared with the attached card. */
 function hncbDepositRunner(site: HncbNetbankSite): HncbDepositRunner {
-  return async (_page, input, context, product) => await stageHncbDeposit(
-    await readHncbDepositSource(hncbDepositSource(site, context), input, context, product),
-    context,
-    product,
-    hncbCurrentDepositBalanceTable(
-      () => readHncbCurrentDepositOverviewTable(site),
-      () => readHncbCurrentDepositDetailTable(site),
-    ),
-  );
+  return async (_page, input, context, product) => {
+    const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+    return await stageHncbDeposit(
+      await readHncbDepositSource(hncbDepositSource(site, context), input, context, product),
+      context,
+      product,
+      hncbCurrentDepositBalanceTable(
+        () => readHncbCurrentDepositOverviewTable(site, reader),
+        () => readHncbCurrentDepositDetailTable(site, reader),
+      ),
+    );
+  };
 }
 
 export type HncbStatementsContext = Pick<WorkflowContextWith<"products">, "signal" | "text" | "now" | "products">;
@@ -1256,7 +1241,14 @@ async function runHncbWorkflow(
       ...(assertSession ? { assertSession } : {}),
       attached: {
         collectors: () => ({
-          credit_card: () => collectHncbCreditCards(playwrightHncbCardPages(site), { now: context.now(), text: context.text }),
+          credit_card: () => {
+            const reader = providerResponseReader({
+              now: () => context.now(),
+              text: context.text,
+              validate: WITHOUT_PRODUCT_VALIDATION,
+            });
+            return collectHncbCreditCards(playwrightHncbCardPages(site, reader), { now: context.now(), reader });
+          },
         }),
         ...(assertSession ? { assertSession } : {}),
       },

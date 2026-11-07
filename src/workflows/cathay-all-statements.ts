@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Page } from "playwright";
 import {
   type CollectionProductOutcome,
+  type ProductCollectionHandle,
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
@@ -27,6 +28,7 @@ import {
   captureCathayForeignCurrentBalances,
 } from "./cathay-current-deposit-canonical.ts";
 import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
+import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
@@ -115,10 +117,14 @@ async function runCathayAllWorkflow(
   dependencies: CathayAllProviderWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
   return await context.browser.withPage(async (page) => {
-    const source: CathayStrictSourceOptions = {
+    const sourceFor = (validate: ProductCollectionHandle["validate"]): CathayStrictSourceOptions => ({
+      now: () => context.now(),
       text: context.text,
+      validate,
       signal: context.signal,
-    };
+    });
+    // The session and the attached previews belong to no verified product.
+    const source = sourceFor(WITHOUT_PRODUCT_VALIDATION);
     await signInCathayForApp(context, page, cathaySignInPlan(input.credentials, context.event));
 
     const createSession =
@@ -131,8 +137,8 @@ async function runCathayAllWorkflow(
     );
     const observedAt = context.now();
     let statementCaptureCount = 0;
-    const acquireCurrentBalances = (kind: "domestic" | "foreign") => () =>
-      readCathayCurrentDepositBalanceResponse(page, kind, context.signal);
+    const acquireCurrentBalances = (kind: "domestic" | "foreign", product: ProductCollectionHandle) => () =>
+      readCathayCurrentDepositBalanceResponse(page, kind, sourceFor(product.validate));
 
     const assertSession = async () => {
       // Cathay's GetJWT request is the authenticated session health check.
@@ -173,7 +179,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, source, observedAt, cathayQueryPeriod(product.collectionPeriod())),
+          )(page, input, session, sourceFor(product.validate), observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
         if (
@@ -209,7 +215,7 @@ async function runCathayAllWorkflow(
         await product.reportActivity("query");
         const balances = await captureCathayDomesticCurrentBalances({
           admitted: domestic.requests,
-          acquire: acquireCurrentBalances("domestic"),
+          acquire: acquireCurrentBalances("domestic", product),
           now: () => context.now(),
           product,
           text: context.text,
@@ -238,7 +244,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, source, () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
+          )(page, input, session, sourceFor(product.validate), () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
           context.signal,
         );
         if (
@@ -277,7 +283,7 @@ async function runCathayAllWorkflow(
         await product.reportActivity("query");
         const balances = await captureCathayForeignCurrentBalances({
           admitted: foreign.captures,
-          acquire: acquireCurrentBalances("foreign"),
+          acquire: acquireCurrentBalances("foreign", product),
           now: () => context.now(),
           product,
           text: context.text,

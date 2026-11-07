@@ -7,8 +7,7 @@ import {
 import { POST_CREDENTIAL_FIELDS, POST_PRODUCTS, POST_SOURCE } from "../lib/automation/server/sources/post.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
-import type { ElementHandle, Locator, Page, Response } from "playwright";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { ElementHandle, Locator, Page } from "playwright";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
@@ -41,12 +40,8 @@ import {
   type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponse,
 } from "./post-current-deposit-balances.ts";
-import {
-  acceptProviderResponse,
-  isDeclaredProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderRequest, type ProviderResponseReader } from "./provider-response-reader.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
@@ -97,10 +92,9 @@ export const POST_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = 
   providerDate: "optional",
 };
 
-/** The statement inquiry response as observed, with the request body that names its account and range. */
-export type PostStatementResponse = Readonly<{
-  evidence: Readonly<{ kind: "json"; bytes: Uint8Array }>;
-  response: ProviderResponse;
+/** An accepted statement inquiry reply, with the request body that names its account and range. */
+export type PostStatementReply = Readonly<{
+  payload: unknown;
   requestPostData: string | null;
 }>;
 
@@ -229,15 +223,11 @@ export function postRowsToStatementRows(
   });
 }
 
-function isEsoafResponse(txnCode: string, bizCode: string) {
-  return (response: Response) => {
-    const request = response.request();
-    const body = request.postData() ?? "";
-    return (
-      isDeclaredProviderResponse(POST_STATEMENT_RESPONSE, response.url(), request.method()) &&
-      body.includes(`"TxnCode":"${txnCode}"`) &&
-      body.includes(`"BizCode":"${bizCode}"`)
-    );
+/** Every dispatcher call shares one endpoint; only the request body names the transaction. */
+function isEsoafRequest(txnCode: string, bizCode: string) {
+  return (request: ProviderRequest): boolean => {
+    const body = request.postData ?? "";
+    return body.includes(`"TxnCode":"${txnCode}"`) && body.includes(`"BizCode":"${bizCode}"`);
   };
 }
 
@@ -466,13 +456,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 
-export function parsePostStatementResponse(input: Readonly<{
-  acquired: PostStatementResponse;
-  observedAt: string;
-  text: SourceTextPort;
-}>): PostQueriedStatement {
-  const { acquired } = input;
-  const payload = acceptProviderResponse(POST_STATEMENT_RESPONSE, acquired, input).evidence.value;
+/** Parse an accepted statement reply; the reader has already checked its transport and decoded it. */
+export function parsePostStatementResponse(acquired: PostStatementReply): PostQueriedStatement {
+  const { payload } = acquired;
   if (!Array.isArray(payload) || payload.length !== 2)
     throw new Error("Post statement response is incomplete.");
   const [screen, endBracket] = payload;
@@ -513,7 +499,8 @@ export function parsePostStatementResponse(input: Readonly<{
     accountId,
     queryPeriods: [`${startDate}~${endDate}`],
     queryRange: { startDate, endDate },
-    httpStatus: acquired.response.status,
+    // Only a 200 reply is accepted (ADR 0110).
+    httpStatus: 200,
     itemShape:
       items === undefined
         ? "absent"
@@ -529,34 +516,23 @@ export function parsePostStatementResponse(input: Readonly<{
 
 async function queryCurrentStatement(
   scope: FrameScope,
-  observedAt: string,
-  text: SourceTextPort,
+  reader: ProviderResponseReader,
   validate: ProductCollectionHandle["validate"],
 ): Promise<PostQueriedStatement> {
   const { page } = scope;
   if (!(await scope.withSignal((signal) => sixMonthDateInput(page).isChecked({ signal })))) {
     await scope.withSignal((signal) => sixMonthDateLabel(page).click({ signal }));
   }
-  const responsePromise = scope.withSignal((signal) =>
-    page.waitForResponse(isEsoafResponse("EB100200", "inquire"), { timeout: 60_000, signal }));
-  void responsePromise.catch(() => undefined);
-  await scope.withSignal((signal) =>
-    page.locator("a.css_btn_class:visible").filter({ hasText: "查詢" }).first().click({ signal }));
-  const response = await responsePromise;
-  const [bytes, headers] = await scope.race(Promise.all([response.body(), response.allHeaders()]));
+  const captured = await reader.capture(scope, POST_STATEMENT_RESPONSE, {
+    evidence: "json",
+    request: isEsoafRequest("EB100200", "inquire"),
+    timeoutMs: 60_000,
+    trigger: () => scope.withSignal((signal) =>
+      page.locator("a.css_btn_class:visible").filter({ hasText: "查詢" }).first().click({ signal })),
+  });
   return await validate(() => parsePostStatementResponse({
-    acquired: {
-      evidence: { kind: "json", bytes },
-      response: {
-        url: response.url(),
-        status: response.status(),
-        method: response.request().method(),
-        headers,
-      },
-      requestPostData: response.request().postData(),
-    },
-    observedAt,
-    text,
+    payload: captured.evidence.value,
+    requestPostData: captured.request.postData,
   }));
 }
 
@@ -570,8 +546,7 @@ export async function readPostDepositSource(
   const observedAt = taipeiInstant(context.now());
   const statements = await collectPostStatementSources(
     frameScope(page, context.signal),
-    observedAt,
-    context.text,
+    providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
     product,
   );
   return { observedAt, statements };
@@ -579,8 +554,7 @@ export async function readPostDepositSource(
 
 async function collectPostStatementSources(
   scope: FrameScope,
-  observedAt: string,
-  text: SourceTextPort,
+  reader: ProviderResponseReader,
   { event, validate }: Pick<ProductCollectionHandle, "event" | "validate">,
 ): Promise<PostQueriedStatement[]> {
   const { page, signal } = scope;
@@ -602,7 +576,7 @@ async function collectPostStatementSources(
       completed: index,
       total: accountCount,
     });
-    const statement = await queryCurrentStatement(scope, observedAt, text, validate);
+    const statement = await queryCurrentStatement(scope, reader, validate);
     signal.throwIfAborted();
     await event("decoding", "advanced", "source-decoding-completed", {
       completed: index + 1,
@@ -758,7 +732,10 @@ async function runPostDeposit(
     input,
     context,
     product,
-    () => readPostCurrentDepositBalanceResponse(page, { signal: context.signal }),
+    () => readPostCurrentDepositBalanceResponse(page, {
+      signal: context.signal,
+      reader: providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+    }),
   );
 }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import type { Response } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
@@ -10,6 +11,8 @@ import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { StatementComponentAbsentError, validationReporter } from "../lib/automation/product-collection.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -263,9 +266,7 @@ const responseBodyFixture = {
       { url: () => "https://ebank.yuantabank.com.tw/nib/pages/vnib/feature-overview" },
     ];
   },
-  async waitForResponse(
-    predicate: (response: typeof responseBodyResponseFixture) => boolean,
-  ) {
+  async waitForResponse(predicate: (response: Response) => boolean) {
     assert.equal(predicate(responseBodyResponseFixture), true);
     return responseBodyResponseFixture;
   },
@@ -275,22 +276,17 @@ const responseBodyFixture = {
     throw new Error("rendered frame never exposed the response table");
   },
 };
-const responseBodyResponseFixture = {
-  url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
-  request: () => ({
-    url: () => "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
-    method: () => "POST",
-    redirectedFrom: () => null,
-  }),
-  status: () => 200,
-  headers: () => ({
-    date: "Thu, 10 Sep 2026 02:03:04 GMT",
-    "cache-control": "no-store",
-  }),
-  async body() {
-    return Buffer.from(responseBodyCurrentCreditHtml, "utf8");
-  },
-};
+const responseBodyResponseFixture = fakeProviderReply({
+  url: "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+  method: "POST",
+  headers: { date: "Thu, 10 Sep 2026 02:03:04 GMT", "cache-control": "no-store" },
+  body: responseBodyCurrentCreditHtml,
+});
+const summaryReader = providerResponseReader({
+  now: () => "2026-09-10T02:03:04.000Z",
+  text: strictSourceText,
+  validate: WITHOUT_PRODUCT_VALIDATION,
+});
 const responseBodyLinkFixture = {
   async click(...args: unknown[]) {
     summaryClickArguments = args;
@@ -298,7 +294,7 @@ const responseBodyLinkFixture = {
 };
 const responseBodyLoaded = await loadYuantaCreditCardSummaryPage(
   fakeYuantaSite(responseBodyFixture),
-  () => "2026-09-10T02:03:04.000Z",
+  summaryReader,
   responseBodyLinkFixture as never,
 );
 assert.equal(summaryClickArguments?.length, 1);
@@ -306,19 +302,29 @@ const [summaryClickOptions] = summaryClickArguments as [Record<string, unknown>]
 assert.deepEqual(Object.keys(summaryClickOptions), ["signal"]);
 assert.ok(summaryClickOptions.signal instanceof AbortSignal);
 assert.equal(renderedDomRead, false);
-assert.equal(responseBodyLoaded.currentCredit?.html, responseBodyCurrentCreditHtml);
+assert.ok(responseBodyLoaded.currentCredit && "html" in responseBodyLoaded.currentCredit);
+assert.equal(responseBodyLoaded.currentCredit.html, responseBodyCurrentCreditHtml);
 
 // A summary reply that fails its provider response check falls back to the
-// rendered summary; the current-credit snapshot rejects its status later.
+// rendered summary; the card rejects its status inside validation later.
 {
   const renderedCurrentCreditHtml = `<p>rendered</p>${responseBodyCurrentCreditHtml}`;
   let renderedRead = false;
-  const failedReply = { ...responseBodyResponseFixture, status: () => 500 };
+  let refusedBodyRead = false;
+  const failedReply = fakeProviderReply({
+    url: "https://ebank.yuantabank.com.tw/nib/tx/creditcardsummary",
+    method: "POST",
+    status: 500,
+    body: responseBodyCurrentCreditHtml,
+    onBodyRead: () => {
+      refusedBodyRead = true;
+    },
+  });
   const page = {
     mainFrame: () => null,
     frames: () => [],
     frame: () => null,
-    async waitForResponse(predicate: (response: typeof failedReply) => boolean) {
+    async waitForResponse(predicate: (response: Response) => boolean) {
       assert.equal(predicate(failedReply), true);
       return failedReply;
     },
@@ -333,12 +339,16 @@ assert.equal(responseBodyLoaded.currentCredit?.html, responseBodyCurrentCreditHt
   };
   const loaded = await loadYuantaCreditCardSummaryPage(
     fakeYuantaSite(page),
-    () => "2026-09-10T02:03:04.000Z",
+    summaryReader,
     responseBodyLinkFixture as never,
   );
   assert.equal(renderedRead, true, "a 500 summary reply reaches the rendered-summary fallback");
   assert.equal(loaded.firstHtml, renderedCurrentCreditHtml);
-  assert.equal(loaded.currentCredit?.response.status, 500, "the fallback keeps the reply the snapshot then rejects");
+  assert.equal(refusedBodyRead, false, "a refused summary reply's body is never read");
+  assert.ok(
+    loaded.currentCredit && "refused" in loaded.currentCredit && loaded.currentCredit.refused.check === "response-status",
+    "the fallback keeps the refusal the card then fails inside validation",
+  );
 }
 
 

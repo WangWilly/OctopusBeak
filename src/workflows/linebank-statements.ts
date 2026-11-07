@@ -1,4 +1,3 @@
-import { taipeiInstant } from "../lib/time/timezone.ts";
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
@@ -22,11 +21,8 @@ import {
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
 import { captureCurrentStateSnapshots, CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
-import {
-  acceptProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -855,8 +851,7 @@ export async function linebankEnsureTransactionPage(scope: FrameScope): Promise<
 
 export class LineBankApiClient {
   private scope: FrameScope;
-  private text: SourceTextPort;
-  private now: () => string;
+  private reader: ProviderResponseReader;
   private validate: ProductCollectionHandle["validate"];
 
   /** `validate` runs each check of a reply; the reads themselves run outside it. */
@@ -865,8 +860,7 @@ export class LineBankApiClient {
     options: { text: SourceTextPort; now: () => string; validate: ProductCollectionHandle["validate"] },
   ) {
     this.scope = scope;
-    this.text = options.text;
-    this.now = options.now;
+    this.reader = providerResponseReader(options);
     this.validate = options.validate;
   }
 
@@ -919,16 +913,16 @@ export class LineBankApiClient {
     return { bytes: Uint8Array.from(bodyBytes), response };
   }
 
-  /** Accept one reply and parse it keeping the available amounts' numeric lexemes. */
-  private acceptJson<T>(
+  /** Accept one reply the in-page fetch returned and parse it keeping the available amounts' numeric lexemes. */
+  private async acceptJson<T>(
     declaration: ProviderResponseDeclaration<"optional">,
     acquired: { bytes: Uint8Array; response: ProviderResponse },
   ): Promise<T> {
-    return this.validate(() => parseLinebankApiJson<T>(acceptProviderResponse(
+    const { evidence } = await this.reader.accept(
       declaration,
       { evidence: { kind: "json", bytes: acquired.bytes }, response: acquired.response },
-      { observedAt: taipeiInstant(this.now()), text: this.text },
-    ).evidence.text));
+    );
+    return await this.validate(() => parseLinebankApiJson<T>(evidence.text));
   }
 
   /** One account-list read drives both the statements and the current balances. */

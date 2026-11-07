@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Dialog, Response } from "playwright";
+import type { Dialog } from "playwright";
 import type {
   PreviewCard,
   PreviewCreditCollection,
@@ -16,19 +16,22 @@ import {
   isZeroDecimal,
   observedAt,
 } from "../lib/preview-sources/source-kit.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { taipeiDate, taipeiInstant } from "../lib/time/timezone.ts";
+import { taipeiDate } from "../lib/time/timezone.ts";
 import type { PreviewResponseObservation } from "../lib/preview-sources/workflow.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import { ifFound } from "./frame-scope.ts";
 import { HNCB_NETBANK_ORIGIN, HNCB_TRX_DISPATCHER_PATH, type HncbNetbankSite } from "./hncb-netbank-site.ts";
-import { acceptProviderResponse, type ProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 /** `CrdDetailInq` ranges: `0` is the current unbilled page, `1`-`3` the three latest statements. */
 export const HNCB_CARD_RANGES = ["0", "1", "2", "3"] as const;
 export type HncbCardRange = (typeof HNCB_CARD_RANGES)[number];
 
-/** A `CrdDetailInq` page: its rendered markup and the dispatcher reply that loaded it, or the native dialog it raised instead. */
+/**
+ * A `CrdDetailInq` page: its rendered markup and the transport of the
+ * dispatcher reply that loaded it, or the native dialog it raised instead.
+ */
 export type HncbCardPage =
   | Readonly<{ range: HncbCardRange; dialog: string; status: number }>
   | Readonly<{ range: HncbCardRange; dialog: null; response: ProviderResponse; html: string }>;
@@ -37,7 +40,8 @@ export type HncbCardPageReader = (range: HncbCardRange) => Promise<HncbCardPage>
 
 export type HncbCardCollectionOptions = Readonly<{
   now: string;
-  text: SourceTextPort;
+  /** Accepts each page; the card is an Attached Preview Product, so no product validation owns it. */
+  reader: ProviderResponseReader;
   observe?: (response: PreviewResponseObservation) => void;
 }>;
 
@@ -242,12 +246,14 @@ const PAGING = /下一頁|次頁|下頁|more\s*data/iu;
 
 type CheckedPage = Readonly<{ text: string; html: string; date: string | null }>;
 
-function checkedPage(page: Extract<HncbCardPage, { dialog: null }>, options: HncbCardCollectionOptions): CheckedPage {
+async function checkedPage(
+  page: Extract<HncbCardPage, { dialog: null }>,
+  options: HncbCardCollectionOptions,
+): Promise<CheckedPage> {
   options.observe?.({ endpoint: `CrdDetailInq RANGE=${page.range}`, status: page.response.status, body: page.html });
-  const accepted = acceptProviderResponse(
+  const accepted = await options.reader.accept(
     HNCB_CARD_RESPONSE,
     { response: page.response, evidence: { kind: "html", html: page.html } },
-    { observedAt: taipeiInstant(options.now), text: options.text },
   );
   const { html } = accepted.evidence;
   const text = pageText(html);
@@ -339,7 +345,7 @@ export async function collectHncbCreditCards(
     if (isHncbNoCreditCardMessage(first.dialog)) return { absent: "not_held" };
     return fail("unexpected-response", "CrdDetailInq RANGE=0 raised a dialog");
   }
-  const firstPage = checkedPage(first, options);
+  const firstPage = await checkedPage(first, options);
   if (textNodes(firstPage.html).some(isHncbNoCreditCardMessage)) return { absent: "not_held" };
   const current = currentPage(firstPage.text, firstPage.html, options.now);
 
@@ -347,7 +353,7 @@ export async function collectHncbCreditCards(
   for (const range of HNCB_CARD_RANGES.slice(1)) {
     const page = await read(range);
     if (page.dialog !== null) return fail("unexpected-response", `CrdDetailInq RANGE=${range} raised a dialog`);
-    const checked = checkedPage(page, options);
+    const checked = await checkedPage(page, options);
     const bill = billPage(checked.text, checked.html);
     if (bill) bills.push(bill);
   }
@@ -410,16 +416,13 @@ export async function collectHncbCreditCards(
   };
 }
 
-function dispatcherReply(response: Response): ProviderResponse {
-  return { url: response.url(), status: response.status(), method: response.request().method(), headers: response.headers() };
-}
-
 /**
  * Reads one `CrdDetailInq` page in the signed-in frameset by posting the
  * same form all-set-tw posts into the `main` frame. Native dialogs are
- * dismissed and returned, never confirmed.
+ * dismissed and returned, never confirmed. The reader checks the reply's
+ * transport as it loads; its markup is read from the frame's DOM.
  */
-export function playwrightHncbCardPages(site: HncbNetbankSite): HncbCardPageReader {
+export function playwrightHncbCardPages(site: HncbNetbankSite, reader: ProviderResponseReader): HncbCardPageReader {
   const { page } = site.frames;
   return async (range) => {
     if (!(await ifFound(site.main({ timeoutMs: 30_000 })))) return fail("unexpected-response", "HNCB main frame is missing");
@@ -433,8 +436,9 @@ export function playwrightHncbCardPages(site: HncbNetbankSite): HncbCardPageRead
       const response = await site.dispatch("com.lb.wibc.trx.CrdDetailInq", { state: "result", TYPE: "001", RANGE: range });
       if (dialog !== null) return { range, dialog, status: response?.status() ?? 200 };
       if (!response) return fail("unexpected-response", `CrdDetailInq RANGE=${range} did not load`);
+      const reply = await reader.witnessFrom(site.frames, HNCB_CARD_RESPONSE, response);
       const loaded = await site.main();
-      return { range, dialog: null, response: dispatcherReply(response), html: await site.frames.race(loaded.content()) };
+      return { range, dialog: null, response: reply, html: await site.frames.race(loaded.content()) };
     } finally {
       page.off("dialog", onDialog);
     }

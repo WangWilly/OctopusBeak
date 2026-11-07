@@ -31,6 +31,7 @@ import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-curren
 import { frameScope } from "../../workflows/frame-scope.ts";
 import { HNCB_NETBANK_ORIGIN, hncbNetbankSite } from "../../workflows/hncb-netbank-site.ts";
 import { ProviderResponseCheckError } from "./provider-response-check.ts";
+import { providerResponseReader } from "../../workflows/provider-response-reader.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -630,7 +631,10 @@ test("cancelling the run stops the current-balance overview polling for its menu
     setTimeout(() => run.abort(cancellation), 300);
     const started = Date.now();
     await assert.rejects(
-      readHncbCurrentDepositOverviewTable(hncbNetbankSite(page, { signal: run.signal })),
+      readHncbCurrentDepositOverviewTable(
+        hncbNetbankSite(page, { signal: run.signal }),
+        providerResponseReader({ ...exportContext, validate: unreported }),
+      ),
       (error: unknown) => error === cancellation,
     );
     assert.ok(Date.now() - started < 2_000, "cancellation ends the menu wait well before its 60 s timeout");

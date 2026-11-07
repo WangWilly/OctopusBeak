@@ -46,7 +46,8 @@ export type ProviderAcquisition = Readonly<{ evidence: ProviderEvidence; respons
 
 /** One provider endpoint whose response may carry the evidence. */
 export type ProviderEndpoint = Readonly<{
-  path: string;
+  /** The exact path, or a pattern for an endpoint known only by its name, such as Cathay's card overview replies. */
+  path: string | RegExp;
   /** Absent for a source whose response method was never established, such as Fubon's navigated page. */
   method?: "GET" | "POST";
   /** The Content-Type the response must carry. Absent accepts any. */
@@ -142,7 +143,8 @@ function declaredEndpoint(declaration: ProviderResponseDeclaration, url: URL): P
   )
     return undefined;
   return declaration.endpoints.find((endpoint) =>
-    endpoint.path === url.pathname && (endpoint.search ?? /^$/u).test(url.search));
+    (typeof endpoint.path === "string" ? endpoint.path === url.pathname : endpoint.path.test(url.pathname)) &&
+    (endpoint.search ?? /^$/u).test(url.search));
 }
 
 /** Whether an observed response is one the declaration names, for an acquisition waiting on it. */

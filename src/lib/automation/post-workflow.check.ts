@@ -7,16 +7,16 @@ import { test } from "node:test";
 import type { Page } from "playwright";
 import {
   parsePostStatementResponse,
+  POST_STATEMENT_RESPONSE,
   postRowsToStatementRows,
   postWorkflowWith,
   stagePostDeposit,
   type PostQueriedStatement,
   type PostReadCurrentDepositBalanceResponse,
-  type PostStatementResponse,
   type PostWorkflowDependencies,
 } from "../../workflows/post-statements.ts";
 import { postCurrentDepositResponse } from "../../workflows/post-current-deposit-balances.fixtures.ts";
-import type { ProviderResponse } from "../../workflows/provider-response.ts";
+import { acceptProviderResponse, type ProviderResponse } from "../../workflows/provider-response.ts";
 import { ProviderResponseCheckError, type ProviderResponseCheck } from "./provider-response-check.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "./product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
@@ -89,8 +89,16 @@ const providerResponse: ProviderResponse = {
   headers: { "content-type": "application/json; charset=utf-8" },
 };
 
-function statementResponse(bytes: Uint8Array, response: Partial<ProviderResponse> = {}): PostStatementResponse {
-  return { evidence: { kind: "json", bytes }, response: { ...providerResponse, ...response }, requestPostData };
+type StatementAcquisition = Readonly<{ evidence: Readonly<{ kind: "json"; bytes: Uint8Array }>; response: ProviderResponse }>;
+
+function statementResponse(bytes: Uint8Array, response: Partial<ProviderResponse> = {}): StatementAcquisition {
+  return { evidence: { kind: "json", bytes }, response: { ...providerResponse, ...response } };
+}
+
+/** Accept a statement reply as the reader does, then parse it. */
+function parseStatement(acquired: StatementAcquisition, text: SourceTextPort = strictSourceText): PostQueriedStatement {
+  const accepted = acceptProviderResponse(POST_STATEMENT_RESPONSE, acquired, { observedAt: statementObservedAt, text });
+  return parsePostStatementResponse({ payload: accepted.evidence.value, requestPostData });
 }
 
 function failedCheck(check: ProviderResponseCheck) {
@@ -111,11 +119,7 @@ test("Post statement source decode validates the endpoint and complete response 
     JSON.stringify([screenEnvelope, successEnvelope]),
     "utf8",
   );
-  const parsed = parsePostStatementResponse({
-    acquired: statementResponse(completeBytes),
-    observedAt: statementObservedAt,
-    text: strictSourceText,
-  });
+  const parsed = parseStatement(statementResponse(completeBytes));
 
   assert.equal(parsed.accountId, accountId);
   assert.deepEqual(parsed.queryRange, {
@@ -139,56 +143,31 @@ test("Post statement source decode validates the endpoint and complete response 
     0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xc3, 0x28, 0x22, 0x7d,
   ]);
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(malformedBytes),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(malformedBytes)),
     SourceTextIntegrityError,
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(completeBytes, { status: 503 }),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(completeBytes, { status: 503 })),
     failedCheck("response-status"),
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8")),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8"))),
     /incomplete/u,
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(completeBytes, { headers: { "content-type": "text/html; charset=utf-8" } }),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(completeBytes, { headers: { "content-type": "text/html; charset=utf-8" } })),
     failedCheck("response-content-type"),
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(completeBytes, { url: "https://example.test/pst/EsoafDispatcher" }),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(completeBytes, { url: "https://example.test/pst/EsoafDispatcher" })),
     failedCheck("response-endpoint"),
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(completeBytes, { method: "GET" }),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+    () => parseStatement(statementResponse(completeBytes, { method: "GET" })),
     failedCheck("response-method"),
   );
   assert.throws(
-    () => parsePostStatementResponse({
-      acquired: statementResponse(Buffer.from(JSON.stringify([
+    () => parseStatement(statementResponse(Buffer.from(JSON.stringify([
         {
           ...screenEnvelope,
           body: {
@@ -198,10 +177,7 @@ test("Post statement source decode validates the endpoint and complete response 
           },
         },
         successEnvelope,
-      ]), "utf8")),
-      observedAt: statementObservedAt,
-      text: strictSourceText,
-    }),
+      ]), "utf8"))),
     /unsupported transaction direction/u,
   );
 });
@@ -468,21 +444,13 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   const harness = createContext({ page });
   const malformedBytes = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28]);
   await assert.rejects(
-    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      acquired: statementResponse(malformedBytes),
-      observedAt: statementObservedAt,
-      text,
-    })])),
+    runPost(harness.context, workflowInput, depositReading((text) => [parseStatement(statementResponse(malformedBytes), text)])),
     assertProductFailure("source-integrity-failed", SourceTextIntegrityError),
   );
   assert.equal(harness.committed.length, 0);
 
   await assert.rejects(
-    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      acquired: statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8")),
-      observedAt: statementObservedAt,
-      text,
-    })])),
+    runPost(harness.context, workflowInput, depositReading((text) => [parseStatement(statementResponse(Buffer.from(JSON.stringify([screenEnvelope]), "utf8")), text)])),
     assertProductFailure("source-collection-failed", /incomplete/u),
   );
   assert.equal(harness.committed.length, 0);
@@ -494,8 +462,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
   assert.equal(harness.committed.length, 0);
 
   await assert.rejects(
-    runPost(harness.context, workflowInput, depositReading((text) => [parsePostStatementResponse({
-      acquired: statementResponse(Buffer.from(JSON.stringify([
+    runPost(harness.context, workflowInput, depositReading((text) => [parseStatement(statementResponse(Buffer.from(JSON.stringify([
         {
           ...screenEnvelope,
           body: {
@@ -505,10 +472,7 @@ test("Post typed workflow rejects malformed and incomplete source before Canonic
           },
         },
         successEnvelope,
-      ]), "utf8")),
-      observedAt: statementObservedAt,
-      text,
-    })])),
+      ]), "utf8")), text)])),
     assertProductFailure("source-collection-failed", /unsupported transaction direction/u),
   );
   assert.equal(harness.committed.length, 0);

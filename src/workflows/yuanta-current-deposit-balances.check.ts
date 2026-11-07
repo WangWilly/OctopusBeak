@@ -6,6 +6,7 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
+import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import {
   YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,
@@ -401,7 +402,12 @@ async function readThroughShell(
       signal: options.signal ?? new AbortController().signal,
       text: strictSourceText,
     });
-    const table = await readYuantaCurrentDepositBalanceTable(site, kind, { timeoutMs: 5_000 });
+    const reader = providerResponseReader({
+      now: () => "2026-09-08T13:24:30.000Z",
+      text: strictSourceText,
+      validate: WITHOUT_PRODUCT_VALIDATION,
+    });
+    const table = await readYuantaCurrentDepositBalanceTable(site, kind, reader, { timeoutMs: 5_000 });
     const rows = parseYuantaCurrentDepositBalanceSnapshot({
       kind,
       rows: table.evidence.rows,

@@ -12,9 +12,8 @@ import {
   text,
   type SourceRecord,
 } from "../lib/preview-sources/source-kit.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
-import { acceptProviderResponse, type ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
 
 /*
@@ -50,17 +49,16 @@ export type SinopacLoanTransport = Readonly<{
 
 const ASSUMED = "the MMA loan endpoint is assumed from all-set-tw's mobile host";
 
-/** Form POSTs through the MMA site's one POST. A 404 is how an endpoint missing from the MMA host answers. */
-export function sinopacLoanTransport(site: SinopacMmaSite, sourceText: SourceTextPort): SinopacLoanTransport {
+/**
+ * Form POSTs through the MMA site's one POST, accepted by the reader at the
+ * run clock. A 404 is how an endpoint missing from the MMA host answers.
+ */
+export function sinopacLoanTransport(site: SinopacMmaSite, reader: ProviderResponseReader): SinopacLoanTransport {
   return {
     async post(path, form) {
       const { response, bytes } = await site.post(path, { body: new URLSearchParams(form).toString() });
       if (response.status === 404) fail("unexpected-response", `${path} answered HTTP 404, as a missing endpoint does; ${ASSUMED}`);
-      const accepted = acceptProviderResponse(
-        SINOPAC_LOAN_RESPONSE,
-        { response, evidence: { kind: "text", bytes } },
-        { observedAt: taipeiInstant(new Date().toISOString()), text: sourceText },
-      );
+      const accepted = await reader.accept(SINOPAC_LOAN_RESPONSE, { response, evidence: { kind: "text", bytes } });
       return { endpoint: path, date: accepted.response.providerDate?.raw ?? null, text: accepted.evidence.text };
     },
   };

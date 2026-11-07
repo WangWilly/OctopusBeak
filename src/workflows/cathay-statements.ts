@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import {
   StatementComponentAbsentError,
@@ -8,7 +8,6 @@ import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { navigateToCathayLoginForm } from "./cathay-login.ts";
 import { CATHAY_CREDENTIAL_FIELDS, CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -18,24 +17,26 @@ import {
 } from "../ledger/pglite/cathay-domestic-admission.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
-import { taipeiInstant } from "../lib/time/timezone.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
+import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
-  acceptProviderResponse,
-  type ProviderResponse,
-  type ProviderResponseDeclaration,
-} from "./provider-response.ts";
+  providerResponseReader,
+  type ProviderRequest,
+  type ProviderResponsePorts,
+} from "./provider-response-reader.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 export type CathayCredentials = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS>["credentials"];
 
-/** A run's source options; every signed-in read yields to its signal. */
-export type CathayStrictSourceOptions = Readonly<{
-  text: SourceTextPort;
-  signal: AbortSignal;
-}>;
+/**
+ * A run's source options: the ports every Cathay reply is read with, and the
+ * signal every signed-in read yields to. `validate` is the collecting
+ * product's own, or `WITHOUT_PRODUCT_VALIDATION` for the session and the
+ * attached previews, which no verified product owns.
+ */
+export type CathayStrictSourceOptions = ProviderResponsePorts & Readonly<{ signal: AbortSignal }>;
 
 const dateRangeSchema = z.enum([
   "one_week",
@@ -972,7 +973,7 @@ export type CathayApiResponseDeclaration = ProviderResponseDeclaration<"optional
  */
 export function cathayApiResponse(
   label: string,
-  paths: readonly string[],
+  paths: readonly (string | RegExp)[],
   search?: RegExp,
 ): CathayApiResponseDeclaration {
   return {
@@ -1001,25 +1002,31 @@ export const CATHAY_DOMESTIC_STATEMENT_RESPONSE = cathayApiResponse("Cathay dome
   CATHAY_TRANSFER_DETAIL_PATH,
 ]);
 
-/** Accept one captured Cathay response against its declaration, reading its body as JSON evidence. */
-export async function acceptCathayResponse(
-  scope: FrameScope,
+/**
+ * Read the reply to a POST the signed-in page sends itself. The in-page fetch
+ * returns the status the browser saw, which must be the captured reply's, so
+ * a reply Playwright matched to some other request is never accepted.
+ */
+async function readCathayReply(
+  page: Page,
   declaration: CathayApiResponseDeclaration,
-  response: Response,
-  text: SourceTextPort,
-) {
-  const transport: ProviderResponse = {
-    url: response.url(),
-    status: response.status(),
-    method: response.request().method(),
-    headers: await scope.race(response.allHeaders()),
-  };
-  const bytes = await scope.race(response.body());
-  return acceptProviderResponse(
-    declaration,
-    { response: transport, evidence: { kind: "json", bytes } },
-    { observedAt: taipeiInstant(new Date().toISOString()), text },
-  );
+  path: string,
+  request: (request: ProviderRequest) => boolean,
+  send: () => Promise<number>,
+  mismatch: string,
+  source: CathayStrictSourceOptions,
+): Promise<string> {
+  const scope = frameScope(page, source.signal);
+  const reader = providerResponseReader(source);
+  const { triggered: browserStatus, ...acquired } = await reader.acquire(scope, declaration, {
+    evidence: "json",
+    trigger: send,
+    // The declaration names every path of its read; this POST answers one.
+    request: (sent) => new URL(sent.url).pathname === path && request(sent),
+    timeoutMs: 60_000,
+  });
+  if (browserStatus !== acquired.response.status) throw new Error(mismatch);
+  return (await reader.accept(declaration, acquired)).evidence.text;
 }
 
 /**
@@ -1034,91 +1041,53 @@ export async function fetchCathayApiSourceText(
   body: unknown,
   source: CathayStrictSourceOptions,
 ): Promise<string> {
-  source.signal.throwIfAborted();
-  const scope = frameScope(page, source.signal);
   const expectedPostData = JSON.stringify(body);
-  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
-    (response) => {
-      const request = response.request();
-      try {
-        const url = new URL(response.url());
-        return (
-          url.pathname === path &&
-          url.hostname === CATHAY_API_HOST &&
-          request.method().toUpperCase() === "POST" &&
-          request.postData() === expectedPostData
-        );
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 60_000, signal },
-  ));
-  const statusPromise = page.evaluate(
-    async ({ path, token, body }) => {
-      const response = await fetch(path, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
-      return response.status;
-    },
-    { path, token, body },
+  return await readCathayReply(
+    page,
+    declaration,
+    path,
+    (request) => request.postData === expectedPostData,
+    () => page.evaluate(
+      async ({ path, token, body }) => {
+        const response = await fetch(path, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            Accept: "application/json, text/plain, */*",
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        return response.status;
+      },
+      { path, token, body },
+    ),
+    "Cathay browser and captured response status did not match.",
+    source,
   );
-  const [browserStatus, response] = await Promise.all([
-    scope.race(statusPromise),
-    responsePromise,
-  ]);
-  if (browserStatus !== response.status()) {
-    throw new Error(
-      "Cathay browser and captured response status did not match.",
-    );
-  }
-  return (await acceptCathayResponse(scope, declaration, response, source.text)).evidence.text;
 }
 
 async function fetchCathaySessionSourceText(
   page: Page,
   source: CathayStrictSourceOptions,
 ): Promise<string> {
-  source.signal.throwIfAborted();
-  const scope = frameScope(page, source.signal);
-  const responsePromise = scope.withSignal((signal) => page.waitForResponse(
-    (response) => {
-      try {
-        const url = new URL(response.url());
-        return (
-          url.hostname === CATHAY_API_HOST &&
-          url.pathname === CATHAY_SESSION_PATH &&
-          response.request().method().toUpperCase() === "POST"
-        );
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 60_000, signal },
-  ));
-  const statusPromise = page.evaluate(async (path) => {
-    const response = await fetch(path, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { Accept: "application/json, text/plain, */*" },
-    });
-    return response.status;
-  }, CATHAY_SESSION_PATH);
-  const [browserStatus, response] = await Promise.all([
-    scope.race(statusPromise),
-    responsePromise,
-  ]);
-  if (browserStatus !== response.status()) {
-    throw new Error("Cathay session response status did not match.");
-  }
-  return (await acceptCathayResponse(scope, CATHAY_SESSION_RESPONSE, response, source.text)).evidence.text;
+  return await readCathayReply(
+    page,
+    CATHAY_SESSION_RESPONSE,
+    CATHAY_SESSION_PATH,
+    () => true,
+    () => page.evaluate(async (path) => {
+      const response = await fetch(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json, text/plain, */*" },
+      });
+      return response.status;
+    }, CATHAY_SESSION_PATH),
+    "Cathay session response status did not match.",
+    source,
+  );
 }
 
 function parseCathayTransferResponse(

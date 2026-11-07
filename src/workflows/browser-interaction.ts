@@ -1,4 +1,4 @@
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page } from "playwright";
 
 type AttachedLocatorProbe = {
   first(): {
@@ -149,19 +149,4 @@ async function moveBrowserWindowOutOfForeground(
   } finally {
     await withTimeout(client.detach(), timeoutMs).catch(() => undefined);
   }
-}
-
-/**
- * Whether this response ends a redirect chain that reached the endpoint: the
- * chain either started with a `method` request to a URL containing `path`, or
- * its final request is one. A hop that redirects onward is not the end; a
- * chain that leaves the endpoint surfaces as its last response instead of as
- * no response at all, and a chain that arrives from elsewhere still counts.
- */
-export function endsRequestChainFrom(response: Response, path: string, method: string): boolean {
-  if (response.status() >= 300 && response.status() < 400 && response.headers().location !== undefined) return false;
-  const final = response.request();
-  let origin = final;
-  for (let previous = origin.redirectedFrom(); previous; previous = previous.redirectedFrom()) origin = previous;
-  return [origin, final].some((request) => request.url().includes(path) && request.method() === method);
 }

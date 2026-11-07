@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { errors, type Locator, type Page, type Response } from "playwright";
+import { errors, type Locator, type Page } from "playwright";
 import { z } from "zod";
 import { fubonCreditCardCommandRequest } from "../ledger/pglite/credit-card-adapters.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
@@ -50,8 +50,13 @@ import {
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
 import type { ProviderResponse } from "./provider-response.ts";
+import {
+  endsRequestChainFrom,
+  providerResponseReader,
+  type ProviderWitness,
+} from "./provider-response-reader.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
-import { endsRequestChainFrom, hasAttachedLocator } from "./browser-interaction.ts";
+import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
@@ -394,6 +399,8 @@ const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   },
 };
 
+type FubonCurrentCreditPage = Readonly<{ html: string }> | Readonly<{ error: unknown }>;
+
 /**
  * Read the current-credit page through the snapshot module. The page's own
  * GET carries the response evidence: without it there is nothing to read;
@@ -405,41 +412,34 @@ async function readFubonCurrentUsedCredit(
   product: ProductCollectionHandle,
 ): Promise<readonly FubonCurrentUsedCreditSnapshot[] | undefined> {
   const { frames } = site;
-  const responseObserved = frames
-    .withSignal((signal) =>
-      frames.page.waitForResponse(
-        (response) => endsRequestChainFrom(response, "/B2C/cccqu/cccqu002/CCCQU002_Home.faces", "GET"),
-        { timeout: 60_000, signal },
-      ),
-    )
-    .catch((error: unknown) => {
-      if (error instanceof errors.TimeoutError) return null;
-      throw error;
-    });
-  // Every exit below either awaits the wait or abandons it on cancellation.
-  responseObserved.catch(() => undefined);
-  let page: Readonly<{ html: string }> | Readonly<{ error: unknown }>;
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  // The page's DOM is the evidence; the reply only carries its transport facts.
+  let read: ProviderWitness<FubonCurrentCreditPage> | Readonly<{ error: unknown }>;
   try {
-    const scope = await site.open(CURRENT_CREDIT_ROUTE);
-    page = { html: await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })) };
+    read = await reader.witness(frames, fubonCurrentUsedCreditSnapshot.response, {
+      // A chain that leaves the endpoint ends in a reply the declaration refuses, not in no reply.
+      waitFor: endsRequestChainFrom("/B2C/cccqu/cccqu002/CCCQU002_Home.faces", "GET"),
+      timeoutMs: 60_000,
+      trigger: async (): Promise<FubonCurrentCreditPage> => {
+        try {
+          const scope = await site.open(CURRENT_CREDIT_ROUTE);
+          return { html: await frames.withSignal((signal) => scope.locator("body").innerHTML({ signal })) };
+        } catch (error) {
+          if (context.signal.aborted) throw error;
+          return { error };
+        }
+      },
+    });
   } catch (error) {
     if (context.signal.aborted) throw error;
-    page = { error };
+    if (error instanceof errors.TimeoutError) return undefined;
+    read = { error };
   }
-  const response = await responseObserved;
-  if (!response) return undefined;
   return await readCurrentStateSnapshot(fubonCurrentUsedCreditSnapshot, {
     acquire: async () => {
-      if ("error" in page) throw page.error;
-      return {
-        evidence: { kind: "html", html: page.html },
-        response: {
-          url: response.url(),
-          status: response.status(),
-          method: response.request().method(),
-          headers: response.headers(),
-        },
-      };
+      if ("error" in read) throw read.error;
+      if ("error" in read.triggered) throw read.triggered.error;
+      return { evidence: { kind: "html", html: read.triggered.html }, response: read.response };
     },
     now: () => context.now(),
     product,

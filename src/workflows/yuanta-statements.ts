@@ -13,7 +13,8 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { yuantaEbankSite, type YuantaCsvAcceptance, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -593,12 +594,12 @@ function yuantaExplicitNoDataDownload(): YuantaStatementDownload {
 export async function downloadYuantaStatementRows(
   site: YuantaEbankSite,
   account: { label: string; value: string },
-  acceptance: YuantaCsvAcceptance,
+  reader: ProviderResponseReader,
 ): Promise<YuantaStatementDownload> {
   const scope = await site.frames.scopeWith(csvDownloadLink, "YuanTa CSV download link");
   const exportLink = csvDownloadLink(scope).first();
   await site.frames.withSignal((signal) => exportLink.waitFor({ state: "attached", timeout: 60_000, signal }));
-  const downloaded = await site.readCsv(exportLink, acceptance);
+  const downloaded = await site.readCsv(exportLink, reader);
   const filename = filenameFromCsvResponse(
     downloaded.contentDisposition,
     downloaded.exportUrl,
@@ -769,6 +770,7 @@ export async function readYuantaDepositSource(
   // accountFilters remains accepted for compatibility but never narrows it.
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
+  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
   await prepareYuantaDepositPage(site, queryRange);
   context.signal.throwIfAborted();
   const accounts: YuantaDepositAccountRead[] = [];
@@ -782,10 +784,7 @@ export async function readYuantaDepositSource(
       continue;
     }
     await product.reportActivity("download");
-    const download = await downloadYuantaStatementRows(site, account, {
-      observedAt: taipeiInstant(context.now()),
-      validate: product.validate,
-    });
+    const download = await downloadYuantaStatementRows(site, account, reader);
     context.text.assertIntact(JSON.stringify(download));
     accounts.push({ account, query, download });
   }
@@ -948,6 +947,10 @@ export async function runYuantaStatements(
     input,
     context,
     product,
-    () => readYuantaCurrentDepositBalanceTable(yuantaEbankSite(page, context), "domestic"),
+    () => readYuantaCurrentDepositBalanceTable(
+      yuantaEbankSite(page, context),
+      "domestic",
+      providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+    ),
   );
 }
