@@ -742,7 +742,6 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
   async setPurchaseCategory(purchaseId: string, categoryCode: string | null) {
     if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return false;
     const requestToken = ++this.actionRequestToken;
-    this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `category:${purchaseId}`, actionError: null });
     try {
       const result = await this.options.transport.applyPageAction({
@@ -752,9 +751,12 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         categoryCode,
         dataVersion: this.value.report.knowledgeAt,
       });
-      // A change that changed nothing wrote no commit, so the page has nothing to take.
-      if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt)
+      // A change that changed nothing wrote no commit, so the page has nothing
+      // to take, and an earlier action's record refresh stays scheduled.
+      if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt) {
+        this.cancelPendingRecordRefresh();
         await this.acceptCompactPageAction(result);
+      }
       return true;
     } finally {
       if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });

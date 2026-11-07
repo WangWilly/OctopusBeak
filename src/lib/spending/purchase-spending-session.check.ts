@@ -416,6 +416,26 @@ test("a category change that changed nothing leaves the page as shown", async ()
   session.dispose();
 });
 
+test("a category change that changed nothing keeps a pairing's record refresh", async () => {
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      return input.kind === "category"
+        ? { ...actionResult(2), baseKnowledgeAt: 2, action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } }
+        : actionResult(2, [linkedRecord()]);
+    },
+  });
+  const { session, clock, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  session.start();
+  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  assert.equal(current().report.knowledgeAt, 2);
+  const reads = calls.recordPages.length;
+  assert.equal(await session.setPurchaseCategory("link:invoice-1", null), true);
+  await clock.advanceBy(1_200);
+  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
+  session.dispose();
+});
+
 test("a category change waits its turn behind a running pairing action", async () => {
   const pairing = deferred<any>();
   const { calls, transport } = makeTransport({
