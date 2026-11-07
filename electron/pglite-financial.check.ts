@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { committedPageAction } from "../src/lib/spending/model.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { fixtureInvoice } from "../src/ledger/pglite/spending-test-fixture.ts";
 import { tmpdir } from "node:os";
@@ -747,13 +746,14 @@ test("a purchase category page action publishes the Spending page a full read wo
     const records = await recordsAt(before.knowledgeAt);
     const purchase = records.find((record) => record.basis === "invoice");
     assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
-    const result = committedPageAction(await client.financial.request("financial.spending.pageAction", [{
+    const result = await client.financial.request("financial.spending.pageAction", [{
       action: "categorize",
       kind: "category",
       purchaseId: purchase.purchaseId,
       categoryCode: "dining",
       dataVersion: before.knowledgeAt,
-    }]));
+    }]);
+    if (result.status !== "committed") assert.fail("a category change cannot conflict");
     assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
     assert.deepEqual(result.affectedRecords.map((record) => record.purchaseId), [purchase.purchaseId]);
     await waitFor(() => (snapshots.at(-1)?.purchaseReport.knowledgeAt ?? 0) >= result.knowledgeAt);

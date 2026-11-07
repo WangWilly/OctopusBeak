@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SpendingPageDto } from "./model.ts";
+import type { SpendingCandidatePairRef, SpendingPageDto } from "./model.ts";
 import {
   createPurchaseSpendingSession,
   type PurchaseSpendingClock,
@@ -8,6 +8,7 @@ import {
   type PurchaseSpendingSnapshot,
   type PurchaseSpendingTimer,
   type PurchaseSpendingTransport,
+  type SpendingPageIntent,
 } from "./purchase-spending-session.ts";
 
 const amount = { currency: "TWD", coefficient: "100", scale: 0 } as const;
@@ -189,6 +190,8 @@ function actionResult(knowledgeAt = 2, affectedRecords: readonly ReturnType<type
   };
 }
 
+const confirmIntent = (pair: SpendingCandidatePairRef): SpendingPageIntent => ({ kind: "decide", pair, decision: "confirm" });
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -367,7 +370,7 @@ test("a pairing action on today's month leaves the page following today", async 
   });
   const { session, current } = createSession(report(1, [invoice, payment], [candidate("candidate-1")]), transport);
   session.start();
-  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  await session.applyPageAction(confirmIntent({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }));
   assert.equal(calls.actions.length, 1);
   assert.equal(current().actionError, null);
   assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
@@ -389,7 +392,7 @@ test("a category change runs as a page action at the shown version and takes its
   let refreshes = 0;
   const { session, current } = createSession(report(1, [invoice]), transport, undefined, async () => { refreshes += 1; });
   session.start();
-  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), true);
+  assert.equal((await session.applyPageAction({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" })).status, "committed");
   assert.deepEqual(calls.actions, [{ action: "categorize", kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining", dataVersion: 1 }]);
   assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
   assert.equal(current().busyAction, null);
@@ -411,29 +414,9 @@ test("a category change that changed nothing leaves the page as shown", async ()
   await settle();
   const shown = current().report;
   const recordReads = calls.recordPages.length;
-  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), true);
+  assert.equal((await session.applyPageAction({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" })).status, "committed");
   assert.equal(current().report, shown, "a no-op result replaces no rows");
   assert.equal(calls.recordPages.length, recordReads, "and schedules no month reread");
-  session.dispose();
-});
-
-test("a category change that changed nothing keeps a pairing's record refresh", async () => {
-  const { calls, transport } = makeTransport({
-    applyPageAction: async (input: any) => {
-      calls.actions.push(input);
-      return input.kind === "category"
-        ? { ...actionResult(2), baseKnowledgeAt: 2, action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } }
-        : actionResult(2, [linkedRecord()]);
-    },
-  });
-  const { session, clock, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
-  session.start();
-  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
-  assert.equal(current().report.knowledgeAt, 2);
-  const reads = calls.recordPages.length;
-  assert.equal(await session.setPurchaseCategory("link:invoice-1", null), true);
-  await clock.advanceBy(1_200);
-  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
   session.dispose();
 });
 
@@ -451,10 +434,10 @@ test("a strong batch runs as one page action and takes its result, and a conflic
   session.start();
   const pairs = [{ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }];
   const shown = current().report;
-  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "conflict");
+  assert.equal((await session.applyPageAction({ kind: "strong",  shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "conflict");
   assert.equal(current().report, shown, "a conflict wrote nothing for the page to take");
   conflict = false;
-  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed");
+  assert.equal((await session.applyPageAction({ kind: "strong",  shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed");
   assert.deepEqual(calls.actions[1], { action: "confirm", kind: "strong", shownKnowledgeAt: 1, month: "2026-10", pairs });
   assert.equal(current().report.knowledgeAt, 2, "the batch result was accepted");
   assert.equal(current().busyAction, null);
@@ -473,44 +456,133 @@ test("a strong batch committed on a base the page has not reached waits for the 
   session.start();
   const shown = current().report;
   const pairs = [{ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }];
-  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed", "the merge that succeeded is not an error");
+  assert.equal((await session.applyPageAction({ kind: "strong",  shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed", "the merge that succeeded is not an error");
   assert.equal(current().report, shown, "the page waits for the live publication");
   session.dispose();
 });
 
-test("a strong batch's conflict keeps a pairing's record refresh", async () => {
-  const { calls, transport } = makeTransport({
-    applyPageAction: async (input: any) => {
-      calls.actions.push(input);
-      return input.kind === "strong"
-        ? { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 2, conflicts: [], strongPairs: [] }
-        : actionResult(2, [linkedRecord()]);
+// Every page action runs one protocol (ADR 0111): refused while another runs,
+// an earlier action's record refresh held through the write and kept when
+// this one takes nothing, and a failure shown where its kind shows it.
+const pair = { candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" };
+const elsewhere = { candidateId: "candidate-9", invoiceIdentityId: "invoice-9", transactionIdentityId: "payment-9" };
+const pageIntents: readonly Readonly<{
+  kind: SpendingPageIntent["kind"];
+  errors: "page" | "caller";
+  prepare: (session: ReturnType<typeof createSession>["session"], current: () => PurchaseSpendingSnapshot) => Promise<SpendingPageIntent>;
+}>[] = [
+  { kind: "decide", errors: "page", prepare: async () => ({ kind: "decide", pair, decision: "deny" }) },
+  {
+    kind: "direct",
+    errors: "page",
+    prepare: async (session, current) => {
+      session.openPairing(invoiceRecord() as never);
+      await waitFor(() => current().pairingCandidates !== null && !current().pairingCandidatesLoading);
+      session.selectPayment("payment-1");
+      await waitFor(() => !current().pairingCandidatesLoading);
+      return { kind: "direct" };
     },
+  },
+  {
+    kind: "revoke",
+    errors: "page",
+    prepare: async () => ({ kind: "revoke", record: { ...linkedRecord(), link: { invoiceId: "invoice-1", transactionId: "payment-1" } } as never }),
+  },
+  { kind: "category", errors: "caller", prepare: async () => ({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" }) },
+  { kind: "strong", errors: "caller", prepare: async () => ({ kind: "strong", shownKnowledgeAt: 2, month: "2026-10", pairs: [pair] }) },
+];
+
+/** A committed pairing elsewhere, which the page takes and follows with a month record refresh. */
+const earlierAction = () => ({ ...actionResult(2), subject: { invoiceIds: ["invoice-9"], transactionIds: ["payment-9"] } });
+const pageWithCandidates = () =>
+  report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]);
+
+for (const intent of pageIntents) {
+  test(`a ${intent.kind} page action is refused while another runs`, async () => {
+    const running = deferred<any>();
+    const { calls, transport } = makeTransport({
+      applyPageAction: async (input: unknown) => { calls.actions.push(input); return calls.actions.length === 1 ? running.promise : actionResult(2); },
+    });
+    const { session, current } = createSession(pageWithCandidates(), transport);
+    session.start();
+    const prepared = await intent.prepare(session, current);
+    const first = session.applyPageAction(confirmIntent(elsewhere));
+    assert.deepEqual(await session.applyPageAction(prepared), { status: "refused" });
+    assert.equal(calls.actions.length, 1, "only the running action reached the worker");
+    running.resolve(earlierAction());
+    await first;
+    session.dispose();
   });
-  const { session, clock, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+
+  for (const answer of ["fails", "takes nothing"] as const) {
+    test(`a ${intent.kind} page action that ${answer} keeps an earlier action's record refresh`, async () => {
+      const { calls, transport } = makeTransport({
+        applyPageAction: async (input: any) => {
+          calls.actions.push(input);
+          if (calls.actions.length === 1) return earlierAction();
+          if (answer === "fails") throw new Error("Synthetic action failure");
+          return input.kind === "strong"
+            ? { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 2, conflicts: [], strongPairs: [] }
+            : { ...actionResult(2), baseKnowledgeAt: 2, action: input.action, kind: input.kind };
+        },
+      });
+      const { session, clock, current } = createSession(pageWithCandidates(), transport);
+      session.start();
+      await session.applyPageAction(confirmIntent(elsewhere));
+      assert.equal(current().report.knowledgeAt, 2, "the earlier action was taken");
+      const reads = calls.recordPages.length;
+      const outcome = await session.applyPageAction(await intent.prepare(session, current));
+      assert.equal(calls.actions.length, 2);
+      if (answer === "fails") {
+        assert.deepEqual(outcome, { status: "failed", message: "Synthetic action failure" });
+        assert.deepEqual(
+          current().actionError,
+          intent.errors === "page" ? { kind: "error", message: "Synthetic action failure" } : null,
+          "a failure shows where its kind shows it",
+        );
+      } else {
+        assert.notEqual(outcome.status, "failed");
+      }
+      assert.equal(current().report.knowledgeAt, 2, "nothing was taken");
+      assert.equal(current().busyAction, null);
+      // The pairing dialog holds the refresh until it closes; every other kind leaves it to its timer.
+      if (intent.kind === "direct") session.closePairing();
+      await clock.advanceBy(1_200);
+      assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the earlier month refresh still runs");
+      session.dispose();
+    });
+  }
+}
+
+test("an earlier action's record refresh waits out a page action's write", async () => {
+  const writing = deferred<any>();
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => { calls.actions.push(input); return calls.actions.length === 1 ? earlierAction() : writing.promise; },
+  });
+  const { session, clock, current } = createSession(pageWithCandidates(), transport);
   session.start();
-  const pair = { candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" };
-  await session.confirmCandidate(pair);
-  assert.equal(current().report.knowledgeAt, 2);
+  await session.applyPageAction(confirmIntent(elsewhere));
   const reads = calls.recordPages.length;
-  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 2, month: "2026-10", pairs: [pair] })).status, "conflict");
+  const changing = session.applyPageAction({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" });
   await clock.advanceBy(1_200);
-  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
+  assert.equal(calls.recordPages.length, reads, "no month read runs while the write is in flight");
+  writing.reject(new Error("Synthetic action failure"));
+  assert.equal((await changing).status, "failed");
+  await clock.advanceBy(1_200);
+  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the held refresh runs after the write");
+  assert.equal(current().report.knowledgeAt, 2);
   session.dispose();
 });
 
-test("a category change waits its turn behind a running pairing action", async () => {
-  const pairing = deferred<any>();
-  const { calls, transport } = makeTransport({
-    applyPageAction: async (input: unknown) => { calls.actions.push(input); return pairing.promise; },
+test("a pairing action the worker rejects says so on the page", async () => {
+  const { transport } = makeTransport({
+    applyPageAction: async () => ({ status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 1, conflicts: [], strongPairs: [] }),
   });
-  const { session } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  const { session, current } = createSession(pageWithCandidates(), transport);
   session.start();
-  const confirming = session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
-  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), false);
-  assert.equal(calls.actions.length, 1, "only the pairing reached the worker");
-  pairing.resolve(actionResult(2, [linkedRecord()]));
-  await confirming;
+  assert.equal((await session.applyPageAction(confirmIntent(pair))).status, "conflict");
+  assert.deepEqual(current().actionError, { kind: "error", message: "Spending action was rejected; reload Spending." });
+  assert.equal(current().report.knowledgeAt, 1);
   session.dispose();
 });
 
@@ -755,7 +827,7 @@ test("action-result refresh stays deferred while pairing is open and flushes on 
   session.openPairing(invoice as any);
   await waitFor(() => current().pairingCandidates?.length === 1);
   session.selectPayment("payment-1");
-  const action = session.confirmDirectPair();
+  const action = session.applyPageAction({ kind: "direct" });
   await waitFor(() => calls.actions.length === 1);
   finishAction(actionResult(2, [linkedRecord()]));
   await action;
@@ -795,7 +867,7 @@ test("dispose suppresses late read recovery and late financial action publicatio
   const second = createSession(report(1, [invoice, payment], [pairCandidate]), actionTransport);
   let actionEmissions = 0;
   second.session.state.subscribe(() => { actionEmissions += 1; });
-  const write = second.session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  const write = second.session.applyPageAction(confirmIntent({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }));
   await waitFor(() => calls.actions.length === 1);
   const beforeLateResult = actionEmissions;
   second.session.dispose();

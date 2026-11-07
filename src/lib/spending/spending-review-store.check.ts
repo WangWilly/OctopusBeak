@@ -32,8 +32,9 @@ async function settle() {
 function harness(
   overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {},
   monthSettleMs = 0,
-  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean> = async () => true,
-  confirmStrongPairs: (input: any) => Promise<any> = async (input) => ({ status: "committed", baseKnowledgeAt: input.shownKnowledgeAt, knowledgeAt: input.shownKnowledgeAt + 1 }),
+  /** The page's answer to the store's page actions, as `PurchaseSpendingSession.applyPageAction` gives it. */
+  applyPageAction: (intent: any) => Promise<any> = async (intent) =>
+    ({ status: "committed", baseKnowledgeAt: intent.shownKnowledgeAt ?? 3, knowledgeAt: (intent.shownKnowledgeAt ?? 3) + 1 }),
 ) {
   const calls: Record<string, any[]> = { overview: [], insight: [], candidates: [], records: [], strong: [], category: [], cancels: [] };
   let refreshes = 0;
@@ -55,13 +56,10 @@ function harness(
   const store = createSpendingReviewStore({
     transport,
     refreshSummary: async () => { refreshes += 1; },
-    setPurchaseCategory: async (purchaseId, categoryCode) => {
-      calls.category!.push({ purchaseId, categoryCode });
-      return setPurchaseCategory(purchaseId, categoryCode);
-    },
-    confirmStrongPairs: async (input) => {
-      calls.strong!.push(input);
-      return confirmStrongPairs(input);
+    applyPageAction: async (intent) => {
+      const { kind, ...request } = intent;
+      calls[kind]!.push(request);
+      return applyPageAction(intent);
     },
     monthSettleMs,
   });
@@ -147,7 +145,7 @@ test("merge lists load only while shown, page by page, and reload on a new versi
 
 test("bulk merge confirms the shown strong set as a page action and re-offers the recomputed set on conflict", async () => {
   let conflict = true;
-  const { store, calls, current, refreshes } = harness({}, 0, undefined, async () => {
+  const { store, calls, current, refreshes } = harness({}, 0, async () => {
     if (conflict) {
       conflict = false;
       return { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 5, conflicts: [pairRef(2)], strongPairs: [pairRef(1)] };
@@ -168,7 +166,7 @@ test("bulk merge confirms the shown strong set as a page action and re-offers th
 });
 
 test("a strong batch the page refuses for now leaves the button ready", async () => {
-  const { store, current } = harness({}, 0, undefined, async () => ({ status: "refused" }));
+  const { store, current } = harness({}, 0, async () => ({ status: "refused" }));
   store.sync(4, "2026-10");
   await settle();
   await store.confirmStrong();
@@ -177,10 +175,9 @@ test("a strong batch the page refuses for now leaves the button ready", async ()
 
 test("changing a category runs its page action without reading the page again, and a failure stays visible", async () => {
   let fail = false;
-  const { store, calls, current, refreshes } = harness({}, 0, async () => {
-    if (fail) throw new Error("Synthetic category failure");
-    return true;
-  });
+  const { store, calls, current, refreshes } = harness({}, 0, async () => fail
+    ? { status: "failed", message: "Synthetic category failure" }
+    : { status: "committed", baseKnowledgeAt: 3, knowledgeAt: 4 });
   store.sync(3, "2026-10");
   await settle();
   assert.equal(await store.setPurchaseCategory("invoice:1", "dining"), true);

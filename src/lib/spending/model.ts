@@ -409,15 +409,6 @@ export type SpendingStrongConflict = Readonly<{
 /** What a page action answers: its committed result, or a strong batch's conflict. */
 export type SpendingPageActionReply = SpendingPageActionResult | SpendingStrongConflict;
 
-/** A strong batch the page sent, or refused to send while another action runs or a newer page waits. */
-export type SpendingStrongConfirmOutcome = SpendingPageActionReply | Readonly<{ status: "refused" }>;
-
-/** The committed result of an action that cannot conflict. */
-export function committedPageAction(reply: SpendingPageActionReply): SpendingPageActionResult {
-  if (reply.status !== "committed") throw new Error("Spending action was rejected; reload Spending.");
-  return reply;
-}
-
 /** Whether a Purchase record belongs to an action's subject, so its row is replaced by the action's records. */
 export function inSpendingPageActionSubject(
   subject: SpendingPageActionSubject,

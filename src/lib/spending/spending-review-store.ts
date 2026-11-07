@@ -2,14 +2,13 @@ import { writable, type Readable } from "svelte/store";
 import type { OctopusBeakApi } from "$lib/desktop/api.ts";
 import type {
   SpendingCandidatePageItem,
-  SpendingCandidatePairRef,
-  SpendingStrongConfirmOutcome,
   SpendingMergeLogEntry,
   SpendingMerchantStatsDto,
   SpendingMonthInsightDto,
   SpendingPageReadResult,
   SpendingPendingOverviewDto,
 } from "./model.ts";
+import type { SpendingPageActionOutcome, SpendingPageIntent } from "./purchase-spending-session.ts";
 import { createSpendingPageReader } from "./page-reader.ts";
 import type { SpendingPurchaseRecordView } from "./purchase-matching.ts";
 
@@ -171,16 +170,12 @@ export function createSpendingReviewStore(options: Readonly<{
   /** Recovers a read that found its version stale; actions publish their own delta instead. */
   refreshSummary: () => Promise<void>;
   /**
-   * The Spending page action that sets a purchase's category; the page takes
-   * its delta (ADR 0105). False when the page refused it for now.
+   * The page's Spending page actions, which the page takes (ADR 0111): a
+   * purchase's category and the shown strong batch. The store shows their
+   * failures and conflicts itself.
    */
-  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean>;
-  /** The Spending page action that confirms the shown strong pairs; the page takes its delta (ADR 0105). */
-  confirmStrongPairs: (request: Readonly<{
-    shownKnowledgeAt: number;
-    month: string | null;
-    pairs: readonly SpendingCandidatePairRef[];
-  }>) => Promise<SpendingStrongConfirmOutcome>;
+  applyPageAction: (intent: Extract<SpendingPageIntent, Readonly<{ kind: "category" | "strong" }>>) =>
+    Promise<SpendingPageActionOutcome>;
   /**
    * How long a newly chosen month must stay chosen before its pending count
    * and insight load. Each read rebuilds the month in the shared worker, so
@@ -351,39 +346,35 @@ export function createSpendingReviewStore(options: Readonly<{
       const overview = value.overview;
       if (!overview || overview.strongPairs.length === 0 || value.strongBatch.kind === "busy" || disposed) return;
       publish({ strongBatch: { kind: "busy" } });
-      try {
-        const result = await options.confirmStrongPairs({ shownKnowledgeAt: overview.knowledgeAt, month, pairs: overview.strongPairs });
-        if (disposed) return;
-        if (result.status === "refused") {
-          publish({ strongBatch: { kind: "idle" } });
-          return;
-        }
-        if (result.status === "conflict") {
-          publish({
-            overview: { ...overview, strongPairs: result.strongPairs, strongCount: result.strongPairs.length },
-            strongBatch: { kind: "conflict", offered: result.strongPairs.length },
-          });
-          pending.reset();
-          if (listsVisible && value.knowledgeAt !== null) void pending.load(value.knowledgeAt);
-          return;
-        }
-        publish({ strongBatch: { kind: "idle" } });
-      } catch (error) {
-        publish({ strongBatch: { kind: "error", message: errorMessage(error) } });
+      const result = await options.applyPageAction({
+        kind: "strong",
+        shownKnowledgeAt: overview.knowledgeAt,
+        month,
+        pairs: overview.strongPairs,
+      });
+      if (disposed) return;
+      if (result.status === "failed") {
+        publish({ strongBatch: { kind: "error", message: result.message } });
+        return;
       }
+      if (result.status === "conflict") {
+        publish({
+          overview: { ...overview, strongPairs: result.strongPairs, strongCount: result.strongPairs.length },
+          strongBatch: { kind: "conflict", offered: result.strongPairs.length },
+        });
+        pending.reset();
+        if (listsVisible && value.knowledgeAt !== null) void pending.load(value.knowledgeAt);
+        return;
+      }
+      publish({ strongBatch: { kind: "idle" } });
     },
     async setPurchaseCategory(purchaseId, categoryCode) {
       if (value.knowledgeAt === null || value.categorySaving !== null || disposed) return false;
       publish({ categorySaving: purchaseId, categoryError: "" });
-      try {
-        const ran = await options.setPurchaseCategory(purchaseId, categoryCode);
-        if (disposed) return false;
-        publish({ categorySaving: null });
-        return ran;
-      } catch (error) {
-        publish({ categorySaving: null, categoryError: errorMessage(error) });
-        return false;
-      }
+      const result = await options.applyPageAction({ kind: "category", purchaseId, categoryCode });
+      if (disposed) return false;
+      publish({ categorySaving: null, categoryError: result.status === "failed" ? result.message : "" });
+      return result.status === "committed";
     },
     dispose() {
       if (disposed) return;

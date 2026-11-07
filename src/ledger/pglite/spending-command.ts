@@ -28,6 +28,7 @@ import type {
   SpendingPageActionResult,
   SpendingPageActionSubject,
   SpendingCandidatePairRef,
+  SpendingStrongConflict,
 } from "../../lib/spending/model.ts";
 import {
   purchaseCategoryActionSubject,
@@ -421,39 +422,32 @@ export async function applyPGliteSpendingPageAction(
   writer: PGliteSpendingWriter,
   input: SpendingPageActionRequest,
 ): Promise<SpendingPageActionReply> {
-  return writer.transaction(async (transaction) => {
-    if (input.kind === "strong") return confirmStrongPairs(transaction, input);
-    const current = await readKnowledgePoint(transaction);
-    if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
-      throw new Error("Spending action data version is stale; reload Spending.");
-    if (input.kind === "category") {
-      const subject = await purchaseCategoryActionSubject(transaction, input.purchaseId);
-      const decision = await decide(transaction, subject, (tx) => setPGliteSpendingPurchaseCategoryInTransaction(tx, {
-        purchaseId: input.purchaseId,
-        knowledgeAt: current,
-        categoryCode: input.categoryCode,
-      }));
-      return pageActionResult(input, subject, decision);
-    }
-    const subject = Object.freeze({
-      invoiceIds: Object.freeze([input.invoiceIdentityId]),
-      transactionIds: Object.freeze([input.transactionIdentityId]),
-    });
-    const decision = await decide(transaction, subject, (tx) => writePageAction(tx, input, current));
-    if (input.action === "revoke" && !decision.beforeRecords.some((record) => record.basis === "linked"))
-      throw new Error("Spending revoke selection is stale or no longer linked.");
-    if (input.action === "confirm" && !decision.affectedRecords.some((record) => record.basis === "linked"))
-      throw new Error("Spending confirmation did not produce its linked record.");
-    if (input.action === "revoke" && decision.affectedRecords.some((record) => record.basis === "linked"))
-      throw new Error("Spending revoke did not restore standalone records.");
-    return pageActionResult(input, subject, decision);
-  });
+  return writer.transaction((transaction) => runPageAction(transaction, input.kind, input));
+}
+
+/**
+ * The one path every kind takes. `kind` is passed beside `input` so the
+ * table lookup and the request share one type parameter: TypeScript can then
+ * hand each entry its own narrowed request without a cast.
+ */
+async function runPageAction<K extends PageActionKind>(
+  transaction: PGliteTransaction,
+  kind: K,
+  input: PageActionOf<K>,
+): Promise<SpendingPageActionReply> {
+  const entry: PageActionTable[K] = PAGE_ACTIONS[kind];
+  const admitted = await entry.admit(transaction, input);
+  if (admitted.status === "conflict") return admitted;
+  const subject = await entry.subject(transaction, input, admitted);
+  const decision = await decide(transaction, subject, (tx) => entry.write(tx, input, admitted));
+  entry.postcondition(input, decision);
+  return pageActionResult(input, subject, decision);
 }
 
 function pageActionResult(
   input: SpendingPageActionRequest,
   subject: SpendingPageActionSubject,
-  decision: Awaited<ReturnType<typeof decide>>,
+  decision: PageActionDecision,
 ): SpendingPageActionResult {
   return Object.freeze({
     status: "committed" as const,
@@ -467,44 +461,169 @@ function pageActionResult(
   });
 }
 
-/** The recognition write one page action makes, after validating its pair at `current`. */
-async function writePageAction(
+type PageActionKind = SpendingPageActionRequest["kind"];
+type PageActionOf<K extends PageActionKind> = Extract<SpendingPageActionRequest, Readonly<{ kind: K }>>;
+type PageActionDecision = Awaited<ReturnType<typeof decide>>;
+
+/** Every kind but strong must act on exactly the data version the page showed. */
+type ExactAdmission = Readonly<{ status: "admitted"; current: number }>;
+
+/**
+ * A strong batch admits against the strong set recomputed at `base`, not the
+ * shown version, so its write needs the validated pairs and their pending rows.
+ */
+type StrongAdmission = Readonly<{
+  status: "admitted";
+  base: number;
+  shown: readonly SpendingCandidatePairRef[];
+  strongByPair: ReadonlyMap<string, PendingSpendingPair>;
+}>;
+type PendingSpendingPair = Awaited<ReturnType<typeof queryPendingSpendingCandidates>>["pairs"][number];
+
+type PageActionAdmission = Readonly<{
+  candidate: ExactAdmission;
+  direct: ExactAdmission;
+  revoke: ExactAdmission;
+  category: ExactAdmission;
+  strong: StrongAdmission;
+}>;
+
+/**
+ * One kind's steps inside the write transaction. `admit` may answer with a
+ * conflict instead of admitting; only then is nothing read or written.
+ */
+type PageActionEntry<R extends SpendingPageActionRequest, A> = Readonly<{
+  admit(transaction: PGliteTransaction, input: R): Promise<A | SpendingStrongConflict>;
+  subject(transaction: PGliteTransaction, input: R, admitted: A): SpendingPageActionSubject | Promise<SpendingPageActionSubject>;
+  write(transaction: PGliteTransaction, input: R, admitted: A): Promise<unknown>;
+  /** Checks decide()'s before/after records; throwing rolls the write back. */
+  postcondition(input: R, decision: PageActionDecision): void;
+}>;
+
+type PageActionTable = { readonly [K in PageActionKind]: PageActionEntry<PageActionOf<K>, PageActionAdmission[K]> };
+
+/** A new page-action kind is one entry here. */
+const PAGE_ACTIONS: PageActionTable = Object.freeze({
+  candidate: {
+    admit: admitExactVersion,
+    subject: pairSubject,
+    write: (tx, input, { current }) => writeCandidateDecision(tx, input, current),
+    postcondition: (input, decision) => {
+      if (input.action === "confirm") requireLinkedRecord(decision);
+    },
+  },
+  direct: {
+    admit: admitExactVersion,
+    subject: pairSubject,
+    write: (tx, input, { current }) => writeDirectConfirmation(tx, input, current),
+    postcondition: (_input, decision) => requireLinkedRecord(decision),
+  },
+  revoke: {
+    admit: admitExactVersion,
+    subject: pairSubject,
+    write: (tx, input, { current }) => writeRevoke(tx, input, current),
+    postcondition: (_input, decision) => {
+      // The selection is only known stale once decide() has read the before
+      // records, so this runs after the write and rolls it back.
+      if (!decision.beforeRecords.some((record) => record.basis === "linked"))
+        throw new Error("Spending revoke selection is stale or no longer linked.");
+      if (decision.affectedRecords.some((record) => record.basis === "linked"))
+        throw new Error("Spending revoke did not restore standalone records.");
+    },
+  },
+  category: {
+    admit: admitExactVersion,
+    subject: (transaction, input) => purchaseCategoryActionSubject(transaction, input.purchaseId),
+    write: (tx, input, { current }) => setPGliteSpendingPurchaseCategoryInTransaction(tx, {
+      purchaseId: input.purchaseId,
+      knowledgeAt: current,
+      categoryCode: input.categoryCode,
+    }),
+    postcondition: () => {},
+  },
+  strong: {
+    admit: admitStrongSet,
+    subject: (_transaction, _input, { shown }) => Object.freeze({
+      invoiceIds: Object.freeze([...new Set(shown.map((pair) => pair.invoiceIdentityId))]),
+      transactionIds: Object.freeze([...new Set(shown.map((pair) => pair.transactionIdentityId))]),
+    }),
+    write: writeStrongBatch,
+    postcondition: () => {},
+  },
+});
+
+async function admitExactVersion(
   transaction: PGliteTransaction,
-  input: Exclude<SpendingPageActionRequest, Readonly<{ kind: "category" | "strong" }>>,
+  input: Readonly<{ dataVersion: number }>,
+): Promise<ExactAdmission> {
+  const current = await readKnowledgePoint(transaction);
+  if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
+    throw new Error("Spending action data version is stale; reload Spending.");
+  return Object.freeze({ status: "admitted" as const, current });
+}
+
+function pairSubject(
+  _transaction: PGliteTransaction,
+  input: Readonly<{ invoiceIdentityId: string; transactionIdentityId: string }>,
+): SpendingPageActionSubject {
+  return Object.freeze({
+    invoiceIds: Object.freeze([input.invoiceIdentityId]),
+    transactionIds: Object.freeze([input.transactionIdentityId]),
+  });
+}
+
+function requireLinkedRecord(decision: PageActionDecision): void {
+  if (!decision.affectedRecords.some((record) => record.basis === "linked"))
+    throw new Error("Spending confirmation did not produce its linked record.");
+}
+
+async function writeRevoke(
+  transaction: PGliteTransaction,
+  input: PageActionOf<"revoke">,
   current: number,
 ): Promise<void> {
-  if (input.kind === "revoke") {
-    await revokePGliteSpendingDedupLink(transaction, {
-      invoiceId: input.invoiceIdentityId,
-      transactionId: input.transactionIdentityId,
-      decisionKey: `spending/user/revoke/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
-      origin: { kind: "user", userId: LOCAL_USER_ID },
-      evidenceKnowledgeSequence: current,
-      evidence: { reason: "user-revoked-link" },
-    });
-    return;
-  }
-  if (input.kind === "direct") {
-    const { invoice, payment } = await queryPGliteSpendingDirectPair(
-      transaction,
-      input.invoiceIdentityId,
-      input.transactionIdentityId,
-      current,
-    );
-    await confirmPGliteSpendingDedupLink(transaction, {
-      invoiceIdentityId: input.invoiceIdentityId,
-      transactionIdentityId: input.transactionIdentityId,
-      decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
-      userId: LOCAL_USER_ID,
-      evidenceKnowledgeSequence: current,
-      evidence: {
-        decisionOrigin: "explicit-user-selection",
-        invoice: { identityId: invoice.invoiceId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
-        payment: { identityId: payment.transactionId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
-      },
-    });
-    return;
-  }
+  await revokePGliteSpendingDedupLink(transaction, {
+    invoiceId: input.invoiceIdentityId,
+    transactionId: input.transactionIdentityId,
+    decisionKey: `spending/user/revoke/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+    origin: { kind: "user", userId: LOCAL_USER_ID },
+    evidenceKnowledgeSequence: current,
+    evidence: { reason: "user-revoked-link" },
+  });
+}
+
+/** A direct pair is revalidated at `current` before its confirmation is written. */
+async function writeDirectConfirmation(
+  transaction: PGliteTransaction,
+  input: PageActionOf<"direct">,
+  current: number,
+): Promise<void> {
+  const { invoice, payment } = await queryPGliteSpendingDirectPair(
+    transaction,
+    input.invoiceIdentityId,
+    input.transactionIdentityId,
+    current,
+  );
+  await confirmPGliteSpendingDedupLink(transaction, {
+    invoiceIdentityId: input.invoiceIdentityId,
+    transactionIdentityId: input.transactionIdentityId,
+    decisionKey: `spending/user/direct/${input.invoiceIdentityId}/${input.transactionIdentityId}/${current}`,
+    userId: LOCAL_USER_ID,
+    evidenceKnowledgeSequence: current,
+    evidence: {
+      decisionOrigin: "explicit-user-selection",
+      invoice: { identityId: invoice.invoiceId, date: invoice.revision.occurrence.value, amount: invoice.revision.total, label: invoice.revision.seller.name },
+      payment: { identityId: payment.transactionId, date: payment.effectiveOn, consumeDate: payment.consumeDate ?? null, postingDate: payment.postingDate ?? null, dateBasis: payment.effectiveDateBasis ?? "effective-date", amount: payment.amount, label: payment.description },
+    },
+  });
+}
+
+/** A candidate's identity is resolved, and a confirmed pair revalidated, at `current`. */
+async function writeCandidateDecision(
+  transaction: PGliteTransaction,
+  input: PageActionOf<"candidate">,
+  current: number,
+): Promise<void> {
   const resolved = await resolvePGliteSpendingCandidate(transaction, input.candidateId, {
     invoiceId: input.invoiceIdentityId,
     transactionId: input.transactionIdentityId,
@@ -537,7 +656,7 @@ async function writePageAction(
   else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
 }
 
-type StrongConfirmRequest = Extract<SpendingPageActionRequest, Readonly<{ kind: "strong" }>>;
+type StrongConfirmRequest = PageActionOf<"strong">;
 
 function strongConfirmPairs(input: StrongConfirmRequest): readonly SpendingCandidatePairRef[] {
   if (!input || typeof input !== "object" || !Array.isArray(input.pairs) || input.pairs.length === 0)
@@ -562,10 +681,10 @@ function strongConfirmPairs(input: StrongConfirmRequest): readonly SpendingCandi
  * do not reject by themselves. A committed batch reports the summary delta of
  * every pair's records, like any page action.
  */
-async function confirmStrongPairs(
+async function admitStrongSet(
   transaction: PGliteTransaction,
   input: StrongConfirmRequest,
-): Promise<SpendingPageActionReply> {
+): Promise<StrongAdmission | SpendingStrongConflict> {
   const shown = strongConfirmPairs(input);
   const base = await readKnowledgePoint(transaction);
   if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
@@ -584,36 +703,38 @@ async function confirmStrongPairs(
       strongPairs: Object.freeze(strong.map(pendingPairRef)),
     });
   }
-  const subject = Object.freeze({
-    invoiceIds: Object.freeze([...new Set(shown.map((pair) => pair.invoiceIdentityId))]),
-    transactionIds: Object.freeze([...new Set(shown.map((pair) => pair.transactionIdentityId))]),
-  });
-  const decision = await decide(transaction, subject, async (tx) => {
-    const created = await commit(tx, "user/local");
-    for (const shownPair of shown) {
-      const pair = strongByPair.get(`${shownPair.invoiceIdentityId}/${shownPair.transactionIdentityId}`)!;
-      const link = await recordDecision(tx, {
-        invoiceId: pair.invoiceId,
-        transactionId: pair.transactionId,
-        decisionKey: `spending/user/confirmed/${pair.candidateId}`,
-        origin: { kind: "user", userId: LOCAL_USER_ID },
-        evidenceKnowledgeSequence: base,
-        evidence: {
-          decisionOrigin: "strong-match-batch",
-          candidateKey: pair.candidateId,
-          algorithm: pair.algorithm,
-          algorithmVersion: pair.algorithmVersion,
-          similarityEvidence: pair.similarityEvidence,
-          strength: pair.strength,
-          reasons: pair.reasons,
-          shownKnowledgeAt: input.shownKnowledgeAt,
-        },
-      }, "confirmed", false, created) as SpendingDedupLinkView;
-      if (link.decisionCommitSequence !== created.sequence)
-        throw new Error("Strong-match confirmation reused an earlier decision.");
-    }
-  });
-  return pageActionResult(input, subject, decision);
+  return Object.freeze({ status: "admitted" as const, base, shown, strongByPair });
+}
+
+/** One commit carries every pair's decision, so the batch lands or rolls back whole. */
+async function writeStrongBatch(
+  tx: PGliteTransaction,
+  input: StrongConfirmRequest,
+  { base, shown, strongByPair }: StrongAdmission,
+): Promise<void> {
+  const created = await commit(tx, "user/local");
+  for (const shownPair of shown) {
+    const pair = strongByPair.get(`${shownPair.invoiceIdentityId}/${shownPair.transactionIdentityId}`)!;
+    const link = await recordDecision(tx, {
+      invoiceId: pair.invoiceId,
+      transactionId: pair.transactionId,
+      decisionKey: `spending/user/confirmed/${pair.candidateId}`,
+      origin: { kind: "user", userId: LOCAL_USER_ID },
+      evidenceKnowledgeSequence: base,
+      evidence: {
+        decisionOrigin: "strong-match-batch",
+        candidateKey: pair.candidateId,
+        algorithm: pair.algorithm,
+        algorithmVersion: pair.algorithmVersion,
+        similarityEvidence: pair.similarityEvidence,
+        strength: pair.strength,
+        reasons: pair.reasons,
+        shownKnowledgeAt: input.shownKnowledgeAt,
+      },
+    }, "confirmed", false, created) as SpendingDedupLinkView;
+    if (link.decisionCommitSequence !== created.sequence)
+      throw new Error("Strong-match confirmation reused an earlier decision.");
+  }
 }
 
 /**
