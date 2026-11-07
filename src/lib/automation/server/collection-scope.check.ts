@@ -25,7 +25,7 @@ import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck, runnerHostForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../../../ledger/pglite/workflow-run.ts";
@@ -66,7 +66,7 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
 test("commit admission goes through the runner's active run to its current execution's launched scope", async () => {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
   const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
   const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
   let current = launch;
@@ -199,7 +199,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       createPGliteFinancialLocalPort(this.registry),
       ({ taskRunId }) => collectionScopeAdmitsCommit(
         taskRunId === this.run.taskRunId ? this.run : null,
-        () => automationConfigEnv({ credentials: credentialStoreForCheck().read() }),
+        () => automationConfigEnv({ settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
       ),
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
@@ -289,7 +289,7 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
       onRunOpened: (run) => { activeRun = run; },
       pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: {
-        ...automationConfigEnv({ baseEnv: {}, credentials: credentialStoreForCheck().read() }),
+        ...automationConfigEnv({ baseEnv: {}, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
       },
       workflowBrowserPort: () => ({
         async withPage(run) { return await run({} as never); },

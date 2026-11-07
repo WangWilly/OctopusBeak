@@ -266,6 +266,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
         await completeAppWorkflowHumanAssistance(request);
       },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit: commitPort,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -324,6 +325,7 @@ test("Post App dispatch names each unread statement's failure before commit", as
       const result = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+        userDataDirectory: root,
         workerPorts: { financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) },
         workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
       });
@@ -359,6 +361,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
         void cancellationRun?.requestStop("cancelled");
       },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       onRunOpened: (active) => {
         cancellationRun = active;
       },
@@ -394,6 +397,7 @@ test("Post App dispatch without a verification route fails with a configuration 
     await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2),
       },

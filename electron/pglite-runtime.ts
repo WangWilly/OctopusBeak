@@ -4,6 +4,7 @@ import { collectionScopeAdmitsCommit } from "../src/lib/automation/server/collec
 import {
   automationConfigEnv,
   type AutomationCredentialStore,
+  type AutomationSettingsStore,
 } from "../src/lib/automation/server/config-files.ts";
 import type { ActiveAutomationTaskRun } from "../src/lib/automation/server/active-task-run.ts";
 import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
@@ -40,6 +41,8 @@ export type PGliteOperationalRuntimeOptions = {
   activeRun: (taskRunId: string) => ActiveAutomationTaskRun | null;
   /** Commit admission compares the run's launched Collection scope with these current credentials. */
   credentials: AutomationCredentialStore;
+  /** The worker reads its own copy at this path; commit admission reads it here. */
+  settings: AutomationSettingsStore;
   workerPath?: string;
   /** Protocol-test seam; production creates exactly one worker client. */
   worker?: PGliteViewWorkerClient;
@@ -57,7 +60,7 @@ export function createPGliteOperationalRuntime(
   }
   const worker = options.worker ?? createPGliteViewWorkerClient(
     new Worker(options.workerPath ?? join(__dirname, "pglite-view-worker.cjs"), {
-      workerData: { dataDir: options.dataDir },
+      workerData: { dataDir: options.dataDir, settingsPath: options.settings.path },
     }),
   );
   const childRpc = createPGliteChildRpcServer({
@@ -67,7 +70,7 @@ export function createPGliteOperationalRuntime(
     },
     isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(
       options.activeRun(taskRunId),
-      () => automationConfigEnv({ credentials: options.credentials.read() }),
+      () => automationConfigEnv({ settings: options.settings.read(), credentials: options.credentials.read() }),
     ),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({

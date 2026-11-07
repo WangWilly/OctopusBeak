@@ -10,7 +10,7 @@ import {
 } from "./pglite-operational-rpc.ts";
 import { createPGliteOperationalRuntime } from "./pglite-runtime.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import { credentialStoreForCheck } from "../src/lib/automation/server/task-run-check-support.ts";
+import { credentialStoreForCheck, settingsStoreForCheck } from "../src/lib/automation/server/task-run-check-support.ts";
 
 class SilentPort {
   readonly listeners = new Set<(value: unknown) => void>();
@@ -30,7 +30,7 @@ test("the worker exposes operational start/read/write/failure through one provid
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-operational-rpc-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   const rawClient = createPGliteOperationalRpcClient(worker);
@@ -39,6 +39,7 @@ test("the worker exposes operational start/read/write/failure through one provid
     worker: client,
     activeRun: () => null,
     credentials: credentialStoreForCheck(join(dataDir, "credentials.json")),
+    settings: settingsStoreForCheck(join(dataDir, "settings.json")),
   });
   try {
     assert.deepEqual(runtime.provider.pgliteWorkflow, {
@@ -168,7 +169,12 @@ test("the worker exposes operational start/read/write/failure through one provid
 
 test("the operational runtime requires its PGlite data directory", () => {
   assert.throws(
-    () => createPGliteOperationalRuntime({ dataDir: "", activeRun: () => null, credentials: credentialStoreForCheck() }),
+    () => createPGliteOperationalRuntime({
+      dataDir: "",
+      activeRun: () => null,
+      credentials: credentialStoreForCheck(),
+      settings: settingsStoreForCheck(),
+    }),
     /requires an explicit data directory/u,
   );
 });
@@ -176,7 +182,7 @@ test("the operational runtime requires its PGlite data directory", () => {
 test("Electron main starts the required PGlite provider without SQLite startup", async () => {
   const source = await readFile(new URL("./main.ts", import.meta.url), "utf8");
   assert.match(source, /createPGliteOperationalRuntime\(/u);
-  assert.match(source, /createAutomationRuntime\(operationalRuntime\.provider, \{ credentials \}\)[\s\S]*?runtime\.recover\(\)/u);
+  assert.match(source, /createAutomationRuntime\(operationalRuntime\.provider, \{[^}]*\}\)[\s\S]*?runtime\.recover\(\)/u);
   assert.doesNotMatch(source, /initializeCanonicalRuntimeBeforeWindow|ledgerDir|pgliteOperationalEnabled/u);
 });
 

@@ -36,7 +36,7 @@ import {
   verificationConfidenceThreshold,
 } from "../src/lib/automation/server/verification-routing.ts";
 import { verificationPlanForContract } from "../src/lib/automation/server/verification-solver.ts";
-import { readAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
+import { AUTOMATION_SETTINGS_FILE, readAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
 import {
   createHumanAssistanceContract,
   type HumanAssistanceCompletionStatus,
@@ -313,7 +313,10 @@ export function createLocalSolverHumanAssistancePort(
         void route({
           contract,
           taskRunId: sessionKey,
-          confidenceThreshold: verificationConfidenceThreshold(contract, readAutomationSettingsFile()),
+          confidenceThreshold: verificationConfidenceThreshold(
+            contract,
+            readAutomationSettingsFile(resolve(process.cwd(), AUTOMATION_SETTINGS_FILE)),
+          ),
           seams: {
             pageForRun,
             signal: AbortSignal.any([signal, requestSignal]),

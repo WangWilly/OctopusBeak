@@ -180,7 +180,7 @@ test("hashed Electron chunks survive worker capture and host protocol validation
   }
 });
 
-test("App root keeps bundled frames available after Electron changes cwd to userData", async () => {
+test("App root keeps bundled frames available whatever directory the process runs in", async () => {
   const userData = await mkdtemp(join(tmpdir(), "octopus-user-data-cwd-"));
   const originalCwd = process.cwd();
   try {

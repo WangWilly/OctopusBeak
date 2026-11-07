@@ -60,7 +60,7 @@ test("PGlite IPC scopes subscriptions to senders and drains failures", async () 
       return 0;
     },
   };
-  const registration = registerPGliteViewIpc({ dataDir: "/tmp/pglite-ipc-check", worker }, bridge);
+  const registration = registerPGliteViewIpc({ worker }, bridge);
   const subscribe = handlers.get(DATA_VIEWS_SUBSCRIBE_CHANNEL);
   const unsubscribe = handlers.get(DATA_VIEWS_UNSUBSCRIBE_CHANNEL);
   assert.ok(subscribe);

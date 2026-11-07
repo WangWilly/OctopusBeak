@@ -40,7 +40,7 @@ const BUILT_ELECTRON_ENTRIES = /^build-electron\/(?:main|app-workflow-worker|pgl
 const HASHED_ELECTRON_CHUNK = /^build-electron\/[a-z0-9]+(?:-[a-z0-9]+)*-[A-Za-z0-9_-]{8}\.cjs$/u;
 export const WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV = "OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE" as const;
 
-/** Main changes to userData as cwd; use the App's declared root for frame checks. */
+/** Main's cwd is wherever the App was launched from; use the App's declared root for frame checks. */
 export function workflowFailureDiagnosticRepoRoot(environment: NodeJS.ProcessEnv = process.env): string {
   const appRoot = environment.OCTOPUSBEAK_APP_ROOT;
   return typeof appRoot === "string" && appRoot.trim() !== "" ? resolve(appRoot) : process.cwd();

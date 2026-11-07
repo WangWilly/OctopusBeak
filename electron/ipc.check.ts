@@ -32,7 +32,7 @@ assert.match(
 );
 assert.match(source, /registerPGliteViewIpc/);
 assert.doesNotMatch(source, /financial-page-worker|createFinancialPageWorkerClient/);
-assert.match(source, /pgliteOperational: \{/);
+assert.match(source, /pgliteWorker: Pick</);
 assert.match(source, /pgliteFinancial: PGliteFinancialPort/);
 assert.match(source, /\.\.\.automationForwardHandlers\(automation\)/, "automation channels only forward to the desktop service");
 assert.match(

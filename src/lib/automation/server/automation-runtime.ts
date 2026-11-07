@@ -11,7 +11,7 @@ import {
 } from "./runner.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { AutomationCredentialStore } from "./config-files.ts";
+import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 
@@ -22,7 +22,12 @@ import { AUTOMATION_TASKS } from "./tasks.ts";
  */
 export function createAutomationRuntime(
   provider: AutomationPersistenceProvider,
-  options: Readonly<{ credentials: AutomationCredentialStore; forceQuitAvailableAfterMs?: number }>,
+  options: Readonly<{
+    credentials: AutomationCredentialStore;
+    settings: AutomationSettingsStore;
+    userDataDirectory: string;
+    forceQuitAvailableAfterMs?: number;
+  }>,
 ) {
   const state = createAutomationRuntimeState(undefined, {
     knownTaskIds: new Set(AUTOMATION_TASKS.map((task) => task.id)),
@@ -32,7 +37,7 @@ export function createAutomationRuntime(
     snapshot: state.snapshot(),
     activeTaskIds: runner.activeTaskIds(),
   });
-  const desktopModel = () => loadAutomationDesktopModel(provider, live(), options.credentials);
+  const desktopModel = () => loadAutomationDesktopModel(provider, live(), options.credentials, options.settings.read());
 
   return Object.freeze({
     provider,
@@ -55,7 +60,7 @@ export function createAutomationRuntime(
     async run(taskId: string, runOptions: StartAutomationTaskOptions = {}) {
       const current = await runner.current(taskId);
       if (current) return { started: taskId, runId: current.runId, runtime: current.runtime };
-      const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel());
+      const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel(), options.settings);
       const started = await runner.start(task.id, provider, runOptions);
       return { started: task.id, runId: started.runId, runtime: started.runtime };
     },
@@ -79,7 +84,7 @@ export function createAutomationRuntime(
             results[taskId] = { status: "already_running", runId: existing.runId };
             continue;
           }
-          const task = assertAutomationTaskCanStartInModel(taskId, model);
+          const task = assertAutomationTaskCanStartInModel(taskId, model, options.settings);
           const run = await runner.start(task.id, provider, runOptions);
           if (run.adopted) {
             results[task.id] = { status: "already_running", runId: run.runId };

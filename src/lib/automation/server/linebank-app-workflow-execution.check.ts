@@ -262,6 +262,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -298,6 +299,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     const malformed = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit },
       workflowBrowserPort: () => ({ async withPage(runPage) { return runPage(malformedPage); } }),
     });
@@ -312,6 +314,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     const incomplete = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit },
       workflowBrowserPort: () => ({ async withPage(runPage) { return runPage(incompletePage); } }),
     });
@@ -332,6 +335,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     const cancelled = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: cancellationRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       onRunOpened: (active) => {
         cancellationRun = active;
       },

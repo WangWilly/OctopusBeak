@@ -203,6 +203,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -252,6 +253,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const incomplete = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit },
       workflowBrowserPort: () => incompleteBrowser,
     });
@@ -272,6 +274,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const malformed = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit },
       workflowBrowserPort: () => malformedBrowser,
     });
@@ -295,6 +298,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const cancelled = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: cancellationRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       onRunOpened: (active) => {
         cancellationRun = active;
       },
@@ -326,6 +330,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     const ambiguous = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: ambiguousRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit: {
           async execute() {

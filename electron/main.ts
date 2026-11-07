@@ -8,12 +8,11 @@ import {
   createAutomationRuntime,
   type AutomationRuntime,
 } from "../src/lib/automation/server/automation-runtime.ts";
-import { AUTOMATION_ENV_PATH, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
 import {
   AUTOMATION_CREDENTIALS_FILE,
-  AUTOMATION_SETTINGS_PATH,
+  AUTOMATION_SETTINGS_FILE,
+  createAutomationSettingsStore,
   migrateAutomationEnvFile,
-  writeAutomationSettings,
 } from "../src/lib/automation/server/config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
@@ -376,16 +375,21 @@ async function start() {
     appRoot,
     electronPath: process.execPath,
   }));
-  process.chdir(userData);
   const credentials = openSafeStorageCredentialStore(path.join(userData, AUTOMATION_CREDENTIALS_FILE));
-  migrateAutomationEnvFile({ envPath: AUTOMATION_ENV_PATH, settingsPath: AUTOMATION_SETTINGS_PATH, credentials });
+  const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
+  migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
     activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,
     credentials,
+    settings: automationSettings,
   });
   pgliteOperationalRuntime = operationalRuntime;
-  const runtime = createAutomationRuntime(operationalRuntime.provider, { credentials });
+  const runtime = createAutomationRuntime(operationalRuntime.provider, {
+    credentials,
+    settings: automationSettings,
+    userDataDirectory: userData,
+  });
   automationRuntime = runtime;
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
@@ -412,7 +416,7 @@ async function start() {
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
     clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
-    readSettings: () => systemSettings(readAutomationSettings()),
+    readSettings: () => systemSettings(automationSettings.read()),
     hasOccurrenceBeenAttempted: (occurrenceUtc) =>
       operationalRuntime.provider.automation.hasOccurrenceBeenAttempted(
         "exchange-rates",
@@ -434,7 +438,7 @@ async function start() {
     now: () => new Date(),
     setTimer: (callback, ms) => setTimeout(callback, ms),
     clearTimer: (timer) => clearTimeout(timer as NodeJS.Timeout),
-    readSettings: () => systemSettings(readAutomationSettings()),
+    readSettings: () => systemSettings(automationSettings.read()),
     startCollection: (occurrenceUtc) =>
       startScheduledCollection(runtime, occurrenceUtc, (results) => notifyCollection("scheduled", results))
         .then(() => undefined),
@@ -450,7 +454,8 @@ async function start() {
     dataVersions: dataVersionStore,
     collection,
     credentials,
-    readCredentialState: () => readAutomationCredentialState(credentials),
+    settings: automationSettings,
+    readCredentialState: () => readAutomationCredentialState(credentials, automationSettings.read()),
     deviceRegistration: createDeviceRegistrationHost({
       tdcc: createTdccRegistrationService({
         store: createTdccSecretStore(credentials),
@@ -488,8 +493,8 @@ async function start() {
     // Lets a developer see the one-time question again; packaged apps ignore it.
     forceAsk: !app.isPackaged && process.env.OCTOPUSBEAK_ASK_USAGE_STATISTICS === "1",
     now: () => new Date(),
-    readSettings: () => readAutomationSettings(),
-    writeSettings: (patch) => writeAutomationSettings({ ...readAutomationSettings(), ...patch }),
+    readSettings: automationSettings.read,
+    writeSettings: (patch) => automationSettings.write({ ...automationSettings.read(), ...patch }),
     appVersion: () => app.getVersion(),
     systemVersion: () => process.getSystemVersion(),
     locale: () => app.getLocale().startsWith("zh") ? "zh-TW" : "en",
@@ -535,8 +540,8 @@ async function start() {
   const appUpdater = createAppUpdater({
     support: appUpdatesSupport,
     currentVersion: app.getVersion(),
-    enabled: () => appUpdatesEnabled(readAutomationSettings()),
-    autoDownload: () => appUpdatesAutoDownload(readAutomationSettings()),
+    enabled: () => appUpdatesEnabled(automationSettings.read()),
+    autoDownload: () => appUpdatesAutoDownload(automationSettings.read()),
     now: () => new Date(),
     fetchRelease: () => appUpdatesSupport.supported
       ? fetchAppRelease(appUpdatesSupport)
@@ -576,10 +581,7 @@ async function start() {
     usagePinger.recordFailures(runFailures(run));
   });
   const settings = createSettingsDesktopService({
-    settingsFile: {
-      read: () => readAutomationSettings(),
-      write: (value) => writeAutomationSettings(value),
-    },
+    settingsFile: automationSettings,
     onSystemSettingsChanged: (settings) => services.settingsChanged(settings),
     usagePing: usagePinger,
     dataVersions: dataVersionStore,
@@ -611,14 +613,9 @@ async function start() {
         }
       },
     },
-    pgliteViews: {
-      dataDir: operationalRuntime.dataDir,
-    },
-    pgliteOperational: {
-      worker: operationalRuntime.worker,
-      dataDir: operationalRuntime.dataDir,
-    },
+    pgliteWorker: operationalRuntime.worker,
     pgliteFinancial: operationalRuntime.worker.financial,
+    automationSettings,
   });
   // Recovery owns the persisted active-run boundary: no schedule claims a run
   // until it is reconciled, while the shell and IPC go ahead meanwhile.

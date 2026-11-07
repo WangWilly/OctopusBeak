@@ -21,6 +21,7 @@ import {
 } from "./pglite-ipc.ts";
 import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { watchPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import type { AutomationSettingsStore } from "../src/lib/automation/server/config-files.ts";
 import type { AppUpdateRestartResult, AppUpdateView } from "../src/lib/settings/app-updates.ts";
 import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "../src/lib/automation/server/error-report.ts";
 import {
@@ -37,9 +38,9 @@ export function registerOctopusBeakIpc({
   spending,
   appUpdates,
   errorReports,
-  pgliteViews,
-  pgliteOperational,
+  pgliteWorker,
   pgliteFinancial,
+  automationSettings,
 }: {
   automation: AutomationDesktopService<BrowserWindow | null>;
   settings: SettingsServiceForwards;
@@ -50,24 +51,16 @@ export function registerOctopusBeakIpc({
     preview(input: ErrorReportInput): ErrorReportPayload;
     send(input: ErrorReportInput): Promise<ErrorReportResult>;
   };
-  pgliteViews: {
-    dataDir?: string;
-    workerPath?: string;
-  };
-  pgliteOperational: {
-    worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
-    dataDir?: string;
-    workerPath?: string;
-  };
+  /** The operational runtime's worker; the runtime owns closing it. */
+  pgliteWorker: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
   pgliteFinancial: PGliteFinancialPort;
+  automationSettings: AutomationSettingsStore;
 }) {
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => broadcast("data:invalidated", event));
   const financialPages = pgliteFinancial;
-  const sharedPgliteWorker = pgliteOperational.worker;
   const pgliteViewRegistration: PGliteViewIpcRegistration = registerPGliteViewIpc({
-    dataDir: pgliteOperational.dataDir ?? pgliteViews.dataDir ?? "",
-    workerPath: pgliteOperational.workerPath ?? pgliteViews.workerPath,
-    ...(sharedPgliteWorker ? { worker: sharedPgliteWorker, workerOwned: false } : {}),
+    worker: pgliteWorker,
+    workerOwned: false,
   }, ipcMain);
   ipcMain.handle("data-views:enabled" satisfies OctopusBeakDataViewChannels["enabled"], () => true);
   ipcMain.on("display:setScale" satisfies OctopusBeakSendChannel, (event, percent: unknown) => {
@@ -78,7 +71,7 @@ export function registerOctopusBeakIpc({
       trafficLightPositionForScale(percent),
     );
   });
-  const unwatchPreviewVisibility = watchPreviewVisibility(() => {
+  const unwatchPreviewVisibility = watchPreviewVisibility(automationSettings, () => {
     dataVersionStore.markStale("preview-data-changed");
     void financialPages.request("financial.preview.visibilityChanged", [])
       .catch((error) => console.error("preview-visibility-refresh-failed", error));
