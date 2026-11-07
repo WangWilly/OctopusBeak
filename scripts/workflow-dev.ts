@@ -306,6 +306,7 @@ export function createLocalSolverHumanAssistancePort(
       }
       const completed: Exclude<HumanAssistanceCompletionStatus, "pending"> =
         contract.completion.mode === "independent" ? "verified" : "entered";
+      const settingsPath = resolve(process.cwd(), AUTOMATION_SETTINGS_FILE);
       return await new Promise((resolve, reject) => {
         let resumed = false;
         const onAbort = () => reject(requestSignal.reason);
@@ -315,7 +316,7 @@ export function createLocalSolverHumanAssistancePort(
           taskRunId: sessionKey,
           confidenceThreshold: verificationConfidenceThreshold(
             contract,
-            readAutomationSettingsFile(resolve(process.cwd(), AUTOMATION_SETTINGS_FILE)),
+            readAutomationSettingsFile(settingsPath),
           ),
           seams: {
             pageForRun,
