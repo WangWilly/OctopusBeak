@@ -334,6 +334,9 @@ jobs:
           done
           exit 1
 
+      - name: Verify packaged fuses
+        run: node scripts/check-packaged-fuses.mjs --app out/OctopusBeak-darwin-arm64/OctopusBeak.app
+
       - name: Verify signed app
         run: |
           set -euo pipefail
