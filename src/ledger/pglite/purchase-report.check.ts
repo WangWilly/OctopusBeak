@@ -8,7 +8,7 @@ import {
   queryCurrentSpendingRecordPage,
   queryCurrentSpendingSummary,
 } from "./purchase-report.ts";
-import { commitPGliteSpendingRefundRevision, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
+import { applyPGliteSpendingPageAction, commitPGliteSpendingRefundRevision, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
 import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 import type { PGliteStore } from "./transaction.ts";
 
@@ -120,6 +120,90 @@ test("an active refund replaces its purchase and a withdrawn one leaves it stand
   }
 });
 
+test("a category page action returns the summary delta that reproduces the recomputed totals", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const bank = await fixture.addTransaction({ amount: "350", date: "2026-09-03" });
+    const invoice = await fixture.commitInvoice({
+      stableKey: "AB10000005:2026-09-04",
+      date: "2026-09-04",
+      items: [{ sequence: 1, name: "鮮奶", amount: "90" }],
+    });
+    for (const [purchaseId, recordId] of [[`transaction:${bank}`, bank], [`invoice:${invoice}`, invoice]] as const) {
+      const before = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+      const result = await applyPGliteSpendingPageAction(fixture.store, {
+        action: "categorize",
+        kind: "category",
+        purchaseId,
+        categoryCode: "dining",
+        dataVersion: before.knowledgeAt,
+      });
+      assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
+      assert.deepEqual(result.affectedRecords.map((record) => record.purchaseId), [purchaseId]);
+      assert.ok(
+        result.affectedRecords.every((record) => record.invoice?.invoiceId === recordId || record.transaction?.transactionId === recordId),
+        "the action reads only its own purchase",
+      );
+      const patched = applySpendingSummaryDelta(before.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
+      const after = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+      assert.equal(after.knowledgeAt, result.knowledgeAt);
+      assert.deepEqual(patched.categoryTotalsByMonth, after.purchaseReport.categoryTotalsByMonth);
+      assert.deepEqual(patched.totalsByCurrency, after.purchaseReport.totalsByCurrency);
+
+      const repeat = await applyPGliteSpendingPageAction(fixture.store, {
+        action: "categorize",
+        kind: "category",
+        purchaseId,
+        categoryCode: "dining",
+        dataVersion: result.knowledgeAt,
+      });
+      assert.equal(repeat.knowledgeAt, repeat.baseKnowledgeAt, "an unchanged category writes no commit");
+      assert.deepEqual(repeat.summaryDelta, { before: [], after: [] });
+    }
+    assert.equal(categoryTotal((await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction))).purchaseReport.categoryTotalsByMonth, "dining")?.count, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a category page action on a linked purchase moves the linked record's line, not a bank-only one", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    // The invoice and the bank posting fall in different months, so a delta
+    // built from the bank-only record would move the wrong month's totals.
+    const bank = await fixture.addTransaction({ amount: "350", date: "2026-10-02" });
+    const invoice = await fixture.commitInvoice({ stableKey: "AB10000006:2026-09-29", date: "2026-09-29", items: [{ sequence: 1, name: "汽油", amount: "350" }] });
+    await fixture.addTransaction({ amount: "500", date: "2026-10-05" });
+    const linkedAt = await fixture.knowledgeAt();
+    await fixture.store.transaction((transaction) => confirmPGliteSpendingDedupLink(transaction, {
+      invoiceId: invoice,
+      transactionId: bank,
+      decisionKey: `check/category-linked/${invoice}/${bank}`,
+      origin: { kind: "user", userId: "local-user" },
+      evidenceKnowledgeSequence: linkedAt,
+      evidence: { check: true },
+    }));
+    const linked = (await fixture.store.transaction((transaction) => queryCurrentSpending(transaction)))
+      .purchaseReport.records.find((record) => record.basis === "linked");
+    assert.ok(linked, "the pair is one linked purchase");
+    const before = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+    const result = await applyPGliteSpendingPageAction(fixture.store, {
+      action: "categorize",
+      kind: "category",
+      purchaseId: linked.purchaseId,
+      categoryCode: "dining",
+      dataVersion: before.knowledgeAt,
+    });
+    assert.deepEqual(result.affectedRecords.map((record) => [record.purchaseId, record.basis]), [[linked.purchaseId, "linked"]]);
+    const patched = applySpendingSummaryDelta(before.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
+    const after = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+    assert.deepEqual(patched.categoryTotalsByMonth, after.purchaseReport.categoryTotalsByMonth);
+    assert.deepEqual(patched.totalsByCurrency, after.purchaseReport.totalsByCurrency);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("decide returns the summary delta that reproduces the recomputed category totals", async () => {
   const fixture = await createSpendingCategoryFixture();
   try {
@@ -135,7 +219,7 @@ test("decide returns the summary delta that reproduces the recomputed category t
 
     const decision = await fixture.store.transaction((transaction) => decide(
       transaction,
-      { invoiceIdentityId: fuelInvoice, transactionIdentityId: bank },
+      { invoiceIds: [fuelInvoice], transactionIds: [bank] },
       (tx) => confirmPGliteSpendingDedupLink(tx, {
         invoiceId: fuelInvoice,
         transactionId: bank,

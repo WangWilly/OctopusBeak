@@ -86,7 +86,6 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "financial.spending.pairing",
   "financial.spending.pendingOverview",
   "financial.spending.recordPage",
-  "financial.spending.setPurchaseCategory",
   "settings:answerUsageStatistics",
   "settings:clearSignInData",
   "settings:collectAllSources",

@@ -182,8 +182,7 @@ function actionResult(knowledgeAt = 2, affectedRecords: readonly ReturnType<type
     kind: "direct",
     baseKnowledgeAt: knowledgeAt - 1,
     knowledgeAt,
-    invoiceIdentityId: "invoice-1",
-    transactionIdentityId: "payment-1",
+    subject: { invoiceIds: ["invoice-1"], transactionIds: ["payment-1"] },
     summaryDelta: { before: [], after: [] },
     affectedRecords,
   };
@@ -374,6 +373,81 @@ test("a pairing action on today's month leaves the page following today", async 
   assert.equal(current().selectedMonth, null, "the action does not turn today's month into an explicit choice");
   session.setToday("2026-11-01");
   assert.equal(current().activeMonth, "2026-11");
+  session.dispose();
+});
+
+test("a category change runs as a page action at the shown version and takes its result", async () => {
+  const invoice = invoiceRecord("Invoice");
+  const recategorized = invoiceRecord("Invoice, recategorized");
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => {
+      calls.actions.push(input);
+      return { ...actionResult(2, [recategorized]), action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } };
+    },
+  });
+  let refreshes = 0;
+  const { session, current } = createSession(report(1, [invoice]), transport, undefined, async () => { refreshes += 1; });
+  session.start();
+  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), true);
+  assert.deepEqual(calls.actions, [{ action: "categorize", kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining", dataVersion: 1 }]);
+  assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
+  assert.equal(current().busyAction, null);
+  assert.equal(refreshes, 0, "the page is not read again");
+  session.dispose();
+});
+
+test("a category change that changed nothing leaves the page as shown", async () => {
+  const invoice = invoiceRecord("Invoice");
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => {
+      calls.actions.push(input);
+      return { ...actionResult(1), baseKnowledgeAt: 1, action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } };
+    },
+  });
+  const { session, current } = createSession(report(1, [invoice]), transport);
+  session.start();
+  await waitFor(() => current().report.records.some((record) => record.description === "Page v1"));
+  await settle();
+  const shown = current().report;
+  const recordReads = calls.recordPages.length;
+  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), true);
+  assert.equal(current().report, shown, "a no-op result replaces no rows");
+  assert.equal(calls.recordPages.length, recordReads, "and schedules no month reread");
+  session.dispose();
+});
+
+test("a category change that changed nothing keeps a pairing's record refresh", async () => {
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      return input.kind === "category"
+        ? { ...actionResult(2), baseKnowledgeAt: 2, action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } }
+        : actionResult(2, [linkedRecord()]);
+    },
+  });
+  const { session, clock, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  session.start();
+  await session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  assert.equal(current().report.knowledgeAt, 2);
+  const reads = calls.recordPages.length;
+  assert.equal(await session.setPurchaseCategory("link:invoice-1", null), true);
+  await clock.advanceBy(1_200);
+  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
+  session.dispose();
+});
+
+test("a category change waits its turn behind a running pairing action", async () => {
+  const pairing = deferred<any>();
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => { calls.actions.push(input); return pairing.promise; },
+  });
+  const { session } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  session.start();
+  const confirming = session.confirmCandidate({ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" });
+  assert.equal(await session.setPurchaseCategory("invoice:invoice-1", "dining"), false);
+  assert.equal(calls.actions.length, 1, "only the pairing reached the worker");
+  pairing.resolve(actionResult(2, [linkedRecord()]));
+  await confirming;
   session.dispose();
 });
 

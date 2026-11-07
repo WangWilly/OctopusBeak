@@ -25,7 +25,9 @@ import type {
 import {
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCategoryMonthTotal,
+  inSpendingPageActionSubject,
   type SpendingPageActionResult,
+  type SpendingPageActionSubject,
   type SpendingPageDto,
   type SpendingPurchaseReportDto,
   type SpendingPurchaseReportSummaryDto,
@@ -74,9 +76,6 @@ import { readKnowledgePoint } from "./knowledge-point.ts";
  * turns canonical views into Purchase records. Every read below, and every
  * Pairing decision through decide(), goes through one of them.
  */
-
-/** The identities one Pairing decision touches. */
-export type PurchasePair = Readonly<{ invoiceIdentityId: string; transactionIdentityId: string }>;
 
 type PurchaseRecord = PurchaseReport["records"][number];
 
@@ -738,18 +737,16 @@ export async function queryCurrentSpendingRecordPage(
  */
 export async function queryCurrentSpendingActionRecords(
   reader: PGliteSpendingReader,
-  request: Readonly<{ knowledgeAt: number } & PurchasePair>,
+  request: Readonly<{ knowledgeAt: number; subject: SpendingPageActionSubject }>,
 ): Promise<readonly PurchaseRecord[]> {
   const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
     throw new Error("Spending action records data version is stale; reload Spending.");
   const composed = await purchaseRecordsByIdentity(reader, current, {
-    invoiceIds: [request.invoiceIdentityId],
-    transactionIds: [request.transactionIdentityId],
+    invoiceIds: [...request.subject.invoiceIds],
+    transactionIds: [...request.subject.transactionIds],
   });
-  return Object.freeze(composed.records.filter((record) =>
-    record.invoice?.invoiceId === request.invoiceIdentityId ||
-    record.transaction?.transactionId === request.transactionIdentityId));
+  return Object.freeze(composed.records.filter((record) => inSpendingPageActionSubject(request.subject, record)));
 }
 
 /** A record's summary line: the day and month the summary buckets it under, its counted amount, and its category. */
@@ -777,15 +774,15 @@ function changedLines(
 }
 
 /**
- * Apply one Pairing decision inside the caller's write transaction. Reads the
- * pair's records under the Purchase report rules, runs `write`, reads them
- * again at the new version, and returns the records after and the summary
- * delta between the two reads. A record that both reads build with the same
- * summary line cancels, so a denial moves no total.
+ * Apply one Spending page action inside the caller's write transaction. Reads
+ * the subject's records under the Purchase report rules, runs `write`, reads
+ * them again at the new version, and returns the records after and the
+ * summary delta between the two reads. A record that both reads build with
+ * the same summary line cancels, so a denial moves no total.
  */
 export async function decide(
   transaction: PGliteTransaction,
-  pair: PurchasePair,
+  subject: SpendingPageActionSubject,
   write: (transaction: PGliteTransaction) => Promise<unknown>,
 ): Promise<Readonly<{
   baseKnowledgeAt: number;
@@ -795,10 +792,10 @@ export async function decide(
   summaryDelta: SpendingPageActionResult["summaryDelta"];
 }>> {
   const baseKnowledgeAt = await readKnowledgePoint(transaction);
-  const beforeRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt: baseKnowledgeAt, ...pair });
+  const beforeRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt: baseKnowledgeAt, subject });
   await write(transaction);
   const knowledgeAt = await readKnowledgePoint(transaction);
-  const affectedRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt, ...pair });
+  const affectedRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt, subject });
   return Object.freeze({
     baseKnowledgeAt,
     knowledgeAt,

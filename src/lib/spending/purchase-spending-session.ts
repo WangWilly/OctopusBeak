@@ -4,6 +4,7 @@ import type { SpendingPurchaseRecordView, SpendingPurchaseReportView } from "./p
 import { spendingCategoryCodesForGroup } from "./category-groups.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
+  inSpendingPageActionSubject,
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
@@ -117,6 +118,7 @@ export interface PurchaseSpendingSession {
   closePairing(): void;
   confirmDirectPair(): Promise<void>;
   revokeLink(record: PurchaseRecord): Promise<void>;
+  setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<boolean>;
   dispose(): void;
 }
 
@@ -585,7 +587,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     if ((pendingReport ?? report).knowledgeAt > result.knowledgeAt) return;
     if (!report.summary) {
       if (report.knowledgeAt >= result.knowledgeAt) return;
-      throw new Error("Spending changed while applying the pairing result. Reload the selected month.");
+      throw new Error("Spending changed while applying the action result. Reload the selected month.");
     }
     const reconciliation = reconcileSpendingPageActionSummary(report.summary, report.knowledgeAt, result);
     if (reconciliation.state === "newer-live-version") return;
@@ -593,14 +595,12 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     const month = this.value.activeMonth;
     const day = this.value.selectedDay?.startsWith(`${month}-`) ? this.value.selectedDay : null;
     const summary = reconciliation.summary;
-    const matchesPair = (record: PurchaseRecord) =>
-      record.invoice?.invoiceId === result.invoiceIdentityId || record.transaction?.transactionId === result.transactionIdentityId;
     const unfiltered = this.value.recordFilter.group === null && this.value.recordFilter.query === "";
     const matchesView = (record: PurchaseRecord) => unfiltered
       && (month === null || record.occurrence.value.startsWith(`${month}-`))
       && (day === null || record.occurrence.value.startsWith(day));
     const nextRecords = Object.freeze([
-      ...this.recordPageRecords.filter((record) => !matchesPair(record)),
+      ...this.recordPageRecords.filter((record) => !inSpendingPageActionSubject(result.subject, record)),
       ...result.affectedRecords.filter((record) => matchesView(record as PurchaseRecord)),
     ].sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
     const nextReport = Object.freeze({
@@ -729,6 +729,35 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       await this.acceptCompactPageAction(result);
     } catch (error) {
       if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
+    } finally {
+      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
+    }
+  }
+
+  /**
+   * Set or clear the user's category on one purchase through the page actions
+   * (ADR 0105), so the page takes its summary delta. Refused, with false,
+   * while another action runs or a newer page waits; rejects when it fails.
+   */
+  async setPurchaseCategory(purchaseId: string, categoryCode: string | null) {
+    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return false;
+    const requestToken = ++this.actionRequestToken;
+    this.publish({ busyAction: `category:${purchaseId}`, actionError: null });
+    try {
+      const result = await this.options.transport.applyPageAction({
+        action: "categorize",
+        kind: "category",
+        purchaseId,
+        categoryCode,
+        dataVersion: this.value.report.knowledgeAt,
+      });
+      // A change that changed nothing wrote no commit, so the page has nothing
+      // to take, and an earlier action's record refresh stays scheduled.
+      if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt) {
+        this.cancelPendingRecordRefresh();
+        await this.acceptCompactPageAction(result);
+      }
+      return true;
     } finally {
       if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
     }

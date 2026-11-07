@@ -65,8 +65,7 @@ const compactActionResult = {
   kind: "direct" as const,
   baseKnowledgeAt: 6,
   knowledgeAt: 7,
-  invoiceIdentityId: "invoice-1",
-  transactionIdentityId: "transaction-1",
+  subject: { invoiceIds: ["invoice-1"], transactionIds: ["transaction-1"] },
   summaryDelta: {
     before: [
       { date: "2026-01-01", amount: { currency: "TWD", coefficient: "10000", scale: 2 }, category: { mode: "absent" as const } },

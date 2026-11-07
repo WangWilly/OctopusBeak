@@ -41,8 +41,7 @@ const removal = (baseKnowledgeAt = 6, knowledgeAt = 7): SpendingPageActionResult
   kind: "direct",
   baseKnowledgeAt,
   knowledgeAt,
-  invoiceIdentityId: "invoice-1",
-  transactionIdentityId: "transaction-1",
+  subject: { invoiceIds: ["invoice-1"], transactionIds: ["transaction-1"] },
   summaryDelta: { before: [{ date: "2026-01-01", amount: TWD("100"), category: { mode: "absent" } }], after: [] },
   affectedRecords: [],
 }) as SpendingPageActionResult;

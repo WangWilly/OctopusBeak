@@ -24,12 +24,15 @@ import type {
 import type {
   SpendingPageActionRequest,
   SpendingPageActionResult,
+  SpendingPageActionSubject,
   SpendingCandidatePairRef,
   SpendingStrongConfirmRequest,
   SpendingStrongConfirmResult,
 } from "../../lib/spending/model.ts";
-import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
-import type { SpendingPurchaseCategoryRequest } from "../../lib/spending/model.ts";
+import {
+  purchaseCategoryActionSubject,
+  setPGliteSpendingPurchaseCategoryInTransaction,
+} from "./purchase-category-command.ts";
 
 /** A command may only see the async transaction capability. */
 export type PGliteSpendingWriter = Pick<PGliteStore, "query" | "transaction">;
@@ -398,11 +401,12 @@ export async function commitPGliteSpendingRefundRevision(
 }
 
 /**
- * Apply a visible month-page decision without rebuilding the 100k-row report.
- * Pair facts, candidate identity, and the data version are all revalidated in
- * the write transaction. The Purchase report's decide() reads the pair's
- * records before and after the write and returns the summary delta between
- * them; the renderer then reloads only its visible month records.
+ * Apply a visible month-page action without rebuilding the 100k-row report.
+ * Pair facts, candidate identity, the purchase's category subject, and the
+ * data version are all revalidated in the write transaction. The Purchase
+ * report's decide() reads the subject's records before and after the write
+ * and returns the summary delta between them; the renderer then reloads only
+ * its visible month records.
  */
 export async function applyPGliteSpendingPageAction(
   writer: PGliteSpendingWriter,
@@ -411,32 +415,51 @@ export async function applyPGliteSpendingPageAction(
   return writer.transaction(async (transaction) => {
     const current = await readKnowledgePoint(transaction);
     if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
-      throw new Error("Spending action data version is stale; reload Spending before pairing.");
-    const pair = { invoiceIdentityId: input.invoiceIdentityId, transactionIdentityId: input.transactionIdentityId };
-    const decision = await decide(transaction, pair, (tx) => writePageAction(tx, input, current));
+      throw new Error("Spending action data version is stale; reload Spending.");
+    if (input.kind === "category") {
+      const subject = await purchaseCategoryActionSubject(transaction, input.purchaseId);
+      const decision = await decide(transaction, subject, (tx) => setPGliteSpendingPurchaseCategoryInTransaction(tx, {
+        purchaseId: input.purchaseId,
+        knowledgeAt: current,
+        categoryCode: input.categoryCode,
+      }));
+      return pageActionResult(input, subject, decision);
+    }
+    const subject = Object.freeze({
+      invoiceIds: Object.freeze([input.invoiceIdentityId]),
+      transactionIds: Object.freeze([input.transactionIdentityId]),
+    });
+    const decision = await decide(transaction, subject, (tx) => writePageAction(tx, input, current));
     if (input.action === "revoke" && !decision.beforeRecords.some((record) => record.basis === "linked"))
       throw new Error("Spending revoke selection is stale or no longer linked.");
     if (input.action === "confirm" && !decision.affectedRecords.some((record) => record.basis === "linked"))
       throw new Error("Spending confirmation did not produce its linked record.");
     if (input.action === "revoke" && decision.affectedRecords.some((record) => record.basis === "linked"))
       throw new Error("Spending revoke did not restore standalone records.");
-    return Object.freeze({
-      action: input.action,
-      kind: input.kind,
-      baseKnowledgeAt: decision.baseKnowledgeAt,
-      knowledgeAt: decision.knowledgeAt,
-      invoiceIdentityId: input.invoiceIdentityId,
-      transactionIdentityId: input.transactionIdentityId,
-      summaryDelta: decision.summaryDelta,
-      affectedRecords: decision.affectedRecords,
-    });
+    return pageActionResult(input, subject, decision);
+  });
+}
+
+function pageActionResult(
+  input: SpendingPageActionRequest,
+  subject: SpendingPageActionSubject,
+  decision: Awaited<ReturnType<typeof decide>>,
+): SpendingPageActionResult {
+  return Object.freeze({
+    action: input.action,
+    kind: input.kind,
+    baseKnowledgeAt: decision.baseKnowledgeAt,
+    knowledgeAt: decision.knowledgeAt,
+    subject,
+    summaryDelta: decision.summaryDelta,
+    affectedRecords: decision.affectedRecords,
   });
 }
 
 /** The recognition write one page action makes, after validating its pair at `current`. */
 async function writePageAction(
   transaction: PGliteTransaction,
-  input: SpendingPageActionRequest,
+  input: Exclude<SpendingPageActionRequest, Readonly<{ kind: "category" }>>,
   current: number,
 ): Promise<void> {
   if (input.kind === "revoke") {
@@ -593,7 +616,6 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     revokeDedupLink: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => revokePGliteSpendingDedupLink(transaction, input)),
     commitRefundRevision: (input: SpendingRefundRevisionInput) => writer.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, input)),
     pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
-    setPurchaseCategory: (input: SpendingPurchaseCategoryRequest) => setPGliteSpendingPurchaseCategory(writer, input),
     confirmStrongCandidates: (input: SpendingStrongConfirmRequest) => confirmPGliteSpendingStrongCandidates(writer, input),
   });
 }

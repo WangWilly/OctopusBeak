@@ -59,12 +59,13 @@ function installReads({ records, pair }) {
       : { status: "committed", baseKnowledgeAt: 7, knowledgeAt: 8, confirmed: [] };
   };
   spending.applyPageAction = async (input) => {
-    window.__calls.actions.push(input);
-    return new Promise(() => {});
-  };
-  spending.setPurchaseCategory = async (input) => {
+    if (input.kind !== "category") {
+      window.__calls.actions.push(input);
+      return new Promise(() => {});
+    }
+    // A category change that changed nothing: the page has nothing to take.
     window.__calls.categories.push(input);
-    return { purchaseId: input.purchaseId, subject: "transaction", categoryCode: input.categoryCode, baseKnowledgeAt: input.knowledgeAt, knowledgeAt: input.knowledgeAt };
+    return { action: input.action, kind: input.kind, baseKnowledgeAt: input.dataVersion, knowledgeAt: input.dataVersion, subject: { invoiceIds: [], transactionIds: [] }, summaryDelta: { before: [], after: [] }, affectedRecords: [] };
   };
 }
 
@@ -144,7 +145,7 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
       await modal.locator("[data-change-category]").click();
       await modal.locator("[data-category-code='dining']").click();
       await page.waitForFunction(() => window.__calls.categories.length === 1);
-      assert.deepEqual(await page.evaluate(() => window.__calls.categories[0]), { purchaseId: "transaction:tx-1", knowledgeAt: 7, categoryCode: "dining" });
+      assert.deepEqual(await page.evaluate(() => window.__calls.categories[0]), { action: "categorize", kind: "category", purchaseId: "transaction:tx-1", categoryCode: "dining", dataVersion: 7 });
       await modal.locator("[data-change-category]").click();
       await modal.locator("[data-clear-category]").click();
       await page.waitForFunction(() => window.__calls.categories.length === 2);

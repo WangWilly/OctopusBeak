@@ -14,9 +14,11 @@ import {
   TRANSACTION_TAXONOMY_VERSION,
 } from "../canonical/transaction-taxonomy.ts";
 import type {
+  SpendingPageActionSubject,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
 } from "../../lib/spending/model.ts";
+import { idString } from "./spending-sql.ts";
 
 /**
  * `setPurchaseCategory` writes User Assertions on the subject that owns the
@@ -124,6 +126,35 @@ async function resolveSubject(transaction: PGliteTransaction, identity: Purchase
       return { kind: "items", invoiceId };
     }
   }
+}
+
+/**
+ * The identities whose Purchase records a category change on `purchaseId`
+ * moves, so the change can report its summary delta (ADR 0105). Fails the
+ * same way the change itself would on a stale or ineligible purchase.
+ */
+export async function purchaseCategoryActionSubject(
+  transaction: PGliteTransaction,
+  purchaseId: string,
+): Promise<SpendingPageActionSubject> {
+  const identity = parsePurchaseIdentity(purchaseId);
+  if (identity.basis === "linked") {
+    // The category lands on the transaction, but the linked record is built
+    // from both members; read without its invoice, it is a bank-only record.
+    const link = (await query<Row>(transaction,
+      "SELECT invoice_id, transaction_id FROM current_spending_dedup_links WHERE confirmed_event_id = ?",
+      [bytes(identity.eventId, "Spending link event identity")],
+    ))[0];
+    if (!link) fail("stale", "Spending purchase is stale or no longer linked.");
+    return Object.freeze({
+      invoiceIds: Object.freeze([idString(bytesFromRow(link.invoice_id, "Linked invoice"))]),
+      transactionIds: Object.freeze([idString(bytesFromRow(link.transaction_id, "Linked transaction"))]),
+    });
+  }
+  const subject = await resolveSubject(transaction, identity);
+  return subject.kind === "transaction"
+    ? Object.freeze({ invoiceIds: Object.freeze([]), transactionIds: Object.freeze([idString(subject.transactionId)]) })
+    : Object.freeze({ invoiceIds: Object.freeze([idString(subject.invoiceId)]), transactionIds: Object.freeze([]) });
 }
 
 async function transactionKind(transaction: PGliteTransaction, transactionId: Uint8Array): Promise<string | null> {
