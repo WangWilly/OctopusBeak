@@ -103,7 +103,6 @@ const { buildDesktopEnv, ensureDataRoot } = runtime as {
   buildDesktopEnv: (options: {
     userData: string;
     appRoot: string;
-    electronPath?: string;
   }) => NodeJS.ProcessEnv;
   ensureDataRoot: (userData: string, defaultSettings: Readonly<Record<string, unknown>>) => void;
 };
@@ -364,7 +363,6 @@ async function start() {
   Object.assign(process.env, buildDesktopEnv({
     userData,
     appRoot,
-    electronPath: process.execPath,
   }));
   const credentials = openSafeStorageCredentialStore(path.join(userData, AUTOMATION_CREDENTIALS_FILE));
   const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
