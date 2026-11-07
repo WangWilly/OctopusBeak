@@ -80,6 +80,10 @@ test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, asyn
     }
     const page = browser.contexts()[0]?.pages()[0];
     assert.ok(page);
+    const cspViolations: string[] = [];
+    page.on("console", (message) => {
+      if (/Content Security Policy/u.test(message.text())) cspViolations.push(message.text());
+    });
     await page.waitForFunction(() => window.location.hash === "#/overview", undefined, { timeout: 10_000 });
     assert.equal(await page.evaluate(() => window.octopusBeak.dataViews.enabled()), true);
 
@@ -101,6 +105,19 @@ test("enabled PGlite financial routes use live pages", { timeout: 90_000 }, asyn
     await page.locator('nav.side-nav a[href="#/overview"]').click();
     await page.locator("[data-overview-state]").first().waitFor({ state: "visible", timeout: 15_000 });
     assert.equal(await page.locator(".route-error").count(), 0);
+
+    assert.match(
+      await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content") ?? "",
+      /default-src 'none'/u,
+    );
+    for (const href of await page.locator("nav.side-nav a[href^='#/']").evaluateAll(
+      (links) => links.map((link) => link.getAttribute("href")!),
+    )) {
+      await page.locator(`nav.side-nav a[href="${href}"]`).click();
+      await page.waitForFunction((hash) => window.location.hash === hash, href, { timeout: 10_000 });
+      await page.waitForFunction(() => !document.querySelector(".route-skeleton"), undefined, { timeout: 15_000 });
+    }
+    assert.deepEqual(cspViolations, [], "every route renders under the Content Security Policy");
 
   } finally {
     if (browser) await Promise.race([

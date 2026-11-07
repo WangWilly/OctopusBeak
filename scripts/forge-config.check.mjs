@@ -116,3 +116,17 @@ test("Forge DMG uses the OctopusBeak volume icon and branded drag-to-install win
     ["position", ".VolumeIcon.icns"],
   ]);
 });
+
+test("Forge flips the fuses that let the packaged binary run as Node or under a debugger", () => {
+  const { FuseV1Options } = require("@electron/fuses");
+  const fuses = forgeConfig.plugins.find((plugin) => plugin.name === "fuses");
+  assert.ok(fuses, "the fuses plugin is configured");
+  assert.equal(fuses.fusesConfig[FuseV1Options.RunAsNode], false);
+  assert.equal(fuses.fusesConfig[FuseV1Options.EnableNodeOptionsEnvironmentVariable], false);
+  assert.equal(fuses.fusesConfig[FuseV1Options.EnableNodeCliInspectArguments], false);
+  assert.notEqual(
+    fuses.fusesConfig[FuseV1Options.GrantFileProtocolExtraPrivileges],
+    false,
+    "the renderer still loads from file://",
+  );
+});
