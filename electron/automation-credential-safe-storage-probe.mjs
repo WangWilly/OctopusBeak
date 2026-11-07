@@ -4,7 +4,9 @@ import { app, safeStorage } from "electron";
 import {
   AUTOMATION_CREDENTIALS_FILE,
   AUTOMATION_CREDENTIALS_FORMAT,
+  AUTOMATION_SETTINGS_FILE,
   createAutomationCredentialStore,
+  createAutomationSettingsStore,
 } from "../src/lib/automation/server/config-files.ts";
 import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
 import { toAutomationCredentialStateDto } from "./automation-credential-state.ts";
@@ -57,7 +59,8 @@ app.whenReady().then(() => {
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "ACCOUNT")]: "synthetic-account",
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "PASSWORD")]: "synthetic-password",
     })).toString("base64");
-    writeFileSync(join(process.cwd(), "settings.json"), "{}\n");
+    const settings = createAutomationSettingsStore(join(process.cwd(), AUTOMATION_SETTINGS_FILE));
+    writeFileSync(settings.path, "{}\n");
     writeFileSync(credentials.path, JSON.stringify({
       format: AUTOMATION_CREDENTIALS_FORMAT,
       data: encrypted,
@@ -66,7 +69,7 @@ app.whenReady().then(() => {
     const samples = [];
     for (let index = 0; index < 100; index += 1) {
       const startedAt = performance.now();
-      const source = readAutomationCredentialState(credentials);
+      const source = readAutomationCredentialState(credentials, settings.read());
       toAutomationCredentialStateDto(source, index);
       samples.push(performance.now() - startedAt);
     }

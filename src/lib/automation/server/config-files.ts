@@ -21,7 +21,7 @@ export type AutomationSettingValue = string | boolean;
 export type AutomationSettingsFile = Record<string, AutomationSettingValue>;
 export type AutomationCredentialsFile = Record<string, string>;
 
-export const AUTOMATION_SETTINGS_PATH = "settings.json";
+export const AUTOMATION_SETTINGS_FILE = "settings.json";
 export const AUTOMATION_CREDENTIALS_FILE = "credentials.json";
 export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
 
@@ -55,6 +55,15 @@ type EncryptedAutomationCredentialsFile = {
   format: typeof AUTOMATION_CREDENTIALS_FORMAT;
   data: string;
 };
+
+export type AutomationSettingsStore = Readonly<{
+  /** Absolute path of settings.json. */
+  path: string;
+  read(): AutomationSettingsFile;
+  write(settings: AutomationSettingsFile): void;
+  /** Hears every write through this store, so no writer has to remember to announce one. */
+  subscribe(listener: (settings: AutomationSettingsFile) => void): () => void;
+}>;
 
 export type AutomationCredentialStore = Readonly<{
   /** Absolute path of credentials.json. */
@@ -172,7 +181,7 @@ function settingsFileText(settings: AutomationSettingsFile) {
   return `${JSON.stringify(cleanSettings(settings), null, 2)}\n`;
 }
 
-export function readAutomationSettingsFile(path = AUTOMATION_SETTINGS_PATH) {
+export function readAutomationSettingsFile(path: string) {
   return cleanSettings(readJsonRecord(path));
 }
 
@@ -183,23 +192,8 @@ export function readAutomationCredentialsFile(
   return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path), codec));
 }
 
-type AutomationSettingsWriteListener = (path: string, settings: AutomationSettingsFile) => void;
-
-const settingsWriteListeners = new Set<AutomationSettingsWriteListener>();
-
-/** Hears every settings write in this process, so no writer has to remember to announce one. */
-export function onAutomationSettingsWritten(listener: AutomationSettingsWriteListener): () => void {
-  settingsWriteListeners.add(listener);
-  return () => settingsWriteListeners.delete(listener);
-}
-
-function announceSettingsWritten(path: string, settings: AutomationSettingsFile) {
-  for (const listener of settingsWriteListeners) listener(path, settings);
-}
-
 export function writeAutomationSettingsFile(path: string, settings: AutomationSettingsFile) {
   atomicWrite(path, settingsFileText(settings));
-  announceSettingsWritten(path, settings);
 }
 
 export function writeAutomationCredentialsFile(
@@ -222,8 +216,38 @@ export function createAutomationCredentialStore(
   });
 }
 
-export function writeAutomationSettings(settings: AutomationSettingsFile) {
-  writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, settings);
+type SettingsListener = (settings: AutomationSettingsFile) => void;
+
+const settingsListeners = new WeakMap<AutomationSettingsStore, Set<SettingsListener>>();
+
+function announceSettingsWritten(store: AutomationSettingsStore, settings: AutomationSettingsFile) {
+  for (const listener of settingsListeners.get(store) ?? []) listener(settings);
+}
+
+/**
+ * The App's one settings.json. `read` applies the Statement Selection id
+ * migration first, so every reader sees current ids.
+ */
+export function createAutomationSettingsStore(path: string): AutomationSettingsStore {
+  const listeners = new Set<SettingsListener>();
+  const store: AutomationSettingsStore = Object.freeze({
+    path,
+    read() {
+      const migrated = migrateStatementSelectionIds(path);
+      if (migrated) announceSettingsWritten(store, migrated);
+      return readAutomationSettingsFile(path);
+    },
+    write(settings: AutomationSettingsFile) {
+      writeAutomationSettingsFile(path, settings);
+      announceSettingsWritten(store, settings);
+    },
+    subscribe(listener: SettingsListener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  });
+  settingsListeners.set(store, listeners);
+  return store;
 }
 
 function validManagedFingerprintSecret(value: string | undefined) {
@@ -272,30 +296,29 @@ export function ensureAutomationManagedSecrets({
 }
 
 export function writeAutomationConfigFiles(
+  store: AutomationSettingsStore,
   settings: AutomationSettingsFile,
   update?: Readonly<{ store: AutomationCredentialStore; credentials: AutomationCredentialsFile }>,
 ) {
-  const nextSettingsText = settingsFileText(settings);
-
   if (update === undefined) {
-    atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
-    announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
+    store.write(settings);
     return;
   }
 
+  const nextSettingsText = settingsFileText(settings);
   const nextCredentialsText = credentialsFileText(update.credentials, update.store.codec);
-  const previousSettingsText = existsSync(AUTOMATION_SETTINGS_PATH)
-    ? readFileSync(AUTOMATION_SETTINGS_PATH, "utf8")
+  const previousSettingsText = existsSync(store.path)
+    ? readFileSync(store.path, "utf8")
     : null;
-  atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
+  atomicWrite(store.path, nextSettingsText);
   try {
     atomicWrite(update.store.path, nextCredentialsText);
   } catch (writeError) {
     try {
       if (previousSettingsText === null) {
-        rmSync(AUTOMATION_SETTINGS_PATH, { force: true });
+        rmSync(store.path, { force: true });
       } else {
-        atomicWrite(AUTOMATION_SETTINGS_PATH, previousSettingsText);
+        atomicWrite(store.path, previousSettingsText);
       }
     } catch (rollbackError) {
       throw new AggregateError(
@@ -305,7 +328,7 @@ export function writeAutomationConfigFiles(
     }
     throw writeError;
   }
-  announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
+  announceSettingsWritten(store, settings);
 }
 
 export function migrateAutomationCredentialsFileEncryption(path: string, codec: AutomationCredentialCodec) {
@@ -365,24 +388,24 @@ function withoutKnownAutomationLines(envText: string) {
 
 export function migrateAutomationEnvFile({
   envPath,
-  settingsPath,
+  settings,
   credentials,
 }: Readonly<{
   envPath: string;
-  settingsPath: string;
+  settings: AutomationSettingsStore;
   credentials: AutomationCredentialStore;
 }>) {
   if (!existsSync(envPath)) return;
   const envText = readFileSync(envPath, "utf8");
   const parsed = parseEnvText(envText);
-  const existingSettings = readAutomationSettingsFile(settingsPath);
+  const existingSettings = readAutomationSettingsFile(settings.path);
   const existingCredentials = credentials.read();
   const migrated = splitAutomationUpdates(parsed);
 
-  const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settingsPath);
+  const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settings.path);
   const hasCredentials = Object.keys(migrated.credentials).length > 0 || existsSync(credentials.path);
   if (hasSettings) {
-    writeAutomationSettingsFile(settingsPath, {
+    settings.write({
       ...migrated.settings,
       ...existingSettings,
     });
@@ -408,9 +431,12 @@ const RENAMED_STATEMENT_SELECTION_IDS = [
   { key: "LIBRETTO_CLOUD_YUANTA_TRADE_STATEMENT_TYPES", from: "brokerage", to: "securities" },
 ] as const;
 
-/** Rewrites renamed Statement Selection ids in settings.json; a migrated file is left unchanged. */
-export function migrateStatementSelectionIds(settingsPath = AUTOMATION_SETTINGS_PATH) {
-  if (!existsSync(settingsPath)) return;
+/**
+ * Rewrites renamed Statement Selection ids in settings.json and returns what
+ * it wrote; a migrated file is left unchanged and returns null.
+ */
+export function migrateStatementSelectionIds(settingsPath: string): AutomationSettingsFile | null {
+  if (!existsSync(settingsPath)) return null;
   const settings = readAutomationSettingsFile(settingsPath);
   let changed = false;
   for (const { key, from, to } of RENAMED_STATEMENT_SELECTION_IDS) {
@@ -421,16 +447,18 @@ export function migrateStatementSelectionIds(settingsPath = AUTOMATION_SETTINGS_
     settings[key] = [...new Set(ids.map((id) => id === from ? to : id))].join(",");
     changed = true;
   }
-  if (changed) writeAutomationSettingsFile(settingsPath, settings);
+  if (!changed) return null;
+  writeAutomationSettingsFile(settingsPath, settings);
+  return settings;
 }
 
 export function automationConfigEnv({
   baseEnv = process.env,
-  settings = readAutomationSettingsFile(),
+  settings,
   credentials,
 }: {
   baseEnv?: NodeJS.ProcessEnv;
-  settings?: AutomationSettingsFile;
+  settings: AutomationSettingsFile;
   credentials: AutomationCredentialsFile;
 }) {
   const env = {

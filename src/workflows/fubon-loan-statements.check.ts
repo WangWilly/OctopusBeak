@@ -477,7 +477,7 @@ test("commits and resolves one Fubon loan capture through authenticated PGlite R
   const worker = createPGliteViewWorkerClient(
     new Worker(new URL("../../electron/pglite-view-worker.ts", import.meta.url), {
       execArgv: ["--experimental-strip-types"],
-      workerData: { dataDir: join(runDir, "pglite") },
+      workerData: { dataDir: join(runDir, "pglite"), settingsPath: join(runDir, "settings.json") },
     }),
   );
   const server = createPGliteChildRpcServer({

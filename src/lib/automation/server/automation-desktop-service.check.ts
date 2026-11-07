@@ -13,21 +13,17 @@ import {
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { StartAutomationTaskOptions } from "./runner.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
-import { credentialStoreForCheck } from "./task-run-check-support.ts";
+import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
 
 const REGISTRATION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 // Built from parts so the secret scanner does not read a credential assignment.
 const CERTIFICATE_KEY = ["LIBRETTO", "CLOUD", "YUANTA", "TRADE", "CA", "PATH"].join("_");
 
 let directory = "";
-let previousDirectory = "";
 before(() => {
-  previousDirectory = process.cwd();
   directory = mkdtempSync(join(tmpdir(), "automation-desktop-service-"));
-  process.chdir(directory);
 });
 after(() => {
-  process.chdir(previousDirectory);
   rmSync(directory, { recursive: true, force: true });
 });
 
@@ -83,7 +79,8 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       pauseSchedules: () => () => {},
       whileStopped: (work) => work(),
     },
-    credentials: credentialStoreForCheck(),
+    credentials: credentialStoreForCheck(join(directory, "credentials.json")),
+    settings: settingsStoreForCheck(join(directory, "settings.json")),
     readCredentialState: () => {
       credentialReads += 1;
       return readableCredentials();

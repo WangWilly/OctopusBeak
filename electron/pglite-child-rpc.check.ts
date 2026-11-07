@@ -114,7 +114,7 @@ test("authenticated child RPC reaches the same worker named registries", async (
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-pglite-child-rpc-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const workerClient = createPGliteViewWorkerClient(worker);
   const server = createPGliteChildRpcServer({ provider: providerForWorker(workerClient) });

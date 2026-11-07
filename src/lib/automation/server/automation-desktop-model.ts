@@ -11,13 +11,14 @@ import {
 import {
   credentialStatusFromValues,
   type AutomationCredentialStore,
+  type AutomationSettingsFile,
+  type AutomationSettingsStore,
 } from "./config-files.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
 import {
   automationBusinessTimezone,
   offeredAutomationSources,
-  readAutomationSettings,
 } from "./settings.ts";
 import type {
   AutomationPersistenceProvider,
@@ -55,8 +56,7 @@ function pagePrerequisiteNoticesFromRows(
   });
 }
 
-function currentCredentialState(store: AutomationCredentialStore) {
-  const settings = readAutomationSettings();
+function currentCredentialState(store: AutomationCredentialStore, settings: AutomationSettingsFile) {
   const credentials = store.read();
   const status = credentialStatusFromValues(
     credentials,
@@ -101,8 +101,11 @@ function credentialStatesFromStatus(status: Readonly<Record<string, boolean>>) {
 }
 
 /** Main-process-only credential reader; never call this from a worker. */
-export function readAutomationCredentialState(credentials: AutomationCredentialStore) {
-  const state = currentCredentialState(credentials);
+export function readAutomationCredentialState(
+  credentials: AutomationCredentialStore,
+  settings: AutomationSettingsFile,
+) {
+  const state = currentCredentialState(credentials, settings);
   return {
     status: state.status,
     fileNames: state.fileNames,
@@ -151,10 +154,10 @@ export type AutomationLiveRuns = Readonly<{
 export async function loadAutomationCoreSnapshot(
   provider: AutomationPersistenceProvider,
   live: AutomationLiveRuns,
+  settings: AutomationSettingsFile,
   credentialStatus: Readonly<Record<string, boolean>> = {},
   credentialStates: Readonly<Record<string, "loading" | "ready" | "missing" | "read_failed">> = credentialStatesFromStatus(credentialStatus),
 ): Promise<AutomationCoreSnapshot> {
-  const settings = readAutomationSettings();
   const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
   const { snapshot: runtime, activeTaskIds } = live;
   const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
@@ -233,8 +236,9 @@ export async function loadAutomationDesktopModel(
   provider: AutomationPersistenceProvider,
   live: AutomationLiveRuns,
   credentials: AutomationCredentialStore,
+  settings: AutomationSettingsFile,
 ): Promise<AutomationDesktopModel> {
-  const raw = currentCredentialState(credentials);
+  const raw = currentCredentialState(credentials, settings);
   const credentialState: AutomationCredentialStateDto = {
     revision: 0,
     status: raw.status,
@@ -243,7 +247,7 @@ export async function loadAutomationDesktopModel(
     invalidFileReasons: raw.invalidFileReasons,
   };
   return applyAutomationCredentialState(
-    await loadAutomationCoreSnapshot(provider, live, raw.status),
+    await loadAutomationCoreSnapshot(provider, live, settings, raw.status),
     credentialState,
   );
 }
@@ -262,6 +266,7 @@ function missingCredentialKeys(
 export function assertAutomationTaskCanStartInModel(
   taskId: string,
   model: AutomationDesktopModel,
+  settings: AutomationSettingsStore,
 ) {
   const task = taskById(taskId);
   if (!task) throw new Error(`Unknown automation task: ${taskId}`);
@@ -282,7 +287,7 @@ export function assertAutomationTaskCanStartInModel(
       (candidate) => candidate.id === group.id,
     );
     const selectionSettings = {
-      ...readAutomationSettings(),
+      ...settings.read(),
       ...(modelGroup ? { [group.enabledKey]: modelGroup.enabled } : {}),
     };
     selectStatementTypes(group, selectionSettings, "strict");

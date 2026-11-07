@@ -207,7 +207,7 @@ test("one worker exposes named financial reads/writes and complete live snapshot
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rpc-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   const snapshots: unknown[] = [];
@@ -304,7 +304,7 @@ test("an exchange-rate update republishes the Assets and Liabilities pages, whic
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rates-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   const stops: Array<() => Promise<void>> = [];
@@ -372,7 +372,7 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rpc-capture-check-"));
   const start = () => new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const worker = start();
   const client = createPGliteViewWorkerClient(worker);
@@ -519,7 +519,7 @@ test("worker named mixed command keeps raw and derived source captures atomic", 
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-mixed-rpc-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   try {
@@ -707,7 +707,7 @@ test("a purchase category page action publishes the Spending page a full read wo
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-category-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   const snapshots: Array<{ purchaseReport: { knowledgeAt: number; summary?: { monthTotals: readonly { month: string }[] } } }> = [];

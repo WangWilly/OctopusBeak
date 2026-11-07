@@ -10,7 +10,7 @@ import { createPgliteOperationalProvider } from "../../../ledger/pglite/operatio
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   AUTOMATION_CREDENTIALS_FILE,
-  AUTOMATION_SETTINGS_PATH,
+  AUTOMATION_SETTINGS_FILE,
   CATHAY_TRUSTED_DEVICE_USER_ID_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   TDCC_DEVICE_IDENTITY_KEY,
@@ -18,6 +18,7 @@ import {
   TDCC_SESSION_KEY,
   TDCC_USER_ID_KEY,
   createAutomationCredentialStore,
+  readAutomationSettingsFile,
   writeAutomationSettingsFile,
   type AutomationCredentialCodec,
 } from "./config-files.ts";
@@ -34,12 +35,11 @@ const fingerprintSecret = "a".repeat(43);
 
 test("Sign-in Erasure removes sign-in details and source sessions and keeps settings, app secrets and financial data", async () => {
   const root = await mkdtemp(join(tmpdir(), "sign-in-erasure-"));
-  const previousDirectory = process.cwd();
   const store = new PGliteStore(await createTestPGlite("ledger+operational"));
+  const settingsPath = join(root, AUTOMATION_SETTINGS_FILE);
   try {
-    process.chdir(root);
     const credentials = createAutomationCredentialStore(join(root, AUTOMATION_CREDENTIALS_FILE), codec);
-    writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, {
+    writeAutomationSettingsFile(settingsPath, {
       LIBRETTO_CLOUD_CATHAY_ENABLED: true,
       LIBRETTO_CLOUD_TDCC_ENABLED: true,
       SCHEDULED_COLLECTION_ENABLED: true,
@@ -64,10 +64,10 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
     writeFileSync(join(profile, "Cookies"), "");
     await commitCathay(store);
     const provider = createPgliteOperationalProvider(store);
-    const sourceRows = async () => (await loadAutomationDesktopModel(provider, idleRuns(), credentials)).automation.tasks
+    const sourceRows = async () => (await loadAutomationDesktopModel(provider, idleRuns(), credentials, readAutomationSettingsFile(settingsPath))).automation.tasks
       .filter((task) => task.credentialKeys.length > 0);
     assert.ok((await sourceRows()).some((task) => task.credentialsReady), "a source was set up before the erasure");
-    const settingsBefore = readFileSync(AUTOMATION_SETTINGS_PATH, "utf8");
+    const settingsBefore = readFileSync(settingsPath, "utf8");
     const accountsBefore = (await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]!.count;
 
     eraseSignInDetails({ credentials, userDataDirectory: root });
@@ -78,7 +78,7 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
     });
     assert.equal(existsSync(join(root, "data", "automation", "browser-state")), false, "retained cookies are gone");
     assert.equal(existsSync(join(root, "data", "automation", "browser-runtime")), false, "browser profiles are gone");
-    assert.equal(readFileSync(AUTOMATION_SETTINGS_PATH, "utf8"), settingsBefore, "enabled sources and schedules are unchanged");
+    assert.equal(readFileSync(settingsPath, "utf8"), settingsBefore, "enabled sources and schedules are unchanged");
     const rows = await sourceRows();
     assert.ok(rows.length > 0);
     for (const task of rows) assert.equal(task.credentialsReady, false, `${task.id} needs setup`);
@@ -88,7 +88,6 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
       "financial data is untouched",
     );
   } finally {
-    process.chdir(previousDirectory);
     await store.close();
     await rm(root, { recursive: true, force: true });
   }

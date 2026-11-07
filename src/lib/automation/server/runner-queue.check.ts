@@ -8,15 +8,12 @@ import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
-import { credentialStoreForCheck } from "./task-run-check-support.ts";
+import { runnerHostForCheck } from "./task-run-check-support.ts";
 
-let previousDirectory: string;
 let settingsDirectory: string;
 beforeEach(async () => {
-  previousDirectory = process.cwd();
   settingsDirectory = await mkdtemp(join(tmpdir(), "automation-queue-settings-"));
-  process.chdir(settingsDirectory);
-  writeAutomationSettingsFile("settings.json", {
+  writeAutomationSettingsFile(join(settingsDirectory, "settings.json"), {
     LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
     LIBRETTO_CLOUD_ESUN_STATEMENT_TYPES: "credit_card",
     LIBRETTO_CLOUD_CTBC_STATEMENT_TYPES: "deposit",
@@ -24,7 +21,6 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
-  process.chdir(previousDirectory);
   await rm(settingsDirectory, { recursive: true, force: true });
 });
 
@@ -54,7 +50,7 @@ function harness() {
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck(settingsDirectory) });
   const execute: typeof runAutomationTaskExecution = async (plan, run) => {
     active += 1;
     peak = Math.max(peak, active);

@@ -16,7 +16,7 @@ import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { SourceDeviceBusyError, sourceDeviceLocks } from "./source-device-lock.ts";
-import { credentialStoreForCheck } from "./task-run-check-support.ts";
+import { runnerHostForCheck } from "./task-run-check-support.ts";
 
 function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
   const runs = new Map<string, AutomationTaskRun>();
@@ -85,7 +85,8 @@ function aborted(signal: AbortSignal) {
   });
 }
 
-const freshRunner = () => createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
+const freshRunner = (directory?: string) =>
+  createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck(directory) });
 
 const exchangeRates = () => {
   const task = taskById("exchange-rates");
@@ -95,7 +96,7 @@ const exchangeRates = () => {
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
-  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, credentials: credentialStoreForCheck(), launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
+  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, ...runnerHostForCheck(), launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
     endpoint: "http://127.0.0.1:43121/rpc",
     token: "test-token",
   });
@@ -103,13 +104,13 @@ test("typed workflow runtime uses the authenticated PGlite capability", () => {
 
 test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
   assert.throws(
-    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, credentials: credentialStoreForCheck(), launchEnv: {}, launchVerificationSettings: {} }),
+    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, ...runnerHostForCheck(), launchEnv: {}, launchVerificationSettings: {} }),
     /PGlite workflow transport is unavailable/u,
   );
   assert.throws(
     () => resolveTaskRunPlan(exchangeRates(), {
       pgliteRpc: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
-      credentials: credentialStoreForCheck(),
+      ...runnerHostForCheck(),
       launchEnv: {},
       launchVerificationSettings: {},
     }),
@@ -137,27 +138,24 @@ test("the runner hands the PGlite capability to the execution as a typed value, 
 
 test("Fubon cannot start with missing or unknown statement selections", async () => {
   const root = await mkdtemp(join(tmpdir(), "automation-runner-selection-"));
-  const previousDirectory = process.cwd();
   try {
-    process.chdir(root);
-    writeAutomationSettingsFile("settings.json", {
+    writeAutomationSettingsFile(join(root, "settings.json"), {
       LIBRETTO_CLOUD_FUBON_ENABLED: true,
     });
     await assert.rejects(
-      freshRunner().start("fubon-all-statements", providerStub()),
+      freshRunner(root).start("fubon-all-statements", providerStub()),
       /Select at least one Fubon statement type/u,
     );
 
-    writeAutomationSettingsFile("settings.json", {
+    writeAutomationSettingsFile(join(root, "settings.json"), {
       LIBRETTO_CLOUD_FUBON_ENABLED: true,
       LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
     });
     await assert.rejects(
-      freshRunner().start("fubon-all-statements", providerStub()),
+      freshRunner(root).start("fubon-all-statements", providerStub()),
       /Unknown Fubon statement type: unknown/u,
     );
   } finally {
-    process.chdir(previousDirectory);
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -176,12 +174,10 @@ for (const { source, taskId, settings } of [
 ] as const) {
   test(`a ${source} sync cannot start while a Source device registration holds the device`, async () => {
     const root = await mkdtemp(join(tmpdir(), `automation-runner-${source}-lock-`));
-    const previousDirectory = process.cwd();
     const lock = sourceDeviceLocks[source];
-    const runner = freshRunner();
+    const runner = freshRunner(root);
     try {
-      process.chdir(root);
-      writeAutomationSettingsFile("settings.json", settings);
+      writeAutomationSettingsFile(join(root, "settings.json"), settings);
       assert.equal(lock.claim("registration"), null);
       await assert.rejects(
         runner.start(taskId, providerStub()),
@@ -192,7 +188,6 @@ for (const { source, taskId, settings } of [
       assert.equal(lock.holder(), "registration", "the refused run leaves the registration holding the device");
     } finally {
       lock.release("registration");
-      process.chdir(previousDirectory);
       await rm(root, { recursive: true, force: true });
     }
   });

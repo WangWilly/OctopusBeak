@@ -191,6 +191,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
       workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;
@@ -224,6 +225,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       const rejected = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId: rejectedRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+        userDataDirectory: root,
         workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
         workflowBrowserPort: () => invalidBrowser,
       });
