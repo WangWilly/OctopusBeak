@@ -6,6 +6,7 @@ import test from "node:test";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost } from "./tdcc-session-host.ts";
 import { tdccConnection } from "../../../workflows/tdcc-session.ts";
+import { createAutomationCredentialStore } from "./config-files.ts";
 
 const codec = {
   encrypt: (text: string) => Buffer.from(text, "utf8").toString("base64"),
@@ -19,7 +20,7 @@ const session = { tokenId: "saved-token", richUrl: null, issuedAt: "2026-10-01T0
 function withStore(run: (store: ReturnType<typeof createTdccSecretStore>) => void) {
   const directory = mkdtempSync(join(tmpdir(), "tdcc-session-host-"));
   try {
-    run(createTdccSecretStore(join(directory, "credentials.json"), codec));
+    run(createTdccSecretStore(createAutomationCredentialStore(join(directory, "credentials.json"), codec)));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

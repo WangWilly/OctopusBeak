@@ -1,7 +1,3 @@
-import {
-  AUTOMATION_CREDENTIALS_PATH,
-  getAutomationCredentialCodec,
-} from "./config-files.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createTdccSessionHost, tdccSessionHostCalls, type TdccSessionHost } from "./tdcc-session-host.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
@@ -169,11 +165,9 @@ function createBrowserRuntimeIdentityRecorder(
   };
 }
 
-function tdccSessionHost(seams: AutomationTaskExecutionSeams): TdccSessionHost {
+function tdccSessionHost(plan: TaskRunPlan, seams: AutomationTaskExecutionSeams): TdccSessionHost {
   if (seams.createTdccSessionHost) return seams.createTdccSessionHost();
-  const codec = getAutomationCredentialCodec();
-  if (!codec) throw new Error("Encrypted credential storage is unavailable.");
-  return createTdccSessionHost(createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec));
+  return createTdccSessionHost(createTdccSecretStore(plan.credentials));
 }
 
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
@@ -209,6 +203,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
         taskRunId: context.run.taskRunId,
         signal,
         userDataDirectory: launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd(),
+        credentialCodec: plan.credentials.codec,
         startUrl: runtime.startUrl,
         browserProfile: runtime.browserProfile,
         onRuntimeIdentity: browserRuntimeIdentity.record,
@@ -240,7 +235,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
-          ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(seams)) : {}),
+          ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(plan, seams)) : {}),
         },
         ...(seams.appWorkflowWorkerFactory
           ? { workerFactory: seams.appWorkflowWorkerFactory }

@@ -17,7 +17,7 @@ import {
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { openTaskRunForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, credentialStoreForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
@@ -207,7 +207,7 @@ try {
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeWorkerStarts = 0;
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
   const exchangeExecution: typeof runAutomationTaskExecution = (plan, activeRun, round, seams) => runAutomationTaskExecution(
     plan,
     activeRun,

@@ -8,6 +8,7 @@ import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 let previousDirectory: string;
 let settingsDirectory: string;
@@ -53,7 +54,7 @@ function harness() {
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState() });
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
   const execute: typeof runAutomationTaskExecution = async (plan, run) => {
     active += 1;
     peak = Math.max(peak, active);

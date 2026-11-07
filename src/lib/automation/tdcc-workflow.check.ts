@@ -27,6 +27,7 @@ import type { WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";
+import { createAutomationCredentialStore } from "./server/config-files.ts";
 
 /** The TDCC definition the registry runs, with the fake TDCC transport. */
 const tdccDefinition = (fetch: TdccWorkflowOptions["fetch"]): WorkflowDefinition => ({
@@ -220,7 +221,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
   });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;
-  const secrets = createTdccSecretStore(join(root, "credentials.json"), codec);
+  const secrets = createTdccSecretStore(createAutomationCredentialStore(join(root, "credentials.json"), codec));
   secrets.write({
     userId: USER_ID,
     password: "fixture-password",

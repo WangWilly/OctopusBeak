@@ -22,7 +22,7 @@ export type AutomationSettingsFile = Record<string, AutomationSettingValue>;
 export type AutomationCredentialsFile = Record<string, string>;
 
 export const AUTOMATION_SETTINGS_PATH = "settings.json";
-export const AUTOMATION_CREDENTIALS_PATH = "credentials.json";
+export const AUTOMATION_CREDENTIALS_FILE = "credentials.json";
 export const AUTOMATION_CREDENTIALS_FORMAT = "octopusbeak.credentials.safeStorage.v1";
 
 // TDCC sign-in details and its registered device identity and session token
@@ -56,24 +56,13 @@ type EncryptedAutomationCredentialsFile = {
   data: string;
 };
 
-let automationCredentialCodec: AutomationCredentialCodec | null = null;
-
-export function setAutomationCredentialCodec(codec: AutomationCredentialCodec | null) {
-  automationCredentialCodec = codec;
-}
-
-/**
- * Capture the codec currently owned by the host process for a long-lived
- * service. Callers that perform asynchronous credential work should keep this
- * snapshot instead of consulting the mutable process registration again.
- */
-export function getAutomationCredentialCodec() {
-  return automationCredentialCodec;
-}
-
-export function isAutomationCredentialCodecConfigured() {
-  return automationCredentialCodec !== null;
-}
+export type AutomationCredentialStore = Readonly<{
+  /** Absolute path of credentials.json. */
+  path: string;
+  codec: AutomationCredentialCodec;
+  read(): AutomationCredentialsFile;
+  write(credentials: AutomationCredentialsFile): void;
+}>;
 
 const automationSettingKeys = new Set<string>(AUTOMATION_NON_SECRET_KEYS);
 const automationSecretKeys = new Set<string>([
@@ -138,7 +127,7 @@ function encryptedAutomationCredentialsFile(
 ): EncryptedAutomationCredentialsFile | null {
   if (record.format !== AUTOMATION_CREDENTIALS_FORMAT) return null;
   if (typeof record.data !== "string" || !record.data.trim()) {
-    throw new Error(`${AUTOMATION_CREDENTIALS_PATH} encrypted envelope is invalid.`);
+    throw new Error(`${AUTOMATION_CREDENTIALS_FILE} encrypted envelope is invalid.`);
   }
   return {
     format: AUTOMATION_CREDENTIALS_FORMAT,
@@ -146,9 +135,7 @@ function encryptedAutomationCredentialsFile(
   };
 }
 
-function requireAutomationCredentialCodec(
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
-) {
+function requireAutomationCredentialCodec(codec: AutomationCredentialCodec | null) {
   if (!codec) {
     throw new Error("Credential encryption is not configured. Refusing to read encrypted automation credentials.");
   }
@@ -157,21 +144,21 @@ function requireAutomationCredentialCodec(
 
 function decodeCredentialsRecord(
   record: Record<string, unknown>,
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+  codec: AutomationCredentialCodec | null,
 ) {
   const encrypted = encryptedAutomationCredentialsFile(record);
   if (!encrypted) return record;
   const text = requireAutomationCredentialCodec(codec).decrypt(encrypted.data);
   const parsed = JSON.parse(text) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${AUTOMATION_CREDENTIALS_PATH} encrypted payload must contain a JSON object.`);
+    throw new Error(`${AUTOMATION_CREDENTIALS_FILE} encrypted payload must contain a JSON object.`);
   }
   return parsed as Record<string, unknown>;
 }
 
 function credentialsFileText(
   credentials: AutomationCredentialsFile,
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+  codec: AutomationCredentialCodec | null,
 ) {
   const cleaned = cleanCredentials(credentials);
   if (!codec) return `${JSON.stringify(cleaned, null, 2)}\n`;
@@ -190,8 +177,8 @@ export function readAutomationSettingsFile(path = AUTOMATION_SETTINGS_PATH) {
 }
 
 export function readAutomationCredentialsFile(
-  path = AUTOMATION_CREDENTIALS_PATH,
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+  path: string,
+  codec: AutomationCredentialCodec | null,
 ) {
   return cleanCredentials(decodeCredentialsRecord(readJsonRecord(path), codec));
 }
@@ -218,20 +205,25 @@ export function writeAutomationSettingsFile(path: string, settings: AutomationSe
 export function writeAutomationCredentialsFile(
   path: string,
   credentials: AutomationCredentialsFile,
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
+  codec: AutomationCredentialCodec | null,
 ) {
   atomicWrite(path, credentialsFileText(credentials, codec));
 }
 
-export function writeAutomationSettings(settings: AutomationSettingsFile) {
-  writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, settings);
+export function createAutomationCredentialStore(
+  path: string,
+  codec: AutomationCredentialCodec,
+): AutomationCredentialStore {
+  return Object.freeze({
+    path,
+    codec,
+    read: () => readAutomationCredentialsFile(path, codec),
+    write: (credentials: AutomationCredentialsFile) => writeAutomationCredentialsFile(path, credentials, codec),
+  });
 }
 
-export function writeAutomationCredentials(
-  credentials: AutomationCredentialsFile,
-  codec: AutomationCredentialCodec | null = automationCredentialCodec,
-) {
-  writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, credentials, codec);
+export function writeAutomationSettings(settings: AutomationSettingsFile) {
+  writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, settings);
 }
 
 function validManagedFingerprintSecret(value: string | undefined) {
@@ -239,18 +231,18 @@ function validManagedFingerprintSecret(value: string | undefined) {
 }
 
 /**
- * Create device-owned identity secrets only after an encrypted credential
- * codec is registered. The secret is intentionally never returned to callers.
+ * Create device-owned identity secrets only with an encrypted credential
+ * codec. The secret is intentionally never returned to callers.
  */
 export function ensureAutomationManagedSecrets({
-  credentialsPath = AUTOMATION_CREDENTIALS_PATH,
+  credentialsPath,
   generateFingerprintSecret = () => randomBytes(32).toString("base64url"),
-  codec = automationCredentialCodec,
+  codec,
 }: {
-  credentialsPath?: string;
+  credentialsPath: string;
   generateFingerprintSecret?: () => string;
-  codec?: AutomationCredentialCodec | null;
-} = {}) {
+  codec: AutomationCredentialCodec | null;
+}) {
   requireAutomationCredentialCodec(codec);
   const credentials = readAutomationCredentialsFile(credentialsPath, codec);
   const existing = credentials[FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
@@ -281,25 +273,23 @@ export function ensureAutomationManagedSecrets({
 
 export function writeAutomationConfigFiles(
   settings: AutomationSettingsFile,
-  credentials?: AutomationCredentialsFile,
+  update?: Readonly<{ store: AutomationCredentialStore; credentials: AutomationCredentialsFile }>,
 ) {
   const nextSettingsText = settingsFileText(settings);
-  const nextCredentialsText = credentials === undefined
-    ? null
-    : credentialsFileText(credentials);
 
-  if (nextCredentialsText === null) {
+  if (update === undefined) {
     atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
     announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
     return;
   }
 
+  const nextCredentialsText = credentialsFileText(update.credentials, update.store.codec);
   const previousSettingsText = existsSync(AUTOMATION_SETTINGS_PATH)
     ? readFileSync(AUTOMATION_SETTINGS_PATH, "utf8")
     : null;
   atomicWrite(AUTOMATION_SETTINGS_PATH, nextSettingsText);
   try {
-    atomicWrite(AUTOMATION_CREDENTIALS_PATH, nextCredentialsText);
+    atomicWrite(update.store.path, nextCredentialsText);
   } catch (writeError) {
     try {
       if (previousSettingsText === null) {
@@ -318,14 +308,13 @@ export function writeAutomationConfigFiles(
   announceSettingsWritten(AUTOMATION_SETTINGS_PATH, settings);
 }
 
-export function migrateAutomationCredentialsFileEncryption(path = AUTOMATION_CREDENTIALS_PATH) {
+export function migrateAutomationCredentialsFileEncryption(path: string, codec: AutomationCredentialCodec) {
   if (!existsSync(path)) return false;
   const record = readJsonRecord(path);
   if (encryptedAutomationCredentialsFile(record)) return false;
   const credentials = cleanCredentials(record);
   if (Object.keys(credentials).length === 0) return false;
-  requireAutomationCredentialCodec();
-  writeAutomationCredentialsFile(path, credentials);
+  writeAutomationCredentialsFile(path, credentials, codec);
   return true;
 }
 
@@ -375,23 +364,23 @@ function withoutKnownAutomationLines(envText: string) {
 }
 
 export function migrateAutomationEnvFile({
-  envPath = ".env",
-  settingsPath = AUTOMATION_SETTINGS_PATH,
-  credentialsPath = AUTOMATION_CREDENTIALS_PATH,
-}: {
-  envPath?: string;
-  settingsPath?: string;
-  credentialsPath?: string;
-} = {}) {
+  envPath,
+  settingsPath,
+  credentials,
+}: Readonly<{
+  envPath: string;
+  settingsPath: string;
+  credentials: AutomationCredentialStore;
+}>) {
   if (!existsSync(envPath)) return;
   const envText = readFileSync(envPath, "utf8");
   const parsed = parseEnvText(envText);
   const existingSettings = readAutomationSettingsFile(settingsPath);
-  const existingCredentials = readAutomationCredentialsFile(credentialsPath);
+  const existingCredentials = credentials.read();
   const migrated = splitAutomationUpdates(parsed);
 
   const hasSettings = Object.keys(migrated.settings).length > 0 || existsSync(settingsPath);
-  const hasCredentials = Object.keys(migrated.credentials).length > 0 || existsSync(credentialsPath);
+  const hasCredentials = Object.keys(migrated.credentials).length > 0 || existsSync(credentials.path);
   if (hasSettings) {
     writeAutomationSettingsFile(settingsPath, {
       ...migrated.settings,
@@ -399,7 +388,7 @@ export function migrateAutomationEnvFile({
     });
   }
   if (hasCredentials) {
-    writeAutomationCredentialsFile(credentialsPath, {
+    credentials.write({
       ...migrated.credentials,
       ...existingCredentials,
     });
@@ -438,12 +427,12 @@ export function migrateStatementSelectionIds(settingsPath = AUTOMATION_SETTINGS_
 export function automationConfigEnv({
   baseEnv = process.env,
   settings = readAutomationSettingsFile(),
-  credentials = readAutomationCredentialsFile(),
+  credentials,
 }: {
   baseEnv?: NodeJS.ProcessEnv;
   settings?: AutomationSettingsFile;
-  credentials?: AutomationCredentialsFile;
-} = {}) {
+  credentials: AutomationCredentialsFile;
+}) {
   const env = {
     ...baseEnv,
     ...settingsToEnv(settings),

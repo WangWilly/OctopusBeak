@@ -9,17 +9,15 @@ import { commitCathay } from "../../../ledger/pglite/direct-source-precedence-fi
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
-  AUTOMATION_CREDENTIALS_PATH,
+  AUTOMATION_CREDENTIALS_FILE,
   AUTOMATION_SETTINGS_PATH,
   CATHAY_TRUSTED_DEVICE_USER_ID_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
-  readAutomationCredentialsFile,
-  setAutomationCredentialCodec,
   TDCC_DEVICE_IDENTITY_KEY,
   TDCC_PASSWORD_KEY,
   TDCC_SESSION_KEY,
   TDCC_USER_ID_KEY,
-  writeAutomationCredentialsFile,
+  createAutomationCredentialStore,
   writeAutomationSettingsFile,
   type AutomationCredentialCodec,
 } from "./config-files.ts";
@@ -40,14 +38,14 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
   const store = new PGliteStore(await createTestPGlite("ledger+operational"));
   try {
     process.chdir(root);
-    setAutomationCredentialCodec(codec);
+    const credentials = createAutomationCredentialStore(join(root, AUTOMATION_CREDENTIALS_FILE), codec);
     writeAutomationSettingsFile(AUTOMATION_SETTINGS_PATH, {
       LIBRETTO_CLOUD_CATHAY_ENABLED: true,
       LIBRETTO_CLOUD_TDCC_ENABLED: true,
       SCHEDULED_COLLECTION_ENABLED: true,
       SCHEDULED_COLLECTION_TIME: "07:00",
     });
-    writeAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, {
+    credentials.write({
       LIBRETTO_CLOUD_CATHAY_USER_ID: "example-user",
       LIBRETTO_CLOUD_CATHAY_ACCOUNT: "example-code",
       LIBRETTO_CLOUD_CATHAY_PASSWORD: "example-password",
@@ -57,7 +55,7 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
       [TDCC_DEVICE_IDENTITY_KEY]: "{\"deviceId\":\"synthetic\"}",
       [TDCC_SESSION_KEY]: "{\"issuedAt\":\"2026-10-09T00:00:00.000Z\"}",
       [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: fingerprintSecret,
-    }, codec);
+    });
     const cookieJar = join(root, "data", "automation", "browser-state", "cathay-all-statements", "authentication");
     const profile = join(root, "data", "automation", "browser-runtime", "cathay-all-statements", "run-1");
     mkdirSync(cookieJar, { recursive: true });
@@ -66,16 +64,16 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
     writeFileSync(join(profile, "Cookies"), "");
     await commitCathay(store);
     const provider = createPgliteOperationalProvider(store);
-    const sourceRows = async () => (await loadAutomationDesktopModel(provider, idleRuns())).automation.tasks
+    const sourceRows = async () => (await loadAutomationDesktopModel(provider, idleRuns(), credentials)).automation.tasks
       .filter((task) => task.credentialKeys.length > 0);
     assert.ok((await sourceRows()).some((task) => task.credentialsReady), "a source was set up before the erasure");
     const settingsBefore = readFileSync(AUTOMATION_SETTINGS_PATH, "utf8");
     const accountsBefore = (await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_accounts")).rows[0]!.count;
 
-    eraseSignInDetails({ credentialsPath: AUTOMATION_CREDENTIALS_PATH, userDataDirectory: root, codec });
-    eraseSignInDetails({ credentialsPath: AUTOMATION_CREDENTIALS_PATH, userDataDirectory: root, codec });
+    eraseSignInDetails({ credentials, userDataDirectory: root });
+    eraseSignInDetails({ credentials, userDataDirectory: root });
 
-    assert.deepEqual(readAutomationCredentialsFile(AUTOMATION_CREDENTIALS_PATH, codec), {
+    assert.deepEqual(credentials.read(), {
       [FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]: fingerprintSecret,
     });
     assert.equal(existsSync(join(root, "data", "automation", "browser-state")), false, "retained cookies are gone");
@@ -90,7 +88,6 @@ test("Sign-in Erasure removes sign-in details and source sessions and keeps sett
       "financial data is untouched",
     );
   } finally {
-    setAutomationCredentialCodec(null);
     process.chdir(previousDirectory);
     await store.close();
     await rm(root, { recursive: true, force: true });
