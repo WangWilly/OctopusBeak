@@ -151,7 +151,7 @@
                 <legend><span class="category-dot" style:background={SPENDING_GROUP_COLORS[group]} aria-hidden="true"></span>{groupLabel($t, group)}</legend>
                 <div class="picker-codes">
                   {#each spendingCategoryCodesForGroup(group) as code}
-                    <button type="button" class="code-option" aria-pressed={currentCode === code} disabled={saving} data-category-code={code} onclick={() => void chooseCategory(code)}>
+                    <button type="button" class="code-option" aria-pressed={currentCode === code} disabled={saving || busy} data-category-code={code} onclick={() => void chooseCategory(code)}>
                       {#if currentCode === code}<Check size={12} strokeWidth={2.4} aria-hidden="true" />{/if}{codeLabel($t, code)}
                     </button>
                   {/each}
@@ -159,7 +159,7 @@
               </fieldset>
             {/each}
           </div>
-          <button type="button" class="button" disabled={saving} data-clear-category onclick={() => void chooseCategory(null)}>{$t.spendingReview.clearCategory}</button>
+          <button type="button" class="button" disabled={saving || busy} data-clear-category onclick={() => void chooseCategory(null)}>{$t.spendingReview.clearCategory}</button>
         </section>
       {/if}
 

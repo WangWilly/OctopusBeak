@@ -118,7 +118,7 @@ export interface PurchaseSpendingSession {
   closePairing(): void;
   confirmDirectPair(): Promise<void>;
   revokeLink(record: PurchaseRecord): Promise<void>;
-  setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<void>;
+  setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<boolean>;
   dispose(): void;
 }
 
@@ -736,20 +736,29 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
 
   /**
    * Set or clear the user's category on one purchase through the page actions
-   * (ADR 0105), so the page takes its summary delta. Rejects when it fails.
+   * (ADR 0105), so the page takes its summary delta. Refused, with false,
+   * while another action runs or a newer page waits; rejects when it fails.
    */
   async setPurchaseCategory(purchaseId: string, categoryCode: string | null) {
-    if (this.disposed) return;
-    const result = await this.options.transport.applyPageAction({
-      action: "categorize",
-      kind: "category",
-      purchaseId,
-      categoryCode,
-      dataVersion: this.value.report.knowledgeAt,
-    });
-    if (this.disposed) return;
+    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return false;
+    const requestToken = ++this.actionRequestToken;
     this.cancelPendingRecordRefresh();
-    await this.acceptCompactPageAction(result);
+    this.publish({ busyAction: `category:${purchaseId}`, actionError: null });
+    try {
+      const result = await this.options.transport.applyPageAction({
+        action: "categorize",
+        kind: "category",
+        purchaseId,
+        categoryCode,
+        dataVersion: this.value.report.knowledgeAt,
+      });
+      // A change that changed nothing wrote no commit, so the page has nothing to take.
+      if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt)
+        await this.acceptCompactPageAction(result);
+      return true;
+    } finally {
+      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
+    }
   }
 
   private isCurrentAction(token: number) { return !this.disposed && token === this.actionRequestToken; }

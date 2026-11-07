@@ -32,7 +32,7 @@ async function settle() {
 function harness(
   overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {},
   monthSettleMs = 0,
-  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<void> = async () => {},
+  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean> = async () => true,
 ) {
   const calls: Record<string, any[]> = { overview: [], insight: [], candidates: [], records: [], strong: [], category: [], cancels: [] };
   let refreshes = 0;
@@ -57,7 +57,7 @@ function harness(
     refreshSummary: async () => { refreshes += 1; },
     setPurchaseCategory: async (purchaseId, categoryCode) => {
       calls.category!.push({ purchaseId, categoryCode });
-      await setPurchaseCategory(purchaseId, categoryCode);
+      return setPurchaseCategory(purchaseId, categoryCode);
     },
     monthSettleMs,
   });
@@ -170,6 +170,7 @@ test("changing a category runs its page action without reading the page again, a
   let fail = false;
   const { store, calls, current, refreshes } = harness({}, 0, async () => {
     if (fail) throw new Error("Synthetic category failure");
+    return true;
   });
   store.sync(3, "2026-10");
   await settle();

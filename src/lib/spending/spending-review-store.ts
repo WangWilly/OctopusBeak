@@ -169,8 +169,11 @@ let nextStoreId = 1;
 export function createSpendingReviewStore(options: Readonly<{
   transport: SpendingReviewTransport;
   refreshSummary: () => Promise<void>;
-  /** The Spending page action that sets a purchase's category; the page takes its delta (ADR 0105). */
-  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<void>;
+  /**
+   * The Spending page action that sets a purchase's category; the page takes
+   * its delta (ADR 0105). False when the page refused it for now.
+   */
+  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean>;
   /**
    * How long a newly chosen month must stay chosen before its pending count
    * and insight load. Each read rebuilds the month in the shared worker, so
@@ -363,10 +366,10 @@ export function createSpendingReviewStore(options: Readonly<{
       if (value.knowledgeAt === null || value.categorySaving !== null || disposed) return false;
       publish({ categorySaving: purchaseId, categoryError: "" });
       try {
-        await options.setPurchaseCategory(purchaseId, categoryCode);
+        const ran = await options.setPurchaseCategory(purchaseId, categoryCode);
         if (disposed) return false;
         publish({ categorySaving: null });
-        return true;
+        return ran;
       } catch (error) {
         publish({ categorySaving: null, categoryError: errorMessage(error) });
         return false;

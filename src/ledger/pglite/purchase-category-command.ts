@@ -137,7 +137,21 @@ export async function purchaseCategoryActionSubject(
   transaction: PGliteTransaction,
   purchaseId: string,
 ): Promise<SpendingPageActionSubject> {
-  const subject = await resolveSubject(transaction, parsePurchaseIdentity(purchaseId));
+  const identity = parsePurchaseIdentity(purchaseId);
+  if (identity.basis === "linked") {
+    // The category lands on the transaction, but the linked record is built
+    // from both members; read without its invoice, it is a bank-only record.
+    const link = (await query<Row>(transaction,
+      "SELECT invoice_id, transaction_id FROM current_spending_dedup_links WHERE confirmed_event_id = ?",
+      [bytes(identity.eventId, "Spending link event identity")],
+    ))[0];
+    if (!link) fail("stale", "Spending purchase is stale or no longer linked.");
+    return Object.freeze({
+      invoiceIds: Object.freeze([idString(bytesFromRow(link.invoice_id, "Linked invoice"))]),
+      transactionIds: Object.freeze([idString(bytesFromRow(link.transaction_id, "Linked transaction"))]),
+    });
+  }
+  const subject = await resolveSubject(transaction, identity);
   return subject.kind === "transaction"
     ? Object.freeze({ invoiceIds: Object.freeze([]), transactionIds: Object.freeze([idString(subject.transactionId)]) })
     : Object.freeze({ invoiceIds: Object.freeze([idString(subject.invoiceId)]), transactionIds: Object.freeze([]) });
