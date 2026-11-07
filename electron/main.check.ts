@@ -5,7 +5,7 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-failed/u);
 assert.match(source, /createPGliteOperationalRuntime\(/u);
-assert.match(source, /const runtime = createAutomationRuntime\(operationalRuntime\.provider\)/);
+assert.match(source, /const runtime = createAutomationRuntime\(operationalRuntime\.provider, \{ credentials \}\)/);
 assert.match(source, /runtime\.recover\(\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/);
 assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
 assert.match(source, /if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\)/u);

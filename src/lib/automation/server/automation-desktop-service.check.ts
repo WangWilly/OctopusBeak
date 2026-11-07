@@ -13,6 +13,7 @@ import {
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { StartAutomationTaskOptions } from "./runner.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 const REGISTRATION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 // Built from parts so the secret scanner does not read a credential assignment.
@@ -82,6 +83,7 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       pauseSchedules: () => () => {},
       whileStopped: (work) => work(),
     },
+    credentials: credentialStoreForCheck(),
     readCredentialState: () => {
       credentialReads += 1;
       return readableCredentials();

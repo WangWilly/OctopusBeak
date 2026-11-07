@@ -265,17 +265,19 @@ test("a covered product is left out of a source's selection, and a verified run 
 
 test("a Preview source's device identity is created with its sign-in details, reaches its run, and goes with Sign-in Erasure", async () => {
   const { automationSaveCredentials } = await import("../automation/server/automation-desktop-service.ts");
-  const { automationConfigEnv, readAutomationCredentialsFile, AUTOMATION_CREDENTIALS_PATH } = await import("../automation/server/config-files.ts");
+  const { automationConfigEnv } = await import("../automation/server/config-files.ts");
+  const { credentialStoreForCheck } = await import("../automation/server/task-run-check-support.ts");
   const { eraseSignInDetails } = await import("../automation/server/sign-in-erasure.ts");
   const { NEWNEWBANK_KEY } = await import("./newnewbank-source.ts");
-  assert.deepEqual(automationSaveCredentials({ [NEWNEWBANK_KEY.userCode]: "user01" }), { saved: true });
-  const created = readAutomationCredentialsFile()[NEWNEWBANK_KEY.deviceId];
+  const credentials = credentialStoreForCheck(join(workDirectory, "credentials.json"));
+  assert.deepEqual(automationSaveCredentials(credentials, { [NEWNEWBANK_KEY.userCode]: "user01" }), { saved: true });
+  const created = credentials.read()[NEWNEWBANK_KEY.deviceId];
   assert.match(created ?? "", /^[0-9a-f]{64}$/u);
-  automationSaveCredentials({ [NEWNEWBANK_KEY.password]: "changed", [NEWNEWBANK_KEY.deviceId]: "0".repeat(64) });
-  assert.equal(readAutomationCredentialsFile()[NEWNEWBANK_KEY.deviceId], created, "a later save keeps it, and the renderer cannot set it");
+  automationSaveCredentials(credentials, { [NEWNEWBANK_KEY.password]: "changed", [NEWNEWBANK_KEY.deviceId]: "0".repeat(64) });
+  assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], created, "a later save keeps it, and the renderer cannot set it");
   const input = appWorkflowRegistration("preview-newnewbank-deposit")?.inputFromEnvironment(
-    automationConfigEnv({ baseEnv: { PREVIEW_FEATURES_ENABLED: "true" } })) as { credentials: Record<string, string> };
+    automationConfigEnv({ baseEnv: { PREVIEW_FEATURES_ENABLED: "true" }, credentials: credentials.read() })) as { credentials: Record<string, string> };
   assert.equal(input.credentials[NEWNEWBANK_KEY.deviceId], created);
-  eraseSignInDetails({ credentialsPath: AUTOMATION_CREDENTIALS_PATH, userDataDirectory: workDirectory, codec: null });
-  assert.equal(readAutomationCredentialsFile()[NEWNEWBANK_KEY.deviceId], undefined);
+  eraseSignInDetails({ credentials, userDataDirectory: workDirectory });
+  assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], undefined);
 });

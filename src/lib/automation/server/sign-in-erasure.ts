@@ -1,10 +1,6 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import {
-  readAutomationCredentialsFile,
-  writeAutomationCredentialsFile,
-  type AutomationCredentialCodec,
-} from "./config-files.ts";
+import type { AutomationCredentialStore } from "./config-files.ts";
 import { AUTOMATION_MANAGED_SECRET_KEYS } from "./tasks.ts";
 
 /**
@@ -15,18 +11,16 @@ import { AUTOMATION_MANAGED_SECRET_KEYS } from "./tasks.ts";
  * them, so dropping one would split existing financial accounts.
  */
 export function eraseSignInDetails({
-  credentialsPath,
+  credentials,
   userDataDirectory,
-  codec,
 }: Readonly<{
-  credentialsPath: string;
+  credentials: AutomationCredentialStore;
   userDataDirectory: string;
-  codec: AutomationCredentialCodec | null;
 }>) {
-  const credentials = readAutomationCredentialsFile(credentialsPath, codec);
+  const stored = credentials.read();
   const kept = AUTOMATION_MANAGED_SECRET_KEYS.flatMap((key) =>
-    credentials[key] ? [[key, credentials[key]] as const] : []);
-  writeAutomationCredentialsFile(credentialsPath, Object.fromEntries(kept), codec);
+    stored[key] ? [[key, stored[key]] as const] : []);
+  credentials.write(Object.fromEntries(kept));
   for (const directory of ["browser-state", "browser-runtime"]) {
     rmSync(join(userDataDirectory, "data", "automation", directory), { recursive: true, force: true });
   }

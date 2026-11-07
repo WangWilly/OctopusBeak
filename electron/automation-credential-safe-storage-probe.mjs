@@ -2,8 +2,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
 import {
+  AUTOMATION_CREDENTIALS_FILE,
   AUTOMATION_CREDENTIALS_FORMAT,
-  setAutomationCredentialCodec,
+  createAutomationCredentialStore,
 } from "../src/lib/automation/server/config-files.ts";
 import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
 import { toAutomationCredentialStateDto } from "./automation-credential-state.ts";
@@ -42,7 +43,7 @@ app.whenReady().then(() => {
       return;
     }
 
-    setAutomationCredentialCodec({
+    const credentials = createAutomationCredentialStore(join(process.cwd(), AUTOMATION_CREDENTIALS_FILE), {
       encrypt(text) {
         return safeStorage.encryptString(text).toString("base64");
       },
@@ -57,7 +58,7 @@ app.whenReady().then(() => {
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "PASSWORD")]: "synthetic-password",
     })).toString("base64");
     writeFileSync(join(process.cwd(), "settings.json"), "{}\n");
-    writeFileSync(join(process.cwd(), "credentials.json"), JSON.stringify({
+    writeFileSync(credentials.path, JSON.stringify({
       format: AUTOMATION_CREDENTIALS_FORMAT,
       data: encrypted,
     }));
@@ -65,7 +66,7 @@ app.whenReady().then(() => {
     const samples = [];
     for (let index = 0; index < 100; index += 1) {
       const startedAt = performance.now();
-      const source = readAutomationCredentialState();
+      const source = readAutomationCredentialState(credentials);
       toAutomationCredentialStateDto(source, index);
       samples.push(performance.now() - startedAt);
     }

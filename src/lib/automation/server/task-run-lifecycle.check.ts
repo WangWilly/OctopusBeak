@@ -15,12 +15,13 @@ import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
 after(() => database.close());
 const runtime = createAutomationRuntimeState();
-const runner = createAutomationRunner({ runtime });
+const runner = createAutomationRunner({ runtime, credentials: credentialStoreForCheck() });
 
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {

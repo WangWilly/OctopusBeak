@@ -4,10 +4,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import type { WorkflowExecution } from "./active-task-run.ts";
-import {
-  getAutomationCredentialCodec,
-  type AutomationCredentialCodec,
-} from "./config-files.ts";
+import type { AutomationCredentialCodec } from "./config-files.ts";
 import {
   browserRuntime,
   BrowserRuntimeConfigurationError,
@@ -43,7 +40,8 @@ export type AppWorkflowBrowserHostInput = Readonly<{
   taskRunId: string;
   signal: AbortSignal;
   userDataDirectory: string;
-  credentialCodec?: AutomationCredentialCodec | null;
+  /** Null keeps no retained cookies. */
+  credentialCodec: AutomationCredentialCodec | null;
   startUrl?: string;
   browserProfile?: AppWorkflowBrowserProfile;
   browserRuntime?: BrowserRuntime;
@@ -353,9 +351,7 @@ export function createAppWorkflowBrowserPort(
   const browserRuntimeRoot = join(input.userDataDirectory, "data", "automation", "browser-runtime");
   const browserRuntimeTaskDirectory = join(browserRuntimeRoot, input.taskId);
   const browserRuntimeDirectory = join(browserRuntimeTaskDirectory, input.taskRunId);
-  const credentialCodec = input.credentialCodec === undefined
-    ? getAutomationCredentialCodec()
-    : input.credentialCodec;
+  const { credentialCodec } = input;
   const launch = input.launchPersistentContext ?? defaultPersistentContext;
   const runtime = input.browserRuntime ?? browserRuntime;
 

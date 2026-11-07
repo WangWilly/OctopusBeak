@@ -1,24 +1,17 @@
-import { randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import {
   CathayDeviceRegistrationError,
   registerCathayTrustedDevice,
 } from "../../../workflows/cathay-device-registration.ts";
 import type { CathayCredentials } from "../../../workflows/cathay-statements.ts";
-import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import {
-  AUTOMATION_CREDENTIALS_PATH,
   CATHAY_TRUSTED_DEVICE_USER_ID_KEY,
-  getAutomationCredentialCodec,
-  readAutomationCredentialsFile,
-  writeAutomationCredentialsFile,
-  type AutomationCredentialCodec,
+  type AutomationCredentialStore,
 } from "./config-files.ts";
-import { DEVICE_REGISTRATION_TASK_IDS, sourceDeviceLocks, type SourceDeviceLock } from "./source-device-lock.ts";
+import { sourceDeviceLocks, type SourceDeviceLock } from "./source-device-lock.ts";
 import {
   createSourceDeviceRegistrationService,
   DeviceRegistrationError,
-  type SourceDeviceRegistrationService,
 } from "./source-device-registration.ts";
 
 export type CathaySecretStore = Readonly<{
@@ -26,10 +19,10 @@ export type CathaySecretStore = Readonly<{
   markTrusted(userId: string): void;
 }>;
 
-export function createCathaySecretStore(credentialsPath: string, codec: AutomationCredentialCodec): CathaySecretStore {
+export function createCathaySecretStore(store: AutomationCredentialStore): CathaySecretStore {
   return {
     read() {
-      const credentials = readAutomationCredentialsFile(credentialsPath, codec);
+      const credentials = store.read();
       const userId = credentials.LIBRETTO_CLOUD_CATHAY_USER_ID?.trim();
       const account = credentials.LIBRETTO_CLOUD_CATHAY_ACCOUNT?.trim();
       const password = credentials.LIBRETTO_CLOUD_CATHAY_PASSWORD?.trim();
@@ -42,9 +35,9 @@ export function createCathaySecretStore(credentialsPath: string, codec: Automati
       };
     },
     markTrusted(userId) {
-      const credentials = readAutomationCredentialsFile(credentialsPath, codec);
+      const credentials = store.read();
       credentials[CATHAY_TRUSTED_DEVICE_USER_ID_KEY] = userId;
-      writeAutomationCredentialsFile(credentialsPath, credentials, codec);
+      store.write(credentials);
     },
   };
 }
@@ -75,23 +68,4 @@ export function createCathayRegistrationService(options: CathayRegistrationServi
       return result.kind === "registered" ? [result.channel] : [];
     },
   });
-}
-
-let configuredService: SourceDeviceRegistrationService | null = null;
-
-export function cathayRegistrationService(): SourceDeviceRegistrationService {
-  if (configuredService) return configuredService;
-  const codec = getAutomationCredentialCodec();
-  if (!codec) throw new Error("Encrypted credential storage is unavailable.");
-  configuredService = createCathayRegistrationService({
-    store: createCathaySecretStore(AUTOMATION_CREDENTIALS_PATH, codec),
-    withCathayTaskPage: (signal, run) => createAppWorkflowBrowserPort({
-      taskId: DEVICE_REGISTRATION_TASK_IDS.cathay,
-      taskRunId: `device-registration-${randomUUID()}`,
-      signal,
-      userDataDirectory: process.env.OCTOPUSBEAK_USER_DATA ?? process.cwd(),
-      browserProfile: "cathay-login",
-    }).withPage(run),
-  });
-  return configuredService;
 }

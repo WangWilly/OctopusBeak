@@ -16,6 +16,7 @@ import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { SourceDeviceBusyError, sourceDeviceLocks } from "./source-device-lock.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 function memoryAutomation(overrides: Partial<AutomationPersistencePort> = {}) {
   const runs = new Map<string, AutomationTaskRun>();
@@ -84,7 +85,7 @@ function aborted(signal: AbortSignal) {
   });
 }
 
-const freshRunner = () => createAutomationRunner({ runtime: createAutomationRuntimeState() });
+const freshRunner = () => createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
 
 const exchangeRates = () => {
   const task = taskById("exchange-rates");
@@ -94,7 +95,7 @@ const exchangeRates = () => {
 
 test("typed workflow runtime uses the authenticated PGlite capability", () => {
   const provider = providerStub({});
-  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
+  assert.deepEqual(resolveTaskRunPlan(exchangeRates(), { pgliteRpc: provider.pgliteWorkflow, credentials: credentialStoreForCheck(), launchEnv: {}, launchVerificationSettings: {} }).pgliteRpc, {
     endpoint: "http://127.0.0.1:43121/rpc",
     token: "test-token",
   });
@@ -102,12 +103,13 @@ test("typed workflow runtime uses the authenticated PGlite capability", () => {
 
 test("typed workflow runtime fails closed when its PGlite capability is absent", () => {
   assert.throws(
-    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, launchEnv: {}, launchVerificationSettings: {} }),
+    () => resolveTaskRunPlan(exchangeRates(), { pgliteRpc: undefined, credentials: credentialStoreForCheck(), launchEnv: {}, launchVerificationSettings: {} }),
     /PGlite workflow transport is unavailable/u,
   );
   assert.throws(
     () => resolveTaskRunPlan(exchangeRates(), {
       pgliteRpc: { endpoint: "http://127.0.0.1:43121/rpc", token: " " },
+      credentials: credentialStoreForCheck(),
       launchEnv: {},
       launchVerificationSettings: {},
     }),

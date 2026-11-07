@@ -1045,6 +1045,7 @@ try {
         taskId: "yuanta-domestic-fixture",
         taskRunId: `yuanta-domestic-run-${runOrdinal}`,
         userDataDirectory: browserFixtureDirectory,
+        credentialCodec: null,
         startUrl: `${origin === "provider" ? YUANTA_EBANK_ORIGIN : browserFixtureBaseUrl}/start`,
         signal,
         launchPersistentContext: async () => {

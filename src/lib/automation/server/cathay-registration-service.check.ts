@@ -13,7 +13,7 @@ import {
   createCathayRegistrationService,
   createCathaySecretStore,
 } from "./cathay-registration-service.ts";
-import { writeAutomationCredentialsFile } from "./config-files.ts";
+import { writeAutomationCredentialsFile, createAutomationCredentialStore } from "./config-files.ts";
 import { createSourceDeviceLock, type SourceDeviceLock } from "./source-device-lock.ts";
 
 const USER_ID = ["A", "1", "23456789"].join("");
@@ -192,7 +192,7 @@ async function withFixture(
     }
   };
   const service = createCathayRegistrationService({
-    store: createCathaySecretStore(credentialsPath, codec),
+    store: createCathaySecretStore(createAutomationCredentialStore(credentialsPath, codec)),
     withCathayTaskPage: openPage,
     deviceLock: lock,
     ...(serviceOptions.codeTimeoutMs === undefined ? {} : { codeTimeoutMs: serviceOptions.codeTimeoutMs }),

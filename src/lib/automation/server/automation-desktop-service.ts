@@ -23,11 +23,9 @@ import {
   loadAutomationCoreSnapshot,
 } from "./automation-desktop-model.ts";
 import {
-  AUTOMATION_CREDENTIALS_PATH,
-  getAutomationCredentialCodec,
-  readAutomationCredentialsFile,
   splitAutomationUpdates,
   writeAutomationConfigFiles,
+  type AutomationCredentialStore,
 } from "./config-files.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
@@ -96,6 +94,7 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   provider: AutomationPersistenceProvider;
   dataVersions: Pick<DataVersionStore, "snapshot" | "markStale">;
   collection: CollectionControl;
+  credentials: AutomationCredentialStore;
   /** Main-process credential reader behind the service's credential state cache. */
   readCredentialState(): AutomationCredentialStateSource | Promise<AutomationCredentialStateSource>;
   deviceRegistration: Readonly<{
@@ -187,7 +186,7 @@ export function automationSetupGuideLink(
   return { ...guideLink, url: selectedUrl };
 }
 
-export function automationSaveCredentials(updates: Record<string, string>) {
+export function automationSaveCredentials(store: AutomationCredentialStore, updates: Record<string, string>) {
   for (const key of CERTIFICATE_FILE_CREDENTIAL_KEYS) {
     if (!Object.hasOwn(updates, key)) continue;
     const validation = validateCertificateFilePath(updates[key] ?? "");
@@ -211,14 +210,18 @@ export function automationSaveCredentials(updates: Record<string, string>) {
         selection.selectedIds.join(",");
     }
   }
-  const nextCredentials =
+  writeAutomationConfigFiles(
+    nextSettings,
     Object.keys(split.credentials).length > 0
-      ? withPreviewDeviceIdentities(
-          { ...readAutomationCredentialsFile(), ...split.credentials },
+      ? {
+        store,
+        credentials: withPreviewDeviceIdentities(
+          { ...store.read(), ...split.credentials },
           split.credentials,
-        )
-      : undefined;
-  writeAutomationConfigFiles(nextSettings, nextCredentials);
+        ),
+      }
+      : undefined,
+  );
   return { saved: true as const };
 }
 
@@ -314,7 +317,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       );
     },
     async saveCredentials(updates: Record<string, string>) {
-      const result = automationSaveCredentials(updates);
+      const result = automationSaveCredentials(deps.credentials, updates);
       if (result.saved) await credentials.refresh();
       return result;
     },
@@ -409,9 +412,8 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       {
         cancelRegistrations: () => deps.deviceRegistration.cancelAll(),
         erase: () => deps.eraseSignInDetails({
-          credentialsPath: AUTOMATION_CREDENTIALS_PATH,
+          credentials: deps.credentials,
           userDataDirectory: deps.userDataDirectory(),
-          codec: getAutomationCredentialCodec(),
         }),
         refresh: () => credentials.refresh(),
       },
