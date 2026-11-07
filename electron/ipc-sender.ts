@@ -8,7 +8,10 @@ export function isRendererDocument(url: string, rendererUrl: string): boolean {
   try {
     const target = new URL(url);
     const renderer = new URL(rendererUrl);
-    return target.origin === renderer.origin && target.pathname === renderer.pathname;
+    // A file: URL's origin is always "null", so the host is compared on its own.
+    return target.protocol === renderer.protocol
+      && target.host === renderer.host
+      && target.pathname === renderer.pathname;
   } catch {
     return false;
   }

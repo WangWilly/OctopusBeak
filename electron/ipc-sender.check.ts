@@ -30,6 +30,8 @@ test("the renderer document matches on every hash route but not another file or 
   assert.equal(isRendererDocument(`${RENDERER}?x=1`, RENDERER), true);
   assert.equal(isRendererDocument("file:///tmp/evil/index.html", RENDERER), false);
   assert.equal(isRendererDocument("https://example.com/build/index.html", RENDERER), false);
+  assert.equal(isRendererDocument(`https://example.com${new URL(RENDERER).pathname}`, RENDERER), false);
+  assert.equal(isRendererDocument(RENDERER.replace("file://", "file://evil"), RENDERER), false);
   assert.equal(isRendererDocument("not a url", RENDERER), false);
 });
 
