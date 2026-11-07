@@ -156,9 +156,8 @@ test("strong-match batch confirmation writes one commit with one evidence-bearin
     assert.equal(result.affectedRecords.filter((record) => record.basis === "linked").length, 2, "the result carries both linked records");
     const patched = applySpendingSummaryDelta(summaryBefore.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
     const summaryAfter = await seeded.fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
-    assert.deepEqual(patched.categoryTotalsByMonth, summaryAfter.purchaseReport.categoryTotalsByMonth, "the batch's delta reproduces the recomputed summary");
-    assert.deepEqual(patched.totalsByCurrency, summaryAfter.purchaseReport.totalsByCurrency);
-    assert.deepEqual(patched.monthTotals, summaryAfter.purchaseReport.monthTotals);
+    for (const field of ["recordCount", "totalsByCurrency", "monthTotals", "dayTotals", "categoryTotalsByMonth"] as const)
+      assert.deepEqual(patched[field], summaryAfter.purchaseReport[field], `the batch's delta reproduces the recomputed ${field}`);
     const events = (await seeded.fixture.store.query<{ evidence_json: string; event_kind: string }>(
       `SELECT event.evidence_json, event.event_kind
          FROM spending_dedup_decision_events event

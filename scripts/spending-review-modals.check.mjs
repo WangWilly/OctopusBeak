@@ -130,8 +130,8 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
       await page.locator("[data-merge-modal] [data-pair-id='cand-1'] [data-confirm-candidate]").click();
       await page.waitForFunction(() => window.__calls.actions.length === 1);
       assert.deepEqual(await page.evaluate(() => window.__calls.actions[0]), {
-        action: "confirm", kind: "candidate", candidateId: "cand-1", invoiceIdentityId: "inv-1", transactionIdentityId: "tx-1", dataVersion: 7,
-      });
+        action: "confirm", kind: "candidate", candidateId: "cand-1", invoiceIdentityId: "inv-1", transactionIdentityId: "tx-1", dataVersion: 8,
+      }, "the committed batch moved the page to its version");
       assert.deepEqual(errors, []);
     });
 

@@ -22,5 +22,5 @@ ADR 0105 covered only Pairing: confirming, denying, or revoking one pair. Two ot
 ## Consequences
 
 - One rule publishes every Spending write, and the page-action checks cover all of them.
-- A strong batch still accepts pairs shown at an older version. Its delta is relative to the version it validated, and a page at another version is read again.
+- A strong batch still accepts pairs shown at an older version. Its delta is relative to the version it validated. The live view reads a page at another version again, and the renderer leaves a page that has not reached that version for the live publication to bring forward.
 - The review store's `refreshSummary` is used only to recover a read that found its version stale.

@@ -786,7 +786,9 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.publish({ busyAction: "strong", actionError: null });
     try {
       const reply = await this.options.transport.applyPageAction({ action: "confirm", kind: "strong", ...request });
-      if (reply.status === "committed" && this.isCurrentAction(requestToken)) {
+      // A batch accepts pairs shown at an older version, so it may commit on a
+      // base the page has not reached; the live view then brings the page forward.
+      if (reply.status === "committed" && this.isCurrentAction(requestToken) && this.value.report.knowledgeAt >= reply.baseKnowledgeAt) {
         this.cancelPendingRecordRefresh();
         await this.acceptCompactPageAction(reply);
       }
