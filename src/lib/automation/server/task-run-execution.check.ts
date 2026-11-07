@@ -23,7 +23,7 @@ import {
   observingExecutions,
   openTaskRunForCheck,
   planForCheck,
-  credentialStoreForCheck,
+  runnerHostForCheck,
 } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution, type AutomationTaskExecutionSeams } from "./task-run-execution.ts";
 import {
@@ -314,7 +314,7 @@ test("resuming a missing App run fails closed without invoking a workflow", asyn
   const persistence = {
     async taskRunById() { return null; },
   };
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), credentials: credentialStoreForCheck() });
+  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
   await assert.rejects(
     () => runner.start("einvoice-personal-invoices", { automation: persistence } as never, {
       taskRunId: "missing-app-run",

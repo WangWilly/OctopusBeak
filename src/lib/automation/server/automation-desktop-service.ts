@@ -26,6 +26,7 @@ import {
   splitAutomationUpdates,
   writeAutomationConfigFiles,
   type AutomationCredentialStore,
+  type AutomationSettingsStore,
 } from "./config-files.ts";
 import {
   CERTIFICATE_FILE_EXTENSIONS,
@@ -33,7 +34,6 @@ import {
 } from "./credential-file.ts";
 import { isSourceTask, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
-import { readAutomationSettings } from "./settings.ts";
 import type { eraseSignInDetails } from "./sign-in-erasure.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
 import {
@@ -95,6 +95,7 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   dataVersions: Pick<DataVersionStore, "snapshot" | "markStale">;
   collection: CollectionControl;
   credentials: AutomationCredentialStore;
+  settings: AutomationSettingsStore;
   /** Main-process credential reader behind the service's credential state cache. */
   readCredentialState(): AutomationCredentialStateSource | Promise<AutomationCredentialStateSource>;
   deviceRegistration: Readonly<{
@@ -186,7 +187,11 @@ export function automationSetupGuideLink(
   return { ...guideLink, url: selectedUrl };
 }
 
-export function automationSaveCredentials(store: AutomationCredentialStore, updates: Record<string, string>) {
+export function automationSaveCredentials(
+  store: AutomationCredentialStore,
+  settings: AutomationSettingsStore,
+  updates: Record<string, string>,
+) {
   for (const key of CERTIFICATE_FILE_CREDENTIAL_KEYS) {
     if (!Object.hasOwn(updates, key)) continue;
     const validation = validateCertificateFilePath(updates[key] ?? "");
@@ -201,7 +206,7 @@ export function automationSaveCredentials(store: AutomationCredentialStore, upda
     updates[key] = validation.path;
   }
   const split = splitAutomationUpdates(updates);
-  const nextSettings = { ...readAutomationSettings(), ...split.settings };
+  const nextSettings = { ...settings.read(), ...split.settings };
   for (const group of AUTOMATION_CREDENTIAL_GROUPS) {
     if (!isStatementSelectionGroup(group)) continue;
     const selection = selectStatementTypes(group, nextSettings, "strict");
@@ -211,6 +216,7 @@ export function automationSaveCredentials(store: AutomationCredentialStore, upda
     }
   }
   writeAutomationConfigFiles(
+    settings,
     nextSettings,
     Object.keys(split.credentials).length > 0
       ? {
@@ -309,6 +315,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
           const core = await loadAutomationCoreSnapshot(
             provider,
             { snapshot: runtimeSnapshot, activeTaskIds: runtime.activeTaskIds() },
+            deps.settings.read(),
             credentialState.status,
             credentialState.states,
           );
@@ -317,7 +324,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
       );
     },
     async saveCredentials(updates: Record<string, string>) {
-      const result = automationSaveCredentials(deps.credentials, updates);
+      const result = automationSaveCredentials(deps.credentials, deps.settings, updates);
       if (result.saved) await credentials.refresh();
       return result;
     },

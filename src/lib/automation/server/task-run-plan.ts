@@ -5,8 +5,8 @@ import {
   automationConfigEnv,
   type AutomationCredentialStore,
   type AutomationSettingsFile,
+  type AutomationSettingsStore,
 } from "./config-files.ts";
-import { readAutomationSettings } from "./settings.ts";
 import type { AutomationTask } from "./tasks.ts";
 import { sourceVerificationFacts, type SourceVerificationFacts } from "./verification-routing.ts";
 
@@ -38,12 +38,16 @@ export type TaskRunPlan = Readonly<{
   /** The authenticated PGlite endpoint every workflow commits or reads through. */
   pgliteRpc: PGliteWorkflowRpc;
   credentials: AutomationCredentialStore;
+  /** Absolute App user-data directory; browser workflows keep their profiles under it. */
+  userDataDirectory: string;
 }>;
 
 export type TaskRunPlanDependencies = Readonly<{
   /** Absent or blank fails the resolution. */
   pgliteRpc: PGliteWorkflowRpc | undefined;
   credentials: AutomationCredentialStore;
+  settings: AutomationSettingsStore;
+  userDataDirectory: string;
   /** Defaults to the App settings and credentials over `process.env`. */
   launchEnv?: NodeJS.ProcessEnv;
   /** Defaults to the App settings file. */
@@ -59,16 +63,15 @@ export function resolveTaskRunPlan(
   if (!workflowId) throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
   const registration = appWorkflowRegistration(workflowId);
   if (!registration) throw new Error(`App workflow definition is unavailable: ${workflowId}`);
-  const { pgliteRpc, credentials } = dependencies;
+  const { pgliteRpc, credentials, userDataDirectory } = dependencies;
   if (!pgliteRpc?.endpoint.trim() || !pgliteRpc.token.trim()) {
     throw new Error("PGlite workflow transport is unavailable.");
   }
-  const settings = dependencies.launchEnv && dependencies.launchVerificationSettings
-    ? undefined
-    : readAutomationSettings();
+  let settings: AutomationSettingsFile | undefined;
+  const launchSettings = () => (settings ??= dependencies.settings.read());
   const launchEnv = dependencies.launchEnv ?? automationConfigEnv({
     baseEnv: process.env,
-    settings,
+    settings: launchSettings(),
     credentials: credentials.read(),
   });
   return {
@@ -81,8 +84,9 @@ export function resolveTaskRunPlan(
     },
     verification: sourceVerificationFacts(task.id),
     launchEnv,
-    launchVerificationSettings: dependencies.launchVerificationSettings ?? { ...settings },
+    launchVerificationSettings: dependencies.launchVerificationSettings ?? { ...launchSettings() },
     pgliteRpc,
     credentials,
+    userDataDirectory,
   };
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./pglite-ipc.ts", import.meta.url), "utf8");
+const runtimeSource = readFileSync(new URL("./pglite-runtime.ts", import.meta.url), "utf8");
 
 for (const channel of [
   "data-views:subscribe",
@@ -11,7 +12,12 @@ for (const channel of [
 ]) {
   assert.match(source, new RegExp(channel.replace(/[-:]/gu, "[-:]")));
 }
-assert.match(source, /workerData:\s*\{\s*dataDir:/u, "the worker gets one explicit data directory");
+assert.match(
+  runtimeSource,
+  /workerData:\s*\{\s*dataDir: options\.dataDir,\s*settingsPath: options\.settings\.path\s*\}/u,
+  "the worker gets one explicit data directory and settings file",
+);
+assert.doesNotMatch(source, /new Worker\(/u, "view IPC serves the operational runtime's worker and starts none");
 assert.match(source, /sender\.id/u, "subscriptions are scoped by renderer sender");
 assert.match(source, /once\("destroyed"/u, "renderer destruction cleans owned subscriptions");
 assert.match(source, /worker\.onError/u, "worker failure is translated to typed renderer errors");

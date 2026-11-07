@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { join, resolve } from "node:path";
 import { MessageChannel } from "node:worker_threads";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
@@ -30,10 +31,13 @@ import {
 import { taskById, type AutomationTask } from "./tasks.ts";
 import {
   AUTOMATION_CREDENTIALS_FILE,
+  AUTOMATION_SETTINGS_FILE,
   createAutomationCredentialStore,
+  createAutomationSettingsStore,
   type AutomationCredentialCodec,
   type AutomationCredentialStore,
   type AutomationSettingsFile,
+  type AutomationSettingsStore,
 } from "./config-files.ts";
 import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
@@ -57,7 +61,30 @@ export function credentialStoreForCheck(
   return createAutomationCredentialStore(path, CHECK_CREDENTIAL_CODEC);
 }
 
-/** The task's plan as the runner resolves it, with the check's PGlite endpoint and credentials unless the check names them. */
+/**
+ * What the host hands the runner: credentials, settings and user data, all
+ * in `directory`. The default is whatever directory the check is in.
+ */
+export function runnerHostForCheck(directory = ".") {
+  return {
+    credentials: credentialStoreForCheck(join(directory, AUTOMATION_CREDENTIALS_FILE)),
+    settings: settingsStoreForCheck(join(directory, AUTOMATION_SETTINGS_FILE)),
+    userDataDirectory: resolve(directory),
+  };
+}
+
+/** By default the settings file in whatever directory the check is in when it reads. */
+export function settingsStoreForCheck(
+  path: string = AUTOMATION_SETTINGS_FILE,
+): AutomationSettingsStore {
+  return createAutomationSettingsStore(path);
+}
+
+/**
+ * The task's plan as the runner resolves it, with the check's PGlite
+ * endpoint, credentials, settings and user data (the check's directory)
+ * unless the check names them.
+ */
 export function planForCheck(
   task: AutomationTask,
   dependencies: Partial<TaskRunPlanDependencies> = {},
@@ -65,6 +92,8 @@ export function planForCheck(
   return resolveTaskRunPlan(task, {
     pgliteRpc: CHECK_PGLITE_RPC,
     credentials: credentialStoreForCheck(),
+    settings: settingsStoreForCheck(),
+    userDataDirectory: process.cwd(),
     ...dependencies,
   });
 }
@@ -230,13 +259,15 @@ export async function executeTaskRunForCheck(
 }> {
   const {
     taskRunId, onRunOpened, executions, workerPorts,
-    pgliteRpc, credentials, launchEnv, launchVerificationSettings,
+    pgliteRpc, credentials, settings, userDataDirectory, launchEnv, launchVerificationSettings,
     attempt, maxAttempts, retrying, executionId, assistanceRoute,
     ...seams
   } = options;
   const plan = planForCheck(task, {
     ...(pgliteRpc ? { pgliteRpc } : {}),
     ...(credentials ? { credentials } : {}),
+    ...(settings ? { settings } : {}),
+    ...(userDataDirectory ? { userDataDirectory } : {}),
     launchEnv,
     launchVerificationSettings,
   });

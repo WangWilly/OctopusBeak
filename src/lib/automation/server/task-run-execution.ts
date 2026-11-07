@@ -202,7 +202,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
         taskId: task.id,
         taskRunId: context.run.taskRunId,
         signal,
-        userDataDirectory: launchEnv.OCTOPUSBEAK_USER_DATA ?? process.cwd(),
+        userDataDirectory: plan.userDataDirectory,
         credentialCodec: plan.credentials.codec,
         startUrl: runtime.startUrl,
         browserProfile: runtime.browserProfile,

@@ -10,8 +10,7 @@ import {
   isStatementSelectionGroup,
   selectStatementTypes,
 } from "../statement-selection.ts";
-import { readAutomationSettings } from "./settings.ts";
-import type { AutomationCredentialStore } from "./config-files.ts";
+import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
@@ -77,12 +76,12 @@ function validateScheduledAtUtc(value: string | undefined) {
   }
 }
 
-function assertStatementSelection(task: AutomationTask) {
+function assertStatementSelection(task: AutomationTask, settings: AutomationSettingsStore) {
   const group = task.credentialGroupId
     ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
     : null;
   if (group && isStatementSelectionGroup(group)) {
-    selectStatementTypes(group, { ...readAutomationSettings(), [group.enabledKey]: true }, "strict");
+    selectStatementTypes(group, { ...settings.read(), [group.enabledKey]: true }, "strict");
   }
 }
 
@@ -95,6 +94,8 @@ type ClaimedTask = {
 export function createAutomationRunner(options: Readonly<{
   runtime: AutomationRuntimeState;
   credentials: AutomationCredentialStore;
+  settings: AutomationSettingsStore;
+  userDataDirectory: string;
   forceQuitAvailableAfterMs?: number;
 }>) {
   const { runtime } = options;
@@ -139,6 +140,8 @@ export function createAutomationRunner(options: Readonly<{
       const plan = resolveTaskRunPlan(task, {
         pgliteRpc: provider.pgliteWorkflow,
         credentials: options.credentials,
+        settings: options.settings,
+        userDataDirectory: options.userDataDirectory,
       });
       const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
@@ -240,7 +243,7 @@ export function createAutomationRunner(options: Readonly<{
       if (holds > 0) throw new Error("Automation is paused while local data is being deleted.");
       const task = appExecutorTask(taskId);
       validateScheduledAtUtc(runOptions.scheduledAtUtc);
-      assertStatementSelection(task);
+      assertStatementSelection(task, options.settings);
       const existing = claimed.get(taskId);
       if (existing) {
         const run = await existing.opening;

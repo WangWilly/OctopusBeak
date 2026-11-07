@@ -1,12 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
-import { parseEnvText } from "./env-file.ts";
-import {
-  AUTOMATION_SETTINGS_PATH,
-  migrateStatementSelectionIds,
-  onAutomationSettingsWritten,
-  readAutomationSettingsFile,
-  type AutomationSettingsFile,
-} from "./config-files.ts";
+import type { AutomationSettingsFile, AutomationSettingsStore } from "./config-files.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS } from "./tasks.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { attachedPreviewSource, attachedStatementType } from "../../preview-sources/attached-products.ts";
@@ -16,34 +8,22 @@ import type { AutomationCredentialGroup } from "../types.ts";
 import { automationFlagEnabled } from "../statement-selection.ts";
 import { systemSettings } from "../../settings/system-settings.ts";
 
-export const AUTOMATION_ENV_PATH = ".env";
-
-export function readAutomationEnvText(envPath = AUTOMATION_ENV_PATH) {
-  return existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-}
-
 export function envFlagEnabled(value: string | boolean | undefined) {
   return automationFlagEnabled(value);
 }
 
-export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) {
-  migrateStatementSelectionIds(settingsPath);
-  return readAutomationSettingsFile(settingsPath);
-}
-
-export function automationBusinessTimezone(settings: AutomationSettingsFile = readAutomationSettings()) {
+export function automationBusinessTimezone(settings: AutomationSettingsFile) {
   return systemSettings(settings).systemTimezone;
 }
 
 export function automationGroupEnabledStatus(
-  settings: AutomationSettingsFile = readAutomationSettings(),
+  settings: AutomationSettingsFile,
   env: Record<string, string | undefined> = process.env,
 ) {
-  const legacy = parseEnvText(readAutomationEnvText());
   return Object.fromEntries(
     AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
       group.id,
-      envFlagEnabled(settings[group.enabledKey] ?? legacy[group.enabledKey] ?? env[group.enabledKey]),
+      envFlagEnabled(settings[group.enabledKey] ?? env[group.enabledKey]),
     ]),
   );
 }
@@ -67,7 +47,7 @@ export function offeredStatementTypes(group: AutomationCredentialGroup, visibili
   return { ...group, statementTypes: [...(group.statementTypes ?? []), ...products.map(attachedStatementType)] };
 }
 
-export function offeredAutomationSources(settings: AutomationSettingsFile = readAutomationSettings()) {
+export function offeredAutomationSources(settings: AutomationSettingsFile) {
   const visibility = currentPreviewVisibility(settings);
   const offeredPreviewIds = new Set(visibility.visible.map((entry) => entry.sourceId));
   const enabled = automationGroupEnabledStatus(settings);
@@ -83,7 +63,7 @@ export function offeredAutomationSources(settings: AutomationSettingsFile = read
   };
 }
 
-export function currentPreviewVisibility(settings: AutomationSettingsFile = readAutomationSettings()) {
+export function currentPreviewVisibility(settings: AutomationSettingsFile) {
   return previewVisibility({
     previewFeaturesEnabled: systemSettings(settings).previewFeaturesEnabled,
     enabledGroups: automationGroupEnabledStatus(settings),
@@ -91,9 +71,9 @@ export function currentPreviewVisibility(settings: AutomationSettingsFile = read
   });
 }
 
-function initialPreviewVisibility(): PreviewVisibility | null {
+function initialPreviewVisibility(settings: AutomationSettingsStore): PreviewVisibility | null {
   try {
-    return currentPreviewVisibility();
+    return currentPreviewVisibility(settings.read());
   } catch {
     // An invalid settings file must not stop the app from starting; the first write announces.
     return null;
@@ -104,11 +84,13 @@ function initialPreviewVisibility(): PreviewVisibility | null {
  * Calls `onChange` after any write of the settings file changes Preview
  * visibility, comparing with the visibility last seen.
  */
-export function watchPreviewVisibility(onChange: () => void): () => void {
-  let last = initialPreviewVisibility();
-  return onAutomationSettingsWritten((path, settings) => {
-    if (path !== AUTOMATION_SETTINGS_PATH) return;
-    const next = currentPreviewVisibility(settings);
+export function watchPreviewVisibility(
+  settings: AutomationSettingsStore,
+  onChange: () => void,
+): () => void {
+  let last = initialPreviewVisibility(settings);
+  return settings.subscribe((written) => {
+    const next = currentPreviewVisibility(written);
     if (last !== null && sameVisibility(next, last)) return;
     last = next;
     onChange();

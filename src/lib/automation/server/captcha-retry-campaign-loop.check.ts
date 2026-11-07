@@ -18,7 +18,6 @@ import {
 } from "./captcha-retry-campaign.ts";
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import type { ActiveTaskRunFields, TaskRunOutcome, TaskRunReport } from "./active-task-run.ts";
-import { readAutomationSettings } from "./settings.ts";
 import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { openTaskRunForCheck, routingPlanForCheck } from "./task-run-check-support.ts";
@@ -322,7 +321,7 @@ test("a nonbrowser campaign executes once, routes nothing and leaves finalizatio
     const run = await openTaskRunForCheck(provider.automation, taskRunId);
     let executions = 0;
     let verificationRoutes = 0;
-    const plan = routingPlanForCheck("exchange-rates", readAutomationSettings());
+    const plan = routingPlanForCheck("exchange-rates");
     assert.equal(plan.verification, null, "exchange rates have no Verified source");
     const report = await runCaptchaRetryCampaign({
       plan,
@@ -354,7 +353,7 @@ test("SinoPac cancellation preserves an ambiguous commit and does not retry", ()
     const run = await openTaskRunForCheck(provider.automation, taskRunId);
     await run.requestStop("cancelled");
     let executions = 0;
-    const plan = routingPlanForCheck("sinopac-statements", readAutomationSettings());
+    const plan = routingPlanForCheck("sinopac-statements");
     const report = await runCaptchaRetryCampaign({
       plan,
       run,

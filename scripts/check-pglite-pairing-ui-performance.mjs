@@ -211,7 +211,7 @@ async function startWorker(dataDir) {
   progress(`starting worker for ${dataDir}`);
   const worker = new Worker(new URL("../electron/pglite-view-worker.ts", import.meta.url), {
     type: "module",
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(process.cwd(), "settings.json") },
   });
   const client = createPGliteViewWorkerClient(worker);
   const startupAt = performance.now();

@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   AUTOMATION_CREDENTIALS_FORMAT,
   AUTOMATION_CREDENTIALS_FILE,
-  AUTOMATION_SETTINGS_PATH,
+  AUTOMATION_SETTINGS_FILE,
   CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   TDCC_HOST_KEYS,
   automationConfigEnv,
   createAutomationCredentialStore,
+  createAutomationSettingsStore,
   credentialStatusFromValues,
   ensureAutomationManagedSecrets,
   migrateAutomationCredentialsFileEncryption,
@@ -25,7 +24,6 @@ import {
   writeAutomationCredentialsFile,
   writeAutomationSettingsFile,
 } from "./config-files.ts";
-import { AUTOMATION_ENV_PATH } from "./settings.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "octopusbeak-config-"));
 const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
@@ -122,7 +120,7 @@ try {
   writeFileSync(envLocalPath, `${fubonPasswordKey}=dev-only\n`);
 
   const credentials = createAutomationCredentialStore(credentialsPath, fakeCodec);
-  migrateAutomationEnvFile({ envPath, settingsPath, credentials });
+  migrateAutomationEnvFile({ envPath, settings: createAutomationSettingsStore(settingsPath), credentials });
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
     SYSTEM_TIMEZONE: "Asia/Taipei",
     EXCHANGE_RATE_UPDATE_TIME: "06:00",
@@ -174,38 +172,35 @@ try {
   writeAutomationCredentialsFile(legacyGmailPath, legacyCredentials, null);
   assert.equal(readFileSync(legacyGmailPath, "utf8").includes("legacy-refresh-token"), false, "the next credential write drops the Gmail grant");
 
-  assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
+  assert.equal(AUTOMATION_SETTINGS_FILE, "settings.json");
   assert.equal(AUTOMATION_CREDENTIALS_FILE, "credentials.json");
-  assert.equal(AUTOMATION_ENV_PATH, ".env");
   assert.equal(
     CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
     FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   );
 
-  const importCwd = join(dir, "import-cwd");
-  const runtimeCwd = join(dir, "runtime-cwd");
-  mkdirSync(importCwd);
-  mkdirSync(runtimeCwd);
-  const configModuleUrl = pathToFileURL(join(process.cwd(), "src/lib/automation/server/config-files.ts")).href;
-  const child = spawnSync(process.execPath, [
-    "--no-warnings",
-    "--experimental-strip-types",
-    "--input-type=module",
-    "-e",
-    `
-      const mod = await import(${JSON.stringify(configModuleUrl)});
-      process.chdir(${JSON.stringify(runtimeCwd)});
-      mod.writeAutomationSettings({ MAX_SUB_ACCOUNT: "runtime" });
-    `,
-  ], {
-    cwd: importCwd,
-    encoding: "utf8",
-  });
-  assert.equal(child.status, 0, `${child.stdout}\n${child.stderr}`);
-  assert.deepEqual(readAutomationSettingsFile(join(runtimeCwd, "settings.json")), {
-    MAX_SUB_ACCOUNT: "runtime",
-  });
-  assert.equal(existsSync(join(importCwd, "settings.json")), false);
+  {
+    const store = createAutomationSettingsStore(join(dir, "store-settings.json"));
+    const other = createAutomationSettingsStore(join(dir, "other-settings.json"));
+    const heard: unknown[] = [];
+    const otherHeard: unknown[] = [];
+    const unsubscribe = store.subscribe((settings) => heard.push(settings));
+    other.subscribe((settings) => otherHeard.push(settings));
+    store.write({ MAX_SUB_ACCOUNT: "runtime" });
+    assert.deepEqual(readAutomationSettingsFile(join(dir, "store-settings.json")), { MAX_SUB_ACCOUNT: "runtime" });
+    assert.deepEqual(heard, [{ MAX_SUB_ACCOUNT: "runtime" }], "a write announces to the store's subscribers");
+    assert.deepEqual(otherHeard, [], "another store hears none of its writes");
+    assert.equal(existsSync(join(process.cwd(), "store-settings.json")), false, "the store never writes relative to the cwd");
+    writeAutomationSettingsFile(store.path, { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts" });
+    assert.deepEqual(store.read(), { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit" }, "a read migrates renamed ids");
+    assert.deepEqual(heard.at(-1), { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit" }, "a migrating read announces its write");
+    const heardBefore = heard.length;
+    store.read();
+    assert.equal(heard.length, heardBefore, "a read with nothing to migrate announces nothing");
+    unsubscribe();
+    store.write({});
+    assert.equal(heard.length, heardBefore, "an unsubscribed listener hears no later write");
+  }
 
   const encryptedCredentialsPath = join(dir, "encrypted-credentials.json");
   const managedSecret = "a".repeat(43);

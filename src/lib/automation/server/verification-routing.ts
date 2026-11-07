@@ -24,7 +24,6 @@ import { automationViewer, type PageForRun } from "./automation-viewer.ts";
 import { createProviderVerificationHost } from "./provider-verification.ts";
 import type { AutomationTask } from "./tasks.ts";
 import { VERIFIED_SOURCES } from "./sources/index.ts";
-import { readAutomationSettings } from "./settings.ts";
 import type { AutomationSettingsFile } from "./config-files.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import type { SourceVerificationRoute } from "./sources/verified-source.ts";
@@ -321,14 +320,13 @@ export async function routeWaitingRunVerification(input: VerificationRoutingSeam
   run: Pick<ActiveAutomationTaskRun, "taskRunId" | "current">;
   /** The run's task, from its Task run plan. */
   task: Pick<AutomationTask, "workflowId">;
-  settings?: AutomationSettingsFile;
+  settings: AutomationSettingsFile;
 }): Promise<VerificationRoutingOutcome> {
-  const { run: activeRun, task, settings: givenSettings, ...seams } = input;
+  const { run: activeRun, task, settings, ...seams } = input;
   if (!task.workflowId) {
     await seams.finalizeFailed("Verification routing requires an App browser workflow.");
     return { kind: "failed" };
   }
-  const settings = givenSettings ?? readAutomationSettings();
   const run = activeRun.current();
   if (run.status !== "waiting_for_human" || !run.humanAssistanceContract) {
     await seams.finalizeFailed("App workflow verification stage is unavailable.");

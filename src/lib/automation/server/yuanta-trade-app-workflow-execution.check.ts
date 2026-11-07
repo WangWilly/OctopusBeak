@@ -89,6 +89,7 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: { financialCommit },
       workflowBrowserPort: ({ startUrl }) => {
         observedStartUrl = startUrl;

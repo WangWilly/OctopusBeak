@@ -1,6 +1,4 @@
 import type { IpcMain, WebContents } from "electron";
-import { join } from "node:path";
-import { Worker } from "node:worker_threads";
 import {
   type DataViewErrorCode,
   type DataViewErrorEvent,
@@ -10,10 +8,7 @@ import {
   type DataViewUnsubscribeRequest,
   type DataViewUnsubscribeResult,
 } from "../src/lib/desktop/api.ts";
-import {
-  createPGliteViewWorkerClient,
-  type PGliteViewWorkerClient,
-} from "./pglite-view-worker-client.ts";
+import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { OctopusBeakDataViewChannels } from "./preload.ts";
 
 export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const satisfies OctopusBeakDataViewChannels["subscribe"];
@@ -22,11 +17,7 @@ export const DATA_VIEWS_VALUE_CHANNEL = "data-views:value" as const satisfies Oc
 export const DATA_VIEWS_ERROR_CHANNEL = "data-views:error" as const satisfies OctopusBeakDataViewChannels["error"];
 
 export type PGliteViewIpcOptions = {
-  /** The only database directory this worker may open. */
-  dataDir: string;
-  workerPath?: string;
-  /** Injection seam for protocol tests; production creates the dedicated worker. */
-  worker?: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
+  worker: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
   /** A shared operational runtime closes this worker after IPC teardown. */
   workerOwned?: boolean;
 };
@@ -113,15 +104,7 @@ export function registerPGliteViewIpc(
   options: PGliteViewIpcOptions,
   bridge: IpcMainBridge,
 ) {
-  if (!options.dataDir || typeof options.dataDir !== "string") {
-    throw new TypeError("PGlite view IPC requires an explicit data directory.");
-  }
-
-  const worker = options.worker ?? createPGliteViewWorkerClient(
-    new Worker(options.workerPath ?? join(__dirname, "pglite-view-worker.cjs"), {
-      workerData: { dataDir: options.dataDir },
-    }),
-  );
+  const { worker } = options;
   const workerOwned = options.workerOwned ?? true;
   const owners = new Map<number, SenderSubscriptions>();
   let workerFailure: Error | undefined;

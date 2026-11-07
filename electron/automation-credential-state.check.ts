@@ -110,22 +110,21 @@ test("credential snapshot mapping has a durable P95 synchronous budget", () => {
 
 test("main credential snapshot and mapping stay within the 50ms P95 budget", async () => {
   const directory = mkdtempSync(join(tmpdir(), "automation-credential-performance-"));
-  const originalCwd = process.cwd();
   try {
-    process.chdir(directory);
-    writeFileSync("settings.json", "{}\n");
-    writeFileSync("credentials.json", JSON.stringify({
+    writeFileSync(join(directory, "settings.json"), "{}\n");
+    writeFileSync(join(directory, "credentials.json"), JSON.stringify({
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "USER", "ID")]: "synthetic-user",
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "ACCOUNT")]: "synthetic-account",
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "PASSWORD")]: "synthetic-password",
     }));
-    const { credentialStoreForCheck } = await import("../src/lib/automation/server/task-run-check-support.ts");
+    const { credentialStoreForCheck, settingsStoreForCheck } = await import("../src/lib/automation/server/task-run-check-support.ts");
     const credentials = credentialStoreForCheck(join(directory, "credentials.json"));
+    const settings = settingsStoreForCheck(join(directory, "settings.json"));
     const desktopApi = await import("../src/lib/automation/server/automation-desktop-model.ts");
     const samples: number[] = [];
     for (let index = 0; index < 100; index += 1) {
       const startedAt = performance.now();
-      const source = desktopApi.readAutomationCredentialState(credentials);
+      const source = desktopApi.readAutomationCredentialState(credentials, settings.read());
       toAutomationCredentialStateDto(source, index);
       samples.push(performance.now() - startedAt);
     }
@@ -133,7 +132,6 @@ test("main credential snapshot and mapping stay within the 50ms P95 budget", asy
     const p95 = samples[Math.ceil(samples.length * 0.95) - 1] ?? Infinity;
     assert.ok(p95 <= 50, `credential snapshot/mapping P95 was ${p95.toFixed(3)}ms`);
   } finally {
-    process.chdir(originalCwd);
     rmSync(directory, { recursive: true, force: true });
   }
 });

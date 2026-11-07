@@ -5,7 +5,16 @@ const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
 assert.doesNotMatch(source, /prepareLibrettoRunCdpPatch|libretto-run-cdp-patch-failed/u);
 assert.match(source, /createPGliteOperationalRuntime\(/u);
-assert.match(source, /const runtime = createAutomationRuntime\(operationalRuntime\.provider, \{ credentials \}\)/);
+assert.doesNotMatch(source, /process\.chdir/u, "main opens every App file at an absolute path, so no thread depends on the cwd");
+assert.match(
+  source,
+  /const automationSettings = createAutomationSettingsStore\(path\.join\(userData, AUTOMATION_SETTINGS_FILE\)\);\s*migrateAutomationEnvFile\(\{ envPath: path\.join\(userData, "\.env"\), settings: automationSettings, credentials \}\);/u,
+  "the legacy .env in user data migrates into the one settings store before anything reads settings",
+);
+assert.match(
+  source,
+  /const runtime = createAutomationRuntime\(operationalRuntime\.provider, \{\s*credentials,\s*settings: automationSettings,\s*userDataDirectory: userData,\s*\}\)/,
+);
 assert.match(source, /runtime\.recover\(\)[\s\S]*?\.then\(\(\) => resolve\(\)\)/);
 assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
 assert.match(source, /if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\)/u);

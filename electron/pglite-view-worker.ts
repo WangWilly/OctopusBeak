@@ -31,6 +31,10 @@ import { applyPGliteSpendingPageAction } from "../src/ledger/pglite/spending-com
 import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
+import {
+  createAutomationSettingsStore,
+  type AutomationSettingsFile,
+} from "../src/lib/automation/server/config-files.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 
 export type PGliteWorkerViewContext = Readonly<{
@@ -40,16 +44,17 @@ export type PGliteWorkerViewContext = Readonly<{
   pageActions: SpendingPageActions;
   clock: LocalDateClock;
   scheduler: PGliteWorkScheduler;
+  readSettings: () => AutomationSettingsFile;
 }>;
 
 /** Builds the worker's only named-view source from the database it opened. */
 export type PGliteWorkerViewSourceFactory = (context: PGliteWorkerViewContext) => ViewSource;
 
-export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, pageActions, clock, scheduler }) =>
+export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, pageActions, clock, scheduler, readSettings }) =>
   createPGliteFinancialLiveViews(
     { registry, pageActions },
     createPGliteLiveViewDependencies(db, registry, clock),
-    () => configuredOverviewSources(),
+    () => configuredOverviewSources(readSettings()),
     scheduler,
   );
 
@@ -61,7 +66,7 @@ export type PGliteViewWorkerRuntime = {
 export async function startPGliteViewWorker(
   port: MessagePort,
   createViewSource: PGliteWorkerViewSourceFactory,
-  dataDir?: string,
+  { readSettings, dataDir }: Readonly<{ readSettings: () => AutomationSettingsFile; dataDir?: string }>,
 ): Promise<PGliteViewWorkerRuntime> {
   const ownsDataDir = dataDir === undefined;
   const ownedDataDir = dataDir ?? await mkdtemp(join(tmpdir(), "octopus-beak-pglite-"));
@@ -76,9 +81,9 @@ export async function startPGliteViewWorker(
     throw error;
   }
   const operationalProvider = createPgliteOperationalProvider(database);
-  const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone()));
+  const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings())));
   const pageActions = createSpendingPageActions((request) => applyPGliteSpendingPageAction(database, request));
-  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(), {
+  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(readSettings()), {
     today: clock.today,
     spendingPageActions: pageActions,
   });
@@ -92,7 +97,7 @@ export async function startPGliteViewWorker(
       error instanceof Error ? error.message : String(error),
     ),
   });
-  const source = createViewSource({ db, registry: financialRegistry, pageActions, clock, scheduler });
+  const source = createViewSource({ db, registry: financialRegistry, pageActions, clock, scheduler, readSettings });
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
@@ -131,11 +136,21 @@ export async function startPGliteViewWorker(
 
 if (parentPort) {
   const port = parentPort;
-  const configuredDataDir = workerData && typeof workerData === "object"
-    && typeof (workerData as { dataDir?: unknown }).dataDir === "string"
-    ? (workerData as { dataDir: string }).dataDir
-    : undefined;
-  const runtime = startPGliteViewWorker(port, financialWorkerViewSource, configuredDataDir).catch((error: unknown) => {
+  const given = (workerData && typeof workerData === "object" ? workerData : {}) as {
+    dataDir?: unknown;
+    settingsPath?: unknown;
+  };
+  const configuredDataDir = typeof given.dataDir === "string" ? given.dataDir : undefined;
+  const runtime = Promise.resolve().then(() => {
+    if (typeof given.settingsPath !== "string" || !given.settingsPath) {
+      throw new TypeError("PGlite view worker requires an explicit settings path.");
+    }
+    const settings = createAutomationSettingsStore(given.settingsPath);
+    return startPGliteViewWorker(port, financialWorkerViewSource, {
+      readSettings: () => settings.read(),
+      dataDir: configuredDataDir,
+    });
+  }).catch((error: unknown) => {
     try {
       port.postMessage({
         kind: "worker-start-failed",

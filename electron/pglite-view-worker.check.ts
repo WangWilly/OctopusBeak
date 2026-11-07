@@ -25,6 +25,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 test("the worker entry serves only the financial live views and never treats a view name as SQL", async () => {
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
+    workerData: { settingsPath: join(tmpdir(), `octopus-beak-view-worker-${process.pid}-settings.json`) },
   });
   const client = createPGliteViewWorkerClient(worker);
   try {
@@ -39,12 +40,27 @@ test("the worker entry serves only the financial live views and never treats a v
   }
 });
 
+test("the worker entry refuses to start without an explicit settings path", async () => {
+  const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
+    execArgv: ["--experimental-strip-types"],
+  });
+  const client = createPGliteViewWorkerClient(worker);
+  try {
+    await assert.rejects(
+      client.subscribe("financial.overview", {}, () => {}),
+      /requires an explicit settings path/u,
+    );
+  } finally {
+    await client.close();
+  }
+});
+
 test("bundled worker reopens its explicit data directory after durable close", async () => {
   const bundledWorker = join(process.cwd(), "build-electron", "pglite-view-worker.cjs");
   assert.ok(existsSync(bundledWorker), "build:electron must emit the dedicated worker");
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-pglite-bundle-check-"));
   const openAndClose = async () => {
-    const worker = new Worker(bundledWorker, { workerData: { dataDir } });
+    const worker = new Worker(bundledWorker, { workerData: { dataDir, settingsPath: join(dataDir, "settings.json") } });
     const client = createPGliteViewWorkerClient(worker);
     try {
       // Reaching the view source's own rejection proves the worker became ready.
@@ -72,7 +88,7 @@ test("the worker serves its injected view source, closes subscriptions, and remo
     },
   };
   const channel = new MessageChannel();
-  const runtime = await startPGliteViewWorker(channel.port1, () => source);
+  const runtime = await startPGliteViewWorker(channel.port1, () => source, { readSettings: () => ({}) });
   const client = createViewPortClient(channel.port2);
   const values: unknown[] = [];
   try {
@@ -98,7 +114,7 @@ test("the registry runs its Spending page actions through the same actions the v
   const runtime = await startPGliteViewWorker(channel.port1, (given) => {
     context = given;
     return { subscribe: async () => async () => {} };
-  });
+  }, { readSettings: () => ({}) });
   try {
     const settled: unknown[] = [];
     context!.pageActions.onSettled((result) => settled.push(result));

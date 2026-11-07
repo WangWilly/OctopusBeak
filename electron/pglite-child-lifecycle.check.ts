@@ -165,7 +165,7 @@ test("PGlite child RPC launches, reconnects, and fails closed when its parent cl
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-pglite-child-lifecycle-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir },
+    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
   });
   const workerClient = createPGliteViewWorkerClient(worker);
   let reachBlockedOperation!: () => void;

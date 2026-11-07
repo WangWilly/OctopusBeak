@@ -13,10 +13,9 @@ import {
   automationSaveCredentials,
   automationSetupGuideLink,
 } from "./automation-desktop-service.ts";
-import { readAutomationSettings } from "./settings.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import { credentialStoreForCheck } from "./task-run-check-support.ts";
+import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
 
 const idleRuns = () => ({ snapshot: createAutomationRuntimeState().snapshot(), activeTaskIds: [] });
 
@@ -41,7 +40,7 @@ test("desktop automation model and history are read from the provider", async ()
         summary: { status: "completed", counts: { count: 2 } },
       },
     });
-    const model = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck());
+    const model = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck(), {});
     assert.ok(model.credentialGroups.length > 0);
     assert.equal(model.automation.credentials !== undefined, true);
     const history = await automationRunHistory(provider);
@@ -78,7 +77,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
         summary: { status: "partial", counts: { itemCount: 4, skippedProductCount: 1 } },
       },
     });
-    const beforeEvents = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck());
+    const beforeEvents = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck(), {});
     assert.deepEqual(
       beforeEvents.automation.tasks.find((task) => task.id === "exchange-rates")?.events,
       [],
@@ -98,7 +97,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
       total: 2,
     });
 
-    const current = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck());
+    const current = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck(), {});
     const currentTask = current.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
@@ -121,7 +120,7 @@ test("desktop model refreshes ordered workflow events and honors retention pruni
       await provider.automation.pruneRunEvents("2026-09-26T00:00:00.000Z"),
       2,
     );
-    const expired = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck());
+    const expired = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck(), {});
     const expiredTask = expired.automation.tasks.find(
       (task) => task.id === "exchange-rates",
     );
@@ -145,40 +144,39 @@ test("automation setup links remain stable without loading the ledger", () => {
 
 test("Fubon statement subset round-trips through settings and desktop model", async () => {
   const root = await mkdtemp(join(tmpdir(), "automation-statement-selection-"));
-  const previousDirectory = process.cwd();
   const store = new PGliteStore(await createTestPGlite("operational"));
+  const credentials = credentialStoreForCheck(join(root, "credentials.json"));
+  const settings = settingsStoreForCheck(join(root, "settings.json"));
   try {
-    process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const saved = automationSaveCredentials(credentialStoreForCheck(), {
+    const saved = automationSaveCredentials(credentials, settings, {
       LIBRETTO_CLOUD_FUBON_ENABLED: "true",
       LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "loan,deposit,loan",
     });
     assert.equal(saved.saved, true);
     assert.equal(
-      readAutomationSettings().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
+      settings.read().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
       "deposit,loan",
     );
 
-    const model = await loadAutomationDesktopModel(provider, idleRuns(), credentialStoreForCheck());
+    const model = await loadAutomationDesktopModel(provider, idleRuns(), credentials, settings.read());
     const fubon = model.credentialGroups.find((group) => group.id === "fubon");
     assert.deepEqual(fubon?.selectedStatementTypeIds, ["deposit", "loan"]);
     assert.equal(fubon?.statementSetupRequired, false);
 
     assert.throws(
-      () => automationSaveCredentials(credentialStoreForCheck(), {
+      () => automationSaveCredentials(credentials, settings, {
         LIBRETTO_CLOUD_FUBON_ENABLED: "true",
         LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
       }),
       /Unknown Fubon statement type: unknown/u,
     );
     assert.equal(
-      readAutomationSettings().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
+      settings.read().LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES,
       "deposit,loan",
       "rejected selection leaves the persisted choice unchanged",
     );
   } finally {
-    process.chdir(previousDirectory);
     await store.close();
     await rm(root, { recursive: true, force: true });
   }

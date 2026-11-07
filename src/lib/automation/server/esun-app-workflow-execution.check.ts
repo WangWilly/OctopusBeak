@@ -246,6 +246,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit,
         now: () => now.toISOString(),
@@ -298,6 +299,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     const cancelledResult = await executeTaskRunForCheck(task, cancelOnCollectionStart, {
       taskRunId: cancelRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       onRunOpened: (active) => {
         cancellationRun = active;
       },
@@ -335,6 +337,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
     const result = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
       workerPorts: {
         financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
         now: () => now.toISOString(),

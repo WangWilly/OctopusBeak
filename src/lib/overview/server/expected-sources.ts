@@ -3,10 +3,7 @@ import type {
 } from "../../../ledger/canonical/canonical-overview-query.ts";
 import { statementSelectionGroup, VERIFIED_SOURCES } from "../../automation/server/sources/index.ts";
 import { selectStatementTypes } from "../../automation/statement-selection.ts";
-import {
-  automationGroupEnabledStatus,
-  readAutomationSettings,
-} from "../../automation/server/settings.ts";
+import { automationGroupEnabledStatus } from "../../automation/server/settings.ts";
 import type { AutomationSettingsFile } from "../../automation/server/config-files.ts";
 
 /**
@@ -21,7 +18,7 @@ import type { AutomationSettingsFile } from "../../automation/server/config-file
  * gaps for every product the provider could support.
  */
 export function configuredOverviewSources(
-  settings: AutomationSettingsFile = readAutomationSettings(),
+  settings: AutomationSettingsFile,
   env: Record<string, string | undefined> = process.env,
 ): CanonicalOverviewExpectedSource[] {
   const enabledGroups = automationGroupEnabledStatus(settings, env);
