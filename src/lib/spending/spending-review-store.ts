@@ -22,7 +22,6 @@ export type SpendingReviewTransport = Pick<SpendingApi,
   | "cancelCandidatePage"
   | "loadRecordPage"
   | "confirmStrongCandidates"
-  | "setPurchaseCategory"
 >;
 
 /** One version-bound list that grows page by page. `meta` is the first page's scope facts. */
@@ -97,7 +96,6 @@ export function createDesktopSpendingReviewTransport(): SpendingReviewTransport 
     cancelCandidatePage: (requestId) => api().cancelCandidatePage(requestId),
     loadRecordPage: (input) => api().loadRecordPage(input),
     confirmStrongCandidates: (input) => api().confirmStrongCandidates(input),
-    setPurchaseCategory: (input) => api().setPurchaseCategory(input),
   };
 }
 
@@ -171,6 +169,8 @@ let nextStoreId = 1;
 export function createSpendingReviewStore(options: Readonly<{
   transport: SpendingReviewTransport;
   refreshSummary: () => Promise<void>;
+  /** The Spending page action that sets a purchase's category; the page takes its delta (ADR 0105). */
+  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<void>;
   /**
    * How long a newly chosen month must stay chosen before its pending count
    * and insight load. Each read rebuilds the month in the shared worker, so
@@ -360,14 +360,12 @@ export function createSpendingReviewStore(options: Readonly<{
       }
     },
     async setPurchaseCategory(purchaseId, categoryCode) {
-      const knowledgeAt = value.knowledgeAt;
-      if (knowledgeAt === null || value.categorySaving !== null || disposed) return false;
+      if (value.knowledgeAt === null || value.categorySaving !== null || disposed) return false;
       publish({ categorySaving: purchaseId, categoryError: "" });
       try {
-        await transport.setPurchaseCategory({ purchaseId, knowledgeAt, categoryCode });
+        await options.setPurchaseCategory(purchaseId, categoryCode);
         if (disposed) return false;
         publish({ categorySaving: null });
-        await options.refreshSummary();
         return true;
       } catch (error) {
         publish({ categorySaving: null, categoryError: errorMessage(error) });

@@ -76,6 +76,7 @@
   const review = createSpendingReviewStore({
     transport: createDesktopSpendingReviewTransport(),
     refreshSummary: () => refreshSummary(),
+    setPurchaseCategory: (purchaseId, categoryCode) => spendingSession.setPurchaseCategory(purchaseId, categoryCode),
   });
   const reviewState = review.state;
 

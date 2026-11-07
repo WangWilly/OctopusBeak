@@ -703,7 +703,7 @@ test("financial operation names stay allowlisted and transport failures are type
   assert.equal(PGLITE_FINANCIAL_OPERATIONS.includes("SELECT 1" as PGliteFinancialOperation), false);
 });
 
-test("a purchase category change publishes a new Spending version that reads the user category", async () => {
+test("a purchase category page action publishes the Spending page a full read would", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-category-check-"));
   const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
     execArgv: ["--experimental-strip-types"],
@@ -746,9 +746,20 @@ test("a purchase category change publishes a new Spending version that reads the
     const records = await recordsAt(before.knowledgeAt);
     const purchase = records.find((record) => record.basis === "invoice");
     assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
-    const result = await client.financial.request("financial.spending.setPurchaseCategory", [{ purchaseId: purchase.purchaseId, knowledgeAt: before.knowledgeAt, categoryCode: "dining" }]);
+    const result = await client.financial.request("financial.spending.pageAction", [{
+      action: "categorize",
+      kind: "category",
+      purchaseId: purchase.purchaseId,
+      categoryCode: "dining",
+      dataVersion: before.knowledgeAt,
+    }]);
     assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
+    assert.deepEqual(result.affectedRecords.map((record) => record.purchaseId), [purchase.purchaseId]);
     await waitFor(() => (snapshots.at(-1)?.purchaseReport.knowledgeAt ?? 0) >= result.knowledgeAt);
+    const published = snapshots.at(-1)!.purchaseReport;
+    const read = await client.financial.request("financial.spending.current", [{}]);
+    assert.equal(read.purchaseReport.knowledgeAt, published.knowledgeAt);
+    assert.deepEqual(published.summary, read.purchaseReport.summary, "the delta-published summary matches a full read");
     const after = (await recordsAt(result.knowledgeAt)).find((record) => record.purchaseId === purchase.purchaseId);
     assert.equal(after?.category.mode, "single");
     assert.equal(after?.category.mode === "single" ? after.category.categoryCode : null, "dining");

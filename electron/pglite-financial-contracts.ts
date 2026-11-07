@@ -5,8 +5,6 @@ import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type {
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
-  SpendingPurchaseCategoryRequest,
-  SpendingPurchaseCategoryResult,
   SpendingPageDto,
   SpendingPageReadResult,
   SpendingStrongConfirmRequest,
@@ -234,14 +232,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
       && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion),
     { lane: "interactive" },
-  )),
-  "financial.spending.setPurchaseCategory": rendered("spending", "setPurchaseCategory", operation<[input: SpendingPurchaseCategoryRequest], SpendingPurchaseCategoryResult>(
-    (args) => args.length === 1 && plainRecord(args[0])
-      && stringField(args[0], "purchaseId")
-      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).knowledgeAt)
-      && ((args[0] as Record<string, unknown>).categoryCode === null
-        || typeof (args[0] as Record<string, unknown>).categoryCode === "string"),
-    { lane: "background" },
   )),
   "financial.spending.confirmStrongCandidates": rendered("spending", "confirmStrongCandidates", operation<[input: SpendingStrongConfirmRequest], SpendingStrongConfirmResult>(
     (args) => args.length === 1 && plainRecord(args[0])

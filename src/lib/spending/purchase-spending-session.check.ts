@@ -182,8 +182,7 @@ function actionResult(knowledgeAt = 2, affectedRecords: readonly ReturnType<type
     kind: "direct",
     baseKnowledgeAt: knowledgeAt - 1,
     knowledgeAt,
-    invoiceIdentityId: "invoice-1",
-    transactionIdentityId: "payment-1",
+    subject: { invoiceIds: ["invoice-1"], transactionIds: ["payment-1"] },
     summaryDelta: { before: [], after: [] },
     affectedRecords,
   };
@@ -374,6 +373,25 @@ test("a pairing action on today's month leaves the page following today", async 
   assert.equal(current().selectedMonth, null, "the action does not turn today's month into an explicit choice");
   session.setToday("2026-11-01");
   assert.equal(current().activeMonth, "2026-11");
+  session.dispose();
+});
+
+test("a category change runs as a page action at the shown version and takes its result", async () => {
+  const invoice = invoiceRecord("Invoice");
+  const recategorized = invoiceRecord("Invoice, recategorized");
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => {
+      calls.actions.push(input);
+      return { ...actionResult(2, [recategorized]), action: "categorize", kind: "category", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } };
+    },
+  });
+  let refreshes = 0;
+  const { session, current } = createSession(report(1, [invoice]), transport, undefined, async () => { refreshes += 1; });
+  session.start();
+  await session.setPurchaseCategory("invoice:invoice-1", "dining");
+  assert.deepEqual(calls.actions, [{ action: "categorize", kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining", dataVersion: 1 }]);
+  assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
+  assert.equal(refreshes, 0, "the page is not read again");
   session.dispose();
 });
 

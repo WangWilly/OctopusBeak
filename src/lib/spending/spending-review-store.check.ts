@@ -32,6 +32,7 @@ async function settle() {
 function harness(
   overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {},
   monthSettleMs = 0,
+  setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<void> = async () => {},
 ) {
   const calls: Record<string, any[]> = { overview: [], insight: [], candidates: [], records: [], strong: [], category: [], cancels: [] };
   let refreshes = 0;
@@ -49,10 +50,17 @@ function harness(
     cancelCandidatePage: async (requestId: string) => { calls.cancels!.push(requestId); return true; },
     loadRecordPage: async (input: any) => { calls.records!.push(input); return { schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: null, day: null, categoryCodes: null, query: null, basis: "linked", records: [], nextCursor: null }; },
     confirmStrongCandidates: async (input: any) => { calls.strong!.push(input); return { status: "committed", baseKnowledgeAt: input.shownKnowledgeAt, knowledgeAt: input.shownKnowledgeAt + 1, confirmed: [] }; },
-    setPurchaseCategory: async (input: any) => { calls.category!.push(input); return { purchaseId: input.purchaseId, subject: "transaction", categoryCode: input.categoryCode, baseKnowledgeAt: input.knowledgeAt, knowledgeAt: input.knowledgeAt + 1 }; },
     ...overrides,
   } as unknown as SpendingReviewTransport;
-  const store = createSpendingReviewStore({ transport, refreshSummary: async () => { refreshes += 1; }, monthSettleMs });
+  const store = createSpendingReviewStore({
+    transport,
+    refreshSummary: async () => { refreshes += 1; },
+    setPurchaseCategory: async (purchaseId, categoryCode) => {
+      calls.category!.push({ purchaseId, categoryCode });
+      await setPurchaseCategory(purchaseId, categoryCode);
+    },
+    monthSettleMs,
+  });
   let snapshot!: SpendingReviewSnapshot;
   store.state.subscribe((next) => { snapshot = next; });
   return { store, calls, current: () => snapshot, refreshes: () => refreshes };
@@ -158,20 +166,16 @@ test("bulk merge confirms the shown strong set, refreshes on commit and re-offer
   assert.equal(refreshes(), 1);
 });
 
-test("changing a category writes at the page version and refreshes, and a failure stays visible", async () => {
+test("changing a category runs its page action without reading the page again, and a failure stays visible", async () => {
   let fail = false;
-  const { store, calls, current, refreshes } = harness({
-    setPurchaseCategory: async (input: any) => {
-      calls.category!.push(input);
-      if (fail) throw new Error("Synthetic category failure");
-      return { purchaseId: input.purchaseId, subject: "items", categoryCode: input.categoryCode, baseKnowledgeAt: 3, knowledgeAt: 4 };
-    },
+  const { store, calls, current, refreshes } = harness({}, 0, async () => {
+    if (fail) throw new Error("Synthetic category failure");
   });
   store.sync(3, "2026-10");
   await settle();
   assert.equal(await store.setPurchaseCategory("invoice:1", "dining"), true);
-  assert.deepEqual(calls.category![0], { purchaseId: "invoice:1", knowledgeAt: 3, categoryCode: "dining" });
-  assert.equal(refreshes(), 1);
+  assert.deepEqual(calls.category![0], { purchaseId: "invoice:1", categoryCode: "dining" });
+  assert.equal(refreshes(), 0, "the page action publishes its own delta");
   fail = true;
   assert.equal(await store.setPurchaseCategory("invoice:1", null), false);
   assert.equal(current().categoryError, "Synthetic category failure");

@@ -128,7 +128,6 @@ const INVOKE_CHANNELS = {
     loadCandidatePage: "spending:candidate-page",
     cancelCandidatePage: "spending:candidate-page-cancel",
     applyPageAction: "financial.spending.pageAction",
-    setPurchaseCategory: "financial.spending.setPurchaseCategory",
     loadPendingOverview: "financial.spending.pendingOverview",
     loadMergeLog: "financial.spending.mergeLog",
     loadMonthInsight: "financial.spending.monthInsight",

@@ -14,9 +14,11 @@ import {
   TRANSACTION_TAXONOMY_VERSION,
 } from "../canonical/transaction-taxonomy.ts";
 import type {
+  SpendingPageActionSubject,
   SpendingPurchaseCategoryRequest,
   SpendingPurchaseCategoryResult,
 } from "../../lib/spending/model.ts";
+import { idString } from "./spending-sql.ts";
 
 /**
  * `setPurchaseCategory` writes User Assertions on the subject that owns the
@@ -124,6 +126,21 @@ async function resolveSubject(transaction: PGliteTransaction, identity: Purchase
       return { kind: "items", invoiceId };
     }
   }
+}
+
+/**
+ * The identities whose Purchase records a category change on `purchaseId`
+ * moves, so the change can report its summary delta (ADR 0105). Fails the
+ * same way the change itself would on a stale or ineligible purchase.
+ */
+export async function purchaseCategoryActionSubject(
+  transaction: PGliteTransaction,
+  purchaseId: string,
+): Promise<SpendingPageActionSubject> {
+  const subject = await resolveSubject(transaction, parsePurchaseIdentity(purchaseId));
+  return subject.kind === "transaction"
+    ? Object.freeze({ invoiceIds: Object.freeze([]), transactionIds: Object.freeze([idString(subject.transactionId)]) })
+    : Object.freeze({ invoiceIds: Object.freeze([idString(subject.invoiceId)]), transactionIds: Object.freeze([]) });
 }
 
 async function transactionKind(transaction: PGliteTransaction, transactionId: Uint8Array): Promise<string | null> {

@@ -373,6 +373,19 @@ export type SpendingPageActionRequest = Readonly<{
   invoiceIdentityId: string;
   transactionIdentityId: string;
   dataVersion: number;
+}> | Readonly<{
+  /** Set or, with a null code, clear the user's category on one purchase (ADR 0038). */
+  action: "categorize";
+  kind: "category";
+  purchaseId: string;
+  categoryCode: string | null;
+  dataVersion: number;
+}>;
+
+/** The identities whose Purchase records an action read before and after its write. */
+export type SpendingPageActionSubject = Readonly<{
+  invoiceIds: readonly string[];
+  transactionIds: readonly string[];
 }>;
 
 export type SpendingPageActionResult = Readonly<{
@@ -380,18 +393,26 @@ export type SpendingPageActionResult = Readonly<{
   kind: SpendingPageActionRequest["kind"];
   /** The compact summary version the action validated before writing. */
   baseKnowledgeAt: number;
-  /** The exact version containing this action's committed change. */
+  /** The exact version containing this action's committed change; equal to the base when nothing changed. */
   knowledgeAt: number;
-  invoiceIdentityId: string;
-  transactionIdentityId: string;
+  subject: SpendingPageActionSubject;
   /** Purchase rows before/after the action; their amounts use exact decimals. */
   summaryDelta: Readonly<{
     before: readonly SpendingSummaryDeltaLine[];
     after: readonly SpendingSummaryDeltaLine[];
   }>;
-  /** Only rows that contain either member of the acted pair. */
+  /** Only rows that contain an identity of the subject. */
   affectedRecords: readonly PurchaseReport["records"][number][];
 }>;
+
+/** Whether a Purchase record belongs to an action's subject, so its row is replaced by the action's records. */
+export function inSpendingPageActionSubject(
+  subject: SpendingPageActionSubject,
+  record: Readonly<{ invoice?: Readonly<{ invoiceId: string }> | null; transaction?: Readonly<{ transactionId: string }> | null }>,
+): boolean {
+  return (record.invoice != null && subject.invoiceIds.includes(record.invoice.invoiceId))
+    || (record.transaction != null && subject.transactionIds.includes(record.transaction.transactionId));
+}
 
 export type SpendingSummaryDeltaLine = Readonly<{
   date: string;

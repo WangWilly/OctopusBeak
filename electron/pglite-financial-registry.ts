@@ -120,9 +120,6 @@ export function createPGliteFinancialRegistry(
       for (const listener of previewVisibilityListeners) listener();
     },
     "financial.spending.pageAction": ([request]) => pageActions.run(request),
-    "financial.spending.setPurchaseCategory"([input]) {
-      return commands.setPurchaseCategory(input);
-    },
     "financial.spending.confirmStrongCandidates"([input]) {
       return commands.confirmStrongCandidates(input);
     },
