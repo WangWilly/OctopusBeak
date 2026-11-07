@@ -72,6 +72,7 @@ import { eraseSignInDetails } from "../src/lib/automation/server/sign-in-erasure
 import { previewStructureReports } from "../src/lib/preview-sources/structure-report.ts";
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
+import { isRendererDocument } from "./ipc-sender.ts";
 import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
@@ -245,27 +246,17 @@ function rendererEntry(appRoot: string) {
   return pathToFileURL(path.join(appRoot, "build", "index.html")).href;
 }
 
-function isAllowedNavigation(targetUrl: string, rendererUrl: string) {
-  try {
-    const target = new URL(targetUrl);
-    const renderer = new URL(rendererUrl);
-    return target.origin === renderer.origin && target.pathname === renderer.pathname;
-  } catch {
-    return false;
-  }
-}
-
 function guardWindowNavigation(window: BrowserWindow, rendererUrl: string) {
   window.webContents.on("will-navigate", (event, targetUrl) => {
-    if (!isAllowedNavigation(targetUrl, rendererUrl)) event.preventDefault();
+    if (!isRendererDocument(targetUrl, rendererUrl)) event.preventDefault();
   });
 
   window.webContents.on("will-redirect", (event, targetUrl) => {
-    if (!isAllowedNavigation(targetUrl, rendererUrl)) event.preventDefault();
+    if (!isRendererDocument(targetUrl, rendererUrl)) event.preventDefault();
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedNavigation(url, rendererUrl)) {
+    if (isRendererDocument(url, rendererUrl)) {
       void window.loadURL(url).catch(showStartupError);
     }
     return { action: "deny" };
@@ -591,6 +582,7 @@ async function start() {
     deleteAllPreviewData,
     deleteAllFinancialData,
   });
+  const rendererUrl = rendererEntry(appRoot);
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     settings,
@@ -616,6 +608,7 @@ async function start() {
     pgliteWorker: operationalRuntime.worker,
     pgliteFinancial: operationalRuntime.worker.financial,
     automationSettings,
+    rendererUrl,
   });
   // Recovery owns the persisted active-run boundary: no schedule claims a run
   // until it is reconciled, while the shell and IPC go ahead meanwhile.
@@ -637,7 +630,7 @@ async function start() {
       });
     return;
   }
-  currentRendererUrl = rendererEntry(appRoot);
+  currentRendererUrl = rendererUrl;
   currentPreloadPath = path.join(__dirname, "preload.cjs");
   if (automationRuntimeFatalHandled) return;
   await createWindow(currentRendererUrl, currentPreloadPath);

@@ -29,6 +29,7 @@ import {
   trafficLightPositionForScale,
 } from "./window-options.ts";
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
+import { trustedIpcMain } from "./ipc-sender.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
 
@@ -41,6 +42,7 @@ export function registerOctopusBeakIpc({
   pgliteWorker,
   pgliteFinancial,
   automationSettings,
+  rendererUrl,
 }: {
   automation: AutomationDesktopService<BrowserWindow | null>;
   settings: SettingsServiceForwards;
@@ -55,15 +57,18 @@ export function registerOctopusBeakIpc({
   pgliteWorker: Pick<PGliteViewWorkerClient, "subscribe" | "onError" | "close">;
   pgliteFinancial: PGliteFinancialPort;
   automationSettings: AutomationSettingsStore;
+  /** Only this document's top frame may call main (Electron security checklist: validate IPC senders). */
+  rendererUrl: string;
 }) {
+  const ipc = trustedIpcMain(ipcMain, rendererUrl);
   const unsubscribeFromDataInvalidation = dataVersionStore.subscribe((event) => broadcast("data:invalidated", event));
   const financialPages = pgliteFinancial;
   const pgliteViewRegistration: PGliteViewIpcRegistration = registerPGliteViewIpc({
     worker: pgliteWorker,
     workerOwned: false,
-  }, ipcMain);
-  ipcMain.handle("data-views:enabled" satisfies OctopusBeakDataViewChannels["enabled"], () => true);
-  ipcMain.on("display:setScale" satisfies OctopusBeakSendChannel, (event, percent: unknown) => {
+  }, ipc);
+  ipc.handle("data-views:enabled" satisfies OctopusBeakDataViewChannels["enabled"], () => true);
+  ipc.on("display:setScale" satisfies OctopusBeakSendChannel, (event, percent: unknown) => {
     if (!isFiniteDisplayScale(percent)) return;
     event.sender.setZoomFactor(displayScaleZoomFactor(percent));
     if (process.platform !== "darwin") return;
@@ -98,7 +103,7 @@ export function registerOctopusBeakIpc({
     "errorReports:send": (_event, input: ErrorReportInput) => errorReports.send(input),
   };
   for (const [channel, handler] of Object.entries(invokeHandlers)) {
-    ipcMain.handle(channel, handler as (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown);
+    ipc.handle(channel, handler as (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown);
   }
   return {
     close: async () => {
