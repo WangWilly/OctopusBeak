@@ -78,7 +78,6 @@ assert.deepEqual([...invokedBy.values()].sort(), [
   "errorReports:preview",
   "errorReports:send",
   "financial.manualAssets.apply",
-  "financial.spending.confirmStrongCandidates",
   "financial.spending.merchantStats",
   "financial.spending.mergeLog",
   "financial.spending.monthInsight",

@@ -2,6 +2,8 @@ import { writable, type Readable } from "svelte/store";
 import type { OctopusBeakApi } from "$lib/desktop/api.ts";
 import type {
   SpendingCandidatePageItem,
+  SpendingCandidatePairRef,
+  SpendingStrongConfirmOutcome,
   SpendingMergeLogEntry,
   SpendingMerchantStatsDto,
   SpendingMonthInsightDto,
@@ -21,7 +23,6 @@ export type SpendingReviewTransport = Pick<SpendingApi,
   | "loadCandidatePage"
   | "cancelCandidatePage"
   | "loadRecordPage"
-  | "confirmStrongCandidates"
 >;
 
 /** One version-bound list that grows page by page. `meta` is the first page's scope facts. */
@@ -95,7 +96,6 @@ export function createDesktopSpendingReviewTransport(): SpendingReviewTransport 
     loadCandidatePage: (input, requestId) => api().loadCandidatePage(input, requestId),
     cancelCandidatePage: (requestId) => api().cancelCandidatePage(requestId),
     loadRecordPage: (input) => api().loadRecordPage(input),
-    confirmStrongCandidates: (input) => api().confirmStrongCandidates(input),
   };
 }
 
@@ -168,12 +168,19 @@ let nextStoreId = 1;
 
 export function createSpendingReviewStore(options: Readonly<{
   transport: SpendingReviewTransport;
+  /** Recovers a read that found its version stale; actions publish their own delta instead. */
   refreshSummary: () => Promise<void>;
   /**
    * The Spending page action that sets a purchase's category; the page takes
    * its delta (ADR 0105). False when the page refused it for now.
    */
   setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean>;
+  /** The Spending page action that confirms the shown strong pairs; the page takes its delta (ADR 0105). */
+  confirmStrongPairs: (request: Readonly<{
+    shownKnowledgeAt: number;
+    month: string | null;
+    pairs: readonly SpendingCandidatePairRef[];
+  }>) => Promise<SpendingStrongConfirmOutcome>;
   /**
    * How long a newly chosen month must stay chosen before its pending count
    * and insight load. Each read rebuilds the month in the shared worker, so
@@ -345,8 +352,12 @@ export function createSpendingReviewStore(options: Readonly<{
       if (!overview || overview.strongPairs.length === 0 || value.strongBatch.kind === "busy" || disposed) return;
       publish({ strongBatch: { kind: "busy" } });
       try {
-        const result = await transport.confirmStrongCandidates({ shownKnowledgeAt: overview.knowledgeAt, month, pairs: overview.strongPairs });
+        const result = await options.confirmStrongPairs({ shownKnowledgeAt: overview.knowledgeAt, month, pairs: overview.strongPairs });
         if (disposed) return;
+        if (result.status === "refused") {
+          publish({ strongBatch: { kind: "idle" } });
+          return;
+        }
         if (result.status === "conflict") {
           publish({
             overview: { ...overview, strongPairs: result.strongPairs, strongCount: result.strongPairs.length },
@@ -357,7 +368,6 @@ export function createSpendingReviewStore(options: Readonly<{
           return;
         }
         publish({ strongBatch: { kind: "idle" } });
-        await options.refreshSummary();
       } catch (error) {
         publish({ strongBatch: { kind: "error", message: errorMessage(error) } });
       }

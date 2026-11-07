@@ -178,6 +178,7 @@ function recordPage(input: { knowledgeAt: number; month?: string | null; day?: s
 
 function actionResult(knowledgeAt = 2, affectedRecords: readonly ReturnType<typeof spendingRecord>[] = []) {
   return {
+    status: "committed",
     action: "confirm",
     kind: "direct",
     baseKnowledgeAt: knowledgeAt - 1,
@@ -433,6 +434,31 @@ test("a category change that changed nothing keeps a pairing's record refresh", 
   assert.equal(await session.setPurchaseCategory("link:invoice-1", null), true);
   await clock.advanceBy(1_200);
   assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
+  session.dispose();
+});
+
+test("a strong batch runs as one page action and takes its result, and a conflict leaves the page as shown", async () => {
+  let conflict = true;
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      if (conflict) return { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 1, conflicts: [], strongPairs: [] };
+      return { ...actionResult(2, [linkedRecord()]), kind: "strong" };
+    },
+  });
+  let refreshes = 0;
+  const { session, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport, undefined, async () => { refreshes += 1; });
+  session.start();
+  const pairs = [{ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }];
+  const shown = current().report;
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "conflict");
+  assert.equal(current().report, shown, "a conflict wrote nothing for the page to take");
+  conflict = false;
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed");
+  assert.deepEqual(calls.actions[1], { action: "confirm", kind: "strong", shownKnowledgeAt: 1, month: "2026-10", pairs });
+  assert.equal(current().report.knowledgeAt, 2, "the batch result was accepted");
+  assert.equal(current().busyAction, null);
+  assert.equal(refreshes, 0, "the page is not read again");
   session.dispose();
 });
 

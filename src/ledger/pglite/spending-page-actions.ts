@@ -1,6 +1,7 @@
 import {
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
+  type SpendingPageActionReply,
   type SpendingPageActionRequest,
   type SpendingPageActionResult,
   type SpendingPageDto,
@@ -16,18 +17,18 @@ import { spendingPageBehind, type SpendingPageVersion } from "./spending-page.ts
 
 /** The page actions that run against one store, and when they settle. */
 export type SpendingPageActions = Readonly<{
-  run(request: SpendingPageActionRequest): Promise<SpendingPageActionResult>;
+  run(request: SpendingPageActionRequest): Promise<SpendingPageActionReply>;
   /** Whether an action is still running; a page recompute waits for it. */
   inFlight(): boolean;
   /**
    * Hears once each time the last running action settles, with the newest
-   * result among the actions that overlapped, or null when none succeeded.
+   * result among the actions that overlapped, or null when none committed.
    */
   onSettled(listener: (result: SpendingPageActionResult | null) => void): () => void;
 }>;
 
 export function createSpendingPageActions(
-  apply: (request: SpendingPageActionRequest) => Promise<SpendingPageActionResult>,
+  apply: (request: SpendingPageActionRequest) => Promise<SpendingPageActionReply>,
 ): SpendingPageActions {
   let running = 0;
   let newest: SpendingPageActionResult | null = null;
@@ -36,9 +37,10 @@ export function createSpendingPageActions(
     run(request) {
       if (running === 0) newest = null;
       running += 1;
-      return apply(request).then((result) => {
-        if (!newest || result.knowledgeAt >= newest.knowledgeAt) newest = result;
-        return result;
+      return apply(request).then((reply) => {
+        // A strong batch's conflict wrote nothing, so the page has nothing to take.
+        if (reply.status === "committed" && (!newest || reply.knowledgeAt >= newest.knowledgeAt)) newest = reply;
+        return reply;
       }).finally(() => {
         running -= 1;
         if (running !== 0) return;

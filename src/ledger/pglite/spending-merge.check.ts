@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import { applyPGliteSpendingPageAction, confirmPGliteSpendingStrongCandidates } from "./spending-command.ts";
+import { applyPGliteSpendingPageAction } from "./spending-command.ts";
+import { queryCurrentSpendingSummary } from "./purchase-report.ts";
+import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 
 type Seeded = Readonly<{
   fixture: SpendingCategoryFixture;
@@ -131,6 +133,11 @@ async function decisionState(fixture: SpendingCategoryFixture) {
   return { commits: Number(row.commits), events: Number(row.events), links: Number(row.links) };
 }
 
+/** The strong batch, as the page sends it. */
+function confirmStrong(store: Parameters<typeof applyPGliteSpendingPageAction>[0], request: Readonly<{ shownKnowledgeAt: number; month?: string | null; pairs: readonly { candidateId: string; invoiceIdentityId: string; transactionIdentityId: string }[] }>) {
+  return applyPGliteSpendingPageAction(store, { action: "confirm", kind: "strong", ...request });
+}
+
 test("strong-match batch confirmation writes one commit with one evidence-bearing event per shown pair", async () => {
   const seeded = await seed();
   try {
@@ -139,12 +146,19 @@ test("strong-match batch confirmation writes one commit with one evidence-bearin
     const shown = freshPage(await query.pendingOverview({ knowledgeAt: shownKnowledgeAt }));
     await seeded.fixture.addTransaction({ amount: "999", date: "2026-11-20", description: "Unrelated" });
     const before = await decisionState(seeded.fixture);
-    const result = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
+    const summaryBefore = await seeded.fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+    const result = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
     assert.equal(result.status, "committed", "an unrelated newer commit does not reject the batch");
     if (result.status !== "committed") return;
     const after = await decisionState(seeded.fixture);
     assert.deepEqual(after, { commits: before.commits + 1, events: before.events + 2, links: before.links + 2 });
     assert.equal(result.knowledgeAt, result.baseKnowledgeAt + 1);
+    assert.equal(result.affectedRecords.filter((record) => record.basis === "linked").length, 2, "the result carries both linked records");
+    const patched = applySpendingSummaryDelta(summaryBefore.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
+    const summaryAfter = await seeded.fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+    assert.deepEqual(patched.categoryTotalsByMonth, summaryAfter.purchaseReport.categoryTotalsByMonth, "the batch's delta reproduces the recomputed summary");
+    assert.deepEqual(patched.totalsByCurrency, summaryAfter.purchaseReport.totalsByCurrency);
+    assert.deepEqual(patched.monthTotals, summaryAfter.purchaseReport.monthTotals);
     const events = (await seeded.fixture.store.query<{ evidence_json: string; event_kind: string }>(
       `SELECT event.evidence_json, event.event_kind
          FROM spending_dedup_decision_events event
@@ -178,13 +192,13 @@ test("a shown pair that became ambiguous rejects the whole batch without writing
     assert.equal(shown.strongPairs.length, 2);
     await seeded.fixture.addTransaction({ amount: "100", date: "2026-09-04", description: "全家便利商店 信義店", card: { consumeDate: "2026-09-04" } });
     const before = await decisionState(seeded.fixture);
-    const result = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
+    const result = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: shown.strongPairs });
     assert.equal(result.status, "conflict");
     if (result.status !== "conflict") return;
     assert.deepEqual(await decisionState(seeded.fixture), before, "a rejected batch writes nothing");
     assert.deepEqual(result.conflicts.map((pair) => pair.invoiceIdentityId), [seeded.strongInvoice]);
     assert.deepEqual(result.strongPairs.map((pair) => `${pair.invoiceIdentityId}/${pair.transactionIdentityId}`), [`${seeded.crossMonthInvoice}/${seeded.crossMonthPayment}`]);
-    const retry = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt: result.knowledgeAt, pairs: result.strongPairs });
+    const retry = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt: result.knowledgeAt, pairs: result.strongPairs });
     assert.equal(retry.status, "committed", "the re-offered set confirms");
   } finally {
     await seeded.fixture.close();
@@ -201,7 +215,7 @@ test("a shown pair that is no longer pending, or was only possible, rejects the 
     const possibleItem = page.items.find((item) => item.candidate.invoiceId === seeded.fallbackInvoice)!;
     const ref = (item: typeof strongItem) => ({ candidateId: item.candidate.candidateId, invoiceIdentityId: item.candidate.invoiceId, transactionIdentityId: item.candidate.transactionId });
     const before = await decisionState(seeded.fixture);
-    const possible = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem), ref(possibleItem)] });
+    const possible = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem), ref(possibleItem)] });
     assert.equal(possible.status, "conflict");
     assert.deepEqual(await decisionState(seeded.fixture), before);
     await applyPGliteSpendingPageAction(seeded.fixture.store, {
@@ -209,10 +223,10 @@ test("a shown pair that is no longer pending, or was only possible, rejects the 
       invoiceIdentityId: seeded.strongInvoice, transactionIdentityId: seeded.strongPayment, dataVersion: shownKnowledgeAt,
     });
     const afterDeny = await decisionState(seeded.fixture);
-    const denied = await confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem)] });
+    const denied = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem)] });
     assert.equal(denied.status, "conflict");
     assert.deepEqual(await decisionState(seeded.fixture), afterDeny);
-    assert.throws(() => confirmPGliteSpendingStrongCandidates(seeded.fixture.store, { shownKnowledgeAt, pairs: [] }), /at least one/u);
+    await assert.rejects(confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: [] }), /at least one/u);
   } finally {
     await seeded.fixture.close();
   }
@@ -412,7 +426,7 @@ test("the merge overview and strong batch stay inside the selected month", async
     assert.ok(october.pendingCount < all.pendingCount, "the October count leaves September-only pairs out");
     assert.ok(october.strongPairs.every((pair) => pairKey(pair) === crossMonth), "October offers only pairs that touch October");
 
-    const crossed = await confirmPGliteSpendingStrongCandidates(fixture.store, {
+    const crossed = await confirmStrong(fixture.store, {
       shownKnowledgeAt: knowledgeAt, month: "2026-10", pairs: all.strongPairs.filter((pair) => pairKey(pair) === september),
     });
     assert.equal(crossed.status, "conflict", "a September pair cannot be merged from October");
@@ -420,7 +434,7 @@ test("the merge overview and strong batch stay inside the selected month", async
 
     const septemberView = freshPage(await query.pendingOverview({ knowledgeAt, month: "2026-09" }));
     assert.ok(septemberView.strongPairs.map(pairKey).includes(september));
-    const result = await confirmPGliteSpendingStrongCandidates(fixture.store, {
+    const result = await confirmStrong(fixture.store, {
       shownKnowledgeAt: knowledgeAt, month: "2026-09", pairs: septemberView.strongPairs.filter((pair) => pairKey(pair) === september),
     });
     assert.equal(result.status, "committed");

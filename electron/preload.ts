@@ -132,7 +132,6 @@ const INVOKE_CHANNELS = {
     loadMergeLog: "financial.spending.mergeLog",
     loadMonthInsight: "financial.spending.monthInsight",
     loadMerchantStats: "financial.spending.merchantStats",
-    confirmStrongCandidates: "financial.spending.confirmStrongCandidates",
     rankPairingCandidates: "financial.spending.pairing",
     prewarmPairingCandidates: "spending:pairing-prewarm",
   },

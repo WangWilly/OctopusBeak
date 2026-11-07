@@ -4,6 +4,8 @@ import type { SpendingPurchaseRecordView, SpendingPurchaseReportView } from "./p
 import { spendingCategoryCodesForGroup } from "./category-groups.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
+  committedPageAction,
+  type SpendingStrongConfirmOutcome,
   inSpendingPageActionSubject,
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
@@ -119,6 +121,11 @@ export interface PurchaseSpendingSession {
   confirmDirectPair(): Promise<void>;
   revokeLink(record: PurchaseRecord): Promise<void>;
   setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<boolean>;
+  confirmStrongPairs(request: Readonly<{
+    shownKnowledgeAt: number;
+    month: string | null;
+    pairs: readonly SpendingCandidatePairRef[];
+  }>): Promise<SpendingStrongConfirmOutcome>;
   dispose(): void;
 }
 
@@ -717,14 +724,14 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `${action}:${candidateId}`, actionError: null });
     try {
-      const result = await this.options.transport.applyPageAction({
+      const result = committedPageAction(await this.options.transport.applyPageAction({
         action: action === "confirmCandidate" ? "confirm" : "deny",
         kind: "candidate",
         candidateId,
         invoiceIdentityId: pair.invoiceIdentityId,
         transactionIdentityId: pair.transactionIdentityId,
         dataVersion: this.value.report.knowledgeAt,
-      });
+      }));
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
     } catch (error) {
@@ -744,13 +751,13 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     const requestToken = ++this.actionRequestToken;
     this.publish({ busyAction: `category:${purchaseId}`, actionError: null });
     try {
-      const result = await this.options.transport.applyPageAction({
+      const result = committedPageAction(await this.options.transport.applyPageAction({
         action: "categorize",
         kind: "category",
         purchaseId,
         categoryCode,
         dataVersion: this.value.report.knowledgeAt,
-      });
+      }));
       // A change that changed nothing wrote no commit, so the page has nothing
       // to take, and an earlier action's record refresh stays scheduled.
       if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt) {
@@ -758,6 +765,32 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         await this.acceptCompactPageAction(result);
       }
       return true;
+    } finally {
+      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
+    }
+  }
+
+  /**
+   * Confirm the strong pairs the user was shown, in one commit or none,
+   * through the page actions (ADR 0105), so the page takes the batch's
+   * summary delta. A conflict wrote nothing and names the strong set to offer
+   * instead. Rejects when it fails.
+   */
+  async confirmStrongPairs(request: Readonly<{
+    shownKnowledgeAt: number;
+    month: string | null;
+    pairs: readonly SpendingCandidatePairRef[];
+  }>): Promise<SpendingStrongConfirmOutcome> {
+    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return { status: "refused" };
+    const requestToken = ++this.actionRequestToken;
+    this.publish({ busyAction: "strong", actionError: null });
+    try {
+      const reply = await this.options.transport.applyPageAction({ action: "confirm", kind: "strong", ...request });
+      if (reply.status === "committed" && this.isCurrentAction(requestToken)) {
+        this.cancelPendingRecordRefresh();
+        await this.acceptCompactPageAction(reply);
+      }
+      return reply;
     } finally {
       if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
     }
@@ -928,13 +961,13 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `direct:${invoiceIdentityId}/${selectedPaymentId}`, actionError: null });
     try {
-      const result = await this.options.transport.applyPageAction({
+      const result = committedPageAction(await this.options.transport.applyPageAction({
         action: "confirm",
         kind: "direct",
         invoiceIdentityId,
         transactionIdentityId: selectedPaymentId,
         dataVersion: this.value.report.knowledgeAt,
-      });
+      }));
       if (!this.isCurrentAction(requestToken)) return;
       this.dismissPairing(false);
       await this.acceptCompactPageAction(result);
@@ -957,13 +990,13 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.cancelPendingRecordRefresh();
     this.publish({ busyAction: `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`, actionError: null });
     try {
-      const result = await this.options.transport.applyPageAction({
+      const result = committedPageAction(await this.options.transport.applyPageAction({
         action: "revoke",
         kind: "revoke",
         invoiceIdentityId: record.link.invoiceId,
         transactionIdentityId: record.link.transactionId,
         dataVersion: this.value.report.knowledgeAt,
-      });
+      }));
       if (!this.isCurrentAction(requestToken)) return;
       await this.acceptCompactPageAction(result);
     } catch (error) {

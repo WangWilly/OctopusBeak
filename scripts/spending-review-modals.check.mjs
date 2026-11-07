@@ -52,20 +52,21 @@ function installReads({ records, pair }) {
   spending.loadCandidatePage = async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: input.month, items: [item], totalCandidateCount: 1, strongCandidateCount: 1, nextOffset: null });
   spending.cancelCandidatePage = async () => true;
   spending.loadPendingOverview = async (input) => ({ schemaVersion: 1, knowledgeAt: input.knowledgeAt, pendingCount: 4, strongCount: 2, affectedByCurrency: [{ currency: "TWD", coefficient: "4658", scale: 0, count: 3 }], strongPairs: [pair, { candidateId: "cand-9", invoiceIdentityId: "inv-9", transactionIdentityId: "tx-9" }] });
-  spending.confirmStrongCandidates = async (input) => {
-    window.__calls.strong.push(input);
-    return window.__calls.strong.length === 1
-      ? { status: "conflict", knowledgeAt: 7, conflicts: [input.pairs[1]], strongPairs: [input.pairs[0]] }
-      : { status: "committed", baseKnowledgeAt: 7, knowledgeAt: 8, confirmed: [] };
-  };
   spending.applyPageAction = async (input) => {
+    if (input.kind === "strong") {
+      const { action, kind, ...request } = input;
+      window.__calls.strong.push(request);
+      return window.__calls.strong.length === 1
+        ? { status: "conflict", action, kind, knowledgeAt: 7, conflicts: [input.pairs[1]], strongPairs: [input.pairs[0]] }
+        : { status: "committed", action, kind, baseKnowledgeAt: 7, knowledgeAt: 8, subject: { invoiceIds: [], transactionIds: [] }, summaryDelta: { before: [], after: [] }, affectedRecords: [] };
+    }
     if (input.kind !== "category") {
       window.__calls.actions.push(input);
       return new Promise(() => {});
     }
     // A category change that changed nothing: the page has nothing to take.
     window.__calls.categories.push(input);
-    return { action: input.action, kind: input.kind, baseKnowledgeAt: input.dataVersion, knowledgeAt: input.dataVersion, subject: { invoiceIds: [], transactionIds: [] }, summaryDelta: { before: [], after: [] }, affectedRecords: [] };
+    return { status: "committed", action: input.action, kind: input.kind, baseKnowledgeAt: input.dataVersion, knowledgeAt: input.dataVersion, subject: { invoiceIds: [], transactionIds: [] }, summaryDelta: { before: [], after: [] }, affectedRecords: [] };
   };
 }
 

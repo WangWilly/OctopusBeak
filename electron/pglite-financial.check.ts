@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { committedPageAction } from "../src/lib/spending/model.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { fixtureInvoice } from "../src/ledger/pglite/spending-test-fixture.ts";
 import { tmpdir } from "node:os";
@@ -456,8 +457,8 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     assert.deepEqual(await client.financial.request("financial.spending.mergeLog", [{ knowledgeAt }]), { schemaVersion: 1, knowledgeAt, entries: [], nextCursor: null });
     assert.deepEqual(await client.financial.request("financial.spending.monthInsight", [{ knowledgeAt, month: "2026-01" }]), { schemaVersion: 1, knowledgeAt, month: "2026-01", largestByCurrency: [] });
     const unknownPair = { candidateId: "sha256:unknown", invoiceIdentityId: "00000000-0000-4000-8000-000000000001", transactionIdentityId: "00000000-0000-4000-8000-000000000002" };
-    const conflict = await client.financial.request("financial.spending.confirmStrongCandidates", [{ shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] }]);
-    assert.deepEqual(conflict, { status: "conflict", knowledgeAt, conflicts: [unknownPair], strongPairs: [] }, "the worker command rejects a pair that is not pending");
+    const conflict = await client.financial.request("financial.spending.pageAction", [{ action: "confirm", kind: "strong", shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] }]);
+    assert.deepEqual(conflict, { status: "conflict", action: "confirm", kind: "strong", knowledgeAt, conflicts: [unknownPair], strongPairs: [] }, "the worker's strong batch rejects a pair that is not pending");
 
     assert.ok(!("stale" in committedPage));
     assert.deepEqual(committedPage.records, [], "the version-bound purchase page must omit this ineligible source fact");
@@ -746,13 +747,13 @@ test("a purchase category page action publishes the Spending page a full read wo
     const records = await recordsAt(before.knowledgeAt);
     const purchase = records.find((record) => record.basis === "invoice");
     assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
-    const result = await client.financial.request("financial.spending.pageAction", [{
+    const result = committedPageAction(await client.financial.request("financial.spending.pageAction", [{
       action: "categorize",
       kind: "category",
       purchaseId: purchase.purchaseId,
       categoryCode: "dining",
       dataVersion: before.knowledgeAt,
-    }]);
+    }]));
     assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
     assert.deepEqual(result.affectedRecords.map((record) => record.purchaseId), [purchase.purchaseId]);
     await waitFor(() => (snapshots.at(-1)?.purchaseReport.knowledgeAt ?? 0) >= result.knowledgeAt);

@@ -22,12 +22,12 @@ import type {
   SpendingDedupLinkView,
 } from "../canonical/spending-recognition-contracts.ts";
 import type {
+  SpendingCommittingPageActionRequest,
+  SpendingPageActionReply,
   SpendingPageActionRequest,
   SpendingPageActionResult,
   SpendingPageActionSubject,
   SpendingCandidatePairRef,
-  SpendingStrongConfirmRequest,
-  SpendingStrongConfirmResult,
 } from "../../lib/spending/model.ts";
 import {
   purchaseCategoryActionSubject,
@@ -408,11 +408,21 @@ export async function commitPGliteSpendingRefundRevision(
  * and returns the summary delta between them; the renderer then reloads only
  * its visible month records.
  */
+export function applyPGliteSpendingPageAction(
+  writer: PGliteSpendingWriter,
+  input: SpendingCommittingPageActionRequest,
+): Promise<SpendingPageActionResult>;
+/** Only a strong batch can answer with a conflict. */
+export function applyPGliteSpendingPageAction(
+  writer: PGliteSpendingWriter,
+  input: SpendingPageActionRequest,
+): Promise<SpendingPageActionReply>;
 export async function applyPGliteSpendingPageAction(
   writer: PGliteSpendingWriter,
   input: SpendingPageActionRequest,
-): Promise<SpendingPageActionResult> {
+): Promise<SpendingPageActionReply> {
   return writer.transaction(async (transaction) => {
+    if (input.kind === "strong") return confirmStrongPairs(transaction, input);
     const current = await readKnowledgePoint(transaction);
     if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
       throw new Error("Spending action data version is stale; reload Spending.");
@@ -446,6 +456,7 @@ function pageActionResult(
   decision: Awaited<ReturnType<typeof decide>>,
 ): SpendingPageActionResult {
   return Object.freeze({
+    status: "committed" as const,
     action: input.action,
     kind: input.kind,
     baseKnowledgeAt: decision.baseKnowledgeAt,
@@ -459,7 +470,7 @@ function pageActionResult(
 /** The recognition write one page action makes, after validating its pair at `current`. */
 async function writePageAction(
   transaction: PGliteTransaction,
-  input: Exclude<SpendingPageActionRequest, Readonly<{ kind: "category" }>>,
+  input: Exclude<SpendingPageActionRequest, Readonly<{ kind: "category" | "strong" }>>,
   current: number,
 ): Promise<void> {
   if (input.kind === "revoke") {
@@ -526,7 +537,9 @@ async function writePageAction(
   else await denyPGliteSpendingDedupCandidate(transaction, decision as SpendingDecisionInput & { origin: { kind: "user"; userId: string } });
 }
 
-function strongConfirmPairs(input: SpendingStrongConfirmRequest): readonly SpendingCandidatePairRef[] {
+type StrongConfirmRequest = Extract<SpendingPageActionRequest, Readonly<{ kind: "strong" }>>;
+
+function strongConfirmPairs(input: StrongConfirmRequest): readonly SpendingCandidatePairRef[] {
   if (!input || typeof input !== "object" || !Array.isArray(input.pairs) || input.pairs.length === 0)
     throw new TypeError("Strong-match confirmation needs at least one shown pair.");
   if (!Number.isSafeInteger(input.shownKnowledgeAt) || input.shownKnowledgeAt < 0)
@@ -546,34 +559,40 @@ function strongConfirmPairs(input: SpendingStrongConfirmRequest): readonly Spend
  * recomputed inside the write transaction; a shown pair that is no longer
  * pending or no longer strong rejects the whole batch without a write and
  * returns the recomputed strong set. Other commits since the pairs were shown
- * do not reject by themselves.
+ * do not reject by themselves. A committed batch reports the summary delta of
+ * every pair's records, like any page action.
  */
-export function confirmPGliteSpendingStrongCandidates(
-  writer: PGliteSpendingWriter,
-  input: SpendingStrongConfirmRequest,
-): Promise<SpendingStrongConfirmResult> {
+async function confirmStrongPairs(
+  transaction: PGliteTransaction,
+  input: StrongConfirmRequest,
+): Promise<SpendingPageActionReply> {
   const shown = strongConfirmPairs(input);
-  return writer.transaction(async (transaction) => {
-    const base = await readKnowledgePoint(transaction);
-    if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
-    const pending = await queryPendingSpendingCandidates(transaction, base);
-    const month = input.month ?? null;
-    const strong = pending.pairs.filter((pair) => pair.strength === "strong" && (month === null || pendingPairInMonth(pair, month)));
-    const strongByPair = new Map(strong.map((pair) => [`${pair.invoiceId}/${pair.transactionId}`, pair]));
-    const conflicts = shown.filter((pair) => !strongByPair.has(`${pair.invoiceIdentityId}/${pair.transactionIdentityId}`));
-    if (conflicts.length > 0) {
-      return Object.freeze({
-        status: "conflict" as const,
-        knowledgeAt: base,
-        conflicts: Object.freeze(conflicts),
-        strongPairs: Object.freeze(strong.map(pendingPairRef)),
-      });
-    }
-    const created = await commit(transaction, "user/local");
-    const confirmed: (SpendingCandidatePairRef & Readonly<{ eventId: string }>)[] = [];
+  const base = await readKnowledgePoint(transaction);
+  if (input.shownKnowledgeAt > base) throw new Error("Strong-match confirmation shown data version is in the future.");
+  const pending = await queryPendingSpendingCandidates(transaction, base);
+  const month = input.month ?? null;
+  const strong = pending.pairs.filter((pair) => pair.strength === "strong" && (month === null || pendingPairInMonth(pair, month)));
+  const strongByPair = new Map(strong.map((pair) => [`${pair.invoiceId}/${pair.transactionId}`, pair]));
+  const conflicts = shown.filter((pair) => !strongByPair.has(`${pair.invoiceIdentityId}/${pair.transactionIdentityId}`));
+  if (conflicts.length > 0) {
+    return Object.freeze({
+      status: "conflict" as const,
+      action: "confirm" as const,
+      kind: "strong" as const,
+      knowledgeAt: base,
+      conflicts: Object.freeze(conflicts),
+      strongPairs: Object.freeze(strong.map(pendingPairRef)),
+    });
+  }
+  const subject = Object.freeze({
+    invoiceIds: Object.freeze([...new Set(shown.map((pair) => pair.invoiceIdentityId))]),
+    transactionIds: Object.freeze([...new Set(shown.map((pair) => pair.transactionIdentityId))]),
+  });
+  const decision = await decide(transaction, subject, async (tx) => {
+    const created = await commit(tx, "user/local");
     for (const shownPair of shown) {
       const pair = strongByPair.get(`${shownPair.invoiceIdentityId}/${shownPair.transactionIdentityId}`)!;
-      const link = await recordDecision(transaction, {
+      const link = await recordDecision(tx, {
         invoiceId: pair.invoiceId,
         transactionId: pair.transactionId,
         decisionKey: `spending/user/confirmed/${pair.candidateId}`,
@@ -592,15 +611,9 @@ export function confirmPGliteSpendingStrongCandidates(
       }, "confirmed", false, created) as SpendingDedupLinkView;
       if (link.decisionCommitSequence !== created.sequence)
         throw new Error("Strong-match confirmation reused an earlier decision.");
-      confirmed.push(Object.freeze({ ...pendingPairRef(pair), eventId: link.eventId }));
     }
-    return Object.freeze({
-      status: "committed" as const,
-      baseKnowledgeAt: base,
-      knowledgeAt: created.sequence,
-      confirmed: Object.freeze(confirmed),
-    });
   });
+  return pageActionResult(input, subject, decision);
 }
 
 /**
@@ -616,7 +629,6 @@ export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
     revokeDedupLink: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => revokePGliteSpendingDedupLink(transaction, input)),
     commitRefundRevision: (input: SpendingRefundRevisionInput) => writer.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, input)),
     pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
-    confirmStrongCandidates: (input: SpendingStrongConfirmRequest) => confirmPGliteSpendingStrongCandidates(writer, input),
   });
 }
 
