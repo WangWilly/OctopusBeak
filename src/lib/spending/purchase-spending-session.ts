@@ -773,7 +773,12 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     let taken = false;
     try {
       const reply = await this.options.transport.applyPageAction(plan.request);
-      if (reply.status !== "committed" || !this.isCurrentAction(requestToken)) return reply;
+      if (!this.isCurrentAction(requestToken)) return reply;
+      if (reply.status !== "committed") {
+        // Only a strong batch can conflict; the review store re-offers its set.
+        if (plan.errors === "page") this.publish({ actionError: errorFeedback(new Error("Spending action was rejected; reload Spending.")) });
+        return reply;
+      }
       plan.committed?.();
       // A write that changed nothing has nothing to take. A strong batch
       // accepts pairs shown at an older version, so it may commit on a base

@@ -545,13 +545,46 @@ for (const intent of pageIntents) {
       }
       assert.equal(current().report.knowledgeAt, 2, "nothing was taken");
       assert.equal(current().busyAction, null);
-      session.closePairing();
+      // The pairing dialog holds the refresh until it closes; every other kind leaves it to its timer.
+      if (intent.kind === "direct") session.closePairing();
       await clock.advanceBy(1_200);
       assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the earlier month refresh still runs");
       session.dispose();
     });
   }
 }
+
+test("an earlier action's record refresh waits out a page action's write", async () => {
+  const writing = deferred<any>();
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => { calls.actions.push(input); return calls.actions.length === 1 ? earlierAction() : writing.promise; },
+  });
+  const { session, clock, current } = createSession(pageWithCandidates(), transport);
+  session.start();
+  await session.applyPageAction(confirmIntent(elsewhere));
+  const reads = calls.recordPages.length;
+  const changing = session.applyPageAction({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" });
+  await clock.advanceBy(1_200);
+  assert.equal(calls.recordPages.length, reads, "no month read runs while the write is in flight");
+  writing.reject(new Error("Synthetic action failure"));
+  assert.equal((await changing).status, "failed");
+  await clock.advanceBy(1_200);
+  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the held refresh runs after the write");
+  assert.equal(current().report.knowledgeAt, 2);
+  session.dispose();
+});
+
+test("a pairing action the worker rejects says so on the page", async () => {
+  const { transport } = makeTransport({
+    applyPageAction: async () => ({ status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 1, conflicts: [], strongPairs: [] }),
+  });
+  const { session, current } = createSession(pageWithCandidates(), transport);
+  session.start();
+  assert.equal((await session.applyPageAction(confirmIntent(pair))).status, "conflict");
+  assert.deepEqual(current().actionError, { kind: "error", message: "Spending action was rejected; reload Spending." });
+  assert.equal(current().report.knowledgeAt, 1);
+  session.dispose();
+});
 
 test("month and day changes ignore late reads from earlier selections", async () => {
   const pending: ReturnType<typeof deferred<any>>[] = [];
