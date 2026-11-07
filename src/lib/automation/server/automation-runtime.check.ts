@@ -4,11 +4,12 @@ import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 async function withRuntime(check: (runtime: ReturnType<typeof createAutomationRuntime>) => Promise<void>) {
   const store = new PGliteStore(await createTestPGlite("operational"));
   try {
-    await check(createAutomationRuntime(createPgliteOperationalProvider(store)));
+    await check(createAutomationRuntime(createPgliteOperationalProvider(store), { credentials: credentialStoreForCheck() }));
   } finally {
     await store.close();
   }

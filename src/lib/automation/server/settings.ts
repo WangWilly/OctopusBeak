@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { parseEnvText } from "./env-file.ts";
 import {
   AUTOMATION_SETTINGS_PATH,
-  migrateAutomationEnvFile,
   migrateStatementSelectionIds,
   onAutomationSettingsWritten,
   readAutomationSettingsFile,
@@ -28,7 +27,6 @@ export function envFlagEnabled(value: string | boolean | undefined) {
 }
 
 export function readAutomationSettings(settingsPath = AUTOMATION_SETTINGS_PATH) {
-  migrateAutomationEnvFile({ envPath: AUTOMATION_ENV_PATH, settingsPath });
   migrateStatementSelectionIds(settingsPath);
   return readAutomationSettingsFile(settingsPath);
 }

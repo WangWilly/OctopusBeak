@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { writeAutomationConfigFiles, writeAutomationSettings } from "./config-files.ts";
 import { watchPreviewVisibility } from "./settings.ts";
+import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
 test("every settings write that changes Preview visibility announces it once, and no other write does", () => {
   const previous = process.cwd();
@@ -21,7 +22,10 @@ test("every settings write that changes Preview visibility announces it once, an
     writeAutomationSettings({ PREVIEW_FEATURES_ENABLED: "true", SYSTEM_TIMEZONE: "Asia/Taipei" });
     assert.equal(changes, 1, "a write that leaves visibility alone announces nothing");
 
-    writeAutomationConfigFiles({ PREVIEW_FEATURES_ENABLED: "false" }, {});
+    writeAutomationConfigFiles({ PREVIEW_FEATURES_ENABLED: "false" }, {
+      store: credentialStoreForCheck(join(directory, "credentials.json")),
+      credentials: {},
+    });
     assert.equal(changes, 2, "the settings-and-credentials write announces its change too");
 
     writeAutomationConfigFiles({ PREVIEW_FEATURES_ENABLED: "true" });

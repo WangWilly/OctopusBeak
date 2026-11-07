@@ -6,21 +6,20 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AUTOMATION_CREDENTIALS_FORMAT,
-  AUTOMATION_CREDENTIALS_PATH,
+  AUTOMATION_CREDENTIALS_FILE,
   AUTOMATION_SETTINGS_PATH,
   CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
   TDCC_HOST_KEYS,
   automationConfigEnv,
+  createAutomationCredentialStore,
   credentialStatusFromValues,
   ensureAutomationManagedSecrets,
-  isAutomationCredentialCodecConfigured,
   migrateAutomationCredentialsFileEncryption,
   migrateAutomationEnvFile,
   migrateStatementSelectionIds,
   readAutomationCredentialsFile,
   readAutomationSettingsFile,
-  setAutomationCredentialCodec,
   settingsToEnv,
   splitAutomationUpdates,
   writeAutomationCredentialsFile,
@@ -33,6 +32,16 @@ const fubonPasswordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
 const fubonPanFingerprintKey =
   "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
 const maxSecretKey = "MAX_SECRET" + "_KEY";
+const fakeCodec = {
+  encrypt(text: string) {
+    return Buffer.from(`safe:${text}`, "utf8").toString("base64");
+  },
+  decrypt(payload: string) {
+    const text = Buffer.from(payload, "base64").toString("utf8");
+    if (!text.startsWith("safe:")) throw new Error("bad fake credential payload");
+    return text.slice("safe:".length);
+  },
+};
 
 try {
   const settingsPath = join(dir, "settings.json");
@@ -49,7 +58,7 @@ try {
   writeAutomationCredentialsFile(credentialsPath, {
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
-  });
+  }, null);
 
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
     SYSTEM_TIMEZONE: "Asia/Taipei",
@@ -57,7 +66,7 @@ try {
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
-  assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
+  assert.deepEqual(readAutomationCredentialsFile(credentialsPath, null), {
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
   });
@@ -112,14 +121,15 @@ try {
   ].join("\n"));
   writeFileSync(envLocalPath, `${fubonPasswordKey}=dev-only\n`);
 
-  migrateAutomationEnvFile({ envPath, settingsPath, credentialsPath });
+  const credentials = createAutomationCredentialStore(credentialsPath, fakeCodec);
+  migrateAutomationEnvFile({ envPath, settingsPath, credentials });
   assert.deepEqual(readAutomationSettingsFile(settingsPath), {
     SYSTEM_TIMEZONE: "Asia/Taipei",
     EXCHANGE_RATE_UPDATE_TIME: "06:00",
     LIBRETTO_CLOUD_FUBON_ENABLED: false,
     MAX_SUB_ACCOUNT: "main",
   });
-  assert.deepEqual(readAutomationCredentialsFile(credentialsPath), {
+  assert.deepEqual(credentials.read(), {
     [fubonPasswordKey]: "secret",
     [maxSecretKey]: "max-secret",
   });
@@ -165,7 +175,7 @@ try {
   assert.equal(readFileSync(legacyGmailPath, "utf8").includes("legacy-refresh-token"), false, "the next credential write drops the Gmail grant");
 
   assert.equal(AUTOMATION_SETTINGS_PATH, "settings.json");
-  assert.equal(AUTOMATION_CREDENTIALS_PATH, "credentials.json");
+  assert.equal(AUTOMATION_CREDENTIALS_FILE, "credentials.json");
   assert.equal(AUTOMATION_ENV_PATH, ".env");
   assert.equal(
     CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY,
@@ -185,9 +195,7 @@ try {
     `
       const mod = await import(${JSON.stringify(configModuleUrl)});
       process.chdir(${JSON.stringify(runtimeCwd)});
-      const passwordKey = "LIBRETTO_CLOUD_FUBON" + "_PASSWORD";
       mod.writeAutomationSettings({ MAX_SUB_ACCOUNT: "runtime" });
-      mod.writeAutomationCredentials({ [passwordKey]: "runtime-pw" });
     `,
   ], {
     cwd: importCwd,
@@ -197,30 +205,12 @@ try {
   assert.deepEqual(readAutomationSettingsFile(join(runtimeCwd, "settings.json")), {
     MAX_SUB_ACCOUNT: "runtime",
   });
-  assert.deepEqual(readAutomationCredentialsFile(join(runtimeCwd, "credentials.json")), {
-    [fubonPasswordKey]: "runtime-pw",
-  });
   assert.equal(existsSync(join(importCwd, "settings.json")), false);
-  assert.equal(existsSync(join(importCwd, "credentials.json")), false);
-
-  const fakeCodec = {
-    encrypt(text: string) {
-      return Buffer.from(`safe:${text}`, "utf8").toString("base64");
-    },
-    decrypt(payload: string) {
-      const text = Buffer.from(payload, "base64").toString("utf8");
-      if (!text.startsWith("safe:")) throw new Error("bad fake credential payload");
-      return text.slice("safe:".length);
-    },
-  };
 
   const encryptedCredentialsPath = join(dir, "encrypted-credentials.json");
   const managedSecret = "a".repeat(43);
-  setAutomationCredentialCodec(null);
-  assert.equal(isAutomationCredentialCodecConfigured(), false);
-  setAutomationCredentialCodec(fakeCodec);
-  assert.equal(isAutomationCredentialCodecConfigured(), true);
-  writeAutomationCredentialsFile(encryptedCredentialsPath, {
+  const encryptedCredentials = createAutomationCredentialStore(encryptedCredentialsPath, fakeCodec);
+  encryptedCredentials.write({
     [fubonPanFingerprintKey]: managedSecret,
   });
   const encryptedText = readFileSync(encryptedCredentialsPath, "utf8");
@@ -228,7 +218,7 @@ try {
   assert.equal(encryptedRecord.format, AUTOMATION_CREDENTIALS_FORMAT);
   assert.equal(typeof encryptedRecord.data, "string");
   assert.equal(encryptedText.includes(managedSecret), false);
-  assert.deepEqual(readAutomationCredentialsFile(encryptedCredentialsPath), {
+  assert.deepEqual(encryptedCredentials.read(), {
     [fubonPanFingerprintKey]: managedSecret,
   });
 
@@ -237,6 +227,7 @@ try {
     ensureAutomationManagedSecrets({
       credentialsPath: generatedCredentialsPath,
       generateFingerprintSecret: () => managedSecret,
+      codec: fakeCodec,
     }),
     { created: true },
   );
@@ -245,7 +236,7 @@ try {
     false,
   );
   assert.equal(
-    readAutomationCredentialsFile(generatedCredentialsPath)[
+    readAutomationCredentialsFile(generatedCredentialsPath, fakeCodec)[
       FUBON_CARD_IDENTITY_FINGERPRINT_SECRET_KEY
     ],
     managedSecret,
@@ -256,20 +247,20 @@ try {
       generateFingerprintSecret: () => {
         throw new Error("must not rotate an existing managed secret");
       },
+      codec: fakeCodec,
     }),
     { created: false },
   );
 
-  setAutomationCredentialCodec(null);
-  assert.equal(isAutomationCredentialCodecConfigured(), false);
   assert.throws(
-    () => readAutomationCredentialsFile(encryptedCredentialsPath),
+    () => readAutomationCredentialsFile(encryptedCredentialsPath, null),
     /Credential encryption is not configured/,
   );
   assert.throws(
     () =>
       ensureAutomationManagedSecrets({
         credentialsPath: join(dir, "unencrypted-managed-secret.json"),
+        codec: null,
       }),
     /Credential encryption is not configured/,
   );
@@ -278,14 +269,12 @@ try {
   writeFileSync(legacyCredentialsPath, `${JSON.stringify({
     [maxSecretKey]: "legacy-secret",
   }, null, 2)}\n`);
-  setAutomationCredentialCodec(fakeCodec);
-  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), true);
-  assert.deepEqual(readAutomationCredentialsFile(legacyCredentialsPath), {
+  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath, fakeCodec), true);
+  assert.deepEqual(readAutomationCredentialsFile(legacyCredentialsPath, fakeCodec), {
     [maxSecretKey]: "legacy-secret",
   });
   assert.equal(readFileSync(legacyCredentialsPath, "utf8").includes("legacy-secret"), false);
-  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath), false);
-  setAutomationCredentialCodec(null);
+  assert.equal(migrateAutomationCredentialsFileEncryption(legacyCredentialsPath, fakeCodec), false);
   {
     const settingsPath = join(dir, "renamed-selection-settings.json");
     writeAutomationSettingsFile(settingsPath, {

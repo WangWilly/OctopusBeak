@@ -5,7 +5,10 @@ import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { TDCC_BASE_URL } from "../../src/workflows/tdcc-epassbook-client.ts";
-import { readAutomationCredentialsFile } from "../../src/lib/automation/server/config-files.ts";
+import {
+  createAutomationCredentialStore,
+  readAutomationCredentialsFile,
+} from "../../src/lib/automation/server/config-files.ts";
 import { nonIsoSettlementAccounts, runTdccProbe } from "./probe.ts";
 import { createTdccSecretStore } from "../../src/lib/automation/server/tdcc-secret-store.ts";
 
@@ -126,7 +129,7 @@ function workspace() {
     directory,
     credentialsPath,
     reportsDirectory: join(directory, "reports", "tdcc-probe"),
-    store: createTdccSecretStore(credentialsPath, codec),
+    store: createTdccSecretStore(createAutomationCredentialStore(credentialsPath, codec)),
   };
 }
 

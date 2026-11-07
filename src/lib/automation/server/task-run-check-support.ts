@@ -28,7 +28,13 @@ import {
   type TaskRunPlanDependencies,
 } from "./task-run-plan.ts";
 import { taskById, type AutomationTask } from "./tasks.ts";
-import type { AutomationSettingsFile } from "./config-files.ts";
+import {
+  AUTOMATION_CREDENTIALS_FILE,
+  createAutomationCredentialStore,
+  type AutomationCredentialCodec,
+  type AutomationCredentialStore,
+  type AutomationSettingsFile,
+} from "./config-files.ts";
 import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
@@ -38,12 +44,29 @@ export const CHECK_PGLITE_RPC: PGliteWorkflowRpc = Object.freeze({
   token: "a".repeat(32),
 });
 
-/** The task's plan as the runner resolves it, with the check's PGlite endpoint unless the check names one. */
+/** Reversible stand-in for safeStorage; a check reads back what it wrote. */
+export const CHECK_CREDENTIAL_CODEC: AutomationCredentialCodec = Object.freeze({
+  encrypt: (text: string) => Buffer.from(text, "utf8").toString("base64"),
+  decrypt: (payload: string) => Buffer.from(payload, "base64").toString("utf8"),
+});
+
+/** By default the credentials file in whatever directory the check is in when it reads. */
+export function credentialStoreForCheck(
+  path: string = AUTOMATION_CREDENTIALS_FILE,
+): AutomationCredentialStore {
+  return createAutomationCredentialStore(path, CHECK_CREDENTIAL_CODEC);
+}
+
+/** The task's plan as the runner resolves it, with the check's PGlite endpoint and credentials unless the check names them. */
 export function planForCheck(
   task: AutomationTask,
   dependencies: Partial<TaskRunPlanDependencies> = {},
 ): TaskRunPlan {
-  return resolveTaskRunPlan(task, { pgliteRpc: CHECK_PGLITE_RPC, ...dependencies });
+  return resolveTaskRunPlan(task, {
+    pgliteRpc: CHECK_PGLITE_RPC,
+    credentials: credentialStoreForCheck(),
+    ...dependencies,
+  });
 }
 
 /**
@@ -207,12 +230,13 @@ export async function executeTaskRunForCheck(
 }> {
   const {
     taskRunId, onRunOpened, executions, workerPorts,
-    pgliteRpc, launchEnv, launchVerificationSettings,
+    pgliteRpc, credentials, launchEnv, launchVerificationSettings,
     attempt, maxAttempts, retrying, executionId, assistanceRoute,
     ...seams
   } = options;
   const plan = planForCheck(task, {
     ...(pgliteRpc ? { pgliteRpc } : {}),
+    ...(credentials ? { credentials } : {}),
     launchEnv,
     launchVerificationSettings,
   });

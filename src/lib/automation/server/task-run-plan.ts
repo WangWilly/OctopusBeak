@@ -1,7 +1,11 @@
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import { appWorkflowRegistration, type AppWorkflowRuntime } from "./app-workflow-registry.ts";
-import { automationConfigEnv, type AutomationSettingsFile } from "./config-files.ts";
+import {
+  automationConfigEnv,
+  type AutomationCredentialStore,
+  type AutomationSettingsFile,
+} from "./config-files.ts";
 import { readAutomationSettings } from "./settings.ts";
 import type { AutomationTask } from "./tasks.ts";
 import { sourceVerificationFacts, type SourceVerificationFacts } from "./verification-routing.ts";
@@ -33,11 +37,13 @@ export type TaskRunPlan = Readonly<{
   launchVerificationSettings: AutomationSettingsFile;
   /** The authenticated PGlite endpoint every workflow commits or reads through. */
   pgliteRpc: PGliteWorkflowRpc;
+  credentials: AutomationCredentialStore;
 }>;
 
 export type TaskRunPlanDependencies = Readonly<{
   /** Absent or blank fails the resolution. */
   pgliteRpc: PGliteWorkflowRpc | undefined;
+  credentials: AutomationCredentialStore;
   /** Defaults to the App settings and credentials over `process.env`. */
   launchEnv?: NodeJS.ProcessEnv;
   /** Defaults to the App settings file. */
@@ -53,14 +59,18 @@ export function resolveTaskRunPlan(
   if (!workflowId) throw new Error(`Automation task is not registered with the App executor: ${task.id}`);
   const registration = appWorkflowRegistration(workflowId);
   if (!registration) throw new Error(`App workflow definition is unavailable: ${workflowId}`);
-  const { pgliteRpc } = dependencies;
+  const { pgliteRpc, credentials } = dependencies;
   if (!pgliteRpc?.endpoint.trim() || !pgliteRpc.token.trim()) {
     throw new Error("PGlite workflow transport is unavailable.");
   }
   const settings = dependencies.launchEnv && dependencies.launchVerificationSettings
     ? undefined
     : readAutomationSettings();
-  const launchEnv = dependencies.launchEnv ?? automationConfigEnv({ baseEnv: process.env, settings });
+  const launchEnv = dependencies.launchEnv ?? automationConfigEnv({
+    baseEnv: process.env,
+    settings,
+    credentials: credentials.read(),
+  });
   return {
     task,
     workflowId,
@@ -73,5 +83,6 @@ export function resolveTaskRunPlan(
     launchEnv,
     launchVerificationSettings: dependencies.launchVerificationSettings ?? { ...settings },
     pgliteRpc,
+    credentials,
   };
 }

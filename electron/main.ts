@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -7,8 +8,13 @@ import {
   createAutomationRuntime,
   type AutomationRuntime,
 } from "../src/lib/automation/server/automation-runtime.ts";
-import { readAutomationSettings } from "../src/lib/automation/server/settings.ts";
-import { writeAutomationSettings } from "../src/lib/automation/server/config-files.ts";
+import { AUTOMATION_ENV_PATH, readAutomationSettings } from "../src/lib/automation/server/settings.ts";
+import {
+  AUTOMATION_CREDENTIALS_FILE,
+  AUTOMATION_SETTINGS_PATH,
+  migrateAutomationEnvFile,
+  writeAutomationSettings,
+} from "../src/lib/automation/server/config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
 import { startWorkflowRunEventCleanup } from "../src/lib/automation/workflow-run-events.ts";
@@ -41,7 +47,7 @@ import {
 } from "../src/lib/automation/server/error-report.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
-import { registerAutomationCredentialSafeStorage } from "./credential-codec.ts";
+import { openSafeStorageCredentialStore } from "./credential-codec.ts";
 import { createExchangeRateScheduler, createScheduledCollectionScheduler } from "./daily-scheduler.ts";
 import { requestNotificationTarget, takeNotificationTarget } from "./notification-target.ts";
 import type { NotificationTarget } from "../src/lib/desktop/api.ts";
@@ -62,7 +68,7 @@ import {
   type AutomationDesktopService,
 } from "../src/lib/automation/server/automation-desktop-service.ts";
 import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
-import * as deviceRegistrationHost from "../src/lib/automation/server/device-registration-host.ts";
+import { createDeviceRegistrationHost } from "../src/lib/automation/server/device-registration-host.ts";
 import { eraseSignInDetails } from "../src/lib/automation/server/sign-in-erasure.ts";
 import { previewStructureReports } from "../src/lib/preview-sources/structure-report.ts";
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
@@ -82,7 +88,14 @@ import { createSquirrelHandoff } from "./squirrel-update-handoff.ts";
 import { createHostServices, type HostServices } from "./host-services.ts";
 import { seedCdpRuntimeFixture } from "./cdp-runtime-fixture.ts";
 import { createTdccRegistrationFixtureFetch } from "../src/lib/automation/server/tdcc-registration-fixture.ts";
-import { useTdccRegistrationFixture } from "../src/lib/automation/server/tdcc-registration-service.ts";
+import { createTdccRegistrationService } from "../src/lib/automation/server/tdcc-registration-service.ts";
+import {
+  createCathayRegistrationService,
+  createCathaySecretStore,
+} from "../src/lib/automation/server/cathay-registration-service.ts";
+import { createTdccSecretStore } from "../src/lib/automation/server/tdcc-secret-store.ts";
+import { createAppWorkflowBrowserPort } from "../src/lib/automation/server/app-browser-host.ts";
+import { DEVICE_REGISTRATION_TASK_IDS } from "../src/lib/automation/server/source-device-lock.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
 
@@ -351,10 +364,7 @@ async function start() {
   const cdpTdccFixture = !app.isPackaged
     && cdpFixture
     && process.env.OCTOPUSBEAK_CDP_TDCC_FIXTURE === "1";
-  if (cdpTdccFixture) {
-    assertDisposableVerificationFixtureRoot(userData);
-    useTdccRegistrationFixture(createTdccRegistrationFixtureFetch());
-  }
+  if (cdpTdccFixture) assertDisposableVerificationFixtureRoot(userData);
   ensureDataRoot(userData, DEFAULT_AUTOMATION_SETTINGS);
   const stopBrowserStateCleanup = startBrowserStateCleanup({
     directory: path.join(userData, "data", "automation", "browser-state"),
@@ -367,14 +377,16 @@ async function start() {
     electronPath: process.execPath,
   }));
   process.chdir(userData);
+  const credentials = openSafeStorageCredentialStore(path.join(userData, AUTOMATION_CREDENTIALS_FILE));
+  migrateAutomationEnvFile({ envPath: AUTOMATION_ENV_PATH, settingsPath: AUTOMATION_SETTINGS_PATH, credentials });
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
     activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,
+    credentials,
   });
   pgliteOperationalRuntime = operationalRuntime;
-  const runtime = createAutomationRuntime(operationalRuntime.provider);
+  const runtime = createAutomationRuntime(operationalRuntime.provider, { credentials });
   automationRuntime = runtime;
-  registerAutomationCredentialSafeStorage();
   // Reconcile abandoned execution rows off the shell's critical path. The
   // first authoritative automation snapshot awaits this same promise, so a
   // schema/recovery failure cannot be hidden by a partially hydrated UI.
@@ -437,14 +449,25 @@ async function start() {
     provider: operationalRuntime.provider,
     dataVersions: dataVersionStore,
     collection,
-    readCredentialState: readAutomationCredentialState,
-    deviceRegistration: {
-      status: deviceRegistrationHost.deviceRegistrationStatus,
-      start: deviceRegistrationHost.startDeviceRegistration,
-      submitCode: deviceRegistrationHost.submitDeviceRegistrationCode,
-      cancel: deviceRegistrationHost.cancelDeviceRegistration,
-      cancelAll: deviceRegistrationHost.cancelAllDeviceRegistrations,
-    },
+    credentials,
+    readCredentialState: () => readAutomationCredentialState(credentials),
+    deviceRegistration: createDeviceRegistrationHost({
+      tdcc: createTdccRegistrationService({
+        store: createTdccSecretStore(credentials),
+        ...(cdpTdccFixture ? { fetch: createTdccRegistrationFixtureFetch() } : {}),
+      }),
+      cathay: createCathayRegistrationService({
+        store: createCathaySecretStore(credentials),
+        withCathayTaskPage: (signal, run) => createAppWorkflowBrowserPort({
+          taskId: DEVICE_REGISTRATION_TASK_IDS.cathay,
+          taskRunId: `device-registration-${randomUUID()}`,
+          signal,
+          userDataDirectory: userData,
+          credentialCodec: credentials.codec,
+          browserProfile: "cathay-login",
+        }).withPage(run),
+      }),
+    }),
     structureReports: previewStructureReports,
     notificationTarget: { take: takeNotificationTarget },
     onManualCollectionFinished: (results) => notifyCollection("manual", results),

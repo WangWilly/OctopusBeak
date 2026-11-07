@@ -153,6 +153,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
         taskRunId,
         signal,
         userDataDirectory: root,
+        credentialCodec: null,
         launchPersistentContext: async () => await launchContext(taskRunId, loginDelayMs),
       });
 

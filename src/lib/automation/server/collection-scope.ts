@@ -6,7 +6,6 @@ import {
 } from "../statement-selection.ts";
 import { PREVIEW_SOURCES } from "../../preview-sources/registry.ts";
 import { previewVisibilityFromEnvironment } from "../../preview-sources/visibility.ts";
-import { automationConfigEnv } from "./config-files.ts";
 import { offeredStatementTypes } from "./settings.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, type AutomationTask } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
@@ -62,7 +61,7 @@ export function launchedCollectionScope(
  */
 export function collectionScopeAdmitsCommit(
   run: Pick<ActiveAutomationTaskRun, "currentExecution"> | null,
-  currentEnvironment: () => ScopeEnvironment = automationConfigEnv,
+  currentEnvironment: () => ScopeEnvironment,
 ): boolean {
   const scope = run?.currentExecution()?.collectionScope();
   return scope ? scope.current(currentEnvironment) : true;

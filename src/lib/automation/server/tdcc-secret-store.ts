@@ -3,9 +3,7 @@ import {
   TDCC_PASSWORD_KEY,
   TDCC_SESSION_KEY,
   TDCC_USER_ID_KEY,
-  readAutomationCredentialsFile,
-  writeAutomationCredentialsFile,
-  type AutomationCredentialCodec,
+  type AutomationCredentialStore,
 } from "./config-files.ts";
 import type { TdccDeviceIdentity } from "../../../workflows/tdcc-epassbook-client.ts";
 import type { TdccIssuedSession } from "../../../workflows/tdcc-session.ts";
@@ -58,10 +56,10 @@ function parseSession(text: string | undefined): StoredTdccSession | undefined {
 }
 
 /** Reads and writes only the TDCC keys; every write re-reads the file so other keys are kept. */
-export function createTdccSecretStore(credentialsPath: string, codec: AutomationCredentialCodec): TdccSecretStore {
+export function createTdccSecretStore(store: AutomationCredentialStore): TdccSecretStore {
   return {
     read() {
-      const credentials = readAutomationCredentialsFile(credentialsPath, codec);
+      const credentials = store.read();
       return {
         userId: credentials[TDCC_USER_ID_KEY] || undefined,
         password: credentials[TDCC_PASSWORD_KEY] || undefined,
@@ -70,13 +68,13 @@ export function createTdccSecretStore(credentialsPath: string, codec: Automation
       };
     },
     write(update) {
-      const credentials = readAutomationCredentialsFile(credentialsPath, codec);
+      const credentials = store.read();
       if (update.userId !== undefined) credentials[TDCC_USER_ID_KEY] = update.userId;
       if (update.password !== undefined) credentials[TDCC_PASSWORD_KEY] = update.password;
       if (update.device !== undefined) credentials[TDCC_DEVICE_IDENTITY_KEY] = JSON.stringify(update.device);
       if (update.session === null) delete credentials[TDCC_SESSION_KEY];
       else if (update.session !== undefined) credentials[TDCC_SESSION_KEY] = JSON.stringify(update.session);
-      writeAutomationCredentialsFile(credentialsPath, credentials, codec);
+      store.write(credentials);
     },
   };
 }

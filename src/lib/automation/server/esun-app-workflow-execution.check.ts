@@ -366,6 +366,7 @@ test("App browser host opens a catalog start URL before invoking the workflow", 
       taskRunId: "run-esun-start-url-check",
       signal: new AbortController().signal,
       userDataDirectory: root,
+      credentialCodec: null,
       startUrl: BANK_ENTRY_URL,
       launchPersistentContext: async () => context as never,
     });

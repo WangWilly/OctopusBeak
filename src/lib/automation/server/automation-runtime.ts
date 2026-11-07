@@ -11,6 +11,7 @@ import {
 } from "./runner.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
+import type { AutomationCredentialStore } from "./config-files.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
 
@@ -21,7 +22,7 @@ import { AUTOMATION_TASKS } from "./tasks.ts";
  */
 export function createAutomationRuntime(
   provider: AutomationPersistenceProvider,
-  options: Readonly<{ forceQuitAvailableAfterMs?: number }> = {},
+  options: Readonly<{ credentials: AutomationCredentialStore; forceQuitAvailableAfterMs?: number }>,
 ) {
   const state = createAutomationRuntimeState(undefined, {
     knownTaskIds: new Set(AUTOMATION_TASKS.map((task) => task.id)),
@@ -31,7 +32,7 @@ export function createAutomationRuntime(
     snapshot: state.snapshot(),
     activeTaskIds: runner.activeTaskIds(),
   });
-  const desktopModel = () => loadAutomationDesktopModel(provider, live());
+  const desktopModel = () => loadAutomationDesktopModel(provider, live(), options.credentials);
 
   return Object.freeze({
     provider,

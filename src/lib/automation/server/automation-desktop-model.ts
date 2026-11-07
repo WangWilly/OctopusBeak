@@ -10,7 +10,7 @@ import {
 } from "../statement-selection.ts";
 import {
   credentialStatusFromValues,
-  readAutomationCredentialsFile,
+  type AutomationCredentialStore,
 } from "./config-files.ts";
 import { businessDayUtcRange } from "./business-day.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
@@ -55,9 +55,9 @@ function pagePrerequisiteNoticesFromRows(
   });
 }
 
-function currentCredentialState() {
+function currentCredentialState(store: AutomationCredentialStore) {
   const settings = readAutomationSettings();
-  const credentials = readAutomationCredentialsFile();
+  const credentials = store.read();
   const status = credentialStatusFromValues(
     credentials,
     AUTOMATION_CREDENTIAL_KEYS,
@@ -101,8 +101,8 @@ function credentialStatesFromStatus(status: Readonly<Record<string, boolean>>) {
 }
 
 /** Main-process-only credential reader; never call this from a worker. */
-export function readAutomationCredentialState() {
-  const state = currentCredentialState();
+export function readAutomationCredentialState(credentials: AutomationCredentialStore) {
+  const state = currentCredentialState(credentials);
   return {
     status: state.status,
     fileNames: state.fileNames,
@@ -232,8 +232,9 @@ export function applyAutomationCredentialState(
 export async function loadAutomationDesktopModel(
   provider: AutomationPersistenceProvider,
   live: AutomationLiveRuns,
+  credentials: AutomationCredentialStore,
 ): Promise<AutomationDesktopModel> {
-  const raw = currentCredentialState();
+  const raw = currentCredentialState(credentials);
   const credentialState: AutomationCredentialStateDto = {
     revision: 0,
     status: raw.status,
@@ -249,7 +250,7 @@ export async function loadAutomationDesktopModel(
 
 function missingCredentialKeys(
   taskId: string,
-  status = currentCredentialState().status,
+  status: Readonly<Record<string, boolean>>,
 ) {
   const task = taskById(taskId);
   if (!task) return [];

@@ -1,9 +1,10 @@
 import { safeStorage } from "electron";
 import {
+  createAutomationCredentialStore,
   ensureAutomationManagedSecrets,
   migrateAutomationCredentialsFileEncryption,
-  setAutomationCredentialCodec,
   type AutomationCredentialCodec,
+  type AutomationCredentialStore,
 } from "../src/lib/automation/server/config-files.ts";
 import { assertSafeStorageCanEncrypt } from "./safe-storage-availability.ts";
 
@@ -20,8 +21,9 @@ export function safeStorageCredentialCodec(): AutomationCredentialCodec {
   };
 }
 
-export function registerAutomationCredentialSafeStorage() {
-  setAutomationCredentialCodec(safeStorageCredentialCodec());
-  migrateAutomationCredentialsFileEncryption();
-  ensureAutomationManagedSecrets();
+export function openSafeStorageCredentialStore(credentialsPath: string): AutomationCredentialStore {
+  const codec = safeStorageCredentialCodec();
+  migrateAutomationCredentialsFileEncryption(credentialsPath, codec);
+  ensureAutomationManagedSecrets({ credentialsPath, codec });
+  return createAutomationCredentialStore(credentialsPath, codec);
 }

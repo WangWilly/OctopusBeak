@@ -11,6 +11,7 @@ import {
   selectStatementTypes,
 } from "../statement-selection.ts";
 import { readAutomationSettings } from "./settings.ts";
+import type { AutomationCredentialStore } from "./config-files.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
 import { runtimeTaskSnapshotFromRun, type AutomationRuntimeState } from "./runtime-state.ts";
@@ -93,6 +94,7 @@ type ClaimedTask = {
 
 export function createAutomationRunner(options: Readonly<{
   runtime: AutomationRuntimeState;
+  credentials: AutomationCredentialStore;
   forceQuitAvailableAfterMs?: number;
 }>) {
   const { runtime } = options;
@@ -134,7 +136,10 @@ export function createAutomationRunner(options: Readonly<{
       }
       if (run.signal.aborted) return CANCELLED;
       // Resolved after admission so settings edited while the run queued apply.
-      const plan = resolveTaskRunPlan(task, { pgliteRpc: provider.pgliteWorkflow });
+      const plan = resolveTaskRunPlan(task, {
+        pgliteRpc: provider.pgliteWorkflow,
+        credentials: options.credentials,
+      });
       const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
         plan,

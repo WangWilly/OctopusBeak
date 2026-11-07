@@ -6,13 +6,11 @@ import {
   type TdccDeviceIdentity,
 } from "../../../workflows/tdcc-epassbook-client.ts";
 import { registerTdccDevice } from "../../../workflows/tdcc-device-registration.ts";
-import { AUTOMATION_CREDENTIALS_PATH, getAutomationCredentialCodec } from "./config-files.ts";
-import { createTdccSecretStore, type StoredTdccDevice, type TdccSecretStore } from "./tdcc-secret-store.ts";
+import type { StoredTdccDevice, TdccSecretStore } from "./tdcc-secret-store.ts";
 import { sourceDeviceLocks, type SourceDeviceLock } from "./source-device-lock.ts";
 import {
   createSourceDeviceRegistrationService,
   DeviceRegistrationError,
-  type SourceDeviceRegistrationService,
 } from "./source-device-registration.ts";
 import type { DeviceRegistrationFailure } from "../types.ts";
 
@@ -69,24 +67,4 @@ export function createTdccRegistrationService(options: TdccRegistrationServiceOp
       return result.kind === "registered" ? result.channels : [];
     },
   });
-}
-
-let configuredService: SourceDeviceRegistrationService | null = null;
-let fixtureFetch: TdccClientOptions["fetch"] | undefined;
-
-/** Development CDP fixture only: answer registration from a scripted TDCC instead of the network. */
-export function useTdccRegistrationFixture(fetch: NonNullable<TdccClientOptions["fetch"]>) {
-  fixtureFetch = fetch;
-  configuredService = null;
-}
-
-export function tdccRegistrationService(): SourceDeviceRegistrationService {
-  if (configuredService) return configuredService;
-  const codec = getAutomationCredentialCodec();
-  if (!codec) throw new Error("Encrypted credential storage is unavailable.");
-  configuredService = createTdccRegistrationService({
-    store: createTdccSecretStore(AUTOMATION_CREDENTIALS_PATH, codec),
-    ...(fixtureFetch ? { fetch: fixtureFetch } : {}),
-  });
-  return configuredService;
 }

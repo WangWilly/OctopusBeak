@@ -8,6 +8,7 @@ import { createTdccRegistrationService } from "./tdcc-registration-service.ts";
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
 import { createSourceDeviceLock, type SourceDeviceLock } from "./source-device-lock.ts";
 import { createTdccRegistrationFixtureFetch } from "./tdcc-registration-fixture.ts";
+import { createAutomationCredentialStore } from "./config-files.ts";
 
 // Built at runtime so the repository privacy hook does not read ID-shaped literals.
 const USER_ID = ["Q", "2", "87654321"].join("");
@@ -63,7 +64,7 @@ function withService(
 ) {
   const directory = mkdtempSync(join(tmpdir(), "tdcc-registration-"));
   const path = join(directory, "credentials.json");
-  const store = createTdccSecretStore(path, codec);
+  const store = createTdccSecretStore(createAutomationCredentialStore(path, codec));
   if (options.signInDetails !== false) store.write({ userId: USER_ID, password: "fixture-password" });
   const service = createTdccRegistrationService({
     store,
