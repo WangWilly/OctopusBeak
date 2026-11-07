@@ -34,7 +34,7 @@ function installReads({ model, scenario }) {
     return { dataVersion: input.dataVersion, candidates, totalCandidateCount: candidates.length, nextOffset: null, selectedCandidate: input.selectedTransactionId ? candidates[0] ?? null : null };
   };
   window.octopusBeak.spending.applyPageAction = async () => new Promise((resolve) => {
-    window.__finishAction = () => resolve({ action: "confirm", kind: "direct", baseKnowledgeAt: 1, knowledgeAt: 2, invoiceIdentityId: "invoice-fixture", transactionIdentityId: "payment-fixture", summaryDelta: { before: [], after: [] }, affectedRecords: [{ ...window.__purchase, description: "Action purchase v2" }] });
+    window.__finishAction = () => resolve({ status: "committed", action: "confirm", kind: "direct", baseKnowledgeAt: 1, knowledgeAt: 2, subject: { invoiceIds: ["invoice-fixture"], transactionIds: ["payment-fixture"] }, summaryDelta: { before: [], after: [] }, affectedRecords: [{ ...window.__purchase, description: "Action purchase v2" }] });
   });
   let listener;
   let publication = model;

@@ -7,8 +7,6 @@ import type {
   SpendingPairingCandidatesResult,
   SpendingPageDto,
   SpendingPageReadResult,
-  SpendingStrongConfirmRequest,
-  SpendingStrongConfirmResult,
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
   SpendingMergeLogDto,
@@ -18,7 +16,7 @@ import type {
   SpendingMonthInsightDto,
   SpendingMonthInsightRequest,
   SpendingPageActionRequest,
-  SpendingPageActionResult,
+  SpendingPageActionReply,
   SpendingPendingOverviewDto,
   SpendingPendingOverviewRequest,
   SpendingRecordPageDto,
@@ -209,7 +207,7 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
   )),
-  "financial.spending.pageAction": rendered("spending", "applyPageAction", operation<[request: SpendingPageActionRequest], SpendingPageActionResult>(
+  "financial.spending.pageAction": rendered("spending", "applyPageAction", operation<[request: SpendingPageActionRequest], SpendingPageActionReply>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
   )),
@@ -232,12 +230,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
       && typeof (args[0] as Record<string, unknown>).invoiceIdentityId === "string"
       && nonNegativeSafeInteger((args[0] as Record<string, unknown>).dataVersion),
     { lane: "interactive" },
-  )),
-  "financial.spending.confirmStrongCandidates": rendered("spending", "confirmStrongCandidates", operation<[input: SpendingStrongConfirmRequest], SpendingStrongConfirmResult>(
-    (args) => args.length === 1 && plainRecord(args[0])
-      && nonNegativeSafeInteger((args[0] as Record<string, unknown>).shownKnowledgeAt)
-      && Array.isArray((args[0] as Record<string, unknown>).pairs),
-    { lane: "background" },
   )),
   "financial.source.admit": operation<[request: PGliteCanonicalSourceAdmissionRequest], PGliteCanonicalSourceAdmissionReceipt>(
     (args) => args.length === 1 && sourceEvidenceShape(args[0]),

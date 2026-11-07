@@ -178,6 +178,7 @@ function recordPage(input: { knowledgeAt: number; month?: string | null; day?: s
 
 function actionResult(knowledgeAt = 2, affectedRecords: readonly ReturnType<typeof spendingRecord>[] = []) {
   return {
+    status: "committed",
     action: "confirm",
     kind: "direct",
     baseKnowledgeAt: knowledgeAt - 1,
@@ -431,6 +432,68 @@ test("a category change that changed nothing keeps a pairing's record refresh", 
   assert.equal(current().report.knowledgeAt, 2);
   const reads = calls.recordPages.length;
   assert.equal(await session.setPurchaseCategory("link:invoice-1", null), true);
+  await clock.advanceBy(1_200);
+  assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
+  session.dispose();
+});
+
+test("a strong batch runs as one page action and takes its result, and a conflict leaves the page as shown", async () => {
+  let conflict = true;
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      if (conflict) return { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 1, conflicts: [], strongPairs: [] };
+      return { ...actionResult(2, [linkedRecord()]), kind: "strong" };
+    },
+  });
+  let refreshes = 0;
+  const { session, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport, undefined, async () => { refreshes += 1; });
+  session.start();
+  const pairs = [{ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }];
+  const shown = current().report;
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "conflict");
+  assert.equal(current().report, shown, "a conflict wrote nothing for the page to take");
+  conflict = false;
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed");
+  assert.deepEqual(calls.actions[1], { action: "confirm", kind: "strong", shownKnowledgeAt: 1, month: "2026-10", pairs });
+  assert.equal(current().report.knowledgeAt, 2, "the batch result was accepted");
+  assert.equal(current().busyAction, null);
+  assert.equal(refreshes, 0, "the page is not read again");
+  session.dispose();
+});
+
+test("a strong batch committed on a base the page has not reached waits for the live page", async () => {
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      return { ...actionResult(3, [linkedRecord()]), baseKnowledgeAt: 2, kind: "strong" };
+    },
+  });
+  const { session, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  session.start();
+  const shown = current().report;
+  const pairs = [{ candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" }];
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 1, month: "2026-10", pairs })).status, "committed", "the merge that succeeded is not an error");
+  assert.equal(current().report, shown, "the page waits for the live publication");
+  session.dispose();
+});
+
+test("a strong batch's conflict keeps a pairing's record refresh", async () => {
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: any) => {
+      calls.actions.push(input);
+      return input.kind === "strong"
+        ? { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 2, conflicts: [], strongPairs: [] }
+        : actionResult(2, [linkedRecord()]);
+    },
+  });
+  const { session, clock, current } = createSession(report(1, [invoiceRecord("Invoice", ["candidate-1"]), paymentRecord("Payment", ["candidate-1"])], [candidate("candidate-1")]), transport);
+  session.start();
+  const pair = { candidateId: "candidate-1", invoiceIdentityId: "invoice-1", transactionIdentityId: "payment-1" };
+  await session.confirmCandidate(pair);
+  assert.equal(current().report.knowledgeAt, 2);
+  const reads = calls.recordPages.length;
+  assert.equal((await session.confirmStrongPairs({ shownKnowledgeAt: 2, month: "2026-10", pairs: [pair] })).status, "conflict");
   await clock.advanceBy(1_200);
   assert.ok(calls.recordPages.slice(reads).some((input: any) => input.knowledgeAt === 2), "the pairing's month refresh still runs");
   session.dispose();

@@ -120,9 +120,6 @@ export function createPGliteFinancialRegistry(
       for (const listener of previewVisibilityListeners) listener();
     },
     "financial.spending.pageAction": ([request]) => pageActions.run(request),
-    "financial.spending.confirmStrongCandidates"([input]) {
-      return commands.confirmStrongCandidates(input);
-    },
     "financial.source.admit": ([request], options) => source.admit(request, options),
     "financial.source.commit": ([request], options) => source.commit(request, options),
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),

@@ -61,6 +61,7 @@ const crossMonthConfirmed = applySpendingSummaryDelta(exactSummary, 6, 7, {
   after: [{ date: "2026-01-01", amount: { currency: "TWD", coefficient: "2500", scale: 2 }, category: { mode: "absent" as const } }],
 });
 const compactActionResult = {
+  status: "committed" as const,
   action: "confirm" as const,
   kind: "direct" as const,
   baseKnowledgeAt: 6,

@@ -25,7 +25,7 @@ import {
   E_INVOICE_COMPLETENESS_RULE_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
 } from "../canonical/einvoice-contract.ts";
-import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
+import { applySpendingSummaryDelta, type SpendingCommittingPageActionRequest } from "../../lib/spending/model.ts";
 
 const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
 const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
@@ -37,7 +37,7 @@ function textId(value: Uint8Array): string {
 
 async function assertCompactActionSummaryParity(
   fixture: Fixture,
-  input: Parameters<typeof applyPGliteSpendingPageAction>[1],
+  input: SpendingCommittingPageActionRequest,
 ) {
   const before = await queryCurrentSpendingSummary(fixture.store);
   const result = await applyPGliteSpendingPageAction(fixture.store, input);

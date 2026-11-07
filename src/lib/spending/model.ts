@@ -327,32 +327,6 @@ export type SpendingMerchantStatsDto = Readonly<{
   totalsByCurrency: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[];
 }>;
 
-/** 合併所有高度相符: confirm exactly the strong pairs the user was shown. */
-export type SpendingStrongConfirmRequest = Readonly<{
-  /** The data version the shown pairs came from; a newer unrelated commit does not reject. */
-  shownKnowledgeAt: number;
-  /** `YYYY-MM`: the strong set is recomputed inside this month only. Omitted means every month. */
-  month?: string | null;
-  pairs: readonly SpendingCandidatePairRef[];
-}>;
-
-export type SpendingStrongConfirmResult =
-  | Readonly<{
-      status: "committed";
-      baseKnowledgeAt: number;
-      /** The one commit holding every decision event of the batch. */
-      knowledgeAt: number;
-      confirmed: readonly (SpendingCandidatePairRef & Readonly<{ eventId: string }>)[];
-    }>
-  | Readonly<{
-      /** Nothing was written: a shown pair is no longer pending or no longer strong. */
-      status: "conflict";
-      knowledgeAt: number;
-      conflicts: readonly SpendingCandidatePairRef[];
-      /** The recomputed strong set to offer instead. */
-      strongPairs: readonly SpendingCandidatePairRef[];
-    }>;
-
 /** Worker-validated action from a compact, version-bound Spending page. */
 export type SpendingPageActionRequest = Readonly<{
   action: "confirm" | "deny";
@@ -380,7 +354,19 @@ export type SpendingPageActionRequest = Readonly<{
   purchaseId: string;
   categoryCode: string | null;
   dataVersion: number;
+}> | Readonly<{
+  /** 合併所有高度相符: confirm exactly the strong pairs the user was shown, in one commit or none. */
+  action: "confirm";
+  kind: "strong";
+  /** The data version the shown pairs came from; a newer unrelated commit does not reject. */
+  shownKnowledgeAt: number;
+  /** `YYYY-MM`: the strong set is recomputed inside this month only. Omitted means every month. */
+  month?: string | null;
+  pairs: readonly SpendingCandidatePairRef[];
 }>;
+
+/** The page actions that always commit, or fail: every kind but the strong batch. */
+export type SpendingCommittingPageActionRequest = Exclude<SpendingPageActionRequest, Readonly<{ kind: "strong" }>>;
 
 /** The identities whose Purchase records an action read before and after its write. */
 export type SpendingPageActionSubject = Readonly<{
@@ -389,6 +375,7 @@ export type SpendingPageActionSubject = Readonly<{
 }>;
 
 export type SpendingPageActionResult = Readonly<{
+  status: "committed";
   action: SpendingPageActionRequest["action"];
   kind: SpendingPageActionRequest["kind"];
   /** The compact summary version the action validated before writing. */
@@ -404,6 +391,32 @@ export type SpendingPageActionResult = Readonly<{
   /** Only rows that contain an identity of the subject. */
   affectedRecords: readonly PurchaseReport["records"][number][];
 }>;
+
+/**
+ * A strong batch that wrote nothing: a shown pair is no longer pending or no
+ * longer strong. The page has nothing to take.
+ */
+export type SpendingStrongConflict = Readonly<{
+  status: "conflict";
+  action: "confirm";
+  kind: "strong";
+  knowledgeAt: number;
+  conflicts: readonly SpendingCandidatePairRef[];
+  /** The recomputed strong set to offer instead. */
+  strongPairs: readonly SpendingCandidatePairRef[];
+}>;
+
+/** What a page action answers: its committed result, or a strong batch's conflict. */
+export type SpendingPageActionReply = SpendingPageActionResult | SpendingStrongConflict;
+
+/** A strong batch the page sent, or refused to send while another action runs or a newer page waits. */
+export type SpendingStrongConfirmOutcome = SpendingPageActionReply | Readonly<{ status: "refused" }>;
+
+/** The committed result of an action that cannot conflict. */
+export function committedPageAction(reply: SpendingPageActionReply): SpendingPageActionResult {
+  if (reply.status !== "committed") throw new Error("Spending action was rejected; reload Spending.");
+  return reply;
+}
 
 /** Whether a Purchase record belongs to an action's subject, so its row is replaced by the action's records. */
 export function inSpendingPageActionSubject(

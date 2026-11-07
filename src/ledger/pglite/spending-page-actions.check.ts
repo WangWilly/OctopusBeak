@@ -37,6 +37,7 @@ const page = (knowledgeAt: number, summary: SpendingPurchaseReportSummaryDto | n
 
 /** A pairing that removed the TWD 100 purchase: version 6 to 7. */
 const removal = (baseKnowledgeAt = 6, knowledgeAt = 7): SpendingPageActionResult => ({
+  status: "committed",
   action: "confirm",
   kind: "direct",
   baseKnowledgeAt,
@@ -141,6 +142,21 @@ test("a burst where every action fails settles with no result, and the next burs
   fail = false;
   await actions.run(REQUEST);
   assert.deepEqual(heard.map((result) => result?.knowledgeAt ?? null), [null, 7]);
+});
+
+test("a strong batch's conflict settles with no result, so the page reads nothing new from it", async () => {
+  const actions = createSpendingPageActions(async () => ({
+    status: "conflict",
+    action: "confirm",
+    kind: "strong",
+    knowledgeAt: 9,
+    conflicts: [],
+    strongPairs: [],
+  }));
+  const heard: (SpendingPageActionResult | null)[] = [];
+  actions.onSettled((result) => heard.push(result));
+  assert.equal((await actions.run(REQUEST)).status, "conflict", "the caller still hears the conflict");
+  assert.deepEqual(heard, [null]);
 });
 
 test("a listener that throws changes neither the action's result nor the other listeners", async () => {

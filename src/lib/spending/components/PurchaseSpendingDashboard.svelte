@@ -77,6 +77,7 @@
     transport: createDesktopSpendingReviewTransport(),
     refreshSummary: () => refreshSummary(),
     setPurchaseCategory: (purchaseId, categoryCode) => spendingSession.setPurchaseCategory(purchaseId, categoryCode),
+    confirmStrongPairs: (request) => spendingSession.confirmStrongPairs(request),
   });
   const reviewState = review.state;
 

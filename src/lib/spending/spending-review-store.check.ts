@@ -33,6 +33,7 @@ function harness(
   overrides: Partial<Record<keyof SpendingReviewTransport, (...args: any[]) => unknown>> = {},
   monthSettleMs = 0,
   setPurchaseCategory: (purchaseId: string, categoryCode: string | null) => Promise<boolean> = async () => true,
+  confirmStrongPairs: (input: any) => Promise<any> = async (input) => ({ status: "committed", baseKnowledgeAt: input.shownKnowledgeAt, knowledgeAt: input.shownKnowledgeAt + 1 }),
 ) {
   const calls: Record<string, any[]> = { overview: [], insight: [], candidates: [], records: [], strong: [], category: [], cancels: [] };
   let refreshes = 0;
@@ -49,7 +50,6 @@ function harness(
     },
     cancelCandidatePage: async (requestId: string) => { calls.cancels!.push(requestId); return true; },
     loadRecordPage: async (input: any) => { calls.records!.push(input); return { schemaVersion: 1, knowledgeAt: input.knowledgeAt, month: null, day: null, categoryCodes: null, query: null, basis: "linked", records: [], nextCursor: null }; },
-    confirmStrongCandidates: async (input: any) => { calls.strong!.push(input); return { status: "committed", baseKnowledgeAt: input.shownKnowledgeAt, knowledgeAt: input.shownKnowledgeAt + 1, confirmed: [] }; },
     ...overrides,
   } as unknown as SpendingReviewTransport;
   const store = createSpendingReviewStore({
@@ -58,6 +58,10 @@ function harness(
     setPurchaseCategory: async (purchaseId, categoryCode) => {
       calls.category!.push({ purchaseId, categoryCode });
       return setPurchaseCategory(purchaseId, categoryCode);
+    },
+    confirmStrongPairs: async (input) => {
+      calls.strong!.push(input);
+      return confirmStrongPairs(input);
     },
     monthSettleMs,
   });
@@ -141,17 +145,14 @@ test("merge lists load only while shown, page by page, and reload on a new versi
   assert.equal(current().pending.status, "idle");
 });
 
-test("bulk merge confirms the shown strong set, refreshes on commit and re-offers the recomputed set on conflict", async () => {
+test("bulk merge confirms the shown strong set as a page action and re-offers the recomputed set on conflict", async () => {
   let conflict = true;
-  const { store, calls, current, refreshes } = harness({
-    confirmStrongCandidates: async (input: any) => {
-      calls.strong!.push(input);
-      if (conflict) {
-        conflict = false;
-        return { status: "conflict", knowledgeAt: 5, conflicts: [pairRef(2)], strongPairs: [pairRef(1)] };
-      }
-      return { status: "committed", baseKnowledgeAt: 4, knowledgeAt: 6, confirmed: [{ ...pairRef(1), eventId: "e" }] };
-    },
+  const { store, calls, current, refreshes } = harness({}, 0, undefined, async () => {
+    if (conflict) {
+      conflict = false;
+      return { status: "conflict", action: "confirm", kind: "strong", knowledgeAt: 5, conflicts: [pairRef(2)], strongPairs: [pairRef(1)] };
+    }
+    return { status: "committed", action: "confirm", kind: "strong", baseKnowledgeAt: 4, knowledgeAt: 6 };
   });
   store.sync(4, "2026-10");
   await settle();
@@ -163,7 +164,15 @@ test("bulk merge confirms the shown strong set, refreshes on commit and re-offer
   await store.confirmStrong();
   assert.deepEqual(calls.strong![1].pairs, [pairRef(1)], "the second press confirms exactly the re-offered set");
   assert.deepEqual(current().strongBatch, { kind: "idle" });
-  assert.equal(refreshes(), 1);
+  assert.equal(refreshes(), 0, "the committed batch publishes its own delta");
+});
+
+test("a strong batch the page refuses for now leaves the button ready", async () => {
+  const { store, current } = harness({}, 0, undefined, async () => ({ status: "refused" }));
+  store.sync(4, "2026-10");
+  await settle();
+  await store.confirmStrong();
+  assert.deepEqual(current().strongBatch, { kind: "idle" });
 });
 
 test("changing a category runs its page action without reading the page again, and a failure stays visible", async () => {

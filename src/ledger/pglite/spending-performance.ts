@@ -10,7 +10,7 @@ import {
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { queryCurrentSpendingSummary } from "./purchase-report.ts";
 import { applyPGliteSpendingPageAction } from "./spending-command.ts";
-import { applySpendingSummaryDelta, type SpendingPageActionRequest } from "../../lib/spending/model.ts";
+import { applySpendingSummaryDelta, type SpendingCommittingPageActionRequest } from "../../lib/spending/model.ts";
 import { rankSpendingManualPaymentCandidates } from "../canonical/spending-manual-pairing.ts";
 
 const transactions = Number(process.env.PGLITE_BENCHMARK_TRANSACTIONS ?? 100_000);
@@ -77,7 +77,7 @@ const coldFixtureReport = await coldFixtureQuery.current();
 const coldCandidate = coldFixtureReport.purchaseReport.candidates.find((value) => value.invoiceId === targetInvoiceId && value.transactionId === targetTransactionId);
 if (!coldCandidate) throw new Error("cold confirm target candidate missing");
 const coldWriter = new PGliteStore(coldFixture.database);
-const candidateAction = (knowledgeAt: number, targetCandidateId: string): SpendingPageActionRequest => ({
+const candidateAction = (knowledgeAt: number, targetCandidateId: string): SpendingCommittingPageActionRequest => ({
   action: "confirm",
   kind: "candidate",
   candidateId: targetCandidateId,
@@ -86,7 +86,7 @@ const candidateAction = (knowledgeAt: number, targetCandidateId: string): Spendi
   dataVersion: knowledgeAt,
 });
 /** Time one page action, then require its summary delta to reproduce the recomputed summary. */
-async function timedPageAction(writer: PGliteStore, request: SpendingPageActionRequest, label: string) {
+async function timedPageAction(writer: PGliteStore, request: SpendingCommittingPageActionRequest, label: string) {
   const summaryBefore = await queryCurrentSpendingSummary(writer);
   const startedAt = performance.now();
   const result = await applyPGliteSpendingPageAction(writer, request);
