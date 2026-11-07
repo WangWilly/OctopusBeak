@@ -76,8 +76,7 @@
   const review = createSpendingReviewStore({
     transport: createDesktopSpendingReviewTransport(),
     refreshSummary: () => refreshSummary(),
-    setPurchaseCategory: (purchaseId, categoryCode) => spendingSession.setPurchaseCategory(purchaseId, categoryCode),
-    confirmStrongPairs: (request) => spendingSession.confirmStrongPairs(request),
+    applyPageAction: (intent) => spendingSession.applyPageAction(intent),
   });
   const reviewState = review.state;
 
@@ -371,12 +370,13 @@
     mergeTab = tab;
   }
 
-  function decidePair(pair: SpendingCandidatePairRef, action: "confirm" | "deny") {
-    return action === "confirm" ? spendingSession.confirmCandidate(pair) : spendingSession.denyCandidate(pair);
+  // A pairing action shows its own failure on the page, so these need not read the outcome.
+  async function decidePair(pair: SpendingCandidatePairRef, decision: "confirm" | "deny") {
+    await spendingSession.applyPageAction({ kind: "decide", pair, decision });
   }
 
-  function revokeLink(record: PurchaseRecord) {
-    return spendingSession.revokeLink(record);
+  async function revokeLink(record: PurchaseRecord) {
+    await spendingSession.applyPageAction({ kind: "revoke", record });
   }
 
   function closePairing() {
@@ -391,8 +391,8 @@
     return spendingSession.loadMoreRecords();
   }
 
-  function confirmDirectPair() {
-    return spendingSession.confirmDirectPair();
+  async function confirmDirectPair() {
+    await spendingSession.applyPageAction({ kind: "direct" });
   }
 </script>
 

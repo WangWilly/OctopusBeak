@@ -4,8 +4,6 @@ import type { SpendingPurchaseRecordView, SpendingPurchaseReportView } from "./p
 import { spendingCategoryCodesForGroup } from "./category-groups.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
-  committedPageAction,
-  type SpendingStrongConfirmOutcome,
   inSpendingPageActionSubject,
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
@@ -13,6 +11,8 @@ import {
   type SpendingCandidatePageDto,
   type SpendingCandidatePageItem,
   type SpendingCandidatePairRef,
+  type SpendingPageActionReply,
+  type SpendingPageActionRequest,
   type SpendingPageActionResult,
   type SpendingPageDto,
   type SpendingPairingCandidateView,
@@ -51,6 +51,36 @@ export type PurchaseSpendingFeedback = Readonly<{
   kind: "error";
   message: string;
 }>;
+
+/**
+ * What the page asks a Spending page action to do. The session builds the
+ * request at the data version it shows, so callers never name a version or
+ * an identity it can derive itself.
+ */
+export type SpendingPageIntent =
+  | Readonly<{ kind: "decide"; pair: SpendingCandidatePairRef; decision: "confirm" | "deny" }>
+  /** Confirm the pairing modal's invoice with its selected payment. */
+  | Readonly<{ kind: "direct" }>
+  | Readonly<{ kind: "revoke"; record: PurchaseRecord }>
+  /** Set or, with a null code, clear the user's category on one purchase (ADR 0038). */
+  | Readonly<{ kind: "category"; purchaseId: string; categoryCode: string | null }>
+  /** Confirm the strong pairs the user was shown, in one commit or none. */
+  | Readonly<{
+    kind: "strong";
+    shownKnowledgeAt: number;
+    month: string | null;
+    pairs: readonly SpendingCandidatePairRef[];
+  }>;
+
+/**
+ * How a page action ended. It never rejects: `refused` ran nothing because
+ * another action runs, a newer page waits, or the intent no longer applies;
+ * `failed` carries the error for a caller that shows its own.
+ */
+export type SpendingPageActionOutcome =
+  | SpendingPageActionReply
+  | Readonly<{ status: "refused" }>
+  | Readonly<{ status: "failed"; message: string }>;
 
 /** The 購買明細 filter: a display group (or Unclassified) and a merchant-or-amount search. */
 export type SpendingRecordFilter = Readonly<{
@@ -114,18 +144,15 @@ export interface PurchaseSpendingSession {
   selectPayment(transactionId: string): void;
   showMorePayments(): Promise<void>;
   loadMoreRecords(): Promise<void>;
-  confirmCandidate(pair: SpendingCandidatePairRef): Promise<void>;
-  denyCandidate(pair: SpendingCandidatePairRef): Promise<void>;
   openPairing(record: PurchaseRecord): void;
   closePairing(): void;
-  confirmDirectPair(): Promise<void>;
-  revokeLink(record: PurchaseRecord): Promise<void>;
-  setPurchaseCategory(purchaseId: string, categoryCode: string | null): Promise<boolean>;
-  confirmStrongPairs(request: Readonly<{
-    shownKnowledgeAt: number;
-    month: string | null;
-    pairs: readonly SpendingCandidatePairRef[];
-  }>): Promise<SpendingStrongConfirmOutcome>;
+  /**
+   * Run one Spending page action (ADR 0105, ADR 0111) and take its result
+   * when it wrote a commit on a version the page has reached; otherwise the
+   * live view brings the page forward. A pairing action's failure shows on
+   * the page; a category or strong-batch failure is the caller's to show.
+   */
+  applyPageAction(intent: SpendingPageIntent): Promise<SpendingPageActionOutcome>;
   dispose(): void;
 }
 
@@ -135,6 +162,18 @@ const defaultClock: PurchaseSpendingClock = {
 };
 
 let nextSessionId = 1;
+/** How long the page waits after an action before it re-reads the month's records. */
+const RECORD_REFRESH_DELAY_MS = 1_200;
+const REFUSED = Object.freeze({ status: "refused" as const });
+
+type PageActionPlan = Readonly<{
+  busyAction: string;
+  request: SpendingPageActionRequest;
+  /** "page" shows a failure as the page's action error; "caller" leaves it to the caller. */
+  errors: "page" | "caller";
+  /** Runs once the action committed, before the page takes it. */
+  committed?: () => void;
+}>;
 const initialPairingCandidateCount = 50;
 
 /**
@@ -669,7 +708,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.recordRefreshTimer = this.clock.setTimeout(() => {
       this.recordRefreshTimer = null;
       this.flushRecordRefreshAfterAction();
-    }, 1_200);
+    }, RECORD_REFRESH_DELAY_MS);
   }
 
   private cancelPendingRecordRefresh() {
@@ -678,6 +717,21 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     this.recordRefreshTimer = null;
     this.pendingRecordRefresh = null;
     if (hadPending) this.publish({ recordPageLoading: false });
+  }
+
+  /** Stop the record refresh timer while a page action writes; the refresh stays pending. */
+  private holdRecordRefresh() {
+    if (this.recordRefreshTimer !== null) this.clock.clearTimeout(this.recordRefreshTimer);
+    this.recordRefreshTimer = null;
+  }
+
+  /** Restart a held record refresh that the action did not replace, after the same delay. */
+  private resumeRecordRefresh() {
+    if (this.disposed || !this.pendingRecordRefresh || this.recordRefreshTimer !== null) return;
+    this.recordRefreshTimer = this.clock.setTimeout(() => {
+      this.recordRefreshTimer = null;
+      this.flushRecordRefreshAfterAction();
+    }, RECORD_REFRESH_DELAY_MS);
   }
 
   private flushRecordRefreshAfterAction() {
@@ -708,93 +762,104 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     }
   }
 
-  async confirmCandidate(pair: SpendingCandidatePairRef) {
-    await this.decideCandidate(pair, "confirmCandidate");
-  }
-
-  async denyCandidate(pair: SpendingCandidatePairRef) {
-    await this.decideCandidate(pair, "denyCandidate");
-  }
-
-  /** A compact page decides a pair by identity, so the merge modal can decide pairs from any month. */
-  private async decideCandidate(pair: SpendingCandidatePairRef, action: "confirmCandidate" | "denyCandidate") {
-    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return;
-    const candidateId = pair.candidateId;
+  async applyPageAction(intent: SpendingPageIntent): Promise<SpendingPageActionOutcome> {
+    const plan = this.disposed || this.value.busyAction !== null || this.pendingReport !== null ? null : this.pageActionPlan(intent);
+    if (!plan) return REFUSED;
     const requestToken = ++this.actionRequestToken;
-    this.cancelPendingRecordRefresh();
-    this.publish({ busyAction: `${action}:${candidateId}`, actionError: null });
+    // An earlier action's record refresh waits out this write: a refresh
+    // during it reads a page the write is about to replace.
+    this.holdRecordRefresh();
+    this.publish({ busyAction: plan.busyAction, actionError: null });
+    let taken = false;
     try {
-      const result = committedPageAction(await this.options.transport.applyPageAction({
-        action: action === "confirmCandidate" ? "confirm" : "deny",
-        kind: "candidate",
-        candidateId,
-        invoiceIdentityId: pair.invoiceIdentityId,
-        transactionIdentityId: pair.transactionIdentityId,
-        dataVersion: this.value.report.knowledgeAt,
-      }));
-      if (!this.isCurrentAction(requestToken)) return;
-      await this.acceptCompactPageAction(result);
-    } catch (error) {
-      if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
-    } finally {
-      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
-    }
-  }
-
-  /**
-   * Set or clear the user's category on one purchase through the page actions
-   * (ADR 0105), so the page takes its summary delta. Refused, with false,
-   * while another action runs or a newer page waits; rejects when it fails.
-   */
-  async setPurchaseCategory(purchaseId: string, categoryCode: string | null) {
-    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return false;
-    const requestToken = ++this.actionRequestToken;
-    this.publish({ busyAction: `category:${purchaseId}`, actionError: null });
-    try {
-      const result = committedPageAction(await this.options.transport.applyPageAction({
-        action: "categorize",
-        kind: "category",
-        purchaseId,
-        categoryCode,
-        dataVersion: this.value.report.knowledgeAt,
-      }));
-      // A change that changed nothing wrote no commit, so the page has nothing
-      // to take, and an earlier action's record refresh stays scheduled.
-      if (this.isCurrentAction(requestToken) && result.knowledgeAt !== result.baseKnowledgeAt) {
-        this.cancelPendingRecordRefresh();
-        await this.acceptCompactPageAction(result);
-      }
-      return true;
-    } finally {
-      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
-    }
-  }
-
-  /**
-   * Confirm the strong pairs the user was shown, in one commit or none,
-   * through the page actions (ADR 0105), so the page takes the batch's
-   * summary delta. A conflict wrote nothing and names the strong set to offer
-   * instead. Rejects when it fails.
-   */
-  async confirmStrongPairs(request: Readonly<{
-    shownKnowledgeAt: number;
-    month: string | null;
-    pairs: readonly SpendingCandidatePairRef[];
-  }>): Promise<SpendingStrongConfirmOutcome> {
-    if (this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return { status: "refused" };
-    const requestToken = ++this.actionRequestToken;
-    this.publish({ busyAction: "strong", actionError: null });
-    try {
-      const reply = await this.options.transport.applyPageAction({ action: "confirm", kind: "strong", ...request });
-      // A batch accepts pairs shown at an older version, so it may commit on a
-      // base the page has not reached; the live view then brings the page forward.
-      if (reply.status === "committed" && this.isCurrentAction(requestToken) && this.value.report.knowledgeAt >= reply.baseKnowledgeAt) {
+      const reply = await this.options.transport.applyPageAction(plan.request);
+      if (reply.status !== "committed" || !this.isCurrentAction(requestToken)) return reply;
+      plan.committed?.();
+      // A write that changed nothing has nothing to take. A strong batch
+      // accepts pairs shown at an older version, so it may commit on a base
+      // the page has not reached; the live view then brings the page forward.
+      if (reply.knowledgeAt !== reply.baseKnowledgeAt && this.value.report.knowledgeAt >= reply.baseKnowledgeAt) {
+        taken = true;
         this.cancelPendingRecordRefresh();
         await this.acceptCompactPageAction(reply);
       }
       return reply;
+    } catch (error) {
+      if (plan.errors === "page" && this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
+      return { status: "failed", message: errorMessage(error) };
     } finally {
+      if (!taken) this.resumeRecordRefresh();
       if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
+    }
+  }
+
+  /**
+   * One intent's request, the busy key the page shows while it runs, where its
+   * failure shows, and what a commit does before the page takes it. Null when
+   * the intent no longer applies.
+   */
+  private pageActionPlan(intent: SpendingPageIntent): PageActionPlan | null {
+    const dataVersion = this.value.report.knowledgeAt;
+    switch (intent.kind) {
+      case "decide": {
+        const { pair, decision } = intent;
+        return {
+          busyAction: `${decision === "confirm" ? "confirmCandidate" : "denyCandidate"}:${pair.candidateId}`,
+          request: {
+            action: decision,
+            kind: "candidate",
+            candidateId: pair.candidateId,
+            invoiceIdentityId: pair.invoiceIdentityId,
+            transactionIdentityId: pair.transactionIdentityId,
+            dataVersion,
+          },
+          errors: "page",
+        };
+      }
+      case "direct": {
+        const invoiceIdentityId = this.value.pairingInvoice?.invoice?.invoiceId;
+        const selectedPaymentId = this.value.selectedPaymentId;
+        if (!invoiceIdentityId || !this.selectedPayment() || this.value.pairingCandidatesLoading) return null;
+        return {
+          busyAction: `direct:${invoiceIdentityId}/${selectedPaymentId}`,
+          request: { action: "confirm", kind: "direct", invoiceIdentityId, transactionIdentityId: selectedPaymentId, dataVersion },
+          errors: "page",
+          committed: () => this.dismissPairing(false),
+        };
+      }
+      case "revoke": {
+        const link = intent.record.link;
+        if (!link) return null;
+        return {
+          busyAction: `revokeLink:${link.invoiceId}/${link.transactionId}`,
+          request: {
+            action: "revoke",
+            kind: "revoke",
+            invoiceIdentityId: link.invoiceId,
+            transactionIdentityId: link.transactionId,
+            dataVersion,
+          },
+          errors: "page",
+        };
+      }
+      case "category":
+        return {
+          busyAction: `category:${intent.purchaseId}`,
+          request: { action: "categorize", kind: "category", purchaseId: intent.purchaseId, categoryCode: intent.categoryCode, dataVersion },
+          errors: "caller",
+        };
+      case "strong":
+        return {
+          busyAction: "strong",
+          request: {
+            action: "confirm",
+            kind: "strong",
+            shownKnowledgeAt: intent.shownKnowledgeAt,
+            month: intent.month,
+            pairs: intent.pairs,
+          },
+          errors: "caller",
+        };
     }
   }
 
@@ -954,58 +1019,10 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     if (!this.disposed) this.publish({ paymentVisibleCount: Math.min(nextVisibleCount, this.value.pairingCandidateTotal) });
   }
 
-  async confirmDirectPair() {
-    const invoiceIdentityId = this.value.pairingInvoice?.invoice?.invoiceId;
-    const selectedPaymentId = this.value.selectedPaymentId;
-    const selectedPayment = this.selectedPayment();
-    if (!invoiceIdentityId || !selectedPayment || this.value.pairingCandidatesLoading || this.value.busyAction !== null || this.pendingReport || this.disposed) return;
-    const requestToken = ++this.actionRequestToken;
-    this.cancelPendingRecordRefresh();
-    this.publish({ busyAction: `direct:${invoiceIdentityId}/${selectedPaymentId}`, actionError: null });
-    try {
-      const result = committedPageAction(await this.options.transport.applyPageAction({
-        action: "confirm",
-        kind: "direct",
-        invoiceIdentityId,
-        transactionIdentityId: selectedPaymentId,
-        dataVersion: this.value.report.knowledgeAt,
-      }));
-      if (!this.isCurrentAction(requestToken)) return;
-      this.dismissPairing(false);
-      await this.acceptCompactPageAction(result);
-    } catch (error) {
-      if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
-    } finally {
-      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
-    }
-  }
-
   private selectedPayment() {
     const selectedId = this.value.selectedPaymentId;
     return this.value.pairingCandidates?.find((candidate) => candidate.transactionId === selectedId)
       ?? (this.value.validatedSelectedCandidate?.transactionId === selectedId ? this.value.validatedSelectedCandidate : null);
-  }
-
-  async revokeLink(record: PurchaseRecord) {
-    if (!record.link || this.disposed || this.value.busyAction !== null || this.pendingReport !== null) return;
-    const requestToken = ++this.actionRequestToken;
-    this.cancelPendingRecordRefresh();
-    this.publish({ busyAction: `revokeLink:${record.link.invoiceId}/${record.link.transactionId}`, actionError: null });
-    try {
-      const result = committedPageAction(await this.options.transport.applyPageAction({
-        action: "revoke",
-        kind: "revoke",
-        invoiceIdentityId: record.link.invoiceId,
-        transactionIdentityId: record.link.transactionId,
-        dataVersion: this.value.report.knowledgeAt,
-      }));
-      if (!this.isCurrentAction(requestToken)) return;
-      await this.acceptCompactPageAction(result);
-    } catch (error) {
-      if (this.isCurrentAction(requestToken)) this.publish({ actionError: errorFeedback(error) });
-    } finally {
-      if (this.isCurrentAction(requestToken)) this.publish({ busyAction: null });
-    }
   }
 
   private monthsFor(report: PurchaseSpendingReport) {
