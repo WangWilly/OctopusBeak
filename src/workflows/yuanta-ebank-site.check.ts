@@ -84,9 +84,17 @@ async function withYuantaShell(
           });
         case "/nib/tx/failing.csv":
           return void route.fulfill({ status: 500, contentType: "text/csv", body: "error" });
-        case "/nib/tx/utf8.csv":
+        case "/nib/tx/utf8-body.csv":
           return void route.fulfill({
             contentType: "text/csv; charset=utf-8",
+            headers: { "content-disposition": "attachment; filename=deposit.csv" },
+            body: Buffer.from("帳號,1\r\n", "utf8"),
+          });
+        case "/nib/tx/utf8.csv":
+        case "/nib/tx/latin1.csv":
+        case "/nib/tx/shiftjis.csv":
+          return void route.fulfill({
+            contentType: `text/csv; charset=${{ "/nib/tx/utf8.csv": "utf-8", "/nib/tx/latin1.csv": "iso-8859-1", "/nib/tx/shiftjis.csv": "shift_jis" }[url.pathname]}`,
             headers: { "content-disposition": "attachment; filename=deposit.csv" },
             body: Buffer.concat([BIG5_ACCOUNT_HEADER, Buffer.from(",1\r\n")]),
           });
@@ -267,7 +275,7 @@ test("a CSV export link is fetched in the page and decoded as Big5", () =>
     assert.equal(download.contentDisposition, "attachment; filename=deposit.csv");
   }));
 
-test("a CSV reply that is not 200, or names another charset, fails the product's validation with its named check", () =>
+test("a CSV reply that is not 200, or names an unrelated charset, fails the product's validation with its named check", () =>
   withYuantaShell(async (page) => {
     const site = yuantaEbankSite(page, context());
     const scope = await site.open(DEPOSIT);
@@ -289,9 +297,33 @@ test("a CSV reply that is not 200, or names another charset, fails the product's
     assert.ok(failing.error instanceof ProviderResponseCheckError && failing.error.check === "response-status");
     assert.equal(failing.code, "source-validation-failed", "the status check fails inside the product's validation");
 
-    const utf8 = await failedAs("/nib/tx/utf8.csv");
-    assert.ok(utf8.error instanceof ProviderResponseCheckError && utf8.error.check === "response-charset");
-    assert.equal(utf8.code, "source-validation-failed");
+    const shiftJis = await failedAs("/nib/tx/shiftjis.csv");
+    assert.ok(shiftJis.error instanceof ProviderResponseCheckError && shiftJis.error.check === "response-charset");
+    assert.equal(shiftJis.code, "source-validation-failed");
+  }));
+
+test("a CSV reply carrying the eBank's wrong utf-8 or iso-8859-1 label still decodes as Big5", () =>
+  withYuantaShell(async (page) => {
+    const site = yuantaEbankSite(page, context());
+    const scope = await site.open(DEPOSIT);
+    const link = scope.locator("#csv");
+    for (const href of ["/nib/tx/utf8.csv", "/nib/tx/latin1.csv"]) {
+      await link.evaluate((anchor, value) => anchor.setAttribute("href", value), href);
+      const download = await site.readCsv(link, { observedAt: OBSERVED_AT, validate: async (check) => await check() });
+      assert.equal(download.content, "帳號,1\r\n", `${href} is read as the Big5 it carries`);
+    }
+    // The label is accepted, never trusted: a body that really is UTF-8 is not Big5 and fails.
+    await link.evaluate((anchor) => anchor.setAttribute("href", "/nib/tx/utf8-body.csv"));
+    const events: FailureEvidenceEvent[] = [];
+    const validate = validationReporter(async (stage, outcome) => {
+      events.push({ stage, outcome });
+    }, new AbortController().signal);
+    const error = await site.readCsv(link, { observedAt: OBSERVED_AT, validate }).then(
+      () => assert.fail("a UTF-8 body must not be read as Big5"),
+      (thrown: unknown) => thrown,
+    );
+    assert.ok(error instanceof SourceTextIntegrityError, String(error));
+    assert.equal(classifyFailure({ error, events, stopped: false }), "source-integrity-failed");
   }));
 
 // A fulfilled 302 under page routing is followed on the real network, so redirect acceptance is checked on the declaration.
