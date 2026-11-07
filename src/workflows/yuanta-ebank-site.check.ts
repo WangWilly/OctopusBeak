@@ -84,6 +84,12 @@ async function withYuantaShell(
           });
         case "/nib/tx/failing.csv":
           return void route.fulfill({ status: 500, contentType: "text/csv", body: "error" });
+        case "/nib/tx/utf8-body.csv":
+          return void route.fulfill({
+            contentType: "text/csv; charset=utf-8",
+            headers: { "content-disposition": "attachment; filename=deposit.csv" },
+            body: Buffer.from("帳號,1\r\n", "utf8"),
+          });
         case "/nib/tx/utf8.csv":
         case "/nib/tx/latin1.csv":
         case "/nib/tx/shiftjis.csv":
@@ -306,6 +312,18 @@ test("a CSV reply carrying the eBank's wrong utf-8 or iso-8859-1 label still dec
       const download = await site.readCsv(link, { observedAt: OBSERVED_AT, validate: async (check) => await check() });
       assert.equal(download.content, "帳號,1\r\n", `${href} is read as the Big5 it carries`);
     }
+    // The label is accepted, never trusted: a body that really is UTF-8 is not Big5 and fails.
+    await link.evaluate((anchor) => anchor.setAttribute("href", "/nib/tx/utf8-body.csv"));
+    const events: FailureEvidenceEvent[] = [];
+    const validate = validationReporter(async (stage, outcome) => {
+      events.push({ stage, outcome });
+    }, new AbortController().signal);
+    const error = await site.readCsv(link, { observedAt: OBSERVED_AT, validate }).then(
+      () => assert.fail("a UTF-8 body must not be read as Big5"),
+      (thrown: unknown) => thrown,
+    );
+    assert.ok(error instanceof SourceTextIntegrityError, String(error));
+    assert.equal(classifyFailure({ error, events, stopped: false }), "source-integrity-failed");
   }));
 
 // A fulfilled 302 under page routing is followed on the real network, so redirect acceptance is checked on the declaration.

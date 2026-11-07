@@ -615,7 +615,7 @@ const timelineResponseSchema = z.object({
 });
 
 /** Whether a card popup opened on an E.SUN host; its replies are declared on that host. */
-export function isEsunCardPopupHost(hostname: string): boolean {
+function isEsunCardPopupHost(hostname: string): boolean {
   return /(?:^|\.)esunbank\.com(?:\.tw)?$/u.test(hostname);
 }
 
@@ -628,7 +628,7 @@ async function openCardPopup(scope: FrameScope, label: string, path: string): Pr
   await scope.withSignal((signal) =>
     popup.waitForURL((url) => url.pathname === path, { timeout: 60_000, signal }));
   // The popup's host names the host its history replies must come from, so it must be E.SUN's own.
-  // The card pages open on iesc.esunbank.com (seen live 2026-11-07), not under esunbank.com.tw.
+  // The card pages open on iesc.esunbank.com, outside esunbank.com.tw.
   if (!isEsunCardPopupHost(new URL(popup.url()).hostname))
     throw new Error("E.SUN card popup opened outside esunbank.com and esunbank.com.tw.");
   return frameScope(popup, scope.signal);

@@ -397,7 +397,7 @@ test("history replies are declared on the host the card popup opened on", () => 
 }));
 
 test("a card popup outside esunbank.com and esunbank.com.tw stops the read", () => withManagedSecret(async () => {
-  for (const popupHost of ["esunbank.com.tw.example", "iesc.esunbank.com.example", "esunbank.co"]) {
+  for (const popupHost of ["esunbank.com.tw.example", "iesc.esunbank.com.example", "esunbank.co", "evilesunbank.com", "xesunbank.com.tw"]) {
     const harness = createContext(createPage({ popupHost }));
     await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
       assert.match(String((error as Error & { cause?: unknown }).cause), /popup opened outside esunbank\.com and esunbank\.com\.tw/u, popupHost);
