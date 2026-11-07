@@ -387,21 +387,24 @@ test("a timeline reply that is not a 200 fails the card on its response status b
 }));
 
 test("history replies are declared on the host the card popup opened on", () => withManagedSecret(async () => {
+  // The live card popup opens on iesc.esunbank.com, outside esunbank.com.tw.
   const harness = createContext(createPage({
-    popupHost: "card.esunbank.com.tw",
-    timelineUrl: ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "card.esunbank.com.tw"),
+    popupHost: "iesc.esunbank.com",
+    timelineUrl: ESUN_TIMELINE_URL.replace("ebank.esunbank.com.tw", "iesc.esunbank.com"),
   }));
   await runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] }));
   assert.equal(harness.committed.length, 1, "replies from the popup's own host are accepted");
 }));
 
-test("a card popup outside esunbank.com.tw stops the read", () => withManagedSecret(async () => {
-  const harness = createContext(createPage({ popupHost: "esunbank.com.tw.example" }));
-  await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
-    assert.match(String((error as Error & { cause?: unknown }).cause), /popup opened outside esunbank\.com\.tw/u);
-    return true;
-  });
-  assert.equal(harness.committed.length, 0);
+test("a card popup outside esunbank.com and esunbank.com.tw stops the read", () => withManagedSecret(async () => {
+  for (const popupHost of ["esunbank.com.tw.example", "iesc.esunbank.com.example", "esunbank.co"]) {
+    const harness = createContext(createPage({ popupHost }));
+    await assert.rejects(runEsun(harness.context, workflowInput({ attachedPreviewProducts: [] })), (error: unknown) => {
+      assert.match(String((error as Error & { cause?: unknown }).cause), /popup opened outside esunbank\.com and esunbank\.com\.tw/u, popupHost);
+      return true;
+    });
+    assert.equal(harness.committed.length, 0);
+  }
 }));
 
 test("a timeline reply from a host other than the card popup's fails as an endpoint check", () => withManagedSecret(async () => {

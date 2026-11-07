@@ -218,7 +218,11 @@ export function yuantaCsvExportResponse(landed: CsvExportRequest): ProviderRespo
       path: url.pathname,
       method: landed.method,
       search: new RegExp(`^${regExpLiteral(url.search)}$`, "u"),
-      charset: { decode: "big5" },
+      // The eBank labels its Big5 CSV exports wrongly: deposit replies say
+      // utf-8 and foreign-currency replies iso-8859-1 (seen live 2026-11-07).
+      // The bytes are Big5, so only those labels are accepted and the body is
+      // still decoded strictly as Big5.
+      charset: { decode: "big5", labels: ["utf-8", "iso-8859-1"] },
     }],
     cacheControl: [],
     providerDate: "optional",
