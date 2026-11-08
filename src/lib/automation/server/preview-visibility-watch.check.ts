@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAutomationSettingsStore, writeAutomationConfigFiles } from "./config-files.ts";
+import { createAutomationSettingsStore } from "./config-files.ts";
 import { watchPreviewVisibility } from "./settings.ts";
 import { credentialStoreForCheck } from "./task-run-check-support.ts";
 
@@ -21,14 +21,18 @@ test("every settings write that changes Preview visibility announces it once, an
     settings.write({ PREVIEW_FEATURES_ENABLED: "true", SYSTEM_TIMEZONE: "Asia/Taipei" });
     assert.equal(changes, 1, "a write that leaves visibility alone announces nothing");
 
-    writeAutomationConfigFiles(settings, { PREVIEW_FEATURES_ENABLED: "false" }, {
-      store: credentialStoreForCheck(join(directory, "credentials.json")),
-      credentials: {},
-    });
+    const credentials = credentialStoreForCheck(join(directory, "credentials.json"));
+    settings.write({ PREVIEW_FEATURES_ENABLED: "false" }, () => credentials.write({}));
     assert.equal(changes, 2, "the settings-and-credentials write announces its change too");
 
-    writeAutomationConfigFiles(settings, { PREVIEW_FEATURES_ENABLED: "true" });
-    assert.equal(changes, 3, "a configuration write without credentials announces its change too");
+    assert.throws(
+      () => settings.write({ PREVIEW_FEATURES_ENABLED: "true" }, () => { throw new Error("credentials refused"); }),
+      /credentials refused/,
+    );
+    assert.equal(changes, 2, "a write rolled back because its credentials failed announces nothing");
+
+    settings.write({ PREVIEW_FEATURES_ENABLED: "true" });
+    assert.equal(changes, 3, "a plain write announces its change");
 
     createAutomationSettingsStore(join(directory, "other-settings.json")).write({ PREVIEW_FEATURES_ENABLED: "false" });
     assert.equal(changes, 3, "a write to another settings file announces nothing");

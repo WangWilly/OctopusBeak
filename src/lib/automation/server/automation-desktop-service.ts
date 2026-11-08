@@ -24,7 +24,6 @@ import {
 } from "./automation-desktop-model.ts";
 import {
   splitAutomationUpdates,
-  writeAutomationConfigFiles,
   type AutomationCredentialStore,
   type AutomationSettingsStore,
 } from "./config-files.ts";
@@ -215,19 +214,10 @@ export function automationSaveCredentials(
         selection.selectedIds.join(",");
     }
   }
-  writeAutomationConfigFiles(
-    settings,
-    nextSettings,
-    Object.keys(split.credentials).length > 0
-      ? {
-        store,
-        credentials: withPreviewDeviceIdentities(
-          { ...store.read(), ...split.credentials },
-          split.credentials,
-        ),
-      }
-      : undefined,
-  );
+  const nextCredentials = Object.keys(split.credentials).length > 0
+    ? withPreviewDeviceIdentities({ ...store.read(), ...split.credentials }, split.credentials)
+    : undefined;
+  settings.write(nextSettings, nextCredentials && (() => store.write(nextCredentials)));
   return { saved: true as const };
 }
 
