@@ -9,7 +9,12 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export function expectedFuses(forgeConfig) {
   const plugin = forgeConfig.plugins?.find((candidate) => candidate.name === "fuses");
   if (!plugin) throw new Error("forge.config.cjs configures no fuses plugin.");
+  // fusesConfig is the plugin's own field; if a Forge upgrade renames it, fail rather than compare nothing.
+  if (!plugin.fusesConfig || typeof plugin.fusesConfig !== "object") {
+    throw new Error("The fuses plugin exposes no fusesConfig; read it the way this Forge version stores it.");
+  }
   const { version: _version, ...fuses } = plugin.fusesConfig;
+  if (Object.keys(fuses).length === 0) throw new Error("forge.config.cjs sets no fuses, so there is nothing to verify.");
   return fuses;
 }
 

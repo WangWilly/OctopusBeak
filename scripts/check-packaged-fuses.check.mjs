@@ -36,3 +36,8 @@ test("a fuse left on, or missing from an older wire, is reported", () => {
 test("a config without the fuses plugin is refused", () => {
   assert.throws(() => expectedFuses({ plugins: [] }), /no fuses plugin/);
 });
+
+test("a plugin whose config cannot be read, or that sets no fuse, is refused instead of passing", () => {
+  assert.throws(() => expectedFuses({ plugins: [{ name: "fuses" }] }), /exposes no fusesConfig/);
+  assert.throws(() => expectedFuses({ plugins: [{ name: "fuses", fusesConfig: { version: "1" } }] }), /sets no fuses/);
+});
