@@ -15,14 +15,17 @@ type LiveSubscription = {
   stopped: boolean;
 };
 
+const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
+
 /**
  * The PGlite worker as one client that outlives its worker. When a worker
- * that had opened the database dies, a new one opens the same data directory:
- * requests in flight fail with the worker's error, later requests reach the
- * new worker, and every live view subscribes again with its view and params.
- * A worker that never opened the database is not restarted, and neither is
- * one that crashes a fourth time within a minute; those failures reach
- * `onError` as before.
+ * that had opened the database dies, it is closed (its thread terminated and
+ * exited) before a new one opens the same data directory, so two PGlite
+ * instances never share it. Requests in flight fail with the worker's error;
+ * requests sent during and after the restart reach the new worker; every live
+ * view subscribes again with its view and params. A worker that never opened
+ * the database is not restarted, and neither is one that crashes a fourth
+ * time within a minute; those failures reach `onError` as before.
  */
 export function superviseWorker(options: Readonly<{
   spawn: () => PGliteViewWorkerClient;
@@ -36,7 +39,10 @@ export function superviseWorker(options: Readonly<{
   let closed = false;
   let failed: Error | undefined;
   let current!: PGliteViewWorkerClient;
-  let becameReady = false;
+  /** Workers being replaced: whatever they still answer, the restart attaches to the next one. */
+  const retired = new WeakSet<PGliteViewWorkerClient>();
+  /** Settles once the generation requests should use is in `current`. */
+  let settled: Promise<void> = Promise.resolve();
   let detach = () => {};
 
   const giveUp = (error: Error) => {
@@ -50,24 +56,41 @@ export function superviseWorker(options: Readonly<{
     }
   };
 
-  const resubscribe = (subscription: LiveSubscription) => {
-    current.subscribe(subscription.view, subscription.params, subscription.onValue, subscription.onError)
-      .then((stop) => {
-        if (subscription.stopped) void stop().catch(() => undefined);
-        else subscription.stop = stop;
-      }, (error: unknown) => {
-        subscriptions.delete(subscription);
-        subscription.onError?.(error instanceof Error ? error : new Error(String(error)));
-      });
+  const unavailable = () => failed ?? new Error("PGlite view worker is closed.");
+  const usable = () => !closed && failed === undefined;
+  const whenCurrent = async () => {
+    await settled;
+    if (!usable()) throw unavailable();
+    return current;
+  };
+
+  /**
+   * Subscribes `subscription` on the current worker. A result from a worker
+   * that is being replaced is ignored: the restart attaches the subscription
+   * to the new worker itself. Rejects only for a failure on a worker that is
+   * not being replaced, after removing the subscription.
+   */
+  const attach = async (subscription: LiveSubscription): Promise<void> => {
+    const generation = await whenCurrent();
+    try {
+      const stop = await generation.subscribe(subscription.view, subscription.params, subscription.onValue, subscription.onError);
+      if (subscription.stopped || closed || retired.has(generation)) {
+        void stop().catch(() => undefined);
+        return;
+      }
+      subscription.stop = stop;
+    } catch (error) {
+      if (subscription.stopped || closed || retired.has(generation)) return;
+      subscriptions.delete(subscription);
+      throw asError(error);
+    }
   };
 
   const start = () => {
     const generation = options.spawn();
     current = generation;
-    becameReady = false;
-    void generation.ready.then(() => {
-      if (current === generation) becameReady = true;
-    }, () => undefined);
+    let becameReady = false;
+    void generation.ready.then(() => { becameReady = true; }, () => undefined);
     detach = generation.onError((error) => {
       if (closed || current !== generation) return;
       detach();
@@ -82,30 +105,31 @@ export function superviseWorker(options: Readonly<{
         return;
       }
       crashes.push(at);
+      retired.add(generation);
       options.onRestart?.(error);
-      start();
-      for (const subscription of subscriptions) resubscribe(subscription);
+      settled = generation.close().then(() => undefined, () => undefined).then(() => {
+        if (closed) return;
+        start();
+        for (const subscription of subscriptions) {
+          void attach(subscription).catch((failure: Error) => subscription.onError?.(failure));
+        }
+      });
     });
   };
   start();
 
-  const unavailable = () => failed ?? new Error("PGlite view worker is closed.");
-  const usable = () => !closed && failed === undefined;
-
   const financial: PGliteFinancialRpcClient = Object.freeze({
-    request: ((operation, args, requestOptions) => (usable()
-      ? current.financial.request(operation, args, requestOptions)
-      : Promise.reject(unavailable()))) as PGliteFinancialRpcClient["request"],
+    request: (async (operation, args, requestOptions) =>
+      (await whenCurrent()).financial.request(operation, args, requestOptions)) as PGliteFinancialRpcClient["request"],
     close: () => {},
   });
 
-  const operationalRequest: PGliteViewWorkerClient["operationalRequest"] = (operation, args) => (usable()
-    ? current.operationalRequest(operation, args)
-    : Promise.reject(unavailable()));
+  const operationalRequest: PGliteViewWorkerClient["operationalRequest"] = async (operation, args) =>
+    (await whenCurrent()).operationalRequest(operation, args);
 
   return {
     get ready() {
-      return current.ready;
+      return whenCurrent().then((generation) => generation.ready);
     },
     operationalProvider: operationalProviderOver(operationalRequest),
     operationalRequest,
@@ -113,8 +137,8 @@ export function superviseWorker(options: Readonly<{
     async subscribe(view, params, onValue, onError) {
       if (!usable()) throw unavailable();
       const subscription: LiveSubscription = { view, params, onValue, ...(onError ? { onError } : {}), stopped: false };
-      subscription.stop = await current.subscribe(view, params, onValue, onError);
       subscriptions.add(subscription);
+      await attach(subscription);
       return async () => {
         if (subscription.stopped) return;
         subscription.stopped = true;
@@ -126,10 +150,12 @@ export function superviseWorker(options: Readonly<{
       errorListeners.add(listener);
       return () => errorListeners.delete(listener);
     },
-    close() {
+    async close() {
       closed = true;
       detach();
+      for (const subscription of subscriptions) subscription.stopped = true;
       subscriptions.clear();
+      await settled;
       return current.close();
     },
   };
