@@ -11,6 +11,8 @@ import type { VerifiedRunInput } from "../lib/automation/server/verified-entry.t
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
+  CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   validateCathayDomesticDepositSyncInputForPGlite,
   type CathayStagedCapturePage,
@@ -1130,10 +1132,6 @@ export async function collectCathayDomesticFinancialRequests(
     options.source.signal,
   );
 
-  const sourceConnectionId =
-    process.env.CATHAY_SOURCE_CONNECTION_REF ?? "cathay-default-source";
-  const identityEpoch =
-    process.env.CATHAY_IDENTITY_EPOCH ?? "cathay-domestic-deposit-v1";
   const bounds: CathayQueryRange = {
     startDate: period.startDate,
     endDate: period.endDate,
@@ -1184,8 +1182,8 @@ export async function collectCathayDomesticFinancialRequests(
   >;
   try {
     validatedSync = validateCathayDomesticDepositSyncInputForPGlite({
-      sourceConnectionId,
-      identityEpoch,
+      sourceConnectionId: CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
+      identityEpoch: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
       authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
       stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
       syncState: { cursor: null },

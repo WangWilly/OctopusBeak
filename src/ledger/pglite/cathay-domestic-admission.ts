@@ -13,6 +13,14 @@ export type { ExactDecimal } from "../canonical/exact-decimal-lexeme.ts";
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit" as const;
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY =
   "cathay/domestic-deposit/v1" as const;
+/**
+ * The source connection and identity epoch every Cathay domestic deposit is
+ * admitted under. They are part of the contract: a new epoch means the old
+ * contract was proven wrong and its scope purged, which a code change does,
+ * never a runtime setting.
+ */
+export const CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION = "cathay-default-source" as const;
+export const CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH = "cathay-domestic-deposit-v1" as const;
 
 export const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -91,7 +99,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
   {
     rawResponse: CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
     sourceConnectionId: "synthetic-cathay-connection",
-    identityEpoch: "cathay-domestic-deposit-v1",
+    identityEpoch: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
     accountNo: "SYNTHETIC-ACCOUNT-001",
     currency: "TWD",
     authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,

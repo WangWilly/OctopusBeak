@@ -12,6 +12,11 @@ import {
   cathayQueryPeriod,
   collectCathayDomesticFinancialRequests,
 } from "./cathay-statements.ts";
+import {
+  CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
+  CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
+} from "../ledger/pglite/cathay-domestic-admission.ts";
+import { cathayOpaqueIdentity } from "../ledger/pglite/cathay-domestic-adapter.ts";
 
 const dateScopeTelemetry = classifyCathayDateScopeMismatch(
   { startDate: "2025-01-01", endDate: "2025-12-31" },
@@ -451,6 +456,38 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);
 assert.equal(directApiCollection.captureCount, 2);
 assert.equal(directApiCollection.rowCount, 0);
+
+{
+  // A variable in the shell that launched the App must not move Cathay accounts to a new identity.
+  const shell = { CATHAY_SOURCE_CONNECTION_REF: "shell-connection", CATHAY_IDENTITY_EPOCH: "shell-epoch" };
+  const before = Object.fromEntries(Object.keys(shell).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, shell);
+  try {
+    const collection = await collectCathayDomesticFinancialRequests(
+      injectedClientPage as never,
+      domesticPeriod,
+      [],
+      { jwtToken: "synthetic", customerId: "synthetic", idType: "id" },
+      {
+        source: uncancelledSource,
+        client: {
+          fetchDomesticAccounts: async () => [directFirstAccount],
+          fetchTransferDetailsRaw: async (_session, accountNo) => emptyTransferResponse(accountNo),
+        },
+      },
+    );
+    const committed = JSON.stringify(collection.requests);
+    assert.ok(committed.includes(cathayOpaqueIdentity(CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION)), "the contract's source connection");
+    assert.ok(committed.includes(cathayOpaqueIdentity(CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH)), "the contract's identity epoch");
+    assert.ok(!committed.includes(cathayOpaqueIdentity("shell-connection")), "not the shell's source connection");
+    assert.ok(!committed.includes(cathayOpaqueIdentity("shell-epoch")), "not the shell's identity epoch");
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 const TRANSFER_DETAIL_URL =
   "https://www.cathaybk.com.tw/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_TransferDetail";
