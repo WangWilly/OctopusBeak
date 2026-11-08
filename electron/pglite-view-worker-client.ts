@@ -21,8 +21,12 @@ type WorkerPort = Pick<Worker, "on" | "off" | "postMessage" | "terminate">;
 export const PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 
 export type PGliteViewWorkerClient = Pick<ViewPortClient, "subscribe"> & {
+  /** Resolves once the worker has opened the database; rejects if it never does. */
+  ready: Promise<void>;
   /** Typed operational commands and queries over the same worker/database. */
   operationalProvider: PGliteOperationalRpcClient["provider"];
+  /** The raw operational request, for a caller that routes operations itself. */
+  operationalRequest: PGliteOperationalRpcClient["request"];
   /** Named canonical financial query/command registry over the same worker/database. */
   financial: PGliteFinancialRpcClient;
   onError(listener: (error: Error) => void): () => void;
@@ -127,7 +131,9 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
 
   let closePromise: Promise<number> | undefined;
   return {
+    ready,
     operationalProvider: operational.provider,
+    operationalRequest: operational.request,
     financial,
     subscribe: async (view, params, onValue, onError) => {
       if (closed) throw new Error("PGlite view worker is closed.");

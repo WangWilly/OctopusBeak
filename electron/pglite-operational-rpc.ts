@@ -464,12 +464,6 @@ export function createPGliteOperationalRpcClient(
     });
   };
 
-  const domains: Record<string, Record<string, (...args: readonly unknown[]) => Promise<unknown>>> = {};
-  for (const operation of PGLITE_OPERATIONAL_OPERATIONS) {
-    const [domain, method] = operationParts(operation);
-    (domains[domain] ??= {})[method] = (...args) => request(operation, args);
-  }
-
   const close = (error = new Error("PGlite operational worker is closed.")): void => {
     if (closed) return;
     closed = true;
@@ -478,10 +472,20 @@ export function createPGliteOperationalRpcClient(
     pending.clear();
   };
 
-  return {
-    request,
-    // The contract table names every port method, so the derived object is each port in full.
-    provider: Object.freeze(domains) as unknown as PGliteOperationalDomains,
-    close,
-  };
+  return { request, provider: operationalProviderOver(request), close };
+}
+
+/**
+ * Every operational port method, each sending its operation through `request`.
+ * The contract table names every port method, so the derived object is each port in full.
+ */
+export function operationalProviderOver(
+  request: (operation: PGliteOperationalOperation, args: readonly unknown[]) => Promise<unknown>,
+): PGliteOperationalDomains {
+  const domains: Record<string, Record<string, (...args: readonly unknown[]) => Promise<unknown>>> = {};
+  for (const operation of PGLITE_OPERATIONAL_OPERATIONS) {
+    const [domain, method] = operationParts(operation);
+    (domains[domain] ??= {})[method] = (...args) => request(operation, args);
+  }
+  return Object.freeze(domains) as unknown as PGliteOperationalDomains;
 }
