@@ -19,7 +19,11 @@ The other directions in the tree do not form a clean order today. `src/ledger` u
 1. From every SvelteKit route file, following runtime imports, the renderer reaches no module under a `server/` folder, no file under `electron/`, no Node built-in and no main-process package. The main-process packages are `electron`, Playwright, PGlite, onnxruntime, tesseract.js, sherpa-onnx and mpg123-decoder.
 2. No production module under `src/` loads the `electron` package.
 
-Runtime imports are read with the TypeScript parser, so `import type`, all-type named imports and type-only re-exports are erased. Static, side-effect, re-export and dynamic `import()` forms are followed. `.svelte` files are read from their `<script>` blocks. A violation prints the import chain from the route.
+Runtime imports are read with the TypeScript parser. `import type` and `export type` count as erased everywhere. A named import whose names are all types (`import { type A } from "x"`) counts as erased only in a `.svelte` file. Under the repo's `verbatimModuleSyntax`, a `.ts` file keeps it as `import "x"`, so the module still loads.
+
+The check follows static, side-effect, re-export, `export *`, `import()`, `require()` and `new URL(…, import.meta.url)` references. It refuses three things instead of skipping them: a computed `import()` or `require()`, an `import.meta.glob` that can match code, and a path that names no file. Without that, a whole subtree could pass unchecked.
+
+`.svelte` files are read from their `<script>` blocks. The entries are the route files, without `*.server.ts` and `+server.ts`, plus any client hooks. A violation prints the import chain from the route.
 
 **Shared contracts live outside `server/`.** The Error report's types and note limit moved to `src/lib/automation/error-report-contract.ts`, and the server module imports them from there.
 

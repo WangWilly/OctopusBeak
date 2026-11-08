@@ -1,10 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 import {
   electronImportsInSrc,
+  moduleReferences,
+  REPO_ROOT,
   rendererViolations,
   runtimeSpecifiers,
 } from "./dependency-direction.mjs";
+
+function fakeTree(files) {
+  return {
+    read: (file) => files[file] ?? "",
+    isFile: (path) => Object.keys(files).some((file) => join(REPO_ROOT, file) === path),
+  };
+}
 
 const describe = (violation) =>
   `${violation.chain.join(" > ")} imports ${violation.specifier} (${violation.refusal})`;
@@ -19,7 +29,7 @@ test("no src/ module loads the electron package", () => {
   assert.deepEqual(electronImportsInSrc(), []);
 });
 
-test("type-only imports are erased, every runtime import form is followed", () => {
+test("import type is erased everywhere; a named import of only types is erased only by Svelte", () => {
   const source = `
     import type { A } from "./types-a.ts";
     import { type B, type C } from "./types-b.ts";
@@ -27,18 +37,41 @@ test("type-only imports are erased, every runtime import form is followed", () =
     import { e, type F } from "./mixed.ts";
     import "./side-effect.ts";
     export { g } from "./re-export.ts";
+    export * from "./star.ts";
     const lazy = () => import("./lazy.ts");
+    const legacy = require("./legacy.cjs");
+    const worker = new Worker(new URL("./worker.ts", import.meta.url));
+    const logo = new URL("./logo.webp", import.meta.url);
   `;
   assert.deepEqual(runtimeSpecifiers("src/lib/x.ts", source), [
+    "./types-b.ts",
     "./mixed.ts",
     "./side-effect.ts",
     "./re-export.ts",
+    "./star.ts",
     "./lazy.ts",
-  ]);
+    "./legacy.cjs",
+    "./worker.ts",
+  ], "verbatimModuleSyntax keeps import { type B } from a .ts file as import \"./types-b.ts\"");
   assert.deepEqual(
-    runtimeSpecifiers("src/lib/X.svelte", `<script lang="ts">import { h } from "./h.ts";</script><p>{h}</p>`),
+    runtimeSpecifiers(
+      "src/lib/X.svelte",
+      `<script lang="ts">import { type B } from "./types-b.ts"; import { h } from "./h.ts";</script><p>{h}</p>`,
+    ),
     ["./h.ts"],
   );
+});
+
+test("forms the walk cannot follow are refused, an asset glob is not", () => {
+  const unchecked = (source) => moduleReferences("src/lib/x.ts", source)
+    .filter((reference) => reference.unchecked).map((reference) => reference.unchecked);
+  assert.deepEqual(unchecked("const all = import.meta.glob('./server/*.ts', { eager: true });"), [
+    "an import.meta.glob that can match code",
+  ]);
+  assert.deepEqual(unchecked("const logos = import.meta.glob(['./logos/*.webp', './logos/*.svg']);"), []);
+  assert.deepEqual(unchecked("const load = (name) => import(`./server/${name}.ts`);"), ["a computed import()"]);
+  assert.deepEqual(unchecked("const x = require(name);"), ["a computed require()"]);
+  assert.deepEqual(unchecked("new Worker(new URL(path, import.meta.url));"), ["a computed new URL(…, import.meta.url)"]);
 });
 
 test("a server module two hops from a route is reported with its chain", () => {
@@ -47,13 +80,28 @@ test("a server module two hops from a route is reported with its chain", () => {
     "src/lib/feature/view.ts": `import { load } from "./server/load.ts"; export const view = load;`,
     "src/lib/feature/server/load.ts": `import { readFileSync } from "node:fs"; export const load = readFileSync;`,
   };
-  const { violations } = rendererViolations({
-    entries: ["src/routes/+page.svelte"],
-    read: (file) => files[file] ?? "",
-  });
+  const { violations } = rendererViolations({ entries: ["src/routes/+page.svelte"], ...fakeTree(files) });
   assert.deepEqual(violations.map(describe), [
     "src/routes/+page.svelte > src/lib/feature/view.ts imports ./server/load.ts (a server module)",
   ]);
+});
+
+test("a .ts module importing only types from a server module still brings it into the renderer", () => {
+  const files = {
+    "src/routes/+page.svelte": `<script lang="ts">import { view } from "$lib/feature/view.ts";</script>`,
+    "src/lib/feature/view.ts": `import { type Load } from "./server/load.ts"; export const view = 1;`,
+    "src/lib/feature/server/load.ts": `export type Load = number;`,
+  };
+  const { violations } = rendererViolations({ entries: ["src/routes/+page.svelte"], ...fakeTree(files) });
+  assert.deepEqual(violations.map(describe), [
+    "src/routes/+page.svelte > src/lib/feature/view.ts imports ./server/load.ts (a server module)",
+  ]);
+});
+
+test("a path that names no file is refused instead of skipping its subtree", () => {
+  const files = { "src/routes/+page.svelte": `<script lang="ts">import { x } from "$lib/x";</script>` };
+  const { violations } = rendererViolations({ entries: ["src/routes/+page.svelte"], ...fakeTree(files) });
+  assert.deepEqual(violations.map(describe), ["src/routes/+page.svelte imports $lib/x (a path that names no file)"]);
 });
 
 test("a src/ module importing electron is reported", () => {
