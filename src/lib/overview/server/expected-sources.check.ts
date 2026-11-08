@@ -14,7 +14,7 @@ const sources = configuredOverviewSources({
   LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit",
   LIBRETTO_CLOUD_YUANTA_TRADE_ENABLED: true,
   LIBRETTO_CLOUD_EINVOICE_ENABLED: true,
-}, {});
+});
 
 assert.deepEqual(sources.map((source) => source.sourceId), [
   "fubon:deposit",
@@ -31,7 +31,7 @@ const yuantaFundOnly = configuredOverviewSources({
   ...disabledSettings,
   LIBRETTO_CLOUD_YUANTA_ENABLED: true,
   LIBRETTO_CLOUD_YUANTA_STATEMENT_TYPES: "fund",
-}, {});
+});
 assert.deepEqual(yuantaFundOnly, [{
   sourceId: "yuanta:fund",
   integrationNamespace: "yuanta-fund",
@@ -42,7 +42,7 @@ assert.deepEqual(yuantaFundOnly, [{
 const cathayWithoutSelection = configuredOverviewSources({
   ...disabledSettings,
   LIBRETTO_CLOUD_CATHAY_ENABLED: true,
-}, {});
+});
 assert.deepEqual(cathayWithoutSelection, [{
   sourceId: "cathay",
   integrationNamespace: "cathay",

@@ -277,7 +277,7 @@ test("a Preview source's device identity is created with its sign-in details, re
   automationSaveCredentials(credentials, settings, { [NEWNEWBANK_KEY.password]: "changed", [NEWNEWBANK_KEY.deviceId]: "0".repeat(64) });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], created, "a later save keeps it, and the renderer cannot set it");
   const input = appWorkflowRegistration("preview-newnewbank-deposit")?.inputFromEnvironment(
-    automationConfigEnv({ baseEnv: { PREVIEW_FEATURES_ENABLED: "true" }, settings: settings.read(), credentials: credentials.read() })) as { credentials: Record<string, string> };
+    automationConfigEnv({ baseEnv: {}, settings: { ...settings.read(), PREVIEW_FEATURES_ENABLED: true }, credentials: credentials.read() })) as { credentials: Record<string, string> };
   assert.equal(input.credentials[NEWNEWBANK_KEY.deviceId], created);
   eraseSignInDetails({ credentials, userDataDirectory: workDirectory });
   assert.equal(credentials.read()[NEWNEWBANK_KEY.deviceId], undefined);

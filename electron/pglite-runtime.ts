@@ -74,7 +74,11 @@ export function createPGliteOperationalRuntime(
     },
     isCommitAdmissible: ({ taskRunId }) => collectionScopeAdmitsCommit(
       options.activeRun(taskRunId),
-      () => automationConfigEnv({ settings: options.settings.read(), credentials: options.credentials.read() }),
+      () => automationConfigEnv({
+        baseEnv: process.env,
+        settings: options.settings.read(),
+        credentials: options.credentials.read(),
+      }),
     ),
   });
   const providerWithWorkflow: PGliteOperationalProvider = Object.freeze({
