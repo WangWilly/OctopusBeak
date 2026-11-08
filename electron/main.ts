@@ -264,6 +264,21 @@ function guardWindowNavigation(window: BrowserWindow, rendererUrl: string) {
   });
 }
 
+/** `executeJavaScript` never settles once its window is gone, so the window's end rejects it. */
+function evaluateUntilGone<T>(window: BrowserWindow, script: string): Promise<T> {
+  if (window.isDestroyed()) return Promise.reject(new Error("The window is gone."));
+  const { webContents } = window;
+  return new Promise<T>((resolve, reject) => {
+    const gone = () => reject(new Error("The window went away during storage migration."));
+    window.once("closed", gone);
+    webContents.once("render-process-gone", gone);
+    webContents.executeJavaScript(script).then(resolve, reject).finally(() => {
+      window.removeListener("closed", gone);
+      if (!webContents.isDestroyed()) webContents.removeListener("render-process-gone", gone);
+    });
+  });
+}
+
 async function createWindow(rendererUrl: string, preloadPath: string) {
   if (automationRuntimeFatalHandled) throw new Error("Automation runtime is unavailable.");
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -280,6 +295,8 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
       minWidth: 980,
       minHeight: 700,
       title: "OctopusBeak",
+      // Shown once storage migration has finished, so it cannot be closed mid-migration.
+      show: false,
       ...integratedTitleBarOptions(),
       webPreferences: {
         contextIsolation: true,
@@ -301,9 +318,11 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
         appOriginPageUrl: STORAGE_MIGRATION_URL,
         page: {
           load: (url) => window.loadURL(url),
-          evaluate: (script) => window.webContents.executeJavaScript(script),
+          evaluate: (script) => evaluateUntilGone(window, script),
         },
       }).catch((error: unknown) => console.error("renderer-storage-migration-failed", error));
+      if (window.isDestroyed()) throw new Error("The window closed before the renderer loaded.");
+      window.show();
       await window.loadURL(`${rendererUrl}#/overview`);
       if (automationRuntimeFatalHandled) {
         window.destroy();
