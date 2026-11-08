@@ -1,4 +1,4 @@
-import { DEFAULT_SYSTEM_TIMEZONE, zonedDateTimeToUtc } from "../../time/timezone.ts";
+import { zonedDateTimeToUtc } from "../../time/timezone.ts";
 
 function dateInTimeZone(date: Date, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -11,10 +11,8 @@ function dateInTimeZone(date: Date, timeZone: string) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-export function businessDayUtcRange(
-  now = new Date(),
-  timeZone = process.env.SYSTEM_TIMEZONE ?? process.env.AUTOMATION_BUSINESS_TIMEZONE ?? DEFAULT_SYSTEM_TIMEZONE,
-) {
+/** The UTC bounds of `now`'s business day in `timeZone`, which callers take from settings. */
+export function businessDayUtcRange(now: Date, timeZone: string) {
   const businessDate = dateInTimeZone(now, timeZone);
   const endLocal = new Date(`${businessDate}T00:00:00.000Z`);
   endLocal.setUTCDate(endLocal.getUTCDate() + 1);

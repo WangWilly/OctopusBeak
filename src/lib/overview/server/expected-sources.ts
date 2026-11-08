@@ -17,11 +17,8 @@ import type { AutomationSettingsFile } from "../../automation/server/config-file
  * expectation, which preserves the setup/awaiting state without inventing
  * gaps for every product the provider could support.
  */
-export function configuredOverviewSources(
-  settings: AutomationSettingsFile,
-  env: Record<string, string | undefined> = process.env,
-): CanonicalOverviewExpectedSource[] {
-  const enabledGroups = automationGroupEnabledStatus(settings, env);
+export function configuredOverviewSources(settings: AutomationSettingsFile): CanonicalOverviewExpectedSource[] {
+  const enabledGroups = automationGroupEnabledStatus(settings);
   return VERIFIED_SOURCES.flatMap((source) => {
     if (source.overview === false || enabledGroups[source.id] !== true) return [];
     const group = statementSelectionGroup(source);

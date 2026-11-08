@@ -16,15 +16,10 @@ export function automationBusinessTimezone(settings: AutomationSettingsFile) {
   return systemSettings(settings).systemTimezone;
 }
 
-export function automationGroupEnabledStatus(
-  settings: AutomationSettingsFile,
-  env: Record<string, string | undefined> = process.env,
-) {
+/** Whether each bank group is on, from settings.json alone; a shell variable never turns one on. */
+export function automationGroupEnabledStatus(settings: AutomationSettingsFile) {
   return Object.fromEntries(
-    AUTOMATION_CREDENTIAL_GROUPS.map((group) => [
-      group.id,
-      envFlagEnabled(settings[group.enabledKey] ?? env[group.enabledKey]),
-    ]),
+    AUTOMATION_CREDENTIAL_GROUPS.map((group) => [group.id, envFlagEnabled(settings[group.enabledKey])]),
   );
 }
 

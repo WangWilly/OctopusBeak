@@ -37,7 +37,6 @@ import {
   type ProviderReply,
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
@@ -309,12 +308,6 @@ export function attachEsunIssuerStatementPeriods(
   });
 }
 
-function optionalEsunManagedSecret(): string | undefined {
-  const secret =
-    process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
-  return secret || undefined;
-}
-
 /**
  * Derive opaque E.SUN source and portfolio identity keys in memory from the
  * normalized login scope and the device-managed HMAC secret. Neither login
@@ -322,7 +315,7 @@ function optionalEsunManagedSecret(): string | undefined {
  */
 export function deriveEsunCanonicalHumanAttestation(
   credentials: EsunCredentials,
-  managedSecret = optionalEsunManagedSecret() ?? "",
+  managedSecret: string,
 ):
   | {
       sourceConnectionKey: string;

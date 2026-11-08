@@ -43,7 +43,6 @@ import {
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
@@ -242,16 +241,6 @@ export function deriveYuantaCanonicalHumanAttestation(
     identityEpochKey: YUANTA_CREDIT_CARD_IDENTITY_EPOCH,
     humanAttestedAccountKey,
   };
-}
-
-/** Resolve the generic application-managed identity secret without exposing it. */
-export function yuantaCanonicalHumanAttestationFromEnvironment(
-  credentials: YuantaStableLoginCredentials,
-): YuantaCanonicalHumanAttestation | undefined {
-  const managedSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  return managedSecret
-    ? deriveYuantaCanonicalHumanAttestation(credentials, managedSecret)
-    : undefined;
 }
 
 function cleanText(value: string | null | undefined): string {

@@ -71,11 +71,7 @@ function currentCredentialState(store: AutomationCredentialStore, settings: Auto
   for (const key of AUTOMATION_CREDENTIAL_KEYS) {
     const settingValue =
       typeof settings[key] === "string" ? settings[key].trim() : "";
-    const storedValue =
-      credentials[key]?.trim() ||
-      settingValue ||
-      process.env[key]?.trim() ||
-      "";
+    const storedValue = credentials[key]?.trim() || settingValue || "";
     if (CERTIFICATE_FILE_CREDENTIAL_KEYS.has(key)) {
       if (storedValue) fileNames[key] = certificateFilename(storedValue);
       const validation = storedValue
@@ -160,7 +156,7 @@ export async function loadAutomationCoreSnapshot(
 ): Promise<AutomationCoreSnapshot> {
   const { credentialGroups: offeredGroups, enabledGroups } = offeredAutomationSources(settings);
   const { snapshot: runtime, activeTaskIds } = live;
-  const range = businessDayUtcRange(undefined, automationBusinessTimezone(settings));
+  const range = businessDayUtcRange(new Date(), automationBusinessTimezone(settings));
   const [latestRuns, todayRunTaskIds, notices, resetRequiredNamespaces] = await Promise.all([
     provider.automation.latestTaskRuns(),
     provider.automation.todayTaskRunIds({ startUtc: range.startUtc, endUtc: range.endUtc }),

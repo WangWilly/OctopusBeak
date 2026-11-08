@@ -199,7 +199,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
       createPGliteFinancialLocalPort(this.registry),
       ({ taskRunId }) => collectionScopeAdmitsCommit(
         taskRunId === this.run.taskRunId ? this.run : null,
-        () => automationConfigEnv({ settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
+        () => automationConfigEnv({ baseEnv: process.env, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
       ),
     );
     const client = createPGliteFinancialRpcClient(ports[0], undefined, {
