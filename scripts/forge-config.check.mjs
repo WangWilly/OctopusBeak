@@ -127,6 +127,6 @@ test("Forge flips the fuses that let the packaged binary run as Node or under a 
   assert.notEqual(
     fuses.fusesConfig[FuseV1Options.GrantFileProtocolExtraPrivileges],
     false,
-    "the renderer still loads from file://",
+    "file:// localStorage stays readable so preferences can move to app://",
   );
 });

@@ -2,8 +2,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
-import { app, autoUpdater, BrowserWindow, dialog, Notification, shell } from "electron";
+import { app, autoUpdater, BrowserWindow, dialog, Notification, protocol, shell } from "electron";
 import {
   createAutomationRuntime,
   type AutomationRuntime,
@@ -73,6 +72,13 @@ import { previewStructureReports } from "../src/lib/preview-sources/structure-re
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import { integratedTitleBarOptions } from "./window-options.ts";
 import { isRendererDocument } from "./ipc-sender.ts";
+import {
+  APP_SCHEME_PRIVILEGES,
+  RENDERER_URL,
+  serveRenderer,
+  STORAGE_MIGRATION_URL,
+} from "./app-protocol.ts";
+import { migrateRendererStorage } from "./renderer-storage-migration.ts";
 import { automationRuntimeFatalDetails } from "../src/lib/automation/runtime-invariants.ts";
 import {
   createPGliteOperationalRuntime,
@@ -241,10 +247,6 @@ function projectRoot() {
   return path.join(__dirname, "..");
 }
 
-function rendererEntry(appRoot: string) {
-  return pathToFileURL(path.join(appRoot, "build", "index.html")).href;
-}
-
 function guardWindowNavigation(window: BrowserWindow, rendererUrl: string) {
   window.webContents.on("will-navigate", (event, targetUrl) => {
     if (!isRendererDocument(targetUrl, rendererUrl)) event.preventDefault();
@@ -294,6 +296,14 @@ async function createWindow(rendererUrl: string, preloadPath: string) {
     guardWindowNavigation(window, rendererUrl);
 
     try {
+      await migrateRendererStorage({
+        userData: app.getPath("userData"),
+        appOriginPageUrl: STORAGE_MIGRATION_URL,
+        page: {
+          load: (url) => window.loadURL(url),
+          evaluate: (script) => window.webContents.executeJavaScript(script),
+        },
+      }).catch((error: unknown) => console.error("renderer-storage-migration-failed", error));
       await window.loadURL(`${rendererUrl}#/overview`);
       if (automationRuntimeFatalHandled) {
         window.destroy();
@@ -580,7 +590,8 @@ async function start() {
     deleteAllPreviewData,
     deleteAllFinancialData,
   });
-  const rendererUrl = rendererEntry(appRoot);
+  const rendererUrl = RENDERER_URL;
+  serveRenderer(protocol, path.join(appRoot, "build"));
   ipcRegistration = registerOctopusBeakIpc({
     automation,
     settings,
@@ -634,6 +645,7 @@ async function start() {
   await createWindow(currentRendererUrl, currentPreloadPath);
 }
 
+protocol.registerSchemesAsPrivileged([APP_SCHEME_PRIVILEGES]);
 app.whenReady().then(start).catch(showStartupError);
 
 app.on("activate", () => {

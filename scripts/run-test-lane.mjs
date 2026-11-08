@@ -35,6 +35,7 @@ export const HARD_PERFORMANCE_FILES = Object.freeze([
 export const ELECTRON_CDP_FILES = Object.freeze([
   "electron/automation-runtime-cdp.check.ts",
   "electron/pglite-route-cdp.check.ts",
+  "electron/renderer-storage-origin-cdp.check.ts",
 ]);
 
 function walk(directory) {
