@@ -130,6 +130,21 @@ jobs:
       - name: Validate Welcome assets
         run: npm run check:welcome-assets
 
+      # Electron 43 downloads its binary on the first require("electron"); fetch
+      # it here, with retries, as pr-tests.yml does, before the tests and probes.
+      - name: Install Electron
+        run: |
+          for attempt in 1 2 3; do
+            if npx --no install-electron; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "Electron download failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
+
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
