@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import type { Page } from "playwright";
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   validateCathayDomesticDepositSyncInputForPGlite,
@@ -79,7 +80,7 @@ const FOREIGN_CAPTURE = { ...CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1, account
 
 const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
   sourceConnectionId: "synthetic-cathay-connection",
-  identityEpoch: "cathay-domestic-deposit-v1",
+  identityEpoch: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
   syncState: { cursor: null },

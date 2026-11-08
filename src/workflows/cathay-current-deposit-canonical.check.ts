@@ -21,6 +21,8 @@ import {
 import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
+  CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
+  CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
   validateCathayDomesticDepositSyncInputForPGlite,
 } from "../ledger/pglite/cathay-domestic-admission.ts";
@@ -57,8 +59,8 @@ const domesticRows = parseCathayCurrentDepositBalanceSnapshot({
 const domesticCaptures = buildCathayCurrentDepositBalanceCaptures(
   domesticRows,
   {
-    sourceConnectionKey: "cathay-default-source",
-    identityEpochKey: "cathay-domestic-deposit-v1",
+    sourceConnectionKey: CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
+    identityEpochKey: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
     subjectDigest: "sha256:cathay-subject-v1",
     observedAt,
     scopeDate: "2026-09-08",
@@ -70,8 +72,8 @@ assert.match(domesticCapture.captureId, /^[0-9a-f-]{36}$/u);
 assert.equal(domesticCapture.authorityRoute, CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE);
 assert.deepEqual(domesticCapture.identity, {
   integrationNamespace: "cathay",
-  sourceConnectionKey: "cathay-default-source",
-  identityEpochKey: "cathay-domestic-deposit-v1",
+  sourceConnectionKey: CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
+  identityEpochKey: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   stream: "domestic-deposit",
   sourceAccountKey: "123456789012",
 });
