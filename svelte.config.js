@@ -1,5 +1,6 @@
 import adapter from "@sveltejs/adapter-static";
 import { readFileSync, writeFileSync } from "node:fs";
+import { withRendererCsp } from "./scripts/renderer-csp.mjs";
 
 function electronStaticAdapter() {
   const base = adapter({
@@ -13,10 +14,12 @@ function electronStaticAdapter() {
       const fallback = "build/index.html";
       writeFileSync(
         fallback,
-        readFileSync(fallback, "utf8")
-          .replaceAll('href="/', 'href="./')
-          .replaceAll('src="/', 'src="./')
-          .replaceAll('import("/', 'import("./'),
+        withRendererCsp(
+          readFileSync(fallback, "utf8")
+            .replaceAll('href="/', 'href="./')
+            .replaceAll('src="/', 'src="./')
+            .replaceAll('import("/', 'import("./'),
+        ),
       );
     },
   };

@@ -19,7 +19,6 @@ function ensureDataRoot(userData, defaultSettings) {
 function buildDesktopEnv({
   userData,
   appRoot,
-  electronPath = process.execPath,
 }) {
   const env = {
     ...process.env,
@@ -27,7 +26,6 @@ function buildDesktopEnv({
     OCTOPUSBEAK_DESKTOP: "1",
     OCTOPUSBEAK_APP_ROOT: appRoot,
     OCTOPUSBEAK_USER_DATA: userData,
-    OCTOPUSBEAK_NODE_PATH: electronPath,
   };
   const playwrightBrowsersPath = path.join(
     appRoot,
