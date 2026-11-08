@@ -21,6 +21,7 @@ import {
   applyAutomationCredentialState,
   CERTIFICATE_FILE_CREDENTIAL_KEYS,
   loadAutomationCoreSnapshot,
+  readAutomationCredentialState,
 } from "./automation-desktop-model.ts";
 import {
   splitAutomationUpdates,
@@ -55,10 +56,7 @@ import {
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
 import { projectAutomationBlock } from "../../../../electron/automation-block.ts";
-import {
-  createAutomationCredentialStateCache,
-  type AutomationCredentialStateSource,
-} from "../../../../electron/automation-credential-state.ts";
+import { createAutomationCredentialStateCache } from "../../../../electron/automation-credential-state.ts";
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;
@@ -93,10 +91,9 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   provider: AutomationPersistenceProvider;
   dataVersions: Pick<DataVersionStore, "snapshot" | "markStale">;
   collection: CollectionControl;
+  /** Read behind the service's credential state cache, and written by credential saves. */
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
-  /** Main-process credential reader behind the service's credential state cache. */
-  readCredentialState(): AutomationCredentialStateSource | Promise<AutomationCredentialStateSource>;
   deviceRegistration: Readonly<{
     status(source: DeviceRegistrationSource): DeviceRegistrationStatus;
     start(source: DeviceRegistrationSource): Promise<DeviceRegistrationStep>;
@@ -109,7 +106,7 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   /** Receives the sources of a sync the person started, once they have all ended. */
   onManualCollectionFinished?: (results: CollectionResult[]) => void;
   eraseSignInDetails: typeof eraseSignInDetails;
-  userDataDirectory(): string;
+  userDataDirectory: string;
   chooseFile(owner: Owner, options: CertificateFileChooserOptions): Promise<FileChooserResult>;
   openExternal(url: string): Promise<void>;
   appVersion(): string;
@@ -260,7 +257,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     }
   };
   const credentials = createAutomationCredentialStateCache(
-    deps.readCredentialState,
+    () => readAutomationCredentialState(deps.credentials, deps.settings.read()),
     (event) => log.warn("automation-credential-state-read-failed", event),
   );
   void credentials.prewarm().catch(() => {
@@ -410,7 +407,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
         cancelRegistrations: () => deps.deviceRegistration.cancelAll(),
         erase: () => deps.eraseSignInDetails({
           credentials: deps.credentials,
-          userDataDirectory: deps.userDataDirectory(),
+          userDataDirectory: deps.userDataDirectory,
         }),
         refresh: () => credentials.refresh(),
       },

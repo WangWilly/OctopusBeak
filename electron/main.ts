@@ -66,7 +66,6 @@ import {
   createAutomationDesktopService,
   type AutomationDesktopService,
 } from "../src/lib/automation/server/automation-desktop-service.ts";
-import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
 import { createDeviceRegistrationHost } from "../src/lib/automation/server/device-registration-host.ts";
 import { eraseSignInDetails } from "../src/lib/automation/server/sign-in-erasure.ts";
 import { previewStructureReports } from "../src/lib/preview-sources/structure-report.ts";
@@ -475,7 +474,6 @@ async function start() {
     collection,
     credentials,
     settings: automationSettings,
-    readCredentialState: () => readAutomationCredentialState(credentials, automationSettings.read()),
     deviceRegistration: createDeviceRegistrationHost({
       tdcc: createTdccRegistrationService({
         store: createTdccSecretStore(credentials),
@@ -497,7 +495,7 @@ async function start() {
     notificationTarget: { take: takeNotificationTarget },
     onManualCollectionFinished: (results) => notifyCollection("manual", results),
     eraseSignInDetails,
-    userDataDirectory: () => app.getPath("userData"),
+    userDataDirectory: userData,
     chooseFile: (owner, options) => owner
       ? dialog.showOpenDialog(owner, options)
       : dialog.showOpenDialog(options),

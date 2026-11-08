@@ -13,6 +13,7 @@ import {
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { StartAutomationTaskOptions } from "./runner.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+import type { AutomationCredentialStore } from "./config-files.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
 
 const REGISTRATION_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -38,12 +39,10 @@ const emptyProvider = {
   },
 } as unknown as AutomationPersistenceProvider;
 
-const readableCredentials = () => ({
-  status: {},
-  fileNames: {},
-  invalidFileKeys: [],
-  invalidFileReasons: {},
-});
+/** The credential store the service reads its credential state from, counting each read. */
+function countingReads(store: AutomationCredentialStore, onRead: () => void): AutomationCredentialStore {
+  return { ...store, read: () => { onRead(); return store.read(); } };
+}
 
 function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) {
   const calls: Array<[string, ...unknown[]]> = [];
@@ -79,12 +78,8 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
       pauseSchedules: () => () => {},
       whileStopped: (work) => work(),
     },
-    credentials: credentialStoreForCheck(join(directory, "credentials.json")),
+    credentials: countingReads(credentialStoreForCheck(join(directory, "credentials.json")), () => { credentialReads += 1; }),
     settings: settingsStoreForCheck(join(directory, "settings.json")),
-    readCredentialState: () => {
-      credentialReads += 1;
-      return readableCredentials();
-    },
     deviceRegistration: {
       status: (source) => {
         calls.push(["registration.status", source]);
@@ -110,7 +105,7 @@ function harness(overrides: Partial<AutomationDesktopServiceDeps<string>> = {}) 
     eraseSignInDetails: () => {
       calls.push(["erase"]);
     },
-    userDataDirectory: () => directory,
+    userDataDirectory: directory,
     chooseFile: async (owner, options) => {
       calls.push(["chooseFile", owner, options.title]);
       return { canceled: true, filePaths: [] };
@@ -142,8 +137,11 @@ test("the credential state cache is read once at construction, before any block 
 
 test("an unreadable credential state fails the details block and degrades every other block", async () => {
   const { service } = harness({
-    readCredentialState: () => {
-      throw new Error("keychain locked");
+    credentials: {
+      ...credentialStoreForCheck(join(directory, "credentials.json")),
+      read: () => {
+        throw new Error("keychain locked");
+      },
     },
   });
   await assert.rejects(service.loadBlock("details"), { message: "無法讀取登入資料" });
