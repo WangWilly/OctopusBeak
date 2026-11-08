@@ -48,7 +48,7 @@ export type TaskRunPlanDependencies = Readonly<{
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
   userDataDirectory: string;
-  /** Defaults to the App settings and credentials over `process.env`. */
+  /** Defaults to `process.env` with every settings and credential key taken from the stores only. */
   launchEnv?: NodeJS.ProcessEnv;
   /** Defaults to the App settings file. */
   launchVerificationSettings?: AutomationSettingsFile;

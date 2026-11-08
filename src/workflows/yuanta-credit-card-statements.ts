@@ -244,16 +244,6 @@ export function deriveYuantaCanonicalHumanAttestation(
   };
 }
 
-/** Resolve the generic application-managed identity secret without exposing it. */
-export function yuantaCanonicalHumanAttestationFromEnvironment(
-  credentials: YuantaStableLoginCredentials,
-): YuantaCanonicalHumanAttestation | undefined {
-  const managedSecret = process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  return managedSecret
-    ? deriveYuantaCanonicalHumanAttestation(credentials, managedSecret)
-    : undefined;
-}
-
 function cleanText(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/\u00a0/g, " ")

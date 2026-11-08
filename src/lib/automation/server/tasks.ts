@@ -145,10 +145,7 @@ export const AUTOMATION_MANAGED_SECRET_KEYS = [
   "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY",
 ] as const;
 
-/**
- * First-run settings. Each Verified source is written disabled rather than
- * left unset, because a setting takes precedence over the environment.
- */
+/** First-run settings. Each Verified source is written disabled, so settings.json names every source. */
 export const DEFAULT_AUTOMATION_SETTINGS: Readonly<Record<string, string | boolean>> = {
   AUTOMATION_BUSINESS_TIMEZONE: "Asia/Taipei",
   ...Object.fromEntries(VERIFIED_SOURCES.map((source) => [source.enabledKey, false])),

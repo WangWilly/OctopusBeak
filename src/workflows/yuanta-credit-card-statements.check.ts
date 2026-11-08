@@ -66,7 +66,6 @@ const {
   loadYuantaCreditCardSummaryPage,
   toYuantaCanonicalCreditCardSourceRow,
   submitCreditCardMonthOptions,
-  yuantaCanonicalHumanAttestationFromEnvironment,
   yuantaCreditCardCaptureBuilderOptions,
   yuantaCreditCardTerminalPagesFromHtml,
   runYuantaCreditCardStatements,
@@ -464,22 +463,6 @@ assert.doesNotMatch(
   JSON.stringify(identity),
   /user-001|main-account|synthetic-managed-secret/iu,
 );
-const identitySecretKey = "LIBRETTO_CLOUD_FUBON_CARD_IDENTITY_FINGERPRINT_KEY";
-const previousIdentitySecret = process.env[identitySecretKey];
-process.env[identitySecretKey] = "synthetic-managed-secret";
-try {
-  assert.deepEqual(
-    yuantaCanonicalHumanAttestationFromEnvironment({
-      yuanta_user_id: "USER-001",
-      yuanta_account: "MAIN-ACCOUNT",
-    }),
-    identity,
-  );
-} finally {
-  if (previousIdentitySecret === undefined) delete process.env[identitySecretKey];
-  else process.env[identitySecretKey] = previousIdentitySecret;
-}
-
 const periods = [
   "115/01",
   "115/02",

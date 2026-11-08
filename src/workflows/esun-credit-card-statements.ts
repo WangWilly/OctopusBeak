@@ -309,12 +309,6 @@ export function attachEsunIssuerStatementPeriods(
   });
 }
 
-function optionalEsunManagedSecret(): string | undefined {
-  const secret =
-    process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY]?.trim();
-  return secret || undefined;
-}
-
 /**
  * Derive opaque E.SUN source and portfolio identity keys in memory from the
  * normalized login scope and the device-managed HMAC secret. Neither login
@@ -322,7 +316,7 @@ function optionalEsunManagedSecret(): string | undefined {
  */
 export function deriveEsunCanonicalHumanAttestation(
   credentials: EsunCredentials,
-  managedSecret = optionalEsunManagedSecret() ?? "",
+  managedSecret: string,
 ):
   | {
       sourceConnectionKey: string;

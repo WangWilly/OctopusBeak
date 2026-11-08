@@ -33,7 +33,6 @@ import {
 import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_ROUTE,
 } from "../ledger/canonical/esun-credit-card-human-attestation-contract.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import {
   esunCanonicalSpineCapture,
   esunNeutralCreditCardCapture,
@@ -817,24 +816,6 @@ assert.throws(
   },
   "raw E.SUN card numbers must be rejected without leaking the value",
 );
-
-const previousManagedSecret =
-  process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-try {
-  process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] = managedSecret;
-  assert.deepEqual(
-    deriveEsunCanonicalHumanAttestation(credentials),
-    identity,
-    "the config alias must resolve the managed identity secret from the environment",
-  );
-} finally {
-  if (previousManagedSecret === undefined) {
-    delete process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY];
-  } else {
-    process.env[CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY] =
-      previousManagedSecret;
-  }
-}
 
 test("an unexpected E.SUN post-login page is classified by kind, never by its text", () => {
   assert.deepEqual(classifyEsunPostLoginPage("請輸入圖形驗證碼"), ["captcha"]);
