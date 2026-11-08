@@ -43,7 +43,6 @@ import {
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,

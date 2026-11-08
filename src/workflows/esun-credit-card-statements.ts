@@ -37,7 +37,6 @@ import {
   type ProviderReply,
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
-import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "../lib/automation/server/config-files.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
