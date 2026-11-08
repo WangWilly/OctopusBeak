@@ -64,11 +64,14 @@ function harness(options: {
   now?: () => number;
   autoReady?: boolean;
   generation?: (index: number) => { holdClose?: boolean; holdSubscribe?: boolean };
+  /** Throws instead of spawning this generation. */
+  spawnThrows?: (index: number) => boolean;
 } = {}) {
   const generations: ReturnType<typeof fakeGeneration>[] = [];
   const restarts: Error[] = [];
   const supervised = superviseWorker({
     spawn: () => {
+      if (options.spawnThrows?.(generations.length)) throw new Error("Worker could not start: EMFILE");
       const generation = fakeGeneration(generations.length, options.generation?.(generations.length));
       generations.push(generation);
       if (options.autoReady ?? true) generation.becomeReady();
@@ -236,4 +239,32 @@ test("close during a restart starts no new worker", async () => {
   await closing;
   await settle();
   assert.equal(generations.length, 1);
+});
+
+test("a subscribe made while a restart is pending attaches once to the new worker", async () => {
+  const { supervised, generations } = harness({ generation: (index) => ({ holdClose: index === 0 }) });
+  await settle();
+  generations[0]!.die();
+  const values: unknown[] = [];
+  const subscribing = supervised.subscribe("spending", {}, (value) => values.push(value));
+  generations[0]!.releaseClose();
+  const stop = await subscribing;
+  await settle();
+  assert.equal(generations[1]!.subscriptions.length, 1, "one live view on the new worker, not two");
+  generations[1]!.subscriptions[0]!.onValue("once");
+  assert.deepEqual(values, ["once"]);
+  await stop();
+  assert.equal(generations[1]!.subscriptions[0]!.stopped, true, "unsubscribing stops the only attachment");
+});
+
+test("a replacement worker that cannot be spawned gives up instead of wedging", async () => {
+  const { supervised, generations, failures } = harness({ spawnThrows: (index) => index === 1 });
+  await settle();
+  generations[0]!.die();
+  await settle();
+  assert.equal(failures.length, 1, "the IPC bridge hears the worker is unavailable");
+  assert.match(failures[0]!.message, /EMFILE/);
+  await assert.rejects(supervised.financial.request("financial.overview" as never, [] as never), /EMFILE/);
+  await assert.rejects(supervised.subscribe("spending", {}, () => {}), /EMFILE/);
+  await supervised.close();
 });

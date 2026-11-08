@@ -12,6 +12,8 @@ type LiveSubscription = {
   onValue(value: unknown): void;
   onError?(error: Error): void;
   stop?: () => Promise<void>;
+  /** The worker this subscription was last sent to; each worker receives it once. */
+  attachedTo?: PGliteViewWorkerClient;
   stopped: boolean;
 };
 
@@ -68,10 +70,14 @@ export function superviseWorker(options: Readonly<{
    * Subscribes `subscription` on the current worker. A result from a worker
    * that is being replaced is ignored: the restart attaches the subscription
    * to the new worker itself. Rejects only for a failure on a worker that is
-   * not being replaced, after removing the subscription.
+   * not being replaced, after removing the subscription. A subscription
+   * made while a restart is pending is reached by both its own call and the
+   * restart; whichever comes second finds it already sent and returns.
    */
   const attach = async (subscription: LiveSubscription): Promise<void> => {
     const generation = await whenCurrent();
+    if (subscription.attachedTo === generation) return;
+    subscription.attachedTo = generation;
     try {
       const stop = await generation.subscribe(subscription.view, subscription.params, subscription.onValue, subscription.onError);
       if (subscription.stopped || closed || retired.has(generation)) {
@@ -109,7 +115,12 @@ export function superviseWorker(options: Readonly<{
       options.onRestart?.(error);
       settled = generation.close().then(() => undefined, () => undefined).then(() => {
         if (closed) return;
-        start();
+        try {
+          start();
+        } catch (failure) {
+          giveUp(asError(failure));
+          return;
+        }
         for (const subscription of subscriptions) {
           void attach(subscription).catch((failure: Error) => subscription.onError?.(failure));
         }
@@ -138,7 +149,12 @@ export function superviseWorker(options: Readonly<{
       if (!usable()) throw unavailable();
       const subscription: LiveSubscription = { view, params, onValue, ...(onError ? { onError } : {}), stopped: false };
       subscriptions.add(subscription);
-      await attach(subscription);
+      try {
+        await attach(subscription);
+      } catch (error) {
+        subscriptions.delete(subscription);
+        throw error;
+      }
       return async () => {
         if (subscription.stopped) return;
         subscription.stopped = true;
