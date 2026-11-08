@@ -48,6 +48,23 @@ jobs:
       - name: Check pinned GitHub Actions
         run: npm run check:actions-pinned
 
+      # Electron 43 has no postinstall: it downloads its binary from GitHub
+      # Releases on the first require("electron"), mid-test and without retry.
+      # Fetch it here so a transient release-host error is retried, and a
+      # lasting one fails this step instead of every Electron check.
+      - name: Install Electron
+        run: |
+          for attempt in 1 2 3; do
+            if npx --no install-electron; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "Electron download failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
+
       - name: Install Playwright Chromium
         run: npx playwright install chromium --with-deps
 
