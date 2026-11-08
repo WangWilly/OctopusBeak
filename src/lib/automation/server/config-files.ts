@@ -60,7 +60,12 @@ export type AutomationSettingsStore = Readonly<{
   /** Absolute path of settings.json. */
   path: string;
   read(): AutomationSettingsFile;
-  write(settings: AutomationSettingsFile): void;
+  /**
+   * Writes settings.json, then `alongside` (the credentials that belong with
+   * these settings). If `alongside` throws, the previous settings.json is
+   * restored and nothing is announced, so the pair lands together or not at all.
+   */
+  write(settings: AutomationSettingsFile, alongside?: () => void): void;
   /** Hears every write through this store, so no writer has to remember to announce one. */
   subscribe(listener: (settings: AutomationSettingsFile) => void): () => void;
 }>;
@@ -219,12 +224,6 @@ export function createAutomationCredentialStore(
 
 type SettingsListener = (settings: AutomationSettingsFile) => void;
 
-const settingsListeners = new WeakMap<AutomationSettingsStore, Set<SettingsListener>>();
-
-function announceSettingsWritten(store: AutomationSettingsStore, settings: AutomationSettingsFile) {
-  for (const listener of settingsListeners.get(store) ?? []) listener(settings);
-}
-
 /**
  * The App's one settings.json. Reading never writes: main runs the Statement
  * Selection id migration once at startup, so the PGlite worker, which reads
@@ -232,20 +231,35 @@ function announceSettingsWritten(store: AutomationSettingsStore, settings: Autom
  */
 export function createAutomationSettingsStore(path: string): AutomationSettingsStore {
   const listeners = new Set<SettingsListener>();
-  const store: AutomationSettingsStore = Object.freeze({
+  return Object.freeze({
     path,
     read: () => readAutomationSettingsFile(path),
-    write(settings: AutomationSettingsFile) {
+    write(settings: AutomationSettingsFile, alongside?: () => void) {
+      const previous = alongside && existsSync(path) ? readFileSync(path, "utf8") : null;
       writeAutomationSettingsFile(path, settings);
-      announceSettingsWritten(store, settings);
+      if (alongside) {
+        try {
+          alongside();
+        } catch (writeError) {
+          try {
+            if (previous === null) rmSync(path, { force: true });
+            else atomicWrite(path, previous);
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [writeError, rollbackError],
+              "Credential write failed and automation settings rollback also failed.",
+            );
+          }
+          throw writeError;
+        }
+      }
+      for (const listener of listeners) listener(settings);
     },
     subscribe(listener: SettingsListener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
   });
-  settingsListeners.set(store, listeners);
-  return store;
 }
 
 function validManagedFingerprintSecret(value: string | undefined) {
@@ -291,42 +305,6 @@ export function ensureAutomationManagedSecrets({
     codec,
   );
   return { created: true as const };
-}
-
-export function writeAutomationConfigFiles(
-  store: AutomationSettingsStore,
-  settings: AutomationSettingsFile,
-  update?: Readonly<{ store: AutomationCredentialStore; credentials: AutomationCredentialsFile }>,
-) {
-  if (update === undefined) {
-    store.write(settings);
-    return;
-  }
-
-  const nextSettingsText = settingsFileText(settings);
-  const nextCredentialsText = credentialsFileText(update.credentials, update.store.codec);
-  const previousSettingsText = existsSync(store.path)
-    ? readFileSync(store.path, "utf8")
-    : null;
-  atomicWrite(store.path, nextSettingsText);
-  try {
-    atomicWrite(update.store.path, nextCredentialsText);
-  } catch (writeError) {
-    try {
-      if (previousSettingsText === null) {
-        rmSync(store.path, { force: true });
-      } else {
-        atomicWrite(store.path, previousSettingsText);
-      }
-    } catch (rollbackError) {
-      throw new AggregateError(
-        [writeError, rollbackError],
-        "Credential write failed and automation settings rollback also failed.",
-      );
-    }
-    throw writeError;
-  }
-  announceSettingsWritten(store, settings);
 }
 
 export function migrateAutomationCredentialsFileEncryption(path: string, codec: AutomationCredentialCodec) {
