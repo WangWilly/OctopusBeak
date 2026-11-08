@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { visibleText, withRenderer } from "./dialog-render-check-support.ts";
-import { MAX_NOTE_LENGTH } from "./server/error-report.ts";
+import { MAX_NOTE_LENGTH } from "./error-report-contract.ts";
 
 const DIALOG = "/src/lib/automation/ErrorReportDialog.svelte";
 const target = { taskId: "cathay", code: "authentication-timeout", stage: "authentication" };

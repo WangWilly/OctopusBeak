@@ -23,7 +23,7 @@ import { displayScaleZoomFactor } from "../src/lib/settings/display-zoom.ts";
 import { watchPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import type { AutomationSettingsStore } from "../src/lib/automation/server/config-files.ts";
 import type { AppUpdateRestartResult, AppUpdateView } from "../src/lib/settings/app-updates.ts";
-import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "../src/lib/automation/server/error-report.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "../src/lib/automation/error-report-contract.ts";
 import {
   isFiniteDisplayScale,
   trafficLightPositionForScale,

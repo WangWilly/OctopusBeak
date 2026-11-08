@@ -19,7 +19,7 @@ import type {
 import type { SystemSettingsDto } from "$lib/settings/system-settings.ts";
 import type { UsagePing } from "$lib/settings/usage-statistics.ts";
 import type { AppUpdateRestartResult, AppUpdateView } from "$lib/settings/app-updates.ts";
-import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/server/error-report.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "$lib/automation/error-report-contract.ts";
 import type {
   DataReadOptions,
   DataInvalidationEvent,

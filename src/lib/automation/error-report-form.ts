@@ -1,4 +1,4 @@
-import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "./server/error-report.ts";
+import type { ErrorReportInput, ErrorReportPayload, ErrorReportResult } from "./error-report-contract.ts";
 import type { AutomationTaskRow } from "./types.ts";
 
 /** ADR 0081: which failure the person is reporting; the note and email come from the form. */
