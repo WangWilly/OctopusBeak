@@ -35,6 +35,18 @@ test("the policy refuses everything the renderer does not need", () => {
   assert.doesNotMatch(policy, /https?:/);
 });
 
+test("an inline script with attributes is hashed too, a script with src is not", () => {
+  const html = withRendererCsp(`<!doctype html><html><head></head><body>
+<script type="module" data-sveltekit-hydrate="x">start();</script>
+<script src="./_app/entry.js"></script>
+<script>boot();</script>
+</body></html>`);
+  const policy = /content="([^"]+)"/.exec(html)?.[1] ?? "";
+  assert.ok(policy.includes(sha("start();")), "a bootstrap with attributes still runs under the policy");
+  assert.ok(policy.includes(sha("boot();")));
+  assert.ok(!policy.includes(sha("")), "an external script contributes no hash");
+});
+
 test("a page that already declares a policy or has no head is refused", () => {
   assert.throws(() => withRendererCsp(withRendererCsp(page)), /already declares/);
   assert.throws(() => withRendererCsp("<html><body></body></html>"), /no <head>/);

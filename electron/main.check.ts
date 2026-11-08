@@ -8,7 +8,7 @@ assert.match(source, /createPGliteOperationalRuntime\(/u);
 assert.doesNotMatch(source, /process\.chdir/u, "main opens every App file at an absolute path, so no thread depends on the cwd");
 assert.match(
   source,
-  /const automationSettings = createAutomationSettingsStore\(path\.join\(userData, AUTOMATION_SETTINGS_FILE\)\);\s*migrateAutomationEnvFile\(\{ envPath: path\.join\(userData, "\.env"\), settings: automationSettings, credentials \}\);/u,
+  /const automationSettings = createAutomationSettingsStore\(path\.join\(userData, AUTOMATION_SETTINGS_FILE\)\);\s*migrateAutomationEnvFile\(\{ envPath: path\.join\(userData, "\.env"\), settings: automationSettings, credentials \}\);\s*migrateStatementSelectionIds\(automationSettings\.path\);/u,
   "the legacy .env in user data migrates into the one settings store before anything reads settings",
 );
 assert.match(
