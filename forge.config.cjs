@@ -47,7 +47,8 @@ module.exports = {
   },
   plugins: [
     // The packaged binary refuses to start as plain Node or under a debugger.
-    // GrantFileProtocolExtraPrivileges stays on while the renderer loads from file://.
+    // GrantFileProtocolExtraPrivileges stays on: without it a file:// page cannot
+    // read localStorage, and the move to app:// carries preferences out of file://.
     new FusesPlugin({
       version: FuseVersion.V1,
       [FuseV1Options.RunAsNode]: false,

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { RENDERER_URL as RENDERER } from "./app-protocol.ts";
 import { isRendererDocument, trustedIpcMain, UntrustedIpcSenderError } from "./ipc-sender.ts";
-
-const RENDERER = "file:///Applications/OctopusBeak.app/Contents/Resources/app/build/index.html";
 
 function fakeIpc() {
   const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
@@ -31,7 +30,12 @@ test("the renderer document matches on every hash route but not another file or 
   assert.equal(isRendererDocument("file:///tmp/evil/index.html", RENDERER), false);
   assert.equal(isRendererDocument("https://example.com/build/index.html", RENDERER), false);
   assert.equal(isRendererDocument(`https://example.com${new URL(RENDERER).pathname}`, RENDERER), false);
-  assert.equal(isRendererDocument(RENDERER.replace("file://", "file://evil"), RENDERER), false);
+  assert.equal(isRendererDocument("app://evil/index.html", RENDERER), false);
+  assert.equal(
+    isRendererDocument("file:///Applications/OctopusBeak.app/Contents/Resources/app/build/index.html", RENDERER),
+    false,
+    "the old file:// renderer page is no longer the App",
+  );
   assert.equal(isRendererDocument("not a url", RENDERER), false);
 });
 
