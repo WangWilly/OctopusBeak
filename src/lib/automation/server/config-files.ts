@@ -7,7 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { parseEnvText } from "./env-file.ts";
 import {
@@ -107,7 +107,8 @@ function readJsonRecord(path: string) {
 
 function atomicWrite(path: string, text: string, mode = 0o600) {
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.tmp-${process.pid}`;
+  // Worker threads share the pid, so each write gets its own temporary file.
+  const tempPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   writeFileSync(tempPath, text, { encoding: "utf8", mode });
   chmodSync(tempPath, mode);
   renameSync(tempPath, path);
@@ -225,18 +226,15 @@ function announceSettingsWritten(store: AutomationSettingsStore, settings: Autom
 }
 
 /**
- * The App's one settings.json. `read` applies the Statement Selection id
- * migration first, so every reader sees current ids.
+ * The App's one settings.json. Reading never writes: main runs the Statement
+ * Selection id migration once at startup, so the PGlite worker, which reads
+ * the same file, is never a second writer.
  */
 export function createAutomationSettingsStore(path: string): AutomationSettingsStore {
   const listeners = new Set<SettingsListener>();
   const store: AutomationSettingsStore = Object.freeze({
     path,
-    read() {
-      const migrated = migrateStatementSelectionIds(path);
-      if (migrated) announceSettingsWritten(store, migrated);
-      return readAutomationSettingsFile(path);
-    },
+    read: () => readAutomationSettingsFile(path),
     write(settings: AutomationSettingsFile) {
       writeAutomationSettingsFile(path, settings);
       announceSettingsWritten(store, settings);

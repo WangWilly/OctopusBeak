@@ -32,7 +32,7 @@ import { createSpendingPageActions, type SpendingPageActions } from "../src/ledg
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import {
-  createAutomationSettingsStore,
+  readAutomationSettingsFile,
   type AutomationSettingsFile,
 } from "../src/lib/automation/server/config-files.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
@@ -145,9 +145,9 @@ if (parentPort) {
     if (typeof given.settingsPath !== "string" || !given.settingsPath) {
       throw new TypeError("PGlite view worker requires an explicit settings path.");
     }
-    const settings = createAutomationSettingsStore(given.settingsPath);
+    const settingsPath = given.settingsPath;
     return startPGliteViewWorker(port, financialWorkerViewSource, {
-      readSettings: () => settings.read(),
+      readSettings: () => readAutomationSettingsFile(settingsPath),
       dataDir: configuredDataDir,
     });
   }).catch((error: unknown) => {

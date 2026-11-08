@@ -12,6 +12,7 @@ import {
   AUTOMATION_SETTINGS_FILE,
   createAutomationSettingsStore,
   migrateAutomationEnvFile,
+  migrateStatementSelectionIds,
 } from "../src/lib/automation/server/config-files.ts";
 import { DEFAULT_AUTOMATION_SETTINGS } from "../src/lib/automation/server/tasks.ts";
 import { startBrowserStateCleanup } from "../src/lib/automation/browser-state-retention.ts";
@@ -396,6 +397,7 @@ async function start() {
   const credentials = openSafeStorageCredentialStore(path.join(userData, AUTOMATION_CREDENTIALS_FILE));
   const automationSettings = createAutomationSettingsStore(path.join(userData, AUTOMATION_SETTINGS_FILE));
   migrateAutomationEnvFile({ envPath: path.join(userData, ".env"), settings: automationSettings, credentials });
+  migrateStatementSelectionIds(automationSettings.path);
   const operationalRuntime = createPGliteOperationalRuntime({
     dataDir: path.join(userData, "data", "pglite"),
     activeRun: (taskRunId) => automationRuntime?.activeRun(taskRunId) ?? null,

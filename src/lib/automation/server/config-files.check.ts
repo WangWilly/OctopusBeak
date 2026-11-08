@@ -192,11 +192,15 @@ try {
     assert.deepEqual(otherHeard, [], "another store hears none of its writes");
     assert.equal(existsSync(join(process.cwd(), "store-settings.json")), false, "the store never writes relative to the cwd");
     writeAutomationSettingsFile(store.path, { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts" });
-    assert.deepEqual(store.read(), { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit" }, "a read migrates renamed ids");
-    assert.deepEqual(heard.at(-1), { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "deposit" }, "a migrating read announces its write");
+    const before = readFileSync(store.path, "utf8");
     const heardBefore = heard.length;
-    store.read();
-    assert.equal(heard.length, heardBefore, "a read with nothing to migrate announces nothing");
+    assert.deepEqual(
+      store.read(),
+      { LIBRETTO_CLOUD_LINEBANK_STATEMENT_TYPES: "accounts" },
+      "a read returns the file as it is; main migrates renamed ids once at startup",
+    );
+    assert.equal(readFileSync(store.path, "utf8"), before, "a read never writes, so the PGlite worker is no second writer");
+    assert.equal(heard.length, heardBefore, "a read announces nothing");
     unsubscribe();
     store.write({});
     assert.equal(heard.length, heardBefore, "an unsubscribed listener hears no later write");
