@@ -18,6 +18,7 @@ import {
   createPGliteViewWorkerClient,
   type PGliteViewWorkerClient,
 } from "./pglite-view-worker-client.ts";
+import { superviseWorker } from "./pglite-worker-supervisor.ts";
 
 export type PGliteOperationalProvider = PGliteOperationalDomains & {
   /** Same-worker overview query used to derive exchange-rate coverage. */
@@ -58,11 +59,14 @@ export function createPGliteOperationalRuntime(
   if (!options.dataDir || typeof options.dataDir !== "string") {
     throw new TypeError("PGlite operational runtime requires an explicit data directory.");
   }
-  const worker = options.worker ?? createPGliteViewWorkerClient(
-    new Worker(options.workerPath ?? join(__dirname, "pglite-view-worker.cjs"), {
-      workerData: { dataDir: options.dataDir, settingsPath: options.settings.path },
-    }),
-  );
+  const worker = options.worker ?? superviseWorker({
+    spawn: () => createPGliteViewWorkerClient(
+      new Worker(options.workerPath ?? join(__dirname, "pglite-view-worker.cjs"), {
+        workerData: { dataDir: options.dataDir, settingsPath: options.settings.path },
+      }),
+    ),
+    onRestart: (error) => console.error("pglite-worker-restarted", error.message),
+  });
   const childRpc = createPGliteChildRpcServer({
     provider: {
       operational: worker.operationalProvider,
