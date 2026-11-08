@@ -9,7 +9,7 @@ import {
   sendErrorReport,
   type ErrorReportStatus,
 } from "./error-report-form.ts";
-import type { ErrorReportInput, ErrorReportPayload } from "./server/error-report.ts";
+import type { ErrorReportInput, ErrorReportPayload } from "./error-report-contract.ts";
 import type { AutomationTaskRow } from "./types.ts";
 
 const target = { taskId: "cathay", code: "authentication-timeout", stage: "authentication" };

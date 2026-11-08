@@ -41,8 +41,8 @@ import {
   forgetStaleFailureDiagnostic,
   InvalidErrorReport,
   sendErrorReport,
-  type ErrorReportInput,
 } from "../src/lib/automation/server/error-report.ts";
+import type { ErrorReportInput } from "../src/lib/automation/error-report-contract.ts";
 import { createBeforeQuitHandler, quitOnTerminationSignals } from "./automation-shutdown.ts";
 import { applyOctopusBeakAppIdentity } from "./app-identity.ts";
 import { openSafeStorageCredentialStore } from "./credential-codec.ts";

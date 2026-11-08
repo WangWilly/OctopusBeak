@@ -3,7 +3,7 @@
   import Modal from "$lib/shared-shell/components/Modal.svelte";
   import type { OctopusBeakApi } from "$lib/desktop/api.ts";
   import { t } from "$lib/i18n/i18n.ts";
-  import { MAX_NOTE_LENGTH, type ErrorReportPayload } from "./server/error-report.ts";
+  import { MAX_NOTE_LENGTH, type ErrorReportPayload } from "./error-report-contract.ts";
   import {
     closeAllowed,
     createPreviewRefresher,
