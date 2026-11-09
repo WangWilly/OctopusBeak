@@ -2145,5 +2145,5 @@ test("unbilled purchases labelled 美金 hand off to a billed USD period without
   ));
 
 assert.doesNotMatch(source, /executePGliteWorkflowRun|requirePGliteChildRpcClientFromEnv/u);
-assert.match(source, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
+assert.match(source, /stageCanonicalCreditCards\(/u);
 assert.doesNotMatch(source, /executeCanonicalFinancialCommitRun|pgliteWorkflowEnabled/);

@@ -55,7 +55,7 @@ assert.doesNotMatch(
 );
 assert.match(workflowSource, /error instanceof SourceTextIntegrityError/u);
 assert.match(workflowSource, /context\.text\.assertIntact/u);
-assert.match(workflowSource, /PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND/);
+assert.match(workflowSource, /stageCanonicalCreditCards\(/u);
 assert.match(workflowSource, /CURRENT_CREDIT_CARD_BALANCE_STAGING/);
 const {
   buildYuantaCanonicalCreditCardCaptures,

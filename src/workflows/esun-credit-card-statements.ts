@@ -2,7 +2,6 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import { z } from "zod";
 import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
-import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   buildEsunCanonicalCreditCardCapture as buildCanonicalEsunCreditCardCapture,
   esunCanonicalSpineCapture,
@@ -26,10 +25,9 @@ import {
   CURRENT_CREDIT_CARD_BALANCE_STAGING,
   issuerAggregateMatching,
   readCurrentStateSnapshot,
-  stageCurrentStateSnapshot,
-  type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   type ProviderBodyAcquisition,
@@ -482,14 +480,10 @@ export function esunCurrentUsedCreditFromSummaryResponse(
   }];
 }
 
-type EsunCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
-  capture: EsunCreditCardValidatedCapture;
-}>;
-
 const esunCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   ProviderBodyAcquisition<"json">,
   EsunCurrentUsedCreditSnapshot,
-  EsunCurrentCreditCapture,
+  CurrentUsedCreditCapture<EsunCreditCardValidatedCapture>,
   "required",
   CreditCardCurrentBalanceCaptureInput
 > = {
@@ -1238,22 +1232,17 @@ export async function stageEsunCreditCard(
   });
   context.signal.throwIfAborted();
 
-  const cardRequest = creditCardCommandRequestFromCanonicalCapture(
-    esunCanonicalSpineCapture(canonicalCapture),
-    esunNeutralCreditCardCapture(canonicalCapture),
+  await stageCanonicalCreditCards(
+    product,
+    [{
+      capture: canonicalCapture,
+      request: creditCardCommandRequestFromCanonicalCapture(
+        esunCanonicalSpineCapture(canonicalCapture),
+        esunNeutralCreditCardCapture(canonicalCapture),
+      ),
+    }],
+    currentUsedCredit && { snapshot: esunCurrentUsedCreditSnapshot, rows: currentUsedCredit },
   );
-  product.stage({
-    product: "credit-card",
-    itemKey: canonicalCapture.captureId,
-    command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: cardRequest },
-  });
-  if (currentUsedCredit) {
-    const { items } = await stageCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, currentUsedCredit, {
-      captures: [{ capture: canonicalCapture, cardIdentity: cardRequest.identity }],
-      product,
-    });
-    product.stage(...items);
-  }
 
   return { count: rows.length };
 }
