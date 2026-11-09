@@ -358,7 +358,6 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
     collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
       await readSinopacDepositSource(source, depositInput, context, product),
       depositInput,
-      context,
       product,
       source.readCurrentBalances,
     ),

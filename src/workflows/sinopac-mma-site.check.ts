@@ -3,9 +3,8 @@ import { after, before, test } from "node:test";
 import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { classifyFailure } from "../lib/automation/failure-classification.ts";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
-import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { sinopacCardTransport } from "./sinopac-credit-card.ts";
@@ -105,15 +104,18 @@ const context = (signal = new AbortController().signal) =>
 
 const reader = providerResponseReader({ ...context(), validate: WITHOUT_PRODUCT_VALIDATION });
 
-const product = {
+const product = productCollectionHandle({
+  ...context(),
   event: async () => undefined,
-  validate: async (check: () => unknown) => await check(),
-} as unknown as ProductCollectionHandle;
+  stage: () => assert.fail("the deposit source stages nothing"),
+  reportActivity: async () => undefined,
+  collectionPeriod: () => assert.fail("the deposit source takes no collection period"),
+});
 
 test("the transaction route opens by goto from another signed-in page and reads the account list its load requests", () =>
   withMma(async (page, received) => {
     const site = sinopacMmaSite(page, context());
-    const accounts = await sinopacDepositSource(site, context() as unknown as WorkflowContext, product).listAccounts();
+    const accounts = await sinopacDepositSource(site, product).listAccounts();
     assert.deepEqual(accounts, ACCOUNTS[0]!.SubInfo);
     assert.equal(new URL(page.url()).pathname, "/mma/bank/transdetail/mma_transdetail.aspx");
     assert.equal(await page.locator("#StartDate").count(), 1, "the route waited for its form");
@@ -125,7 +127,7 @@ test("the transaction route opens by goto from another signed-in page and reads 
 test("the transaction query posts the selected account and window to ws_transdetailMerge and reads its envelope", () =>
   withMma(async (page, received) => {
     const site = sinopacMmaSite(page, context());
-    const source = sinopacDepositSource(site, context() as unknown as WorkflowContext, product);
+    const source = sinopacDepositSource(site, product);
     const [account] = await source.listAccounts();
     const reply = await source.queryTransactions(account!, { startDate: "2026/08/01", endDate: "2026/08/31" }, "2026/09/09");
     assert.deepEqual(reply, TRANSACTIONS[0]);
@@ -142,7 +144,7 @@ test("the transaction query posts the selected account and window to ws_transdet
 test("a transaction reply that is not a 200 JSON reply is refused before its body is decoded", () =>
   withMma(async (page) => {
     const site = sinopacMmaSite(page, context());
-    const source = sinopacDepositSource(site, context() as unknown as WorkflowContext, product);
+    const source = sinopacDepositSource(site, product);
     const [account] = await source.listAccounts();
     const error = await source.queryTransactions(account!, { startDate: "2026/08/01", endDate: "2026/08/31" }, "2026/09/09")
       .then(() => assert.fail("the error page was read"), (rejection: unknown) => rejection);
