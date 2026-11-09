@@ -95,6 +95,8 @@ async function attachedRun(
     context: {
       previewWrite: { write: async (input) => { writes.push(input); return previewReceipt(input); } },
       signal: new AbortController().signal,
+      now: () => NOW,
+      text: strictSourceText,
       event: async () => undefined,
     },
     source: ATTACHED_PREVIEW_PRODUCTS.hncb,

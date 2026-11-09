@@ -8,6 +8,7 @@ import type {
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionInterruptedError } from "../automation/product-collection.ts";
 import { ProviderResponseCheckError } from "../automation/provider-response-check.ts";
+import { strictSourceText } from "../automation/source-text.ts";
 import { createWorkflowExecutor, type WorkflowDefinition } from "../automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "./attached-products.ts";
 import {
@@ -51,6 +52,8 @@ function harness(collectors: PreviewProductCollectors, selected: readonly Previe
     collectors,
     write: async (write) => { writes.push(write.product); return previewReceipt({ sourceId: "s", institution: "bank-017", ...write }); },
     signal,
+    now: () => AT,
+    text: strictSourceText,
     event: async (_stage, _outcome, code) => { events.push(code); },
     ...(assertSession ? { assertSession } : {}),
   });
@@ -171,6 +174,8 @@ test("attached products write only through a writer bound to the verified source
   const context = {
     previewWrite: { write: async (input: PreviewWrite) => { writes.push(input); return previewReceipt(input); } },
     signal: new AbortController().signal,
+    now: () => AT,
+    text: strictSourceText,
     event: async () => undefined,
   };
   const result = await collectAttachedPreviewProducts({

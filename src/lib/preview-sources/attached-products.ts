@@ -42,7 +42,7 @@ export function attachedPreviewSource(groupId: string): AttachedPreviewSource | 
 export const attachedStatementType = (product: PreviewProduct): StatementTypeCapability => ({ id: product, preview: true });
 
 export type AttachedPreviewCollectionOptions = Readonly<{
-  context: Pick<WorkflowContext, "previewWrite" | "signal" | "event">;
+  context: Pick<WorkflowContext, "previewWrite" | "signal" | "event" | "now" | "text">;
   source: AttachedPreviewSource;
   /** `input.attachedPreviewProducts`: the selected attached products this run may write. */
   selected: readonly PreviewProduct[];
@@ -76,6 +76,8 @@ export async function collectAttachedPreviewProducts(options: AttachedPreviewCol
     collectors: options.collectors,
     write: boundPreviewWriter(port, source),
     signal: context.signal,
+    now: context.now,
+    text: context.text,
     event: context.event,
     ...(options.assertSession ? { assertSession: options.assertSession } : {}),
   });

@@ -1,5 +1,5 @@
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -36,7 +36,10 @@ export function yuantaStagingHandle(
   activities: string[] = [],
   period?: CollectionPeriod,
 ): ProductCollectionHandle {
-  return {
+  return productCollectionHandle({
+    now: () => "2026-09-25T00:00:00.000Z",
+    text: strictSourceText,
+    signal: new AbortController().signal,
     stage: (...requests) => {
       staged.push(...requests.map((request) => ({ ...request, provider: "yuanta" })));
     },
@@ -44,10 +47,9 @@ export function yuantaStagingHandle(
       activities.push(activity);
     },
     event: async () => undefined,
-    validate: async (check) => await check(),
     collectionPeriod: () => {
       if (!period) throw new Error("This check supplies no collection period.");
       return period;
     },
-  };
+  });
 }

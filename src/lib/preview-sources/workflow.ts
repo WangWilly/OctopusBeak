@@ -124,6 +124,8 @@ export function previewWorkflowDefinition(
             collectors,
             write,
             signal: context.signal,
+            now: context.now,
+            text: context.text,
             event: context.event,
             ...(options.assertSession ? { assertSession: options.assertSession } : {}),
           })),

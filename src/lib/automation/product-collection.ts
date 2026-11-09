@@ -6,7 +6,8 @@ import type {
 } from "../../ledger/pglite/workflow-run.ts";
 import type { PGliteWorkflowCommand } from "../../ledger/pglite/workflow-client.ts";
 import type { PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND } from "../../ledger/pglite/workflow-commands.ts";
-import { strictSourceText } from "./source-text.ts";
+import { strictSourceText, type SourceTextPort } from "./source-text.ts";
+import { providerResponseReader, type ProviderResponseReader } from "../../workflows/provider-response-reader.ts";
 import { classifyFailure, namesItsFailure, type FailureEvidenceEvent } from "./failure-classification.ts";
 import {
   FailureCodeError,
@@ -210,7 +211,42 @@ export type ProductCollectionHandle = Readonly<{
    * `FailureCodeError` for a product that declares none.
    */
   collectionPeriod: () => CollectionPeriod;
+  /**
+   * ADR 0116: this product's Provider response reader, on the run clock and
+   * text port, accepting inside `validate`. A collector reads every provider
+   * response it owns through this one.
+   */
+  reader: ProviderResponseReader;
+  /** The run's signal. */
+  signal: AbortSignal;
 }>;
+
+/**
+ * The one way to build a product's handle, for the run and for checks that
+ * drive a collector outside it, so the reader is bound the same way in both.
+ */
+export function productCollectionHandle(
+  options: Readonly<{
+    now: () => string;
+    text: SourceTextPort;
+    signal: AbortSignal;
+    event: ProductCollectionStageEvent;
+    stage: ProductCollectionHandle["stage"];
+    reportActivity: ProductCollectionActivityReporter;
+    collectionPeriod: ProductCollectionHandle["collectionPeriod"];
+  }>,
+): ProductCollectionHandle {
+  const validate = validationReporter(options.event, options.signal);
+  return {
+    stage: options.stage,
+    reportActivity: options.reportActivity,
+    event: options.event,
+    validate,
+    collectionPeriod: options.collectionPeriod,
+    reader: providerResponseReader({ now: options.now, text: options.text, validate }),
+    signal: options.signal,
+  };
+}
 
 /**
  * The handle's `validate` (ADR 0106), reporting through `event`: an untyped
@@ -292,6 +328,9 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
    */
   selectedIds: readonly TId[];
   signal: AbortSignal;
+  /** The run clock, an RFC3339 instant. */
+  now: () => string;
+  text: SourceTextPort;
   prepare?: (typeId: TId) => Promise<void>;
   /** Must fail with a FailureCodeError if the source session is no longer valid. */
   assertSession?: () => Promise<void>;
@@ -452,16 +491,18 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
       const reportActivity: ProductCollectionActivityReporter = async (activity) => {
         await emitProductEvent("collection", "advanced", `${codePrefix}-collection-${activity}-started`, { activity });
       };
-      const collected = await options.collect(typeId, {
+      const collected = await options.collect(typeId, productCollectionHandle({
+        now: options.now,
+        text: options.text,
+        signal,
         stage: productStager(options.provider, stagedItems),
         reportActivity,
         event: collectorEvent,
-        validate: validationReporter(collectorEvent, options.signal),
         collectionPeriod: () => {
           if (!options.collectionPeriod) throw new FailureCodeError("workflow-failed");
           return options.collectionPeriod(typeId);
         },
-      });
+      }));
       await options.assertSession?.();
 
       if (!isSafeCount(collected.sourceCaptureCount)
@@ -753,6 +794,7 @@ export type BoundProductCollectionOptions = Readonly<{
   collectionPeriods?: CollectionPeriods;
   /** The run's clock; its Taipei date is read once, when a product first asks for its period. */
   now: () => string;
+  text: SourceTextPort;
   /** The run input; its `statementTypes` and `attachedPreviewProducts` choose what this run collects. */
   input: unknown;
   attachedSource?: AttachedPreviewSource;
@@ -805,7 +847,7 @@ export function boundProductCollection(options: BoundProductCollectionOptions): 
           throw new FailureCodeError("workflow-failed");
         }
         attached = attachedPreviewRun({
-          context: { signal, event, previewWrite: options.previewWrite },
+          context: { signal, event, now: options.now, text: options.text, previewWrite: options.previewWrite },
           source: attachedSource,
           selected: attachedSelected as readonly PreviewProduct[],
           collectors: collectOptions.attached.collectors,
@@ -817,6 +859,8 @@ export function boundProductCollection(options: BoundProductCollectionOptions): 
         productIds,
         selectedIds: productIds.filter((typeId) => statementTypes.includes(typeId)),
         signal,
+        now: options.now,
+        text: options.text,
         event,
         ...(options.productFailure ? { productFailure: options.productFailure } : {}),
         financialCommit: options.financialCommit,

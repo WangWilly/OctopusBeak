@@ -22,7 +22,7 @@ import {
 import { FailureCodeError } from "./workflow-failures.ts";
 import { productRunStatus } from "./product-run-status.ts";
 import { SourceUnavailableError } from "./source-access.ts";
-import { SourceTextIntegrityError } from "./source-text.ts";
+import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { PreviewProductRun } from "../preview-sources/product-collection.ts";
 import { productRunResult } from "./workflow-run-result.ts";
 
@@ -90,6 +90,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["credit_card"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       collected.push(typeId);
       product.stage(item(typeId, `${typeId}-1`));
@@ -118,6 +120,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       product.stage(item(typeId, `${typeId}-staged`));
       if (typeId === "credit_card") throw new Error("product decoder failed after staging");
@@ -152,6 +156,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["credit_card"],
     selectedIds: ["credit_card"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       product.stage(item(typeId, "transactions"), item(typeId, "current-balance"));
       return { sourceCaptureCount: 0, rowCount: 141 };
@@ -191,6 +197,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       product.stage(item(typeId, `${typeId}-1`));
       return { sourceCaptureCount: 1, rowCount: 1 };
@@ -229,6 +237,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit", "credit_card", "loan"],
     selectedIds: ["deposit", "credit_card", "loan"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId) => {
       const disposition = dispositions[["deposit", "credit_card", "loan"].indexOf(typeId)]!;
       throw new StatementComponentAbsentError("no source record", disposition);
@@ -252,6 +262,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (typeId, product) => {
         product.stage(item(typeId, `${typeId}-1`));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -282,6 +294,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (typeId, product) => {
         product.stage(item(typeId, `${typeId}-1`));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -315,6 +329,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit", "credit_card", "loan"],
       selectedIds: ["deposit", "credit_card", "loan"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (typeId, product) => {
         product.stage(item(typeId, `${typeId}-1`));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -353,6 +369,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit", "credit_card"],
       selectedIds: ["deposit", "credit_card"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (typeId, product) => {
         product.stage(item(typeId, `${typeId}-1`));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -384,6 +402,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (_typeId, product) => {
         product.stage(item("domestic", "duplicate-key"));
         product.stage(item("domestic", "duplicate-key"));
@@ -409,6 +429,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (_typeId, product) => {
       product.stage(item("domestic-deposit", "same-key"), item("current-balance", "same-key"));
       product.stage({ ...item("current-balance", "other-key"), provider: "smuggled" } as ProductStageRequest);
@@ -440,6 +462,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
     productIds: ["deposit", "loan"],
     selectedIds: ["deposit", "loan"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       product.stage(item(typeId, `${typeId}-intact`));
       if (typeId === "deposit") {
@@ -475,6 +499,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (_typeId, product) => {
         product.stage(item("domestic", "deposit-1"), item("domestic", "deposit-2"));
         return { sourceCaptureCount: 2, rowCount: 2 };
@@ -501,6 +527,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit"],
       selectedIds: ["deposit"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (_typeId, product) => {
         product.stage(item("deposit", "deposit-1"));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -525,6 +553,8 @@ async function failedRunSummary(run: Promise<unknown>, errorCode: string) {
       productIds: ["deposit", "loan"],
       selectedIds: ["deposit", "loan"],
       signal: controller.signal,
+      now: () => "2026-09-01T04:00:00.000Z",
+      text: strictSourceText,
       collect: async (typeId, product) => {
         product.stage(item(typeId, `${typeId}-1`));
         return { sourceCaptureCount: 1, rowCount: 1 };
@@ -594,6 +624,8 @@ function depositRun(
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       if (options.collect === "fail") throw new Error("synthetic incomplete verified source");
       if (options.collect === "no_data") return { sourceCaptureCount: 2, rowCount: 0, noDataEvidence: true };
@@ -685,6 +717,8 @@ for (const code of ["authentication-failed", "commit-outcome-unknown"] as const)
     productIds: ["deposit"],
     selectedIds: [],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async () => { throw new Error("an unselected verified product must not collect"); },
     financialCommit: commitWith(async () => { throw new Error("an unselected verified product must not commit"); }),
     attached: async () => collected,
@@ -728,6 +762,8 @@ for (const [stage, expected] of [["validation", "source-validation-failed"], ["d
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (_stage, _outcome, code) => { forwarded.push(code); },
     collect: async (_typeId, { event }) => {
       if (stage) await event(stage, "failed", "source-rejected");
@@ -761,6 +797,8 @@ for (const [name, collect, expected, reported] of [
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (stage, outcome, code) => { forwarded.push(`${stage}/${outcome}/${code}`); },
     collect: async (_typeId, { validate }) => {
       await collect(validate);
@@ -780,6 +818,8 @@ for (const [name, collect, expected, reported] of [
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (stage, outcome) => { forwarded.push(`${stage}/${outcome}`); },
     collect: async (_typeId, { validate }) => validate(() => {
       throw new StatementComponentAbsentError("no deposit account", "not_held");
@@ -798,6 +838,8 @@ for (const [name, collect, expected, reported] of [
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: controller.signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (stage, outcome) => { forwarded.push(`${stage}/${outcome}`); },
     collect: async (_typeId, { validate }) => validate(() => {
       controller.abort(new Error("cancelled by the person"));
@@ -814,6 +856,8 @@ for (const [name, collect, expected, reported] of [
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (_typeId, { event }) => {
       await event("validation", "failed", "source-rejected");
       throw new SourceUnavailableError();
@@ -838,6 +882,8 @@ for (const [failure, fail, code, endsRun] of [
     productIds: ["deposit", "loan"],
     selectedIds: ["deposit", "loan"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (typeId, product) => {
       attempted.push(typeId);
       if (typeId === "deposit") await fail(product.event);
@@ -864,6 +910,8 @@ for (const [failure, fail, code, endsRun] of [
     productIds: ["deposit", "loan"],
     selectedIds: ["deposit", "loan"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (stage, outcome, code, counts) => {
       if (stage === "validation" && outcome === "completed" && !code.startsWith("deposit-") && !code.startsWith("loan-")) {
         events.push(`${code}:${counts?.completed}/${counts?.total}`);
@@ -901,6 +949,8 @@ for (const [failure, fail, code, endsRun] of [
     productIds: ["credit_card"],
     selectedIds: [],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (_stage, _outcome, code) => { codes.push(code); },
     collect: async () => { throw new Error("an unselected verified product must not collect"); },
     financialCommit: commitWith(async () => { throw new Error("an unselected verified product must not commit"); }),
@@ -917,6 +967,8 @@ for (const [failure, fail, code, endsRun] of [
     productIds: ["domestic"],
     selectedIds: ["domestic"],
     signal: signal().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     event: async (_stage, _outcome, code) => { codes.push(code); },
     collect: async () => { throw new Error("synthetic verified source failure"); },
     financialCommit: commitWith(async () => { throw new Error("a failed verified product must not commit"); }),

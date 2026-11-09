@@ -21,7 +21,7 @@ import {
 import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { verifyProviderResponse } from "./provider-response.ts";
 import { FrameScopeTimeoutError } from "./frame-scope.ts";
-import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
@@ -558,13 +558,15 @@ assert.deepEqual(balanceReads, ["overview", "detail"]);
 // The build half reads current balances only after a capture was admitted as
 // financial data, and only while the run is live.
 function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
-  return {
+  return productCollectionHandle({
+    now,
+    text: strictSourceText,
+    signal: new AbortController().signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
-    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("the build half reads no collection period"),
-  };
+  });
 }
 const now = () => "2026-08-31T04:00:00.000Z";
 const live = { signal: new AbortController().signal, text: strictSourceText, now };

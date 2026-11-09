@@ -396,6 +396,7 @@ export function createWorkflowExecutor(
         products = boundProductCollection({
           ...definition.productCollection,
           now: ports.now,
+          text: ports.text,
           input,
           ...(definition.attachedPreviewProducts ? { attachedSource: definition.attachedPreviewProducts } : {}),
           signal,

@@ -49,7 +49,7 @@ import {
   type ProviderResponseDeclaration,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
-import { providerResponseReader } from "./provider-response-reader.ts";
+import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 
 /** How a bank stages the rows it read: matching, building, and labeling. */
 export type CurrentStateSnapshotStaging<Row, Capture, Input = CurrentDepositBalanceCaptureInput> = Readonly<{
@@ -91,6 +91,38 @@ export type CurrentStateSnapshotCapture<Row, Capture> = Readonly<{
   items: readonly ProductStageRequest[];
 } & CurrentBalanceCaptureMatch<Row, Capture>>;
 
+/** What the snapshot module needs from the product that owns the snapshot (ADR 0116). */
+export type SnapshotProduct = Pick<ProductCollectionHandle, "event" | "validate" | "reader" | "signal">;
+
+/**
+ * The product a snapshot reads for: its handle, or, until every bank passes
+ * its handle, the run ports a caller threads in beside the product.
+ */
+type SnapshotRun =
+  | Readonly<{ product: SnapshotProduct }>
+  | Readonly<{
+    /** The run clock, an RFC3339 instant. */
+    now: () => string;
+    text: SourceTextPort;
+    signal: AbortSignal;
+    product: Pick<ProductCollectionHandle, "event" | "validate">;
+  }>;
+
+function snapshotPorts(run: SnapshotRun): Readonly<{
+  product: Pick<ProductCollectionHandle, "event" | "validate">;
+  signal: AbortSignal;
+  reader: () => ProviderResponseReader;
+}> {
+  if ("now" in run) {
+    return {
+      product: run.product,
+      signal: run.signal,
+      reader: () => providerResponseReader({ now: run.now, text: run.text, validate: run.product.validate }),
+    };
+  }
+  return { product: run.product, signal: run.product.signal, reader: () => run.product.reader };
+}
+
 /**
  * Acquire, decode, parse, match, and admit one current-state snapshot. With
  * no admitted financial captures it reads nothing, reports nothing, and
@@ -109,12 +141,7 @@ export async function captureCurrentStateSnapshots<
     /** The financial captures this run admitted. */
     captures: readonly Capture[];
     acquire: () => Promise<Acquired>;
-    /** The run clock, an RFC3339 instant. */
-    now: () => string;
-    product: Pick<ProductCollectionHandle, "event" | "validate">;
-    text: SourceTextPort;
-    signal: AbortSignal;
-  }>,
+  }> & SnapshotRun,
 ): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
   if (input.captures.length === 0) return { items: [], matched: [], excluded: [] };
   const rows = await readCurrentStateSnapshot(declaration, input);
@@ -132,16 +159,9 @@ export async function readCurrentStateSnapshot<
   DateRule extends ProviderDateRule,
 >(
   declaration: Pick<CurrentStateSnapshotDeclaration<Acquired, Row, never, DateRule>, "response" | "parse">,
-  input: Readonly<{
-    acquire: () => Promise<Acquired>;
-    /** The run clock, an RFC3339 instant. */
-    now: () => string;
-    product: Pick<ProductCollectionHandle, "event" | "validate">;
-    text: SourceTextPort;
-    signal: AbortSignal;
-  }>,
+  input: Readonly<{ acquire: () => Promise<Acquired> }> & SnapshotRun,
 ): Promise<readonly Row[]> {
-  const { product, signal } = input;
+  const { product, signal } = snapshotPorts(input);
   signal.throwIfAborted();
   await product.event("collection", "started", "current-balance-collection-started");
   await product.event("decoding", "started", "current-balance-decoding-started");
@@ -156,8 +176,7 @@ export async function readCurrentStateSnapshot<
     throw error;
   }
   signal.throwIfAborted();
-  const reader = providerResponseReader({ now: input.now, text: input.text, validate: product.validate });
-  const { response, evidence } = await reader.accept(declaration.response, acquired);
+  const { response, evidence } = await snapshotPorts(input).reader().accept(declaration.response, acquired);
   const rows = await product.validate(() => parseRows(() => declaration.parse(evidence, response, acquired)));
   await product.event("decoding", "completed", "current-balance-decoding-completed");
   await product.event("collection", "completed", "current-balance-collection-completed", {
@@ -179,11 +198,10 @@ export async function stageCurrentStateSnapshot<Row, Capture, Input>(
   input: Readonly<{
     /** The financial captures this run admitted. */
     captures: readonly Capture[];
-    product: Pick<ProductCollectionHandle, "event" | "validate">;
-    signal: AbortSignal;
-  }>,
+  }> & (Readonly<{ product: SnapshotProduct }> | Readonly<{ product: Pick<ProductCollectionHandle, "event" | "validate">; signal: AbortSignal }>),
 ): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
-  const { product, signal } = input;
+  const { product } = input;
+  const signal = "signal" in input ? input.signal : input.product.signal;
   const index = indexCurrentBalanceCaptures(input.captures, declaration.matching);
   await product.event("validation", "started", "current-balance-validation-started", {
     completed: 0,
