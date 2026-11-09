@@ -671,7 +671,7 @@ try {
       },
       typedInput,
       checkContext(cancellation.signal),
-      yuantaStagingHandle(canceledItems),
+      yuantaStagingHandle(canceledItems, [], undefined, { signal: cancellation.signal }),
       async () => assert.fail("a cancelled run must not open the current-balance page"),
     ),
     /abort/u,
@@ -969,7 +969,9 @@ try {
           shellPage,
           { accountFilters: [], ...stableConnectionIdentity },
           checkContext(options.signal),
-          yuantaStagingHandle(items, activities, collectionPeriod({ today: "2026-08-21", lookBack: ONE_MONTH })),
+          yuantaStagingHandle(items, activities, collectionPeriod({ today: "2026-08-21", lookBack: ONE_MONTH }), {
+            signal: options.signal,
+          }),
         );
         const picked = await shellPage.evaluate(() => (window as { picked?: string[] }).picked ?? []);
         return { snapshot, served, queried, items, activities, picked };
@@ -1070,7 +1072,7 @@ try {
           },
           { accountFilters: [], ...stableConnectionIdentity },
           context,
-          yuantaStagingHandle(items),
+          yuantaStagingHandle(items, [], undefined, { signal }),
           async () => yuantaCurrentDepositTable(
             [workflowCurrentBalanceCells(workflowAccount)],
             workflowCurrentBalanceRow.providerHttpDate,

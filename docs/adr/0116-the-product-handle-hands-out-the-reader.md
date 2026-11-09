@@ -32,3 +32,4 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 - Until the last bank moves, the snapshot module accepts both forms.
 - A preview product's reader is no longer shared with other preview products of the same run.
+- A product that keeps a refused response and fails it later inside its own validation, such as Yuanta's card summary page, reads it through the Source reader, so a page that then cannot be read stays a read failure rather than a validation failure.

@@ -31,6 +31,7 @@ import {
   yuantaTradeAudioAssistanceStage,
   type YuantaTradeReportPage,
 } from "../../workflows/yuanta-trade-statements.ts";
+import { yuantaStagingHandle } from "../../workflows/yuanta-collection.fixtures.ts";
 
 const credentials = {
   yuanta_trade_user_id: "synthetic-user",
@@ -264,7 +265,7 @@ test("Yuanta Trade names a report page that does not parse a validation failure"
         captureReport: () => decodeYuantaTradeReportResponse(
           reportScope(context.signal),
           response(malformed),
-          { text: context.text, now: () => context.now(), validate: product.validate },
+          product,
           "Stock",
         ),
       }, input, context, product);
@@ -297,7 +298,7 @@ test("Yuanta Trade names a refused report reply a validation failure", async () 
         captureReport: () => decodeYuantaTradeReportResponse(
           reportScope(context.signal),
           response(html, undefined, 500),
-          { text: context.text, now: () => context.now(), validate: product.validate },
+          product,
           "Stock",
         ),
       }, input, context, product);
@@ -313,11 +314,7 @@ test("Yuanta Trade names a refused report reply a validation failure", async () 
 });
 
 test("Yuanta Trade source decoding rejects malformed response bytes", async () => {
-  const reader = {
-    text: strictSourceText,
-    now: () => "2026-09-25T12:00:00.000Z",
-    validate: async <T>(check: () => T | Promise<T>) => await check(),
-  };
+  const reader = yuantaStagingHandle([]);
   await assert.rejects(
     decodeYuantaTradeReportResponse(reportScope(new AbortController().signal), response(Uint8Array.from([0xc3, 0x28])), reader, "Stock"),
     (error: unknown) => error instanceof SourceTextIntegrityError && /invalid-encoding/u.test(error.message),

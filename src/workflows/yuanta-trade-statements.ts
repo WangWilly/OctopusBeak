@@ -55,7 +55,6 @@ import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderResponsePorts } from "./provider-response-reader.ts";
 
 export {
   YUANTA_TRADE_CAPTCHA_IMAGE_SELECTOR,
@@ -799,23 +798,23 @@ function isUnavailableBrowserResponseBody(error: unknown): boolean {
 
 /**
  * Validate and strictly decode the report: its reply is read through the
- * reader, which checks the transport before the body, and its page is parsed
- * inside `ports.validate`. If CDP loses a navigation body, make one fresh,
- * authenticated POST and validate that response independently.
+ * product's reader, which checks the transport before the body, and its page
+ * is parsed inside the product's `validate`. If CDP loses a navigation body,
+ * make one fresh, authenticated POST and validate that response independently.
  */
 export async function decodeYuantaTradeReportResponse(
   scope: FrameScope,
   response: Response,
-  ports: ProviderResponsePorts,
+  product: Pick<ProductCollectionHandle, "reader" | "validate">,
   reportType: string,
   retryRequest?: { request: APIRequestContext; params: Record<string, string | number> },
 ): Promise<ReportPage> {
   const declaration = yuantaTradeReportResponse(reportType);
-  const reader = providerResponseReader(ports);
+  const { reader } = product;
   const decode = async (held: Parameters<typeof reader.acquireFrom>[2]): Promise<ReportPage> => {
     const acquired = await reader.acquireFrom(scope, declaration, held, "text");
     const { evidence } = await reader.accept(declaration, acquired);
-    return await ports.validate(() => parseReportPage(evidence.text, acquired.response.url, reportType));
+    return await product.validate(() => parseReportPage(evidence.text, acquired.response.url, reportType));
   };
   try {
     return await decode(response);
@@ -864,20 +863,23 @@ async function submitReportForm(
   return await navigation;
 }
 
+/** What reading one report page needs from the securities product. */
+export type YuantaTradeReportProduct = Pick<ProductCollectionHandle, "reader" | "validate" | "signal">;
+
 export async function captureTypedReport(
   page: Page,
   reportType: string,
   params: Record<string, string | number>,
-  context: ProviderResponsePorts & Readonly<{ signal: AbortSignal }>,
+  product: YuantaTradeReportProduct,
 ): Promise<ReportPage> {
-  const scope = frameScope(page, context.signal);
+  const scope = frameScope(page, product.signal);
   const reportUrl = new URL(
     `/NexusWebTrade/AssetReport/${reportType}`,
     YUANTA_TRADE_LOGIN_URL,
   ).href;
   let response: Response | null = null;
   for (let attempt = 1; attempt <= YUANTA_REPORT_ATTEMPTS; attempt += 1) {
-    context.signal.throwIfAborted();
+    product.signal.throwIfAborted();
     response = await submitReportForm(scope, reportUrl, params);
     if (!response || new URL(response.url()).pathname !== YUANTA_REPORT_ERROR_PATH) break;
     if (attempt < YUANTA_REPORT_ATTEMPTS) await scope.pause(2_000 * attempt);
@@ -888,7 +890,7 @@ export async function captureTypedReport(
   const captured = await scope.race(decodeYuantaTradeReportResponse(
     scope,
     response,
-    context,
+    product,
     reportType,
     { request: page.context().request, params },
   ));
@@ -1650,10 +1652,10 @@ export type YuantaTradeSource = Readonly<{
 
 export function yuantaTradeSource(
   page: Page,
-  context: ProviderResponsePorts & Readonly<{ signal: AbortSignal }>,
+  product: YuantaTradeReportProduct,
 ): YuantaTradeSource {
   return {
-    captureReport: (reportType, params) => captureTypedReport(page, reportType, params, context),
+    captureReport: (reportType, params) => captureTypedReport(page, reportType, params, product),
   };
 }
 
@@ -1796,12 +1798,7 @@ export type YuantaTradeProductRunner = (
 
 const collectYuantaTradeSecurities: YuantaTradeProductRunner = async (page, input, context, product) => {
   const snapshot = await readYuantaTradeSource(
-    yuantaTradeSource(page, {
-      signal: context.signal,
-      text: context.text,
-      now: () => context.now(),
-      validate: product.validate,
-    }),
+    yuantaTradeSource(page, product),
     input,
     context,
     product,
