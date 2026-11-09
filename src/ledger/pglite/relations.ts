@@ -1,6 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { InvestmentFundingEvidence } from "../canonical/investment-financial.ts";
 import {
+  YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+} from "../canonical/investment-funding-contract.ts";
+import {
+  YuantaSettlementCalendarNotCoveredError,
+  yuantaForeignSettlementEffectiveOn,
+} from "../canonical/yuanta-foreign-settlement-calendar.ts";
+import {
   admitCounterpartyAccountEvidence,
   type TransactionCounterpartyAccountEvidenceInput,
 } from "../canonical/counterparty-account-evidence.ts";
@@ -1053,29 +1061,21 @@ type FundingCandidate = Readonly<{
   currency: string;
 }>;
 
-const YUANTA_SETTLEMENT_CONTRACT = "yuanta/foreign-settlement/human-attested-v1";
-const YUANTA_SETTLEMENT_LINKAGE = "yuanta/foreign-settlement/linkage-v1";
-const YUANTA_SETTLEMENT_MARKET = "yuanta/foreign-settlement/market-v2";
-const YUANTA_SETTLEMENT_MARKET_US_EQUITY = "us-equity";
-const YUANTA_SETTLEMENT_HOLIDAYS = new Set([
-  "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",
-  "2026-02-20", "2026-02-27", "2026-04-03", "2026-04-06", "2026-05-01",
-  "2026-06-19", "2026-09-25", "2026-10-09",
-]);
+type SettlementContractEvidence = Extract<InvestmentFundingEvidence, { kind: "source-settlement-contract" }>;
 
-function addSettlementBusinessDays(effectiveOn: string, action: "buy" | "sell", market: string): string | null {
-  if (market !== YUANTA_SETTLEMENT_MARKET_US_EQUITY || effectiveOn < "2026-01-01" || effectiveOn > "2026-12-31") return null;
-  const date = new Date(`${effectiveOn}T00:00:00Z`);
-  const days = action === "buy" ? 1 : 2;
-  let count = 0;
-  while (count < days) {
-    date.setUTCDate(date.getUTCDate() + 1);
-    const candidate = date.toISOString().slice(0, 10);
-    if (candidate > "2026-12-31") return null;
-    const weekday = date.getUTCDay();
-    if (weekday !== 0 && weekday !== 6 && !YUANTA_SETTLEMENT_HOLIDAYS.has(candidate)) count += 1;
+/** The contract's settlement day, or null when the trade predates the calendar's coverage. A day after the coverage throws: the calendar is stale. */
+function contractSettlementOn(row: InvestmentRow, evidence: SettlementContractEvidence): string | null {
+  try {
+    return yuantaForeignSettlementEffectiveOn({
+      settlementMarket: evidence.settlementMarket,
+      settlementMarketContractVersion: evidence.settlementMarketContractVersion,
+      effectiveOn: row.effectiveOn,
+      action: row.action,
+    });
+  } catch (error) {
+    if (error instanceof YuantaSettlementCalendarNotCoveredError && error.beforeCoverage) return null;
+    throw error;
   }
-  return date.toISOString().slice(0, 10);
 }
 
 function parseFundingEvidence(value: unknown): InvestmentFundingEvidence | null {
@@ -1197,7 +1197,7 @@ async function readFundingCandidates(
     const payload = parseSourcePayload(row.payload_json);
     const account = text(String(row.account_id ?? ""), "Funding account");
     if (String(row.description) !== description || payload.transactionInfo !== transactionInfo ||
-        payload.linkageKey !== linkageKey || payload.linkageContract !== YUANTA_SETTLEMENT_LINKAGE ||
+        payload.linkageKey !== linkageKey || payload.linkageContract !== YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
         String(row.completeness) !== "complete-range" || !(Number(row.terminal) === 1 || row.terminal === true) ||
         !exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), expectedCoefficient, expectedScale)) return [];
     return [{
@@ -1217,8 +1217,10 @@ function investmentGroupKey(row: InvestmentRow): string | null {
   if (row.fundingEvidence.kind === "source-linked-account")
     return `${hex(row.investmentAccountId)}\u0000${row.fundingEvidence.settlementGroupKey}`;
   if (row.fundingEvidence.kind === "source-settlement-contract") {
-    const settlement = addSettlementBusinessDays(row.effectiveOn, row.action, row.fundingEvidence.settlementMarket);
-    return settlement ? `${hex(row.investmentAccountId)}\u0000${row.cashCurrency}\u0000${row.fundingEvidence.settlementMarket}\u0000${settlement}` : null;
+    const settlement = contractSettlementOn(row, row.fundingEvidence);
+    return settlement
+      ? `${hex(row.investmentAccountId)}\u0000${row.cashCurrency}\u0000${row.fundingEvidence.settlementMarket}\u0000${settlement}`
+      : `${hex(row.investmentAccountId)}\u0000calendar-not-covered\u0000${row.sourceRecordKey}`;
   }
   return null;
 }
@@ -1359,15 +1361,15 @@ async function resolveInvestmentRelationsInTransaction(
       const bankRows = await query<Row>(transaction, `SELECT current_row.transaction_id, revision.source_record_id, financial.account_id, revision.amount_coefficient, revision.amount_scale, revision.currency FROM current_transactions current_row JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id JOIN financial_transactions financial ON financial.transaction_id = current_row.transaction_id JOIN financial_accounts account ON account.account_id = financial.account_id WHERE account.account_no = ? AND revision.effective_on = ? AND revision.direction = ? AND revision.currency = ? AND revision.posting_status = 'posted' AND revision.economic_status = 'normal' AND revision.administrative_state = 'active'`, [accountNo, settlementEffectiveOn, net.direction, firstRow.cashCurrency]);
       candidates = bankRows.filter((row) => exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), net.coefficient, net.scale)).map((row) => ({ accountId: bytes(row.account_id, "Funding account"), transactionId: bytes(row.transaction_id, "Funding transaction"), sourceRecordId: bytes(row.source_record_id, "Funding source record"), coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency) }));
     } else if (evidence.kind === "source-settlement-contract") {
-      if (evidence.settlementMarket !== YUANTA_SETTLEMENT_MARKET_US_EQUITY || evidence.settlementMarketContractVersion !== YUANTA_SETTLEMENT_MARKET || evidence.linkageContractVersion !== YUANTA_SETTLEMENT_LINKAGE || evidence.contractVersion !== YUANTA_SETTLEMENT_CONTRACT) {
+      if (evidence.linkageContractVersion !== YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION || evidence.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION) {
         noAdmission += 1;
-        reasons.add("unsupported-settlement-market");
+        reasons.add("unsupported-settlement-contract");
         continue;
       }
-      settlementEffectiveOn = addSettlementBusinessDays(firstRow.effectiveOn, firstRow.action, evidence.settlementMarket);
+      settlementEffectiveOn = contractSettlementOn(firstRow, evidence);
       if (!settlementEffectiveOn) {
         noAdmission += 1;
-        reasons.add("unsupported-settlement-calendar");
+        reasons.add("settlement-calendar-not-covered");
         continue;
       }
       candidates = await readFundingCandidates(transaction, settlementEffectiveOn, firstRow.cashCurrency, net.direction, net.coefficient, net.scale, evidence.sourceLinkageKey);
