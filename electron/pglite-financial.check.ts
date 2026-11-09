@@ -8,11 +8,10 @@ import { Worker } from "node:worker_threads";
 import test from "node:test";
 import { NO_PROVENANCE } from "../src/lib/shared-ledger/provenance.ts";
 import type { LiveViewDependency, LiveViewDependencySignals } from "./pglite-financial-live-dependencies.ts";
-import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
+import { createPGliteFinancialLiveViews, type LiveViewRegistry } from "./pglite-financial-live-views.ts";
 import {
   PGLITE_FINANCIAL_OPERATIONS,
   type PGliteFinancialPort,
-  type PGliteFinancialRegistry,
   type PGliteFinancialOperation,
 } from "./pglite-financial-contracts.ts";
 import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
@@ -26,9 +25,10 @@ import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts
 import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { createSpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
 
-/** These views never see a Spending page action run. */
-const NO_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
+/** The fake registries' page actions, which these view checks never run. */
+const REFUSING_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
 
 const token = (letter: string): string => `sha256:${letter.repeat(64)}`;
 
@@ -334,7 +334,7 @@ test("PGlite overview exposes observed daily balances to exchange-rate requireme
   const database = await createTestPGlite("full");
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
-  const registry = createPGliteFinancialRegistry(store);
+  const registry = createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store));
   try {
     await registry["financial.source.commit"]([sourceCommitRequest("overview-history-source", "123456")]);
     await registry["financial.balance.capture"]([balanceCaptureRequest(
@@ -613,8 +613,9 @@ test("financial live views recover after a transient read failure and stop durin
       if (blocked) return blocked;
       return page;
     },
-  } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
+    spendingPageActions: REFUSING_PAGE_ACTIONS,
+  } as unknown as LiveViewRegistry;
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
   const values: unknown[] = [];
   const errors: unknown[] = [];
   const stop = await views.subscribe(
@@ -652,8 +653,9 @@ test("a dependency's own failure reaches every listener of the view, and a later
       readCount += 1;
       return EMPTY_OVERVIEW;
     },
-  } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
+    spendingPageActions: REFUSING_PAGE_ACTIONS,
+  } as unknown as LiveViewRegistry;
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
   const errors: unknown[][] = [[], []];
   const stops = await Promise.all(errors.map((seen) =>
     views.subscribe("financial.overview.current", {}, () => {}, (error) => seen.push(error))));
@@ -683,8 +685,9 @@ test("failed live subscription releases started dependencies and permits retry",
       if (failRead) throw new Error("initial read failed");
       return { availability: "empty" };
     },
-  } as unknown as PGliteFinancialRegistry;
-  const views = createPGliteFinancialLiveViews({ registry, pageActions: NO_PAGE_ACTIONS }, dependencies);
+    spendingPageActions: REFUSING_PAGE_ACTIONS,
+  } as unknown as LiveViewRegistry;
+  const views = createPGliteFinancialLiveViews(registry, dependencies);
   await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /dependency setup failed/u);
   assert.equal(active(), 0, "a partial dependency setup must be drained");
   failRead = true;

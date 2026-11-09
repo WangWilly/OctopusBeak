@@ -17,6 +17,7 @@ import { createTestPGlite } from "./baseline-test-template.ts";
 import { createPGliteCanonicalOverviewQuery } from "./overview.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
+import { createPGliteSpendingPageActions } from "./spending-command.ts";
 
 const taipei = (date: string) => Date.parse(`${date}T10:00:00+08:00`);
 const HTTP_DATE = "Sat, 31 Oct 2026 07:00:00 GMT";
@@ -66,7 +67,7 @@ test("Binance workflow commits both wallets and their bounded history through th
   const database = await createTestPGlite("ledger+operational", { dataDir: join(root, "pglite") });
   const store = new PGliteStore(database);
   const server = createPGliteChildRpcServer({
-    provider: { operational: createPgliteOperationalProvider(store), financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },
+    provider: { operational: createPgliteOperationalProvider(store), financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;

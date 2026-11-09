@@ -12,7 +12,8 @@ import {
 } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
 import { PGliteOperationalError } from "./pglite-operational-rpc.ts";
-import { startPGliteViewWorker, type PGliteWorkerViewContext } from "./pglite-view-worker.ts";
+import { startPGliteViewWorker } from "./pglite-view-worker.ts";
+import type { PGliteLedgerHost } from "./pglite-ledger-host.ts";
 import type { SpendingPageActionRequest } from "../src/lib/spending/model.ts";
 import { createViewPortClient, createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
 
@@ -110,8 +111,8 @@ test("the worker serves its injected view source, closes subscriptions, and remo
   }
 });
 
-test("the registry runs its Spending page actions through the same actions the views watch", async () => {
-  let context: PGliteWorkerViewContext | undefined;
+test("the worker's registry runs its Spending page actions through the same actions the views watch", async () => {
+  let context: PGliteLedgerHost | undefined;
   const channel = new MessageChannel();
   const runtime = await startPGliteViewWorker(channel.port1, (given) => {
     context = given;
@@ -119,7 +120,7 @@ test("the registry runs its Spending page actions through the same actions the v
   }, { readSettings: () => ({}) });
   try {
     const settled: unknown[] = [];
-    context!.pageActions.onSettled((result) => settled.push(result));
+    context!.spendingPageActions.onSettled((result) => settled.push(result));
     const stale = { action: "confirm", kind: "direct", invoiceIdentityId: "missing", transactionIdentityId: "missing", dataVersion: 999 };
     await assert.rejects(context!.registry["financial.spending.pageAction"]([stale as unknown as SpendingPageActionRequest]));
     assert.deepEqual(settled, [null], "the views hear the registry's action settle");

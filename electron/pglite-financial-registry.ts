@@ -3,9 +3,6 @@ import {
   createPGliteSpendingQuery,
 } from "../src/ledger/pglite/spending-query.ts";
 import {
-  createPGliteSpendingCommands,
-} from "../src/ledger/pglite/spending-command.ts";
-import {
   createPGliteCanonicalSourceStore,
 } from "../src/ledger/pglite/canonical-source-store.ts";
 import {
@@ -48,7 +45,7 @@ import {
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
 import { readSpendingPage, readSpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
-import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -63,31 +60,35 @@ import type { PGliteFinancialPort, PGliteFinancialRegistry } from "./pglite-fina
 export type PGliteFinancialPreviewEvents = Readonly<{
   onPreviewVisibilityChanged?(listener: () => void): () => void;
 }>;
-type PGliteFinancialRegistryWithPreviewEvents = PGliteFinancialRegistry & Required<PGliteFinancialPreviewEvents>;
+
+/** The Spending page actions a registry runs, which its live views watch (ADR 0105, ADR 0120). */
+export type PGliteFinancialRegistryPageActions = Readonly<{
+  spendingPageActions: SpendingPageActions;
+}>;
+
+export type PGliteLedgerRegistry = PGliteFinancialRegistry
+  & Required<PGliteFinancialPreviewEvents>
+  & PGliteFinancialRegistryPageActions;
 
 export type PGliteFinancialRegistryOptions = Readonly<{
+  /** Which Preview data the pages show, read at each page read. */
+  previewVisibility?: () => PreviewVisibility;
   /** The person's local date, which no manual row may be dated after, and which decides whether an ended asset still counts. */
   today?: () => string;
-  /**
-   * The Spending page actions to run, shared with the live views that publish
-   * their results (ADR 0105). Without it the registry runs its own.
-   */
-  spendingPageActions?: SpendingPageActions;
 }>;
 
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
-  previewVisibility: () => PreviewVisibility = () => NO_PREVIEW_VISIBILITY,
+  spendingPageActions: SpendingPageActions,
   options: PGliteFinancialRegistryOptions = {},
-): PGliteFinancialRegistryWithPreviewEvents {
+): PGliteLedgerRegistry {
+  const previewVisibility = options.previewVisibility ?? (() => NO_PREVIEW_VISIBILITY);
   const today = options.today ?? (() => dateInTimeZone(new Date(), DEFAULT_SYSTEM_TIMEZONE));
   const manualClock = { now: () => new Date().toISOString(), today };
   const pageScope = (expectedSources: FinancialPageScope["expectedSources"]): FinancialPageScope =>
     ({ expectedSources, previewVisibility: previewVisibility(), today: today() });
   const spending = createPGliteSpendingQuery(store);
-  const commands = createPGliteSpendingCommands(store);
   const source = createPGliteCanonicalSourceStore(store);
-  const pageActions = options.spendingPageActions ?? createSpendingPageActions(commands.pageAction);
   const previewVisibilityListeners = new Set<() => void>();
   return Object.freeze({
     "financial.overview.current": ([expectedSources = []]) =>
@@ -119,7 +120,8 @@ export function createPGliteFinancialRegistry(
     async "financial.preview.visibilityChanged"() {
       for (const listener of previewVisibilityListeners) listener();
     },
-    "financial.spending.pageAction": ([request]) => pageActions.run(request),
+    spendingPageActions,
+    "financial.spending.pageAction": ([request]) => spendingPageActions.run(request),
     "financial.source.admit": ([request], options) => source.admit(request, options),
     "financial.source.commit": ([request], options) => source.commit(request, options),
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),
