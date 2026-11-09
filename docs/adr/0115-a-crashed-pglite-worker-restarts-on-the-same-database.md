@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Refined by [ADR 0118](0118-pglite-worker-rpcs-share-one-call-core.md): a request in flight now fails with a typed `worker-closed` error whose `cause` is the dead worker's error.
+
 Keeps the single database owner of [ADR 0030](0030-pglite-owned-live-financial-views.md) and the live-view contract of [ADR 0079](0079-a-financial-page-owns-its-live-view-lifecycle.md).
 
 ## Context

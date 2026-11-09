@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Refines [ADR 0115](0115-a-crashed-pglite-worker-restarts-on-the-same-database.md) on the error an in-flight request receives.
+
 Relates to [ADR 0072](0072-host-calls-go-through-one-contract-table.md), which kept the workflow host-call channel off the operational correlator.
 
 ## Context
@@ -36,5 +38,5 @@ ADR 0072 rejected sharing a correlator between the workflow host-call channel an
 
 - A change to correlation, ready gating, or close is made once and applies to both protocols.
 - A caller can tell a closed worker from other failures by error class and code on both protocols.
-- When the view worker exits or fails to start, pending calls reject with the typed `worker-closed` error, and the worker's own failure is the error's `cause`.
+- When a ready view worker exits, or its client is closed, calls already sent reject with the typed `worker-closed` error, and the worker's own failure is the error's `cause`. This refines ADR 0115's "fails with the dead worker's error": the error is now typed and carries that failure. A call made before the worker became ready still rejects with the start failure itself, as before.
 - A new request/response protocol on the worker port is a frame kind, a contract table, and a `start` callback.
