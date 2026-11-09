@@ -17,17 +17,16 @@ import {
 import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import type { Response } from "playwright";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const observedAt = "2026-09-09T10:14:00+08:00";
-const reader = providerResponseReader({
+const reader = sourceReader({
   now: () => "2026-09-09T02:14:00.000Z",
   text: strictSourceText,
-  validate: WITHOUT_PRODUCT_VALIDATION,
 });
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 const conflictingPostAccountNumber = ["0311", "5240", "5293", "96"].join("");

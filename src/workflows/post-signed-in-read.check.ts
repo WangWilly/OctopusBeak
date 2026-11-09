@@ -5,7 +5,7 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { readPostCurrentDepositBalanceResponse } from "./post-current-deposit-balances.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { readPostDepositSource } from "./post-statements.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
@@ -83,10 +83,9 @@ test("cancelling the run stops a pending statement query instead of letting it c
 test("cancelling the run stops the asset overview waiting a minute for its response", () =>
   withSilentIpost(async (page) => {
     await page.goto("https://ipost.post.gov.tw/pst/index.html");
-    const reader = providerResponseReader({
+    const reader = sourceReader({
       now: () => new Date().toISOString(),
       text: strictSourceText,
-      validate: WITHOUT_PRODUCT_VALIDATION,
     });
     const read = readPostCurrentDepositBalanceResponse(page, { signal: cancelledAfter(500), reader });
     assert.ok((await settlesWithin(read)) < 2_000);

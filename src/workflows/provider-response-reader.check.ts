@@ -11,7 +11,6 @@ import {
   endsRequestChainFrom,
   providerResponseReader,
   sourceReader,
-  WITHOUT_PRODUCT_VALIDATION,
   type ProviderReply,
 } from "./provider-response-reader.ts";
 
@@ -231,7 +230,7 @@ test("a response the source already holds is read the same way", async () => {
 });
 
 test("a read no product owns refuses the response without product validation", async () => {
-  const reader = providerResponseReader({ now: () => RUN_CLOCK, text: strictSourceText, validate: WITHOUT_PRODUCT_VALIDATION });
+  const reader = sourceReader({ now: () => RUN_CLOCK, text: strictSourceText });
   await assert.rejects(
     reader.accept(RESPONSE, {
       response: { url: `${ORIGIN}/elsewhere`, status: 200, method: "POST", headers: { date: PROVIDER_DATE } },

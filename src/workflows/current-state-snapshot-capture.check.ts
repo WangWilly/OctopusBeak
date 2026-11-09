@@ -32,11 +32,19 @@ import type {
   ProviderResponse,
   ProviderResponseDeclaration,
 } from "./provider-response.ts";
-import { validationReporter, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
 
-/** A product handle's reporting half, with the run's own validate. */
-const reporting = (event: ProductCollectionStageEvent) =>
-  ({ event, validate: validationReporter(event, new AbortController().signal) });
+/** A product handle on the run clock and strict text, reporting through `event`. */
+const handle = (event: ProductCollectionStageEvent, signal = new AbortController().signal) =>
+  productCollectionHandle({
+    now: () => RUN_CLOCK,
+    text: strictSourceText,
+    signal,
+    event,
+    stage: () => assert.fail("a snapshot returns its items and never stages them"),
+    reportActivity: async () => undefined,
+    collectionPeriod: () => assert.fail("a snapshot takes no collection period"),
+  });
 
 type Capture = Readonly<{
   id: string;
@@ -375,12 +383,9 @@ async function snapshot(
       reads += 1;
       return acquired;
     },
-    now: () => RUN_CLOCK,
-    product: reporting(async (stage, outcome, code, counts) => {
+    product: handle(async (stage, outcome, code, counts) => {
       events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
     }),
-    text: strictSourceText,
-    signal: new AbortController().signal,
   });
   return { run, events, reads: () => reads };
 }
@@ -505,10 +510,7 @@ test("a parse failure reports validation, and a failed read reports collection",
   const events: string[] = [];
   const timedOut = readCurrentStateSnapshot(declaration(), {
     acquire: async () => { throw Object.assign(new Error("Timeout 60000ms exceeded"), { name: "TimeoutError" }); },
-    now: () => RUN_CLOCK,
-    product: reporting(async (stage, outcome, code) => { events.push(`${stage} ${outcome} ${code}`); }),
-    text: strictSourceText,
-    signal: new AbortController().signal,
+    product: handle(async (stage, outcome, code) => { events.push(`${stage} ${outcome} ${code}`); }),
   });
   await assert.rejects(timedOut, /Timeout/u);
   assert.deepEqual(events, [...readStarted, "collection failed current-balance-collection-failed"],
@@ -579,20 +581,16 @@ test("a validate throw rejects validation after matching and stages nothing", as
 
 test("the read and stage halves report their own events and stage what the read returned", async () => {
   const events: string[] = [];
-  const product = reporting(async (stage, outcome, code, counts) => {
+  const product = handle(async (stage, outcome, code, counts) => {
     events.push([stage, outcome, code, counts ? `${counts.completed}/${counts.total}` : ""].join(" ").trim());
   });
-  const signal = new AbortController().signal;
   const declared = declaration("domestic-deposit", { kind: "exclude" });
   const rows = await readCurrentStateSnapshot(declared, {
     acquire: async () => json([
       { account: "A", currencies: ["TWD"], amount: "5" },
       { account: "B", currencies: ["TWD"], amount: "6" },
     ]),
-    now: () => RUN_CLOCK,
     product,
-    text: strictSourceText,
-    signal,
   });
   assert.deepEqual(rows.map((row) => row.account), ["A", "B"]);
   assert.deepEqual(events.splice(0), [
@@ -605,7 +603,6 @@ test("the read and stage halves report their own events and stage what the read 
   const staged = await stageCurrentStateSnapshot(declared, rows.slice(1), {
     captures: [capture("b", { account: "B" })],
     product,
-    signal,
   });
   assert.deepEqual(staged.items.map((item) => item.itemKey), ["current-balance:domestic-deposit:B"]);
   assert.deepEqual(staged.excluded, []);
@@ -620,8 +617,7 @@ test("the stage half throws on ambiguous captures before validation starts", asy
   await assert.rejects(
     stageCurrentStateSnapshot(declaration(), [{ account: "A", currencies: ["TWD"], amount: "1" }], {
       captures: [capture("a"), capture("b", { connection: "c2" })],
-      product: reporting(async (_stage, _outcome, code) => { events.push(code); }),
-      signal: new AbortController().signal,
+      product: handle(async (_stage, _outcome, code) => { events.push(code); }),
     }),
     /^Error: ambiguous$/u,
   );
