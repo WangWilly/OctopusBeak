@@ -10,6 +10,7 @@ import {
 } from "./generate-yuanta-settlement-calendar.mjs";
 
 const OFF_FILL = "FFFF99FF";
+const SECOND_FILL = "FFCCFFCC";
 const MONTH_NAMES = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
 const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -111,12 +112,12 @@ function calendarSheet(year, { offDays = new Set(), workdays = new Set(), title,
   const sheetRows = [...rows.keys()].sort((left, right) => left - right).map((row) =>
     `<row r="${row}">${rows.get(row).sort(([left], [right]) => left - right).map(([col, cell]) =>
       /^\d+$/u.test(cell.value)
-        ? `<c r="${column(col)}${row}" s="${cell.off ? 1 : 0}"><v>${cell.value}</v></c>`
-        : `<c r="${column(col)}${row}" s="${cell.off ? 1 : 0}" t="s"><v>${index(cell.value)}</v></c>`).join("")}</row>`);
+        ? `<c r="${column(col)}${row}" s="${cell.style ?? (cell.off ? 1 : 0)}"><v>${cell.value}</v></c>`
+        : `<c r="${column(col)}${row}" s="${cell.style ?? (cell.off ? 1 : 0)}" t="s"><v>${index(cell.value)}</v></c>`).join("")}</row>`);
   return zip({
     "xl/workbook.xml": `<workbook><sheets><sheet name="calendar" sheetId="1"/></sheets></workbook>`,
     "xl/sharedStrings.xml": `<sst>${strings.map((value) => `<si><t>${value}</t><rPh sb="0" eb="1"><t>ㄅ</t></rPh></si>`).join("")}</sst>`,
-    "xl/styles.xml": `<styleSheet><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="${OFF_FILL}"/><bgColor indexed="64"/></patternFill></fill></fills><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0"/><xf numFmtId="0" fontId="0" fillId="2" applyFill="1"/></cellXfs></styleSheet>`,
+    "xl/styles.xml": `<styleSheet><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="${OFF_FILL}"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="${SECOND_FILL}"/><bgColor indexed="64"/></patternFill></fill></fills><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0"/><xf numFmtId="0" fontId="0" fillId="2" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" applyFill="1"/></cellXfs></styleSheet>`,
     "xl/worksheets/sheet1.xml": `<worksheet><sheetData>${sheetRows.join("")}</sheetData></worksheet>`,
   });
 }
@@ -170,6 +171,36 @@ test("the generator refuses a sheet whose day-off marking it cannot identify", (
   const sundayWorkday = calendarSheet(2030, { workdays: new Set(["2030-02-17"]) });
   assert.throws(() => parseGovernmentCalendar(sundayWorkday, 2030), GovernmentCalendarLayoutError);
   assert.throws(() => parseGovernmentCalendar(Buffer.from("not a zip"), 2030), GovernmentCalendarLayoutError);
+});
+
+test("the generator refuses a day marked with a second fill", () => {
+  const sheet = calendarSheet(2030, {
+    edit: (cells) => {
+      findDay(cells, "2030-04-04")[1].style = 2;
+    },
+  });
+  assert.throws(() => parseGovernmentCalendar(sheet, 2030), (error) =>
+    error instanceof GovernmentCalendarLayoutError && /2030-04-04 has fill solid:FFCCFFCC/u.test(error.message));
+});
+
+test("the generator refuses a sheet without four aligned quarter blocks or with a wrong month label", () => {
+  const threeBlocks = calendarSheet(2030, {
+    edit: (cells) => {
+      for (const key of [...cells.keys()]) if (key.startsWith("18,")) cells.delete(key);
+    },
+  });
+  assert.throws(() => parseGovernmentCalendar(threeBlocks, 2030), (error) =>
+    error instanceof GovernmentCalendarLayoutError && /four quarter blocks, found 3/u.test(error.message));
+  const misaligned = calendarSheet(2030, { edit: (cells) => cells.delete("18,2") });
+  assert.throws(() => parseGovernmentCalendar(misaligned, 2030), (error) =>
+    error instanceof GovernmentCalendarLayoutError && /three months in the same columns/u.test(error.message));
+  const relabelled = calendarSheet(2030, {
+    edit: (cells) => {
+      cells.get("3,4").value = "二";
+    },
+  });
+  assert.throws(() => parseGovernmentCalendar(relabelled, 2030), (error) =>
+    error instanceof GovernmentCalendarLayoutError && /labelled 「二月」, not 一月/u.test(error.message));
 });
 
 test("the generator reproduces the committed 2026 and 2027 calendar from the DGPA files", () => {

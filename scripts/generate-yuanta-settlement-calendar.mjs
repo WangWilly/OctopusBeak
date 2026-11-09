@@ -208,6 +208,9 @@ export function parseGovernmentCalendar(buffer, year) {
   if (sundayFills.size !== 1) refuse("Sundays do not share one day-off fill.");
   const offFill = [...sundayFills][0];
   if (offFill === "none") refuse("Sundays are not filled, so the sheet's day-off marking is unknown.");
+  for (const day of days)
+    if (day.fill !== offFill && day.fill !== "none")
+      refuse(`${day.date} has fill ${day.fill}, neither the Sunday day-off fill ${offFill} nor unfilled.`);
   const weekdays = days.filter((day) => day.weekday >= 1 && day.weekday <= 5);
   const closures = weekdays.filter((day) => day.fill === offFill).map((day) => day.date).sort();
   if (weekdays.length - closures.length < 200)
