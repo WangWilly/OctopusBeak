@@ -3,8 +3,7 @@ import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts
 import { readFileSync } from "node:fs";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
-import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
-import { namesItsFailure } from "../lib/automation/failure-classification.ts";
+import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -225,22 +224,15 @@ function stagingHarness(signal = new AbortController().signal) {
     event: async (_stage, _outcome, code) => { events.push(code); },
     signalEvent: async () => undefined,
   };
-  const product: ProductCollectionHandle = {
+  const product = productCollectionHandle({
+    now: context.now,
+    text: context.text,
+    signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: context.event,
-    // As the run's handle: an untyped error from a check is reported as rejected, then thrown on.
-    validate: async (check) => {
-      try {
-        return await check();
-      } catch (error) {
-        if (!signal.aborted && !namesItsFailure(error))
-          await context.event("validation", "failed", "source-validation-rejected");
-        throw error;
-      }
-    },
     collectionPeriod: () => assert.fail("CTBC declares no collection period"),
-  };
+  });
   return {
     events,
     staged,

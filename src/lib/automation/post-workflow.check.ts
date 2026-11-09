@@ -18,7 +18,7 @@ import {
 import { postCurrentDepositResponse } from "../../workflows/post-current-deposit-balances.fixtures.ts";
 import { acceptProviderResponse, type ProviderResponse } from "../../workflows/provider-response.ts";
 import { ProviderResponseCheckError, type ProviderResponseCheck } from "./provider-response-check.ts";
-import type { ProductCollectionHandle, ProductStageRequest } from "./product-collection.ts";
+import { productCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
 import { SourceTextIntegrityError, strictSourceText, type SourceTextPort } from "./source-text.ts";
 import type { WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
 import { POST_SOURCE } from "./server/sources/post.ts";
@@ -329,13 +329,15 @@ async function stageSnapshot(
   const { context } = createContext({ page: createPage(true) });
   const staged: ProductStageRequest[] = [];
   const codes: string[] = [];
-  const product: ProductCollectionHandle = {
+  const product = productCollectionHandle({
+    now: context.now,
+    text: context.text,
+    signal: context.signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
-    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("Post declares no collection period"),
-  };
+  });
   const outcome = await stagePostDeposit(
     { observedAt, statements },
     workflowInput,

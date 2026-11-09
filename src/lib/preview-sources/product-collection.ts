@@ -20,7 +20,8 @@ import type { TypedWorkflowErrorCode } from "../automation/workflow-failures.ts"
 import type { WorkflowContextStage, WorkflowEventCounts } from "../automation/workflow-executor.ts";
 import { productRunResult, type ProductRunResult } from "../automation/workflow-run-result.ts";
 import { PreviewSourceFailure, type PreviewFailureReason } from "./source-kit.ts";
-import { SourceTextIntegrityError } from "../automation/source-text.ts";
+import { SourceTextIntegrityError, type SourceTextPort } from "../automation/source-text.ts";
+import { sourceReader, type ProviderResponseReader } from "../../workflows/provider-response-reader.ts";
 
 /** Explicit provider evidence that the person holds no such product, or that it holds nothing. */
 export type PreviewProductAbsence = Readonly<{ absent: "not_held" | "no_data" }>;
@@ -33,8 +34,18 @@ export type PreviewProductAbsence = Readonly<{ absent: "not_held" | "no_data" }>
 export type PreviewProductCollectorResult<P extends PreviewProduct> =
   P extends "time_deposit" | "loan" ? PreviewProductCollection[P] : PreviewProductCollection[P] | PreviewProductAbsence;
 
+/**
+ * What the run hands each selected preview product's collector (ADR 0116):
+ * its own Provider response reader on the run clock and text port, and the
+ * run's signal.
+ */
+export type PreviewProductHandle = Readonly<{
+  reader: ProviderResponseReader;
+  signal: AbortSignal;
+}>;
+
 export type PreviewProductCollectors = Readonly<{
-  [P in PreviewProduct]?: () => Promise<PreviewProductCollectorResult<P>>;
+  [P in PreviewProduct]?: (product: PreviewProductHandle) => Promise<PreviewProductCollectorResult<P>>;
 }>;
 
 export type PreviewProductWriter = (write: PreviewProductWrite) => Promise<PreviewWriteReceipt>;
@@ -59,6 +70,9 @@ export type PreviewProductRunOptions = Readonly<{
   collectors: PreviewProductCollectors;
   write: PreviewProductWriter;
   signal: AbortSignal;
+  /** The run clock, an RFC3339 instant. */
+  now: () => string;
+  text: SourceTextPort;
   event?: (stage: WorkflowContextStage, outcome: RunEventOutcome, code: string, counts?: WorkflowEventCounts) => Promise<void>;
   /** Throws a session-loss failure when the signed-in session is gone. */
   assertSession?: () => Promise<void>;
@@ -140,7 +154,8 @@ export async function collectPreviewProducts(options: PreviewProductRunOptions):
       await event(product, "collection", "started", "collection-started", { activity: "query" });
       const collector = options.collectors[product];
       if (!collector) throw new FailureCodeError("workflow-failed");
-      const result = collectionFor(product, await collector() as PreviewProductCollectorResult<typeof product>);
+      const handle: PreviewProductHandle = { reader: sourceReader(options), signal: options.signal };
+      const result = collectionFor(product, await collector(handle) as PreviewProductCollectorResult<typeof product>);
       if ("absent" in result) {
         done.set(product, outcome(product, result.absent));
         await event(product, "collection", "advanced", `component-${result.absent.replaceAll("_", "-")}`);

@@ -819,6 +819,8 @@ test("Fubon loan fails a query reply with status 500 inside the product's valida
     productIds: ["loan"],
     selectedIds: ["loan"],
     signal: new AbortController().signal,
+    now: () => "2026-09-01T04:00:00.000Z",
+    text: strictSourceText,
     collect: async (_typeId, product) =>
       (await readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value, validate: product.validate })).summary,
     financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },

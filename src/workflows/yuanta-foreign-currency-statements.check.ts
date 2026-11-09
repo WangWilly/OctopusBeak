@@ -1686,6 +1686,7 @@ try {
     provider: "yuanta",
     productIds: ["foreign_currency", "credit_card"],
     now: () => "2026-08-24T12:00:00+08:00",
+    text: strictSourceText,
     input: { statementTypes: ["foreign_currency", "credit_card"] },
     signal: new AbortController().signal,
     event: async () => undefined,

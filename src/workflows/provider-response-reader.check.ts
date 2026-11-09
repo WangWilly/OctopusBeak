@@ -3,13 +3,14 @@ import { after, before, test } from "node:test";
 import type { Browser, Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { frameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
   providerResponseReader,
+  sourceReader,
   WITHOUT_PRODUCT_VALIDATION,
   type ProviderReply,
 } from "./provider-response-reader.ts";
@@ -238,6 +239,41 @@ test("a read no product owns refuses the response without product validation", a
     }),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
   );
+});
+
+test("a product's handle reads on the run clock and reports a refused response as its validation failure", async () => {
+  const events: string[] = [];
+  const product = productCollectionHandle({
+    now: () => RUN_CLOCK,
+    text: strictSourceText,
+    signal: new AbortController().signal,
+    event: async (stage, outcome, code) => { events.push(`${stage}:${outcome}:${code}`); },
+    stage: () => assert.fail("nothing is staged"),
+    reportActivity: async () => undefined,
+    collectionPeriod: () => assert.fail("no period is asked for"),
+  });
+  const accepted = await product.reader.accept(RESPONSE, {
+    response: { url: `${ORIGIN}/history`, status: 200, method: "POST", headers: { date: PROVIDER_DATE, "content-type": "application/json" } },
+    evidence: { kind: "json", bytes: new TextEncoder().encode('{"ok":1}') },
+  });
+  assert.equal(accepted.response.observedAt, "2026-09-09T10:01:05+08:00");
+  assert.deepEqual(events, []);
+  await assert.rejects(
+    product.reader.accept(RESPONSE, {
+      response: { url: `${ORIGIN}/elsewhere`, status: 200, method: "POST", headers: { date: PROVIDER_DATE } },
+      evidence: { kind: "json", bytes: new TextEncoder().encode("{}") },
+    }),
+    (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
+  );
+  assert.deepEqual(events, ["validation:failed:source-validation-rejected"]);
+});
+
+test("the Source reader reads on the run clock", async () => {
+  const accepted = await sourceReader({ now: () => RUN_CLOCK, text: strictSourceText }).accept(RESPONSE, {
+    response: { url: `${ORIGIN}/history`, status: 200, method: "POST", headers: { date: PROVIDER_DATE, "content-type": "application/json" } },
+    evidence: { kind: "json", bytes: new TextEncoder().encode('{"ok":1}') },
+  });
+  assert.equal(accepted.response.observedAt, "2026-09-09T10:01:05+08:00");
 });
 
 test("a wider wait lets the declaration refuse a lookalike endpoint by name", async () => {

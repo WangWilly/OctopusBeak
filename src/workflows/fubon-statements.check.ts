@@ -37,6 +37,7 @@ import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import {
   collectSelectedProducts,
   ProductCollectionInterruptedError,
+  productCollectionHandle,
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductStageRequest,
@@ -369,13 +370,15 @@ async function collectDeposit(
       event: async () => undefined,
       signalEvent: async () => undefined,
     },
-    {
+    productCollectionHandle({
+      now: () => "2026-01-31T12:00:00.000Z",
+      text: strictSourceText,
+      signal: signal ?? new AbortController().signal,
       stage: (...requests) => { stagedItems.push(...requests); },
       reportActivity: async () => undefined,
       event: async (_stage, _outcome, code) => { events.push(code); },
-      validate: async (check) => await check(),
       collectionPeriod: () => assert.fail("the staging half reads no collection period"),
-    },
+    }),
     readCurrentBalances ?? (async () => currentTable(currentRows)),
   );
   return { ...summary, events };
@@ -1213,6 +1216,8 @@ try {
     productIds: ["deposit"],
     selectedIds: ["deposit"],
     signal: new AbortController().signal,
+    now: () => "2026-01-31T12:00:00.000Z",
+    text: strictSourceText,
     collect: async (_typeId, product) => {
       await readThroughShell({ failAccount: shellAccounts[1]!.value, validate: product.validate });
       throw new Error("a deposit read with a failed reply must not finish");

@@ -147,6 +147,11 @@ export type ProviderResponsePorts = Readonly<{
 /** For a read a source makes before any product collects, such as fetching its session. */
 export const WITHOUT_PRODUCT_VALIDATION: ProductCollectionHandle["validate"] = async (check) => await check();
 
+/** The Source reader (ADR 0116): the reader for a read a source makes before any product collects. */
+export function sourceReader(run: Readonly<{ now: () => string; text: SourceTextPort }>): ProviderResponseReader {
+  return providerResponseReader({ now: () => run.now(), text: run.text, validate: WITHOUT_PRODUCT_VALIDATION });
+}
+
 export type ProviderResponseReader = Readonly<{
   /** Wait for the declared response the trigger causes, read its body and accept it. */
   capture<Kind extends ProviderBodyKind, DateRule extends ProviderDateRule, Triggered = void>(

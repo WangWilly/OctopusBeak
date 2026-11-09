@@ -6,6 +6,7 @@ import test from "node:test";
 import { registerHooks } from "node:module";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import {
+  productCollectionHandle,
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductStageRequest,
@@ -59,13 +60,15 @@ function cardCollection(observedAt: string) {
     event: async () => undefined,
     signalEvent: async () => undefined,
   };
-  const product: ProductCollectionHandle = {
+  const product = productCollectionHandle({
+    now: context.now,
+    text: context.text,
+    signal: context.signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
-    validate: async (check) => await check(),
     collectionPeriod: () => assert.fail("Fubon credit cards declare no collection period"),
-  };
+  });
   return { staged, context, product };
 }
 

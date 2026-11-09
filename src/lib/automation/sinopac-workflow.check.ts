@@ -27,7 +27,7 @@ import {
   type CommitAttemptReport,
 } from "./commit-attempt.ts";
 import type { WorkflowContext, WorkflowFinancialCommitPort, WorkflowContextWith } from "./workflow-executor.ts";
-import { ProductCollectionInterruptedError, type ProductCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, productCollectionHandle, type ProductCollectionHandle, type ProductStageRequest } from "./product-collection.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import type { CollectionPeriod } from "./collection-period.ts";
 import { SINOPAC_SOURCE } from "./server/sources/sinopac.ts";
@@ -230,13 +230,15 @@ const salaryDay: CollectionPeriod = {
 };
 
 function productHandle(staged: ProductStageRequest[], codes: string[]): ProductCollectionHandle {
-  return {
+  return productCollectionHandle({
+    now: () => "2026-09-24T12:00:00.000+08:00",
+    text: strictSourceText,
+    signal: new AbortController().signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async (_stage, _outcome, code) => { codes.push(code); },
-    validate: async (check) => await check(),
     collectionPeriod: () => salaryDay,
-  };
+  });
 }
 
 function currentBalanceResponse() {

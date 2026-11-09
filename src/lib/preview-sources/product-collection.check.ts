@@ -8,12 +8,15 @@ import type {
 } from "../../ledger/pglite/preview-financial-data.ts";
 import { ProductCollectionInterruptedError } from "../automation/product-collection.ts";
 import { ProviderResponseCheckError } from "../automation/provider-response-check.ts";
+import { strictSourceText } from "../automation/source-text.ts";
+import { taipeiInstant } from "../time/timezone.ts";
 import { createWorkflowExecutor, type WorkflowDefinition } from "../automation/workflow-executor.ts";
 import { ATTACHED_PREVIEW_PRODUCTS, collectAttachedPreviewProducts } from "./attached-products.ts";
 import {
   collectPreviewProducts,
   previewRunOutput,
   type PreviewProductCollectors,
+  type PreviewProductHandle,
   type PreviewProductRun,
 } from "./product-collection.ts";
 import { PREVIEW_PRODUCTS_FIXTURE_SOURCE } from "./fixture-source.ts";
@@ -51,6 +54,8 @@ function harness(collectors: PreviewProductCollectors, selected: readonly Previe
     collectors,
     write: async (write) => { writes.push(write.product); return previewReceipt({ sourceId: "s", institution: "bank-017", ...write }); },
     signal,
+    now: () => AT,
+    text: strictSourceText,
     event: async (_stage, _outcome, code) => { events.push(code); },
     ...(assertSession ? { assertSession } : {}),
   });
@@ -85,6 +90,33 @@ test("a refused provider response fails its product as a validation failure", as
     time_deposit: async () => emptyTimeDeposits,
   });
   assert.equal(statuses(await run())[0], "deposit:failed:source-validation-failed");
+});
+
+test("each preview collector is handed a reader on the run clock and the run's signal", async () => {
+  const signal = new AbortController().signal;
+  const handles: PreviewProductHandle[] = [];
+  const { run } = harness({
+    deposit: async (product) => { handles.push(product); return depositCollection; },
+    credit_card: async (product) => { handles.push(product); return creditCollection; },
+    time_deposit: async () => emptyTimeDeposits,
+  });
+  await run(signal);
+  assert.equal(handles.length, 2);
+  assert.notEqual(handles[0]!.reader, handles[1]!.reader);
+  for (const handle of handles) {
+    assert.equal(handle.signal, signal);
+    const accepted = await handle.reader.accept({
+      label: "Check bank deposits",
+      host: "bank.example",
+      endpoints: [{ path: "/deposits", method: "GET", contentType: /^application\/json\b/iu }],
+      cacheControl: [],
+      providerDate: "optional",
+    }, {
+      response: { url: "https://bank.example/deposits", status: 200, method: "GET", headers: { "content-type": "application/json" } },
+      evidence: { kind: "json", bytes: new TextEncoder().encode("{}") },
+    });
+    assert.equal(accepted.response.observedAt, taipeiInstant(AT));
+  }
 });
 
 test("a session loss ends the run and leaves later products unattempted and unwritten", async () => {
@@ -171,6 +203,8 @@ test("attached products write only through a writer bound to the verified source
   const context = {
     previewWrite: { write: async (input: PreviewWrite) => { writes.push(input); return previewReceipt(input); } },
     signal: new AbortController().signal,
+    now: () => AT,
+    text: strictSourceText,
     event: async () => undefined,
   };
   const result = await collectAttachedPreviewProducts({

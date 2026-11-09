@@ -464,8 +464,12 @@ One named check a provider response must pass before a parser reads it, such as 
 _Avoid_: Snapshot check (for a check that also covers history reads), validation failure message
 
 **Provider response reader**:
-The one step through which a run obtains every provider response it reads: it waits for the declared response that the source's action triggers, checks the response's transport facts before reading its body, reads the body only while the run continues, records the run's observed time, and accepts it as a Verified provider response inside the validation its caller supplies. A product's read is accepted inside that product's validation, so a refused response is always a validation failure; a read a source makes before any product collects, such as fetching its session, carries no product validation. The bank decides only which response it declares, which action triggers it, and which request the response must answer.
-_Avoid_: Provider reply reader, per-bank response adapter, per-bank header read, wall-clock observed time
+The one step through which a run obtains every provider response it reads: it waits for the declared response that the source's action triggers, checks the response's transport facts before reading its body, reads the body only while the run continues, records the run's observed time, and accepts it as a Verified provider response inside the validation of whoever owns the read. A bank never builds one: each verified product is handed its own, so a refused response is always that product's validation failure; an Attached preview product is handed a Source reader, and a response it refuses fails that preview product as a validation failure; a read a source makes before any product collects goes through the Source reader. The bank decides only which response it declares, which action triggers it, and which request the response must answer.
+_Avoid_: Provider reply reader, per-bank response adapter, per-bank header read, wall-clock observed time, collector-assembled reader
+
+**Source reader**:
+The Provider response reader that carries no product validation: the one a source uses before any product collects, such as fetching its session or signing in, and the one each Attached preview product reads through.
+_Avoid_: Unvalidated reader, session reader, product-less validation
 
 **Measurement history**:
 The append-only sequence of Balance or Holding Observations created for distinct source-side measurement evidence with a contract-established effective time. Reprocessing the same Source Capture does not create another observation, while a measurement whose effective time cannot be established fails integration admission rather than entering history.
