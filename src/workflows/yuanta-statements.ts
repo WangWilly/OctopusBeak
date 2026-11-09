@@ -13,7 +13,7 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import {
   StatementComponentAbsentError,
@@ -770,7 +770,7 @@ export async function readYuantaDepositSource(
   // accountFilters remains accepted for compatibility but never narrows it.
   context.signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  const { reader } = product;
   await prepareYuantaDepositPage(site, queryRange);
   context.signal.throwIfAborted();
   const accounts: YuantaDepositAccountRead[] = [];
@@ -889,10 +889,7 @@ export async function stageYuantaDeposit(
   const balances = await captureCurrentStateSnapshots(yuantaCurrentBalanceSnapshot, {
     captures: financialDepositCaptures,
     acquire: readCurrentBalanceTable,
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal: context.signal,
   });
 
   context.signal.throwIfAborted();
@@ -950,7 +947,7 @@ export async function runYuantaStatements(
     () => readYuantaCurrentDepositBalanceTable(
       yuantaEbankSite(page, context),
       "domestic",
-      providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+      product.reader,
     ),
   );
 }

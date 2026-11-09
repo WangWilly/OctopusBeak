@@ -15,7 +15,7 @@ import {
 } from "parse5";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import { yuantaQuickRange } from "./yuanta-statements.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
@@ -2364,7 +2364,7 @@ export async function readYuantaForeignCurrencySource(
   const { signal, text: sourceText } = context;
   signal.throwIfAborted();
   const site = yuantaEbankSite(page, context);
-  const reader = providerResponseReader({ now: () => context.now(), text: sourceText, validate: product.validate });
+  const { reader } = product;
   await site.open(FX_TRANSACTION_DETAILS_ROUTE);
   const accounts = await readYuantaForeignCurrencyAccountOptions(site, input.accountFilters);
   const downloads: YuantaForeignCurrencyDownload[] = [];
@@ -2470,10 +2470,7 @@ export async function stageYuantaForeignCurrency(
         throw new Error("Yuanta foreign current balances were not read for the admitted accounts.");
       return snapshot.currentBalances;
     },
-    now,
     product,
-    text: sourceText,
-    signal,
   });
   checkCancelled();
   product.stage(...statementItems, ...balances.items);

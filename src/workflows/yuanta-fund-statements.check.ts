@@ -24,7 +24,6 @@ import { test } from "node:test";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
-import { validationReporter } from "../lib/automation/product-collection.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 
@@ -1068,20 +1067,17 @@ async function readFundThroughShell(browser: import("playwright").Browser, optio
       return await route.fulfill(html(`<p>${url.pathname}</p>`));
     });
     await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp`, { waitUntil: "load" });
-    const handle = yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31"));
     const { events } = options;
     const snapshot = await yuantaFundModule.readYuantaFundSource(
       page,
       yuantaFundStatementsInputSchema.parse(options.input),
       yuantaCollectionContext({ signal: options.signal }),
-      events
-        ? {
-          ...handle,
-          validate: validationReporter(async (stage, outcome) => {
-            events.push({ stage, outcome });
-          }, options.signal ?? new AbortController().signal),
-        }
-        : handle,
+      yuantaStagingHandle([], activities, fixedPeriod("2026-01-01", "2026-01-31"), {
+        signal: options.signal,
+        event: events && (async (stage, outcome) => {
+          events.push({ stage, outcome });
+        }),
+      }),
     );
     const menuCalls = await page.evaluate(() => (window as { menuCalls?: unknown }).menuCalls);
     return { snapshot, served, posted, activities, menuCalls };

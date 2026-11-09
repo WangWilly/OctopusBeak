@@ -37,8 +37,7 @@ import {
 import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
-  providerResponseReader,
-  WITHOUT_PRODUCT_VALIDATION,
+  sourceReader,
   type ProviderBodyAcquisition,
   type ProviderResponseReader,
 } from "./provider-response-reader.ts";
@@ -738,12 +737,10 @@ async function submitCreditCardSummary(
 
   let loaded: Awaited<ReturnType<typeof loadYuantaCreditCardSummaryPage>>;
   try {
-    const reader = providerResponseReader({
-      now: () => context.now(),
-      text: context.text,
-      validate: WITHOUT_PRODUCT_VALIDATION,
-    });
-    loaded = await loadYuantaCreditCardSummaryPage(site, reader, link ?? undefined);
+    // Not the card's reader: a refused summary reply fails the card only when
+    // the current-credit snapshot rejects it, so a summary page that then
+    // cannot be read stays a read failure, not a validation failure.
+    loaded = await loadYuantaCreditCardSummaryPage(site, sourceReader(context), link ?? undefined);
   } catch (error) {
     if (
       error instanceof YuantaCreditSummaryNavigationError ||
@@ -1184,8 +1181,7 @@ export async function readYuantaCreditCardSource(
 ): Promise<YuantaCreditCardSourceSnapshot> {
   context.signal.throwIfAborted();
   await product.reportActivity("query");
-  const now = () => context.now();
-  const reader = providerResponseReader({ now, text: context.text, validate: product.validate });
+  const { reader } = product;
   const bills = await openCreditCardBillsPage(site, reader);
   const currentMonthHtml = bills.html;
   context.text.assertIntact(currentMonthHtml);
@@ -1283,10 +1279,7 @@ export async function readYuantaCreditCardSource(
           evidence: { kind: "html", html: currentCredit.html },
           response: currentCredit.response,
         }),
-        now,
         product,
-        text: context.text,
-        signal: context.signal,
       })
     : undefined;
 
@@ -1416,7 +1409,6 @@ export async function stageYuantaCreditCard(
           {
             captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
             product,
-            signal: context.signal,
           },
         );
         items.push(...balanceItems);

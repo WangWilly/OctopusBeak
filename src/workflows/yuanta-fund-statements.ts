@@ -20,7 +20,7 @@ import type { CanonicalOccurrenceGroupCoverage } from "../ledger/canonical/occur
 import type { BrowserScope } from "./frame-scope.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -1974,7 +1974,7 @@ export async function readYuantaFundSource(
 ): Promise<YuantaFundSourceSnapshot> {
   const site = yuantaEbankSite(page, context);
   const sourceText = context.text;
-  const reader = providerResponseReader({ now: () => context.now(), text: sourceText, validate: product.validate });
+  const { reader } = product;
   const dateRange = yuantaFundQueryRange(product.collectionPeriod());
   const historyStartDate = canonicalSourceDate(dateRange.startDate);
   const historyEndDate = canonicalSourceDate(dateRange.endDate);

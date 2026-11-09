@@ -38,11 +38,10 @@ import {
   YUANTA_TRADE_CAPTCHA_MODAL_SELECTOR,
   YUANTA_TRADE_CAPTCHA_SUBMIT_SELECTOR,
 } from "./yuanta-trade-statements.ts";
-import type { ProviderResponsePorts } from "./provider-response-reader.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 import { readFile } from "node:fs/promises";
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
-import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
+import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { RUN_EVENT_SIGNALS, signalRunEvent, type RunEventSignal, type WorkflowRunEvent } from "../lib/automation/run-event.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
@@ -51,7 +50,7 @@ import { withBoundProducts } from "../lib/automation/product-collection.fixtures
 import { YUANTA_TRADE_SOURCE } from "../lib/automation/server/sources/yuanta-trade.ts";
 import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { ExternalPrerequisiteUnavailableError } from "../lib/automation/external-prerequisite.ts";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import {
   PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
@@ -997,23 +996,23 @@ function fakeReportPage(landings: readonly ("report" | "error")[]) {
   return { page, submissions: () => submissions };
 }
 
-function reportContext(): WorkflowContext & ProviderResponsePorts {
-  return {
-    validate: async (check) => await check(),
-    runId: "yuanta-trade-report-error-fixture",
-    signal: new AbortController().signal,
+function reportProduct(): ProductCollectionHandle {
+  return productCollectionHandle({
     now: () => "2026-10-12T02:08:50.000Z",
-    browser: { withPage: async () => { throw new Error("unused"); } },
     text: strictSourceText,
-    verification: { complete: async () => { throw new Error("unused"); } },
+    signal: new AbortController().signal,
     event: async () => {},
-    signalEvent: async () => {},
-  };
+    stage: () => {},
+    reportActivity: async () => {},
+    collectionPeriod: () => {
+      throw new Error("unused");
+    },
+  });
 }
 
 test("resubmits a Yuanta report that the provider redirected to its error page", async () => {
   const fake = fakeReportPage(["error", "report"]);
-  const page = await captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportContext());
+  const page = await captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportProduct());
 
   assert.equal(fake.submissions(), 2);
   assert.equal(page.url, "https://global.yuanta.com.tw/NexusWebTrade/AssetReport/OverseaTrade");
@@ -1023,7 +1022,7 @@ test("resubmits a Yuanta report that the provider redirected to its error page",
 test("fails a Yuanta report that keeps redirecting to the provider error page", async () => {
   const fake = fakeReportPage([]);
   await assert.rejects(
-    captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportContext()),
+    captureTypedReport(fake.page, "OverseaTrade", { index: -1 }, reportProduct()),
     (error: unknown) => error instanceof ProviderResponseCheckError && error.check === "response-endpoint",
   );
   assert.equal(fake.submissions(), 3);

@@ -8,7 +8,7 @@ import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
-import { StatementComponentAbsentError, validationReporter } from "../lib/automation/product-collection.ts";
+import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
@@ -85,7 +85,7 @@ await assert.rejects(
     {} as never,
     {} as never,
     yuantaCollectionContext({ signal: cancelled.signal }),
-    yuantaStagingHandle(cancelledSink),
+    yuantaStagingHandle(cancelledSink, [], undefined, { signal: cancelled.signal }),
   ),
   /abort/i,
 );
@@ -1019,20 +1019,17 @@ test("Yuanta credit card reads the bills, unbilled and summary pages through the
         return await route.fulfill(html(`<p>${url.pathname}</p>`));
       });
       await page.goto(`${YUANTA_EBANK_ORIGIN}/nib/shell.jsp?cid=${SHELL_CID}`, { waitUntil: "load" });
-      const handle = yuantaStagingHandle(staged);
       const { events } = options;
       const summary = await runYuantaCreditCardStatements(
         page,
         input,
         yuantaCollectionContext({ signal: options.signal, now: "2026-07-10T00:00:00.000Z" }),
-        events
-          ? {
-            ...handle,
-            validate: validationReporter(async (stage, outcome) => {
-              events.push({ stage, outcome });
-            }, options.signal ?? new AbortController().signal),
-          }
-          : handle,
+        yuantaStagingHandle(staged, [], undefined, {
+          signal: options.signal,
+          event: events && (async (stage, outcome) => {
+            events.push({ stage, outcome });
+          }),
+        }),
       );
       return { summary, served, posted, staged };
     } finally {

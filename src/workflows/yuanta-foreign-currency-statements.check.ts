@@ -2011,7 +2011,7 @@ function yuantaForeignWindowCapture(
         page,
         fxInput,
         yuantaCollectionContext({ signal: options.signal, now: "2026-08-24T10:00:00+08:00" }),
-        yuantaStagingHandle(items, activities),
+        yuantaStagingHandle(items, activities, undefined, { signal: options.signal }),
       );
       const picked = await page.evaluate(() => (window as { picked?: string[] }).picked ?? []);
       return { snapshot, served, queried, exported, items, activities, picked };

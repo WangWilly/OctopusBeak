@@ -1,5 +1,9 @@
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
-import { productCollectionHandle, type ProductCollectionHandle } from "../lib/automation/product-collection.ts";
+import {
+  productCollectionHandle,
+  type ProductCollectionHandle,
+  type ProductCollectionStageEvent,
+} from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { strictSourceText, type SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -35,18 +39,19 @@ export function yuantaStagingHandle(
   staged: PGliteWorkflowRunItem[],
   activities: string[] = [],
   period?: CollectionPeriod,
+  run: Readonly<{ signal?: AbortSignal; event?: ProductCollectionStageEvent }> = {},
 ): ProductCollectionHandle {
   return productCollectionHandle({
     now: () => "2026-09-25T00:00:00.000Z",
     text: strictSourceText,
-    signal: new AbortController().signal,
+    signal: run.signal ?? new AbortController().signal,
     stage: (...requests) => {
       staged.push(...requests.map((request) => ({ ...request, provider: "yuanta" })));
     },
     reportActivity: async (activity) => {
       activities.push(activity);
     },
-    event: async () => undefined,
+    event: run.event ?? (async () => undefined),
     collectionPeriod: () => {
       if (!period) throw new Error("This check supplies no collection period.");
       return period;
