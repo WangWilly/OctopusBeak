@@ -188,7 +188,6 @@ function depositFrom(source: SinopacDepositSource): SinopacProviderWorkflowDepen
     collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
       await readSinopacDepositSource(source, depositInput, context, product),
       depositInput,
-      context,
       product,
       source.readCurrentBalances,
     ),
@@ -321,7 +320,7 @@ test("a SinoPac snapshot of provider no-data stages source only and never reads 
     queryTransactions: async () => ({ Header: "FAIL", Message: "查無資料", SubInfo: [] }),
   }), input, context, product);
   let balanceReads = 0;
-  const counts = await stageSinopacDeposit(snapshot, input, context, product, async () => {
+  const counts = await stageSinopacDeposit(snapshot, input, product, async () => {
     balanceReads += 1;
     return currentBalanceResponse();
   });
@@ -341,7 +340,7 @@ test("a financial SinoPac snapshot reads current balances once and stages the ma
   const snapshot = await readSinopacDepositSource(fakeSource(), input, context, product);
   codes.length = 0;
   let balanceReads = 0;
-  const counts = await stageSinopacDeposit(snapshot, input, context, product, async () => {
+  const counts = await stageSinopacDeposit(snapshot, input, product, async () => {
     balanceReads += 1;
     return currentBalanceResponse();
   });
@@ -374,7 +373,7 @@ test("a failed SinoPac current-balance read fails the build before anything is s
   const product = productHandle(staged, codes);
   const snapshot = await readSinopacDepositSource(fakeSource(), input, context, product);
   await assert.rejects(
-    stageSinopacDeposit(snapshot, input, context, product, async () => { throw new Error("synthetic balance page failure"); }),
+    stageSinopacDeposit(snapshot, input, product, async () => { throw new Error("synthetic balance page failure"); }),
     /synthetic balance page failure/u,
   );
   assert.deepEqual(staged, []);

@@ -240,7 +240,7 @@ function runWithLoan(writes: PreviewWrite[], commits: unknown[][], loanTransport
   return runVerifiedEntry(SINOPAC_SOURCE, sinopacWorkflowWith({
     collectDeposit: async (_page, depositInput, context, product) => await stageSinopacDeposit(
       await readSinopacDepositSource(depositSource, depositInput, context, product),
-      depositInput, context, product, depositSource.readCurrentBalances,
+      depositInput, product, depositSource.readCurrentBalances,
     ),
     loanTransport,
   }), withBoundProducts(workflowContext(writes, commits), SINOPAC_SOURCE, input), input);

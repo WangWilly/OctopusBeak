@@ -4,11 +4,7 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import { withAbort } from "./abort.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import {
-  providerResponseReader,
-  WITHOUT_PRODUCT_VALIDATION,
-  type ProviderResponseReader,
-} from "./provider-response-reader.ts";
+import { sourceReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import type { FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -777,8 +773,7 @@ const SINOPAC_TRANSACTION_ROUTE: SinopacMmaRoute = {
 
 async function listSinopacAccounts(
   site: SinopacMmaSite,
-  reader: ProviderResponseReader,
-  validate: ProductCollectionHandle["validate"],
+  { reader, validate }: Pick<ProductCollectionHandle, "reader" | "validate">,
 ): Promise<SinopacAccount[]> {
   const { evidence } = await reader.accept(SINOPAC_ACCOUNT_LIST_RESPONSE, await site.open(SINOPAC_TRANSACTION_ROUTE, reader));
   return await validate(() => {
@@ -789,14 +784,14 @@ async function listSinopacAccounts(
   });
 }
 
+/** One window's accepted transaction reply, before its envelope is read. */
 async function querySinopacTransactions(
   site: SinopacMmaSite,
   reader: ProviderResponseReader,
   account: SinopacAccount,
   dateRange: DateRange,
   businessDate: string,
-  validate: ProductCollectionHandle["validate"],
-): Promise<SinopacTransactionResponse> {
+): Promise<unknown> {
   const body = new URLSearchParams({
     Acct: accountLabel(account),
     AcctValue: accountId(account),
@@ -811,7 +806,7 @@ async function querySinopacTransactions(
   });
   const { bytes, response } = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, { body: body.toString() });
   const { evidence } = await reader.accept(SINOPAC_TRANSACTION_RESPONSE, { evidence: { kind: "json", bytes }, response });
-  return await validate(() => sinopacSingleEnvelope<SinopacTransactionResponse>(evidence.value, "transaction"));
+  return evidence.value;
 }
 
 type SinopacWrapperCategory = "native" | "patched" | "unknown";
@@ -958,20 +953,16 @@ export async function runSinopacIdentityValidation(
   ];
   const captures: SinopacIdentityCapture[] = [];
   // An identity validation runs outside any product, so nothing owns its validation.
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: WITHOUT_PRODUCT_VALIDATION });
+  const reader = sourceReader(context);
 
   // Query exactly three sequential sets.  Monthly windows remain the normal
   // provider boundary so the validation does not introduce a new request shape.
   for (const querySet of querySets) {
     const windows: SinopacIdentityCapture["windows"] = [];
     for (const window of sinopacQueryWindows(querySet.range)) {
-      const response = validateSinopacTransactionRows(await querySinopacTransactions(
-        site,
-        reader,
-        accounts[0]!,
-        window,
-        querySet.range.endDate,
-        WITHOUT_PRODUCT_VALIDATION,
+      const response = validateSinopacTransactionRows(sinopacSingleEnvelope<SinopacTransactionResponse>(
+        await querySinopacTransactions(site, reader, accounts[0]!, window, querySet.range.endDate),
+        "transaction",
       ));
       windows.push({
         window,
@@ -1092,14 +1083,15 @@ export type SinopacDepositSource = Readonly<{
 
 export function sinopacDepositSource(
   site: SinopacMmaSite,
-  context: WorkflowContext,
-  product: ProductCollectionHandle,
+  product: Pick<ProductCollectionHandle, "reader" | "validate">,
 ): SinopacDepositSource {
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  const { reader, validate } = product;
   return {
-    listAccounts: () => listSinopacAccounts(site, reader, product.validate),
-    queryTransactions: (account, window, businessDate) =>
-      querySinopacTransactions(site, reader, account, window, businessDate, product.validate),
+    listAccounts: () => listSinopacAccounts(site, product),
+    queryTransactions: async (account, window, businessDate) => {
+      const payload = await querySinopacTransactions(site, reader, account, window, businessDate);
+      return await validate(() => sinopacSingleEnvelope<SinopacTransactionResponse>(payload, "transaction"));
+    },
     readCurrentBalances: () => readSinopacCurrentDepositBalanceResponse(site, reader),
   };
 }
@@ -1239,11 +1231,9 @@ export async function readSinopacDepositSource(
 export async function stageSinopacDeposit(
   snapshot: SinopacDepositSourceSnapshot,
   _input: SinopacWorkflowInput,
-  context: WorkflowContext,
   product: ProductCollectionHandle,
   readCurrentBalances: SinopacReadCurrentDepositBalanceResponse,
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
-  const { signal } = context;
   const { event } = product;
   const { observedAt } = snapshot;
   const captureOccurrenceId = sinopacCaptureId(observedAt);
@@ -1294,10 +1284,7 @@ export async function stageSinopacDeposit(
   const balances = await captureCurrentStateSnapshots(sinopacCurrentBalanceSnapshot, {
     captures: financialCapturesForCurrent,
     acquire: readCurrentBalances,
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal,
   });
   product.stage(...items, ...balances.items);
   return {
@@ -1315,9 +1302,9 @@ export async function runSinopacDeposit(
   context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
-  const source = sinopacDepositSource(site, context, product);
+  const source = sinopacDepositSource(site, product);
   const snapshot = await readSinopacDepositSource(source, input, context, product);
-  return await stageSinopacDeposit(snapshot, input, context, product, source.readCurrentBalances);
+  return await stageSinopacDeposit(snapshot, input, product, source.readCurrentBalances);
 }
 
 export type SinopacProviderWorkflowDependencies = Readonly<{
@@ -1372,22 +1359,18 @@ async function runSinopacWorkflow(
     }, {
       assertSession,
       attached: {
-        collectors: () => {
-          const reader = providerResponseReader({
-            now: () => context.now(),
-            text: context.text,
-            validate: WITHOUT_PRODUCT_VALIDATION,
-          });
-          const transport = dependencies.cardTransport ?? sinopacCardTransport(site, reader);
-          return {
-            // Attached products have no structure report yet, so responses are validated but not kept.
-            credit_card: () => collectSinopacCreditCards({ transport, collectedAt: context.now(), observe: () => undefined }),
-            loan: () => collectSinopacLoans({
-              transport: dependencies.loanTransport ?? sinopacLoanTransport(site, reader),
-              collectedAt: context.now(),
-            }),
-          };
-        },
+        collectors: () => ({
+          // Attached products have no structure report yet, so responses are validated but not kept.
+          credit_card: ({ reader }) => collectSinopacCreditCards({
+            transport: dependencies.cardTransport ?? sinopacCardTransport(site, reader),
+            collectedAt: context.now(),
+            observe: () => undefined,
+          }),
+          loan: ({ reader }) => collectSinopacLoans({
+            transport: dependencies.loanTransport ?? sinopacLoanTransport(site, reader),
+            collectedAt: context.now(),
+          }),
+        }),
         assertSession,
       },
     });
