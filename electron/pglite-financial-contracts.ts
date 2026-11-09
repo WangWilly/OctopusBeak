@@ -71,6 +71,7 @@ import type {
 import type { SafeWorkflowFailureError, WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
 import type { PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
+import { plainRecord } from "./pglite-worker-call.ts";
 
 /**
  * How the worker schedules an operation: interactive work answers a click and
@@ -418,12 +419,6 @@ export type PGliteFinancialResponse =
     message: string;
   }>;
 
-export type PGliteFinancialRpcPort = {
-  on(event: "message", listener: (value: unknown) => void): unknown;
-  off(event: "message", listener: (value: unknown) => void): unknown;
-  postMessage(value: unknown): void;
-};
-
 export type PGliteFinancialRequestOptions = Readonly<{
   signal?: AbortSignal;
 }>;
@@ -453,9 +448,3 @@ export type PGliteFinancialPort = Readonly<{
     options?: PGliteFinancialRequestOptions,
   ): Promise<PGliteFinancialResult<Op>>;
 }>;
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}

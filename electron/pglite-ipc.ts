@@ -10,6 +10,7 @@ import {
 } from "../src/lib/desktop/api.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { OctopusBeakDataViewChannels } from "./preload.ts";
+import { plainRecord } from "./pglite-worker-call.ts";
 
 export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const satisfies OctopusBeakDataViewChannels["subscribe"];
 export const DATA_VIEWS_UNSUBSCRIBE_CHANNEL = "data-views:unsubscribe" as const satisfies OctopusBeakDataViewChannels["unsubscribe"];
@@ -38,12 +39,6 @@ type SenderSubscriptions = {
   onDestroyed: () => void;
   onNavigate: () => void;
 };
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 function invalidResult<T extends { ok: false; code: DataViewErrorCode; message: string }>(
   code: DataViewErrorCode,

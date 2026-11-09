@@ -16,10 +16,10 @@ import {
   PGLITE_CHILD_RPC_TOKEN_BYTES,
   PGLITE_CHILD_RPC_VERSION,
   LineSocketPort,
-  plainRecord,
   PGliteChildTransportError,
   validToken,
 } from "./pglite-child-rpc-client.ts";
+import { plainRecord } from "./pglite-worker-call.ts";
 export * from "./pglite-child-rpc-client.ts";
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;

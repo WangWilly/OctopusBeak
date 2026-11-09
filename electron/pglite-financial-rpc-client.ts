@@ -7,24 +7,12 @@ import type {
   PGliteFinancialPort,
   PGliteFinancialRequest,
   PGliteFinancialRequestOptions,
-  PGliteFinancialRpcPort,
 } from "./pglite-financial-contracts.ts";
+import { createWorkerCallClient, type WorkerPort } from "./pglite-worker-call.ts";
 
 export type PGliteFinancialRpcClient = PGliteFinancialPort & Readonly<{
   close(error?: Error): void;
 }>;
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-type Pending = {
-  resolve(value: unknown): void;
-  reject(error: Error): void;
-  cleanup(): void;
-};
 
 export class PGliteFinancialError extends Error {
   readonly code: "invalid-request" | "operation-failed" | "worker-closed" | "cancelled";
@@ -53,20 +41,15 @@ function isFailureCategory(value: unknown): value is PGliteFinancialFailureCateg
 }
 
 export function createPGliteFinancialRpcClient(
-  port: PGliteFinancialRpcPort,
+  port: WorkerPort,
   ready?: Promise<void>,
   diagnosticContext?: WorkflowFailureCorrelation,
 ): PGliteFinancialRpcClient {
-  const pending = new Map<number, Pending>();
-  let nextId = 1;
-  let closed = false;
-  const onMessage = (value: unknown): void => {
-    if (!plainRecord(value) || value.kind !== "pglite-financial-response" || value.version !== 1 || !Number.isSafeInteger(value.id) || typeof value.ok !== "boolean") return;
-    const request = pending.get(value.id as number);
-    if (!request) return;
-    pending.delete(value.id as number);
-    if (value.ok === true) request.resolve(value.value);
-    else {
+  const client = createWorkerCallClient({
+    port,
+    ready,
+    response: { kind: "pglite-financial-response", version: 1 },
+    failure: (value) => {
       const code = value.code === "invalid-request" || value.code === "worker-closed" || value.code === "cancelled"
         ? value.code
         : "operation-failed";
@@ -76,88 +59,25 @@ export function createPGliteFinancialRpcClient(
         code === "operation-failed" ? pgliteWorkflowAdmissionReason(value.reason) : undefined,
       );
       if (code === "operation-failed") retainSafeWorkflowFailureError(error, value.diagnosticError);
-      request.reject(error);
-    }
-  };
-  port.on("message", onMessage);
-  const send = (operation: PGliteFinancialOperation, args: readonly unknown[], options: PGliteFinancialRequestOptions = {}): Promise<unknown> => {
-    if (closed) return Promise.reject(new PGliteFinancialError("worker-closed"));
-    return new Promise((resolve, reject) => {
-      if (options.signal?.aborted) {
-        reject(new PGliteFinancialError("cancelled"));
-        return;
-      }
-      const send = () => {
-        if (closed) {
-          reject(new PGliteFinancialError("worker-closed"));
-          return;
-        }
-        if (options.signal?.aborted) {
-          reject(new PGliteFinancialError("cancelled"));
-          return;
-        }
-        const id = nextId++;
-        const abort = () => {
-          // Keep the request pending until the worker sends its terminal
-          // response.  A commit may have crossed the cancellation frame; in
-          // that case the caller must receive the durable success receipt.
-          // If the worker rolls back before its final cancellation check, it
-          // sends the cancelled response and this same pending entry rejects.
-          if (!pending.has(id)) return;
-          try {
-            port.postMessage({ kind: "pglite-financial-cancel", version: 1, id } satisfies PGliteFinancialCancelRequest);
-          } catch {
-            // A disconnected peer is indeterminate, so surface the transport
-            // closure rather than claiming that the write rolled back.
-            pending.delete(id);
-            const entry = pendingEntry;
-            entry?.cleanup();
-            entry?.reject(new PGliteFinancialError("worker-closed"));
-          }
-        };
-        const pendingEntry: Pending = {
-          resolve: (value) => {
-            options.signal?.removeEventListener("abort", abort);
-            resolve(value);
-          },
-          reject: (error) => {
-            options.signal?.removeEventListener("abort", abort);
-            reject(error);
-          },
-          cleanup: () => options.signal?.removeEventListener("abort", abort),
-        };
-        options.signal?.addEventListener("abort", abort, { once: true });
-        pending.set(id, pendingEntry);
-        try {
-          port.postMessage({
-            kind: "pglite-financial-request",
-            version: 1,
-            id,
-            operation,
-            args,
-            ...(diagnosticContext ? { diagnosticContext } : {}),
-          } satisfies PGliteFinancialRequest);
-        } catch (error) {
-          pending.delete(id);
-          pendingEntry.cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      };
-      if (ready) void ready.then(send, (error) => reject(error instanceof Error ? error : new Error(String(error))));
-      else send();
-    });
-  };
-
-  const close = (error = new PGliteFinancialError("worker-closed")): void => {
-    if (closed) return;
-    closed = true;
-    port.off("message", onMessage);
-    for (const item of pending.values()) {
-      item.cleanup();
-      item.reject(error);
-    }
-    pending.clear();
-  };
-  const request = send as PGliteFinancialPort["request"];
-  return { request, close };
+      return error;
+    },
+    closed: () => new PGliteFinancialError("worker-closed"),
+  });
+  const request = ((operation: PGliteFinancialOperation, args: readonly unknown[], options: PGliteFinancialRequestOptions = {}) =>
+    client.call(
+      (id) => ({
+        kind: "pglite-financial-request",
+        version: 1,
+        id,
+        operation,
+        args,
+        ...(diagnosticContext ? { diagnosticContext } : {}),
+      } satisfies PGliteFinancialRequest),
+      options.signal && {
+        signal: options.signal,
+        cancelled: () => new PGliteFinancialError("cancelled"),
+        frame: (id) => ({ kind: "pglite-financial-cancel", version: 1, id } satisfies PGliteFinancialCancelRequest),
+      },
+    )) as PGliteFinancialPort["request"];
+  return { request, close: client.close };
 }
