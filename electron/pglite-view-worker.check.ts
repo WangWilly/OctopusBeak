@@ -119,7 +119,7 @@ test("the registry runs its Spending page actions through the same actions the v
   }, { readSettings: () => ({}) });
   try {
     const settled: unknown[] = [];
-    context!.pageActions.onSettled((result) => settled.push(result));
+    context!.registry.spendingPageActions.onSettled((result) => settled.push(result));
     const stale = { action: "confirm", kind: "direct", invoiceIdentityId: "missing", transactionIdentityId: "missing", dataVersion: 999 };
     await assert.rejects(context!.registry["financial.spending.pageAction"]([stale as unknown as SpendingPageActionRequest]));
     assert.deepEqual(settled, [null], "the views hear the registry's action settle");

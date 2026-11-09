@@ -28,6 +28,7 @@ import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.t
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessAppWorkflowWorker } from "./server/task-run-check-support.ts";
 import { createAutomationCredentialStore } from "./server/config-files.ts";
+import { createPGliteSpendingPageActions } from "../../ledger/pglite/spending-command.ts";
 
 /** The TDCC definition the registry runs, with the fake TDCC transport. */
 const tdccDefinition = (fetch: TdccWorkflowOptions["fetch"]): WorkflowDefinition => ({
@@ -217,7 +218,7 @@ async function withHarness(body: (harness: Harness) => Promise<void>, registered
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
   });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;

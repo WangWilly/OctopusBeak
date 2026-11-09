@@ -41,6 +41,7 @@ import {
   type YuantaCurrentDepositBalanceRow,
 } from "../src/workflows/yuanta-current-deposit-balances.ts";
 import { removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
+import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
 
 // Some workflow modules import a sibling as `./x.js` for the bundler; under
 // strip-types the source is the `.ts` file next to it, as the checks resolve it.
@@ -439,7 +440,7 @@ export async function seedAppDemo(userData: string) {
   const store = await installFinancialStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store)) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;

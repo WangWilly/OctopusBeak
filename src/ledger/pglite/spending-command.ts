@@ -12,6 +12,7 @@ import { querySpendingRecognition, recordedAtIso, refundFromRow } from "./spendi
 import { decide } from "./purchase-report.ts";
 import { bytes, idString, pgliteQuery, type Row } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { createSpendingPageActions, type SpendingPageActions } from "./spending-page-actions.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -737,20 +738,7 @@ async function writeStrongBatch(
   }
 }
 
-/**
- * Worker-facing command facade. Every method opens one adapter transaction;
- * callers never receive a synchronous database handle or a partially applied
- * Spending mutation.
- */
-export function createPGliteSpendingCommands(writer: PGliteSpendingWriter) {
-  return Object.freeze({
-    recordMatchCandidate: (input: SpendingCandidateInput) => writer.transaction((transaction) => recordPGliteSpendingMatchCandidate(transaction, input)),
-    confirmDedupLink: (input: SpendingDecisionInput | SpendingDirectUserConfirmationInput) => writer.transaction((transaction) => confirmPGliteSpendingDedupLink(transaction, input)),
-    denyDedupCandidate: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => denyPGliteSpendingDedupCandidate(transaction, input)),
-    revokeDedupLink: (input: SpendingDecisionInput & { origin: { kind: "user"; userId: string } }) => writer.transaction((transaction) => revokePGliteSpendingDedupLink(transaction, input)),
-    commitRefundRevision: (input: SpendingRefundRevisionInput) => writer.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, input)),
-    pageAction: (input: SpendingPageActionRequest) => applyPGliteSpendingPageAction(writer, input),
-  });
+/** The Spending page actions that run against this store (ADR 0105). */
+export function createPGliteSpendingPageActions(writer: PGliteSpendingWriter): SpendingPageActions {
+  return createSpendingPageActions((request) => applyPGliteSpendingPageAction(writer, request));
 }
-
-export type PGliteSpendingCommands = ReturnType<typeof createPGliteSpendingCommands>;

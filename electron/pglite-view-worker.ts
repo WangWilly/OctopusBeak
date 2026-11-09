@@ -27,8 +27,7 @@ import {
   createPGliteFinancialRegistry,
   createPGliteFinancialLocalPort,
 } from "./pglite-financial-registry.ts";
-import { applyPGliteSpendingPageAction } from "../src/ledger/pglite/spending-command.ts";
-import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import {
@@ -40,8 +39,6 @@ import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 export type PGliteWorkerViewContext = Readonly<{
   db: PGliteWithLive;
   registry: ReturnType<typeof createPGliteFinancialRegistry>;
-  /** The Spending page actions the registry runs, whose results the Spending view publishes. */
-  pageActions: SpendingPageActions;
   clock: LocalDateClock;
   scheduler: PGliteWorkScheduler;
   readSettings: () => AutomationSettingsFile;
@@ -50,9 +47,9 @@ export type PGliteWorkerViewContext = Readonly<{
 /** Builds the worker's only named-view source from the database it opened. */
 export type PGliteWorkerViewSourceFactory = (context: PGliteWorkerViewContext) => ViewSource;
 
-export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, pageActions, clock, scheduler, readSettings }) =>
+export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, clock, scheduler, readSettings }) =>
   createPGliteFinancialLiveViews(
-    { registry, pageActions },
+    registry,
     createPGliteLiveViewDependencies(db, registry, clock),
     () => configuredOverviewSources(readSettings()),
     scheduler,
@@ -82,10 +79,9 @@ export async function startPGliteViewWorker(
   }
   const operationalProvider = createPgliteOperationalProvider(database);
   const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings())));
-  const pageActions = createSpendingPageActions((request) => applyPGliteSpendingPageAction(database, request));
-  const financialRegistry = createPGliteFinancialRegistry(database, () => currentPreviewVisibility(readSettings()), {
+  const financialRegistry = createPGliteFinancialRegistry(database, createPGliteSpendingPageActions(database), {
+    previewVisibility: () => currentPreviewVisibility(readSettings()),
     today: clock.today,
-    spendingPageActions: pageActions,
   });
   // Renderer requests and live-view recomputes share the database; one queue
   // lets a Pairing click start before refreshes that are still waiting.
@@ -97,7 +93,7 @@ export async function startPGliteViewWorker(
       error instanceof Error ? error.message : String(error),
     ),
   });
-  const source = createViewSource({ db, registry: financialRegistry, pageActions, clock, scheduler, readSettings });
+  const source = createViewSource({ db, registry: financialRegistry, clock, scheduler, readSettings });
   const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(

@@ -7,15 +7,15 @@ import type { FinancialLiveViewDefinition } from "./pglite-financial-live-views.
 export const SPENDING_LIVE_VIEW: FinancialLiveViewDefinition = {
   load: (registry, params) => registry["financial.spending.current"]([params as SpendingLoadInput]),
   dependsOn: ["manual"],
-  async shouldRecompute({ registry, pageActions }, lastValue) {
+  async shouldRecompute(registry, lastValue) {
     // A page action publishes its own summary delta once it settles (ADR 0105).
-    if (pageActions.inFlight()) return false;
+    if (registry.spendingPageActions.inFlight()) return false;
     // Read the version first: a recompute may publish while this read waits.
     const version = await registry["financial.spending.version"]([]);
     return spendingPageBehind(lastValue() as SpendingPageDto | undefined, version);
   },
-  watch({ registry, pageActions, lastValue, publish, recompute, fail }) {
-    return pageActions.onSettled((result) => {
+  watch({ registry, lastValue, publish, recompute, fail }) {
+    return registry.spendingPageActions.onSettled((result) => {
       void (async () => {
         let settled: { result: SpendingPageActionResult; published: boolean } | null = null;
         if (result) {
