@@ -6,7 +6,6 @@ const fileNames = [
   "fubon-statements.ts",
   "fubon-credit-card-statements.ts",
   "fubon-loan-statements.ts",
-  "fubon-deposit-telemetry.ts",
   "fubon-auth.ts",
 ] as const;
 
