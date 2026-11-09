@@ -37,7 +37,7 @@ ADR 0105 rejected one required `spendingPageActions` member on the registry, bec
 
 ## Consequences
 
-- Production behaviour does not change. The worker builds the same parts in the same order.
+- Production behaviour does not change. The worker builds the same parts; the live views are now built before WAL checkpoints start rather than after, which does no work until a view is subscribed.
 - A registry-only caller, such as a workflow check or the demo seed, states its page actions in one call.
 - A check that reads live pages over a real database builds the host, so it gets the worker's scheduler and page actions.
 - A caller can still build a registry over one store and hand the views live dependencies over a different database. The host takes both from its caller, as the worker opens them.

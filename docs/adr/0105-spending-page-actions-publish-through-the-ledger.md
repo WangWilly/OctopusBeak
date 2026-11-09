@@ -1,6 +1,6 @@
 # Spending page actions reach the live page through one ledger module
 
-Status: accepted; extended by [ADR 0111](0111-every-spending-write-is-a-page-action.md), which sends category changes and the strong-pair batch through the same page actions; refined by [ADR 0120](0120-one-host-assembles-the-ledger-s-shared-parts.md), under which the registry requires its page actions and the live views read them from it
+Status: accepted; extended by [ADR 0111](0111-every-spending-write-is-a-page-action.md), which sends category changes and the strong-pair batch through the same page actions; superseded in part by [ADR 0120](0120-one-host-assembles-the-ledger-s-shared-parts.md), which reverses this ADR's rejected "required page-actions member" option: under it the registry requires its page actions and the live views read them from it
 
 Extends [ADR 0089](0089-spending-page-composed-in-the-ledger-with-one-version.md), which moved the Spending page's composition out of the RPC registry. Keeps the one-value live views of [ADR 0093](0093-a-live-view-publishes-one-value.md) and the injected dependencies of [ADR 0088](0088-live-view-dependencies-are-injected-watches.md).
 
