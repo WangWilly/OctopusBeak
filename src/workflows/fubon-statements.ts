@@ -123,19 +123,6 @@ const MY_DEPOSITS_ROUTE: FubonRoute = {
     (await scope.locator(depositFastFunctionSelector).count().catch(() => 0)) > 0,
 };
 
-export const fubonStatementDateRangeSchema = z.enum([
-  "1",
-  "3",
-  "7",
-  "14",
-  "21",
-  "30",
-  "60",
-  "90",
-  "180",
-  "180_365",
-]);
-
 export const fubonStatementsInputSchema = z.object({
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]).default("EXCEL"),
 });
