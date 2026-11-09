@@ -32,7 +32,6 @@ import {
 } from "./current-state-snapshot-capture.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
-  providerResponseReader,
   type ProviderBodyAcquisition,
   type ProviderReply,
   type ProviderResponseReader,
@@ -1101,11 +1100,11 @@ async function collectEsunCreditCard(
   page: Page,
   context: WorkflowContext,
   input: EsunWorkflowInput,
-  product: Pick<ProductCollectionHandle, "event" | "stage" | "validate">,
+  product: Pick<ProductCollectionHandle, "event" | "stage" | "validate" | "reader" | "signal">,
 ): Promise<EsunCreditCardCollection> {
   const credentials = input.credentials;
   const scope = frameScope(page, context.signal);
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  const { reader } = product;
   // The landing page may send the card summary at any point during the history reads, or never.
   const currentCredit = reader.watch(scope, esunCurrentUsedCreditSnapshot.response, {
     evidence: "json",
@@ -1147,10 +1146,7 @@ async function collectEsunCreditCard(
   if (watched) {
     currentUsedCredit = await readCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, {
       acquire: async () => watched,
-      now: () => context.now(),
       product,
-      text: context.text,
-      signal: context.signal,
     });
   }
   const settledPeriods = await product.validate(() => {
@@ -1230,7 +1226,6 @@ async function collectEsunCreditCard(
     const { items } = await stageCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, currentUsedCredit, {
       captures: [{ capture: canonicalCapture, cardIdentity: cardRequest.identity }],
       product,
-      signal: context.signal,
     });
     product.stage(...items);
   }
@@ -1275,9 +1270,9 @@ async function runEsunCreditCardWorkflow(
       // ADR 0051: the attached deposit product, read in the same signed-in page. It writes only Preview Financial Data.
       attached: {
         collectors: () => ({
-          deposit: async () => {
-            await waitForEsunPortalSession(page, 30_000, context.signal);
-            return await collectEsunDeposits(createEsunPortalTransport(page, context), context.now());
+          deposit: async ({ signal }) => {
+            await waitForEsunPortalSession(page, 30_000, signal);
+            return await collectEsunDeposits(createEsunPortalTransport(page, { signal, text: context.text }), context.now());
           },
         }),
       },
