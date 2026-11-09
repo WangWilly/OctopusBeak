@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import {
   createPGliteOperationalRpcClient,
+  isPGliteOperationalOperation,
   type PGliteOperationalOperation,
   type PGliteOperationalRpcClient,
 } from "./pglite-operational-rpc.ts";
@@ -23,6 +24,7 @@ import {
   type PGliteWorkflowTransport,
 } from "../src/ledger/pglite/workflow-client.ts";
 import type { WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import { plainRecord } from "./pglite-worker-call.ts";
 
 export const PGLITE_CHILD_RPC_ENDPOINT_ENV =
   "OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT" as const;
@@ -53,12 +55,6 @@ export type SocketMessagePort = {
   postMessage(value: unknown): void;
   close(): void;
 };
-
-export function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 export function validToken(token: string): boolean {
   return /^[A-Za-z0-9_-]{32,128}$/u.test(token);
@@ -282,8 +278,7 @@ export function createPGliteChildRpcClient(
     if (!closed) fail("closed");
   });
   const request = <K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown> => {
-    if (operation.startsWith("automation.") || operation.startsWith("exchangeRates."))
-      return operational.request(operation as PGliteOperationalOperation, args);
+    if (isPGliteOperationalOperation(operation)) return operational.request(operation, args);
     return financial.request(operation as PGliteFinancialOperation, args as never, options);
   };
   const close = (error = safeTransportError("closed")): void => {

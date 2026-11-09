@@ -10,6 +10,8 @@ import {
   createPGliteViewWorkerClient,
   PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS,
 } from "./pglite-view-worker-client.ts";
+import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import { PGliteOperationalError } from "./pglite-operational-rpc.ts";
 import { startPGliteViewWorker, type PGliteWorkerViewContext } from "./pglite-view-worker.ts";
 import type { SpendingPageActionRequest } from "../src/lib/spending/model.ts";
 import { createViewPortClient, createViewPortServer } from "../src/lib/data-views/server/view-port.ts";
@@ -155,6 +157,41 @@ test("closing the client gives a slow worker shutdown its full bound before term
   worker.emit("message", { kind: "worker-stopped" });
   await closing;
   assert.equal(terminated, 1);
+});
+
+test("calls pending when the worker exits or closes reject as worker-closed", async () => {
+  const worker = Object.assign(new EventEmitter(), {
+    postMessage() {},
+    terminate() { return Promise.resolve(0); },
+  });
+  const client = createPGliteViewWorkerClient(
+    worker as unknown as Parameters<typeof createPGliteViewWorkerClient>[0],
+  );
+  client.onError(() => {});
+  worker.emit("message", { kind: "worker-ready" });
+  const financial = client.financial.request("financial.overview.current", []);
+  const operational = client.operationalProvider.automation.activeTaskRuns();
+  await new Promise((resolve) => setImmediate(resolve));
+  worker.emit("exit", 1);
+  await assert.rejects(financial, (error) => error instanceof PGliteFinancialError
+    && error.code === "worker-closed"
+    && (error.cause as Error).message === "PGlite view worker exited with code 1.");
+  await assert.rejects(operational, (error) => error instanceof PGliteOperationalError
+    && error.code === "worker-closed"
+    && (error.cause as Error).message === "PGlite view worker exited with code 1.");
+
+  const stoppable: EventEmitter = Object.assign(new EventEmitter(), {
+    postMessage(message: { kind?: string }) {
+      if (message.kind === "shutdown") queueMicrotask(() => stoppable.emit("message", { kind: "worker-stopped" }));
+    },
+    terminate() { return Promise.resolve(0); },
+  });
+  const closing = createPGliteViewWorkerClient(stoppable as unknown as Parameters<typeof createPGliteViewWorkerClient>[0]);
+  stoppable.emit("message", { kind: "worker-ready" });
+  const pending = closing.operationalProvider.automation.activeTaskRuns();
+  await new Promise((resolve) => setImmediate(resolve));
+  await closing.close();
+  await assert.rejects(pending, (error) => error instanceof PGliteOperationalError && error.code === "worker-closed");
 });
 
 test("a financial view's error after its first value reaches the port as a failed subscription", async () => {

@@ -5,7 +5,6 @@ import {
   appendWorkflowFailureDiagnostic,
   captureSafeWorkflowFailureError,
   type SafeWorkflowFailureError,
-  isWorkflowFailureCorrelation,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
@@ -17,33 +16,13 @@ import {
   type PGliteFinancialCancelRequest,
   type PGliteFinancialFailureCategory,
   type PGliteFinancialOperation,
-  type PGliteFinancialRequest,
   type PGliteFinancialResponse,
   type PGliteFinancialPort,
-  type PGliteFinancialRpcPort,
 } from "./pglite-financial-contracts.ts";
 import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
-
-type RpcPort = PGliteFinancialRpcPort;
+import { createWorkerCallServer, plainRecord, type WorkerCall, type WorkerPort } from "./pglite-worker-call.ts";
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function validRequest(value: unknown): value is PGliteFinancialRequest {
-  return plainRecord(value)
-    && value.kind === "pglite-financial-request"
-    && value.version === 1
-    && Number.isSafeInteger(value.id)
-    && (value.id as number) >= 0
-    && typeof value.operation === "string"
-    && Array.isArray(value.args)
-    && (value.diagnosticContext === undefined || isWorkflowFailureCorrelation(value.diagnosticContext));
-}
 
 function validCancelRequest(value: unknown): value is PGliteFinancialCancelRequest {
   return plainRecord(value)
@@ -119,14 +98,6 @@ function failureCategory(error: unknown): PGliteFinancialFailureCategory {
   return "fatal";
 }
 
-function post(port: RpcPort, response: PGliteFinancialResponse): void {
-  try {
-    port.postMessage(response);
-  } catch {
-    // The renderer may close while a worker operation is finishing.
-  }
-}
-
 /**
  * False refuses a workflow's canonical write before it reaches the database
  * (ADR 0058). A throw is an ordinary failure, not a refusal.
@@ -173,68 +144,78 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
+type CoalescedRead = {
+  args: readonly unknown[];
+  callers: number;
+  controller: AbortController;
+  outcome: Promise<unknown>;
+};
+
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
-  port: RpcPort,
+  port: WorkerPort,
   financial: PGliteFinancialPort,
   isCommitAdmissible?: PGliteCanonicalCommitAdmission,
   scheduler: PGliteWorkScheduler = createPGliteWorkScheduler(),
 ): PGliteFinancialRpcServer {
-  let closed = false;
-  const active = new Set<Promise<void>>();
   const controllers = new Map<number, AbortController>();
-  const queuedReads = new Map<string, { args: readonly unknown[]; outcome: Promise<unknown> }>();
-  const onMessage = (value: unknown): void => {
-    if (validCancelRequest(value)) {
-      controllers.get(value.id)?.abort();
-      return;
+  const queuedReads = new Map<PGliteFinancialOperation, CoalescedRead>();
+  /**
+   * Attach a caller to the queued read of its kind, or queue one. The read
+   * runs with the newest caller's arguments. A caller whose signal aborts
+   * leaves at once with a cancellation; the read itself is aborted only when
+   * no caller is left on it.
+   */
+  const joinLatestRead = (operation: PGliteFinancialOperation, args: readonly unknown[], signal: AbortSignal): Promise<unknown> => {
+    let read = queuedReads.get(operation);
+    if (read) read.args = args;
+    else {
+      const created: CoalescedRead = { args, callers: 0, controller: new AbortController(), outcome: Promise.resolve() };
+      created.outcome = scheduler.schedule("background", async () => {
+        if (queuedReads.get(operation) === created) queuedReads.delete(operation);
+        if (created.controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+        return financial.request(operation, created.args as never, { signal: created.controller.signal });
+      });
+      server.track(created.outcome);
+      queuedReads.set(operation, created);
+      read = created;
     }
-    if (!validRequest(value)) return;
-    if (closed) {
-      post(port, genericFailure(value.id, "worker-closed"));
-      return;
-    }
-    if (controllers.has(value.id)) {
-      // Request identifiers are the response correlation key.  Reusing one
-      // while it is active would otherwise overwrite its AbortController and
-      // make one of the two writes impossible to cancel deterministically.
-      post(port, genericFailure(value.id, "invalid-request"));
-      return;
-    }
-    const contract = isPGliteFinancialOperation(value.operation)
-      ? PGLITE_FINANCIAL_CONTRACTS[value.operation]
-      : undefined;
-    if (!contract?.accepts(value.args)) {
-      post(port, genericFailure(value.id, "invalid-request"));
-      return;
-    }
-    const operation = value.operation as PGliteFinancialOperation;
+    const joined = read;
+    joined.callers += 1;
+    return new Promise((resolve, reject) => {
+      const leave = () => {
+        joined.callers -= 1;
+        if (joined.callers === 0) {
+          if (queuedReads.get(operation) === joined) queuedReads.delete(operation);
+          joined.controller.abort();
+        }
+        reject(new Error("PGlite financial operation was cancelled."));
+      };
+      signal.addEventListener("abort", leave, { once: true });
+      void joined.outcome
+        .finally(() => signal.removeEventListener("abort", leave))
+        .then(resolve, reject);
+    });
+  };
+  const start = (call: WorkerCall): Promise<PGliteFinancialResponse> | undefined => {
+    const { id, operation, args, diagnosticContext } = call;
+    if (!isPGliteFinancialOperation(operation)) return undefined;
+    const contract = PGLITE_FINANCIAL_CONTRACTS[operation];
+    if (!contract.accepts(args)) return undefined;
     const controller = new AbortController();
-    controllers.set(value.id, controller);
-    const latestWins = contract.lane === "latest-wins";
-    const queuedRead = latestWins ? queuedReads.get(operation) : undefined;
-    let outcome: Promise<unknown>;
-    if (queuedRead) {
-      queuedRead.args = value.args;
-      outcome = queuedRead.outcome;
-    } else {
-      const read = { args: value.args, outcome: Promise.resolve() as Promise<unknown> };
-      outcome = scheduler.schedule(contract.lane === "interactive" ? "interactive" : "background", async () => {
-        if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
+    controllers.set(id, controller);
+    const outcome = contract.lane === "latest-wins"
+      ? joinLatestRead(operation, args, controller.signal)
+      : scheduler.schedule(contract.lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
-        if (isCommitAdmissible && value.diagnosticContext && contract.canonicalCommit
-          && !isCommitAdmissible(value.diagnosticContext)) {
+        if (isCommitAdmissible && diagnosticContext && contract.canonicalCommit
+          && !isCommitAdmissible(diagnosticContext)) {
           throw new PGliteFinancialError("operation-failed", "refused");
         }
-        return financial.request(operation, read.args as never, { signal: controller.signal });
+        return financial.request(operation, args as never, { signal: controller.signal });
       });
-      read.outcome = outcome;
-      if (latestWins) queuedReads.set(operation, read);
-    }
-    const work = outcome.then(
-      (result) => {
-        post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });
-      },
+    return outcome.then(
+      (result): PGliteFinancialResponse => ({ kind: "pglite-financial-response", version: 1, id, ok: true, value: result }),
       async (error) => {
         // The inner database worker has no workflow correlation. Capture before
         // wrapping there and let the correlated outer server write the record.
@@ -242,11 +223,11 @@ export function createPGliteFinancialRpcServer(
           && process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV]?.trim()
           ? captureSafeWorkflowFailureError(error, workflowFailureDiagnosticRepoRoot())
           : undefined;
-        if (!controller.signal.aborted && value.diagnosticContext) {
+        if (!controller.signal.aborted && diagnosticContext) {
           const refused = error instanceof PGliteFinancialError && error.category === "refused";
           await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
-            workflowId: value.diagnosticContext.workflowId,
-            taskRunId: value.diagnosticContext.taskRunId,
+            workflowId: diagnosticContext.workflowId,
+            taskRunId: diagnosticContext.taskRunId,
             source: "financial-rpc",
             errorCode: refused ? "collection-scope-changed" : "workflow-failed",
             stage: operation === "financial.source.admit" ? "validation" : "commit",
@@ -256,34 +237,27 @@ export function createPGliteFinancialRpcServer(
             error,
           }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
         }
-        post(
-          port,
-          genericFailure(
-            value.id,
-            controller.signal.aborted ? "cancelled" : "operation-failed",
-            controller.signal.aborted ? undefined : failureCategory(error),
-            diagnosticError,
-            controller.signal.aborted ? undefined : failureReason(error),
-          ),
+        return genericFailure(
+          id,
+          controller.signal.aborted ? "cancelled" : "operation-failed",
+          controller.signal.aborted ? undefined : failureCategory(error),
+          diagnosticError,
+          controller.signal.aborted ? undefined : failureReason(error),
         );
       },
-    ).then(() => undefined);
-    active.add(work);
-    void work.finally(() => {
-      active.delete(work);
-      controllers.delete(value.id);
-    }).catch(() => undefined);
+    ).finally(() => controllers.delete(id));
   };
-  port.on("message", onMessage);
-  let closePromise: Promise<void> | undefined;
-  return {
-    close() {
-      if (closePromise) return closePromise;
-      closed = true;
-      port.off("message", onMessage);
-      for (const controller of controllers.values()) controller.abort();
-      closePromise = Promise.all([...active]).then(() => undefined);
-      return closePromise;
+  const server = createWorkerCallServer({
+    port,
+    request: { kind: "pglite-financial-request", version: 1 },
+    refusal: (id, code) => genericFailure(id, code),
+    start,
+    other: (value) => {
+      if (validCancelRequest(value)) controllers.get(value.id)?.abort();
     },
-  };
+    closing: () => {
+      for (const controller of controllers.values()) controller.abort();
+    },
+  });
+  return { close: server.close };
 }

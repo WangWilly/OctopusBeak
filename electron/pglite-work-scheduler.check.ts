@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
-import { createPGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
+import { createPGliteFinancialRpcClient, PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
 import {
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,
@@ -85,4 +85,67 @@ test("queued month reads collapse into the newest request of their kind", async 
     client.close(new Error("test done"));
     await server.close();
   }
+});
+
+async function coalescedMonthReads(cancel: (controllers: readonly AbortController[]) => void) {
+  type Listener = (value: unknown) => void;
+  const listeners = { server: new Set<Listener>(), client: new Set<Listener>() };
+  const port = (self: keyof typeof listeners, peer: keyof typeof listeners) => ({
+    on: (_event: "message", listener: Listener) => { listeners[self].add(listener); },
+    off: (_event: "message", listener: Listener) => { listeners[self].delete(listener); },
+    postMessage: (value: unknown) => queueMicrotask(() => { for (const listener of listeners[peer]) listener(value); }),
+  });
+  const reads: string[] = [];
+  let releaseFirst!: () => void;
+  const firstRunning = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const financial = {
+    async request(operation: string, [request]: readonly [{ month: string }], options?: { signal?: AbortSignal }) {
+      if (options?.signal?.aborted) throw new Error("aborted before the read");
+      reads.push(`${operation}:${request.month}`);
+      if (reads.length === 1) await firstRunning;
+      return { month: request.month };
+    },
+  } as unknown as PGliteFinancialPort;
+  const server = createPGliteFinancialRpcServer(port("server", "client") as never, financial);
+  const client = createPGliteFinancialRpcClient(port("client", "server") as never);
+  const controllers = [new AbortController(), new AbortController(), new AbortController()];
+  try {
+    const running = client.request("financial.spending.recordPage", [{ knowledgeAt: 1, month: "2026-12" }]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const stepped = Promise.allSettled(["2026-11", "2026-10", "2026-09"].map((month, index) =>
+      client.request("financial.spending.monthInsight", [{ knowledgeAt: 1, month }], { signal: controllers[index]!.signal })));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    cancel(controllers);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    releaseFirst();
+    await running;
+    const outcomes = await stepped;
+    return {
+      reads,
+      outcomes: outcomes.map((outcome) => outcome.status === "fulfilled"
+        ? outcome.value
+        : (outcome.reason as PGliteFinancialError).code),
+    };
+  } finally {
+    client.close(new Error("test done"));
+    await server.close();
+  }
+}
+
+test("the first coalesced caller's cancel leaves the other callers the newest result", async () => {
+  const { reads, outcomes } = await coalescedMonthReads(([first]) => first!.abort());
+  assert.deepEqual(outcomes, ["cancelled", { month: "2026-09" }, { month: "2026-09" }]);
+  assert.deepEqual(reads, ["financial.spending.recordPage:2026-12", "financial.spending.monthInsight:2026-09"]);
+});
+
+test("a later coalesced caller's cancel settles that caller as cancelled", async () => {
+  const { reads, outcomes } = await coalescedMonthReads(([, , last]) => last!.abort());
+  assert.deepEqual(outcomes, [{ month: "2026-09" }, { month: "2026-09" }, "cancelled"]);
+  assert.deepEqual(reads, ["financial.spending.recordPage:2026-12", "financial.spending.monthInsight:2026-09"]);
+});
+
+test("a coalesced read runs no query once every caller attached to it has cancelled", async () => {
+  const { reads, outcomes } = await coalescedMonthReads((controllers) => { for (const controller of controllers) controller.abort(); });
+  assert.deepEqual(outcomes, ["cancelled", "cancelled", "cancelled"]);
+  assert.deepEqual(reads, ["financial.spending.recordPage:2026-12"]);
 });

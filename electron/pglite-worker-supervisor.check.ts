@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import { PGliteOperationalError } from "./pglite-operational-rpc.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { superviseWorker } from "./pglite-worker-supervisor.ts";
 
@@ -178,7 +180,14 @@ test("close ends the current worker and nothing restarts after it", async () => 
   generations[0]!.die();
   await settle();
   assert.equal(generations.length, 1);
-  await assert.rejects(supervised.financial.request("financial.overview" as never, [] as never), /closed/);
+  await assert.rejects(
+    supervised.financial.request("financial.overview" as never, [] as never),
+    (error) => error instanceof PGliteFinancialError && error.code === "worker-closed",
+  );
+  await assert.rejects(
+    supervised.operationalRequest("automation.activeTaskRuns", []),
+    (error) => error instanceof PGliteOperationalError && error.code === "worker-closed",
+  );
 });
 
 test("the new worker starts only after the dead one has closed, and requests wait for it", async () => {
