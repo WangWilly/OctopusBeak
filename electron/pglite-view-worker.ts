@@ -12,22 +12,10 @@ import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
 import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
-import {
-  createLocalDateClock,
-  createPGliteLiveViewDependencies,
-  type LocalDateClock,
-} from "./pglite-financial-live-dependencies.ts";
-import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
-import {
-  createPGliteFinancialRpcServer,
-  createPGliteWorkScheduler,
-  type PGliteWorkScheduler,
-} from "./pglite-financial-rpc-server.ts";
-import {
-  createPGliteFinancialRegistry,
-  createPGliteFinancialLocalPort,
-} from "./pglite-financial-registry.ts";
-import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
+import { createLocalDateClock } from "./pglite-financial-live-dependencies.ts";
+import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
+import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";
+import { createPGliteLedgerHost, type PGliteLedgerHost } from "./pglite-ledger-host.ts";
 import { configuredOverviewSources } from "../src/lib/overview/server/expected-sources.ts";
 import { automationBusinessTimezone, currentPreviewVisibility } from "../src/lib/automation/server/settings.ts";
 import {
@@ -36,24 +24,10 @@ import {
 } from "../src/lib/automation/server/config-files.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 
-export type PGliteWorkerViewContext = Readonly<{
-  db: PGliteWithLive;
-  registry: ReturnType<typeof createPGliteFinancialRegistry>;
-  clock: LocalDateClock;
-  scheduler: PGliteWorkScheduler;
-  readSettings: () => AutomationSettingsFile;
-}>;
+/** Picks the worker's only named-view source from the ledger it opened. */
+export type PGliteWorkerViewSourceFactory = (host: PGliteLedgerHost) => ViewSource;
 
-/** Builds the worker's only named-view source from the database it opened. */
-export type PGliteWorkerViewSourceFactory = (context: PGliteWorkerViewContext) => ViewSource;
-
-export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = ({ db, registry, clock, scheduler, readSettings }) =>
-  createPGliteFinancialLiveViews(
-    registry,
-    createPGliteLiveViewDependencies(db, registry, clock),
-    () => configuredOverviewSources(readSettings()),
-    scheduler,
-  );
+export const financialWorkerViewSource: PGliteWorkerViewSourceFactory = (host) => host.views;
 
 export type PGliteViewWorkerRuntime = {
   dataDir: string;
@@ -78,23 +52,20 @@ export async function startPGliteViewWorker(
     throw error;
   }
   const operationalProvider = createPgliteOperationalProvider(database);
-  const clock = createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings())));
-  const financialRegistry = createPGliteFinancialRegistry(database, createPGliteSpendingPageActions(database), {
+  const host = createPGliteLedgerHost(db, database, {
+    clock: createLocalDateClock(() => dateInTimeZone(new Date(), automationBusinessTimezone(readSettings()))),
     previewVisibility: () => currentPreviewVisibility(readSettings()),
-    today: clock.today,
+    expectedSources: () => configuredOverviewSources(readSettings()),
   });
-  // Renderer requests and live-view recomputes share the database; one queue
-  // lets a Pairing click start before refreshes that are still waiting.
-  const scheduler = createPGliteWorkScheduler();
   const walCheckpoints = startPgliteWalCheckpoints(database, {
-    run: (task) => scheduler.schedule("background", task),
+    run: (task) => host.scheduler.schedule("background", task),
     onError: (error) => console.error(
       "pglite-wal-checkpoint-failed",
       error instanceof Error ? error.message : String(error),
     ),
   });
-  const source = createViewSource({ db, registry: financialRegistry, clock, scheduler, readSettings });
-  const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(financialRegistry), undefined, scheduler);
+  const source = createViewSource(host);
+  const financialServer = createPGliteFinancialRpcServer(port, createPGliteFinancialLocalPort(host.registry), undefined, host.scheduler);
   const server = createViewPortServer(port, source);
   const operationalServer = createPGliteOperationalRpcServer(
     port,

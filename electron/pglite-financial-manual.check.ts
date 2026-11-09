@@ -9,41 +9,34 @@ import {
 } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
-import { createSpendingPageActions, type SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import { createPGliteLedgerHost } from "./pglite-ledger-host.ts";
+import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingPageDto } from "../src/lib/spending/model.ts";
-import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import { commitCathay } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
 import { applyManual, createManualAsset as create, MANUAL_CLOCK as CLOCK } from "../src/ledger/pglite/financial-pages.fixtures.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
-import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
+import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 
-/** These checks run no Spending page action. */
-const REFUSING_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
-
+/** A live-extension database with the layout the worker installs, and the store over it. */
 async function withManualLedger(run: (input: {
+  db: PGliteWithLive;
   store: PGliteStore;
-  registry: ReturnType<typeof createPGliteFinancialRegistry>;
   apply: (command: unknown) => Promise<Readonly<{ revision: number; assetId?: string; transactionId?: string }>>;
-}) => Promise<void>, database?: PGlite) {
-  // A live-extension database gets the same layout the worker installs.
-  const store = database ? await installFinancialStore(database) : new PGliteStore(await createTestPGlite("full"));
+}) => Promise<void>) {
+  const db = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
+  const store = await installFinancialStore(db as unknown as PGlite);
   try {
     await commitCathay(store);
-    await run({
-      store,
-      registry: createPGliteFinancialRegistry(store, REFUSING_PAGE_ACTIONS, { today: CLOCK.today }),
-      apply: (command) => applyManual(store, command),
-    });
+    await run({ db, store, apply: (command) => applyManual(store, command) });
   } finally {
     await store.close();
   }
 }
 
 test("every live page republishes on each kind of manual write", async () => {
-  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await withManualLedger(async ({ registry, apply }) => {
-    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
+  await withManualLedger(async ({ db, store, apply }) => {
+    const { views } = createPGliteLedgerHost(db, store, { clock: createLocalDateClock(CLOCK.today) });
     const latest = new Map<string, unknown>();
     const counts = new Map<string, number>();
     const stops: Array<() => Promise<void>> = [];
@@ -99,12 +92,11 @@ test("every live page republishes on each kind of manual write", async () => {
     } finally {
       await Promise.all(stops.map((stop) => stop()));
     }
-  }, database as unknown as PGlite);
+  });
 });
 
 test("a live page republishes when the date moves past an asset's end date, with no write", async () => {
-  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await withManualLedger(async ({ store, apply }) => {
+  await withManualLedger(async ({ db, store, apply }) => {
     let date = CLOCK.today();
     let midnight = () => {};
     const clock: LocalDateClock = {
@@ -114,10 +106,9 @@ test("a live page republishes when the date moves past an asset's end date, with
         return async () => {};
       },
     };
-    const registry = createPGliteFinancialRegistry(store, REFUSING_PAGE_ACTIONS, { today: clock.today });
     const { assetId } = await apply(create("other", "Watch", "TWD", "2026-10-01", "50000", "market_quote"));
     await apply({ kind: "endAsset", assetId, endedOn: CLOCK.today() });
-    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, clock));
+    const { views } = createPGliteLedgerHost(db, store, { clock });
     const published: OverviewPageDto[] = [];
     const stop = await views.subscribe("financial.overview.current", {}, (value) => published.push(value as OverviewPageDto));
     const watchLines = () => published.at(-1)!.accounts.find((account) => account.manual)!.amountLines.length;
@@ -135,12 +126,11 @@ test("a live page republishes when the date moves past an asset's end date, with
     } finally {
       await stop();
     }
-  }, database as unknown as PGlite);
+  });
 });
 
 test("a manual write during a Spending page action is published once the action settles", async () => {
-  const database = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
-  await withManualLedger(async ({ store, apply }) => {
+  await withManualLedger(async ({ db, store, apply }) => {
     let inFlight = false;
     let settle: ((result: null) => void) | null = null;
     const pageActions: SpendingPageActions = {
@@ -152,7 +142,7 @@ test("a manual write during a Spending page action is published once the action 
       },
     };
     const registry = createPGliteFinancialRegistry(store, pageActions, { today: CLOCK.today });
-    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(database, registry, createLocalDateClock(CLOCK.today)));
+    const views = createPGliteFinancialLiveViews(registry, createPGliteLiveViewDependencies(db, registry, createLocalDateClock(CLOCK.today)));
     const pages: SpendingPageDto[] = [];
     const stop = await views.subscribe("financial.spending.current", {}, (value) => pages.push(value as SpendingPageDto));
     const purchases = () => pages.at(-1)?.manual?.purchases.length ?? 0;
@@ -177,5 +167,5 @@ test("a manual write during a Spending page action is published once the action 
     } finally {
       await stop();
     }
-  }, database as unknown as PGlite);
+  });
 });
