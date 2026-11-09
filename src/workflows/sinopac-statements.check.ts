@@ -9,8 +9,6 @@ import {
   sinopacSortAccounts,
   sinopacSignedInPageUrl,
   sinopacStatementRowsToCsv,
-  runSinopacIdentityValidation,
-  sinopacIdentityValidationSchema,
   SINOPAC_LOGIN_URL,
   buildSinopacCurrentDepositBalanceCapture,
 } from "./sinopac-statements.ts";
@@ -19,9 +17,6 @@ import {
   parseSinopacCurrentDepositBalanceSnapshot,
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,
 } from "./sinopac-current-deposit-balances.ts";
-import { type SinopacIdentityRawRow } from "./sinopac-identity-evidence.ts";
-import { sinopacMmaSite } from "./sinopac-mma-site.ts";
-import { strictSourceText } from "../lib/automation/source-text.ts";
 
 const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
 const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
@@ -279,133 +274,3 @@ assert.equal(
   sinopacStatementRowsToCsv(rows),
   '帳務日期,交易日期,交易時間,摘要,支出金額,存入金額,即時餘額,附註,匯率\n2025/09/29,2025/09/29,06:01,電子交易,109,,"9,029",一卡通Money自動儲值 iPASS MO,31.2\n2025/10/21,2025/10/21,00:13,利息存入,,6,"9,035",,\n',
 );
-
-const identityInput = sinopacIdentityValidationSchema.parse({
-  startDate: "20250825",
-  endDate: "20260824",
-  currency: "USD",
-  overlapStartDate: "20260224",
-  overlapEndDate: "20260824",
-});
-assert.equal(identityInput.currency, "USD");
-assert.equal(
-  sinopacIdentityValidationSchema.safeParse({
-    startDate: "20250825",
-    endDate: "20260824",
-    currency: "TWD",
-  }).success,
-  false,
-);
-
-const identityRows: SinopacIdentityRawRow[] = [
-  {
-    DataText1: "2026/08/20 09:00",
-    DataText2: "2026/08/20",
-    DataText3: "synthetic row one",
-    DataText4: "100.00",
-    DataText5: "900.00",
-    DataText6: "candidate-one",
-    DataText7: "31.1",
-    DataText8: "note-one",
-    DataText9: "100.00<br />900.00",
-    DataText10: "candidate-ten-one",
-    DataText11: "candidate-eleven-one",
-  },
-  {
-    DataText1: "2026/08/21 10:00",
-    DataText2: "2026/08/21",
-    DataText3: "synthetic row two",
-    DataText4: "200.00",
-    DataText5: "700.00",
-    DataText6: "candidate-two",
-    DataText7: "31.2",
-    DataText8: "note-two",
-    DataText9: "200.00<br />700.00",
-    DataText10: "candidate-ten-two",
-    DataText11: "candidate-eleven-two",
-  },
-];
-const identityResponse = {
-  Header: "SUCCESS",
-  RecordCount: "3",
-  SubInfo: [identityRows[0]!, identityRows[1]!, identityRows[0]!],
-};
-let identityQueryCount = 0;
-const identityPage = {
-  url: () => SINOPAC_LOGIN_URL,
-  context: () => ({ cookies: async () => [] }),
-  locator: () => ({
-    all: async () => [],
-    count: async () => 0,
-  }),
-  getByText: () => ({ count: async () => 0 }),
-  evaluate: async (expression: unknown, options?: unknown) => {
-    if (typeof expression === "string") {
-      return {
-        botGlobal: false,
-        fetchSource: "function fetch() { [native code] }",
-        openSource: "function open() { [native code] }",
-      };
-    }
-    identityQueryCount += 1;
-    const requestOptions = options as { url: string };
-    return {
-      url: requestOptions.url,
-      status: 200,
-      headers: { "content-type": "application/json; charset=utf-8" },
-      base64: Buffer.from(JSON.stringify([identityResponse]), "utf8").toString("base64"),
-    };
-  },
-} as never;
-const identitySummary = await runSinopacIdentityValidation(
-  sinopacMmaSite(identityPage, { signal: new AbortController().signal }),
-  { now: () => "2026-09-09T10:01:02+08:00", text: strictSourceText },
-  identityInput,
-  [{ DataText: "USD account", DataValue: "002", DisplayText: "USD" }],
-);
-assert.equal(identitySummary.mode, "identity-validation");
-assert.equal(identitySummary.captures.length, 3);
-assert.equal(identitySummary.exactRepeat.rowSetEqual, true);
-assert.equal(identitySummary.overlap.rightRowsContained, true);
-assert.equal(identitySummary.captures[0]?.duplicateCompleteRowsExist, true);
-assert.equal(
-  identitySummary.candidateFields.DataText6?.populationByCapture[
-    "exact-repeat-1"
-  ].uniqueWithinCapture,
-  false,
-);
-assert.equal(
-  identitySummary.candidateFields.DataText6?.exactRepeat.stableForMatchedRows,
-  true,
-);
-assert.equal(
-  identitySummary.derivedFields.DataText9.formula,
-  'DataText4 + "<br />" + DataText5',
-);
-for (const capture of identitySummary.captures) {
-  const derivation =
-    identitySummary.derivedFields.DataText9.populationByCapture[capture.label];
-  assert.equal(derivation.evaluatedRows, capture.rowCount);
-  assert.equal(derivation.exactMatches, capture.rowCount);
-  assert.equal(derivation.exactForAllEvaluatedRows, true);
-}
-assert.deepEqual(identitySummary.siteAssessment, {
-  botProtectionDetected: false,
-  fetchXhrWrapperCategory: { fetch: "native", xhr: "native" },
-  challengeType: "none",
-});
-assert.deepEqual(identitySummary.sideEffects, {
-  canonicalCommits: false,
-  statementFilesWritten: false,
-  rawValuesReturned: false,
-});
-assert.equal(
-  identityQueryCount,
-  sinopacQueryWindows({ startDate: "20250825", endDate: "20260824" }).length *
-    2 +
-    sinopacQueryWindows({ startDate: "20260224", endDate: "20260824" }).length,
-);
-const redactedIdentitySummary = JSON.stringify(identitySummary);
-assert.equal(redactedIdentitySummary.includes("candidate-one"), false);
-assert.equal(redactedIdentitySummary.includes("USD account"), false);
-assert.equal(redactedIdentitySummary.includes("002"), false);

@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import { z } from "zod";
 import { withAbort } from "./abort.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { sourceReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -15,7 +15,6 @@ import {
 } from "../lib/automation/server/sources/sinopac.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import {
-  collectionPeriod,
   collectionWindows,
   type CalendarDate,
   type CollectionWindow,
@@ -63,14 +62,6 @@ import {
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 } from "../lib/automation/sinopac-captcha.ts";
 import {
-  SINOPAC_IDENTITY_FIELD_NAMES,
-  summarizeSinopacIdentityEvidence,
-  type SinopacIdentityCapture,
-  type SinopacIdentityEvidenceSummary,
-  type SinopacIdentityRawRow,
-  type SinopacIdentitySiteAssessment,
-} from "./sinopac-identity-evidence.ts";
-import {
   assembleCurrentDepositCapture,
   captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
@@ -114,9 +105,6 @@ export const SINOPAC_TRANSACTION_RESPONSE: ProviderResponseDeclaration<"optional
   providerDate: "optional",
 };
 
-/** What a SinoPac history read needs from the run to accept a response. */
-type SinopacReadContext = Pick<WorkflowContext, "now" | "text">;
-
 const statementHeaders = [
   "帳務日期",
   "交易日期",
@@ -129,17 +117,6 @@ const statementHeaders = [
   "匯率",
 ];
 
-const dateSchema = z.string().regex(/^\d{8}$/);
-
-export const sinopacIdentityValidationSchema = z.object({
-  startDate: dateSchema,
-  endDate: dateSchema,
-  currency: z.literal("USD"),
-  overlapStartDate: dateSchema.optional(),
-  overlapEndDate: dateSchema.optional(),
-  accountFilter: z.string().min(1).optional(),
-});
-
 const sinopacInputSchema = z.object({
   accountFilters: z.array(z.string()).default([]),
   currencyFilters: z.array(z.string()).default([]),
@@ -147,10 +124,6 @@ const sinopacInputSchema = z.object({
 
 type SinopacVerifiedInput = VerifiedRunInput<typeof SINOPAC_CREDENTIAL_FIELDS, typeof SINOPAC_PRODUCTS>;
 type SinopacCredentials = SinopacVerifiedInput["credentials"];
-
-export type SinopacIdentityValidationInput = z.infer<
-  typeof sinopacIdentityValidationSchema
->;
 
 export type DateRange = {
   startDate: string;
@@ -178,7 +151,7 @@ export type SinopacTransactionResponse = {
 };
 
 export type SinopacRawTransactionRow = Partial<
-  Record<(typeof SINOPAC_IDENTITY_FIELD_NAMES)[number], string>
+  Record<`DataText${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11}`, string>
 >;
 
 export type SinopacStatementRow = {
@@ -807,181 +780,6 @@ async function querySinopacTransactions(
   const { bytes, response } = await site.post(`${TRANSACTION_ENDPOINT}?${Date.now()}`, { body: body.toString() });
   const { evidence } = await reader.accept(SINOPAC_TRANSACTION_RESPONSE, { evidence: { kind: "json", bytes }, response });
   return evidence.value;
-}
-
-type SinopacWrapperCategory = "native" | "patched" | "unknown";
-
-function classifyWrapperSource(source: unknown): SinopacWrapperCategory {
-  if (typeof source !== "string" || source.length === 0) return "unknown";
-  return source.includes("[native code]") ? "native" : "patched";
-}
-
-async function assessSinopacSiteSecurity(
-  page: Page,
-): Promise<SinopacIdentitySiteAssessment> {
-  // Keep the probe aggregate-only: browser globals are classified in-page and
-  // cookie/script values never leave this function.
-  const browserSignals = (await page.evaluate(`(() => {
-    const root = globalThis;
-    const fetchSource = Function.prototype.toString.call(root.fetch);
-    const xhr = root.XMLHttpRequest;
-    const openSource = xhr?.prototype?.open
-      ? Function.prototype.toString.call(xhr.prototype.open)
-      : "";
-    return {
-      botGlobal: ["_pxAppId", "bmak", "ddjskey"].some((key) => key in root),
-      fetchSource,
-      openSource,
-    };
-  })()`)) as {
-    botGlobal: boolean;
-    fetchSource: string;
-    openSource: string;
-  };
-  const cookies = await page.context().cookies(page.url());
-  const cookieBotSignal = cookies.some((cookie) =>
-    /(?:_abck|_px|datadome|cf_clearance|_imp_apg_|x-kpsdk-)/i.test(cookie.name),
-  );
-  let scriptBotSignal = false;
-  for (const script of await page.locator("script[src]").all()) {
-    const source = await script.getAttribute("src");
-    if (
-      source &&
-      /(?:akamaized|perimeterx|datadome|kasada|cloudflare)/i.test(source)
-    ) {
-      scriptBotSignal = true;
-      break;
-    }
-  }
-
-  const captchaMarkers = await page
-    .locator('iframe[src*="captcha" i]:visible, iframe[title*="captcha" i]:visible')
-    .count();
-  const cloudflareMarkers = await page
-    .locator(
-      'iframe[src*="challenge" i]:visible, [data-cf-chl-widget]:visible',
-    )
-    .count();
-  const genericChallengeMarkers = await page
-    .getByText(/checking your browser|verify you are human|bot check/i)
-    .count()
-    .catch(() => 0);
-  const challengeType: SinopacIdentitySiteAssessment["challengeType"] =
-    captchaMarkers > 0
-      ? "captcha"
-      : cloudflareMarkers > 0
-        ? "cloudflare"
-        : genericChallengeMarkers > 0
-          ? "generic-bot-check"
-          : "none";
-
-  return {
-    botProtectionDetected:
-      cookieBotSignal || scriptBotSignal || browserSignals.botGlobal || challengeType !== "none",
-    fetchXhrWrapperCategory: {
-      fetch: classifyWrapperSource(browserSignals.fetchSource),
-      xhr: classifyWrapperSource(browserSignals.openSource),
-    },
-    challengeType,
-  };
-}
-
-function cloneSinopacRawRow(row: SinopacRawTransactionRow): SinopacIdentityRawRow {
-  return { ...row };
-}
-
-function identityValidationOverlapRange(
-  validation: SinopacIdentityValidationInput,
-): DateRange {
-  const primary = {
-    startDate: validation.startDate,
-    endDate: validation.endDate,
-  };
-  // Six months back from the primary end, clamped to the month end.
-  const defaultStart = collectionPeriod({
-    today: isoDate(primary.endDate),
-    lookBack: { months: 6, days: 1 },
-  }).start.replaceAll("-", "");
-  const startDate = validation.overlapStartDate ??
-    (defaultStart < primary.startDate ? primary.startDate : defaultStart);
-  const endDate = validation.overlapEndDate ?? primary.endDate;
-  if (
-    startDate < primary.startDate ||
-    endDate > primary.endDate ||
-    startDate > endDate
-  ) {
-    throw new Error("identityValidation overlap range must be within the primary range.");
-  }
-  return { startDate, endDate };
-}
-
-export async function runSinopacIdentityValidation(
-  site: SinopacMmaSite,
-  context: SinopacReadContext,
-  validation: SinopacIdentityValidationInput,
-  initialAccounts: SinopacAccount[],
-): Promise<SinopacIdentityEvidenceSummary> {
-  if (validation.currency !== "USD")
-    throw new Error("SinoPac identity validation only supports USD foreign accounts.");
-  const accounts = sinopacFilterAccounts(
-    initialAccounts,
-    validation.accountFilter ? [validation.accountFilter] : [],
-    ["USD"],
-  );
-  if (accounts.length === 0)
-    throw new Error("No USD foreign account matched identityValidation.");
-  if (accounts.length !== 1)
-    throw new Error(
-      "identityValidation requires exactly one USD foreign account; provide accountFilter.",
-    );
-
-  const primaryRange: DateRange = {
-    startDate: validation.startDate,
-    endDate: validation.endDate,
-  };
-  if (primaryRange.startDate > primaryRange.endDate)
-    throw new Error("identityValidation startDate must be on or before endDate.");
-  const overlapRange = identityValidationOverlapRange(validation);
-  const siteAssessment = await assessSinopacSiteSecurity(site.frames.page);
-  const querySets: Array<{
-    label: SinopacIdentityCapture["label"];
-    range: DateRange;
-  }> = [
-    { label: "exact-repeat-1", range: primaryRange },
-    { label: "exact-repeat-2", range: primaryRange },
-    { label: "overlap", range: overlapRange },
-  ];
-  const captures: SinopacIdentityCapture[] = [];
-  // An identity validation runs outside any product, so nothing owns its validation.
-  const reader = sourceReader(context);
-
-  // Query exactly three sequential sets.  Monthly windows remain the normal
-  // provider boundary so the validation does not introduce a new request shape.
-  for (const querySet of querySets) {
-    const windows: SinopacIdentityCapture["windows"] = [];
-    for (const window of sinopacQueryWindows(querySet.range)) {
-      const response = validateSinopacTransactionRows(sinopacSingleEnvelope<SinopacTransactionResponse>(
-        await querySinopacTransactions(site, reader, accounts[0]!, window, querySet.range.endDate),
-        "transaction",
-      ));
-      windows.push({
-        window,
-        response: { ...response },
-        rows: (response.SubInfo ?? []).map(cloneSinopacRawRow),
-      });
-    }
-    captures.push({ label: querySet.label, range: querySet.range, windows });
-  }
-
-  return summarizeSinopacIdentityEvidence(
-    captures as [
-      SinopacIdentityCapture,
-      SinopacIdentityCapture,
-      SinopacIdentityCapture,
-    ],
-    siteAssessment,
-    accounts.length,
-  );
 }
 
 type PendingSinopacSource = {

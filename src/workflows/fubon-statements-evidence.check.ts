@@ -728,3 +728,40 @@ assert.equal(
   false,
   "the retired file-output redactor is no longer part of the App provider contract",
 );
+
+// Response metadata names the form's fields and pagination but never carries a provider value.
+const sensitiveMetadataAccount = "987654321098";
+const sensitiveMetadataDescription = "PRIVATE DESCRIPTION 44";
+const sensitiveMetadataAmount = "7654321";
+const sensitiveMetadataNote = "PRIVATE NOTE 99";
+const responseMetadata = module.inspectFubonDepositResponseMetadata(`
+  <form>
+    <input type="hidden" name="javax.faces.ViewState" value="secret-view-state">
+    <input name="txnSeqNbr" value="${sensitiveMetadataAccount}">
+    <input name="resultGrid:dataGridCurrentPage" value="2">
+    <input name="resultGrid:totalCount" value="4">
+  </form>
+  <table>
+    <tr><th>帳務日期</th><th>交易時間</th><th>摘要</th><th>支出金額</th>
+    <th>存入金額</th><th>即時餘額</th><th>附註</th></tr>
+    <tr><td>2026/01/02</td><td>09:10:11</td><td>${sensitiveMetadataDescription}</td>
+    <td>${sensitiveMetadataAmount}</td><td></td><td>100</td><td>${sensitiveMetadataNote}</td></tr>
+  </table>
+`);
+assert.deepEqual(responseMetadata.fieldNames, [
+  "javax.faces.ViewState",
+  "resultGrid:dataGridCurrentPage",
+  "resultGrid:totalCount",
+  "txnSeqNbr",
+]);
+assert.deepEqual(responseMetadata.pagination, [
+  { name: "resultGrid:dataGridCurrentPage", value: 2 },
+  { name: "resultGrid:totalCount", value: 4 },
+]);
+assert.deepEqual(responseMetadata.candidateProviderKeyNames, ["txnSeqNbr"]);
+assert.equal(responseMetadata.candidateProviderKeyDigests.length, 1);
+const responseMetadataJson = JSON.stringify(responseMetadata);
+for (const value of [sensitiveMetadataAccount, sensitiveMetadataDescription, sensitiveMetadataAmount, sensitiveMetadataNote, "secret-view-state"]) {
+  assert.equal(responseMetadataJson.includes(value), false, `response metadata must not carry ${value}`);
+}
+assert.match(responseMetadataJson, /sha256:/u);

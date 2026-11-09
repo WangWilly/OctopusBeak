@@ -45,12 +45,6 @@ const NOT_PROVIDER_RESPONSES: readonly Readonly<{ path: string; name: string; co
     count: 1,
     reason: "a menu click's dispatch is awaited so the next label is searched after the frames reload; its reply is never read",
   },
-  {
-    path: "src/workflows/fubon-statements.ts",
-    name: "response headers",
-    count: 1,
-    reason: "the deposit diagnostics record which header names a reply carried, never their values as evidence",
-  },
 ];
 
 function sourceFiles(directory: string): string[] {
