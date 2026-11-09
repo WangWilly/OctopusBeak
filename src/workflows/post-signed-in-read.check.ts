@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
+import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { readPostCurrentDepositBalanceResponse } from "./post-current-deposit-balances.ts";
 import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
@@ -62,8 +63,14 @@ test("cancelling the run stops a pending statement query instead of letting it c
   withSilentIpost(async (page) => {
     const controller = new AbortController();
     const context = { now: () => new Date().toISOString(), text: strictSourceText, signal: controller.signal };
-    const product = { event: async () => {} };
-    const reading = readPostDepositSource(page, {} as never, context as never, product as never);
+    const product = productCollectionHandle({
+      ...context,
+      stage: () => assert.fail("a cancelled read stages nothing"),
+      reportActivity: async () => undefined,
+      event: async () => {},
+      collectionPeriod: () => assert.fail("Post declares no collection period"),
+    });
+    const reading = readPostDepositSource(page, {} as never, context as never, product);
     reading.catch(() => undefined);
     await page.waitForFunction(() => document.body.dataset.ranged === "yes");
     controller.abort(CANCELLED);
