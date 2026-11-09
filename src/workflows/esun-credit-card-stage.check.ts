@@ -149,6 +149,10 @@ const incomplete: ReadonlyArray<readonly [string, EsunCreditCardSource]> = [
     ...completeSource,
     timeline: { ...thirteenMonths, lastMonth: "2025/09" },
   }],
+  ["a timeline that never reached its terminal page", {
+    ...completeSource,
+    timeline: { ...thirteenMonths, terminal: false as true },
+  }],
   ["a terminal cursor other than four", {
     ...completeSource,
     timeline: { ...thirteenMonths, terminalCursor: 3 as 4 },
