@@ -12,6 +12,7 @@ import {
 } from "./pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import { PGLITE_OPERATIONAL_OPERATIONS } from "./pglite-operational-rpc.ts";
 
 function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClient>): PGliteChildProvider {
   return {
@@ -178,6 +179,45 @@ test("child RPC retains a worker admission category across both hops", async () 
   } finally {
     child.close();
     await server.close();
+  }
+});
+
+test("child request sends every operational operation on the operational protocol", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "octopus-beak-child-routing-"));
+  const endpoint = join(directory, "rpc.sock");
+  const kinds = new Map<string, string>();
+  const rawServer = createServer((peer) => {
+    let buffer = "";
+    peer.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString("utf8");
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const frame = JSON.parse(buffer.slice(0, newline)) as { kind: string; id?: number; operation?: string };
+        buffer = buffer.slice(newline + 1);
+        if (frame.kind === "pglite-child-auth") {
+          peer.write(JSON.stringify({ kind: "pglite-child-auth-response", version: 1, ok: true }) + "\n");
+        } else if (frame.operation) {
+          kinds.set(frame.operation, frame.kind);
+          const kind = frame.kind === "pglite-operational-request" ? "pglite-operational-response" : "pglite-financial-response";
+          peer.write(JSON.stringify({ kind, version: 1, id: frame.id, ok: true, value: null }) + "\n");
+        }
+        newline = buffer.indexOf("\n");
+      }
+    });
+  });
+  await new Promise<void>((resolve) => rawServer.listen(endpoint, resolve));
+  const child = createPGliteChildRpcClient({ endpoint, token: "A".repeat(43) });
+  try {
+    await child.ready;
+    await Promise.allSettled(PGLITE_OPERATIONAL_OPERATIONS.map((operation) => child.request(operation, [])));
+    assert.deepEqual(
+      PGLITE_OPERATIONAL_OPERATIONS.filter((operation) => kinds.get(operation) !== "pglite-operational-request"),
+      [],
+    );
+  } finally {
+    child.close();
+    await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
