@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
-import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -82,16 +82,19 @@ async function assertStopped(page: Page, read: Promise<unknown>) {
 test("cancelling the run stops a deposit read clicking the account selector", () =>
   withCtbc(`<div class="btn dropdown-toggle" data-control>帳戶</div>`, async (page) => {
     const staged: ProductStageRequest[] = [];
-    const context = {
-      signal: cancelledAfter(ABORT_AFTER_MS),
+    const signal = cancelledAfter(ABORT_AFTER_MS);
+    const now = () => new Date().toISOString();
+    const event = async () => undefined;
+    const context = { signal, text: strictSourceText, now, event } as unknown as WorkflowContext;
+    const product = productCollectionHandle({
+      now,
       text: strictSourceText,
-      now: () => new Date().toISOString(),
-      event: async () => undefined,
-    } as unknown as WorkflowContext;
-    const product = {
-      stage: (...requests: ProductStageRequest[]) => { staged.push(...requests); },
-      validate: async <T>(check: () => T | Promise<T>) => await check(),
-    } as unknown as ProductCollectionHandle;
+      signal,
+      event,
+      stage: (...requests) => { staged.push(...requests); },
+      reportActivity: async () => undefined,
+      collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+    });
     await assertStopped(page, readCtbcDepositSource(page, {
       credentials: { ctbc_user_id: "synthetic-user", ctbc_account: "synthetic-account", ctbc_password: "synthetic-password" },
       statementTypes: ["deposit"],
