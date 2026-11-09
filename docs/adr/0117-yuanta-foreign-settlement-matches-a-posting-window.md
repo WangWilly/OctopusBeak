@@ -18,9 +18,17 @@ The provider cannot supply the date instead. The live 複委託 stock trade repo
 
 **A group matches a posting inside a ten-day window.** A candidate posting passes every check the exact-date match applied: description, transaction info, linkage key and linkage contract, complete-range coverage with a terminal page, posted, normal and active, direction, currency and exact net amount. Its effective date must fall from the expected day through ten calendar days after it. The window absorbs Taiwan closures; the longest, Lunar New Year, is shorter than ten days.
 
-**Ambiguity relates nothing, in both directions.** A group with two or more candidates in its window relates nothing. A posting that is the only candidate of two or more groups in the same resolution pass relates to none of them. Both record `ambiguous-funding-candidate`. A group with no candidate records `no-complete-funding-candidate`.
+**A posting relates only when nothing else could claim it.** A group relates to a posting only when all of these hold:
 
-**The relation keeps the posting's day.** The relation's settlement date is the matched posting's effective date, and its settlement group key stays `<investment account>:<posting date>`. A relation the calendar created for a correctly dated trade has the same key, identity and support reason, so it stays current with no withdrawal or new observation.
+- the posting is the group's only candidate;
+- no other settlement-contract group in the same resolution pass sees the posting in its window, whether as its only candidate or as one of several;
+- the posting funds no observed relation other than the group's own prior relations.
+
+Otherwise the group relates nothing and records `ambiguous-funding-candidate`. A group with no candidate records `no-complete-funding-candidate`.
+
+**The relation keeps the posting's day.** The relation's settlement date is the matched posting's effective date, and its settlement group key stays `<investment account>:<posting date>`. When the weekday rule groups a calendar relation's trades exactly as the calendar did, the relation has the same key, identity and support reason. It stays current with no withdrawal or new observation.
+
+**Calendar relations netted across a closure are withdrawn.** The calendar could put trades on either side of a Taiwan closure on one settlement day. One example is a sell on Thursday 2026-02-12 and a buy on Friday 2026-02-20, which both settled on 2026-02-23. The weekday rule splits such trades into separate groups. No posting matches either group's net amount, so the relation is withdrawn and the trades stay unrelated under `no-complete-funding-candidate`. They are not re-paired to another posting.
 
 **Prior relations are found by their trades.** A settlement-contract group has no source date, so its prior active relations are the ones holding any of its trades. When the group matches a different posting, or no posting, those relations are withdrawn: complete coverage makes a missing replacement authoritative, as before. Source-linked-account funding keeps finding prior relations by its source settlement date.
 
@@ -36,5 +44,6 @@ The provider cannot supply the date instead. The live 複委託 stock trade repo
 ## Consequences
 
 - When a holiday splits trades the bank netted into one posting, the weekday groups do not match it. Those trades stay unrelated, counted under `no-complete-funding-candidate`, and never relate to a wrong posting.
-- Two groups with the same net amount close together can both lose their relation to ambiguity.
+- Groups with the same net amount whose windows overlap lose their relations to ambiguity. Recurring equal buys, such as a weekly fixed-amount purchase, stay unrelated.
+- 2026 relations that the calendar netted across a closure are withdrawn on the first resolution after this change.
 - There is no yearly calendar to maintain.
