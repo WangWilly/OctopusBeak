@@ -9,7 +9,6 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
-import { providerResponseReader } from "./provider-response-reader.ts";
 import type { CathayStrictSourceOptions } from "./cathay-statements.ts";
 
 export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
@@ -544,7 +543,7 @@ export async function readCathayCurrentDepositBalanceResponse(
       kind === "domestic" ? "臺幣帳戶總覽" : "外幣帳戶總覽",
       timeoutMs,
     );
-    const { response, evidence } = await providerResponseReader(source).acquire(
+    const { response, evidence } = await source.reader.acquire(
       scope,
       cathayCurrentDepositResponseDeclaration(kind),
       {

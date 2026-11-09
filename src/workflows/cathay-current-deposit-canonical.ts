@@ -17,14 +17,14 @@ import {
   type CurrentDepositBalanceEntry,
   type CurrentBalanceCaptureMatching,
   CURRENT_DEPOSIT_BALANCE_STAGING,
+  type SnapshotProduct,
 } from "./current-state-snapshot-capture.ts";
 import type { DecodedProviderEvidence, VerifiedProviderResponse } from "./provider-response.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
+import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositTimeEvidence,
@@ -224,11 +224,7 @@ type CathayCurrentDepositSnapshotInput<Admitted> = Readonly<{
   /** The statement captures this product admitted; their accounts each need a balance. */
   admitted: readonly Admitted[];
   acquire: () => Promise<CathayCurrentDepositResponse>;
-  /** The run clock, an RFC3339 instant. */
-  now: () => string;
-  product: Pick<ProductCollectionHandle, "event" | "validate">;
-  text: SourceTextPort;
-  signal: AbortSignal;
+  product: SnapshotProduct;
 }>;
 
 /**

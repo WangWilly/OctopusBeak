@@ -6,6 +6,7 @@ import {
   ProductCollectionInterruptedError,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
+import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import {
   type CathayStrictSourceOptions,
@@ -28,7 +29,7 @@ import {
   captureCathayForeignCurrentBalances,
 } from "./cathay-current-deposit-canonical.ts";
 import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
-import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
@@ -77,7 +78,7 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
   attachedPreviewPort?: (
     page: Page,
     session: () => CathaySession,
-    source: CathayStrictSourceOptions,
+    product: PreviewProductHandle,
   ) => CathayAttachedPreviewPort;
 }>;
 
@@ -117,14 +118,8 @@ async function runCathayAllWorkflow(
   dependencies: CathayAllProviderWorkflowDependencies,
 ): Promise<WorkflowRunResult> {
   return await context.browser.withPage(async (page) => {
-    const sourceFor = (validate: ProductCollectionHandle["validate"]): CathayStrictSourceOptions => ({
-      now: () => context.now(),
-      text: context.text,
-      validate,
-      signal: context.signal,
-    });
-    // The session and the attached previews belong to no verified product.
-    const source = sourceFor(WITHOUT_PRODUCT_VALIDATION);
+    // The session belongs to no product.
+    const source: CathayStrictSourceOptions = { reader: sourceReader(context), signal: context.signal };
     await signInCathayForApp(context, page, cathaySignInPlan(input.credentials, context.event));
 
     const createSession =
@@ -138,7 +133,7 @@ async function runCathayAllWorkflow(
     const observedAt = context.now();
     let statementCaptureCount = 0;
     const acquireCurrentBalances = (kind: "domestic" | "foreign", product: ProductCollectionHandle) => () =>
-      readCathayCurrentDepositBalanceResponse(page, kind, sourceFor(product.validate));
+      readCathayCurrentDepositBalanceResponse(page, kind, product);
 
     const assertSession = async () => {
       // Cathay's GetJWT request is the authenticated session health check.
@@ -179,7 +174,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, sourceFor(product.validate), observedAt, cathayQueryPeriod(product.collectionPeriod())),
+          )(page, input, session, product, observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
         if (
@@ -216,10 +211,7 @@ async function runCathayAllWorkflow(
         const balances = await captureCathayDomesticCurrentBalances({
           admitted: domestic.requests,
           acquire: acquireCurrentBalances("domestic", product),
-          now: () => context.now(),
           product,
-          text: context.text,
-          signal: context.signal,
         });
         product.stage(...balances);
         statementCaptureCount += domestic.captureCount;
@@ -244,7 +236,7 @@ async function runCathayAllWorkflow(
                 token,
                 { source: sourceOptions, observedAt: captureTime },
               ))
-          )(page, input, session, sourceFor(product.validate), () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
+          )(page, input, session, product, () => context.now(), cathayForeignQueryRange(product.collectionPeriod())),
           context.signal,
         );
         if (
@@ -284,10 +276,7 @@ async function runCathayAllWorkflow(
         const balances = await captureCathayForeignCurrentBalances({
           admitted: foreign.captures,
           acquire: acquireCurrentBalances("foreign", product),
-          now: () => context.now(),
           product,
-          text: context.text,
-          signal: context.signal,
         });
         product.stage(...balances);
         statementCaptureCount += foreign.captures.length;
@@ -300,8 +289,8 @@ async function runCathayAllWorkflow(
       assertSession,
       attached: {
         collectors: () => cathayAttachedPreviewCollectors(
-          (dependencies.attachedPreviewPort ??
-            playwrightCathayAttachedPreviewPort)(page, () => session, source),
+          (product) => (dependencies.attachedPreviewPort ??
+            playwrightCathayAttachedPreviewPort)(page, () => session, product),
           context.now,
         ),
         assertSession,

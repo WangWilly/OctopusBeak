@@ -561,8 +561,8 @@ test("Cathay malformed source decoding is isolated to its product and keeps the 
     bothProductsInput,
     {
       ...collectionDependencies(),
-      collectDomestic: async (_page, _input, _session, source) => {
-        source.text.decode(Uint8Array.from([0xff]), "utf-8");
+      collectDomestic: async () => {
+        harness.context.text.decode(Uint8Array.from([0xff]), "utf-8");
         return {
           requests: DOMESTIC_REQUESTS,
           captureCount: 1,

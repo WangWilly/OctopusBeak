@@ -9,7 +9,11 @@ import type {
   PreviewTimeDepositCollection,
 } from "../ledger/pglite/preview-financial-data.ts";
 import type { PreviewLoan, PreviewLoanCollection } from "../ledger/pglite/preview-loan.ts";
-import type { PreviewProductAbsence, PreviewProductCollectors } from "../lib/preview-sources/product-collection.ts";
+import type {
+  PreviewProductAbsence,
+  PreviewProductCollectors,
+  PreviewProductHandle,
+} from "../lib/preview-sources/product-collection.ts";
 import {
   currencyCode,
   decimalSum,
@@ -480,10 +484,14 @@ export async function collectCathayLoans(port: CathayAttachedPreviewPort, collec
   return { collectedAt, completeness: "complete", loans };
 }
 
-export function cathayAttachedPreviewCollectors(port: CathayAttachedPreviewPort, now: () => string): PreviewProductCollectors {
+/** Each collector reads through a port over its own product handle. */
+export function cathayAttachedPreviewCollectors(
+  portFor: (product: PreviewProductHandle) => CathayAttachedPreviewPort,
+  now: () => string,
+): PreviewProductCollectors {
   return {
-    credit_card: () => collectCathayCreditCards(port, now()),
-    time_deposit: () => collectCathayTimeDeposits(port, now()),
-    loan: () => collectCathayLoans(port, now()),
+    credit_card: (product) => collectCathayCreditCards(portFor(product), now()),
+    time_deposit: (product) => collectCathayTimeDeposits(portFor(product), now()),
+    loan: (product) => collectCathayLoans(portFor(product), now()),
   };
 }

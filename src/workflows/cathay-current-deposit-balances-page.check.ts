@@ -7,7 +7,7 @@ import {
   readCathayCurrentDepositBalanceResponse,
 } from "./cathay-current-deposit-balances.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 
@@ -34,9 +34,7 @@ test("cancelling the run stops a current balance read waiting a minute for the o
     const started = Date.now();
     await assert.rejects(
       readCathayCurrentDepositBalanceResponse(page, "domestic", {
-        now: () => "2026-09-08T13:20:10.000Z",
-        text: strictSourceText,
-        validate: WITHOUT_PRODUCT_VALIDATION,
+        reader: sourceReader({ now: () => "2026-09-08T13:20:10.000Z", text: strictSourceText }),
         signal: controller.signal,
       }),
       (error: unknown) => error === CANCELLED,

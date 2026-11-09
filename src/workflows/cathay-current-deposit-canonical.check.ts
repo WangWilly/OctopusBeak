@@ -36,7 +36,7 @@ import {
   cathayForeignOverviewBody,
   cathayOverviewAcquired,
 } from "./cathay-current-deposit-balances.fixtures.ts";
-import { validationReporter, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
+import { productCollectionHandle, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
 
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 const observedAt = "2026-09-08T21:20:10+08:00";
@@ -196,14 +196,17 @@ const domesticOverview = {
 };
 
 function snapshotHarness(events: string[] = []) {
+  const event: ProductCollectionStageEvent = async (_stage, outcome, code) => void events.push(`${code} ${outcome}`);
   return {
-    product: (() => {
-      const event: ProductCollectionStageEvent = async (_stage, outcome, code) => void events.push(`${code} ${outcome}`);
-      return { event, validate: validationReporter(event, new AbortController().signal) };
-    })(),
-    text: strictSourceText,
-    signal: new AbortController().signal,
-    now: () => observedAt,
+    product: productCollectionHandle({
+      now: () => observedAt,
+      text: strictSourceText,
+      signal: new AbortController().signal,
+      event,
+      stage: () => undefined,
+      reportActivity: async () => undefined,
+      collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+    }),
   };
 }
 
