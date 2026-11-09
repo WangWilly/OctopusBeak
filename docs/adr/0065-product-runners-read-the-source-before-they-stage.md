@@ -20,6 +20,8 @@ Yuanta foreign currency, Yuanta loan, Yuanta fund, Fubon deposit and Fubon credi
 
 The single-product workflows (SinoPac, Chunghwa Post, HNCB, CTBC and Yuanta trade) later took the same split. Their bank-specific bags of fake page steps are deleted. Each provider workflow keeps one optional product runner shaped like the multi-product orchestrators' runners: a `collectDeposit` field, or a positional `collectSecurities` argument for Yuanta trade. SinoPac also keeps its attached credit-card transport, and HNCB's run still takes the session check and the Attached Preview Products from sign-in. The SinoPac and HNCB goldens record read-time events, such as account listing and decoding, between each account's validation events. For these two banks the read half also admits each account's capture structure as it reads it, and their goldens run the real read half against a fake source port. That keeps the goldens byte-identical.
 
+E.SUN credit card later took the same split: its read half returns the timeline rows, the bill summaries and the watched current used credit, and its build half holds the completeness decision, canonical admission and staging.
+
 ## Considered options
 
 - **Keep the fake page steps under one name.** Rejected. Checks would still script page steps to test how commit items are built.
