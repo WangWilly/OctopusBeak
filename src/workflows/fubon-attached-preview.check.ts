@@ -15,6 +15,7 @@ import { PreviewSourceFailure } from "../lib/preview-sources/source-kit.ts";
 import { collectFubonForeignCurrency, type FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
 import { fubonWorkflowWith } from "./fubon-all-statements.ts";
 import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import {
   BALANCE_ROWS,
   balancePage,
@@ -79,10 +80,15 @@ async function signedInPage(site: Site = {}): Promise<{ page: Page; posted: Arra
   return { page, posted };
 }
 
+const previewHandle = () => ({
+  reader: sourceReader({ now: () => FUBON_FX_NOW, text: strictSourceText }),
+  signal: new AbortController().signal,
+});
+
 async function collect(site: Site = {}) {
   const { page, posted } = await signedInPage(site);
   try {
-    const port = playwrightFubonAttachedPreviewPort(page, { signal: new AbortController().signal, text: strictSourceText, now: () => FUBON_FX_NOW });
+    const port = playwrightFubonAttachedPreviewPort(page, { text: strictSourceText }, previewHandle());
     return { result: await collectFubonForeignCurrency(port, FUBON_FX_NOW), posted };
   } finally {
     await page.close();
@@ -92,7 +98,7 @@ async function collect(site: Site = {}) {
 async function rejectsWith(site: Site, pattern: RegExp, reason?: PreviewSourceFailure["reason"]) {
   const { page } = await signedInPage(site);
   try {
-    const port = playwrightFubonAttachedPreviewPort(page, { signal: new AbortController().signal, text: strictSourceText, now: () => FUBON_FX_NOW });
+    const port = playwrightFubonAttachedPreviewPort(page, { text: strictSourceText }, previewHandle());
     await assert.rejects(collectFubonForeignCurrency(port, FUBON_FX_NOW), (error: unknown) =>
       pattern.test(String(error)) && (reason === undefined || (error instanceof PreviewSourceFailure && error.reason === reason)));
   } finally {

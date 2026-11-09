@@ -11,6 +11,7 @@ import {
 } from "./fubon-statements.ts";
 import { reconcileFubonTelemetryAuthentication } from "./fubon-deposit-telemetry.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 let authenticateCalls = 0;
 const authRaceResult = await reconcileFubonTelemetryAuthentication(
@@ -166,6 +167,7 @@ const queryForm = (result: string) => `<form id="form1" method="post" action="${
 </form>${result}`;
 const resultTable = `<table><tr><th>帳務日期</th><th>交易時間</th><th>即時餘額</th></tr></table>`;
 const siteContext = { signal: new AbortController().signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" };
+const reader = sourceReader(siteContext);
 
 const browser = await launchCheckBrowser();
 try {
@@ -173,6 +175,7 @@ try {
   await overridePage.setContent(queryForm(""));
   const output = await captureFubonDepositTelemetry(
     fubonEbankSite(overridePage, siteContext),
+    reader,
     { repeatDateRange: "180", zeroDateRange: "1" },
     {
       openTransactionDetailForAccountIndex: async () => "********1098",
@@ -220,7 +223,7 @@ try {
     FubonDepositTelemetryRunDependencies["fetchDepositStatement"]
   > = async (site, range, account) => {
     uiRanges.push(range);
-    return await fetchFubonDepositStatementViaUi(site, range, account, {
+    return await fetchFubonDepositStatementViaUi(site, reader, range, account, {
       accountAlreadySelected: true,
       parsePage: async (_page, html) => {
         uiBodies.push(html.match(/ui-response-\w+$/u)?.[0] ?? html);
@@ -231,6 +234,7 @@ try {
 
   const uiOutput = await captureFubonDepositTelemetry(
     fubonEbankSite(uiPage, siteContext),
+    reader,
     { repeatDateRange: "180", zeroDateRange: "1" },
     {
       openTransactionDetailForAccountIndex: async () => "masked",

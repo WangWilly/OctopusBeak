@@ -19,7 +19,7 @@ import {
   type FubonRoute,
 } from "./fubon-ebank-site.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { WITHOUT_PRODUCT_VALIDATION, type ProviderRequest } from "./provider-response-reader.ts";
+import type { ProviderRequest, ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   admitFubonDomesticDepositCaptureEvidence,
   admitFubonDomesticDepositSourceOnlyEvidence,
@@ -2130,7 +2130,7 @@ export async function fetchDepositStatement(
   site: FubonEbankSite,
   query: FubonDepositQuery,
   accountOption: FubonDepositAccountOption,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
 ): Promise<FubonParsedDepositStatement> {
   const { page } = site.frames;
   const scope = await site.frames.scopeWith(depositSubmitSelector);
@@ -2138,7 +2138,6 @@ export async function fetchDepositStatement(
   await site.activate(scope.locator(dateRangeId));
   await site.frames.pause(DATE_RANGE_HANDLER_PAUSE_MS);
 
-  const reader = site.reader(validate);
   const accept = async (reply: FubonPostbackReply) =>
     (await reader.accept(FUBON_DEPOSIT_STATEMENT_RESPONSE, reply)).evidence.text;
   const html = await accept(await site.postback(
@@ -2241,14 +2240,16 @@ const isFubonDepositQueryRequest = ({ postData }: ProviderRequest): boolean =>
 
 /**
  * Click a control that posts the deposit query and decode the bank's reply
- * strictly. The UI observation runs outside any product, so a refused reply
- * fails the observation without a validation failure.
+ * strictly. The UI observation runs outside any product, so `reader` is the
+ * source's own and a refused reply fails the observation without a
+ * validation failure.
  */
 async function clickAndReadFubonDepositQuery(
   site: FubonEbankSite,
+  reader: ProviderResponseReader,
   control: Locator,
 ): Promise<string> {
-  const captured = await site.reader(WITHOUT_PRODUCT_VALIDATION).capture(site.frames, FUBON_DEPOSIT_STATEMENT_RESPONSE, {
+  const captured = await reader.capture(site.frames, FUBON_DEPOSIT_STATEMENT_RESPONSE, {
     evidence: "text",
     request: isFubonDepositQueryRequest,
     timeoutMs: 60_000,
@@ -2285,6 +2286,7 @@ export type FubonDepositUiQueryDependencies = {
 
 export async function fetchFubonDepositStatementViaUi(
   site: FubonEbankSite,
+  reader: ProviderResponseReader,
   dateRange: z.infer<typeof fubonStatementDateRangeSchema>,
   accountOption: FubonDepositAccountOption,
   dependencies: FubonDepositUiQueryDependencies = {},
@@ -2305,7 +2307,7 @@ export async function fetchFubonDepositStatementViaUi(
   await frames.withSignal((signal) => submit.waitFor({ state: "visible", timeout: 30_000, signal }));
   let control: Locator = submit;
   while (true) {
-    const html = await clickAndReadFubonDepositQuery(site, control);
+    const html = await clickAndReadFubonDepositQuery(site, reader, control);
     const parsed = await parsePage(frames.page, html, pages.length, pages.length + 1);
     pages.push(parsed);
 
@@ -2568,6 +2570,7 @@ export type FubonDepositTelemetryRunDependencies = Readonly<{
  */
 export async function captureFubonDepositTelemetry(
   site: FubonEbankSite,
+  reader: ProviderResponseReader,
   input: FubonDepositTelemetryInput,
   overrides: FubonDepositTelemetryRunDependencies = {},
 ): Promise<FubonDepositTelemetryOutput> {
@@ -2581,7 +2584,7 @@ export async function captureFubonDepositTelemetry(
   const fetchStatement =
     overrides.fetchDepositStatement ??
     ((currentSite, range, account) =>
-      fetchFubonDepositStatementViaUi(currentSite, range, account, {
+      fetchFubonDepositStatementViaUi(currentSite, reader, range, account, {
         accountAlreadySelected: true,
       }));
   const tracker = new FubonDepositResponseTracker(site.frames.page);
@@ -2689,7 +2692,7 @@ export async function runFubonStatements(
   const snapshot = await readFubonDepositSourceSnapshot(site, context, product);
   return stageFubonDeposit(snapshot, input, context, product, async () => {
     await product.reportActivity("query");
-    return await readFubonCurrentDepositBalanceTable(site, product.validate);
+    return await readFubonCurrentDepositBalanceTable(site, product.reader);
   });
 }
 
@@ -2697,7 +2700,7 @@ export async function runFubonStatements(
 export async function readFubonDepositSourceSnapshot(
   site: FubonEbankSite,
   context: Pick<FubonDepositProductContext, "signal" | "text">,
-  product: Pick<ProductCollectionHandle, "reportActivity" | "collectionPeriod" | "validate">,
+  product: Pick<ProductCollectionHandle, "reportActivity" | "collectionPeriod" | "reader">,
 ): Promise<FubonDepositSourceSnapshot> {
   const queries = fubonDepositQueries(product.collectionPeriod());
   await product.reportActivity("query");
@@ -2711,7 +2714,7 @@ export async function readFubonDepositSourceSnapshot(
     for (const query of queries) {
       context.signal.throwIfAborted();
       await product.reportActivity("query");
-      const statement = await fetchDepositStatement(site, query, account, product.validate);
+      const statement = await fetchDepositStatement(site, query, account, product.reader);
       context.text.assertIntact(JSON.stringify(statement));
       statements.push(statement);
     }
@@ -2918,10 +2921,7 @@ export async function stageFubonDeposit(
     if (financialCaptures.length > 0 || deferred.length > 0) {
       currentRows = await readCurrentStateSnapshot(fubonCurrentBalanceSnapshot, {
         acquire: readCurrentBalances,
-        now: () => context.now(),
         product,
-        text: context.text,
-        signal: context.signal,
       });
     }
 
@@ -2944,7 +2944,7 @@ export async function stageFubonDeposit(
         fubonCurrentBalanceSnapshot,
         currentRows
           .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber)),
-        { captures: financialCaptures, product, signal: context.signal },
+        { captures: financialCaptures, product },
       )
       : { items: [], excluded: [] };
 

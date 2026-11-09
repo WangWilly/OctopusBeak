@@ -8,7 +8,7 @@ import { ProviderResponseCheckError } from "../lib/automation/provider-response-
 import { FUBON_EBANK_ENTRY_URL, FUBON_EBANK_HOST, fubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 const ORIGIN = new URL(FUBON_EBANK_ENTRY_URL).origin;
 const CANCELLED = new Error("synthetic cancellation");
@@ -194,7 +194,7 @@ test("a form postback reply is accepted through its declaration and decoded as s
     const reply = await site.postback(form, "query", { page: "2" });
     assert.equal(reply.response.method, "POST");
     assert.equal(reply.postedTo, new URL("/B2C/loan.faces", FUBON_EBANK_ENTRY_URL).toString(), "the reply names the form action it was posted to");
-    const reader = site.reader(WITHOUT_PRODUCT_VALIDATION);
+    const reader = sourceReader(context());
     const html = (await reader.accept(LOAN_REPLY, reply)).evidence.text;
     assert.match(html, /交易日期/u);
     assert.deepEqual(posted, ["/B2C/loan.faces acct=0012&query=query&page=2"]);
@@ -210,7 +210,7 @@ test("a form postback reply with status 500 or from an undeclared endpoint fails
   withFubonShell(async (page) => {
     const site = fubonEbankSite(page, context());
     const form = (await site.open(LOAN)).locator("form#form1");
-    const reader = site.reader(WITHOUT_PRODUCT_VALIDATION);
+    const reader = sourceReader(context());
     const failed = await site.postback(form, undefined, { failed: "1" });
     await assert.rejects(reader.accept(LOAN_REPLY, failed), failsCheck("response-status"));
     const elsewhere = await site.postback(form, undefined, { page: "2" });

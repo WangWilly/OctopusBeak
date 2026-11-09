@@ -1,5 +1,4 @@
 import type { Locator } from "playwright";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
@@ -11,6 +10,7 @@ import {
 import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
@@ -319,12 +319,12 @@ export type FubonCurrentDepositTable = Readonly<{
 }>;
 
 /**
- * Navigate through 存款交易查詢 → 我的存款 and read the current table. A
- * refused page response fails inside `validate`.
+ * Navigate through 存款交易查詢 → 我的存款 and read the current table
+ * through `reader`, which refuses a page response that fails its checks.
  */
 export async function readFubonCurrentDepositBalanceTable(
   site: FubonEbankSite,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
   input: Readonly<{ timeoutMs?: number }> = {},
 ): Promise<FubonCurrentDepositTable> {
   const { frames } = site;
@@ -333,7 +333,7 @@ export async function readFubonCurrentDepositBalanceTable(
   await frames.withSignal((signal) => depositMenu.click({ signal }));
   const myDeposit = await findExactControl(frames, "我的存款", timeoutMs);
   // The page's own response carries the HTTP Date and Cache-Control evidence; the rendered table is the evidence.
-  const { response } = await site.reader(validate).witness(frames, FUBON_CURRENT_DEPOSIT_RESPONSE, {
+  const { response } = await reader.witness(frames, FUBON_CURRENT_DEPOSIT_RESPONSE, {
     timeoutMs,
     trigger: () => frames.withSignal((signal) => myDeposit.click({ signal })),
   });

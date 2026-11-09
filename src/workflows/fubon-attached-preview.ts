@@ -6,7 +6,11 @@ import type {
 } from "../ledger/pglite/preview-financial-data.ts";
 import { parseFubonCompositeAccountOption } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
-import type { PreviewProductAbsence, PreviewProductCollectors } from "../lib/preview-sources/product-collection.ts";
+import type {
+  PreviewProductAbsence,
+  PreviewProductCollectors,
+  PreviewProductHandle,
+} from "../lib/preview-sources/product-collection.ts";
 import {
   decimalSum,
   exactDecimal,
@@ -157,6 +161,9 @@ export async function collectFubonForeignCurrency(
   return { collectedAt, accounts };
 }
 
-export function fubonAttachedPreviewCollectors(port: FubonAttachedPreviewPort, now: () => string): PreviewProductCollectors {
-  return { foreign_currency: () => collectFubonForeignCurrency(port, now()) };
+export function fubonAttachedPreviewCollectors(
+  portFor: (product: PreviewProductHandle) => FubonAttachedPreviewPort,
+  now: () => string,
+): PreviewProductCollectors {
+  return { foreign_currency: (product) => collectFubonForeignCurrency(portFor(product), now()) };
 }
