@@ -152,6 +152,15 @@ export function sourceReader(run: Readonly<{ now: () => string; text: SourceText
   return providerResponseReader({ now: () => run.now(), text: run.text, validate: WITHOUT_PRODUCT_VALIDATION });
 }
 
+export type ProviderAcceptOptions = Readonly<{
+  /**
+   * The run clock's instant, RFC3339, at which the source read evidence it
+   * accepts later, such as an account list a snapshot reuses. Absent, the
+   * response is observed when it is accepted.
+   */
+  observedAt?: string;
+}>;
+
 export type ProviderResponseReader = Readonly<{
   /** Wait for the declared response the trigger causes, read its body and accept it. */
   capture<Kind extends ProviderBodyKind, DateRule extends ProviderDateRule, Triggered = void>(
@@ -206,6 +215,7 @@ export type ProviderResponseReader = Readonly<{
   accept<Acquired extends ProviderAcquisition, DateRule extends ProviderDateRule>(
     declaration: ProviderResponseDeclaration<DateRule>,
     acquired: Acquired,
+    options?: ProviderAcceptOptions,
   ): Promise<AcceptedProviderResponse<Acquired, DateRule>>;
 }>;
 
@@ -323,8 +333,8 @@ export function providerResponseReader(ports: ProviderResponsePorts): ProviderRe
     return { ...acquired, triggered: value };
   };
 
-  const accept: ProviderResponseReader["accept"] = async (declaration, acquired) => {
-    const at = observedAt();
+  const accept: ProviderResponseReader["accept"] = async (declaration, acquired, options = {}) => {
+    const at = options.observedAt === undefined ? observedAt() : taipeiInstant(options.observedAt);
     return await ports.validate(() => acceptProviderResponse(declaration, acquired, { observedAt: at, text: ports.text }));
   };
 

@@ -99,7 +99,14 @@ export type SnapshotProduct = Pick<ProductCollectionHandle, "event" | "validate"
  * its handle, the run ports a caller threads in beside the product.
  */
 type SnapshotRun =
-  | Readonly<{ product: SnapshotProduct; now?: never; text?: never; signal?: never }>
+  | Readonly<{
+    product: SnapshotProduct;
+    /** The run clock's instant, RFC3339, at which the source read evidence it acquires later. */
+    observedAt?: string;
+    now?: never;
+    text?: never;
+    signal?: never;
+  }>
   | Readonly<{
     /** The run clock, an RFC3339 instant. */
     now: () => string;
@@ -176,7 +183,11 @@ export async function readCurrentStateSnapshot<
     throw error;
   }
   signal.throwIfAborted();
-  const { response, evidence } = await snapshotPorts(input).reader().accept(declaration.response, acquired);
+  const { response, evidence } = await snapshotPorts(input).reader().accept(
+    declaration.response,
+    acquired,
+    "observedAt" in input && input.observedAt !== undefined ? { observedAt: input.observedAt } : {},
+  );
   const rows = await product.validate(() => parseRows(() => declaration.parse(evidence, response, acquired)));
   await product.event("decoding", "completed", "current-balance-decoding-completed");
   await product.event("collection", "completed", "current-balance-collection-completed", {
