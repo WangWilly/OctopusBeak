@@ -5,8 +5,8 @@ import {
   functionSeqNo,
   type CathayApiResponseDeclaration,
   type CathaySession,
-  type CathayStrictSourceOptions,
 } from "./cathay-statements.ts";
+import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
 import {
   CATHAY_CURRENT_DEPOSIT_HOST,
   CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
@@ -21,7 +21,7 @@ import {
 } from "./cathay-attached-preview.ts";
 import { frameScope } from "./frame-scope.ts";
 import type { AcceptedProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderBodyAcquisition } from "./provider-response-reader.ts";
+import type { ProviderBodyAcquisition } from "./provider-response-reader.ts";
 
 const ORIGIN = `https://${CATHAY_CURRENT_DEPOSIT_HOST}`;
 const CARD_OVERVIEW_URL = `${ORIGIN}/OnlineBanking/CQuery/C0101_BillOverview`;
@@ -164,12 +164,12 @@ function previewResponse(
 export function playwrightCathayAttachedPreviewPort(
   page: Page,
   session: () => CathaySession,
-  source: CathayStrictSourceOptions,
+  product: PreviewProductHandle,
 ): CathayAttachedPreviewPort {
-  const scope = frameScope(page, source.signal);
-  const reader = providerResponseReader(source);
+  const scope = frameScope(page, product.signal);
+  const { reader } = product;
   // An optional wait that times out or fails leaves the read to decide; a cancellation still stops it.
-  const unlessCancelled = () => source.signal.throwIfAborted();
+  const unlessCancelled = () => product.signal.throwIfAborted();
   const open = (url: string) =>
     scope.withSignal((signal) => page.goto(url, { waitUntil: "domcontentloaded", timeout: TIMEOUT_MS, signal }));
   const settled = (settles: () => boolean, timeout: number) =>
@@ -210,7 +210,7 @@ export function playwrightCathayAttachedPreviewPort(
       const text = await fetchCathayApiSourceText(page, CATHAY_CARD_RESPONSE, path, current.jwtToken, {
         functionSeqNo: functionSeqNo(),
         content: { customerId: current.customerId, ...content },
-      }, source);
+      }, product);
       return { endpoint: path, status: 200, text, date: null };
     },
     async domesticOverview() {

@@ -3,7 +3,7 @@ import { type ProviderResponse, verifyProviderResponse } from "./provider-respon
 import { cathayDomesticOverviewBody, cathayOverviewPage } from "./cathay-current-deposit-balances.fixtures.ts";
 import { registerHooks } from "node:module";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -258,9 +258,7 @@ assert.throws(
 {
   const { readCathayCurrentDepositBalanceResponse } = await import("./cathay-current-deposit-balances.ts");
   const running = {
-    now: () => "2026-09-08T13:20:10.000Z",
-    text: strictSourceText,
-    validate: WITHOUT_PRODUCT_VALIDATION,
+    reader: sourceReader({ now: () => "2026-09-08T13:20:10.000Z", text: strictSourceText }),
     signal: new AbortController().signal,
   };
   const ui = ["9990", "0000", "0001"].join("");

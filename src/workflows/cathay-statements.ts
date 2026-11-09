@@ -22,23 +22,18 @@ import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import {
-  providerResponseReader,
-  type ProviderRequest,
-  type ProviderResponsePorts,
-} from "./provider-response-reader.ts";
+import type { ProviderRequest, ProviderResponseReader } from "./provider-response-reader.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
 
 export type CathayCredentials = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS>["credentials"];
 
 /**
- * A run's source options: the ports every Cathay reply is read with, and the
- * signal every signed-in read yields to. `validate` is the collecting
- * product's own, or `WITHOUT_PRODUCT_VALIDATION` for the session and the
- * attached previews, which no verified product owns.
+ * A run's source options: the reader every Cathay reply is read with, and the
+ * signal every signed-in read yields to. The reader is the collecting
+ * product's own, or the Source reader for the session, which no product owns.
  */
-export type CathayStrictSourceOptions = ProviderResponsePorts & Readonly<{ signal: AbortSignal }>;
+export type CathayStrictSourceOptions = Readonly<{ reader: ProviderResponseReader; signal: AbortSignal }>;
 
 const dateRangeSchema = z.enum([
   "one_week",
@@ -1019,7 +1014,7 @@ async function readCathayReply(
   source: CathayStrictSourceOptions,
 ): Promise<string> {
   const scope = frameScope(page, source.signal);
-  const reader = providerResponseReader(source);
+  const { reader } = source;
   const { triggered: browserStatus, ...acquired } = await reader.acquire(scope, declaration, {
     evidence: "json",
     trigger: send,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { CATHAY_SOURCE } from "../lib/automation/server/sources/cathay.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
-import { WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import {
   CathayApiClient,
@@ -394,9 +394,7 @@ const directSecondAccount = {
 };
 
 const sourceUntil = (signal: AbortSignal) => ({
-  now: () => "2026-10-29T04:00:00.000Z",
-  text: strictSourceText,
-  validate: WITHOUT_PRODUCT_VALIDATION,
+  reader: sourceReader({ now: () => "2026-10-29T04:00:00.000Z", text: strictSourceText }),
   signal,
 });
 const uncancelledSource = sourceUntil(new AbortController().signal);
