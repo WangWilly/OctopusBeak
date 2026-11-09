@@ -16,6 +16,8 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 **Each attached preview product gets its own handle.** A preview collector receives a `PreviewProductHandle` with its own Source reader and the run's signal, instead of sharing one reader a workflow built. A preview product has no product validation: the preview run classifies a refused response as that product's validation failure by its error, as it did before.
 
+**Evidence read earlier keeps the instant it was read.** A snapshot that reuses evidence the source read before, such as LINE Bank's balances riding on the account list read before the statements, passes the run-clock instant of that read as `observedAt`; the reader accepts it at that instant instead of the run clock's current reading. A source never builds a reader on a fixed clock to get this.
+
 **Checks build handles the same way.** A check that drives a collector outside a run calls `productCollectionHandle`, so it exercises the binding the run uses.
 
 **Banks move one at a time, then the old paths go.** Each bank's collectors move to the handle in their own change. Once every bank has moved, the snapshot module drops its threaded-ports form, `WITHOUT_PRODUCT_VALIDATION` and `ProviderResponsePorts` stop being exported, and a structural check keeps collectors from importing `providerResponseReader`.

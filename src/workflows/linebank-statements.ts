@@ -1300,10 +1300,8 @@ async function runLineBankWorkflow(
             })),
             acquire: async () => accountSnapshot.currentBalance,
             // The balances ride on the account list read before the statements, so they were observed then.
-            now: () => accountSnapshotAt,
+            observedAt: accountSnapshotAt,
             product,
-            text: context.text,
-            signal: context.signal,
           }));
         } catch (error) {
           if (!balanceAdmitting) throw error;

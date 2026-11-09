@@ -268,6 +268,14 @@ test("a product's handle reads on the run clock and reports a refused response a
   assert.deepEqual(events, ["validation:failed:source-validation-rejected"]);
 });
 
+test("evidence the source read earlier is observed at the run-clock instant it was read", async () => {
+  const accepted = await sourceReader({ now: () => RUN_CLOCK, text: strictSourceText }).accept(RESPONSE, {
+    response: { url: `${ORIGIN}/history`, status: 200, method: "POST", headers: { date: PROVIDER_DATE, "content-type": "application/json" } },
+    evidence: { kind: "json", bytes: new TextEncoder().encode('{"ok":1}') },
+  }, { observedAt: "2026-09-09T01:59:00.000Z" });
+  assert.equal(accepted.response.observedAt, "2026-09-09T09:59:00+08:00");
+});
+
 test("the Source reader reads on the run clock", async () => {
   const accepted = await sourceReader({ now: () => RUN_CLOCK, text: strictSourceText }).accept(RESPONSE, {
     response: { url: `${ORIGIN}/history`, status: 200, method: "POST", headers: { date: PROVIDER_DATE, "content-type": "application/json" } },

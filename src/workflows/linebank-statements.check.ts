@@ -96,7 +96,7 @@ assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot
 assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
 assert.match(linebankWorkflowSource, /captureCurrentStateSnapshots\(/u);
 assert.match(linebankWorkflowSource, /export const lineBankWorkflow/u);
-assert.match(linebankWorkflowSource, /text:\s*context\.text/u);
+assert.match(linebankWorkflowSource, /observedAt:\s*accountSnapshotAt/u);
 assert.doesNotMatch(
   linebankWorkflowSource,
   /from\s+["']libretto["']|export\s+default\s+workflow\s*\(|librettoAuthenticate|LibrettoWorkflowContext/u,
