@@ -15,6 +15,8 @@ const SENSITIVE = {
   symbol: "AAPLX",
   amount: "-12,345.67",
   holderName: "王小明",
+  tickerKey: "TSLAQ",
+  romanizedNameKey: "WANGXIAOMING",
   errorDetail: "AssetReport/OverseaTrade?acct=980C-1234567",
 };
 
@@ -25,6 +27,7 @@ function overseaHtml() {
     <script>
       var currTradeType = 'OverseaTrade';
       var accountData = [{ "AccountNo": "${SENSITIVE.brokerageAccount}", "Name": "${SENSITIVE.holderName}" }];
+      var positions = { "${SENSITIVE.tickerKey}": 3, "${SENSITIVE.romanizedNameKey}": "x" };
       $("#gridOversea").kendoGrid({
         columns: [
           { field: 'TradeDate_T2', title: '交易日期' },
@@ -87,7 +90,8 @@ test("columns come out in page order, with digit-run titles withheld and digit-r
   });
   assert.equal(oversea.grids[1].gridId, "{segment}");
   assert.equal(oversea.grids[1].category, "{segment}");
-  assert.deepEqual(oversea.dataKeysOutsideColumns, ["AccountNo", "DeliveryDate_T7", "MarketNo", "Name"]);
+  assert.deepEqual(oversea.dataKeysOutsideColumns, ["DeliveryDate_T7", "MarketNo"]);
+  assert.equal(oversea.otherDataKeyCount, 4, "AccountNo, Name and the two data-named keys are counted, not listed");
 });
 
 test("the candidate detector finds 交割日 columns and settlement-date data keys", async () => {

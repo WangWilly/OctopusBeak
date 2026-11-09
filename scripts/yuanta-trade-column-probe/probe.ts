@@ -24,6 +24,14 @@ const LONG_DIGIT_RUN = /\d{4,}/u;
 const MAX_TITLE_LENGTH = 40;
 const MAX_DATA_KEYS = 200;
 const JSON_KEY = /"([A-Za-z_][A-Za-z0-9_]{0,63})"\s*:/gu;
+/**
+ * A page key is reported only when it is shaped like a Yuanta grid field
+ * (`TradeDate_T2`), names a settlement date, or is a key the workflow already
+ * reads. Any other quoted key, such as a ticker or a romanized name a page
+ * uses as an object key, is only counted.
+ */
+const GRID_FIELD_KEY = /^[A-Za-z][A-Za-z0-9]*_T\d{1,3}$/u;
+const KNOWN_DATA_KEYS: ReadonlySet<string> = new Set(["MarketNo"]);
 const SAFE_FAILURE = /^[A-Za-z][A-Za-z-]{0,40}$/u;
 
 export type ColumnEntry = Readonly<{ field: string; title: string }>;
@@ -40,8 +48,10 @@ export type ReportEntry =
     reportType: TradeType;
     status: "ok";
     grids: readonly GridEntry[];
-    /** Keys in the page's embedded JSON that no grid shows as a column, such as `MarketNo`. */
+    /** Field-shaped keys in the page's embedded JSON that no grid shows as a column, such as `MarketNo`. */
     dataKeysOutsideColumns: readonly string[];
+    /** How many other quoted keys the page held; their names are not reported. */
+    otherDataKeyCount: number;
   }>
   | Readonly<{ reportType: TradeType; status: "failed"; reason: string }>;
 
@@ -85,15 +95,21 @@ export function describeGrids(page: CapturedReport["page"]): GridEntry[] {
   }));
 }
 
-/** Object keys in the page's inline JSON that are not a column field of any grid, sanitized and sorted. */
-export function dataKeysOutsideColumns(captured: CapturedReport): string[] {
+/**
+ * Field-shaped keys in the page's inline JSON that are not a column field of
+ * any grid, sanitized and sorted, and how many other keys it held.
+ */
+export function dataKeysOutsideColumns(captured: CapturedReport): Readonly<{ keys: string[]; otherCount: number }> {
   const columnFields = new Set(captured.page.grids.flatMap((grid) => grid.columns.map((column) => column.field)));
   const keys = new Set<string>();
+  const others = new Set<string>();
   for (const match of captured.html.matchAll(JSON_KEY)) {
     const key = match[1]!;
-    if (!columnFields.has(key)) keys.add(safeKey(key));
+    if (columnFields.has(key)) continue;
+    if (GRID_FIELD_KEY.test(key) || KNOWN_DATA_KEYS.has(key) || SETTLEMENT_DATE_PATTERN.test(key)) keys.add(safeKey(key));
+    else others.add(key);
   }
-  return [...keys].sort().slice(0, MAX_DATA_KEYS);
+  return { keys: [...keys].sort().slice(0, MAX_DATA_KEYS), otherCount: others.size };
 }
 
 export function findSettlementDateCandidates(reports: readonly ReportEntry[]): SettlementDateCandidate[] {
@@ -126,7 +142,7 @@ export function describeReport(reportType: TradeType, captured: CapturedReport):
     reportType,
     status: "ok",
     grids: describeGrids(captured.page),
-    dataKeysOutsideColumns: dataKeysOutsideColumns(captured),
+    ...(({ keys, otherCount }) => ({ dataKeysOutsideColumns: keys, otherDataKeyCount: otherCount }))(dataKeysOutsideColumns(captured)),
   };
 }
 

@@ -23,11 +23,11 @@ export LIBRETTO_CLOUD_YUANTA_TRADE_USER_ID LIBRETTO_CLOUD_YUANTA_TRADE_PASSWORD 
 npm run probe:yuanta-trade-columns -- --allow-live-source
 ```
 
-`--help` prints the usage and exits without network access. `--headless` hides the browser window. The probe opens the same visible, non-persistent development browser as `npm run workflow:dev`, with the Yuanta Trade browser profile. Stage events go to stderr. The report goes to stdout as JSON.
+`--help` prints the usage and exits without network access. `--headless` hides the browser window. The probe opens the same visible, non-persistent development browser as `npm run workflow:dev`, with the Yuanta Trade browser profile. Stage events go to stderr. The report goes to stdout as JSON. The development solver route can also print one `verification route ended with … after resume` line to stdout before the report. It carries no personal data; delete it before you parse the file as JSON.
 
 The probe does these steps in order:
 
-1. It signs in at `https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020` with the workflow's sign-in code. The App's local solver answers the audio code, CAPTCHA checkbox, and image challenge, the same route `npm run workflow:dev -- run-app yuanta-trade-statements` uses. If the solver cannot answer a stage, the probe stops before the report.
+1. It signs in at `https://global.yuanta.com.tw/NexusWebTrade/Login/OTPLogin?urlid=6020` with the workflow's sign-in code. The development solver route answers the audio code and the CAPTCHA checkbox, and attempts the image challenge, the same route `npm run workflow:dev -- run-app yuanta-trade-statements` uses. The App's own route refuses the image challenge, so a run that meets one may stop where the App would too. If the solver cannot answer a stage, or the certificate picker appears, the probe stops before the report.
 2. It reads the ten trade reports the workflow reads, with the workflow's own form parameters, over the workflow's 91-day range ending today in Taipei. The order is `OverseaTrade` and `InternationalSecuritiesTrade` (foreign securities), then `StockTrade` (domestic), then `SecuritiesLendingTrade`, `UnlimitedUseLendingTrade`, `LedgerTrade`, `FuturesTrade`, `WealthTrade`, `BondTrade`, and `DerivativeTrade`.
 
 A report that fails is recorded as `failed`, and the next report still runs.
@@ -40,16 +40,16 @@ The report has these top-level fields:
 
 - `complete`: whether every report was read.
 - `rangeDays`: the length of the queried range.
-- `reports`: one entry per report type. A read report lists its `grids` and `dataKeysOutsideColumns`. A failed report names its reason: a provider response check such as `response-endpoint`, an error class name, or `capture-failed`.
+- `reports`: one entry per report type. A read report lists its `grids`, `dataKeysOutsideColumns` and `otherDataKeyCount`. A failed report names its reason: a provider response check such as `response-endpoint`, an error class name, or `capture-failed`.
 - `settlementDateCandidates`: every column, and every data key, whose field or title matches `交割日`, `交割日期`, `SettleDate`, `SettlementDate`, or `DeliveryDate`, in any letter case.
 
 Each grid has these fields:
 
-- `gridId` and `category`: the grid's element ID and the category the workflow derives from it. An ID with six or more consecutive digits shows as `{segment}`.
+- `gridId` and `category`: the grid's element ID and the category the workflow derives from it. An ID that contains `/`, any character outside `A-Z a-z 0-9 . _ -`, six or more consecutive digits, or only four or more digits shows as `{segment}`.
 - `rowCount`: how many rows the grid held.
 - `columns`: every `{ field, title }` pair, in page order. A field that is not a plain identifier, or has four or more consecutive digits, shows as `{key}`. A title longer than 40 characters, or with four or more consecutive digits, shows as `withheld`.
 
-`dataKeysOutsideColumns` lists the object keys in the page's inline JSON that no grid shows as a column, such as `MarketNo`. A settlement date can be in the row data without a visible column, and this list shows that case. Keys are sanitized like fields.
+`dataKeysOutsideColumns` lists the object keys in the page's inline JSON that no grid shows as a column, such as `MarketNo`. A settlement date can be in the row data without a visible column, and this list shows that case. Only keys shaped like a Yuanta grid field (`TradeDate_T2`), keys that name a settlement date, and keys the workflow already reads are listed. A page can use data as an object key, such as a ticker or a romanized name, so every other key is only counted in `otherDataKeyCount`. Listed keys are sanitized like fields.
 
 The report never contains row values, account numbers, names, amounts, dates, or error messages.
 
