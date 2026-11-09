@@ -3,6 +3,14 @@ import { createHash } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
+import {
+  deriveYuantaForeignSettlementLinkageKey,
+  YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+} from "../canonical/investment-funding-contract.ts";
+import { YuantaSettlementCalendarNotCoveredError } from "../canonical/yuanta-foreign-settlement-calendar.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
@@ -363,6 +371,68 @@ test("source-linked investment funding resolves exactly one retained bank fact",
     assert.equal(ambiguous.noAdmission, 1);
     assert.ok(ambiguous.reasons.includes("ambiguous-funding-candidate"));
     assert.deepEqual(await queryPGliteCurrentInvestmentFundingRelations(store), []);
+  } finally {
+    await store.close();
+  }
+});
+
+function yuantaSettlementContractRequest(captureId: string, effectiveOn: string): PGliteCanonicalInvestmentCommitRequest {
+  const base: PGliteCanonicalInvestmentCommitRequest = JSON.parse(
+    JSON.stringify(investmentRequest(captureId)).replaceAll("yuanta-fund", "yuanta-trade"),
+  );
+  const transaction = base.capture.transactions[0]!;
+  return {
+    capture: {
+      ...base.capture,
+      sourceId: "yuanta-trade",
+      transactions: [{
+        ...transaction,
+        effectiveOn,
+        fundingEvidence: {
+          kind: "source-settlement-contract",
+          sourceRecordKey: transaction.sourceRecordKey,
+          sourceLinkageKey: deriveYuantaForeignSettlementLinkageKey("synthetic-yuanta-login", "USD"),
+          linkageContractVersion: YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+          settlementMarket: YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+          settlementMarketContractVersion: YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+          sourceMarketCode: "52",
+          settlementModel: "account-currency-date-net",
+          contractVersion: YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+        },
+      }],
+    },
+  };
+}
+
+test("Yuanta settlement before the calendar's coverage is reported, not dropped", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalInvestmentCapture(store, yuantaSettlementContractRequest("yuanta-settlement-2025", "2025-06-02"));
+    const resolution = await resolvePGliteCanonicalInvestmentFundingRelations(store, {
+      sourceConnectionKey: token("investment-connection"),
+      observedAt: "2026-09-22T02:00:00.000Z",
+    });
+    assert.equal(resolution.outcome, "no-admission");
+    assert.equal(resolution.noAdmission, 1);
+    assert.deepEqual(resolution.reasons, ["settlement-calendar-not-covered"]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("Yuanta settlement after the calendar's coverage fails resolution with a named error", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalInvestmentCapture(store, yuantaSettlementContractRequest("yuanta-settlement-2028", "2028-01-03"));
+    await assert.rejects(
+      resolvePGliteCanonicalInvestmentFundingRelations(store, {
+        sourceConnectionKey: token("investment-connection"),
+        observedAt: "2028-01-03T02:00:00.000Z",
+      }),
+      (error: unknown) => error instanceof YuantaSettlementCalendarNotCoveredError && error.date === "2028-01-04",
+    );
   } finally {
     await store.close();
   }
