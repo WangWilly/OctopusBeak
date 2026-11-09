@@ -6,6 +6,8 @@ import { Worker } from "node:worker_threads";
 import test from "node:test";
 import {
   createPGliteOperationalRpcClient,
+  createPGliteOperationalRpcServer,
+  PGliteOperationalError,
   type PGliteOperationalOperation,
 } from "./pglite-operational-rpc.ts";
 import { createPGliteOperationalRuntime } from "./pglite-runtime.ts";
@@ -191,5 +193,43 @@ test("closing the operational transport rejects requests still waiting on the wi
   const client = createPGliteOperationalRpcClient(port);
   const pending = client.provider.automation.activeTaskRuns();
   client.close();
-  await assert.rejects(pending, /PGlite operational worker is closed/u);
+  await assert.rejects(pending, (error) => error instanceof PGliteOperationalError
+    && error.code === "worker-closed"
+    && /PGlite operational worker is closed/u.test(error.message));
+  await assert.rejects(
+    client.provider.automation.activeTaskRuns(),
+    (error) => error instanceof PGliteOperationalError && error.code === "worker-closed",
+  );
+});
+
+test("the operational server refuses a second call under an id that is still running", async () => {
+  type Listener = (value: unknown) => void;
+  const listeners = new Set<Listener>();
+  const responses: Array<Record<string, unknown>> = [];
+  const port = {
+    on: (_event: "message", listener: Listener) => { listeners.add(listener); },
+    off: (_event: "message", listener: Listener) => { listeners.delete(listener); },
+    postMessage: (value: unknown) => { responses.push(value as Record<string, unknown>); },
+  };
+  let release!: () => void;
+  const running = new Promise<unknown[]>((resolve) => { release = () => resolve([]); });
+  let calls = 0;
+  const provider = {
+    automation: { activeTaskRuns: () => { calls += 1; return running; } },
+  } as unknown as Parameters<typeof createPGliteOperationalRpcServer>[1];
+  const server = createPGliteOperationalRpcServer(port, provider);
+  const request = { kind: "pglite-operational-request", version: 1, id: 7, operation: "automation.activeTaskRuns", args: [] };
+  try {
+    for (const listener of listeners) listener(request);
+    for (const listener of listeners) listener(request);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    assert.deepEqual(responses.map(({ id, ok, code }) => ({ id, ok, code })), [{ id: 7, ok: false, code: "invalid-request" }]);
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(responses.at(-1), { kind: "pglite-operational-response", version: 1, id: 7, ok: true, value: [] });
+  } finally {
+    release();
+    await server.close();
+  }
 });

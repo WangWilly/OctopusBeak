@@ -8,11 +8,16 @@ import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-
 import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   appendWorkflowFailureDiagnostic,
-  isWorkflowFailureCorrelation,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
 } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+import {
+  createWorkerCallClient,
+  createWorkerCallServer,
+  plainRecord,
+  type WorkerPort,
+} from "./pglite-worker-call.ts";
 
 /**
  * The operational worker protocol is deliberately method based.  There is no
@@ -77,30 +82,6 @@ export class PGliteOperationalError extends Error {
     this.name = "PGliteOperationalError";
     this.code = code;
   }
-}
-
-type RpcPort = {
-  on(event: "message", listener: (value: unknown) => void): unknown;
-  off(event: "message", listener: (value: unknown) => void): unknown;
-  postMessage(value: unknown): void;
-};
-
-function plainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function validRequest(value: unknown): value is PGliteOperationalRequest {
-  if (!plainRecord(value)) return false;
-  return value.kind === "pglite-operational-request"
-    && value.version === PGLITE_OPERATIONAL_RPC_VERSION
-    && typeof value.id === "number"
-    && Number.isSafeInteger(value.id)
-    && value.id >= 0
-    && typeof value.operation === "string"
-    && Array.isArray(value.args)
-    && (value.diagnosticContext === undefined || isWorkflowFailureCorrelation(value.diagnosticContext));
 }
 
 function operationFailure(
@@ -297,15 +278,6 @@ export function isPGliteOperationalOperation(value: unknown): value is PGliteOpe
   return typeof value === "string" && Object.hasOwn(PGLITE_OPERATIONAL_CONTRACTS, value);
 }
 
-function postResponse(port: RpcPort, response: PGliteOperationalResponse): void {
-  try {
-    port.postMessage(response);
-  } catch {
-    // A closing worker may reject a response after the operation itself has
-    // completed.  The client has its own bounded close path.
-  }
-}
-
 function operationParts(operation: PGliteOperationalOperation): [OperationalDomain, string] {
   return operation.split(".") as [OperationalDomain, string];
 }
@@ -324,69 +296,50 @@ export type PGliteOperationalRpcServer = {
   close(): Promise<void>;
 };
 
-/** Install the allowlisted operational command/query server in the worker. */
+/**
+ * Install the allowlisted operational command/query server in the worker.
+ * Calls run as they arrive, not through the financial work scheduler: run
+ * state, preview and MaiCoin writes must not wait behind background reads
+ * (ADR 0118).
+ */
 export function createPGliteOperationalRpcServer(
-  port: RpcPort,
+  port: WorkerPort,
   provider: PGliteOperationalDomains,
 ): PGliteOperationalRpcServer {
-  let closed = false;
-  const active = new Set<Promise<void>>();
-  const onMessage = (value: unknown): void => {
-    if (!validRequest(value)) return;
-    if (closed) {
-      postResponse(port, operationFailure(value.id, "worker-closed"));
-      return;
-    }
-    const operation = value.operation;
-    if (!isPGliteOperationalOperation(operation) || !PGLITE_OPERATIONAL_CONTRACTS[operation].accepts(value.args)) {
-      postResponse(port, operationFailure(value.id, "invalid-request"));
-      return;
-    }
-    const work = Promise.resolve()
-      .then(() => invokeOperation(provider, operation, value.args))
-      .then(
-        (result) => postResponse(port, {
-          kind: "pglite-operational-response",
-          version: PGLITE_OPERATIONAL_RPC_VERSION,
-          id: value.id,
-          ok: true,
-          value: result,
-        }),
-        async (error: unknown) => {
-          if (value.diagnosticContext) {
-            await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
-              workflowId: value.diagnosticContext.workflowId,
-              taskRunId: value.diagnosticContext.taskRunId,
-              source: "operational-rpc",
-              errorCode: "workflow-failed",
-              operation,
-              error,
-            }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
-          }
-          postResponse(port, operationFailure(value.id, "operation-failed"));
-        },
-      )
-      .then(() => undefined);
-    active.add(work);
-    void work.finally(() => active.delete(work)).catch(() => undefined);
-  };
-  port.on("message", onMessage);
-  let closePromise: Promise<void> | undefined;
-  return {
-    close() {
-      if (closePromise) return closePromise;
-      closed = true;
-      port.off("message", onMessage);
-      closePromise = Promise.all([...active]).then(() => undefined);
-      return closePromise;
+  const server = createWorkerCallServer({
+    port,
+    request: { kind: "pglite-operational-request", version: PGLITE_OPERATIONAL_RPC_VERSION },
+    refusal: operationFailure,
+    start: ({ id, operation, args, diagnosticContext }) => {
+      if (!isPGliteOperationalOperation(operation) || !PGLITE_OPERATIONAL_CONTRACTS[operation].accepts(args)) return undefined;
+      return Promise.resolve()
+        .then(() => invokeOperation(provider, operation, args))
+        .then(
+          (result): PGliteOperationalResponse => ({
+            kind: "pglite-operational-response",
+            version: PGLITE_OPERATIONAL_RPC_VERSION,
+            id,
+            ok: true,
+            value: result,
+          }),
+          async (error: unknown) => {
+            if (diagnosticContext) {
+              await appendWorkflowFailureDiagnostic(process.env[WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV], {
+                workflowId: diagnosticContext.workflowId,
+                taskRunId: diagnosticContext.taskRunId,
+                source: "operational-rpc",
+                errorCode: "workflow-failed",
+                operation,
+                error,
+              }, { repoRoot: workflowFailureDiagnosticRepoRoot() });
+            }
+            return operationFailure(id, "operation-failed");
+          },
+        );
     },
-  };
+  });
+  return { close: server.close };
 }
-
-type RpcPending = {
-  resolve(value: unknown): void;
-  reject(error: Error): void;
-};
 
 export type PGliteOperationalRpcClient = {
   request<K extends PGliteOperationalOperation>(
@@ -399,80 +352,29 @@ export type PGliteOperationalRpcClient = {
 
 /** Client proxy with durable rejection for every request still in flight. */
 export function createPGliteOperationalRpcClient(
-  port: RpcPort,
+  port: WorkerPort,
   ready?: Promise<void>,
   diagnosticContext?: WorkflowFailureCorrelation,
 ): PGliteOperationalRpcClient {
-  const pending = new Map<number, RpcPending>();
-  let nextId = 1;
-  let closed = false;
-  const onMessage = (value: unknown): void => {
-    if (!plainRecord(value)
-      || value.kind !== "pglite-operational-response"
-      || value.version !== PGLITE_OPERATIONAL_RPC_VERSION
-      || typeof value.id !== "number"
-      || !Number.isSafeInteger(value.id)
-      || typeof value.ok !== "boolean") return;
-    const request = pending.get(value.id);
-    if (!request) return;
-    pending.delete(value.id);
-    if (value.ok === true) {
-      request.resolve(value.value);
-      return;
-    }
-    const code = value.code === "invalid-request"
-      || value.code === "worker-closed"
-      || value.code === "operation-failed"
-      ? value.code
-      : "operation-failed";
-    request.reject(new PGliteOperationalError(code));
-  };
-  port.on("message", onMessage);
-
-  const request = <K extends PGliteOperationalOperation>(
-    operation: K,
-    args: readonly unknown[],
-  ): Promise<unknown> => {
-    if (closed) return Promise.reject(new Error("PGlite operational worker is closed."));
-    return new Promise((resolve, reject) => {
-      const send = () => {
-        if (closed) {
-          reject(new Error("PGlite operational worker is closed."));
-          return;
-        }
-        const id = nextId++;
-        pending.set(id, { resolve, reject });
-        try {
-          port.postMessage({
-            kind: "pglite-operational-request",
-            version: PGLITE_OPERATIONAL_RPC_VERSION,
-            id,
-            operation,
-            args,
-            ...(diagnosticContext ? { diagnosticContext } : {}),
-          } satisfies PGliteOperationalRequest);
-        } catch (error) {
-          pending.delete(id);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        }
-      };
-      if (ready) {
-        void ready.then(send, (error) => reject(error instanceof Error ? error : new Error(String(error))));
-      } else {
-        send();
-      }
-    });
-  };
-
-  const close = (error = new Error("PGlite operational worker is closed.")): void => {
-    if (closed) return;
-    closed = true;
-    port.off("message", onMessage);
-    for (const item of pending.values()) item.reject(error);
-    pending.clear();
-  };
-
-  return { request, provider: operationalProviderOver(request), close };
+  const client = createWorkerCallClient({
+    port,
+    ready,
+    response: { kind: "pglite-operational-response", version: PGLITE_OPERATIONAL_RPC_VERSION },
+    failure: (value) => new PGliteOperationalError(
+      value.code === "invalid-request" || value.code === "worker-closed" ? value.code : "operation-failed",
+    ),
+    closed: () => new PGliteOperationalError("worker-closed"),
+  });
+  const request = <K extends PGliteOperationalOperation>(operation: K, args: readonly unknown[]): Promise<unknown> =>
+    client.call((id) => ({
+      kind: "pglite-operational-request",
+      version: PGLITE_OPERATIONAL_RPC_VERSION,
+      id,
+      operation,
+      args,
+      ...(diagnosticContext ? { diagnosticContext } : {}),
+    } satisfies PGliteOperationalRequest));
+  return { request, provider: operationalProviderOver(request), close: client.close };
 }
 
 /**
