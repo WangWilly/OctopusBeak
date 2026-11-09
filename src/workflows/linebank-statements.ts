@@ -9,7 +9,6 @@ import type {
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import {
@@ -22,7 +21,7 @@ import {
 } from "./linebank-current-deposit-canonical.ts";
 import { captureCurrentStateSnapshots, CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
@@ -855,13 +854,10 @@ export class LineBankApiClient {
   private validate: ProductCollectionHandle["validate"];
 
   /** `validate` runs each check of a reply; the reads themselves run outside it. */
-  constructor(
-    scope: FrameScope,
-    options: { text: SourceTextPort; now: () => string; validate: ProductCollectionHandle["validate"] },
-  ) {
+  constructor(scope: FrameScope, product: Pick<ProductCollectionHandle, "reader" | "validate">) {
     this.scope = scope;
-    this.reader = providerResponseReader(options);
-    this.validate = options.validate;
+    this.reader = product.reader;
+    this.validate = product.validate;
   }
 
   private async apiResponse(
@@ -1165,11 +1161,7 @@ async function runLineBankWorkflow(
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const windows = linebankQueryWindows(product.collectionPeriod());
         const productContext: WorkflowContext = { ...context, event: product.event };
-        const client = new LineBankApiClient(scope, {
-          text: context.text,
-          now: context.now,
-          validate: product.validate,
-        });
+        const client = new LineBankApiClient(scope, product);
         await productContext.event("decoding", "started", "source-decoding-started");
         const accountSnapshot = await client.fetchAccountSnapshot();
         const accountSnapshotAt = context.now();

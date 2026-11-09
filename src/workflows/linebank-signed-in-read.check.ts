@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
+import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { frameScope } from "./frame-scope.ts";
 import { LineBankApiClient, linebankEnsureTransactionPage } from "./linebank-statements.ts";
@@ -71,10 +72,14 @@ test("cancelling the run stops the transaction link click, which never lands", (
 test("cancelling the run abandons an account snapshot whose fetch never answers", () =>
   withSilentLineBank(async (page) => {
     await page.goto(`${ORIGIN}/transaction`);
-    const client = new LineBankApiClient(scopeCancelledAfter(page, 300), {
-      text: strictSourceText,
+    const client = new LineBankApiClient(scopeCancelledAfter(page, 300), productCollectionHandle({
       now: () => new Date().toISOString(),
-      validate: async (check) => await check(),
-    });
+      text: strictSourceText,
+      signal: new AbortController().signal,
+      event: async () => undefined,
+      stage: () => undefined,
+      reportActivity: async () => undefined,
+      collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+    }));
     assert.ok((await settlesWithin(client.fetchAccountSnapshot())) < 2_000);
   }));

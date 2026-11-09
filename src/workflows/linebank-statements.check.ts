@@ -4,6 +4,7 @@ import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-
 import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
 import { commitPGliteCanonicalDepositCapture } from "../ledger/pglite/deposit.ts";
 import { PGliteStore } from "../ledger/pglite/transaction.ts";
+import { productCollectionHandle } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import {
@@ -69,11 +70,15 @@ const accountSnapshotPage = {
   },
 };
 
-const readClient = (page: unknown) => new LineBankApiClient(readScope(page as never), {
-  text: strictSourceText,
+const readClient = (page: unknown) => new LineBankApiClient(readScope(page as never), productCollectionHandle({
   now: () => "2026-09-25T20:00:00+08:00",
-  validate: async (check) => await check(),
-});
+  text: strictSourceText,
+  signal: new AbortController().signal,
+  event: async () => undefined,
+  stage: () => undefined,
+  reportActivity: async () => undefined,
+  collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+}));
 
 const accountSnapshot = await readClient(accountSnapshotPage).fetchAccountSnapshot();
 assert.deepEqual(
