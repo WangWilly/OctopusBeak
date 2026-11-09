@@ -202,7 +202,8 @@ test("withSignal stops a cancelled Playwright click in the browser, where race o
     await page.setContent(LATE_BUTTON);
     const abandoned = frameScope(page, cancelAfter(100)).race(page.locator("#late").click({ timeout: 60_000 }));
     await assert.rejects(abandoned, (error: unknown) => error === CANCELLED);
-    assert.equal(await clicksAfterTheButtonAppears(page), 1, "a raced click still lands after the run was cancelled");
+    await page.waitForFunction(() => (window as unknown as { clicks: number }).clicks === 1, undefined, { timeout: 10_000 })
+      .catch(() => assert.fail("a raced click still lands after the run was cancelled"));
   } finally {
     await page.close();
   }
