@@ -468,7 +468,7 @@ The one step through which a run obtains every provider response it reads: it wa
 _Avoid_: Provider reply reader, per-bank response adapter, per-bank header read, wall-clock observed time, collector-assembled reader
 
 **Source reader**:
-The Provider response reader that carries no product validation: the one a source uses before any product collects, such as fetching its session or signing in, and the one each Attached preview product reads through.
+The Provider response reader that carries no product validation: the one a source uses before any product collects, such as fetching its session or signing in, the one each Attached preview product reads through, and the one a product reads through when it keeps a refused response and decides later, inside its own validation, whether that refusal fails it.
 _Avoid_: Unvalidated reader, session reader, product-less validation
 
 **Measurement history**:
