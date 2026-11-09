@@ -12,7 +12,7 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 **A bank never builds a reader.** The Product collection run builds each product's handle with `productCollectionHandle`, which binds the handle's `reader` to the run clock, the run's text port and the handle's own `validate`, and carries the run's `signal`. A collector reads every response it owns through `product.reader`. The snapshot module takes the handle as its product and reads the clock, text, signal and reader from it.
 
-**A read before any product goes through the Source reader.** `sourceReader(context)` is the reader for a source's session or sign-in reads. It carries no product validation, and it is the only place `WITHOUT_PRODUCT_VALIDATION` is used once every bank has moved.
+**A read before any product goes through the Source reader.** `sourceReader(context)` is the reader for a source's session or sign-in reads. It carries no product validation, and it is the only place `WITHOUT_PRODUCT_VALIDATION` is used.
 
 **Each attached preview product gets its own handle.** A preview collector receives a `PreviewProductHandle` with its own Source reader and the run's signal, instead of sharing one reader a workflow built. A preview product has no product validation: the preview run classifies a refused response as that product's validation failure by its error, as it did before.
 
@@ -20,7 +20,7 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 **Checks build handles the same way.** A check that drives a collector outside a run calls `productCollectionHandle`, so it exercises the binding the run uses.
 
-**Banks move one at a time, then the old paths go.** Each bank's collectors move to the handle in their own change. Once every bank has moved, the snapshot module drops its threaded-ports form, `WITHOUT_PRODUCT_VALIDATION` and `ProviderResponsePorts` stop being exported, and a structural check keeps collectors from importing `providerResponseReader`.
+**Banks moved one at a time, then the old paths went.** Each bank's collectors moved to the handle in their own change. After the last one, the snapshot module dropped its threaded-ports form, and `WITHOUT_PRODUCT_VALIDATION` and `ProviderResponsePorts` stopped being exported. The ADR 0112 structural check now also refuses a `providerResponseReader(` call in workflow and automation source outside the reader module, with `productCollectionHandle` its one listed exception.
 
 ## Considered options
 
@@ -30,6 +30,5 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 ## Consequences
 
-- Until the last bank moves, the snapshot module accepts both forms.
 - A preview product's reader is no longer shared with other preview products of the same run.
 - A product that keeps a refused response and fails it later inside its own validation, such as Yuanta's card summary page, reads it through the Source reader, so a page that then cannot be read stays a read failure rather than a validation failure.
