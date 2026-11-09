@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 import {
@@ -10,6 +10,7 @@ import {
   YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
 } from "../canonical/investment-funding-contract.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
+import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
   commitPGliteCanonicalInvestmentCapture,
   type PGliteCanonicalInvestmentCommitRequest,
@@ -405,6 +406,169 @@ test("a related posting that disappears under complete coverage withdraws the re
     ]));
     const resolution = await resolve(store);
     assert.equal(resolution.outcome, "changed");
+    assert.deepEqual(resolution.reasons, ["no-complete-funding-candidate"]);
+    assert.deepEqual(await relatedPostings(store), []);
+    const events = await store.query<{ event_kind: string }>(
+      `SELECT event.event_kind FROM investment_funding_relation_events event
+         JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+        ORDER BY event_commit.commit_sequence`,
+    );
+    assert.deepEqual(events.rows.map((row) => row.event_kind), ["observed", "withdrawn"]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a posting another group also sees relates to neither group", async () => {
+  // The 03-01 buy's own 03-02 posting predates the deposit history. Its window still sees the 03-09 posting,
+  // which the 03-08 buy sees beside 03-16; each later posting is likewise seen by two weekly buys.
+  const { store } = await ledger([
+    { key: "buy-03-01", action: "buy", tradeOn: "2027-03-01", cents: "10000" },
+    { key: "buy-03-08", action: "buy", tradeOn: "2027-03-08", cents: "10000" },
+    { key: "buy-03-15", action: "buy", tradeOn: "2027-03-15", cents: "10000" },
+    { key: "buy-03-22", action: "buy", tradeOn: "2027-03-22", cents: "10000" },
+  ], [
+    { key: "out-03-09", postedOn: "2027-03-09", direction: "outflow", cents: "10000" },
+    { key: "out-03-16", postedOn: "2027-03-16", direction: "outflow", cents: "10000" },
+    { key: "out-03-23", postedOn: "2027-03-23", direction: "outflow", cents: "10000" },
+  ]);
+  try {
+    const resolution = await resolve(store);
+    assert.equal(resolution.outcome, "no-admission");
+    assert.equal(resolution.resolved, 0);
+    assert.equal(resolution.noAdmission, 4);
+    assert.deepEqual(resolution.reasons, ["ambiguous-funding-candidate"]);
+    assert.deepEqual(await relatedPostings(store), []);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a posting that already funds another relation is not claimed again", async () => {
+  const { store, postingIds } = await ledger([
+    { key: "buy-monday", action: "buy", tradeOn: "2027-03-01", cents: "10000" },
+  ], [
+    { key: "out", postedOn: "2027-03-03", direction: "outflow", cents: "10000" },
+  ]);
+  try {
+    assert.equal((await resolve(store)).resolved, 1);
+    // A later capture adds a Friday sell that nets the Monday buy's group to zero, leaving its relation
+    // observed, and a Tuesday buy whose window sees the same posting.
+    await commitPGliteCanonicalInvestmentCapture(store, tradeCapture("yuanta-trade-2", [
+      { key: "sell-friday", action: "sell", tradeOn: "2027-02-26", cents: "10000" },
+      { key: "buy-monday", action: "buy", tradeOn: "2027-03-01", cents: "10000" },
+      { key: "buy-tuesday", action: "buy", tradeOn: "2027-03-02", cents: "10000" },
+    ]));
+    const resolution = await resolve(store);
+    assert.equal(resolution.resolved, 0);
+    assert.deepEqual(resolution.reasons, ["ambiguous-funding-candidate", "zero-net-settlement"]);
+    assert.deepEqual(await relatedPostings(store), [
+      { posting: postingIds.get("out"), settlementOn: "2027-03-03", members: 1 },
+    ]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a posting the day before the weekday settlement is not a candidate", async () => {
+  // Weekday settlement 2027-03-03; the posting is on 2027-03-02.
+  const { store } = await ledger([
+    { key: "buy", action: "buy", tradeOn: "2027-03-02", cents: "10000" },
+  ], [
+    { key: "out-early", postedOn: "2027-03-02", direction: "outflow", cents: "10000" },
+  ]);
+  try {
+    const resolution = await resolve(store);
+    assert.equal(resolution.outcome, "no-admission");
+    assert.deepEqual(resolution.reasons, ["no-complete-funding-candidate"]);
+    assert.deepEqual(await relatedPostings(store), []);
+  } finally {
+    await store.close();
+  }
+});
+
+/** Writes the relation the retired 2026 calendar would have persisted for every trade in the ledger. */
+async function persistCalendarRelation(store: PGliteStore, postingId: string, settlementOn: string): Promise<void> {
+  await store.transaction(async (transaction) => {
+    const members = (await transaction.query<{ transaction_id: Uint8Array; source_record_id: Uint8Array; account_id: Uint8Array; action: string; cash_coefficient: string; cash_scale: number }>(
+      "SELECT transaction_id, source_record_id, account_id, action, cash_coefficient, cash_scale FROM investment_transactions",
+    )).rows;
+    const posting = (await transaction.query<{ transaction_id: Uint8Array; source_record_id: Uint8Array; account_id: Uint8Array; amount_coefficient: string; amount_scale: number; direction: string }>(
+      `SELECT current_row.transaction_id, revision.source_record_id, financial.account_id,
+              revision.amount_coefficient, revision.amount_scale, revision.direction
+         FROM current_transactions current_row
+         JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+         JOIN financial_transactions financial ON financial.transaction_id = current_row.transaction_id
+        WHERE encode(current_row.transaction_id, 'hex') = $1`,
+      [postingId.replaceAll("-", "")],
+    )).rows[0]!;
+    const hex = (value: Uint8Array) => Buffer.from(value).toString("hex");
+    const account = hex(members[0]!.account_id);
+    const commit = await insertPGliteCanonicalCommit(transaction, {
+      kind: "relation_resolution",
+      authorityRoute: "canonical/investment-funding-relation-resolution-v1",
+      time: { kind: "requested" },
+    });
+    const relationId = Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
+    const memberIds = members.map((member) => hex(member.transaction_id)).sort();
+    const memberRecords = members.map((member) => hex(member.source_record_id)).sort();
+    await transaction.query(
+      `INSERT INTO investment_funding_relations(relation_id, relation_key, settlement_group_key, investment_account_id, funding_account_id, funding_transaction_id, funding_source_record_id, settlement_effective_on, settlement_model, coefficient, scale, currency, direction, source_linkage_key, evidence_contract_version, created_commit_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'account-currency-date-net', $9, $10, 'USD', $11, $12, $13, $14)`,
+      [relationId, digest("investment-funding-relation-v1", account, hex(posting.transaction_id), ...memberIds),
+        `${account}:${settlementOn}`, members[0]!.account_id, posting.account_id, posting.transaction_id, posting.source_record_id, settlementOn,
+        posting.amount_coefficient, posting.amount_scale, posting.direction,
+        digest("investment-funding-linkage-set-v1", ...members.map(() => LINKAGE)), YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION, commit.id],
+    );
+    for (const member of members)
+      await transaction.query(
+        "INSERT INTO investment_funding_relation_members(relation_id, investment_transaction_id, investment_source_record_id, action, coefficient, scale, currency) VALUES ($1, $2, $3, $4, $5, $6, 'USD')",
+        [relationId, member.transaction_id, member.source_record_id, member.action, member.cash_coefficient, member.cash_scale],
+      );
+    const support = digest("investment-funding-relation-support-v2", ...memberRecords, hex(posting.source_record_id), ...memberIds, hex(posting.transaction_id));
+    await transaction.query(
+      "INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES ($1, $2, 'observed', $3, $4, $5)",
+      [Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex")), relationId, `verified-settlement:${support}`, commit.id, commit.recordedAtUtcUs],
+    );
+  });
+}
+
+test("a calendar relation whose trades the weekday rule groups the same way stays current", async () => {
+  // Tuesday 2026-09-22 buy: the retired calendar and the weekday rule both settle Wednesday 2026-09-23.
+  const { store, postingIds } = await ledger([
+    { key: "buy", action: "buy", tradeOn: "2026-09-22", cents: "10000" },
+  ], [
+    { key: "out", postedOn: "2026-09-23", direction: "outflow", cents: "10000" },
+  ]);
+  try {
+    await persistCalendarRelation(store, postingIds.get("out")!, "2026-09-23");
+    const before = await relatedPostings(store);
+    const resolution = await resolve(store);
+    assert.equal(resolution.outcome, "unchanged");
+    assert.equal(resolution.resolutionId, null);
+    assert.deepEqual(await relatedPostings(store), before);
+    assert.equal((await store.query("SELECT 1 FROM investment_funding_relation_events")).rows.length, 1);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a calendar relation that netted trades across a closure is withdrawn, not re-paired", async () => {
+  // The retired calendar settled a Thursday 2026-02-12 sell (T+2 across Lunar New Year) and a Friday
+  // 2026-02-20 buy (T+1) together on Monday 2026-02-23. The weekday rule splits them into two groups.
+  const { store, postingIds } = await ledger([
+    { key: "sell-before-closure", action: "sell", tradeOn: "2026-02-12", cents: "10000" },
+    { key: "buy-after-closure", action: "buy", tradeOn: "2026-02-20", cents: "30000" },
+  ], [
+    { key: "out-net", postedOn: "2026-02-23", direction: "outflow", cents: "20000" },
+  ]);
+  try {
+    await persistCalendarRelation(store, postingIds.get("out-net")!, "2026-02-23");
+    assert.equal((await relatedPostings(store)).length, 1, "the calendar relation starts out current");
+    const resolution = await resolve(store);
+    assert.equal(resolution.outcome, "changed");
+    assert.equal(resolution.resolved, 0);
+    assert.equal(resolution.noAdmission, 2);
     assert.deepEqual(resolution.reasons, ["no-complete-funding-candidate"]);
     assert.deepEqual(await relatedPostings(store), []);
     const events = await store.query<{ event_kind: string }>(
