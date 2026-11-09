@@ -1359,15 +1359,37 @@ async function readInvestmentGroupCandidates(
   return bankRows.filter((row) => exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), net.coefficient, net.scale)).map((row) => ({ accountId: bytes(row.account_id, "Funding account"), transactionId: bytes(row.transaction_id, "Funding transaction"), sourceRecordId: bytes(row.source_record_id, "Funding source record"), coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency), effectiveOn: evidence.settlementEffectiveOn }));
 }
 
-/** A settlement-contract posting that is the only candidate of two groups proves neither. */
-function postingsClaimedByManyGroups(matches: readonly InvestmentGroupMatch[]): ReadonlySet<string> {
+/** How many settlement-contract groups of the pass see each posting in their window. */
+function settlementPostingClaims(matches: readonly InvestmentGroupMatch[]): ReadonlyMap<string, number> {
   const claims = new Map<string, number>();
   for (const match of matches) {
-    if (match.evidence.kind !== "source-settlement-contract" || match.candidates.length !== 1) continue;
-    const posting = hex(match.candidates[0]!.transactionId);
-    claims.set(posting, (claims.get(posting) ?? 0) + 1);
+    if (match.evidence.kind !== "source-settlement-contract") continue;
+    for (const candidate of match.candidates) {
+      const posting = hex(candidate.transactionId);
+      claims.set(posting, (claims.get(posting) ?? 0) + 1);
+    }
   }
-  return new Set([...claims].filter(([, count]) => count > 1).map(([posting]) => posting));
+  return claims;
+}
+
+/**
+ * A settlement-contract group relates only to a posting that it alone sees,
+ * that is its only candidate, and that funds no observed relation outside the
+ * group's own prior relations.
+ */
+async function provenFundingPosting(
+  transaction: PGliteTransaction,
+  match: InvestmentGroupMatch,
+  claims: ReadonlyMap<string, number>,
+  prior: readonly ObservedInvestmentRelation[],
+): Promise<FundingCandidate | null> {
+  if (match.candidates.length !== 1) return null;
+  const candidate = match.candidates[0]!;
+  if (match.evidence.kind !== "source-settlement-contract") return candidate;
+  if (claims.get(hex(candidate.transactionId)) !== 1) return null;
+  const funded = await query<Row>(transaction, `SELECT relation.relation_id FROM investment_funding_relations relation WHERE relation.funding_transaction_id = ? AND ${LATEST_INVESTMENT_RELATION_EVENT_KIND} = 'observed'`, [candidate.transactionId]);
+  const own = new Set(prior.map((relation) => hex(relation.relationId)));
+  return funded.every((row) => own.has(hex(bytes(row.relation_id, "Investment relation")))) ? candidate : null;
 }
 
 async function resolveInvestmentRelationsInTransaction(
@@ -1399,13 +1421,14 @@ async function resolveInvestmentRelationsInTransaction(
     }
     matches.push({ rows, evidence: admission.evidence, candidates: await readInvestmentGroupCandidates(transaction, rows, admission.evidence) });
   }
-  const contested = postingsClaimedByManyGroups(matches);
-  for (const { rows, evidence, candidates } of matches) {
+  const claims = settlementPostingClaims(matches);
+  for (const match of matches) {
+    const { rows, evidence, candidates } = match;
     const firstRow = rows[0]!;
-    const candidate = candidates.length === 1 && !contested.has(hex(candidates[0]!.transactionId)) ? candidates[0]! : null;
     const prior = evidence.kind === "source-settlement-contract"
       ? await observedRelationsSharingMembers(transaction, rows)
       : await observedRelationsInSettlementGroup(transaction, firstRow.investmentAccountId, `${hex(firstRow.investmentAccountId)}:${evidence.settlementEffectiveOn}`);
+    const candidate = await provenFundingPosting(transaction, match, claims, prior);
     if (!candidate) {
       noAdmission += 1;
       reasons.add(candidates.length === 0 ? "no-complete-funding-candidate" : "ambiguous-funding-candidate");
