@@ -41,7 +41,7 @@ import {
   type PostCurrentDepositResponse,
 } from "./post-current-deposit-balances.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderRequest, type ProviderResponseReader } from "./provider-response-reader.ts";
+import { type ProviderRequest, type ProviderResponseReader } from "./provider-response-reader.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
@@ -546,7 +546,6 @@ export async function readPostDepositSource(
   const observedAt = taipeiInstant(context.now());
   const statements = await collectPostStatementSources(
     frameScope(page, context.signal),
-    providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
     product,
   );
   return { observedAt, statements };
@@ -554,8 +553,7 @@ export async function readPostDepositSource(
 
 async function collectPostStatementSources(
   scope: FrameScope,
-  reader: ProviderResponseReader,
-  { event, validate }: Pick<ProductCollectionHandle, "event" | "validate">,
+  { event, reader, validate }: Pick<ProductCollectionHandle, "event" | "reader" | "validate">,
 ): Promise<PostQueriedStatement[]> {
   const { page, signal } = scope;
   await scope.withSignal((signal) => page.goto(INDEX_URL, { waitUntil: "domcontentloaded", signal }));
@@ -697,10 +695,7 @@ export async function stagePostDeposit(
   const balances = await captureCurrentStateSnapshots(postCurrentBalanceSnapshot, {
     captures: financialCaptures,
     acquire: readCurrentBalanceResponse,
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal: context.signal,
   });
 
   context.signal.throwIfAborted();
@@ -734,7 +729,7 @@ async function runPostDeposit(
     product,
     () => readPostCurrentDepositBalanceResponse(page, {
       signal: context.signal,
-      reader: providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+      reader: product.reader,
     }),
   );
 }
