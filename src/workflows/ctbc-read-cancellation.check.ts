@@ -11,7 +11,7 @@ import {
   readCtbcCurrentDepositBalanceResponse,
 } from "./ctbc-current-deposit-balances.ts";
 import { readCtbcDepositSource } from "./ctbc-statements.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 const ABORT_AFTER_MS = 300;
@@ -106,10 +106,9 @@ test("cancelling the run stops a deposit read clicking the account selector", ()
 test("cancelling the run stops a current-balance read clicking its menu", () =>
   withCtbc(`<a data-control>臺幣/轉帳</a>`, async (page) => {
     await page.goto(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}/twrbc/`);
-    const reader = providerResponseReader({
+    const reader = sourceReader({
       now: () => new Date().toISOString(),
       text: strictSourceText,
-      validate: WITHOUT_PRODUCT_VALIDATION,
     });
     await assertStopped(page, readCtbcCurrentDepositBalanceResponse(page, cancelledAfter(ABORT_AFTER_MS), reader));
   }));

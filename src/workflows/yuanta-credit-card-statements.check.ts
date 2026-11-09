@@ -11,7 +11,7 @@ import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 
 registerHooks({
@@ -281,10 +281,9 @@ const responseBodyResponseFixture = fakeProviderReply({
   headers: { date: "Thu, 10 Sep 2026 02:03:04 GMT", "cache-control": "no-store" },
   body: responseBodyCurrentCreditHtml,
 });
-const summaryReader = providerResponseReader({
+const summaryReader = sourceReader({
   now: () => "2026-09-10T02:03:04.000Z",
   text: strictSourceText,
-  validate: WITHOUT_PRODUCT_VALIDATION,
 });
 const responseBodyLinkFixture = {
   async click(...args: unknown[]) {

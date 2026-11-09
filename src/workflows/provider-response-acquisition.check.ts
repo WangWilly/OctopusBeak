@@ -24,6 +24,8 @@ const FORBIDDEN: readonly Readonly<{ name: string; pattern: RegExp }>[] = [
   { name: "allHeaders", pattern: /\.allHeaders\(/u },
   // A request's own headers are the source's to read; a reply's are the reader's.
   { name: "response headers", pattern: /\b(?:response|reply|fetched)\.headers\(\)/iu },
+  // ADR 0116: a source reads through the reader it is handed, never one it builds.
+  { name: "providerResponseReader", pattern: /\bproviderResponseReader\(/u },
 ];
 
 /**
@@ -31,6 +33,12 @@ const FORBIDDEN: readonly Readonly<{ name: string; pattern: RegExp }>[] = [
  * the number of times its file may use it and why it stays.
  */
 const NOT_PROVIDER_RESPONSES: readonly Readonly<{ path: string; name: string; count: number; reason: string }>[] = [
+  {
+    path: "src/lib/automation/product-collection.ts",
+    name: "providerResponseReader",
+    count: 1,
+    reason: "productCollectionHandle builds each product's reader on the run clock, text port and the product's own validate",
+  },
   {
     path: "src/workflows/hncb-netbank-site.ts",
     name: "waitForResponse",

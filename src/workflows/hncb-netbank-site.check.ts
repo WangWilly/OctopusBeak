@@ -4,7 +4,7 @@ import { type Browser, type Page } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FrameScopeTimeoutError, type BrowserScope } from "./frame-scope.ts";
 import { HNCB_CARD_RESPONSE, playwrightHncbCardPages } from "./hncb-credit-card.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE,
@@ -95,10 +95,9 @@ async function withHncbShell(
 
 const site = (page: Page, signal = new AbortController().signal) => hncbNetbankSite(page, { signal });
 // The site reads each reply it waits for through the reader, outside any product.
-const reader = providerResponseReader({
+const reader = sourceReader({
   now: () => "2026-10-15T02:00:00.000Z",
   text: strictSourceText,
-  validate: WITHOUT_PRODUCT_VALIDATION,
 });
 const attached = (selector: string) => async (scope: BrowserScope) =>
   (await scope.locator(selector).count().catch(() => 0)) > 0;

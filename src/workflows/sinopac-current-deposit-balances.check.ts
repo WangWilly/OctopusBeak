@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isDeclaredProviderResponse, type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
@@ -243,10 +243,9 @@ test("SinoPac's balance route opens the balance page and accepts only the declar
 
 test("SinoPac reader returns the balance route's raw body and response", async () => {
   const bytes = Buffer.from(JSON.stringify(payload), "utf8");
-  const reader = providerResponseReader({
+  const reader = sourceReader({
     now: () => "2026-09-09T02:01:02.000Z",
     text: strictSourceText,
-    validate: WITHOUT_PRODUCT_VALIDATION,
   });
   const opened: unknown[] = [];
   const site = {

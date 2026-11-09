@@ -9,7 +9,7 @@ import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/so
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { providerResponseReader, sourceReader } from "./provider-response-reader.ts";
 import {
   YUANTA_EBANK_ORIGIN,
   yuantaCsvExportResponse,
@@ -235,8 +235,10 @@ const HTML_PAGES: ProviderResponseDeclaration = {
 };
 const RUN_CLOCK = "2026-09-10T02:03:04.000Z";
 
-const reader = (validate: ProductCollectionHandle["validate"] = WITHOUT_PRODUCT_VALIDATION) =>
-  providerResponseReader({ now: () => RUN_CLOCK, text: strictSourceText, validate });
+const reader = (validate?: ProductCollectionHandle["validate"]) =>
+  validate === undefined
+    ? sourceReader({ now: () => RUN_CLOCK, text: strictSourceText })
+    : providerResponseReader({ now: () => RUN_CLOCK, text: strictSourceText, validate });
 
 test("a route's own document is verified against its declaration inside validation and decodes strictly, and malformed bytes fail the read", () =>
   withYuantaShell(async (page) => {

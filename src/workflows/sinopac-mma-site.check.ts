@@ -13,7 +13,7 @@ import {
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
 } from "./sinopac-current-deposit-balances.ts";
 import { SINOPAC_MMA_ORIGIN, sinopacMmaSite } from "./sinopac-mma-site.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import { sinopacDepositSource } from "./sinopac-statements.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
@@ -102,7 +102,7 @@ async function withMma(
 const context = (signal = new AbortController().signal) =>
   ({ signal, text: strictSourceText, now: () => "2026-09-09T10:01:02+08:00" });
 
-const reader = providerResponseReader({ ...context(), validate: WITHOUT_PRODUCT_VALIDATION });
+const reader = sourceReader({ ...context() });
 
 const product = productCollectionHandle({
   ...context(),
@@ -223,7 +223,7 @@ test("cancelling the run interrupts a route whose page never requests its respon
         providerDate: "optional",
       },
       ready: async (scope) => (await scope.locator("#never").count()) > 0,
-    }, providerResponseReader({ ...context(controller.signal), validate: WITHOUT_PRODUCT_VALIDATION }));
+    }, sourceReader({ ...context(controller.signal) }));
     setTimeout(() => controller.abort(CANCELLED), 300);
     const started = Date.now();
     await assert.rejects(opening, (error: unknown) => error === CANCELLED);

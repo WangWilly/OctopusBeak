@@ -25,7 +25,7 @@ import {
   type SinopacCardTransport,
 } from "./sinopac-credit-card.ts";
 import { SINOPAC_MMA_ORIGIN, type SinopacMmaSite } from "./sinopac-mma-site.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import {
   readSinopacDepositSource,
   sinopacWorkflowWith,
@@ -37,7 +37,7 @@ import { sinopacCurrentDepositResponse } from "./sinopac-current-deposit-balance
 
 const DATE_HEADER = "Thu, 24 Sep 2026 04:00:00 GMT";
 const COLLECTED_AT = "2026-09-24T04:05:00.000Z";
-const READER = providerResponseReader({ now: () => COLLECTED_AT, text: strictSourceText, validate: WITHOUT_PRODUCT_VALIDATION });
+const READER = sourceReader({ now: () => COLLECTED_AT, text: strictSourceText });
 
 type Bodies = Record<string, unknown>;
 

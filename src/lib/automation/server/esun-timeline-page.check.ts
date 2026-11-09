@@ -5,7 +5,7 @@ import { strictSourceText } from "../source-text.ts";
 import { loadNextEsunTimelinePage } from "../../../workflows/esun-credit-card-statements.ts";
 import { frameScope } from "../../../workflows/frame-scope.ts";
 import type { ProviderResponseDeclaration } from "../../../workflows/provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "../../../workflows/provider-response-reader.ts";
+import { sourceReader } from "../../../workflows/provider-response-reader.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 
@@ -17,10 +17,9 @@ const TIMELINE: ProviderResponseDeclaration<"optional"> = {
   providerDate: "optional",
 };
 
-const reader = providerResponseReader({
+const reader = sourceReader({
   now: () => new Date().toISOString(),
   text: strictSourceText,
-  validate: WITHOUT_PRODUCT_VALIDATION,
 });
 
 test("E.SUN timeline still loads the next page when content grows after the first scroll", async () => {

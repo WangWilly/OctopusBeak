@@ -132,22 +132,26 @@ export function endsRequestChainFrom(path: string, method: string): (reply: Prov
 }
 
 /** What the reader needs from the run, a product's handle or a source's own read. */
-export type ProviderResponsePorts = Readonly<{
+type ProviderResponsePorts = Readonly<{
   /** The run clock, an RFC3339 instant. */
   now: () => string;
   text: SourceTextPort;
   /**
    * The validation a refused response fails inside: a product's
    * `validate`, so the product fails as a validation failure (ADR 0106), or
-   * `WITHOUT_PRODUCT_VALIDATION` for a read no product owns yet.
+   * none, for the Source reader.
    */
   validate: ProductCollectionHandle["validate"];
 }>;
 
 /** For a read a source makes before any product collects, such as fetching its session. */
-export const WITHOUT_PRODUCT_VALIDATION: ProductCollectionHandle["validate"] = async (check) => await check();
+const WITHOUT_PRODUCT_VALIDATION: ProductCollectionHandle["validate"] = async (check) => await check();
 
-/** The Source reader (ADR 0116): the reader for a read a source makes before any product collects. */
+/**
+ * The Source reader (ADR 0116): the reader with no product validation, for a
+ * read before any product collects, an Attached preview product's reads, and
+ * a refusal a product keeps and fails later inside its own validation.
+ */
 export function sourceReader(run: Readonly<{ now: () => string; text: SourceTextPort }>): ProviderResponseReader {
   return providerResponseReader({ now: () => run.now(), text: run.text, validate: WITHOUT_PRODUCT_VALIDATION });
 }
