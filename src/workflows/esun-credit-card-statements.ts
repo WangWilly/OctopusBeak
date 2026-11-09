@@ -32,7 +32,6 @@ import {
 } from "./current-state-snapshot-capture.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
-  providerResponseReader,
   type ProviderBodyAcquisition,
   type ProviderReply,
   type ProviderResponseReader,
@@ -1097,15 +1096,28 @@ export async function authenticateEsunPage(
   throw new Error("E.SUN sign-in verification is not supported by the automatic solver.");
 }
 
-async function collectEsunCreditCard(
+/** What E.SUN's card pages answered, read before anything is built or staged (ADR 0065). */
+export type EsunCreditCardSource = Readonly<{
+  /** The timeline's query dates; the start may move to where the timeline actually begins. */
+  startDate: string;
+  endDate: string;
+  rows: readonly StatementRow[];
+  timeline: CreditCardMonthTimeline;
+  issuerSummaries: readonly EsunIssuerStatementSummary[];
+  /** Absent when the landing page sent no card summary, or 204 with nothing to report. */
+  currentUsedCredit?: readonly EsunCurrentUsedCreditSnapshot[];
+}>;
+
+type EsunCreditCardProduct = Pick<ProductCollectionHandle, "event" | "stage" | "validate" | "reader" | "signal">;
+type EsunCreditCardRunContext = Pick<WorkflowContext, "event" | "now" | "signal">;
+
+async function readEsunCreditCardSource(
   page: Page,
-  context: WorkflowContext,
-  input: EsunWorkflowInput,
-  product: Pick<ProductCollectionHandle, "event" | "stage" | "validate">,
-): Promise<EsunCreditCardCollection> {
-  const credentials = input.credentials;
+  context: EsunCreditCardRunContext,
+  product: EsunCreditCardProduct,
+): Promise<EsunCreditCardSource> {
   const scope = frameScope(page, context.signal);
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  const { reader } = product;
   // The landing page may send the card summary at any point during the history reads, or never.
   const currentCredit = reader.watch(scope, esunCurrentUsedCreditSnapshot.response, {
     evidence: "json",
@@ -1141,18 +1153,27 @@ async function collectEsunCreditCard(
     completed: issuerSummaries.length,
     total: issuerSummaries.length,
   });
-  // No reply, or 204 with nothing to report, leaves current used credit unread.
-  let currentUsedCredit: readonly EsunCurrentUsedCreditSnapshot[] | undefined;
   const watched = await currentCredit.settle(5_000);
-  if (watched) {
-    currentUsedCredit = await readCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, {
-      acquire: async () => watched,
-      now: () => context.now(),
-      product,
-      text: context.text,
-      signal: context.signal,
-    });
-  }
+  if (!watched) return { startDate, endDate, rows, timeline, issuerSummaries };
+  const currentUsedCredit = await readCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, {
+    acquire: async () => watched,
+    product,
+  });
+  return { startDate, endDate, rows, timeline, issuerSummaries, currentUsedCredit };
+}
+
+/**
+ * Builds and stages the card capture from what E.SUN answered: the settled
+ * periods, the completeness decision, canonical admission, then the current
+ * used credit matched to the staged card.
+ */
+export async function stageEsunCreditCard(
+  source: EsunCreditCardSource,
+  input: Pick<EsunWorkflowInput, "credentials" | "managedIdentitySecret">,
+  context: EsunCreditCardRunContext,
+  product: EsunCreditCardProduct,
+): Promise<EsunCreditCardCollection> {
+  const { startDate, endDate, rows, timeline, issuerSummaries, currentUsedCredit } = source;
   const settledPeriods = await product.validate(() => {
     try {
       return buildEsunSettledPeriodsFromIssuerSummaries(issuerSummaries);
@@ -1182,7 +1203,7 @@ async function collectEsunCreditCard(
   });
 
   const managedSecret = input.managedIdentitySecret;
-  const identity = deriveEsunCanonicalHumanAttestation(credentials, managedSecret);
+  const identity = deriveEsunCanonicalHumanAttestation(input.credentials, managedSecret);
   if (!identity) throw new Error("E.SUN canonical identity could not be established.");
   const capture: CaptureMetadata = {
     snapshotMode: "full",
@@ -1230,12 +1251,20 @@ async function collectEsunCreditCard(
     const { items } = await stageCurrentStateSnapshot(esunCurrentUsedCreditSnapshot, currentUsedCredit, {
       captures: [{ capture: canonicalCapture, cardIdentity: cardRequest.identity }],
       product,
-      signal: context.signal,
     });
     product.stage(...items);
   }
 
   return { count: rows.length };
+}
+
+async function collectEsunCreditCard(
+  page: Page,
+  context: EsunCreditCardRunContext,
+  input: EsunWorkflowInput,
+  product: EsunCreditCardProduct,
+): Promise<EsunCreditCardCollection> {
+  return await stageEsunCreditCard(await readEsunCreditCardSource(page, context, product), input, context, product);
 }
 
 /** App-owned provider entry. This path collects and commits without writing source artifacts. */
@@ -1275,9 +1304,9 @@ async function runEsunCreditCardWorkflow(
       // ADR 0051: the attached deposit product, read in the same signed-in page. It writes only Preview Financial Data.
       attached: {
         collectors: () => ({
-          deposit: async () => {
-            await waitForEsunPortalSession(page, 30_000, context.signal);
-            return await collectEsunDeposits(createEsunPortalTransport(page, context), context.now());
+          deposit: async ({ signal }) => {
+            await waitForEsunPortalSession(page, 30_000, signal);
+            return await collectEsunDeposits(createEsunPortalTransport(page, { signal, text: context.text }), context.now());
           },
         }),
       },
