@@ -7,10 +7,8 @@ import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
-  ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
-import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   admitFubonCreditCardCapture,
   buildFubonCreditCardTransactionSourceKey,
@@ -45,10 +43,9 @@ import {
   CURRENT_CREDIT_CARD_BALANCE_STAGING,
   issuerAggregateMatching,
   readCurrentStateSnapshot,
-  stageCurrentStateSnapshot,
-  type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderResponse } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
@@ -359,14 +356,10 @@ type FubonCurrentCreditAcquisition = Readonly<{
   response: ProviderResponse;
 }>;
 
-type FubonCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
-  capture: FubonCreditCardValidatedCapture;
-}>;
-
 const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   FubonCurrentCreditAcquisition,
   FubonCurrentUsedCreditSnapshot,
-  FubonCurrentCreditCapture,
+  CurrentUsedCreditCapture<FubonCreditCardValidatedCapture>,
   "required",
   CreditCardCurrentBalanceCaptureInput
 > = {
@@ -2280,29 +2273,15 @@ export async function stageFubonCreditCard(
   if (canonicalCaptures.length === 0 &&
     statementRows.length + unbilledRows.length > 0)
     throw new Error("Fubon credit-card source has no admissible Canonical Financial Commit capture.");
-  const items: ProductStageRequest[] = [];
-  if (canonicalCaptures.length > 0) {
-    const requests = canonicalCaptures.map((capture) =>
-      fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)));
-    items.push(...requests.map((request) => ({
-      product: "credit-card", itemKey: request.capture.captureId,
-      command: { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request },
-    })));
-    if (currentUsedCredit) {
-      const { items: balanceItems } = await stageCurrentStateSnapshot(
-        fubonCurrentUsedCreditSnapshot,
-        currentUsedCredit,
-        {
-          captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
-          product,
-        },
-      );
-      items.push(...balanceItems);
-    }
-  }
-
+  await stageCanonicalCreditCards(
+    product,
+    canonicalCaptures.map((capture) => ({
+      capture,
+      request: fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)),
+    })),
+    currentUsedCredit && { snapshot: fubonCurrentUsedCreditSnapshot, rows: currentUsedCredit },
+  );
   context.signal.throwIfAborted();
-  product.stage(...items);
   return {
     sourceCaptureCount: statementPeriods.length + 1,
     rowCount: statementRows.length + unbilledRows.length,

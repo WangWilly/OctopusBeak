@@ -2,7 +2,6 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { errors, type Locator, type Page } from "playwright";
 import { z } from "zod";
 import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
-import { PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   SourceTextIntegrityError,
   type SourceTextPort,
@@ -30,10 +29,9 @@ import {
   CURRENT_CREDIT_CARD_BALANCE_STAGING,
   issuerAggregateMatching,
   readCurrentStateSnapshot,
-  stageCurrentStateSnapshot,
-  type CurrentCreditCardStagingCapture,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
+import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
@@ -47,7 +45,6 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -844,14 +841,10 @@ function yuantaCreditCurrentSnapshotCapture(
   }]);
 }
 
-type YuantaCurrentCreditCapture = CurrentCreditCardStagingCapture & Readonly<{
-  capture: YuantaCreditCardValidatedCapture;
-}>;
-
 const yuantaCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   Readonly<{ evidence: Readonly<{ kind: "html"; html: string }>; response: ProviderResponse }>,
   YuantaCurrentUsedCreditSnapshot,
-  YuantaCurrentCreditCapture,
+  CurrentUsedCreditCapture<YuantaCreditCardValidatedCapture>,
   "required",
   CreditCardCurrentBalanceCaptureInput
 > = {
@@ -1387,35 +1380,17 @@ export async function stageYuantaCreditCard(
       unbilledRows,
       statementSummaries,
     });
-    if (canonicalCaptures.length > 0) {
-      const requests = canonicalCaptures.map((capture) =>
-        creditCardCommandRequestFromCanonicalCapture(
+    await stageCanonicalCreditCards(
+      product,
+      canonicalCaptures.map((capture) => ({
+        capture,
+        request: creditCardCommandRequestFromCanonicalCapture(
           yuantaCanonicalSpineCapture(capture),
           yuantaNeutralCreditCardCapture(capture),
         ),
-      );
-      const items: ProductStageRequest[] = requests.map((request) => ({
-        product: "credit-card",
-        itemKey: request.capture.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND,
-          request,
-        },
-      }));
-      if (currentUsedCredit) {
-        const { items: balanceItems } = await stageCurrentStateSnapshot(
-          yuantaCurrentUsedCreditSnapshot,
-          currentUsedCredit,
-          {
-            captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
-            product,
-          },
-        );
-        items.push(...balanceItems);
-      }
-      context.signal.throwIfAborted();
-      product.stage(...items);
-    }
+      })),
+      currentUsedCredit && { snapshot: yuantaCurrentUsedCreditSnapshot, rows: currentUsedCredit },
+    );
   }
 
   context.signal.throwIfAborted();

@@ -125,15 +125,15 @@ test("a complete twelve- or thirteen-month E.SUN source stages one canonical car
   }
 });
 
-test("E.SUN stages the card before it validates and stages the current used credit read beside it", async () => {
+test("E.SUN validates the current used credit before it stages the card and the balance together", async () => {
   const { log, staged, error } = await stage({ ...completeSource, currentUsedCredit: [currentUsedCredit] });
   assert.equal(error, undefined);
   assert.deepEqual(log, [
     "decoding:completed:source-decoding-completed",
     "validation:started:source-validation-started",
-    "stage:credit-card",
     "validation:started:current-balance-validation-started",
     "validation:completed:current-balance-validation-completed",
+    "stage:credit-card",
     "stage:current-balance",
   ]);
   assert.equal(staged.length, 2);
