@@ -10,6 +10,7 @@ import {
   type PGliteCanonicalLoanCommitRequest,
 } from "./loan.ts";
 import { PGliteStore } from "./transaction.ts";
+import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
 import {
   resolvePGliteCanonicalLoanRepaymentRelations,
   queryPGliteCurrentLoanRepaymentRelations,
@@ -719,6 +720,74 @@ test("PGlite Fubon loan capture permits balance-only evolution as a new observat
   }
 });
 
+
+test("PGlite Fubon loan capture permits a rewritten source description on the same occurrence", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    const first = loanRequest("loan-capture-1");
+    const firstRecord = first.capture.records[0]!;
+    await commitPGliteCanonicalLoanCapture(store, {
+      ...first,
+      capture: { ...first.capture, records: [{ ...firstRecord, sourceDescription: "還款" }] },
+    }, { clock: () => 100 });
+    const next = loanRequest("loan-capture-description-update");
+    const nextRecord = next.capture.records[0]!;
+    const result = await commitPGliteCanonicalLoanCapture(store, {
+      ...next,
+      capture: { ...next.capture, records: [{ ...nextRecord, sourceDescription: "還款(自動扣繳)" }] },
+    }, { clock: () => 200 });
+    assert.equal(result.transactions[0]?.revisionCreated, false);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a Fubon loan record's collision key is its occurrence key, so a revisable field can never re-key it (ADR 0117)", () => {
+  const payment = { transactionDate: "2026/09/10", transactionContent: "LOAN-PAYMENT", transactionAmount: "1000.00", balanceAfterTransaction: "9000.00" };
+  const capture = buildFubonLoanCapture({
+    accountValue: "fubon-collision-account",
+    sourceConnectionScope: "fubon-collision-connection",
+    observedAt: "2026-10-01T00:00:00.000Z",
+    startDate: "2026-09-01",
+    endDate: "2026-09-30",
+    scope: {
+      startDate: "2026-09-01",
+      endDate: "2026-09-30",
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v2.fubon",
+      pageCount: 1,
+      terminal: true,
+    },
+    pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 2, proofKind: "source-declared-terminal-range" }],
+    counterpartTransactions: [],
+    relations: [],
+    relationCoverage: "not-asserted",
+    rows: [payment, payment],
+  });
+  assert.equal(capture.records.length, 2);
+  for (const record of capture.records) assert.equal(record.occurrenceCollisionKey, record.sourceRecordKey);
+});
+
+test("PGlite Fubon loan capture still refuses a rewrite of a field its route does not declare revisable", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalLoanCapture(store, loanRequest("loan-capture-1"), { clock: () => 100 });
+    const next = loanRequest("loan-capture-time-update");
+    const record = next.capture.records[0]!;
+    await assert.rejects(
+      commitPGliteCanonicalLoanCapture(store, {
+        ...next,
+        capture: { ...next.capture, records: [{ ...record, sourceTime: { ...record.sourceTime, localTime: "13:00:00" } }] },
+      }, { clock: () => 200 }),
+      (error: unknown) => error instanceof PGliteCanonicalSourceAdmissionError && error.code === "occurrence-conflict",
+    );
+  } finally {
+    await store.close();
+  }
+});
 
 test("Fubon repeated deposit capture resolves repayment evidence through its stable account scope", async () => {
   const database = await createTestPGlite("ledger");

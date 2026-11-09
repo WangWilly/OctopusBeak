@@ -26,6 +26,7 @@ import {
   canonicalOccurrenceGroupKey,
 } from "../canonical/occurrence-groups.ts";
 import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
+import { canonicalSourceRouteRegistration } from "../canonical/canonical-source-route-registry.ts";
 
 export type PGliteCanonicalLoanCommitRequest = Readonly<{
   capture: LoanCaptureInput;
@@ -161,11 +162,9 @@ function sourceRecord(record: LoanTransactionInput | LoanCounterpartTransactionI
         description: record.description ?? null,
         sourceEvidence: record.sourceEvidence,
       };
-  const content = { ...compact };
-  if (capture.sourceId === "fubon" && "eventEvidence" in record) {
-    delete content.balanceSourceEvidence;
-    delete content.sourceDescription;
-  }
+  const content: Record<string, unknown> = { ...compact };
+  for (const field of canonicalSourceRouteRegistration(capture.authorityRoute)?.revisablePayloadFields ?? [])
+    delete content[field];
   return {
     occurrenceKey: record.sourceRecordKey,
     collisionKey: "eventEvidence" in record
