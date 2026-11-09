@@ -109,7 +109,6 @@ async function record(
         const product = { ...bound, collectionPeriod: () => august };
         return await stageHncbDeposit(
           await readHncbDepositSource(source(accounts), depositInput, depositContext, product),
-          depositContext,
           product,
           hncbCurrentDepositBalanceTable(
             async () => ({

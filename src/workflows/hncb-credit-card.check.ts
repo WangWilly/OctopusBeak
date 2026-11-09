@@ -334,7 +334,6 @@ function depositRun(options: Readonly<{
           },
         }),
       }, input, context, product),
-      context,
       product,
       async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(depositAccount)]),
     ),

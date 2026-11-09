@@ -60,7 +60,6 @@ import {
   type HncbRoute,
 } from "./hncb-netbank-site.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, WITHOUT_PRODUCT_VALIDATION } from "./provider-response-reader.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
@@ -751,19 +750,18 @@ function parseHncbExport(bytes: Uint8Array, text: string, fallbackAccount: strin
  * creates its managed download artifact. The paused browser request is fetched
  * exactly once with the page's cookies, decoded from the returned bytes, then
  * fulfilled with an empty response so attachment handling cannot write a file.
- * The reader checks the reply's transport before its body and accepts it
- * through `validate`; the popup and the fetch are waits outside it.
+ * The product's reader checks the reply's transport before its body and
+ * accepts it; the popup and the fetch are waits outside it.
  */
 export async function downloadCurrentStatementInMemory(
   scope: FrameScope,
   fallbackAccount: string,
   resultFrame: Frame,
-  context: Pick<WorkflowContext, "text" | "now">,
-  validate: ProductCollectionHandle["validate"],
+  product: Pick<ProductCollectionHandle, "reader" | "validate">,
   timeoutMs = 60_000,
 ): Promise<HncbStatementDownload> {
   const { page, signal } = scope;
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate });
+  const { reader, validate } = product;
   const popupPromise = scope.withSignal((signal) => page.waitForEvent("popup", { timeout: 30_000, signal }));
   void popupPromise.catch(() => undefined);
   await scope.withSignal((signal) => statementDownloadLink(resultFrame).click({ signal }));
@@ -923,13 +921,13 @@ export type HncbDepositSource = Readonly<{
   accounts(filters: readonly string[]): Promise<readonly HncbDepositAccount[]>;
   /**
    * One account's statement query; null when HNCB answers with explicit no
-   * data. Its download checks the export reply through `validate`.
+   * data. Its download reads the export reply through the product's reader.
    */
   query(
     account: HncbDepositAccount,
     dateRange: HncbDateRange,
   ): Promise<Readonly<{
-    download(validate: ProductCollectionHandle["validate"]): Promise<HncbStatementDownload>;
+    download(product: Pick<ProductCollectionHandle, "reader" | "validate">): Promise<HncbStatementDownload>;
   }> | null>;
 }>;
 
@@ -970,19 +968,18 @@ export type HncbDepositRunner = (
   product: ProductCollectionHandle,
 ) => Promise<HncbDepositSummary>;
 
-function hncbDepositSource(site: HncbNetbankSite, context: HncbDepositContext): HncbDepositSource {
+function hncbDepositSource(site: HncbNetbankSite): HncbDepositSource {
   return {
     accounts: async (filters) =>
       await site.frames.race(readAccountOptions(await openFirstStatementDetail(site), filters)),
     query: async (account, dateRange) => {
       const resultFrame = await queryAccountStatements(site, account, dateRange);
       return resultFrame && {
-        download: (validate) => downloadCurrentStatementInMemory(
+        download: (product) => downloadCurrentStatementInMemory(
           site.frames,
           account.label,
           resultFrame,
-          context,
-          validate,
+          product,
         ),
       };
     },
@@ -1054,7 +1051,7 @@ export async function readHncbDepositSource(
       completed: accountIndex,
       total: accounts.length,
     });
-    const statement = await result.download(product.validate);
+    const statement = await result.download(product);
     context.signal.throwIfAborted();
     await product.event("decoding", "advanced", "source-decoding-completed", {
       completed: accountIndex + 1,
@@ -1076,7 +1073,6 @@ export async function readHncbDepositSource(
  */
 export async function stageHncbDeposit(
   snapshot: HncbDepositSourceSnapshot,
-  context: HncbDepositContext,
   product: ProductCollectionHandle,
   readCurrentBalanceTable: HncbReadCurrentDepositBalanceTable,
 ): Promise<HncbDepositSummary> {
@@ -1131,10 +1127,7 @@ export async function stageHncbDeposit(
   const balances = await captureCurrentStateSnapshots(hncbCurrentBalanceSnapshot, {
     captures: financialCaptures,
     acquire: readCurrentBalanceTable,
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal: context.signal,
   });
 
   product.stage(
@@ -1164,14 +1157,12 @@ export async function stageHncbDeposit(
 /** The deposit runner over the run's one HNCB site, shared with the attached card. */
 function hncbDepositRunner(site: HncbNetbankSite): HncbDepositRunner {
   return async (_page, input, context, product) => {
-    const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
     return await stageHncbDeposit(
-      await readHncbDepositSource(hncbDepositSource(site, context), input, context, product),
-      context,
+      await readHncbDepositSource(hncbDepositSource(site), input, context, product),
       product,
       hncbCurrentDepositBalanceTable(
-        () => readHncbCurrentDepositOverviewTable(site, reader),
-        () => readHncbCurrentDepositDetailTable(site, reader),
+        () => readHncbCurrentDepositOverviewTable(site, product.reader),
+        () => readHncbCurrentDepositDetailTable(site, product.reader),
       ),
     );
   };
@@ -1241,14 +1232,8 @@ async function runHncbWorkflow(
       ...(assertSession ? { assertSession } : {}),
       attached: {
         collectors: () => ({
-          credit_card: () => {
-            const reader = providerResponseReader({
-              now: () => context.now(),
-              text: context.text,
-              validate: WITHOUT_PRODUCT_VALIDATION,
-            });
-            return collectHncbCreditCards(playwrightHncbCardPages(site, reader), { now: context.now(), reader });
-          },
+          credit_card: ({ reader }) =>
+            collectHncbCreditCards(playwrightHncbCardPages(site, reader), { now: context.now(), reader }),
         }),
         ...(assertSession ? { assertSession } : {}),
       },

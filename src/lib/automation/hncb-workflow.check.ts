@@ -24,14 +24,13 @@ import {
 import { hncbCurrentDepositDetailTable, hncbCurrentDepositUnavailableRow } from "../../workflows/hncb-current-deposit-balances.fixtures.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import type { WorkflowContext, WorkflowContextWith, WorkflowFinancialCommitPort } from "./workflow-executor.ts";
-import { ProductCollectionInterruptedError, type ProductCollectionHandle } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, productCollectionHandle, type ProductCollectionHandle } from "./product-collection.ts";
 import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { HNCB_SOURCE } from "./server/sources/hncb.ts";
 import { readHncbCurrentDepositOverviewTable } from "../../workflows/hncb-current-deposit-balances.ts";
 import { frameScope } from "../../workflows/frame-scope.ts";
 import { HNCB_NETBANK_ORIGIN, hncbNetbankSite } from "../../workflows/hncb-netbank-site.ts";
 import { ProviderResponseCheckError } from "./provider-response-check.ts";
-import { providerResponseReader } from "../../workflows/provider-response-reader.ts";
 
 const account = "123456";
 // CP950 fixture bytes exercise the mapping used by the browser's WHATWG
@@ -44,9 +43,16 @@ const parsedFixture = parseStatementExport(strictSourceText.decode(exportBytes, 
 assert.equal(parsedFixture.queryPeriod, "2026/08/01-2026/08/31");
 assert.equal(parsedFixture.currency, "TWD");
 
-/** A check run outside any product, for the export read driven directly. */
-const unreported: ProductCollectionHandle["validate"] = async (check) => await check();
-const exportContext = { text: strictSourceText, now: () => "2026-09-01T04:00:00.000Z" };
+/** A product handle outside any run, for the export read driven directly. */
+const unreported = productCollectionHandle({
+  now: () => "2026-09-01T04:00:00.000Z",
+  text: strictSourceText,
+  signal: new AbortController().signal,
+  stage: () => assert.fail("the export read stages nothing"),
+  reportActivity: async () => undefined,
+  event: async () => undefined,
+  collectionPeriod: () => assert.fail("the export read takes no collection period"),
+});
 
 /**
  * A throwaway self-signed certificate for netbank.hncb.com.tw, so the export
@@ -71,7 +77,7 @@ async function fixtureTls(): Promise<Readonly<{ key: string; cert: string }>> {
 
 /** The real read and build halves over one account whose query opens `download`, with no current balances. */
 function oneAccount(
-  download: (validate: ProductCollectionHandle["validate"]) => Promise<HncbStatementDownload>,
+  download: (product: ProductCollectionHandle) => Promise<HncbStatementDownload>,
 ): HncbDepositRunner {
   const source: HncbDepositSource = {
     accounts: async () => [{ value: account, label: `HNCB ${account}` }],
@@ -79,7 +85,6 @@ function oneAccount(
   };
   return async (_page, input, context, product) => await stageHncbDeposit(
     await readHncbDepositSource(source, input, context, product),
-    context,
     product,
     async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(account)]),
   );
@@ -128,7 +133,6 @@ test("HNCB queries two years and one day ending on the run's Taipei date", async
   await runHncbStatements({} as Page, { accountFilters: [] }, runContext(committed, { now: () => "2028-02-28T16:30:00.000Z" }), {
     collectDeposit: async (_page, input, context, product) => await stageHncbDeposit(
       await readHncbDepositSource(source, input, context, product),
-      context,
       product,
       async () => hncbCurrentDepositDetailTable([hncbCurrentDepositUnavailableRow(account)]),
     ),
@@ -264,13 +268,12 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
       event: async (stage, _outcome, code) => { events.push({ stage, code }); },
     });
     const output = await runHncbStatements(page, { accountFilters: [] }, context, {
-      collectDeposit: oneAccount(async (validate) => {
+      collectDeposit: oneAccount(async (product) => {
         const statement = await downloadCurrentStatementInMemory(
           frameScope(page, context.signal),
           `HNCB ${account}`,
           page.mainFrame(),
-          context,
-          validate,
+          product,
           5_000,
         );
         statementResponse = statement.sourceResponse;
@@ -344,7 +347,6 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
           frameScope(page, new AbortController().signal),
           account,
           page.mainFrame(),
-          exportContext,
           unreported,
           5_000,
         ),
@@ -367,12 +369,11 @@ test("HNCB export is parsed from the one cookie-authenticated POST without a bro
     const incompleteContext = runContext(financialCommit);
     await assert.rejects(
       runHncbStatements(page, { accountFilters: [] }, incompleteContext, {
-        collectDeposit: oneAccount((validate) => downloadCurrentStatementInMemory(
+        collectDeposit: oneAccount((product) => downloadCurrentStatementInMemory(
           frameScope(page, incompleteContext.signal),
           `HNCB ${account}`,
           page.mainFrame(),
-          incompleteContext,
-          validate,
+          product,
           5_000,
         )),
       }),
@@ -518,7 +519,7 @@ test("HNCB export deadline also bounds a blocked submit evaluation", async () =>
   };
   const page = { async waitForEvent() { return popup; } } as never;
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
-  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, exportContext, unreported, 20);
+  const run = downloadCurrentStatementInMemory(frameScope(page, new AbortController().signal), account, frame, unreported, 20);
   let watchdog: ReturnType<typeof setTimeout>;
   try {
     await assert.rejects(Promise.race([
@@ -546,8 +547,8 @@ test("HNCB export that times out fails the product as a collection failure, not 
   const context = runContext({ async execute() { throw new Error("a failed read must not reach the commit"); } });
   await assert.rejects(
     runHncbStatements(page, { accountFilters: [] }, context, {
-      collectDeposit: oneAccount((validate) =>
-        downloadCurrentStatementInMemory(frameScope(page, context.signal), account, frame, context, validate, 20)),
+      collectDeposit: oneAccount((product) =>
+        downloadCurrentStatementInMemory(frameScope(page, context.signal), account, frame, product, 20)),
     }),
     (error: unknown) => {
       assert.ok(error instanceof ProductCollectionInterruptedError);
@@ -573,7 +574,7 @@ test("HNCB export stops at the run's cancellation instead of its deadline", asyn
   const frame = { locator() { return { first() { return { async click() {} }; } }; } } as never;
   const run = new AbortController();
   const reason = new Error("run cancelled");
-  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, exportContext, unreported, 60_000);
+  const download = downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, unreported, 60_000);
   setTimeout(() => run.abort(reason), 10);
   await assert.rejects(download, (error: unknown) => error === reason);
   assert.equal(closed, true);
@@ -596,8 +597,8 @@ test("cancelling the run stops a pending export click in the browser and stages 
       },
     };
     let readError: unknown;
-    const download = (validate: ProductCollectionHandle["validate"]) =>
-      downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, exportContext, validate)
+    const download = (product: ProductCollectionHandle) =>
+      downloadCurrentStatementInMemory(frameScope(page, run.signal), account, frame, product)
       .catch((error: unknown) => { readError = error; throw error; });
     setTimeout(() => run.abort(cancellation), 300);
     // The export link appears only after the cancellation; an abandoned click would still land on it.
@@ -633,7 +634,7 @@ test("cancelling the run stops the current-balance overview polling for its menu
     await assert.rejects(
       readHncbCurrentDepositOverviewTable(
         hncbNetbankSite(page, { signal: run.signal }),
-        providerResponseReader({ ...exportContext, validate: unreported }),
+        unreported.reader,
       ),
       (error: unknown) => error === cancellation,
     );
