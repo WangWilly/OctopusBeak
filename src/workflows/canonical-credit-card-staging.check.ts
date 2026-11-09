@@ -66,18 +66,17 @@ function harness(signal = new AbortController().signal) {
   return { product, log, calls };
 }
 
-test("cards and their current used credit stage in one call, bound to the first card", async () => {
+test("a card and its current used credit stage in one call, bound to that card", async () => {
   const { product, log, calls } = harness();
-  await stageCanonicalCreditCards(product, [card("a"), card("b")], usedCredit([{ used: "46989" }]));
+  await stageCanonicalCreditCards(product, [card("a")], usedCredit([{ used: "46989" }]));
   assert.deepEqual(log, [
     "validation:started:current-balance-validation-started",
     "validation:completed:current-balance-validation-completed",
-    "stage:credit-card,credit-card,current-balance",
+    "stage:credit-card,current-balance",
   ]);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0]!.map(({ product, itemKey, command }) => [product, itemKey, command]), [
     ["credit-card", "capture:a", { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: card("a").request }],
-    ["credit-card", "capture:b", { kind: PGLITE_CANONICAL_CREDIT_CARD_COMMIT_COMMAND, request: card("b").request }],
     ["current-balance", "a:current-used-credit", {
       kind: PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND,
       request: { used: "46989", cardIdentity: { sourceAccountKey: "account:a" } },
@@ -85,11 +84,22 @@ test("cards and their current used credit stage in one call, bound to the first 
   ]);
 });
 
-test("cards without current used credit stage alone and report no current-balance events", async () => {
+test("cards without current used credit stage alone, in one call, and report no current-balance events", async () => {
   const { product, log, calls } = harness();
-  await stageCanonicalCreditCards(product, [card("a")]);
-  assert.deepEqual(log, ["stage:credit-card"]);
+  await stageCanonicalCreditCards(product, [card("a"), card("b")]);
+  assert.deepEqual(log, ["stage:credit-card,credit-card"]);
   assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]!.map(({ itemKey }) => itemKey), ["capture:a", "capture:b"]);
+});
+
+test("used credit with more than one card capture throws before validating or staging", async () => {
+  const { product, log, calls } = harness();
+  await assert.rejects(
+    stageCanonicalCreditCards(product, [card("a"), card("b")], usedCredit([{ used: "1" }])),
+    /issuer aggregate/u,
+  );
+  assert.deepEqual(log, []);
+  assert.deepEqual(calls, []);
 });
 
 test("a current used credit that fails validation stages no card", async () => {

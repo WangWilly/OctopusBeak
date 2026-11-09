@@ -37,8 +37,9 @@ export type CurrentUsedCredit<Row, Capture> = Readonly<{
  * it stages nothing and does not stage the snapshot.
  *
  * Used credit is an issuer-aggregate figure (ADR 0023), and every issuer's
- * snapshot matches its rows to one issuer aggregate, so it binds to the first
- * card. Each issuer admits at most one card capture per run.
+ * snapshot matches its rows to one issuer aggregate, so it binds to the one
+ * card capture an issuer admits per run. More than one card with used credit
+ * throws instead of binding the figure to a guessed card.
  */
 export async function stageCanonicalCreditCards<Capture, Row>(
   product: Pick<ProductCollectionHandle, "stage"> & SnapshotProduct,
@@ -47,6 +48,8 @@ export async function stageCanonicalCreditCards<Capture, Row>(
 ): Promise<void> {
   const [first] = cards;
   if (!first) return;
+  if (currentUsedCredit && cards.length > 1)
+    throw new Error("Current used credit is an issuer aggregate; an issuer with used credit admits one card capture per run.");
   const balances = currentUsedCredit
     ? (await stageCurrentStateSnapshot(currentUsedCredit.snapshot, currentUsedCredit.rows, {
         captures: [{ capture: first.capture, cardIdentity: first.request.identity }],
