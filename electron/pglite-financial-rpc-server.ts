@@ -173,6 +173,13 @@ export function createPGliteWorkScheduler(): PGliteWorkScheduler {
   return Object.freeze({ schedule });
 }
 
+type CoalescedRead = {
+  args: readonly unknown[];
+  callers: number;
+  controller: AbortController;
+  outcome: Promise<unknown>;
+};
+
 /** Install the named financial registry on the same worker MessagePort. */
 export function createPGliteFinancialRpcServer(
   port: RpcPort,
@@ -183,7 +190,48 @@ export function createPGliteFinancialRpcServer(
   let closed = false;
   const active = new Set<Promise<void>>();
   const controllers = new Map<number, AbortController>();
-  const queuedReads = new Map<string, { args: readonly unknown[]; outcome: Promise<unknown> }>();
+  const queuedReads = new Map<PGliteFinancialOperation, CoalescedRead>();
+  const track = (work: Promise<void>): void => {
+    active.add(work);
+    void work.finally(() => active.delete(work)).catch(() => undefined);
+  };
+  /**
+   * Attach a caller to the queued read of its kind, or queue one. The read
+   * runs with the newest caller's arguments. A caller whose signal aborts
+   * leaves at once with a cancellation; the read itself is aborted only when
+   * no caller is left on it.
+   */
+  const joinLatestRead = (operation: PGliteFinancialOperation, args: readonly unknown[], signal: AbortSignal): Promise<unknown> => {
+    let read = queuedReads.get(operation);
+    if (read) read.args = args;
+    else {
+      const created: CoalescedRead = { args, callers: 0, controller: new AbortController(), outcome: Promise.resolve() };
+      created.outcome = scheduler.schedule("background", async () => {
+        if (queuedReads.get(operation) === created) queuedReads.delete(operation);
+        if (created.controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
+        return financial.request(operation, created.args as never, { signal: created.controller.signal });
+      });
+      track(created.outcome.then(() => undefined, () => undefined));
+      queuedReads.set(operation, created);
+      read = created;
+    }
+    const joined = read;
+    joined.callers += 1;
+    return new Promise((resolve, reject) => {
+      const leave = () => {
+        joined.callers -= 1;
+        if (joined.callers === 0) {
+          if (queuedReads.get(operation) === joined) queuedReads.delete(operation);
+          joined.controller.abort();
+        }
+        reject(new Error("PGlite financial operation was cancelled."));
+      };
+      signal.addEventListener("abort", leave, { once: true });
+      void joined.outcome
+        .finally(() => signal.removeEventListener("abort", leave))
+        .then(resolve, reject);
+    });
+  };
   const onMessage = (value: unknown): void => {
     if (validCancelRequest(value)) {
       controllers.get(value.id)?.abort();
@@ -211,26 +259,16 @@ export function createPGliteFinancialRpcServer(
     const operation = value.operation as PGliteFinancialOperation;
     const controller = new AbortController();
     controllers.set(value.id, controller);
-    const latestWins = contract.lane === "latest-wins";
-    const queuedRead = latestWins ? queuedReads.get(operation) : undefined;
-    let outcome: Promise<unknown>;
-    if (queuedRead) {
-      queuedRead.args = value.args;
-      outcome = queuedRead.outcome;
-    } else {
-      const read = { args: value.args, outcome: Promise.resolve() as Promise<unknown> };
-      outcome = scheduler.schedule(contract.lane === "interactive" ? "interactive" : "background", async () => {
-        if (latestWins && queuedReads.get(operation) === read) queuedReads.delete(operation);
+    const outcome = contract.lane === "latest-wins"
+      ? joinLatestRead(operation, value.args, controller.signal)
+      : scheduler.schedule(contract.lane, async () => {
         if (controller.signal.aborted) throw new Error("PGlite financial operation was cancelled before execution.");
         if (isCommitAdmissible && value.diagnosticContext && contract.canonicalCommit
           && !isCommitAdmissible(value.diagnosticContext)) {
           throw new PGliteFinancialError("operation-failed", "refused");
         }
-        return financial.request(operation, read.args as never, { signal: controller.signal });
+        return financial.request(operation, value.args as never, { signal: controller.signal });
       });
-      read.outcome = outcome;
-      if (latestWins) queuedReads.set(operation, read);
-    }
     const work = outcome.then(
       (result) => {
         post(port, { kind: "pglite-financial-response", version: 1, id: value.id, ok: true, value: result });
@@ -267,12 +305,8 @@ export function createPGliteFinancialRpcServer(
           ),
         );
       },
-    ).then(() => undefined);
-    active.add(work);
-    void work.finally(() => {
-      active.delete(work);
-      controllers.delete(value.id);
-    }).catch(() => undefined);
+    ).then(() => undefined).finally(() => controllers.delete(value.id));
+    track(work);
   };
   port.on("message", onMessage);
   let closePromise: Promise<void> | undefined;
