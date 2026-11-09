@@ -8,7 +8,6 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import {
   productCollectionHandle,
   StatementComponentAbsentError,
-  type ProductCollectionHandle,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
@@ -306,20 +305,22 @@ async function readCardThroughShell(
       }
     });
     await page.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+    const run = {
+      signal: options.signal ?? new AbortController().signal,
+      text: strictSourceText,
+      now: () => "2026-10-27T00:00:00.000Z",
+    };
     const snapshot = await readFubonCreditCardSourceSnapshot(
       page,
       fubonCreditCardStatementsInputSchema.parse({ periodOffsets: options.periodOffsets }),
-      {
-        signal: options.signal ?? new AbortController().signal,
-        text: strictSourceText,
-        now: () => "2026-10-27T00:00:00.000Z",
-      } as unknown as WorkflowContext,
-      {
+      run as unknown as WorkflowContext,
+      productCollectionHandle({
+        ...run,
         stage: () => {},
-        reportActivity: async (activity: string) => { activities.push(activity); },
-        event: async (_stage: string, _outcome: string, code: string) => { events.push(code); },
-        validate: async <T>(check: () => T | Promise<T>) => await check(),
-      } as unknown as ProductCollectionHandle,
+        reportActivity: async (activity) => { activities.push(activity); },
+        event: async (_stage, _outcome, code) => { events.push(code); },
+        collectionPeriod: () => assert.fail("the card read takes no collection period"),
+      }),
     );
     const menuOpens = await page.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
     return { snapshot, requested, activities, events, menuOpens };

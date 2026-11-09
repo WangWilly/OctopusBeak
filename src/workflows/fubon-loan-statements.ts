@@ -33,6 +33,7 @@ import {
   type FubonRoute,
 } from "./fubon-ebank-site.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
@@ -87,9 +88,9 @@ export function fubonLoanStatementResponse(postedTo: string): ProviderResponseDe
 async function acceptLoanReply(
   site: FubonEbankSite,
   reply: FubonPostbackReply,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
 ): Promise<string> {
-  return (await site.reader(validate).accept(fubonLoanStatementResponse(reply.postedTo), reply)).evidence.text;
+  return (await reader.accept(fubonLoanStatementResponse(reply.postedTo), reply)).evidence.text;
 }
 
 const queryItemSchema = z.enum([
@@ -941,13 +942,13 @@ async function parseLoanStatementHtml(
 
 async function fetchLoanQueryHtml(
   site: FubonEbankSite,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
 ): Promise<string> {
   const scope = await site.frames.scopeWith("#form1\\:doValidate");
   const html = await acceptLoanReply(site, await site.postback(
     scope.locator("form").first(),
     "form1:doValidate",
-  ), validate);
+  ), reader);
   await site.replaceDocument(scope, html);
   await site.frames.scopeWith(loanResultTable, "loan result table");
 
@@ -1004,7 +1005,7 @@ async function fetchFubonLoanStatementPages(
   firstHtml: string,
   account: LoanAccountOption,
   query: FubonLoanQuery,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
   silent = false,
 ): Promise<ParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
@@ -1031,7 +1032,7 @@ async function fetchFubonLoanStatementPages(
       scope.locator("form").first(),
       undefined,
       { [parsed.pagination.pageFieldName]: parsed.pagination.nextPage },
-    ), validate);
+    ), reader);
     await site.replaceDocument(scope, html);
     await site.frames.scopeWith(loanResultTable, "loan result table");
   }
@@ -1045,7 +1046,7 @@ export async function parseFubonLoanStatementForCollection(
   account: LoanAccountOption,
   query: FubonLoanQuery,
   sourceText: SourceTextPort,
-  validate: ProductCollectionHandle["validate"],
+  reader: ProviderResponseReader,
 ): Promise<ParsedLoanStatement> {
   sourceText.assertIntact(html);
   const parsed = await fetchFubonLoanStatementPages(
@@ -1053,7 +1054,7 @@ export async function parseFubonLoanStatementForCollection(
     html,
     account,
     query,
-    validate,
+    reader,
     true,
   );
   sourceText.assertIntact(JSON.stringify(parsed));
@@ -1114,14 +1115,14 @@ export async function runFubonLoanStatements(
       context.signal.throwIfAborted();
       scope = await configureLoanQuery(site, query, queryItem);
       await product.reportActivity("query");
-      const html = await fetchLoanQueryHtml(site, product.validate);
+      const html = await fetchLoanQueryHtml(site, product.reader);
       const parsed = await parseFubonLoanStatementForCollection(
         site,
         html,
         account,
         query,
         context.text,
-        product.validate,
+        product.reader,
       );
       const completeness = parsed.completeness;
       if (!completeness || parsed.pages.length !== completeness.pageCount)

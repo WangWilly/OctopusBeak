@@ -28,6 +28,7 @@ import { FUBON_CREDENTIAL_FIELDS, FUBON_PRODUCTS, FUBON_SOURCE } from "../lib/au
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { fubonAttachedPreviewCollectors, type FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
 import { playwrightFubonAttachedPreviewPort } from "./fubon-attached-preview-page.ts";
+import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
 import { signIn, type ShellPlan, type SignedIn } from "./sign-in.ts";
 import type { FrameScope } from "./frame-scope.ts";
@@ -166,7 +167,11 @@ export type FubonAllWorkflowDependencies = Readonly<{
   collectLoan?: FubonProductRunner<FubonLoanProductInput>;
   signOut?: (page: Page) => Promise<void>;
   startSessionKeepAlive?: (page: Page) => () => void;
-  attachedPreviewPort?: (page: Page, context: FubonAllWorkflowContext) => FubonAttachedPreviewPort;
+  attachedPreviewPort?: (
+    page: Page,
+    context: FubonAllWorkflowContext,
+    product: PreviewProductHandle,
+  ) => FubonAttachedPreviewPort;
 }>;
 
 async function fubonSessionProbe(scope: FrameScope): Promise<boolean> {
@@ -284,7 +289,7 @@ async function runFubonWorkflow(
         // collects the attached ones after the verified products.
         attached: {
           collectors: () => fubonAttachedPreviewCollectors(
-            (overrides.attachedPreviewPort ?? playwrightFubonAttachedPreviewPort)(page, context),
+            (product) => (overrides.attachedPreviewPort ?? playwrightFubonAttachedPreviewPort)(page, context, product),
             context.now,
           ),
           assertSession,

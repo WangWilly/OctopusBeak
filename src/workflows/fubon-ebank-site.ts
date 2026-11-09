@@ -1,9 +1,6 @@
 import type { Frame, Locator, Page } from "playwright";
-import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
-import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { ProviderEvidence, ProviderResponse } from "./provider-response.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
 import { activateControlWithoutPointer } from "./browser-interaction.ts";
 import { frameScope, ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 
@@ -52,11 +49,6 @@ export type FubonEbankSite = Readonly<{
   /** Post a form from inside the page and return the reply as observed, before any check. */
   postback(form: Locator, submitFieldName?: string, fields?: Readonly<Record<string, string>>): Promise<FubonPostbackReply>;
   replaceDocument(scope: BrowserScope, html: string): Promise<void>;
-  /**
-   * The Provider response reader on the run's clock and text port, refusing
-   * inside `validate`: a product's own, or `WITHOUT_PRODUCT_VALIDATION`.
-   */
-  reader(validate: ProductCollectionHandle["validate"]): ProviderResponseReader;
 }>;
 
 /** One HTML reply the site observed: its body bytes and the response that carried them. */
@@ -68,7 +60,7 @@ export type FubonReply = Readonly<{
 /** A postback's reply, with the URL the form was posted to: its action, resolved against the page. */
 export type FubonPostbackReply = FubonReply & Readonly<{ postedTo: string }>;
 
-type SiteContext = Readonly<{ signal: AbortSignal; text: SourceTextPort; now(): string }>;
+type SiteContext = Readonly<{ signal: AbortSignal }>;
 
 const isFollowableHref = (href: string | null): href is string =>
   !!href && href !== "#" && !href.startsWith("javascript:");
@@ -205,7 +197,6 @@ export function fubonEbankSite(page: Page, context: SiteContext): FubonEbankSite
         document.close();
       }, html));
     },
-    reader: (validate) => providerResponseReader({ now: () => context.now(), text: context.text, validate }),
   };
   return Object.freeze(site);
 }

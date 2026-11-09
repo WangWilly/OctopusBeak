@@ -34,6 +34,7 @@ import {
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 import {
   collectSelectedProducts,
   ProductCollectionInterruptedError,
@@ -1123,7 +1124,7 @@ try {
       holdAccount?: string;
       onHeld?: () => void;
       failAccount?: string;
-      validate?: ProductCollectionHandle["validate"];
+      reader?: ProductCollectionHandle["reader"];
     }> = {},
   ) {
     const shellPage = await browser.newPage();
@@ -1174,7 +1175,7 @@ try {
         {
           reportActivity: async (activity) => { activities.push(activity); },
           collectionPeriod: () => january,
-          validate: options.validate ?? (async (check) => await check()),
+          reader: options.reader ?? sourceReader(siteContext(options.signal)),
         },
       );
       return { snapshot, posted, clicks, activities };
@@ -1219,7 +1220,7 @@ try {
     now: () => "2026-01-31T12:00:00.000Z",
     text: strictSourceText,
     collect: async (_typeId, product) => {
-      await readThroughShell({ failAccount: shellAccounts[1]!.value, validate: product.validate });
+      await readThroughShell({ failAccount: shellAccounts[1]!.value, reader: product.reader });
       throw new Error("a deposit read with a failed reply must not finish");
     },
     financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },

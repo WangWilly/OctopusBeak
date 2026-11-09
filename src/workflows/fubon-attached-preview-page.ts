@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import type { ProductCollectionHandle } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
+import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
 import type { FubonAttachedPreviewPort } from "./fubon-attached-preview.ts";
 import { readCurrentStateSnapshot } from "./current-state-snapshot-capture.ts";
 import {
@@ -23,9 +24,10 @@ import {
  */
 export function playwrightFubonAttachedPreviewPort(
   page: Page,
-  context: Pick<WorkflowContext, "signal" | "text" | "now">,
+  context: Pick<WorkflowContext, "text">,
+  product: PreviewProductHandle,
 ): FubonAttachedPreviewPort {
-  const site = fubonEbankSite(page, context);
+  const site = fubonEbankSite(page, product);
   // The preview stages nothing and names no Failure code, so its checks report no validation events.
   const validate: ProductCollectionHandle["validate"] = async (check) => await check();
   return {
@@ -34,11 +36,8 @@ export function playwrightFubonAttachedPreviewPort(
         response: FUBON_CURRENT_DEPOSIT_RESPONSE,
         parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
       }, {
-        acquire: () => readFubonCurrentDepositBalanceTable(site, validate),
-        now: () => context.now(),
-        product: { event: async () => undefined, validate },
-        text: context.text,
-        signal: context.signal,
+        acquire: () => readFubonCurrentDepositBalanceTable(site, product.reader),
+        product: { event: async () => undefined, validate, reader: product.reader, signal: product.signal },
       });
     },
     async accountOptions() {
@@ -46,9 +45,9 @@ export function playwrightFubonAttachedPreviewPort(
       return await readFubonDepositAccountOptions(site);
     },
     async statement(option, query) {
-      context.signal.throwIfAborted();
+      product.signal.throwIfAborted();
       await selectDepositAccount(site, option);
-      const statement = await fetchDepositStatement(site, query, option, validate);
+      const statement = await fetchDepositStatement(site, query, option, product.reader);
       context.text.assertIntact(JSON.stringify(statement));
       return statement;
     },

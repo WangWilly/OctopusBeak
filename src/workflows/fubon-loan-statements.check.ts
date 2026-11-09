@@ -27,12 +27,14 @@ import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/so
 import {
   collectSelectedProducts,
   ProductCollectionInterruptedError,
+  productCollectionHandle,
   type ProductCollectionHandle,
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { collectionPeriod, taipeiToday } from "../lib/automation/collection-period.ts";
 import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonEbankSite } from "./fubon-ebank-site.ts";
+import { sourceReader } from "./provider-response-reader.ts";
 
 const { runFubonLoanStatements, fubonLoanStatementsInputSchema, fubonLoanQuery } = await import("./fubon-loan-statements.ts");
 const { buildFubonLoanCapture, assertFubonLoanCaptureAccountNumberEvidence } =
@@ -126,7 +128,7 @@ const parseFubonLoanStatementForCollection = module.parseFubonLoanStatementForCo
   account: { label: string; value: string },
   query: { quickMonths?: "1" | "3" | "6"; startDate: string; endDate: string },
   sourceText: { assertIntact(value: string): void },
-  validate: ProductCollectionHandle["validate"],
+  reader: ProductCollectionHandle["reader"],
 ) => Promise<{ completeness: { terminal: true } | null }>;
 const assembleFubonLoanStatement = module.assembleFubonLoanStatement as (
   pages: ReadonlyArray<{
@@ -201,7 +203,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
     } as unknown as Page;
     const fixtureHtml = FUBON_LOAN_PAGINATION_FIXTURES_V2.providerResultTerminalWithoutPager;
     const result = await parseFubonLoanStatementForCollection(
-      fubonEbankSite(page, { signal: new AbortController().signal, text: strictSourceText, now: () => "2026-02-01T00:00:00.000Z" }),
+      fubonEbankSite(page, { signal: new AbortController().signal }),
       fixtureHtml,
       {
         label: `${syntheticFubonLoanAccountNumber} (synthetic-loan)`,
@@ -209,7 +211,7 @@ test("typed Fubon loan parser returns complete evidence without CSV/JSON files",
       },
       { startDate: "2026/01/01", endDate: "2026/01/31" },
       { assertIntact: (value) => assert.ok(value.length > 0) },
-      async (check) => await check(),
+      sourceReader({ now: () => "2026-02-01T00:00:00.000Z", text: strictSourceText }),
     );
 
     assert.deepEqual(await readdir(temp), [], "typed loan parsing must not create source, output, or log files");
@@ -693,7 +695,7 @@ async function readLoanThroughShell(
     onHeld?: () => void;
     brokenAccount?: string;
     failAccount?: string;
-    validate?: ProductCollectionHandle["validate"];
+    reader?: ProductCollectionHandle["reader"];
   }> = {},
 ) {
   const browser = await launchCheckBrowser();
@@ -749,6 +751,20 @@ async function readLoanThroughShell(
       }
     });
     await shellPage.goto(FUBON_EBANK_ENTRY_URL, { waitUntil: "load" });
+    const product = productCollectionHandle({
+      now: () => "2026-02-01T00:00:00.000Z",
+      text: strictSourceText,
+      signal: options.signal ?? new AbortController().signal,
+      stage: (...items) => { staged.push(...items); },
+      reportActivity: async (activity) => { activities.push(activity); },
+      event: async () => {},
+      // January matches no quick period, so the query enters its dates.
+      collectionPeriod: () => ({
+        start: "2026-01-01",
+        end: "2026-01-31",
+        windows: [{ start: "2026-01-01", end: "2026-01-31" }],
+      }),
+    });
     const credentials = { fubon_user_id: "synthetic-user-id", fubon_account: "synthetic-user" };
     const summary = await runFubonLoanStatements(
       shellPage,
@@ -762,18 +778,7 @@ async function readLoanThroughShell(
         text: strictSourceText,
         now: () => "2026-02-01T00:00:00.000Z",
       } as unknown as Parameters<typeof runFubonLoanStatements>[2],
-      {
-        stage: (...items: readonly ProductStageRequest[]) => { staged.push(...items); },
-        reportActivity: async (activity: string) => { activities.push(activity); },
-        event: async () => {},
-        validate: options.validate ?? (async (check: () => unknown) => await check()),
-        // January matches no quick period, so the query enters its dates.
-        collectionPeriod: () => ({
-          start: "2026-01-01",
-          end: "2026-01-31",
-          windows: [{ start: "2026-01-01", end: "2026-01-31" }],
-        }),
-      } as unknown as Parameters<typeof runFubonLoanStatements>[3],
+      options.reader ? { ...product, reader: options.reader } : product,
     );
     const menuOpens = await shellPage.evaluate(() => (window as unknown as { menuOpens?: number }).menuOpens);
     return { summary, posted, requested, staged, activities, menuOpens };
@@ -822,7 +827,7 @@ test("Fubon loan fails a query reply with status 500 inside the product's valida
     now: () => "2026-09-01T04:00:00.000Z",
     text: strictSourceText,
     collect: async (_typeId, product) =>
-      (await readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value, validate: product.validate })).summary,
+      (await readLoanThroughShell({ failAccount: shellLoanAccounts[1]!.value, reader: product.reader })).summary,
     financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
   }).then(() => null, (error: unknown) => error);
   assert.ok(failed instanceof ProductCollectionInterruptedError);

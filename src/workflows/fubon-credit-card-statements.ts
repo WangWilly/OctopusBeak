@@ -52,7 +52,6 @@ import {
 import type { ProviderResponse } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
-  providerResponseReader,
   type ProviderWitness,
 } from "./provider-response-reader.ts";
 import { assignOccurrenceSlots } from "../ledger/canonical/occurrence-groups.ts";
@@ -412,7 +411,7 @@ async function readFubonCurrentUsedCredit(
   product: ProductCollectionHandle,
 ): Promise<readonly FubonCurrentUsedCreditSnapshot[] | undefined> {
   const { frames } = site;
-  const reader = providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate });
+  const { reader } = product;
   // The page's DOM is the evidence; the reply only carries its transport facts.
   let read: ProviderWitness<FubonCurrentCreditPage> | Readonly<{ error: unknown }>;
   try {
@@ -441,10 +440,7 @@ async function readFubonCurrentUsedCredit(
       if ("error" in read.triggered) throw read.triggered.error;
       return { evidence: { kind: "html", html: read.triggered.html }, response: read.response };
     },
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal: context.signal,
   });
 }
 
@@ -2299,7 +2295,6 @@ export async function stageFubonCreditCard(
         {
           captures: [{ capture: canonicalCaptures[0]!, cardIdentity: requests[0]!.identity }],
           product,
-          signal: context.signal,
         },
       );
       items.push(...balanceItems);
