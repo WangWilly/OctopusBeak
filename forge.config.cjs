@@ -34,6 +34,7 @@ module.exports = {
       /^\/reports($|\/)/,
       /^\/scripts\/tdcc-probe(?:\.mjs$|$|\/)/,
       /^\/scripts\/esun-deposit-probe(?:\.ts$|$|\/)/,
+      /^\/scripts\/yuanta-trade-column-probe(?:\.ts$|$|\/)/,
     ],
     ...(shouldSign
       ? {

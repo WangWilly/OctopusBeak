@@ -899,7 +899,7 @@ export async function captureTypedReport(
   return captured;
 }
 
-function tradeParams(
+export function tradeParams(
   input: Pick<YuantaTradeProviderInput, "accountIndex">,
   tradeType: TradeType,
   dateRange: { startDate: string; endDate: string },
@@ -1618,7 +1618,7 @@ export function yuantaTradeSignInPlan(credentials: YuantaTradeCredentials, conte
   };
 }
 
-async function authenticateYuantaTradePage(
+export async function authenticateYuantaTradePage(
   page: Page,
   credentials: YuantaTradeCredentials,
   context: WorkflowContext,
