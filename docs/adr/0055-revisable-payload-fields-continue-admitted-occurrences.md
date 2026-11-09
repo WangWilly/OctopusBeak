@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Refined by [ADR 0117](0117-fubon-loan-declares-its-revisable-payload-fields.md): the balance-observation restriction below applies to routes whose collision key can differ from their occurrence key.
+
 ## Context
 
 Yuanta's domestic-deposit download has no provider transaction identifier. The contract builds each row's occurrence fingerprint from its composite fence (accounting date, transaction date and time, direction, amount, balance) plus its summary, note, and check number. The collision key is the composite fence with the group ordinal and carries no text.

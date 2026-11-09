@@ -476,11 +476,10 @@ async function assertOccurrenceContinuity(
     for (const row of prior.rows) {
       const priorJson = comparableOccurrencePayload(row.payload_json, revisableFields);
       const providerMatches = row.provider_key === record.providerKey;
-      const allowedFubonLoanEvolution = recordKind === "fubon-loan-transaction" && equivalentFubonLoanPayload(row.payload_json, comparablePayloadJson);
       if (
         !providerMatches ||
         !samePersistedOccurrenceGroup(row, record.occurrenceGroup) ||
-        (priorJson !== comparablePayloadJson && !allowedFubonLoanEvolution)
+        priorJson !== comparablePayloadJson
       ) {
         throw new PGliteCanonicalSourceAdmissionError(
           "occurrence-conflict",
@@ -621,32 +620,6 @@ function canonicalJson(value: Record<string, unknown>): string {
     return entry;
   };
   return JSON.stringify(normalize(value));
-}
-
-/** Fubon loan rows carry mutable balance/display observations beside the
- * immutable booked event. Keep those observations in each capture while
- * allowing a later capture to advance only the typed balance revision. */
-function equivalentFubonLoanPayload(
-  prior: string,
-  next: string,
-): boolean {
-  try {
-    const priorValue = JSON.parse(prior) as unknown;
-    const nextValue = JSON.parse(next) as unknown;
-    if (
-      !priorValue || typeof priorValue !== "object" || Array.isArray(priorValue) ||
-      !nextValue || typeof nextValue !== "object" || Array.isArray(nextValue)
-    ) return false;
-    const priorRecord = { ...(priorValue as Record<string, unknown>) };
-    const nextRecord = { ...(nextValue as Record<string, unknown>) };
-    delete priorRecord.balanceSourceEvidence;
-    delete nextRecord.balanceSourceEvidence;
-    delete priorRecord.sourceDescription;
-    delete nextRecord.sourceDescription;
-    return canonicalJson(priorRecord) === canonicalJson(nextRecord);
-  } catch {
-    return false;
-  }
 }
 
 async function assertOccurrenceGroupContinuity(

@@ -84,8 +84,10 @@ export type CanonicalSourceRouteRegistration = Readonly<{
   occurrenceGroupCoverage?: "queried-buckets";
   /**
    * Compact payload fields the provider may rewrite after an occurrence is
-   * admitted. A recapture differing only in these fields continues the
-   * admitted occurrence and revises its transaction (ADR 0055).
+   * admitted. Occurrence continuity ignores them, and a recapture whose key
+   * differs only through them continues the admitted occurrence and revises
+   * its transaction (ADR 0055). A route that sends balance observations may
+   * declare them only while its collision key is its occurrence key (ADR 0117).
    */
   revisablePayloadFields?: readonly string[];
   /**
@@ -584,6 +586,9 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
       effectiveTimeOnly("loan/canonical/v2.fubon", "loan/canonical/v2.fubon"),
     ],
     occurrenceGroups: "required",
+    // ADR 0117: the balance and display text Fubon reports beside each
+    // booked event may change on recapture; neither feeds the occurrence key.
+    revisablePayloadFields: ["balanceSourceEvidence", "sourceDescription"],
   },
   {
     routeKey: "yuanta/loan/canonical-v1",
