@@ -12,9 +12,9 @@ After ADR 0112, about twenty-five collectors built `providerResponseReader({ now
 
 **A bank never builds a reader.** The Product collection run builds each product's handle with `productCollectionHandle`, which binds the handle's `reader` to the run clock, the run's text port and the handle's own `validate`, and carries the run's `signal`. A collector reads every response it owns through `product.reader`. The snapshot module takes the handle as its product and reads the clock, text, signal and reader from it.
 
-**A read before any product goes through the Source reader.** `sourceReader(context)` is the reader for a source's session or sign-in reads. It carries no product validation, and it is the only place `WITHOUT_PRODUCT_VALIDATION` is used.
+**A read before any product goes through the Source reader.** `sourceReader(context)` is the reader for a source's session or sign-in reads. It carries no product validation, and it is the only place `WITHOUT_PRODUCT_VALIDATION` is used once every bank has moved.
 
-**Each attached preview product gets its own handle.** A preview collector receives a `PreviewProductHandle` with its own reader and the run's signal, instead of sharing one reader a workflow built.
+**Each attached preview product gets its own handle.** A preview collector receives a `PreviewProductHandle` with its own Source reader and the run's signal, instead of sharing one reader a workflow built. A preview product has no product validation: the preview run classifies a refused response as that product's validation failure by its error, as it did before.
 
 **Checks build handles the same way.** A check that drives a collector outside a run calls `productCollectionHandle`, so it exercises the binding the run uses.
 

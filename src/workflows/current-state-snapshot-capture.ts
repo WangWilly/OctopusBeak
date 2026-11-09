@@ -99,7 +99,7 @@ export type SnapshotProduct = Pick<ProductCollectionHandle, "event" | "validate"
  * its handle, the run ports a caller threads in beside the product.
  */
 type SnapshotRun =
-  | Readonly<{ product: SnapshotProduct }>
+  | Readonly<{ product: SnapshotProduct; now?: never; text?: never; signal?: never }>
   | Readonly<{
     /** The run clock, an RFC3339 instant. */
     now: () => string;
@@ -113,7 +113,7 @@ function snapshotPorts(run: SnapshotRun): Readonly<{
   signal: AbortSignal;
   reader: () => ProviderResponseReader;
 }> {
-  if ("now" in run) {
+  if (run.now !== undefined) {
     return {
       product: run.product,
       signal: run.signal,
@@ -198,10 +198,10 @@ export async function stageCurrentStateSnapshot<Row, Capture, Input>(
   input: Readonly<{
     /** The financial captures this run admitted. */
     captures: readonly Capture[];
-  }> & (Readonly<{ product: SnapshotProduct }> | Readonly<{ product: Pick<ProductCollectionHandle, "event" | "validate">; signal: AbortSignal }>),
+  }> & (Readonly<{ product: SnapshotProduct; signal?: never }> | Readonly<{ product: Pick<ProductCollectionHandle, "event" | "validate">; signal: AbortSignal }>),
 ): Promise<CurrentStateSnapshotCapture<Row, Capture>> {
   const { product } = input;
-  const signal = "signal" in input ? input.signal : input.product.signal;
+  const signal = input.signal !== undefined ? input.signal : input.product.signal;
   const index = indexCurrentBalanceCaptures(input.captures, declaration.matching);
   await product.event("validation", "started", "current-balance-validation-started", {
     completed: 0,
