@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 import { StringDecoder } from "node:string_decoder";
 import {
   createPGliteOperationalRpcClient,
+  isPGliteOperationalOperation,
   type PGliteOperationalOperation,
   type PGliteOperationalRpcClient,
 } from "./pglite-operational-rpc.ts";
@@ -282,8 +283,7 @@ export function createPGliteChildRpcClient(
     if (!closed) fail("closed");
   });
   const request = <K extends PGliteChildOperation>(operation: K, args: readonly unknown[], options?: PGliteFinancialRequestOptions): Promise<unknown> => {
-    if (operation.startsWith("automation.") || operation.startsWith("exchangeRates."))
-      return operational.request(operation as PGliteOperationalOperation, args);
+    if (isPGliteOperationalOperation(operation)) return operational.request(operation, args);
     return financial.request(operation as PGliteFinancialOperation, args as never, options);
   };
   const close = (error = safeTransportError("closed")): void => {
