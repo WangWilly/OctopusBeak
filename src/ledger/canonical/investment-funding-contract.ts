@@ -27,11 +27,6 @@ export function isYuantaForeignSettlementMarketCode(
     Object.hasOwn(YUANTA_FOREIGN_SETTLEMENT_MARKET_CODEBOOK, value)
   );
 }
-export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_CONTRACT_VERSION =
-  "yuanta/foreign-settlement/calendar-v1" as const;
-export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_START = "2026-01-01" as const;
-export const YUANTA_FOREIGN_SETTLEMENT_CALENDAR_END = "2026-12-31" as const;
-
 /**
  * The fixed bank note pair is the provider's cross-product linkage evidence:
  * it identifies a Yuanta foreign-currency row as a securities settlement,

@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { InvestmentFundingEvidence } from "../canonical/investment-financial.ts";
 import {
+  YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION,
+  YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY,
+} from "../canonical/investment-funding-contract.ts";
+import {
   admitCounterpartyAccountEvidence,
   type TransactionCounterpartyAccountEvidenceInput,
 } from "../canonical/counterparty-account-evidence.ts";
@@ -1051,31 +1057,26 @@ type FundingCandidate = Readonly<{
   coefficient: string;
   scale: number;
   currency: string;
+  effectiveOn: string;
 }>;
 
-const YUANTA_SETTLEMENT_CONTRACT = "yuanta/foreign-settlement/human-attested-v1";
-const YUANTA_SETTLEMENT_LINKAGE = "yuanta/foreign-settlement/linkage-v1";
-const YUANTA_SETTLEMENT_MARKET = "yuanta/foreign-settlement/market-v2";
-const YUANTA_SETTLEMENT_MARKET_US_EQUITY = "us-equity";
-const YUANTA_SETTLEMENT_HOLIDAYS = new Set([
-  "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",
-  "2026-02-20", "2026-02-27", "2026-04-03", "2026-04-06", "2026-05-01",
-  "2026-06-19", "2026-09-25", "2026-10-09",
-]);
+const YUANTA_SETTLEMENT_WINDOW_DAYS = 10;
 
-function addSettlementBusinessDays(effectiveOn: string, action: "buy" | "sell", market: string): string | null {
-  if (market !== YUANTA_SETTLEMENT_MARKET_US_EQUITY || effectiveOn < "2026-01-01" || effectiveOn > "2026-12-31") return null;
-  const date = new Date(`${effectiveOn}T00:00:00Z`);
-  const days = action === "buy" ? 1 : 2;
-  let count = 0;
-  while (count < days) {
-    date.setUTCDate(date.getUTCDate() + 1);
-    const candidate = date.toISOString().slice(0, 10);
-    if (candidate > "2026-12-31") return null;
-    const weekday = date.getUTCDay();
-    if (weekday !== 0 && weekday !== 6 && !YUANTA_SETTLEMENT_HOLIDAYS.has(candidate)) count += 1;
+function shiftDate(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+/** Buy T+1, sell T+2, counting weekdays only; Taiwan holidays are absorbed by the posting window. */
+function expectedSettlementOn(tradeOn: string, action: "buy" | "sell"): string {
+  let date = tradeOn;
+  for (let remaining = action === "buy" ? 1 : 2; remaining > 0;) {
+    date = shiftDate(date, 1);
+    const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+    if (weekday !== 0 && weekday !== 6) remaining -= 1;
   }
-  return date.toISOString().slice(0, 10);
+  return date;
 }
 
 function parseFundingEvidence(value: unknown): InvestmentFundingEvidence | null {
@@ -1159,7 +1160,7 @@ function parseSourcePayload(value: unknown): Readonly<{ linkageKey: string; link
 
 async function readFundingCandidates(
   transaction: PGliteTransaction,
-  effectiveOn: string,
+  expectedOn: string,
   currency: string,
   direction: "inflow" | "outflow",
   expectedCoefficient: string,
@@ -1171,6 +1172,7 @@ async function readFundingCandidates(
     `SELECT current_row.transaction_id, revision.source_record_id,
             financial.account_id, revision.amount_coefficient,
             revision.amount_scale, revision.currency, revision.description,
+            revision.effective_on,
             source_record.payload_json, scope.completeness, scope.terminal
        FROM current_transactions current_row
        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
@@ -1183,13 +1185,13 @@ async function readFundingCandidates(
       WHERE connection.integration_namespace = 'yuanta'
         AND account.stream = 'foreign-currency-deposit'
         AND account.account_type = 'depository'
-        AND revision.effective_on = ?
+        AND revision.effective_on BETWEEN ? AND ?
         AND revision.direction = ?
         AND revision.currency = ?
         AND revision.posting_status = 'posted'
         AND revision.economic_status = 'normal'
         AND revision.administrative_state = 'active'`,
-    [effectiveOn, direction, currency],
+    [expectedOn, shiftDate(expectedOn, YUANTA_SETTLEMENT_WINDOW_DAYS), direction, currency],
   );
   const description = direction === "outflow" ? "複委託扣" : "複委託入";
   const transactionInfo = direction === "outflow" ? "淨額扣" : "淨額入";
@@ -1197,7 +1199,7 @@ async function readFundingCandidates(
     const payload = parseSourcePayload(row.payload_json);
     const account = text(String(row.account_id ?? ""), "Funding account");
     if (String(row.description) !== description || payload.transactionInfo !== transactionInfo ||
-        payload.linkageKey !== linkageKey || payload.linkageContract !== YUANTA_SETTLEMENT_LINKAGE ||
+        payload.linkageKey !== linkageKey || payload.linkageContract !== YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
         String(row.completeness) !== "complete-range" || !(Number(row.terminal) === 1 || row.terminal === true) ||
         !exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), expectedCoefficient, expectedScale)) return [];
     return [{
@@ -1207,20 +1209,21 @@ async function readFundingCandidates(
       coefficient: String(row.amount_coefficient),
       scale: Number(row.amount_scale),
       currency: String(row.currency),
+      effectiveOn: String(row.effective_on),
     } satisfies FundingCandidate];
   });
 }
 
-function investmentGroupKey(row: InvestmentRow): string | null {
-  if (row.fundingEvidence.kind === "unresolved")
-    return `${hex(row.investmentAccountId)}\u0000unresolved\u0000${row.sourceRecordKey}`;
-  if (row.fundingEvidence.kind === "source-linked-account")
-    return `${hex(row.investmentAccountId)}\u0000${row.fundingEvidence.settlementGroupKey}`;
-  if (row.fundingEvidence.kind === "source-settlement-contract") {
-    const settlement = addSettlementBusinessDays(row.effectiveOn, row.action, row.fundingEvidence.settlementMarket);
-    return settlement ? `${hex(row.investmentAccountId)}\u0000${row.cashCurrency}\u0000${row.fundingEvidence.settlementMarket}\u0000${settlement}` : null;
+function investmentGroupKey(row: InvestmentRow): string {
+  const evidence = row.fundingEvidence;
+  switch (evidence.kind) {
+    case "source-linked-account":
+      return `${hex(row.investmentAccountId)}\u0000${evidence.settlementGroupKey}`;
+    case "source-settlement-contract":
+      return `${hex(row.investmentAccountId)}\u0000${row.cashCurrency}\u0000${evidence.settlementMarket}\u0000${expectedSettlementOn(row.effectiveOn, row.action)}`;
+    default:
+      return `${hex(row.investmentAccountId)}\u0000${evidence.kind}\u0000${row.sourceRecordKey}`;
   }
-  return null;
 }
 
 function scaledInteger(coefficient: string, scale: number, targetScale: number): bigint {
@@ -1239,11 +1242,35 @@ function investmentRelationIdentity(rows: readonly InvestmentRow[], candidate: F
   return { relationKey, reason: `verified-settlement:${supportFingerprint}` };
 }
 
+const LATEST_INVESTMENT_RELATION_EVENT_KIND = `(SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1)`;
+
+type ObservedInvestmentRelation = Readonly<{ relationId: Uint8Array; fundingTransactionId: Uint8Array }>;
+
+function observedInvestmentRelations(rows: readonly Row[]): ObservedInvestmentRelation[] {
+  return rows.map((row) => ({ relationId: bytes(row.relation_id, "Investment relation"), fundingTransactionId: bytes(row.funding_transaction_id, "Funding transaction") }));
+}
+
+async function observedRelationsInSettlementGroup(
+  transaction: PGliteTransaction,
+  investmentAccountId: Uint8Array,
+  settlementGroupKey: string,
+): Promise<ObservedInvestmentRelation[]> {
+  return observedInvestmentRelations(await query<Row>(transaction, `SELECT relation.relation_id, relation.funding_transaction_id FROM investment_funding_relations relation WHERE relation.investment_account_id = ? AND relation.settlement_group_key = ? AND ${LATEST_INVESTMENT_RELATION_EVENT_KIND} = 'observed'`, [investmentAccountId, settlementGroupKey]));
+}
+
+/** A settlement-contract group has no source date, so its prior relations are the ones holding any of its trades. */
+async function observedRelationsSharingMembers(
+  transaction: PGliteTransaction,
+  rows: readonly InvestmentRow[],
+): Promise<ObservedInvestmentRelation[]> {
+  return observedInvestmentRelations(await query<Row>(transaction, `SELECT DISTINCT relation.relation_id, relation.funding_transaction_id FROM investment_funding_relations relation JOIN investment_funding_relation_members member ON member.relation_id = relation.relation_id WHERE member.investment_transaction_id IN (${inList(rows)}) AND ${LATEST_INVESTMENT_RELATION_EVENT_KIND} = 'observed'`, rows.map((row) => row.transactionId)));
+}
+
 async function investmentRelationAlreadyCurrent(
   transaction: PGliteTransaction,
   rows: readonly InvestmentRow[],
   candidate: FundingCandidate,
-  settlementGroupKey: string,
+  prior: readonly ObservedInvestmentRelation[],
 ): Promise<boolean> {
   const identity = investmentRelationIdentity(rows, candidate);
   const existing = await first<Row>(transaction, "SELECT relation_id FROM investment_funding_relations WHERE relation_key = ?", [identity.relationKey]);
@@ -1251,12 +1278,7 @@ async function investmentRelationAlreadyCurrent(
   const relationId = bytes(existing.relation_id, "Investment relation");
   const latest = await first<Row>(transaction, `SELECT event.event_kind, event.reason FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
   if (latest?.event_kind !== "observed" || latest.reason !== identity.reason) return false;
-  const competitors = await query<Row>(transaction, "SELECT relation_id FROM investment_funding_relations WHERE investment_account_id = ? AND settlement_group_key = ? AND relation_id <> ?", [rows[0]!.investmentAccountId, settlementGroupKey, relationId]);
-  for (const competitor of competitors) {
-    const event = await first<Row>(transaction, `SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [competitor.relation_id]);
-    if (event?.event_kind === "observed") return false;
-  }
-  return true;
+  return prior.every((relation) => hex(relation.relationId) === hex(relationId));
 }
 
 async function persistInvestmentRelation(
@@ -1286,24 +1308,66 @@ async function persistInvestmentRelation(
 
 async function withdrawInvestmentRelations(
   transaction: PGliteTransaction,
-  investmentAccountId: Uint8Array,
-  settlementGroupKey: string,
+  relations: readonly ObservedInvestmentRelation[],
   commitId: Uint8Array,
   replacementRelationId?: Uint8Array,
-): Promise<Readonly<{ count: number; transactionIds: readonly Uint8Array[] }>> {
-  const rows = await query<Row>(transaction, `SELECT relation.relation_id, relation.funding_transaction_id FROM investment_funding_relations relation WHERE relation.investment_account_id = ? AND relation.settlement_group_key = ?`, [investmentAccountId, settlementGroupKey]);
-  let count = 0;
+): Promise<readonly Uint8Array[]> {
   const transactionIds: Uint8Array[] = [];
-  for (const row of rows) {
-    const relationId = bytes(row.relation_id, "Investment relation");
-    if (replacementRelationId && hex(relationId) === hex(replacementRelationId)) continue;
-    const latest = await first<Row>(transaction, `SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
-    if (latest?.event_kind !== "observed") continue;
-    await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'withdrawn', 'complete-resolution-no-longer-supported', ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), relationId, commitId, Date.now() * 1_000]);
-    count += 1;
-    transactionIds.push(bytes(row.funding_transaction_id, "Funding transaction"));
+  for (const relation of relations) {
+    if (replacementRelationId && hex(relation.relationId) === hex(replacementRelationId)) continue;
+    await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'withdrawn', 'complete-resolution-no-longer-supported', ?, ?) ON CONFLICT DO NOTHING`, [uuidBytes(), relation.relationId, commitId, Date.now() * 1_000]);
+    transactionIds.push(relation.fundingTransactionId);
   }
-  return { count, transactionIds };
+  return transactionIds;
+}
+
+type InvestmentGroupMatch = Readonly<{
+  rows: readonly InvestmentRow[];
+  evidence: Exclude<InvestmentFundingEvidence, { kind: "unresolved" }>;
+  candidates: readonly FundingCandidate[];
+}>;
+
+/** Refuse a group for every reason that needs no candidate posting, or hand back the evidence to match with. */
+function admitInvestmentGroup(rows: readonly InvestmentRow[]): Readonly<{ refusal: string }> | Readonly<{ evidence: InvestmentGroupMatch["evidence"] }> {
+  const firstRow = rows[0]!;
+  const evidence = firstRow.fundingEvidence;
+  if (rows.some((row) => row.cashCurrency !== firstRow.cashCurrency || investmentGroupKey(row) !== investmentGroupKey(firstRow)))
+    return { refusal: "inconsistent-settlement-group" };
+  if (evidence.kind === "unresolved") return { refusal: "unresolved-funding-evidence" };
+  if (!rows.every((row) => row.complete)) return { refusal: "incomplete-investment-coverage" };
+  if (signedNet(rows).coefficient === "0") return { refusal: "zero-net-settlement" };
+  if (evidence.kind === "source-settlement-contract" &&
+      (evidence.settlementMarket !== YUANTA_FOREIGN_SETTLEMENT_MARKET_US_EQUITY ||
+       evidence.settlementMarketContractVersion !== YUANTA_FOREIGN_SETTLEMENT_MARKET_CONTRACT_VERSION ||
+       evidence.linkageContractVersion !== YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION ||
+       evidence.contractVersion !== YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION))
+    return { refusal: "unsupported-settlement-market" };
+  return { evidence };
+}
+
+async function readInvestmentGroupCandidates(
+  transaction: PGliteTransaction,
+  rows: readonly InvestmentRow[],
+  evidence: InvestmentGroupMatch["evidence"],
+): Promise<FundingCandidate[]> {
+  const firstRow = rows[0]!;
+  const net = signedNet(rows);
+  if (evidence.kind === "source-settlement-contract")
+    return readFundingCandidates(transaction, expectedSettlementOn(firstRow.effectiveOn, firstRow.action), firstRow.cashCurrency, net.direction, net.coefficient, net.scale, evidence.sourceLinkageKey);
+  const accountNo = evidence.fundingAccountNumber.replaceAll(/[\\s-]/gu, "");
+  const bankRows = await query<Row>(transaction, `SELECT current_row.transaction_id, revision.source_record_id, financial.account_id, revision.amount_coefficient, revision.amount_scale, revision.currency FROM current_transactions current_row JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id JOIN financial_transactions financial ON financial.transaction_id = current_row.transaction_id JOIN financial_accounts account ON account.account_id = financial.account_id WHERE account.account_no = ? AND revision.effective_on = ? AND revision.direction = ? AND revision.currency = ? AND revision.posting_status = 'posted' AND revision.economic_status = 'normal' AND revision.administrative_state = 'active'`, [accountNo, evidence.settlementEffectiveOn, net.direction, firstRow.cashCurrency]);
+  return bankRows.filter((row) => exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), net.coefficient, net.scale)).map((row) => ({ accountId: bytes(row.account_id, "Funding account"), transactionId: bytes(row.transaction_id, "Funding transaction"), sourceRecordId: bytes(row.source_record_id, "Funding source record"), coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency), effectiveOn: evidence.settlementEffectiveOn }));
+}
+
+/** A settlement-contract posting that is the only candidate of two groups proves neither. */
+function postingsClaimedByManyGroups(matches: readonly InvestmentGroupMatch[]): ReadonlySet<string> {
+  const claims = new Map<string, number>();
+  for (const match of matches) {
+    if (match.evidence.kind !== "source-settlement-contract" || match.candidates.length !== 1) continue;
+    const posting = hex(match.candidates[0]!.transactionId);
+    claims.set(posting, (claims.get(posting) ?? 0) + 1);
+  }
+  return new Set([...claims].filter(([, count]) => count > 1).map(([posting]) => posting));
 }
 
 async function resolveInvestmentRelationsInTransaction(
@@ -1316,7 +1380,6 @@ async function resolveInvestmentRelationsInTransaction(
   const groups = new Map<string, InvestmentRow[]>();
   for (const row of investments) {
     const key = investmentGroupKey(row);
-    if (!key) continue;
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   let commit: Readonly<{ id: Uint8Array; sequence: number }> | null = null;
@@ -1326,78 +1389,41 @@ async function resolveInvestmentRelationsInTransaction(
   let withdrawn = 0;
   let noAdmission = 0;
   const affected = new Map<string, Uint8Array>();
+  const matches: InvestmentGroupMatch[] = [];
   for (const rows of groups.values()) {
+    const admission = admitInvestmentGroup(rows);
+    if ("refusal" in admission) {
+      noAdmission += 1;
+      reasons.add(admission.refusal);
+      continue;
+    }
+    matches.push({ rows, evidence: admission.evidence, candidates: await readInvestmentGroupCandidates(transaction, rows, admission.evidence) });
+  }
+  const contested = postingsClaimedByManyGroups(matches);
+  for (const { rows, evidence, candidates } of matches) {
     const firstRow = rows[0]!;
-    const evidence = firstRow.fundingEvidence;
-    const inconsistent = rows.some((row) => row.cashCurrency !== firstRow.cashCurrency || investmentGroupKey(row) !== investmentGroupKey(firstRow));
-    if (inconsistent) {
-      noAdmission += 1;
-      reasons.add("inconsistent-settlement-group");
-      continue;
-    }
-    if (evidence.kind === "unresolved") {
-      noAdmission += 1;
-      reasons.add("unresolved-funding-evidence");
-      continue;
-    }
-    if (!rows.every((row) => row.complete)) {
-      noAdmission += 1;
-      reasons.add("incomplete-investment-coverage");
-      continue;
-    }
-    const net = signedNet(rows);
-    if (net.coefficient === "0") {
-      noAdmission += 1;
-      reasons.add("zero-net-settlement");
-      continue;
-    }
-    let settlementEffectiveOn: string | null = null;
-    let candidates: FundingCandidate[] = [];
-    if (evidence.kind === "source-linked-account") {
-      settlementEffectiveOn = evidence.settlementEffectiveOn;
-      const accountNo = evidence.fundingAccountNumber.replaceAll(/[\\s-]/gu, "");
-      const bankRows = await query<Row>(transaction, `SELECT current_row.transaction_id, revision.source_record_id, financial.account_id, revision.amount_coefficient, revision.amount_scale, revision.currency FROM current_transactions current_row JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id JOIN financial_transactions financial ON financial.transaction_id = current_row.transaction_id JOIN financial_accounts account ON account.account_id = financial.account_id WHERE account.account_no = ? AND revision.effective_on = ? AND revision.direction = ? AND revision.currency = ? AND revision.posting_status = 'posted' AND revision.economic_status = 'normal' AND revision.administrative_state = 'active'`, [accountNo, settlementEffectiveOn, net.direction, firstRow.cashCurrency]);
-      candidates = bankRows.filter((row) => exactAmountEquals(String(row.amount_coefficient), Number(row.amount_scale), net.coefficient, net.scale)).map((row) => ({ accountId: bytes(row.account_id, "Funding account"), transactionId: bytes(row.transaction_id, "Funding transaction"), sourceRecordId: bytes(row.source_record_id, "Funding source record"), coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency) }));
-    } else if (evidence.kind === "source-settlement-contract") {
-      if (evidence.settlementMarket !== YUANTA_SETTLEMENT_MARKET_US_EQUITY || evidence.settlementMarketContractVersion !== YUANTA_SETTLEMENT_MARKET || evidence.linkageContractVersion !== YUANTA_SETTLEMENT_LINKAGE || evidence.contractVersion !== YUANTA_SETTLEMENT_CONTRACT) {
-        noAdmission += 1;
-        reasons.add("unsupported-settlement-market");
-        continue;
-      }
-      settlementEffectiveOn = addSettlementBusinessDays(firstRow.effectiveOn, firstRow.action, evidence.settlementMarket);
-      if (!settlementEffectiveOn) {
-        noAdmission += 1;
-        reasons.add("unsupported-settlement-calendar");
-        continue;
-      }
-      candidates = await readFundingCandidates(transaction, settlementEffectiveOn, firstRow.cashCurrency, net.direction, net.coefficient, net.scale, evidence.sourceLinkageKey);
-    }
-    if (!settlementEffectiveOn || candidates.length !== 1) {
+    const candidate = candidates.length === 1 && !contested.has(hex(candidates[0]!.transactionId)) ? candidates[0]! : null;
+    const prior = evidence.kind === "source-settlement-contract"
+      ? await observedRelationsSharingMembers(transaction, rows)
+      : await observedRelationsInSettlementGroup(transaction, firstRow.investmentAccountId, `${hex(firstRow.investmentAccountId)}:${evidence.settlementEffectiveOn}`);
+    if (!candidate) {
       noAdmission += 1;
       reasons.add(candidates.length === 0 ? "no-complete-funding-candidate" : "ambiguous-funding-candidate");
-      if (settlementEffectiveOn && firstRow.complete) {
-        const groupKey = `${hex(firstRow.investmentAccountId)}:${settlementEffectiveOn}`;
-        const prior = await query<Row>(transaction, `SELECT relation.relation_id FROM investment_funding_relations relation WHERE relation.investment_account_id = ? AND relation.settlement_group_key = ? AND (SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = relation.relation_id ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1) = 'observed'`, [firstRow.investmentAccountId, groupKey]);
-        if (prior.length > 0) {
-          if (!commit) commit = await relationCommit(transaction, "canonical/investment-funding-relation-resolution-v1", options);
-          const closed = await withdrawInvestmentRelations(transaction, firstRow.investmentAccountId, groupKey, commit.id);
-          withdrawn += closed.count;
-          for (const transactionId of closed.transactionIds) affected.set(hex(transactionId), transactionId);
-        }
-      }
-      continue;
     }
-    const settlementGroupKey = `${hex(firstRow.investmentAccountId)}:${settlementEffectiveOn}`;
-    if (await investmentRelationAlreadyCurrent(transaction, rows, candidates[0]!, settlementGroupKey)) continue;
+    if (candidate && await investmentRelationAlreadyCurrent(transaction, rows, candidate, prior)) continue;
+    if (!candidate && prior.length === 0) continue;
     if (!commit) commit = await relationCommit(transaction, "canonical/investment-funding-relation-resolution-v1", options);
-    const persisted = await persistInvestmentRelation(transaction, rows, candidates[0]!, settlementGroupKey, settlementEffectiveOn, evidence, commit.id);
-    affected.set(hex(candidates[0]!.transactionId), candidates[0]!.transactionId);
-    resolved += 1;
+    let replacementRelationId: Uint8Array | undefined;
+    if (candidate) {
+      replacementRelationId = (await persistInvestmentRelation(transaction, rows, candidate, `${hex(firstRow.investmentAccountId)}:${candidate.effectiveOn}`, candidate.effectiveOn, evidence, commit.id)).relationId;
+      affected.set(hex(candidate.transactionId), candidate.transactionId);
+      resolved += 1;
+    }
     // Complete source coverage makes a missing replacement authoritative for
     // this investment settlement group, so stale active relations are closed.
-    const closed = await withdrawInvestmentRelations(transaction, firstRow.investmentAccountId, settlementGroupKey, commit.id, persisted.relationId);
-    withdrawn += closed.count;
-    for (const transactionId of closed.transactionIds) affected.set(hex(transactionId), transactionId);
+    const closed = await withdrawInvestmentRelations(transaction, prior, commit.id, replacementRelationId);
+    withdrawn += closed.length;
+    for (const transactionId of closed) affected.set(hex(transactionId), transactionId);
   }
   if (!commit) {
     return {
