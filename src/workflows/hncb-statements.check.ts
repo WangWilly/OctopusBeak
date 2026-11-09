@@ -557,11 +557,11 @@ assert.deepEqual(balanceReads, ["overview", "detail"]);
 
 // The build half reads current balances only after a capture was admitted as
 // financial data, and only while the run is live.
-function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
+function productHandle(staged: ProductStageRequest[], signal = new AbortController().signal): ProductCollectionHandle {
   return productCollectionHandle({
     now,
     text: strictSourceText,
-    signal: new AbortController().signal,
+    signal,
     stage: (...requests) => { staged.push(...requests); },
     reportActivity: async () => undefined,
     event: async () => undefined,
@@ -569,7 +569,6 @@ function productHandle(staged: ProductStageRequest[]): ProductCollectionHandle {
   });
 }
 const now = () => "2026-08-31T04:00:00.000Z";
-const live = { signal: new AbortController().signal, text: strictSourceText, now };
 function readCapture(account: string, label: string) {
   const structural = admitHncbDomesticDepositCaptureEvidence(buildHncbCapture(
     { value: account, label },
@@ -600,7 +599,6 @@ const countingReads: HncbReadCurrentDepositBalanceTable = async () => {
 const sourceOnlyStaged: ProductStageRequest[] = [];
 const sourceOnlySummary = await stageHncbDeposit(
   { observedAt: "2026-08-31T12:00:00+08:00", captures: [sourceOnly] },
-  live,
   productHandle(sourceOnlyStaged),
   countingReads,
 );
@@ -611,7 +609,6 @@ assert.deepEqual(sourceOnlySummary, { accountCount: 1, sourceCaptureCount: 1, ro
 const financialStaged: ProductStageRequest[] = [];
 await stageHncbDeposit(
   { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted, sourceOnly] },
-  live,
   productHandle(financialStaged),
   countingReads,
 );
@@ -627,8 +624,7 @@ cancelledRun.abort(cancellation);
 await assert.rejects(
   stageHncbDeposit(
     { observedAt: "2026-08-31T12:00:00+08:00", captures: [admitted] },
-    { signal: cancelledRun.signal, text: strictSourceText, now },
-    productHandle([]),
+    productHandle([], cancelledRun.signal),
     countingReads,
   ),
   (error: unknown) => error === cancellation,
@@ -636,6 +632,6 @@ await assert.rejects(
 assert.equal(currentReads, 1, "a cancelled run does not read current balances");
 
 await assert.rejects(
-  stageHncbDeposit({ observedAt: "2026-08-31T12:00:00+08:00", captures: [] }, live, productHandle([]), countingReads),
+  stageHncbDeposit({ observedAt: "2026-08-31T12:00:00+08:00", captures: [] }, productHandle([]), countingReads),
   /No HNCB accounts reached a terminal source result/u,
 );
