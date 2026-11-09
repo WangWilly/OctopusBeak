@@ -44,7 +44,7 @@ import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/
 import { SourceUnavailableError } from "../lib/automation/source-access.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
-import { providerResponseReader, type ProviderResponseReader } from "./provider-response-reader.ts";
+import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import {
   assembleCurrentDepositCapture,
@@ -724,7 +724,7 @@ export async function readCtbcDepositSource(
 ): Promise<CtbcDepositSourceSnapshot> {
   const scope = frameScope(page, context.signal);
   const reply: CtbcReplyCheck = {
-    reader: providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+    reader: product.reader,
     validate: product.validate,
   };
   const opened = await openDomesticDetailsPage(scope, reply);
@@ -1103,10 +1103,7 @@ export async function stageCtbcDeposit(
   const balances = await captureCurrentStateSnapshots(ctbcCurrentBalanceSnapshot, {
     captures: financialCaptures,
     acquire: readCurrentBalanceResponse,
-    now: () => context.now(),
     product,
-    text: context.text,
-    signal: context.signal,
   });
 
   product.stage(...items, ...balances.items);
@@ -1127,7 +1124,7 @@ export const runCtbcDeposit: CtbcDepositRunner = async (page, input, context, pr
     () => readCtbcCurrentDepositBalanceResponse(
       page,
       context.signal,
-      providerResponseReader({ now: () => context.now(), text: context.text, validate: product.validate }),
+      product.reader,
     ),
   );
 };

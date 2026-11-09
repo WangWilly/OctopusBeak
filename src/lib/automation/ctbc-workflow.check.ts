@@ -20,7 +20,7 @@ import { withBoundProducts } from "./product-collection.fixtures.ts";
 import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
 import { SourceUnavailableError } from "./source-access.ts";
-import { ProductCollectionInterruptedError, type ProductCollectionHandle } from "./product-collection.ts";
+import { ProductCollectionInterruptedError, productCollectionHandle } from "./product-collection.ts";
 import { assertStoppedRun, STOPPED_COMMITS, stoppedCommitPort } from "./single-product-run.fixtures.ts";
 import { ProviderResponseCheckError } from "./provider-response-check.ts";
 import {
@@ -394,9 +394,15 @@ test("CTBC names malformed JSON a validation failure and a timed-out read a coll
 
 test("CTBC refuses a deposit statement reply whose status is not 200", async () => {
   const { context } = createContext();
-  const product = {
-    validate: async <T>(check: () => T | Promise<T>) => await check(),
-  } as unknown as ProductCollectionHandle;
+  const product = productCollectionHandle({
+    now: context.now,
+    text: context.text,
+    signal: context.signal,
+    event: async () => undefined,
+    stage: () => undefined,
+    reportActivity: async () => undefined,
+    collectionPeriod: () => { throw new Error("This check supplies no collection period."); },
+  });
   await assert.rejects(
     readCtbcDepositSource(
       createPage({ detailResponse: response(detailsResource, { code: "0000", rsData: { detailList: [], nextKey: "" } }, 500) }),
