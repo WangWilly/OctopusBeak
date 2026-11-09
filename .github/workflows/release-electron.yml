@@ -121,8 +121,21 @@ jobs:
       - name: Check package lock
         run: npm run check:package-lock
 
+      # onnxruntime-node's install script downloads its native binary, and a
+      # transient download-host timeout fails the whole install (seen in CI).
+      # npm ci starts from an empty node_modules each time, so a retry is safe.
       - name: Install dependencies
-        run: npm ci
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "npm ci failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
 
       - name: Check pinned GitHub Actions
         run: npm run check:actions-pinned
@@ -197,8 +210,21 @@ jobs:
           node-version: 25.9.0
           cache: npm
 
+      # onnxruntime-node's install script downloads its native binary, and a
+      # transient download-host timeout fails the whole install (seen in CI).
+      # npm ci starts from an empty node_modules each time, so a retry is safe.
       - name: Install dependencies
-        run: npm ci
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "npm ci failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
 
       - name: Validate source has not changed
         run: |
