@@ -5,10 +5,12 @@ import {
 } from "../src/lib/data-views/server/view-port.ts";
 import {
   createPGliteOperationalRpcClient,
+  PGliteOperationalError,
   type PGliteOperationalRpcClient,
 } from "./pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcClient,
+  PGliteFinancialError,
   type PGliteFinancialRpcClient,
 } from "./pglite-financial-rpc-client.ts";
 
@@ -55,6 +57,12 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
   });
   const operational = createPGliteOperationalRpcClient(worker, ready);
   const financial = createPGliteFinancialRpcClient(worker, ready);
+  /** Pending calls reject as worker-closed, carrying the worker's failure when there is one. */
+  const closeCalls = (cause?: Error): void => {
+    const options = cause ? { cause } : {};
+    operational.close(Object.assign(new PGliteOperationalError("worker-closed"), options));
+    financial.close(Object.assign(new PGliteFinancialError("worker-closed"), options));
+  };
   const errorListeners = new Set<(error: Error) => void>();
   const notifyErrorListeners = (error: Error): void => {
     for (const listener of errorListeners) {
@@ -86,8 +94,7 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
         detachReady();
         rejectReady(failure);
         void views.close();
-        operational.close(failure);
-        financial.close(failure);
+        closeCalls(failure);
         notifyErrorListeners(failure);
       } else if (kind === "worker-stopped") {
         stopped = true;
@@ -110,8 +117,7 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
     }
     if (!stopped) rejectStopped(failure);
     void views.close();
-    operational.close(failure);
-    financial.close(failure);
+    closeCalls(failure);
     notifyErrorListeners(failure);
   };
   const onError = (error: unknown) => {
@@ -152,8 +158,7 @@ export function createPGliteViewWorkerClient(worker: WorkerPort): PGliteViewWork
         rejectReady(new Error("PGlite view worker is closed."));
       }
       closePromise = views.close().then(async () => {
-        operational.close(new Error("PGlite view worker is closed."));
-        financial.close(new Error("PGlite view worker is closed."));
+        closeCalls();
         let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
         try {
           worker.postMessage({ kind: "shutdown" });

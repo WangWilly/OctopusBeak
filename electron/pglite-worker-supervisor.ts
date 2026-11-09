@@ -1,5 +1,5 @@
-import type { PGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
-import { operationalProviderOver } from "./pglite-operational-rpc.ts";
+import { PGliteFinancialError, type PGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
+import { operationalProviderOver, PGliteOperationalError } from "./pglite-operational-rpc.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 
 /** A worker that keeps crashing more often than this gives up instead of looping. */
@@ -58,11 +58,12 @@ export function superviseWorker(options: Readonly<{
     }
   };
 
-  const unavailable = () => failed ?? new Error("PGlite view worker is closed.");
+  const viewWorkerClosed = () => new Error("PGlite view worker is closed.");
+  const unavailable = (closedError: () => Error = viewWorkerClosed) => failed ?? closedError();
   const usable = () => !closed && failed === undefined;
-  const whenCurrent = async () => {
+  const whenCurrent = async (closedError?: () => Error) => {
     await settled;
-    if (!usable()) throw unavailable();
+    if (!usable()) throw unavailable(closedError);
     return current;
   };
 
@@ -131,12 +132,12 @@ export function superviseWorker(options: Readonly<{
 
   const financial: PGliteFinancialRpcClient = Object.freeze({
     request: (async (operation, args, requestOptions) =>
-      (await whenCurrent()).financial.request(operation, args, requestOptions)) as PGliteFinancialRpcClient["request"],
+      (await whenCurrent(() => new PGliteFinancialError("worker-closed"))).financial.request(operation, args, requestOptions)) as PGliteFinancialRpcClient["request"],
     close: () => {},
   });
 
   const operationalRequest: PGliteViewWorkerClient["operationalRequest"] = async (operation, args) =>
-    (await whenCurrent()).operationalRequest(operation, args);
+    (await whenCurrent(() => new PGliteOperationalError("worker-closed"))).operationalRequest(operation, args);
 
   return {
     get ready() {
