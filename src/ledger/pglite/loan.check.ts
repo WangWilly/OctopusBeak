@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import test from "node:test";
 import { createTestPGlite } from "./baseline-test-template.ts";
-import { buildCathayDomesticFinancialRequestsForPGlite } from "./cathay-domestic-adapter.ts";
-import { commitPGliteCanonicalFinancialCapture } from "./canonical-source-store.ts";
+import {
+  admitCathayDomesticDepositCapture,
+  CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+  CATHAY_DOMESTIC_DEPOSIT_STREAM,
+} from "../canonical/cathay-domestic-deposit-admission.ts";
+import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
 import {
   commitPGliteCanonicalLoanCapture,
   type PGliteCanonicalLoanCommitRequest,
@@ -516,50 +520,66 @@ test("default PGlite enrichment records superseded and withdrawn assertion trans
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
-    const request = (captureLabel: string, description: string) =>
-      buildCathayDomesticFinancialRequestsForPGlite({
-        sourceConnectionId: "pglite-transition-cathay-connection",
-        identityEpoch: "pglite-transition-cathay-epoch",
-        authorityRoute: "cathay/domestic-deposit/v1",
-        stream: "domestic-deposit",
+    const transitionCapture = admitCathayDomesticDepositCapture({
+      sourceConnectionId: "pglite-transition-cathay-connection",
+      identityEpoch: "pglite-transition-cathay-epoch",
+      authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+      stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
+      syncState: { cursor: null },
+      observedAt: "2026-09-22T01:00:00.000Z",
+      pages: [{
+        accountNo: "987654",
+        accountNumber: {
+          value: "987654",
+          kind: "depository-account",
+          evidenceVersion: "cathay/domestic-deposit/v1",
+          sourceField: "accountNo",
+        },
+        currency: "TWD",
+        scope: { startDate: "2026-09-22", endDate: "2026-09-22" },
+        pageOrdinal: 0,
+        requestPageToken: null,
+        nextPageToken: null,
+        rawResponse: JSON.stringify({
+          success: true,
+          returnCode: "0000",
+          content: { datas: [{
+            queryStatus: "Success",
+            accountNumber: "987654",
+            count: 1,
+            startDate: "2026-09-22",
+            endDate: "2026-09-22",
+            details: [{
+              sequenceNumber: 1,
+              txnDateTime: "2026-09-22T09:00:00",
+              accountDate: "2026-09-22",
+              expendAmt: 1000,
+              incomeAmt: null,
+              balance: 9000,
+            }],
+          }] },
+        }),
+        contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+        preflightFingerprint: "cathay/domestic-deposit/v1",
+        absenceAuthority: "comparable-complete-range",
+      }],
+    });
+    // The provider's description is not part of the row payload here, so each
+    // recapture is the same occurrence with a revised description.
+    const request = (captureLabel: string, description: string) => ({
+      capture: {
+        ...transitionCapture,
+        captureId: randomUUID(),
         observedAt: `2026-09-22T01:00:${captureLabel === "first" ? "00" : captureLabel === "second" ? "01" : "02"}.000Z`,
-        scopes: [{
-          accountNo: "pglite-transition-account",
-          accountNumber: {
-            value: "987654",
-            kind: "depository-account",
-            evidenceVersion: "cathay/domestic-deposit/v1",
-            sourceField: "accountNo",
-          },
-          currency: "TWD",
-          startDate: "2026-09-22",
-          endDate: "2026-09-22",
-          contractFingerprint: "cathay/domestic-deposit/v1",
-          preflightFingerprint: "cathay/domestic-deposit/v1",
-          pages: [{
-            pageOrdinal: 0,
-            rowCount: 1,
-            responseDigest: token(`${captureLabel}:response`),
-          }],
-          rows: [{
-            sequence: "transition-row-1",
-            accountDate: "2026-09-22",
-            transactionDateTime: "2026-09-22T09:00:00",
-            description,
-            utcInstantUtcUs: Date.parse("2026-09-22T01:00:00Z") * 1_000,
-            amount: { coefficient: 1_000n, scale: 0 },
-            direction: "outflow",
-            balance: { coefficient: 9_000n, scale: 0 },
-            payload: JSON.stringify({ captureLabel, description, sequence: "transition-row-1" }),
-          }],
-        }],
-      })[0]!;
+        records: transitionCapture.records.map((record) => ({ ...record, description })),
+      },
+    });
 
-    const first = await commitPGliteCanonicalFinancialCapture(store, request("first", "transfer"));
+    const first = await commitPGliteCanonicalDepositCapture(store, request("first", "transfer"));
     assert.equal(first.transactions.length, 1);
-    const second = await commitPGliteCanonicalFinancialCapture(store, request("second", "deposit"));
+    const second = await commitPGliteCanonicalDepositCapture(store, request("second", "deposit"));
     assert.equal(second.transactions.length, 1);
-    const third = await commitPGliteCanonicalFinancialCapture(store, request("third", "opaque provider note"));
+    const third = await commitPGliteCanonicalDepositCapture(store, request("third", "opaque provider note"));
     assert.equal(third.transactions.length, 1);
 
     const transitions = await store.query<{

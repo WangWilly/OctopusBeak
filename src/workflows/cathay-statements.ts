@@ -14,11 +14,9 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  validateCathayDomesticDepositSyncInputForPGlite,
-  type CathayStagedCapturePage,
-} from "../ledger/pglite/cathay-domestic-admission.ts";
+  type CathayDomesticDepositSyncInput,
+} from "../ledger/canonical/cathay-domestic-deposit-admission.ts";
 import type { CanonicalSourceAccountNumber } from "../ledger/canonical/canonical-source-evidence.ts";
-import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
@@ -1096,13 +1094,15 @@ function parseCathayTransferResponse(
 }
 
 export type CathayDomesticFinancialCollection = Readonly<{
-  requests: ReturnType<typeof buildCathayDomesticFinancialRequestsForPGlite>;
+  /** One admission input per selected account. */
+  accounts: readonly CathayDomesticDepositSyncInput[];
   captureCount: number;
   rowCount: number;
 }>;
 
-/** Collect and validate every selected domestic source without persistence or
- * file output. The App executor owns the single later commit. */
+/** Collect every selected domestic source without persistence or file
+ * output. The workflow admits each account, and the App executor owns the
+ * later commit. */
 export async function collectCathayDomesticFinancialRequests(
   page: Page,
   period: CathayQueryPeriod,
@@ -1127,7 +1127,7 @@ export async function collectCathayDomesticFinancialRequests(
   };
   const scope = { startDate: bounds.startDate, endDate: bounds.endDate };
   const observedAt = options.observedAt ?? new Date().toISOString();
-  const stagedPages: CathayStagedCapturePage[] = [];
+  const accountInputs: CathayDomesticDepositSyncInput[] = [];
   const stagedStatements: CathayTransferResult[] = [];
   for (const account of accounts) {
     options.source.signal.throwIfAborted();
@@ -1147,52 +1147,39 @@ export async function collectCathayDomesticFinancialRequests(
       statement.accountNumber,
     );
     stagedStatements.push(statement);
-    stagedPages.push({
-      accountNo: account.accountNo,
-      ...(accountNumber ? { accountNumber } : {}),
-      currency: (account.currency ?? "TWD") as "TWD",
-      scope,
-      pageOrdinal: 0,
-      requestPageToken: null,
-      nextPageToken: null,
-      rawResponse,
-      contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
-      preflightFingerprint: "cathay/domestic-deposit/collection-v1",
-      absenceAuthority: "comparable-complete-range",
-    });
-  }
-  if (stagedPages.length !== accounts.length || stagedPages.length === 0) {
-    throw new Error(
-      "Cathay domestic selected account source set is incomplete.",
-    );
-  }
-  let validatedSync: ReturnType<
-    typeof validateCathayDomesticDepositSyncInputForPGlite
-  >;
-  try {
-    validatedSync = validateCathayDomesticDepositSyncInputForPGlite({
+    accountInputs.push({
       sourceConnectionId: CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
       identityEpoch: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
       authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
       stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
       syncState: { cursor: null },
       observedAt,
-      pages: stagedPages,
+      pages: [{
+        accountNo: account.accountNo,
+        ...(accountNumber ? { accountNumber } : {}),
+        currency: (account.currency ?? "TWD") as "TWD",
+        scope,
+        pageOrdinal: 0,
+        requestPageToken: null,
+        nextPageToken: null,
+        rawResponse,
+        contractFingerprint: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
+        preflightFingerprint: "cathay/domestic-deposit/collection-v1",
+        absenceAuthority: "comparable-complete-range",
+      }],
     });
-  } catch {
+  }
+  if (accountInputs.length !== accounts.length || accountInputs.length === 0) {
     throw new Error(
-      "Cathay domestic source admission rejected the selected source set.",
+      "Cathay domestic selected account source set is incomplete.",
     );
   }
-  const requests = buildCathayDomesticFinancialRequestsForPGlite(validatedSync);
-  if (requests.length === 0 || requests.length !== stagedPages.length) {
-    throw new Error(
-      "Cathay domestic source admission did not cover every selected account.",
-    );
+  if (new Set(accounts.map((account) => account.accountNo)).size !== accounts.length) {
+    throw new Error("Cathay domestic selected accounts repeat an account.");
   }
   return {
-    requests,
-    captureCount: requests.length,
+    accounts: accountInputs,
+    captureCount: accountInputs.length,
     rowCount: stagedStatements.reduce(
       (sum, statement) => sum + (statement.details?.length ?? 0),
       0,

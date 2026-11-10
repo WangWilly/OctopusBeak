@@ -25,7 +25,7 @@ import {
   type CathayForeignQueryRange,
 } from "./cathay-foreign-statements.ts";
 import {
-  captureCathayDomesticCurrentBalances,
+  cathayDomesticCurrentBalanceSnapshot,
   cathayForeignCurrentBalanceSnapshot,
   type CathayAdmittedDeposit,
 } from "./cathay-current-deposit-canonical.ts";
@@ -33,8 +33,11 @@ import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./c
 import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
-import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
+import {
+  admitCathayDomesticDepositCapture,
+  type CathayDomesticDepositSyncInput,
+} from "../ledger/canonical/cathay-domestic-deposit-admission.ts";
+import type { CanonicalFinancialDepositCapture } from "../ledger/canonical/canonical-financial-deposit-admission.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { CATHAY_CREDENTIAL_FIELDS, CATHAY_PRODUCTS } from "../lib/automation/server/sources/cathay.ts";
@@ -84,6 +87,14 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
   ) => CathayAttachedPreviewPort;
 }>;
 
+
+function admitCathayDomesticAccount(account: CathayDomesticDepositSyncInput): CanonicalFinancialDepositCapture {
+  try {
+    return admitCathayDomesticDepositCapture(account);
+  } catch {
+    throw new Error("Cathay domestic source admission rejected the selected source set.");
+  }
+}
 
 function admittedDeposits(admissions: readonly DepositAdmission<CathayAdmittedDeposit>[]): readonly CathayAdmittedDeposit[] {
   return admissions.flatMap(({ balance }) => balance === undefined ? [] : [balance]);
@@ -183,7 +194,7 @@ async function runCathayAllWorkflow(
         );
         if (
           domestic.captureCount === 0 ||
-          domestic.requests.length !== domestic.captureCount
+          domestic.accounts.length !== domestic.captureCount
         ) {
           throw new Error("Cathay domestic selected source set is incomplete.");
         }
@@ -192,32 +203,25 @@ async function runCathayAllWorkflow(
           total: domestic.captureCount,
         });
         await context.event("validation", "started", "domestic-admission-started", {
-          total: domestic.requests.length,
+          total: domestic.accounts.length,
         });
-        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
-        for (const request of domestic.requests) {
+        const admissions: DepositAdmission<CathayAdmittedDeposit>[] = [];
+        for (const account of domestic.accounts) {
           context.signal.throwIfAborted();
-          statementSteps.push({ kind: "financial", request });
+          admissions.push(await admitDeposit<CathayAdmittedDeposit>(product, () => {
+            const deposit = admitCathayDomesticAccount(account);
+            return { product: "domestic-statements", capture: deposit, balance: deposit };
+          }));
         }
-        product.stage({
-          product: "domestic-statements",
-          itemKey: `statements:${context.runId}:domestic`,
-          command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: statementSteps },
-          },
-        });
         await context.event("validation", "completed", "domestic-admission-completed", {
-          completed: domestic.requests.length,
-          total: domestic.requests.length,
+          completed: domestic.accounts.length,
+          total: domestic.accounts.length,
         });
         await product.reportActivity("query");
-        const balances = await captureCathayDomesticCurrentBalances({
-          admitted: domestic.requests,
+        await stageCanonicalDeposits(product, admissions, {
+          snapshot: cathayDomesticCurrentBalanceSnapshot(admittedDeposits(admissions)),
           acquire: acquireCurrentBalances("domestic", product),
-          product,
         });
-        product.stage(...balances);
         return {
           // Keep this legacy field scoped to statement-source captures;
           // the run counts the staged balance command items.

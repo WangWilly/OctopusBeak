@@ -12,9 +12,9 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   CATHAY_DOMESTIC_DEPOSIT_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  validateCathayDomesticDepositSyncInputForPGlite,
-} from "../../ledger/pglite/cathay-domestic-admission.ts";
-import { buildCathayDomesticFinancialRequestsForPGlite } from "../../ledger/pglite/cathay-domestic-adapter.ts";
+  admitCathayDomesticDepositCapture,
+  type CathayDomesticDepositSyncInput,
+} from "../../ledger/canonical/cathay-domestic-deposit-admission.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import { strictSourceText, SourceTextIntegrityError } from "./source-text.ts";
 import type {
@@ -78,7 +78,7 @@ const DOMESTIC_ACCOUNT = ["9990", "0000", "0001"].join("");
 const FOREIGN_ACCOUNT = ["9991", "0000", "0001"].join("");
 const FOREIGN_CAPTURE = { ...CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1, accountNo: FOREIGN_ACCOUNT };
 
-const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
+const DOMESTIC_ACCOUNT_INPUT: CathayDomesticDepositSyncInput = {
   sourceConnectionId: "synthetic-cathay-connection",
   identityEpoch: CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
@@ -102,10 +102,7 @@ const DOMESTIC_SYNC_FIXTURE = validateCathayDomesticDepositSyncInputForPGlite({
       absenceAuthority: "comparable-complete-range",
     },
   ],
-});
-const DOMESTIC_REQUESTS = buildCathayDomesticFinancialRequestsForPGlite(
-  DOMESTIC_SYNC_FIXTURE,
-);
+};
 
 test("Cathay typed source decoding rejects invalid UTF-8 and unexpected response metadata", () => {
   const response: ProviderResponse = {
@@ -221,7 +218,7 @@ function collectionDependencies(
     }),
     collectDomestic: async () =>
       override.domestic ?? {
-        requests: DOMESTIC_REQUESTS,
+        accounts: [DOMESTIC_ACCOUNT_INPUT],
         captureCount: 1,
         rowCount: 3,
       },
@@ -286,13 +283,10 @@ test("Cathay all workflow collects and commits selected products independently w
     assert.equal(harness.committed.length, 2);
     const statementItem = harness.committed[0]![0] as {
       product: string;
-      command: { request: { steps: readonly { kind: string }[] } };
+      command: { kind: string };
     };
     assert.equal(statementItem.product, "domestic-statements");
-    assert.deepEqual(
-      statementItem.command.request.steps.map((step) => step.kind),
-      ["financial"],
-    );
+    assert.equal(statementItem.command.kind, "financial.deposit.commit");
     const foreignItem = harness.committed[1]![0] as {
       product: string;
       command: { kind: string };
@@ -389,7 +383,7 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
     bothProductsInput,
     collectionDependencies({
       domestic: {
-        requests: DOMESTIC_REQUESTS.slice(0, 0),
+        accounts: [],
         captureCount: 1,
         rowCount: 0,
       },
@@ -560,7 +554,7 @@ test("Cathay malformed source decoding is isolated to its product and keeps the 
       collectDomestic: async () => {
         harness.context.text.decode(Uint8Array.from([0xff]), "utf-8");
         return {
-          requests: DOMESTIC_REQUESTS,
+          accounts: [DOMESTIC_ACCOUNT_INPUT],
           captureCount: 1,
           rowCount: 3,
         };
@@ -800,8 +794,8 @@ test("a session lost during an attached product ends the run with the verified o
 
 test("Cathay domestic current balances take their identity from the admitted statement through the workflow", async () => {
   const harness = contextHarness();
-  const admitted = DOMESTIC_REQUESTS[0]!;
-  const accountKey = admitted.account.sourceAccountKey;
+  const { identity: admitted } = admitCathayDomesticDepositCapture(DOMESTIC_ACCOUNT_INPUT);
+  const accountKey = admitted.sourceAccountKey;
   assert.equal(accountKey, DOMESTIC_ACCOUNT);
   const output = await runCathay(
     harness.context,
@@ -826,6 +820,6 @@ test("Cathay domestic current balances take their identity from the admitted sta
   const { capture, account } = balance.command.request;
   assert.deepEqual(
     [capture.sourceConnectionKey, capture.identityEpoch, capture.stream, account.sourceAccountKey],
-    [admitted.capture.sourceConnectionKey, admitted.capture.identityEpoch, admitted.capture.stream, accountKey],
+    [admitted.sourceConnectionKey, admitted.identityEpochKey, admitted.stream, accountKey],
   );
 });

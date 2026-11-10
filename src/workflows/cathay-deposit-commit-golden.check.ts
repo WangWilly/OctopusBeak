@@ -8,9 +8,8 @@ import {
   CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE,
   CATHAY_DOMESTIC_DEPOSIT_STREAM,
-  validateCathayDomesticDepositSyncInputForPGlite,
-} from "../ledger/pglite/cathay-domestic-admission.ts";
-import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
+  type CathayDomesticDepositSyncInput,
+} from "../ledger/canonical/cathay-domestic-deposit-admission.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import type { ForeignCurrencyDepositCaptureInput } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
@@ -47,7 +46,7 @@ const signedInHome = {
   getByText: () => ({ first: () => ({ isVisible: async () => true }) }),
 };
 
-function domesticRequests() {
+function domesticAccounts(): CathayDomesticDepositSyncInput[] {
   const page = (number: string) => ({
     accountNo: number,
     currency: "TWD" as const,
@@ -60,14 +59,14 @@ function domesticRequests() {
     preflightFingerprint: "cathay/domestic-deposit/collection-v1",
     absenceAuthority: "comparable-complete-range" as const,
   });
-  return buildCathayDomesticFinancialRequestsForPGlite(validateCathayDomesticDepositSyncInputForPGlite({
+  return [domesticA, domesticB].map((number) => ({
     sourceConnectionId: "synthetic-cathay-connection",
     identityEpoch: "cathay-domestic-deposit-v1",
     authorityRoute: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
     stream: CATHAY_DOMESTIC_DEPOSIT_STREAM,
     syncState: { cursor: null },
     observedAt: "2026-08-17T12:00:00+08:00",
-    pages: [page(domesticA), page(domesticB)],
+    pages: [page(number)],
   }));
 }
 
@@ -107,7 +106,7 @@ test("Cathay domestic and foreign accounts commit statements beside their curren
     },
   });
   const captures = [foreignCapture(foreignA, "USD"), foreignCapture(foreignA, "JPY"), foreignCapture(foreignB, "EUR")];
-  const requests = domesticRequests();
+  const accounts = domesticAccounts();
   const context: WorkflowContextWith<"financialCommit"> = {
     runId: "run-cathay-golden",
     signal: new AbortController().signal,
@@ -125,7 +124,7 @@ test("Cathay domestic and foreign accounts commit statements beside their curren
   };
   const workflow = cathayAllWorkflow({
     createSession: async () => ({ jwtToken: "synthetic-token", customerId: "synthetic", idType: "synthetic" }),
-    collectDomestic: async () => ({ requests, captureCount: requests.length, rowCount: 6 }),
+    collectDomestic: async () => ({ accounts, captureCount: accounts.length, rowCount: 6 }),
     collectForeign: async () => ({
       captures,
       selectedStatementCount: captures.length,

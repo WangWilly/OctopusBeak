@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import {
+  admitCanonicalFinancialDepositCapture,
+  type CanonicalFinancialDepositRecord,
+  type CanonicalFinancialDepositValidatedCapture,
+} from "./canonical-financial-deposit-admission.ts";
+import { idToString, uuidV7 } from "./canonical-local-identifier.ts";
+import {
   validateCanonicalSourceAccountNumber,
   type CanonicalSourceAccountNumber,
-} from "../canonical/canonical-source-evidence.ts";
-import { parseExactDecimalLexeme } from "../canonical/exact-decimal-lexeme.ts";
-import type { ExactDecimal } from "../canonical/exact-decimal-lexeme.ts";
-import type { CathayValidatedDomesticSync } from "./cathay-domestic-adapter.ts";
-
-export { parseExactDecimalLexeme } from "../canonical/exact-decimal-lexeme.ts";
-export type { ExactDecimal } from "../canonical/exact-decimal-lexeme.ts";
+} from "./canonical-source-evidence.ts";
+import { parseExactDecimalLexeme, type ExactDecimal } from "./exact-decimal-lexeme.ts";
 
 export const CATHAY_DOMESTIC_DEPOSIT_STREAM = "domestic-deposit" as const;
 export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY =
@@ -22,7 +23,7 @@ export const CATHAY_DOMESTIC_DEPOSIT_AUTHORITY =
 export const CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION = "cathay-default-source" as const;
 export const CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH = "cathay-domestic-deposit-v1" as const;
 
-export const CATHAY_POSTING_MAPPING = {
+const CATHAY_POSTING_MAPPING = {
   contractVersion: CATHAY_DOMESTIC_DEPOSIT_AUTHORITY,
   postingStatus: "posted",
   origin: "provider_booked_history",
@@ -30,18 +31,10 @@ export const CATHAY_POSTING_MAPPING = {
   ruleVersion: "cathay/domestic-deposit/v1",
 } as const;
 
-export const CATHAY_COMPLETENESS_PROOF = {
+const CATHAY_COMPLETENESS_PROOF = {
   kind: "complete-range",
   basis: "success-status-scope-count-details",
   ruleVersion: "cathay/domestic-deposit/v1",
-} as const;
-
-export const CATHAY_DOMESTIC_DEPOSIT_PROVENANCE = {
-  validatedAt: "2026-08-17",
-  source: "Cathay domestic deposit",
-  values: "synthetic",
-  liveResponseRetained: false,
-  note: "Human-assisted validation covered response shape only; no live values are retained.",
 } as const;
 
 export const CATHAY_DOMESTIC_DEPOSIT_RAW_FIXTURE = `{"success":true,"returnCode":"0000","content":{"datas":[{"queryStatus":"Success","accountNumber":"SYNTHETIC-ACCOUNT-001","count":3,"startDate":"2025-08-17","endDate":"2026-08-17","details":[{"sequenceNumber":1,"txnDateTime":"2026-07-01T09:00:00","accountDate":"2026-07-01","description":"Synthetic Cathay deposit description","expendAmt":null,"incomeAmt":12500,"balance":12500},{"sequenceNumber":2,"txnDateTime":"2026-07-02T10:15:30","accountDate":"2026-07-02","description":"Synthetic Cathay transfer description","expendAmt":300,"incomeAmt":null,"balance":12200},{"sequenceNumber":3,"txnDateTime":"2026-07-03T11:45:00","accountDate":"2026-07-03","description":"Synthetic Cathay credit description","expendAmt":null,"incomeAmt":800,"balance":13000}]}]}}`;
@@ -62,9 +55,9 @@ export type CathayDomesticDepositCaptureInput = {
   absenceAuthority?: CathayAbsenceAuthority;
 };
 
-export type CathayAbsenceAuthority = "comparable-complete-range";
+type CathayAbsenceAuthority = "comparable-complete-range";
 
-export type CathayTransportCheckpoint = {
+type CathayTransportCheckpoint = {
   kind: "transport-progress";
   ordinal: number;
   token: string | null;
@@ -109,40 +102,9 @@ export const CATHAY_DOMESTIC_DEPOSIT_FIXTURE: CathayDomesticDepositCaptureInput 
     observedAt: "2026-08-17T12:00:00+08:00",
   };
 
-export const MAX_CANONICAL_SCALE = 9007199254740991n;
+type LosslessJsonNumber = { kind: "number"; lexeme: string };
 
-export function canonicalStoredInteger(value: unknown): string | null {
-  if (typeof value === "string") return value;
-  if (typeof value === "bigint") return value.toString();
-  if (typeof value === "number" && Number.isSafeInteger(value))
-    return value.toString();
-  return null;
-}
-
-export function isCanonicalStoredExactAmount(
-  coefficientValue: unknown,
-  scaleValue: unknown,
-): boolean {
-  const coefficient = canonicalStoredInteger(coefficientValue);
-  const scale = canonicalStoredInteger(scaleValue);
-  if (
-    coefficient === null ||
-    scale === null ||
-    !/^-?(?:0|[1-9]\d*)$/.test(coefficient) ||
-    !/^(?:0|[1-9]\d*)$/.test(scale)
-  )
-    return false;
-  try {
-    BigInt(coefficient);
-    return BigInt(scale) <= MAX_CANONICAL_SCALE;
-  } catch {
-    return false;
-  }
-}
-
-export type LosslessJsonNumber = { kind: "number"; lexeme: string };
-
-export type LosslessJsonValue =
+type LosslessJsonValue =
   | null
   | boolean
   | string
@@ -150,7 +112,7 @@ export type LosslessJsonValue =
   | LosslessJsonValue[]
   | { [key: string]: LosslessJsonValue };
 
-export class LosslessJsonParser {
+class LosslessJsonParser {
   private position = 0;
   private readonly source: string;
 
@@ -271,7 +233,7 @@ export class LosslessJsonParser {
   }
 }
 
-export function asObject(
+function asObject(
   value: LosslessJsonValue,
   label: string,
 ): { [key: string]: LosslessJsonValue } {
@@ -285,7 +247,7 @@ export function asObject(
   return value as { [key: string]: LosslessJsonValue };
 }
 
-export function asArray(
+function asArray(
   value: LosslessJsonValue | undefined,
   label: string,
 ): LosslessJsonValue[] {
@@ -293,7 +255,7 @@ export function asArray(
   return value;
 }
 
-export function requiredString(
+function requiredString(
   object: { [key: string]: LosslessJsonValue },
   key: string,
 ): string {
@@ -303,7 +265,7 @@ export function requiredString(
   return value;
 }
 
-export function isLosslessJsonNumber(
+function isLosslessJsonNumber(
   value: LosslessJsonValue | undefined,
 ): value is LosslessJsonNumber {
   return Boolean(
@@ -314,7 +276,7 @@ export function isLosslessJsonNumber(
   );
 }
 
-export function requiredNumber(
+function requiredNumber(
   object: { [key: string]: LosslessJsonValue },
   key: string,
 ): string {
@@ -324,7 +286,7 @@ export function requiredNumber(
   return value.lexeme;
 }
 
-export function nullableNumber(
+function nullableNumber(
   object: { [key: string]: LosslessJsonValue },
   key: string,
 ): string | null {
@@ -335,7 +297,7 @@ export function nullableNumber(
   return value.lexeme;
 }
 
-export function requireDate(value: string, label: string): string {
+function requireDate(value: string, label: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
     throw new Error(`${label} must be YYYY-MM-DD.`);
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -344,7 +306,7 @@ export function requireDate(value: string, label: string): string {
   return value;
 }
 
-export function normalizeCathayAccountDate(
+function normalizeCathayAccountDate(
   value: string,
   label: string,
 ): string {
@@ -359,7 +321,7 @@ export function normalizeCathayAccountDate(
   return localSecond[1]!;
 }
 
-export function normalizeCathayResponseDate(
+function normalizeCathayResponseDate(
   value: string,
   expected: string,
 ): string {
@@ -387,7 +349,7 @@ export function normalizeCathayResponseDate(
   return date;
 }
 
-export function requireDateTime(value: string, label: string): string {
+function requireDateTime(value: string, label: string): string {
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value))
     throw new Error(`${label} must be YYYY-MM-DDTHH:mm:ss.`);
   const calendarShape = new Date(`${value}Z`);
@@ -399,7 +361,7 @@ export function requireDateTime(value: string, label: string): string {
   return value;
 }
 
-export function parseRfc3339UtcMicros(value: string, label: string): number {
+function parseRfc3339UtcMicros(value: string, label: string): number {
   const match = value.match(
     /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/,
   );
@@ -436,15 +398,15 @@ export function parseRfc3339UtcMicros(value: string, label: string): number {
   return Number(micros);
 }
 
-export function localDateTimeToUtcMicros(value: string): number {
+function localDateTimeToUtcMicros(value: string): number {
   return parseRfc3339UtcMicros(`${value}+08:00`, "Cathay local date-time");
 }
 
-export function localDateToUtcMicros(value: string): number {
+function localDateToUtcMicros(value: string): number {
   return localDateTimeToUtcMicros(`${value}T00:00:00`);
 }
 
-export type ValidatedCathayRow = {
+type ValidatedCathayRow = {
   sequence: string;
   accountDate: string;
   transactionDateTime: string;
@@ -457,7 +419,7 @@ export type ValidatedCathayRow = {
   payload: string;
 };
 
-export type ValidatedCathayCapture = {
+type ValidatedCathayCapture = {
   accountNo: string;
   accountNumber: CanonicalSourceAccountNumber | null;
   startDate: string;
@@ -467,7 +429,7 @@ export type ValidatedCathayCapture = {
   rows: ValidatedCathayRow[];
 };
 
-export type ValidatedCathayScope = {
+type ValidatedCathayScope = {
   accountNo: string;
   accountNumber: CanonicalSourceAccountNumber | null;
   currency: "TWD";
@@ -486,7 +448,7 @@ export type ValidatedCathayScope = {
   rows: ValidatedCathayRow[];
 };
 
-export type ValidatedCathaySync = {
+type ValidatedCathaySync = {
   sourceConnectionId: string;
   identityEpoch: string;
   authorityRoute: string;
@@ -496,7 +458,7 @@ export type ValidatedCathaySync = {
   scopes: ValidatedCathayScope[];
 };
 
-export function cathayPostingMapping(
+function cathayPostingMapping(
   statement: { [key: string]: LosslessJsonValue },
   details: LosslessJsonValue[],
 ): typeof CATHAY_POSTING_MAPPING {
@@ -519,7 +481,7 @@ export function cathayPostingMapping(
   return CATHAY_POSTING_MAPPING;
 }
 
-export function validateCapture(
+function validateCapture(
   input: CathayDomesticDepositCaptureInput,
 ): ValidatedCathayCapture {
   if (!input.sourceConnectionId.trim() || !input.identityEpoch.trim())
@@ -636,7 +598,7 @@ export function validateCapture(
     const direction = incomeLexeme === null ? "outflow" : "inflow";
     const payload: Record<string, string> = {
       sequenceNumber: sequenceLexeme,
-      accountDate: accountDateValue,
+      accountingDate: accountDate,
       txnDateTime: transactionDateTime,
       amount: amountLexeme,
       amountDirection: direction,
@@ -667,11 +629,11 @@ export function validateCapture(
   };
 }
 
-export function responseDigest(rawResponse: string): string {
+function responseDigest(rawResponse: string): string {
   return createHash("sha256").update(rawResponse, "utf8").digest("hex");
 }
 
-export function validateSyncInput(
+function validateSyncInput(
   input: CathayDomesticDepositSyncInput,
 ): ValidatedCathaySync {
   if (!input.sourceConnectionId.trim() || !input.identityEpoch.trim())
@@ -840,14 +802,142 @@ export function validateSyncInput(
   };
 }
 
-export function validateCathayDomesticDepositSyncInput(
-  input: CathayDomesticDepositSyncInput,
-): void {
-  validateSyncInput(input);
+export function cathayOpaqueIdentity(value: string): string {
+  const normalized = value.trim();
+  if (/^sha256:[A-Za-z0-9_-]+$/u.test(normalized)) return normalized;
+  return `sha256:${createHash("sha256")
+    .update(`cathay/source-identity/v1|${normalized}`, "utf8")
+    .digest("base64url")}`;
 }
 
-export function validateCathayDomesticDepositSyncInputForPGlite(
+function exactAmount(value: ExactDecimal): { coefficient: string; scale: number } {
+  return { coefficient: value.coefficient.toString(), scale: value.scale };
+}
+
+function depositRecord(
+  accountNo: string,
+  row: ValidatedCathayRow,
+): CanonicalFinancialDepositRecord {
+  if (row.balance.coefficient < 0n)
+    throw new Error("Cathay domestic negative balance is unsupported by the canonical deposit contract.");
+  const [localDate, localTime] = row.transactionDateTime.split("T") as [string, string];
+  return {
+    occurrenceKey: cathayOpaqueIdentity(
+      `cathay/domestic-deposit/occurrence/v1|${accountNo}|${row.sequence}|${row.payload}`,
+    ),
+    collisionKey: cathayOpaqueIdentity(
+      `cathay/domestic-deposit/collision/v1|${accountNo}|${row.sequence}|${row.payload}`,
+    ),
+    providerKey: cathayOpaqueIdentity(
+      `cathay/domestic-deposit/provider/v1|${accountNo}|${row.sequence}`,
+    ),
+    contentHash: cathayOpaqueIdentity(
+      `cathay/domestic-deposit/content/v1|${accountNo}|${row.payload}`,
+    ),
+    sequenceLexeme: row.sequence,
+    compactJson: row.payload,
+    amount: exactAmount(row.amount),
+    balanceAfter: exactAmount(row.balance),
+    currency: "TWD",
+    direction: row.direction,
+    sourceTime: {
+      localDate,
+      localTime,
+      timeZone: "Asia/Taipei",
+      epochMilliseconds: row.utcInstantUtcUs / 1000,
+      precision: "second",
+      timeOrigin: "source_reported",
+    },
+    effectiveOn: row.accountDate,
+    transactionDateTimeLocal: row.transactionDateTime,
+    description: row.description,
+  };
+}
+
+/**
+ * Admit one Cathay domestic account's staged pages as a deposit capture.
+ * The pages must all belong to one account.
+ */
+export function admitCathayDomesticDepositCapture(
   input: CathayDomesticDepositSyncInput,
-): CathayValidatedDomesticSync {
-  return validateSyncInput(input);
+): CanonicalFinancialDepositValidatedCapture {
+  const validated = validateSyncInput(input);
+  if (validated.scopes.length !== 1)
+    throw new Error("Cathay domestic deposit capture must hold exactly one account.");
+  const scope = validated.scopes[0]!;
+  const sourceConnectionKey = cathayOpaqueIdentity(validated.sourceConnectionId);
+  const identityEpochKey = cathayOpaqueIdentity(validated.identityEpoch);
+  const contractFingerprint = cathayOpaqueIdentity(scope.contractFingerprint);
+  const preflightFingerprint = cathayOpaqueIdentity(scope.preflightFingerprint);
+  return admitCanonicalFinancialDepositCapture({
+    captureId: idToString(uuidV7()),
+    authorityRoute: validated.authorityRoute,
+    contractVersion: "v1",
+    identity: {
+      integrationNamespace: "cathay",
+      sourceConnectionKey,
+      identityEpochKey,
+      stream: validated.stream,
+      recordKind: "cathay-domestic-deposit",
+      subjectDigest: cathayOpaqueIdentity(
+        ["cathay/domestic-deposit/subject/v1", sourceConnectionKey, identityEpochKey, scope.accountNo].join("|"),
+      ),
+      accountNo: scope.accountNo,
+      sourceAccountKey: scope.accountNo,
+      accountNumber: scope.accountNumber,
+      accountType: "depository",
+      currency: scope.currency,
+    },
+    observedAt: validated.observedAt,
+    scope: {
+      startDate: scope.startDate,
+      endDate: scope.endDate,
+      scopeKind: "bounded-range",
+      completeness: CATHAY_COMPLETENESS_PROOF.kind,
+      completenessBasis: CATHAY_COMPLETENESS_PROOF.basis,
+      completenessRuleVersion: CATHAY_COMPLETENESS_PROOF.ruleVersion,
+      absenceAuthority: scope.absenceAuthority ?? null,
+      contractFingerprint,
+      preflightFingerprint,
+      pageCount: scope.pages.length,
+      withdrawalPolicy:
+        scope.absenceAuthority === "comparable-complete-range"
+          ? "allow-inference"
+          : "never-infer",
+    },
+    semantics: {
+      postingStatus: CATHAY_POSTING_MAPPING.postingStatus,
+      postingOrigin: CATHAY_POSTING_MAPPING.origin,
+      postingBasis: CATHAY_POSTING_MAPPING.basis,
+      postingRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      economicStatus: "normal",
+      administrativeState: "active",
+      semanticRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      effectiveTimeBasis: "accounting",
+      effectiveTimeRuleVersion: CATHAY_POSTING_MAPPING.ruleVersion,
+      timeZone: "Asia/Taipei",
+      timePrecision: "second",
+      timeOrigin: "source_reported",
+      requireBalance: true,
+    },
+    pages: scope.pages.map((page, index) => ({
+      pageOrdinal: index,
+      responseCode: "200",
+      terminal: index === scope.pages.length - 1,
+      rowCount: page.rowCount,
+      responseDigest: page.responseDigest,
+      proofKind: CATHAY_COMPLETENESS_PROOF.basis,
+      contractFingerprint,
+      preflightFingerprint,
+      metadataJson: JSON.stringify({
+        source: "cathay",
+        accountNo: scope.accountNo,
+        scopeStart: scope.startDate,
+        scopeEnd: scope.endDate,
+        pageOrdinal: page.pageOrdinal,
+        responseDigest: page.responseDigest,
+      }),
+    })),
+    records: scope.rows.map((row) => depositRecord(scope.accountNo, row)),
+  });
 }
