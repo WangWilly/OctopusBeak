@@ -28,7 +28,7 @@
         {
           "provider": "sinopac",
           "product": "domestic-deposit",
-          "itemKey": "domestic-deposit:0",
+          "itemKey": "sinopac-financial-sinopac-source-8b9336775e463f31d81f238f-1790_8272_0000_0-0",
           "command": {
             "kind": "financial.mixed.commit",
             "request": {

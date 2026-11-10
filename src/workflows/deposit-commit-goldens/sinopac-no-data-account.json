@@ -28,7 +28,61 @@
         {
           "provider": "sinopac",
           "product": "domestic-deposit",
-          "itemKey": "domestic-deposit:0",
+          "itemKey": "sinopac-source-8b9336775e463f31d81f238f-1790_8272_0000_0:source:1",
+          "command": {
+            "kind": "financial.source.admit",
+            "request": {
+              "captureId": "sinopac-source-8b9336775e463f31d81f238f-1790_8272_0000_0:source:1",
+              "integrationNamespace": "sinopac",
+              "sourceConnectionKey": "sha256:RlwjruyG81yMys-eZFmE-Uv98hzwt6LHTlcNVdNSRuI",
+              "identityEpoch": "sha256:RSLiMnoqEtG8Y_fWZ-gokrmJQvc9XEuI281DeRsVb_M",
+              "stream": "domestic-deposit",
+              "recordKind": "sinopac-domestic-deposit-capture-evidence-v1",
+              "routeKey": "sinopac/domestic-deposit/capture-evidence-v1",
+              "contractVersion": "capture-evidence-v1",
+              "subjectDigest": "sha256:RGBrOfghxo-_mZWwBjqe4qmGH-fc3bUJCRRA61vIwjs",
+              "observedAt": "2026-10-01T12:00:00.000+08:00",
+              "accountNumber": {
+                "value": "9100_0000_0000_22",
+                "kind": "depository-account",
+                "evidenceVersion": "sinopac/statement/account-number-v1",
+                "sourceField": "ws_debitacct.ashx SubInfo.DataValue"
+              },
+              "scope": {
+                "startDate": "20260901",
+                "endDate": "20260930",
+                "kind": "bounded-range",
+                "completeness": "single-page",
+                "ruleVersion": "sinopac/domestic-deposit/capture-evidence-v1/terminal-query",
+                "absenceAuthority": "provider-explicit-no-data"
+              },
+              "pages": [
+                {
+                  "pageOrdinal": 0,
+                  "responseCode": "200",
+                  "rowCount": 0,
+                  "terminal": true,
+                  "metadata": {
+                    "filenameDigest": "sha256:PMlyintmZLbffhf9z-3Z_SNAdRfB0KonS7jh5jNEAZI",
+                    "contentDigest": "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+                    "byteLength": 0,
+                    "columnCount": 9,
+                    "queryPeriodCount": 1,
+                    "accountDigest": "sha256:LqqF1Iv9Yf1Savy51K5Xj3RTn-zKQUJm77MRlRVCMTo",
+                    "currency": "TWD",
+                    "zeroResultAuthority": "provider-explicit-no-data",
+                    "completeness": "unproven"
+                  }
+                }
+              ],
+              "records": []
+            }
+          }
+        },
+        {
+          "provider": "sinopac",
+          "product": "domestic-deposit",
+          "itemKey": "sinopac-financial-sinopac-source-8b9336775e463f31d81f238f-1790_8272_0000_0-0",
           "command": {
             "kind": "financial.mixed.commit",
             "request": {
@@ -276,60 +330,6 @@
                   }
                 }
               ]
-            }
-          }
-        },
-        {
-          "provider": "sinopac",
-          "product": "domestic-deposit",
-          "itemKey": "domestic-deposit:1",
-          "command": {
-            "kind": "financial.source.admit",
-            "request": {
-              "captureId": "sinopac-source-8b9336775e463f31d81f238f-1790_8272_0000_0:source:1",
-              "integrationNamespace": "sinopac",
-              "sourceConnectionKey": "sha256:RlwjruyG81yMys-eZFmE-Uv98hzwt6LHTlcNVdNSRuI",
-              "identityEpoch": "sha256:RSLiMnoqEtG8Y_fWZ-gokrmJQvc9XEuI281DeRsVb_M",
-              "stream": "domestic-deposit",
-              "recordKind": "sinopac-domestic-deposit-capture-evidence-v1",
-              "routeKey": "sinopac/domestic-deposit/capture-evidence-v1",
-              "contractVersion": "capture-evidence-v1",
-              "subjectDigest": "sha256:RGBrOfghxo-_mZWwBjqe4qmGH-fc3bUJCRRA61vIwjs",
-              "observedAt": "2026-10-01T12:00:00.000+08:00",
-              "accountNumber": {
-                "value": "9100_0000_0000_22",
-                "kind": "depository-account",
-                "evidenceVersion": "sinopac/statement/account-number-v1",
-                "sourceField": "ws_debitacct.ashx SubInfo.DataValue"
-              },
-              "scope": {
-                "startDate": "20260901",
-                "endDate": "20260930",
-                "kind": "bounded-range",
-                "completeness": "single-page",
-                "ruleVersion": "sinopac/domestic-deposit/capture-evidence-v1/terminal-query",
-                "absenceAuthority": "provider-explicit-no-data"
-              },
-              "pages": [
-                {
-                  "pageOrdinal": 0,
-                  "responseCode": "200",
-                  "rowCount": 0,
-                  "terminal": true,
-                  "metadata": {
-                    "filenameDigest": "sha256:PMlyintmZLbffhf9z-3Z_SNAdRfB0KonS7jh5jNEAZI",
-                    "contentDigest": "sha256:47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
-                    "byteLength": 0,
-                    "columnCount": 9,
-                    "queryPeriodCount": 1,
-                    "accountDigest": "sha256:LqqF1Iv9Yf1Savy51K5Xj3RTn-zKQUJm77MRlRVCMTo",
-                    "currency": "TWD",
-                    "zeroResultAuthority": "provider-explicit-no-data",
-                    "completeness": "unproven"
-                  }
-                }
-              ],
-              "records": []
             }
           }
         },
