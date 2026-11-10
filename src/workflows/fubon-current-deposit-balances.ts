@@ -12,6 +12,7 @@ import { ifFound, type FrameScope } from "./frame-scope.ts";
 import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
@@ -84,13 +85,6 @@ export type FubonCurrentDepositSnapshotInput = Readonly<{
   response: VerifiedProviderResponse<"required">;
 }>;
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 const FUBON_AMOUNT: ProviderDecimalPolicy = {
   internalWhitespace: "strip",
   grouping: "thousands",
@@ -98,7 +92,7 @@ const FUBON_AMOUNT: ProviderDecimalPolicy = {
 };
 
 function parseBalance(value: string, label: string): FubonCurrentDepositExactDecimal {
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const amount = parseProviderDecimal(sourceLexeme, FUBON_AMOUNT);
   if (!amount) {
     throw new Error(`Fubon current deposit ${label} is not an exact decimal.`);
@@ -107,7 +101,7 @@ function parseBalance(value: string, label: string): FubonCurrentDepositExactDec
 }
 
 function parseAccount(value: string): string {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value);
   if (!/^\d{14}$/u.test(normalized)) {
     throw new Error("Fubon current deposit account must be a full fourteen-digit value.");
   }
@@ -118,7 +112,7 @@ function parseCurrency(value: string, rowIndex: number): {
   value: string;
   sourceLexeme: string;
 } {
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const currency = fubonIsoCurrency(sourceLexeme);
   if (currency === null) {
     throw new Error(`Fubon current deposit row ${rowIndex} currency is invalid.`);
@@ -154,9 +148,9 @@ export function parseFubonCurrentDepositBalanceSnapshot(
     rows.push({
       source: "fubon",
       accountNumber,
-      accountNickname: cleanText(values[1]),
-      depositType: cleanText(values[2]),
-      branchName: cleanText(values[3]),
+      accountNickname: collapseSourceWhitespace(values[1]),
+      depositType: collapseSourceWhitespace(values[2]),
+      branchName: collapseSourceWhitespace(values[3]),
       currency: parsedCurrency.value,
       currencySourceLexeme: parsedCurrency.sourceLexeme,
       instantBalance: parseBalance(values[5] ?? "", `row ${rowIndex} instant balance`),
@@ -180,14 +174,14 @@ async function readCellTexts(frames: FrameScope, row: Locator, selector: string)
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await frames.withSignal((signal) => cells.nth(index).innerText({ signal }))));
+    values.push(collapseSourceWhitespace(await frames.withSignal((signal) => cells.nth(index).innerText({ signal }))));
   }
   return values;
 }
 
 async function readClass(frames: FrameScope, locator: Locator): Promise<Set<string>> {
   return new Set(
-    cleanText(await frames.withSignal((signal) => locator.getAttribute("class", { signal })))
+    collapseSourceWhitespace(await frames.withSignal((signal) => locator.getAttribute("class", { signal })))
       .split(/\s+/u)
       .filter(Boolean),
   );

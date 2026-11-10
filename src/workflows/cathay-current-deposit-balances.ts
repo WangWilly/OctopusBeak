@@ -14,6 +14,7 @@ import {
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { CathayStrictSourceOptions } from "./cathay-statements.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"];
 const FOREIGN_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/foreign-currency/current-balance-v1"];
@@ -217,13 +218,6 @@ function responseDigest(rawBody: string): string {
   return `sha256:${createHash("sha256").update(rawBody, "utf8").digest("base64url")}`;
 }
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 function validateCalendarDate(date: string, label: string): void {
   const parsed = new Date(`${date}T00:00:00.000Z`);
   if (
@@ -266,7 +260,7 @@ function parseExactDecimal(value: unknown, label: string): CathayCurrentDepositE
   if (typeof value !== "string") {
     throw new Error(`Cathay current deposit ${label} lacks exact JSON lexical evidence.`);
   }
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const amount = parseProviderDecimal(sourceLexeme, CATHAY_AMOUNT);
   if (!amount) {
     throw new Error(`Cathay current deposit ${label} is not an exact decimal.`);
@@ -491,7 +485,7 @@ async function readDomesticUiAccountNumbers(scope: FrameScope, timeoutMs: number
       const count = await buttons.count().catch(() => 0);
       const accounts: string[] = [];
       for (let index = 0; index < count; index += 1) {
-        const label = cleanText(await buttons.nth(index).innerText().catch(() => ""));
+        const label = collapseSourceWhitespace(await buttons.nth(index).innerText().catch(() => ""));
         if (/^\d{12}$/u.test(label)) accounts.push(label);
       }
       if (accounts.length > 0) return accounts;

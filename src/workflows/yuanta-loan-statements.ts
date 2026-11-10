@@ -33,6 +33,7 @@ import { requireSourceConnectionIdentity } from "../ledger/canonical/source-conn
 import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type LoanAccountOption = {
   label: string;
@@ -98,15 +99,8 @@ export function yuantaLoanQueryRange(period: CollectionPeriod): YuantaLoanQueryR
 
 const sourceStatementColumnCount = 6;
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function stripHtml(value: string): string {
-  return cleanText(value.replace(/<[^>]*>/gu, " "));
+  return collapseSourceWhitespace(value.replace(/<[^>]*>/gu, " "));
 }
 
 function htmlAttribute(openingTag: string, name: string): string {
@@ -128,8 +122,8 @@ function htmlControlLabel(controlHtml: string): string {
   const opening = htmlControlOpeningTag(controlHtml);
   return (
     stripHtml(controlHtml) ||
-    cleanText(htmlAttribute(opening, "value")) ||
-    cleanText(htmlAttribute(opening, "aria-label"))
+    collapseSourceWhitespace(htmlAttribute(opening, "value")) ||
+    collapseSourceWhitespace(htmlAttribute(opening, "aria-label"))
   );
 }
 
@@ -466,7 +460,7 @@ function toAsciiDigits(value: string): string {
 }
 
 function maskAccountLabel(value: string): string {
-  return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
+  return collapseSourceWhitespace(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
@@ -474,7 +468,7 @@ function maskAccountLabel(value: string): string {
 
 function isUnavailableAccountOption(value: string, label: string): boolean {
   const normalizedValue = value.trim().toLowerCase();
-  const normalizedLabel = cleanText(label).toLowerCase();
+  const normalizedLabel = collapseSourceWhitespace(label).toLowerCase();
   if (
     !normalizedValue ||
     ["0", "-1", "none", "null", "undefined"].includes(normalizedValue)
@@ -488,13 +482,13 @@ function isUnavailableAccountOption(value: string, label: string): boolean {
 }
 
 function splitDatePair(value: string): [string, string] {
-  const normalized = toAsciiDigits(cleanText(value));
+  const normalized = toAsciiDigits(collapseSourceWhitespace(value));
   const dates = normalized.match(/\d{4}\/\d{2}\/\d{2}/g) ?? [];
   return [dates[0] ?? normalized, dates[1] ?? ""];
 }
 
 function parseDateSortValue(value: string): number | null {
-  const match = toAsciiDigits(cleanText(value)).match(
+  const match = toAsciiDigits(collapseSourceWhitespace(value)).match(
     /^(\d{4})\/(\d{2})\/(\d{2})$/,
   );
   if (!match) return null;
@@ -515,7 +509,7 @@ export function parseYuantaLoanStatementRows(
   sourceRows: readonly string[][],
 ): StatementRow[] {
   return sourceRows.flatMap((sourceRow) => {
-    const values = sourceRow.map((value) => cleanText(value));
+    const values = sourceRow.map((value) => collapseSourceWhitespace(value));
     if (values.every((value) => value.length === 0)) return [];
     if (values.length !== sourceStatementColumnCount)
       throw new Error("Unexpected Yuanta loan result row.");
@@ -599,7 +593,7 @@ export async function readYuantaLoanAccountOptions(
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableAccountOption(value, label)) continue;
 
     const account = { label, value };
@@ -711,7 +705,7 @@ async function parseLoanStatementRows(
 
     const values: string[] = [];
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
-      values.push(cleanText(await frames.withSignal((signal) => cells.nth(cellIndex).innerText({ signal }))));
+      values.push(collapseSourceWhitespace(await frames.withSignal((signal) => cells.nth(cellIndex).innerText({ signal }))));
     }
     sourceRows.push(values);
   }

@@ -25,6 +25,7 @@ import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderRequest, ProviderResponseReader } from "./provider-response-reader.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type CathayCredentials = VerifiedRunInput<typeof CATHAY_CREDENTIAL_FIELDS>["credentials"];
 
@@ -526,13 +527,6 @@ export function classifyCathayDateScopeMismatch(
   };
 }
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
@@ -544,7 +538,7 @@ function digitsOnly(value: string): string {
 }
 
 function maskAccountLabel(value: string): string {
-  return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
+  return collapseSourceWhitespace(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
@@ -812,7 +806,7 @@ export function functionSeqNo(): string {
 }
 
 function accountLabel(account: CathayAccount): string {
-  return cleanText(
+  return collapseSourceWhitespace(
     [
       account.accountNo,
       account.nickName,

@@ -33,6 +33,7 @@ import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const LINEBANK_HOST = "accessibility.linebank.com.tw";
 const LOGIN_URL = `https://${LINEBANK_HOST}/login`;
@@ -108,7 +109,7 @@ export type LineBankAccountNumberEvidence = Readonly<{
 export function deriveLinebankAccountNumberEvidence(
   account: LineBankAccount,
 ): LineBankAccountNumberEvidence | null {
-  const value = cleanText(account.acctNbr).normalize("NFKC");
+  const value = collapseSourceWhitespace(account.acctNbr).normalize("NFKC");
   if (!/^\d{6,24}$/.test(value)) return null;
   return {
     value,
@@ -123,8 +124,8 @@ export function deriveLinebankAccountNumberEvidence(
  * Keep the delimiter explicit so two different pairs cannot concatenate to the
  * same opaque key (for example, `12` + `3` versus `1` + `23`). */
 export function linebankAccountKey(account: LineBankAccount): string {
-  const accountNumber = cleanText(account.acctNbr);
-  const arrangementId = cleanText(account.arrId);
+  const accountNumber = collapseSourceWhitespace(account.acctNbr);
+  const arrangementId = collapseSourceWhitespace(account.arrId);
   return accountNumber && arrangementId
     ? `${accountNumber}:${arrangementId}`
     : "";
@@ -217,12 +218,6 @@ export type LineBankStatementRow = {
   values: string[];
 };
 
-function cleanText(value: unknown): string {
-  return String(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /** The provider's YYYYMMDD request dates for each window of the product's collection period. */
 function linebankQueryWindows(period: CollectionPeriod): DateRange[] {
   return period.windows.map(({ start, end }) => ({
@@ -236,8 +231,8 @@ function formatSlashDate(value: string): string {
 }
 
 function formatTime(value: string | undefined): string {
-  const raw = cleanText(value).padStart(6, "0");
-  if (!/^\d{6}$/.test(raw)) return cleanText(value);
+  const raw = collapseSourceWhitespace(value).padStart(6, "0");
+  if (!/^\d{6}$/.test(raw)) return collapseSourceWhitespace(value);
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
 }
 
@@ -246,8 +241,8 @@ export function linebankEpochMillisecondsFromSourceDateTime(
   txDt: string | undefined,
   txTm: string | undefined,
 ): number {
-  const date = cleanText(txDt);
-  const time = cleanText(txTm);
+  const date = collapseSourceWhitespace(txDt);
+  const time = collapseSourceWhitespace(txTm);
   const dateMatch = date.match(/^(\d{4})(\d{2})(\d{2})$/);
   const timeMatch = time.match(/^(\d{2})(\d{2})(\d{2})$/);
   if (!dateMatch || !timeMatch) {
@@ -288,8 +283,8 @@ export function linebankValidateTransactionTime(
   row: LineBankTransactionRow,
 ): void {
   if (
-    !cleanText(row.txDt) ||
-    !cleanText(row.txTm) ||
+    !collapseSourceWhitespace(row.txDt) ||
+    !collapseSourceWhitespace(row.txTm) ||
     row.txDtm === undefined ||
     row.txDtm === null
   ) {
@@ -485,7 +480,7 @@ export function linebankTransactionPageFromResponse(
 
 function noteText(row: LineBankTransactionRow): string {
   return [row.txRmkCont, row.txMemoVal]
-    .map(cleanText)
+    .map(collapseSourceWhitespace)
     .filter(Boolean)
     .join(" ");
 }
@@ -500,14 +495,14 @@ export function linebankApiRowsToStatementRows(
     }
   }
   return rows
-    .filter((row) => cleanText(row.txDt) || cleanText(row.bizTxFuncTpNm))
+    .filter((row) => collapseSourceWhitespace(row.txDt) || collapseSourceWhitespace(row.bizTxFuncTpNm))
     .map((row) => {
       const [withdrawal, deposit] = amountColumns(row);
       const values = [
-        formatSlashDate(cleanText(row.txDt)),
-        formatSlashDate(cleanText(row.txDt)),
+        formatSlashDate(collapseSourceWhitespace(row.txDt)),
+        formatSlashDate(collapseSourceWhitespace(row.txDt)),
         formatTime(row.txTm),
-        cleanText(row.bizTxFuncTpNm),
+        collapseSourceWhitespace(row.bizTxFuncTpNm),
         withdrawal,
         deposit,
         amountText(row.afTxBal),
@@ -515,7 +510,7 @@ export function linebankApiRowsToStatementRows(
         "",
       ];
       return {
-        sortKey: `${cleanText(row.txDt)} ${cleanText(row.txTm)} ${row.txSeqNbr ?? ""}`,
+        sortKey: `${collapseSourceWhitespace(row.txDt)} ${collapseSourceWhitespace(row.txTm)} ${row.txSeqNbr ?? ""}`,
         values,
       };
     });
@@ -563,8 +558,8 @@ export function linebankValidateTransactionPageSequence(
       throw new Error("LINE Bank transaction response status is invalid.");
     }
     if (page.source !== undefined) {
-      const acctNbr = cleanText(page.source.acctNbr);
-      const arrId = cleanText(page.source.arrId);
+      const acctNbr = collapseSourceWhitespace(page.source.acctNbr);
+      const arrId = collapseSourceWhitespace(page.source.arrId);
       if (!acctNbr || !arrId) {
         throw new Error(
           "LINE Bank source account identity metadata is incomplete.",
@@ -677,7 +672,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
         throw new Error("LINE Bank foreign negative balance is unsupported by the canonical contract.");
       const amount = signedAmount;
       const balanceAfter = signedBalanceAfter;
-      const transactionDate = cleanText(row.txDt).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
+      const transactionDate = collapseSourceWhitespace(row.txDt).replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
       const transactionTime = formatTime(row.txTm);
       return {
         sourceKey: `${accountNo}:${currency}:${String(row.txSeqNbr)}:${String(row.crrnDpstNthCnt)}:${String(row.txDtm)}`,
@@ -688,7 +683,7 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
         balanceAfter,
         sourceTime: { localDate: transactionDate, localTime: transactionTime },
         originalAmount: { amount, currency },
-        description: cleanText(row.bizTxFuncTpNm) || null,
+        description: collapseSourceWhitespace(row.bizTxFuncTpNm) || null,
         sourcePayload: {
           transactionSequence: String(row.txSeqNbr),
           occurrenceCounter: String(row.crrnDpstNthCnt),
@@ -703,17 +698,17 @@ export function buildLinebankForeignCurrencyCaptureInput(input: {
 }
 
 function accountId(account: LineBankAccount): string {
-  return cleanText(account.acctNbr);
+  return collapseSourceWhitespace(account.acctNbr);
 }
 
 function accountLabel(account: LineBankAccount): string {
   return (
-    cleanText(account.acctNick) || cleanText(account.pdNm) || accountId(account)
+    collapseSourceWhitespace(account.acctNick) || collapseSourceWhitespace(account.pdNm) || accountId(account)
   );
 }
 
 export function linebankAccountCurrency(account: LineBankAccount): string {
-  return cleanText(
+  return collapseSourceWhitespace(
     account.currCd ??
       account.ccyCd ??
       account.crncyCd ??

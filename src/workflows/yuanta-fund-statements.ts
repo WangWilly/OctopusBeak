@@ -35,6 +35,7 @@ import { resolveYuantaFundIdentity } from "./yuanta-fund-identity.ts";
 import { assertYuantaFundHistoryQueryRequest } from "./yuanta-fund-history-query.ts";
 import { yuantaFundAccountHistoryQueries, yuantaFundAccountHistoryKey, yuantaFundAccountHistoryType, yuantaFundAccountHistoryScope, yuantaFundAccountHistoryQueryFields, yuantaFundAccountHistoryTableLabels, yuantaFundHistoryInvestmentTypes, type YuantaFundAccountHistoryQuery } from "./yuanta-fund-account-history.ts";
 import { canonicalYuantaFundCurrency, isYuantaFundSourceCurrencyLabel, yuantaFundSourceAmountCurrency } from "./yuanta-fund-currency.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const YUANTA_FUND_INVESTMENT_CONTRACT_VERSION =
   "yuanta-fund/investment/canonical-v1" as const;
@@ -531,13 +532,6 @@ const fundRedemptionTableLabels = ["redemption-details", "redemption-account-det
 const fundFinancialHistoryTableLabels = [...fundPurchaseTableLabels, ...fundRedemptionTableLabels,
   "conversion-details", "cash-dividend-details", "unit-dividend-details"];
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function simpleTableConfig(headers: string[]): TableOutputConfig {
   return {
     rawColumns: headers,
@@ -547,19 +541,19 @@ function simpleTableConfig(headers: string[]): TableOutputConfig {
 }
 
 export function splitWhitespacePair(value: string): [string, string] {
-  const lines = value.split(/\r?\n/u).map(cleanText).filter(Boolean);
+  const lines = value.split(/\r?\n/u).map(collapseSourceWhitespace).filter(Boolean);
   if (lines.length > 2) {
     throw new Error("YuanTa paired cell has more than two source lines.");
   }
   if (lines.length === 2) return [lines[0], lines[1]];
-  const text = cleanText(value);
+  const text = collapseSourceWhitespace(value);
   const parts = text.split(" ").filter(Boolean);
   if (parts.length <= 1) return [text, ""];
   return [parts[0] ?? "", parts.slice(1).join(" ")];
 }
 
 function splitFundNameAndTransactionNo(value: string): [string, string] {
-  const text = cleanText(value);
+  const text = collapseSourceWhitespace(value);
   const match = text.match(/^(.+?)\s+([A-Z]{1,8}\d[\w-]*)$/);
   if (!match) return [text, ""];
   return [match[1] ?? "", match[2] ?? ""];
@@ -579,7 +573,7 @@ function yuantaFundQueryRange({ start, end }: CollectionPeriod): {
 /** Whether a scope shows fund tables and body text that matches the page it should be. */
 const fundTablesShow = (bodyPattern: RegExp) => async (scope: BrowserScope): Promise<boolean> => {
   if ((await scope.locator(FUND_TABLE_SELECTOR).count().catch(() => 0)) === 0) return false;
-  return bodyPattern.test(cleanText(await scope.locator("body").innerText().catch(() => "")));
+  return bodyPattern.test(collapseSourceWhitespace(await scope.locator("body").innerText().catch(() => "")));
 };
 
 const FUND_PORTFOLIO_SUMMARY_ROUTE: YuantaRoute = {
@@ -661,7 +655,7 @@ export function isYuantaFundPositionAbsentText(
   value: string | null | undefined,
 ): boolean {
   return /無持有基金|未持有基金|無基金部位|沒有基金部位|查無基金/.test(
-    cleanText(value),
+    collapseSourceWhitespace(value),
   );
 }
 
@@ -728,13 +722,13 @@ export async function extractFundPositions(
     if (!match) continue;
 
     const [, txnType, paperNo, trustNo] = match;
-    const rowText = cleanText(
+    const rowText = collapseSourceWhitespace(
       await link
         .locator("xpath=ancestor::tr[1]")
         .innerText()
         .catch(() => ""),
     );
-    const label = cleanText(await link.textContent()) || rowText || paperNo;
+    const label = collapseSourceWhitespace(await link.textContent()) || rowText || paperNo;
     const key = `${txnType}:${paperNo}:${trustNo}`;
     if (!positions.has(key)) {
       positions.set(key, { txnType, paperNo, trustNo, label });
@@ -929,8 +923,8 @@ export async function parseHtmlTableRows(
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
       const cell = cells.nth(cellIndex);
       const sourceText = await cell.innerText();
-      values.push(cleanText(sourceText));
-      cellLines.push(sourceText.split(/\r?\n/u).map(cleanText).filter(Boolean));
+      values.push(collapseSourceWhitespace(sourceText));
+      cellLines.push(sourceText.split(/\r?\n/u).map(collapseSourceWhitespace).filter(Boolean));
       const rawColspan = await cell.getAttribute("colspan");
       const colspan = rawColspan ? Number.parseInt(rawColspan, 10) : 1;
       cellColspans.push(Number.isInteger(colspan) && colspan > 0 ? colspan : 1);
@@ -944,7 +938,7 @@ export async function parseHtmlTableRows(
   }
 
   if (parsedRows.length === 0) {
-    const text = cleanText(await table.innerText());
+    const text = collapseSourceWhitespace(await table.innerText());
     if (text) {
       parsedRows.push([text]);
       parsedCellColspans.push([1]);
@@ -1045,7 +1039,7 @@ function alignValuesToHeaders(values: string[], headers: string[]): string[] {
 
 function isRepeatedHeaderRow(values: string[], headers: string[]): boolean {
   if (values.length !== headers.length) return false;
-  return values.every((value, index) => !value || cleanText(value) === headers[index]);
+  return values.every((value, index) => !value || collapseSourceWhitespace(value) === headers[index]);
 }
 
 function tableHasNoData(table: ParsedTable): boolean {
@@ -1118,7 +1112,7 @@ function tableOutputConfigForTable(table: ParsedTable): TableOutputConfig | unde
   const layouts = tableOutputLayoutsByLabel[table.tableLabel];
   const exactLayout = layouts?.find(layout => table.rows.some(row => {
     const headers = alignValuesToHeaders(row, layout.rawColumns)
-      .map(value => cleanText(value).replace(/\s*\?/gu, ""));
+      .map(value => collapseSourceWhitespace(value).replace(/\s*\?/gu, ""));
     return headers.length === layout.rawColumns.length &&
       headers.every((header, index) => header === layout.rawColumns[index]);
   }));
@@ -1132,7 +1126,7 @@ export function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
   if (!config) return [];
   if (tableHasNoData(table)) {
     if (fundFinancialHistoryTableLabels.includes(table.tableLabel) &&
-      table.rows.some(row => row.some(value => /^\d{4}[/-]\d{2}[/-]\d{2}/u.test(cleanText(value)))))
+      table.rows.some(row => row.some(value => /^\d{4}[/-]\d{2}[/-]\d{2}/u.test(collapseSourceWhitespace(value)))))
       throw new Error("YuanTa history table contradicts its explicit empty result.");
     return [];
   }
@@ -1140,10 +1134,10 @@ export function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
   const headerRowIndex = findMatchingHeaderRowIndex(table, config.rawColumns);
   if (headerRowIndex < 0) return [];
 
-  const sourceHeaders = (table.rows[headerRowIndex] ?? []).map(value => cleanText(value).replace(/\s*\?/gu, ""));
+  const sourceHeaders = (table.rows[headerRowIndex] ?? []).map(value => collapseSourceWhitespace(value).replace(/\s*\?/gu, ""));
   const scalarOrderRequired = [...fundPurchaseTableLabels, "unit-dividend-details"].includes(table.tableLabel);
   const sourceColumnOrder = scalarOrderRequired
-    ? config.rawColumns.map(header => sourceHeaders.indexOf(cleanText(header))) : null;
+    ? config.rawColumns.map(header => sourceHeaders.indexOf(collapseSourceWhitespace(header))) : null;
   const exactSourceColumnOrder = sourceColumnOrder && sourceHeaders.length === config.rawColumns.length &&
     sourceColumnOrder.every(index => index >= 0) && new Set(sourceColumnOrder).size === sourceColumnOrder.length
     ? sourceColumnOrder : null;
@@ -1156,14 +1150,14 @@ export function normalizedRowsForTable(table: ParsedTable): NormalizedRow[] {
     rowIndex < table.rows.length;
     rowIndex += 1
   ) {
-    if (table.tableLabel === "redemption-account-details" && cleanText(table.rows[rowIndex]?.[0]) === "合計") {
+    if (table.tableLabel === "redemption-account-details" && collapseSourceWhitespace(table.rows[rowIndex]?.[0]) === "合計") {
       // The observed account report has an eight-cell aggregate footer without
       // merged cells. Require its full label layout before excluding it.
       const footer = table.rows[rowIndex]!;
       const spans = table.cellColspans?.[rowIndex];
-      if (spans?.length !== 8 || spans.some(span => span !== 1) || footer.length !== 8 || cleanText(footer[1]) !== "贖回投資金額" ||
-        cleanText(footer[3]) !== "贖回參考損益" || cleanText(footer[5]) !== "贖回參考報酬率" ||
-        cleanText(footer[7]) !== "")
+      if (spans?.length !== 8 || spans.some(span => span !== 1) || footer.length !== 8 || collapseSourceWhitespace(footer[1]) !== "贖回投資金額" ||
+        collapseSourceWhitespace(footer[3]) !== "贖回參考損益" || collapseSourceWhitespace(footer[5]) !== "贖回參考報酬率" ||
+        collapseSourceWhitespace(footer[7]) !== "")
         throw new Error("YuanTa redemption aggregate footer has an unsupported source shape.");
       continue;
     }
@@ -1382,9 +1376,9 @@ function positionForTransactionNumber(
   positions: readonly FundPosition[],
   sourceTransactionNo: string,
 ): FundPosition | undefined {
-  const normalized = cleanText(sourceTransactionNo);
+  const normalized = collapseSourceWhitespace(sourceTransactionNo);
   const matches = positions.filter((position) =>
-    normalized.length > 0 && normalized === cleanText(position.paperNo),
+    normalized.length > 0 && normalized === collapseSourceWhitespace(position.paperNo),
   );
   return matches.length === 1 ? matches[0] : undefined;
 }

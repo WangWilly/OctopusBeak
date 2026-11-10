@@ -47,6 +47,7 @@ import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/
 import { withAbort } from "./abort.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, SignInDeadlineError, type FormPlan } from "./sign-in.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const BANK_ENTRY_URL = "https://ebank.esunbank.com.tw/index.jsp";
 
@@ -135,10 +136,6 @@ export type EsunCurrentUsedCreditSnapshot = Readonly<{
 
 const dateSchema = z.string().regex(/^\d{4}\/\d{2}\/\d{2}$/);
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-}
-
 /**
  * The past-year timeline's query dates in E.SUN's YYYY/MM/DD: today in
  * Asia/Taipei and the same date one year earlier, clamped to the end of a
@@ -208,7 +205,7 @@ export function deriveEsunProjectedInstrumentIdentity(
   managedSecret: string,
 ): EsunProjectedInstrumentIdentity | undefined {
   const secret = managedSecret.trim();
-  const normalized = cleanText(cardLabel).normalize("NFKC");
+  const normalized = collapseSourceWhitespace(cardLabel).normalize("NFKC");
   const digits = normalized.replace(/\D/gu, "");
   const hasMask = /[*xX•●]/u.test(normalized);
   if (!secret || digits.length !== 8 || !hasMask) return undefined;
@@ -750,14 +747,14 @@ async function queryStatements(
 function labeledCellValue(rows: readonly string[][], label: string): string | undefined {
   const issuerLabel = /帳款結帳日|繳款截止日|本期應繳總金額|本期最低應繳金額/u;
   for (const [rowIndex, cells] of rows.entries()) {
-    const index = cells.findIndex((cell) => cleanText(cell).includes(label));
+    const index = cells.findIndex((cell) => collapseSourceWhitespace(cell).includes(label));
     if (index < 0) continue;
-    const verticallyAligned = cleanText(rows[rowIndex + 1]?.[index]);
+    const verticallyAligned = collapseSourceWhitespace(rows[rowIndex + 1]?.[index]);
     if (verticallyAligned && !issuerLabel.test(verticallyAligned))
       return verticallyAligned;
-    const following = cleanText(cells[index + 1]);
+    const following = collapseSourceWhitespace(cells[index + 1]);
     if (following && !issuerLabel.test(following)) return following;
-    const sameCell = cleanText(cells[index]).replace(label, "").trim();
+    const sameCell = collapseSourceWhitespace(cells[index]).replace(label, "").trim();
     if (sameCell && !issuerLabel.test(sameCell)) return sameCell;
   }
   return undefined;
@@ -989,7 +986,7 @@ async function readIssuerStatementSummaries(
   try {
     await popup.withSignal((signal) => page.locator('input[name="comboFilter"]').click({ signal }));
     const periods = (await popup.race(page.locator(".info-scrollable li").allTextContents()))
-      .map(cleanText)
+      .map(collapseSourceWhitespace)
       .filter((value) => /^\d{4}\/\d{2}$/u.test(value));
     if (periods.length < 2)
       throw new Error("E.SUN needs at least two available statement periods.");

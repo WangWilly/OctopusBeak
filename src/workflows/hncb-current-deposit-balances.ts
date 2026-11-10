@@ -11,6 +11,7 @@ import {
 import type { BrowserScope } from "./frame-scope.ts";
 import type { HncbMenuRoute, HncbNetbankSite } from "./hncb-netbank-site.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const DETAIL_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-v1"];
 const OVERVIEW_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"];
@@ -158,13 +159,6 @@ const directTableRowsSelector =
   ":scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr";
 const directRowCellsSelector = ":scope > th, :scope > td";
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 const HNCB_AMOUNT: ProviderDecimalPolicy = {
   internalWhitespace: "strip",
   grouping: "thousands",
@@ -175,14 +169,14 @@ function parseExactDecimal(
   value: string,
   label: string,
 ): HncbCurrentDepositExactDecimal {
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const amount = parseProviderDecimal(sourceLexeme, HNCB_AMOUNT);
   if (!amount) throw new Error(`HNCB current deposit ${label} is not an exact decimal.`);
   return { ...amount, sourceLexeme };
 }
 
 function parseAccount(value: string, rowIndex: number): string {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value);
   // The result table renders a complete account number with two display-only
   // hyphen separators. Preserve the numeric identity after removing only
   // those provider formatting characters.
@@ -201,8 +195,8 @@ function parseAccount(value: string, rowIndex: number): string {
 function isUnavailableBalanceRow(values: readonly string[]): boolean {
   return (
     values.length === HNCB_CURRENT_DEPOSIT_HEADERS.length &&
-    cleanText(values[2] ?? "") === "" &&
-    values.slice(3).every((value) => cleanText(value) === "-")
+    collapseSourceWhitespace(values[2] ?? "") === "" &&
+    values.slice(3).every((value) => collapseSourceWhitespace(value) === "-")
   );
 }
 
@@ -210,7 +204,7 @@ function parseCurrency(value: string, rowIndex: number): {
   value: string;
   sourceLexeme: string;
 } {
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const normalized = sourceLexeme.toUpperCase();
   const mapped = new Map([
     ["臺幣", "TWD"],
@@ -226,7 +220,7 @@ function parseCurrency(value: string, rowIndex: number): {
 }
 
 function normalizedHeader(value: string): string {
-  return cleanText(value);
+  return collapseSourceWhitespace(value);
 }
 
 /** Parse only account, currency, available balance, and 帳上餘額. */
@@ -279,7 +273,7 @@ async function readCellTexts(row: Locator, selector: string): Promise<string[]> 
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await cells.nth(index).innerText()));
+    values.push(collapseSourceWhitespace(await cells.nth(index).innerText()));
   }
   return values;
 }
@@ -332,7 +326,7 @@ export async function readHncbCurrentDepositDetailCells(
         const colspan = await footerCell.getAttribute("colspan");
         if (
           colspan === String(HNCB_CURRENT_DEPOSIT_HEADERS.length) ||
-          /(?:總計|合計|筆數)/u.test(cleanText(values[0]))
+          /(?:總計|合計|筆數)/u.test(collapseSourceWhitespace(values[0]))
         )
           continue;
       }
@@ -431,7 +425,7 @@ async function readSpannedTableRows(table: Locator): Promise<SpannedTableRow[]> 
       const colSpan = Number((await cell.getAttribute("colspan")) ?? "1");
       if (!Number.isSafeInteger(rowSpan) || rowSpan < 1 || !Number.isSafeInteger(colSpan) || colSpan < 1)
         throw new Error(`HNCB current deposit overview row ${rowIndex} has invalid cell spans.`);
-      const entry = { text: cleanText(await cell.innerText()), tag: resolvedTag };
+      const entry = { text: collapseSourceWhitespace(await cell.innerText()), tag: resolvedTag };
       sourceCells.push({ ...entry, rowSpan, colSpan });
       for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
         const target = grid[rowIndex + rowOffset] ?? (grid[rowIndex + rowOffset] = []);
@@ -473,7 +467,7 @@ export function parseHncbCurrentDepositOverviewSnapshot(
     if (values.length !== HNCB_CURRENT_DEPOSIT_OVERVIEW_HEADERS.length)
       throw new Error(`HNCB current deposit overview row ${rowIndex} must have 11 cells.`);
     const accountNumber = parseAccount(values[0] ?? "", rowIndex);
-    const sourceCurrencyLexeme = cleanText(values[2] ?? "");
+    const sourceCurrencyLexeme = collapseSourceWhitespace(values[2] ?? "");
     const parsedCurrency = sourceCurrencyLexeme
       ? parseCurrency(sourceCurrencyLexeme, rowIndex)
       : { value: "", sourceLexeme: "" };
@@ -555,14 +549,14 @@ export async function readHncbCurrentDepositOverviewCells(
       // safe to discard without weakening malformed data-row rejection.
       if (
         row.sourceDataCount === 0 ||
-        (row.sourceDataCount === 1 && row.values.every((value) => cleanText(value) === ""))
+        (row.sourceDataCount === 1 && row.values.every((value) => collapseSourceWhitespace(value) === ""))
       )
         continue;
       if (row.sourceDataCount === 1) {
         const footer = row.sourceCells[0];
         if (
           footer?.colSpan === 9 &&
-          cleanText(footer.text) === "列印"
+          collapseSourceWhitespace(footer.text) === "列印"
         )
           continue;
         if (

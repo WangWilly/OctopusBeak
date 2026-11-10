@@ -83,6 +83,7 @@ import {
   type YuantaCurrentUsedCreditSnapshot,
 } from "./yuanta-credit-card-parser.ts";
 import { taipeiDate } from "../lib/time/timezone.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 type MonthOption = YuantaCreditCardMonthOption;
 
@@ -188,7 +189,7 @@ export function deriveYuantaProjectedInstrumentIdentity(
 ): YuantaProjectedInstrumentIdentity | undefined {
   const secret = managedSecret.trim();
   if (!secret) return undefined;
-  const normalized = cleanText(cardLabel)
+  const normalized = collapseSourceWhitespace(cardLabel)
     .normalize("NFKC")
     .replace(/[‐‑‒–—−]/gu, "-");
   const match = normalized.match(
@@ -240,18 +241,11 @@ export function deriveYuantaCanonicalHumanAttestation(
   };
 }
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export function isCreditCardProductAbsentText(
   value: string | null | undefined,
 ): boolean {
   return /未持有信用卡|目前(?:無|沒有)信用卡|無信用卡產品|尚未申請信用卡|查無信用卡|無可用信用卡|未持有卡片/.test(
-    cleanText(value),
+    collapseSourceWhitespace(value),
   );
 }
 
@@ -405,7 +399,7 @@ async function waitForYuantaCreditCardSummary(
 ): Promise<BrowserScope> {
   return await frames.until(async () => {
     for (const scope of frames.scopes()) {
-      const bodyText = cleanText(
+      const bodyText = collapseSourceWhitespace(
         await scope.locator("body").innerText().catch(() => ""),
       );
       if (
@@ -462,7 +456,7 @@ async function readYuantaSummaryHtml(
       ? [preferredFrame, ...frames.scopes().filter((scope) => scope !== preferredFrame)]
       : frames.scopes();
     for (const scope of scopes) {
-      const bodyText = cleanText(
+      const bodyText = collapseSourceWhitespace(
         await scope.locator("body").innerText().catch(() => ""),
       );
       if (
@@ -901,7 +895,7 @@ function cardKeyForRow(row: StatementRow): string {
 }
 
 function safeCanonicalCardName(value: string): string {
-  return cleanText(value)
+  return collapseSourceWhitespace(value)
     .replace(/(?<!\d)(?:\d[\s-]*){12,19}(?!\d)/gu, "")
     .replace(/\s+/gu, " ")
     .trim();
@@ -927,14 +921,14 @@ export function toYuantaCanonicalCreditCardSourceRow(
   return {
     creditCardNo: instrument.cardMask,
     creditCardName: safeCanonicalCardName(row.creditCardName),
-    consumeDate: cleanText(row.consumeDate),
-    postedDate: cleanText(row.postedDate),
-    description: cleanText(row.description),
-    countryCurrency: cleanText(row.countryCurrency),
-    foreignExchangeDate: cleanText(row.foreignExchangeDate),
-    foreignAmount: cleanText(row.foreignAmount),
-    twdAmount: cleanText(row.twdAmount),
-    paymentStatus: cleanText(row.paymentStatus),
+    consumeDate: collapseSourceWhitespace(row.consumeDate),
+    postedDate: collapseSourceWhitespace(row.postedDate),
+    description: collapseSourceWhitespace(row.description),
+    countryCurrency: collapseSourceWhitespace(row.countryCurrency),
+    foreignExchangeDate: collapseSourceWhitespace(row.foreignExchangeDate),
+    foreignAmount: collapseSourceWhitespace(row.foreignAmount),
+    twdAmount: collapseSourceWhitespace(row.twdAmount),
+    paymentStatus: collapseSourceWhitespace(row.paymentStatus),
     period: kind === "billed" ? row.period : null,
     instrumentKey: instrument.instrumentKey,
   };

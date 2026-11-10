@@ -47,6 +47,7 @@ import {
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
 const DOMESTIC_DETAILS_URL =
@@ -204,13 +205,6 @@ export type CtbcStatementRow = {
   values: string[];
 };
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/[\u00a0\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function digitsOnly(value: string): string {
   return value.replace(/\D/g, "");
 }
@@ -219,11 +213,11 @@ function amountText(
   displayValue: string | undefined,
   rawValue: string | undefined,
 ) {
-  return cleanText(displayValue) || cleanText(rawValue);
+  return collapseSourceWhitespace(displayValue) || collapseSourceWhitespace(rawValue);
 }
 
 function slashDate(value: string | undefined): string {
-  const clean = cleanText(value);
+  const clean = collapseSourceWhitespace(value);
   if (/^\d{4}\/\d{2}\/\d{2}$/.test(clean)) return clean;
   if (/^\d{8}$/.test(clean)) {
     return `${clean.slice(0, 4)}/${clean.slice(4, 6)}/${clean.slice(6, 8)}`;
@@ -236,19 +230,19 @@ function dateKey(value: string): string {
 }
 
 function timeFromDetail(detail: CtbcDetailRow): string {
-  const actDtTm = cleanText(detail.actDtTm);
+  const actDtTm = collapseSourceWhitespace(detail.actDtTm);
   const dotted = actDtTm.match(/\d{4}-\d{2}-\d{2}-(\d{2})\.(\d{2})\.(\d{2})/);
   if (dotted) return `${dotted[1]}:${dotted[2]}:${dotted[3]}`;
 
-  const sortActDtTm = cleanText(detail.sortActDtTm);
+  const sortActDtTm = collapseSourceWhitespace(detail.sortActDtTm);
   const clock = sortActDtTm.match(/\b(\d{2}:\d{2}:\d{2})\b/);
   return clock?.[1] ?? "";
 }
 
 function noteForDetail(detail: CtbcDetailRow): string {
   const parts = [
-    cleanText(detail.passBookMemo),
-    cleanText(detail.memo2),
+    collapseSourceWhitespace(detail.passBookMemo),
+    collapseSourceWhitespace(detail.memo2),
   ].filter(Boolean);
   return [...new Set(parts)].join(" ");
 }
@@ -263,10 +257,10 @@ export function ctbcDetailRowsToStatementRows(
       accountingDate,
       transactionDate,
       timeFromDetail(detail),
-      cleanText(detail.memo1),
+      collapseSourceWhitespace(detail.memo1),
       amountText(detail.dbAmtDisplay, detail.dbAmt),
       amountText(detail.crAmtDisplay, detail.crAmt),
-      cleanText(detail.balanceAmt),
+      collapseSourceWhitespace(detail.balanceAmt),
       noteForDetail(detail),
     ];
 
@@ -537,7 +531,7 @@ async function readDetailAccountOptions(
   const count = await scope.race(detailAccountOptions(page).count());
   const accounts: CtbcAccount[] = [];
   for (let index = 0; index < count; index += 1) {
-    const text = cleanText(
+    const text = collapseSourceWhitespace(
       await scope.withSignal((signal) => detailAccountOptions(page).nth(index).textContent({ signal })),
     );
     const account = accountFromOptionText(text, index);
@@ -582,9 +576,9 @@ async function selectDetailAccount(
 }
 
 function accountFromRaw(raw: CtbcRawAccount): CtbcAccount | null {
-  const accountId = cleanText(raw.accountId);
+  const accountId = collapseSourceWhitespace(raw.accountId);
   if (!accountId) return null;
-  const nickname = cleanText(raw.accountNickName);
+  const nickname = collapseSourceWhitespace(raw.accountNickName);
   return {
     accountId,
     nickname,
@@ -596,10 +590,10 @@ function accountsFromBootstrap(data: CtbcBootstrapData): CtbcAccount[] {
   const accounts = (data.accountInfoList ?? [])
     .map(accountFromRaw)
     .filter((account): account is CtbcAccount => account !== null);
-  if (accounts.length === 0 && cleanText(data.accountId)) {
+  if (accounts.length === 0 && collapseSourceWhitespace(data.accountId)) {
     accounts.push({
-      accountId: cleanText(data.accountId),
-      label: `新臺幣-${cleanText(data.accountId)}`,
+      accountId: collapseSourceWhitespace(data.accountId),
+      label: `新臺幣-${collapseSourceWhitespace(data.accountId)}`,
     });
   }
 
@@ -614,7 +608,7 @@ function filterAccounts(
   accounts: CtbcAccount[],
   filters: string[] | undefined,
 ): CtbcAccount[] {
-  const cleanFilters = filters?.map(cleanText).filter(Boolean) ?? [];
+  const cleanFilters = filters?.map(collapseSourceWhitespace).filter(Boolean) ?? [];
   if (cleanFilters.length === 0) return accounts;
   return accounts.filter((account) =>
     cleanFilters.some((filter) =>
@@ -627,7 +621,7 @@ function queryPeriodForDateRange(dateRange: CtbcDateRange): string {
   const startDate = slashDate(dateRange.firstDateYYYYMMDD);
   const endDate = slashDate(dateRange.lastDateYYYYMMDD);
   if (startDate && endDate) return `${startDate}~${endDate}`;
-  return cleanText(dateRange.currMonthYYYYMM);
+  return collapseSourceWhitespace(dateRange.currMonthYYYYMM);
 }
 
 function queryPeriodsForBootstrap(
@@ -689,7 +683,7 @@ async function accountRowsFromCurrentPage(
   const queryPeriods = queryPeriodsForBootstrap(bootstrap, input);
   const responses = await reply.validate(() => captures.map((capture, rangeOrdinal) => {
     const code = capture.body.code === NO_DATA_CODE ? NO_DATA_CODE : "0000";
-    const nextKey = cleanText(capture.body.rsData?.nextKey) || null;
+    const nextKey = collapseSourceWhitespace(capture.body.rsData?.nextKey) || null;
     const range = ranges[rangeOrdinal];
     return {
       rangeOrdinal,
