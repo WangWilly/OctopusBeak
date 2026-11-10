@@ -137,7 +137,7 @@ const runSource = source.slice(
   source.indexOf("export async function runFubonCreditCardStatements"),
 );
 assert.doesNotMatch(source, /openFubonLoginForm|fubonLogin\(|workflow\(/u);
-assert.match(runSource, /capture\.snapshotMode === "full"/);
+assert.match(runSource, /if \(capture\.snapshotMode !== "full"\)\s*throw new Error\("Fubon credit-card source is incomplete/u);
 assert.doesNotMatch(source, /requirePGliteChildRpcClientFromEnv|executePGliteWorkflowRun|writeFile\(|downloads[\\/]fubon/u);
 
 const summaryRows = [
