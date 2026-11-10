@@ -117,6 +117,21 @@ test("source-only items, then deposits, then balances stage in one call, each ke
   assert.equal("relationCommands" in staged![2]!, false);
 });
 
+test("rows the snapshot excludes come back to the source and stage nothing", async () => {
+  const { product, calls } = harness();
+  const excluding = snapshot();
+  const excluded = await stageCanonicalDeposits(
+    product,
+    [await admitDeposit<Balance>(product, () => ({ product: "domestic-deposit", capture: capture("financial-a"), balance: { account: "a" } }))],
+    {
+      snapshot: { ...excluding, matching: { ...excluding.matching, unmatched: { kind: "exclude" } } },
+      rows: [{ account: "a", amount: "1" }, { account: "z", amount: "9" }],
+    },
+  );
+  assert.deepEqual(excluded, [{ account: "z", amount: "9" }]);
+  assert.deepEqual(calls[0]!.map(({ itemKey }) => itemKey), ["financial-a", "current-balance:a"]);
+});
+
 test("an admission that throws is reported as the product's validation failure", async () => {
   const { product, log, calls } = harness();
   await assert.rejects(

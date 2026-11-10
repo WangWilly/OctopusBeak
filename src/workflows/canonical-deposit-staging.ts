@@ -76,13 +76,14 @@ export type DepositCurrentBalance<Acquired extends ProviderAcquisition, Row, Bal
  * snapshot has validated, so a broken snapshot stages no deposit. Source-only
  * items come first, then deposits in admission order, then balances. With no
  * admitted deposit that carries a balance capture, the snapshot is neither
- * read nor staged.
+ * read nor staged. Returns the rows the snapshot's `exclude` policy left out,
+ * for the source to report.
  */
 export async function stageCanonicalDeposits<Acquired extends ProviderAcquisition, Row, Balance, DateRule extends ProviderDateRule>(
   product: Pick<ProductCollectionHandle, "stage"> & SnapshotProduct,
   admissions: readonly DepositAdmission<Balance>[],
   currentBalance: DepositCurrentBalance<Acquired, Row, Balance, DateRule>,
-): Promise<void> {
+): Promise<readonly Row[]> {
   const sourceOnly: ProductStageRequest[] = [];
   const deposits: ProductStageRequest[] = [];
   const balanceCaptures: Balance[] = [];
@@ -110,15 +111,16 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
     if (admission.balance !== undefined) balanceCaptures.push(admission.balance);
   }
   const balances = balanceCaptures.length === 0
-    ? []
+    ? { items: [], excluded: [] }
     : "rows" in currentBalance
-      ? (await stageCurrentStateSnapshot(currentBalance.snapshot, currentBalance.rows, { captures: balanceCaptures, product })).items
-      : (await captureCurrentStateSnapshots(currentBalance.snapshot, {
+      ? await stageCurrentStateSnapshot(currentBalance.snapshot, currentBalance.rows, { captures: balanceCaptures, product })
+      : await captureCurrentStateSnapshots(currentBalance.snapshot, {
           captures: balanceCaptures,
           acquire: currentBalance.acquire,
           ...(currentBalance.observedAt === undefined ? {} : { observedAt: currentBalance.observedAt }),
           product,
-        })).items;
+        });
   product.signal.throwIfAborted();
-  product.stage(...sourceOnly, ...deposits, ...balances);
+  product.stage(...sourceOnly, ...deposits, ...balances.items);
+  return balances.excluded;
 }
