@@ -9,7 +9,7 @@ import {
 } from "../ledger/pglite/workflow-commands.ts";
 import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { stageCanonicalCreditCards, type CurrentUsedCredit } from "./canonical-credit-card-staging.ts";
+import { admitCreditCards, stageCanonicalCreditCards, type CurrentUsedCredit } from "./canonical-credit-card-staging.ts";
 import { issuerAggregateMatching } from "./current-state-snapshot-capture.ts";
 
 type Capture = Readonly<{ name: string }>;
@@ -68,7 +68,7 @@ function harness(signal = new AbortController().signal) {
 
 test("a card and its current used credit stage in one call, bound to that card", async () => {
   const { product, log, calls } = harness();
-  await stageCanonicalCreditCards(product, [card("a")], usedCredit([{ used: "46989" }]));
+  await stageCanonicalCreditCards(product, await admitCreditCards(product, () => [card("a")]), usedCredit([{ used: "46989" }]));
   assert.deepEqual(log, [
     "validation:started:current-balance-validation-started",
     "validation:completed:current-balance-validation-completed",
@@ -86,7 +86,7 @@ test("a card and its current used credit stage in one call, bound to that card",
 
 test("cards without current used credit stage alone, in one call, and report no current-balance events", async () => {
   const { product, log, calls } = harness();
-  await stageCanonicalCreditCards(product, [card("a"), card("b")]);
+  await stageCanonicalCreditCards(product, await admitCreditCards(product, () => [card("a"), card("b")]));
   assert.deepEqual(log, ["stage:credit-card,credit-card"]);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0]!.map(({ itemKey }) => itemKey), ["capture:a", "capture:b"]);
@@ -95,7 +95,7 @@ test("cards without current used credit stage alone, in one call, and report no 
 test("used credit with more than one card capture throws before validating or staging", async () => {
   const { product, log, calls } = harness();
   await assert.rejects(
-    stageCanonicalCreditCards(product, [card("a"), card("b")], usedCredit([{ used: "1" }])),
+    stageCanonicalCreditCards(product, await admitCreditCards(product, () => [card("a"), card("b")]), usedCredit([{ used: "1" }])),
     /issuer aggregate/u,
   );
   assert.deepEqual(log, []);
@@ -105,7 +105,7 @@ test("used credit with more than one card capture throws before validating or st
 test("a current used credit that fails validation stages no card", async () => {
   const { product, log, calls } = harness();
   await assert.rejects(
-    stageCanonicalCreditCards(product, [card("a")], usedCredit([{ used: "1", broken: true }])),
+    stageCanonicalCreditCards(product, await admitCreditCards(product, () => [card("a")]), usedCredit([{ used: "1", broken: true }])),
     /Synthetic used credit is broken/u,
   );
   assert.deepEqual(log, [
@@ -115,9 +115,21 @@ test("a current used credit that fails validation stages no card", async () => {
   assert.deepEqual(calls, []);
 });
 
+test("an admission that throws is reported as the product's validation failure and stages nothing", async () => {
+  const { product, log, calls } = harness();
+  await assert.rejects(
+    admitCreditCards(product, () => {
+      throw new Error("Synthetic card admission failed.");
+    }),
+    /Synthetic card admission failed/u,
+  );
+  assert.deepEqual(log, ["validation:failed:source-validation-rejected"]);
+  assert.deepEqual(calls, []);
+});
+
 test("no cards stage nothing and leave the current used credit unvalidated", async () => {
   const { product, log, calls } = harness();
-  await stageCanonicalCreditCards(product, [], usedCredit([{ used: "46989" }]));
+  await stageCanonicalCreditCards(product, await admitCreditCards<Capture>(product, () => []), usedCredit([{ used: "46989" }]));
   assert.deepEqual(log, []);
   assert.deepEqual(calls, []);
 });
@@ -130,6 +142,6 @@ test("an abort after validation stages nothing", async () => {
     ...credit,
     snapshot: { ...credit.snapshot, validate: () => controller.abort(new Error("Synthetic abort.")) },
   };
-  await assert.rejects(stageCanonicalCreditCards(product, [card("a")], abortingCredit), /Synthetic abort/u);
+  await assert.rejects(stageCanonicalCreditCards(product, await admitCreditCards(product, () => [card("a")]), abortingCredit), /Synthetic abort/u);
   assert.deepEqual(calls, []);
 });
