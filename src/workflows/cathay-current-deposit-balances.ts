@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Locator, Page, Response } from "playwright";
+import {
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
+  type CurrentDepositRouteContract,
+} from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
   isDeclaredProviderResponse,
@@ -11,17 +15,13 @@ import {
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { CathayStrictSourceOptions } from "./cathay-statements.ts";
 
-export const CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH =
-  "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview" as const;
+const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"];
+const FOREIGN_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/foreign-currency/current-balance-v1"];
+
 export const CATHAY_CURRENT_DOMESTIC_UI_PATH =
   "/OnlineBanking/AcctInq/B0101_DepInq" as const;
-export const CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH =
-  "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView" as const;
 export const CATHAY_CURRENT_FOREIGN_UI_PATH =
   "/OnlineBanking/FAcctInq/R0101_FDepInq" as const;
-export const CATHAY_CURRENT_DEPOSIT_HOST = "www.cathaybk.com.tw" as const;
-export const CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION =
-  "cathay/current-deposit-balance-v1" as const;
 export const CATHAY_CURRENT_DEPOSIT_TIME_BOUND_MS = 5 * 60 * 1000;
 
 export type CathayCurrentDepositKind = "domestic" | "foreign";
@@ -36,27 +36,29 @@ export type CathayCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
-function cathayCurrentDepositResponse(path: string): ProviderResponseDeclaration<"required"> {
+function cathayCurrentDepositResponse(
+  contract: CurrentDepositRouteContract,
+): ProviderResponseDeclaration<"required"> {
   return {
     label: "Cathay current deposit",
-    host: CATHAY_CURRENT_DEPOSIT_HOST,
+    host: contract.endpointHost,
     endpoints: [{
-      path,
+      path: contract.endpointPath,
       method: "POST",
       // Cathay's JSON APIs have labeled their bodies both ways.
       contentType: /^(?:application\/json|text\/plain)\s*(?:;.*)?$/isu,
       // Cathay has never constrained the overview's query string.
       search: /^.*$/su,
     }],
-    cacheControl: [],
+    cacheControl: contract.requiredCacheTokens,
     providerDate: "required",
   };
 }
 
 /** The 臺幣帳戶總覽 overview POST. */
-export const CATHAY_CURRENT_DOMESTIC_RESPONSE = cathayCurrentDepositResponse(CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH);
+export const CATHAY_CURRENT_DOMESTIC_RESPONSE = cathayCurrentDepositResponse(DOMESTIC_CONTRACT);
 /** The 外幣帳戶總覽 overview POST. */
-export const CATHAY_CURRENT_FOREIGN_RESPONSE = cathayCurrentDepositResponse(CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH);
+export const CATHAY_CURRENT_FOREIGN_RESPONSE = cathayCurrentDepositResponse(FOREIGN_CONTRACT);
 
 export function cathayCurrentDepositResponseDeclaration(
   kind: CathayCurrentDepositKind,
@@ -96,11 +98,11 @@ export type CathayCurrentDomesticDepositBalanceRow = Readonly<{
   httpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH;
+    endpoint: typeof DOMESTIC_CONTRACT.endpointPath;
     uiPath: typeof CATHAY_CURRENT_DOMESTIC_UI_PATH;
     status: 200;
     responseDigest: string;
-    contractVersion: typeof CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION;
+    contractVersion: typeof DOMESTIC_CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -121,11 +123,11 @@ export type CathayCurrentForeignDepositBalanceRow = Readonly<{
   httpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
+    endpoint: typeof FOREIGN_CONTRACT.endpointPath;
     uiPath: typeof CATHAY_CURRENT_FOREIGN_UI_PATH;
     status: 200;
     responseDigest: string;
-    contractVersion: typeof CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION;
+    contractVersion: typeof FOREIGN_CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -372,11 +374,11 @@ function domesticRows(
       httpDate,
       observedAt,
       sourceEvidence: {
-        endpoint: CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
+        endpoint: DOMESTIC_CONTRACT.endpointPath,
         uiPath: CATHAY_CURRENT_DOMESTIC_UI_PATH,
         status: 200,
         responseDigest: digest,
-        contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+        contractVersion: DOMESTIC_CONTRACT.contractVersion,
       },
     });
   }
@@ -438,11 +440,11 @@ function foreignRows(
         httpDate,
         observedAt,
         sourceEvidence: {
-          endpoint: CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
+          endpoint: FOREIGN_CONTRACT.endpointPath,
           uiPath: CATHAY_CURRENT_FOREIGN_UI_PATH,
           status: 200,
           responseDigest: digest,
-          contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+          contractVersion: FOREIGN_CONTRACT.contractVersion,
         },
       });
     }

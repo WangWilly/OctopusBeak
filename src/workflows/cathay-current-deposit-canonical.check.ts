@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
   CATHAY_CURRENT_DOMESTIC_RESPONSE,
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   CATHAY_CURRENT_FOREIGN_RESPONSE,
   parseCathayCurrentDepositBalanceSnapshot,
 } from "./cathay-current-deposit-balances.ts";
@@ -38,6 +37,9 @@ import {
 } from "./cathay-current-deposit-balances.fixtures.ts";
 import { productCollectionHandle, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
 
+const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"];
+const FOREIGN_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/foreign-currency/current-balance-v1"];
+
 const systemTime = "2026-09-08T21:20:04.1234567+08:00";
 const observedAt = "2026-09-08T21:20:10+08:00";
 const date = "Tue, 08 Sep 2026 13:20:04 GMT";
@@ -47,7 +49,7 @@ const foreignAccountNumber = ["1234", "5678", "9012"].join("");
 const domesticRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "domestic",
   response: verifyProviderResponse(CATHAY_CURRENT_DOMESTIC_RESPONSE, {
-    url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`,
+    url: `https://${DOMESTIC_CONTRACT.endpointHost}${DOMESTIC_CONTRACT.endpointPath}`,
     status: 200,
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8", date },
@@ -116,7 +118,7 @@ assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(domesticCapture));
 const foreignRows = parseCathayCurrentDepositBalanceSnapshot({
   kind: "foreign",
   response: verifyProviderResponse(CATHAY_CURRENT_FOREIGN_RESPONSE, {
-    url: `https://www.cathaybk.com.tw${CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH}`,
+    url: `https://${FOREIGN_CONTRACT.endpointHost}${FOREIGN_CONTRACT.endpointPath}`,
     status: 200,
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8", date },

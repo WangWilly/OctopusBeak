@@ -1,12 +1,13 @@
 import type { Page, Response } from "playwright";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   type CathayCurrentDepositKind,
   type CathayCurrentDepositResponse,
 } from "./cathay-current-deposit-balances.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
+
+const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"];
+const FOREIGN_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/foreign-currency/current-balance-v1"];
 
 /** A recorded Cathay overview response: the body as the provider sent it. */
 export type CathayRecordedOverview = Readonly<{
@@ -49,11 +50,11 @@ export function cathayOverviewAcquired(
   kind: CathayCurrentDepositKind,
   overview: CathayRecordedOverview,
 ): CathayCurrentDepositResponse {
-  const path = kind === "domestic" ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH;
+  const path = kind === "domestic" ? DOMESTIC_CONTRACT.endpointPath : FOREIGN_CONTRACT.endpointPath;
   return {
     evidence: { kind: "json", bytes: new TextEncoder().encode(overview.body) },
     response: {
-      url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${path}`,
+      url: `https://${DOMESTIC_CONTRACT.endpointHost}${path}`,
       status: 200,
       method: "POST",
       headers: { "content-type": "application/json; charset=utf-8", date: overview.date },
@@ -64,7 +65,7 @@ export function cathayOverviewAcquired(
 
 function recordedResponse(path: string, overview: CathayRecordedOverview): Response {
   return fakeProviderReply({
-    url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${path}`,
+    url: `https://${DOMESTIC_CONTRACT.endpointHost}${path}`,
     method: "POST",
     headers: { "content-type": "application/json; charset=utf-8", date: overview.date },
     body: overview.body,
@@ -87,11 +88,11 @@ export function cathayOverviewPage(
   const overviewFor: Record<string, () => CathayRecordedOverview & Readonly<{ path: string }>> = {
     臺幣帳戶總覽: () => {
       if (!overviews.domestic) throw new Error("No recorded Cathay domestic overview.");
-      return { ...overviews.domestic, path: CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH };
+      return { ...overviews.domestic, path: DOMESTIC_CONTRACT.endpointPath };
     },
     外幣帳戶總覽: () => {
       if (!overviews.foreign) throw new Error("No recorded Cathay foreign overview.");
-      return { ...overviews.foreign, path: CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH };
+      return { ...overviews.foreign, path: FOREIGN_CONTRACT.endpointPath };
     },
   };
   const controls = ["臺幣", "外幣", ...Object.keys(overviewFor)];

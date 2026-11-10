@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { type Browser } from "playwright";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
-import {
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  readCathayCurrentDepositBalanceResponse,
-} from "./cathay-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { sourceReader } from "./provider-response-reader.ts";
+
+const CATHAY_HOST = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"].endpointHost;
 
 const CANCELLED = new Error("synthetic cancellation");
 
@@ -23,12 +23,12 @@ test("cancelling the run stops a current balance read waiting a minute for the o
   const page = await browser.newPage();
   try {
     // The menu renders, but opening the overview never sends the POST the read waits for.
-    await page.route(`https://${CATHAY_CURRENT_DEPOSIT_HOST}/**`, (route) =>
+    await page.route(`https://${CATHAY_HOST}/**`, (route) =>
       route.fulfill({
         contentType: "text/html; charset=utf-8",
         body: "<button>臺幣</button><button>臺幣帳戶總覽</button>",
       }));
-    await page.goto(`https://${CATHAY_CURRENT_DEPOSIT_HOST}/OnlineBanking/`);
+    await page.goto(`https://${CATHAY_HOST}/OnlineBanking/`);
     const controller = new AbortController();
     setTimeout(() => controller.abort(CANCELLED), 300);
     const started = Date.now();
