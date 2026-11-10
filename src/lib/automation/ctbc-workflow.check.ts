@@ -313,7 +313,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
 
     assert.deepEqual(result, {
       status: "financial-admitted",
-      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2, count: 1 },
+      counts: { sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2 },
       products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
     });
     assert.equal(harness.committed.length, 1);

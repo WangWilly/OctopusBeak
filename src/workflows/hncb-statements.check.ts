@@ -604,7 +604,7 @@ const sourceOnlySummary = await stageHncbDeposit(
 );
 assert.equal(currentReads, 0, "a source-only snapshot never opens the balance pages");
 assert.deepEqual(sourceOnlyStaged.map((item) => item.command.kind), [PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND]);
-assert.deepEqual(sourceOnlySummary, { accountCount: 1, sourceCaptureCount: 1, rowCount: 1 });
+assert.deepEqual(sourceOnlySummary, { counts: { accountCount: 1 }, sourceCaptureCount: 1, rowCount: 1 });
 
 const financialStaged: ProductStageRequest[] = [];
 await stageHncbDeposit(

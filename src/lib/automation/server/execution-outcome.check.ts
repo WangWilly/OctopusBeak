@@ -159,6 +159,7 @@ test("an interrupted product collection keeps its committed products over the wo
       rowCount: 2,
       itemCount: 2,
       committedCount: 2,
+      counts: {},
       products,
     }),
     cancelled: false,

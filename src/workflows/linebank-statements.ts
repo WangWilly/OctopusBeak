@@ -1158,7 +1158,6 @@ async function runLineBankWorkflow(
     await linebankAutoDismissApprovedAlert(scope);
     await linebankEnsureTransactionPage(scope);
 
-    let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const windows = linebankQueryWindows(product.collectionPeriod());
@@ -1296,19 +1295,13 @@ async function runLineBankWorkflow(
           if (!balanceAdmitting) throw error;
           throw new Error("LINE Bank current balance source admission was rejected.");
         }
-        accountCount = accounts.length;
         return {
           sourceCaptureCount: selectedSources.length,
           rowCount: statementRowCount,
+          counts: { accountCount: accounts.length },
         };
       },
     });
-    return productRunResult(summary, {
-      counts: {
-        accountCount,
-        statementRowCount: summary.rowCount,
-        financialItemCount: summary.itemCount,
-      },
-    });
+    return productRunResult(summary);
   });
 }

@@ -84,6 +84,7 @@ test("product outcomes survive typed sanitization and persisted outcome round-tr
     rowCount: 5,
     itemCount: 3,
     committedCount: 3,
+    counts: {},
     products,
   }));
   assert.deepEqual(interrupted?.products, products);
@@ -318,6 +319,7 @@ test("three-product TDCC exclusion aggregates stay bounded through normal and in
     rowCount: 0,
     itemCount: 3,
     committedCount: 3,
+    counts: {},
     status: "partial",
   }));
   assert.ok(interrupted);

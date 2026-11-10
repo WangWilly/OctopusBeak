@@ -852,13 +852,6 @@ function sinopacCaptureId(observedAt: string): string {
     .slice(0, 24)}-${Date.now()}`;
 }
 
-/** SinoPac's own account counts for one deposit collection. */
-type SinopacDepositCollection = Readonly<{
-  accountCount: number;
-  rowCount: number;
-  skippedAccountCount: number;
-}>;
-
 /** Observe the balance page's response; the snapshot module decodes and parses it. */
 export type SinopacReadCurrentDepositBalanceResponse = () => Promise<SinopacCurrentDepositResponse>;
 
@@ -1026,7 +1019,7 @@ export async function stageSinopacDeposit(
   _input: SinopacWorkflowInput,
   product: ProductCollectionHandle,
   readCurrentBalances: SinopacReadCurrentDepositBalanceResponse,
-): Promise<SinopacDepositCollection & ProductCollectionSummary> {
+): Promise<ProductCollectionSummary> {
   const { observedAt } = snapshot;
   const captureOccurrenceId = sinopacCaptureId(observedAt);
   const admissions: DepositAdmission<ExistingSinopacFinancialCapture>[] = [];
@@ -1064,10 +1057,12 @@ export async function stageSinopacDeposit(
     acquire: readCurrentBalances,
   });
   return {
-    accountCount: snapshot.accounts.length,
     rowCount: snapshot.accounts.reduce((count, read) => count + read.rowCount, 0),
-    skippedAccountCount: snapshot.accounts.filter((read) => read.providerNoData).length,
     sourceCaptureCount: snapshot.accounts.length,
+    counts: {
+      accountCount: snapshot.accounts.length,
+      skippedAccountCount: snapshot.accounts.filter((read) => read.providerNoData).length,
+    },
   };
 }
 
@@ -1077,7 +1072,7 @@ export async function runSinopacDeposit(
   input: SinopacWorkflowInput,
   context: WorkflowContext,
   product: ProductCollectionHandle,
-): Promise<SinopacDepositCollection & ProductCollectionSummary> {
+): Promise<ProductCollectionSummary> {
   const source = sinopacDepositSource(site, product);
   const snapshot = await readSinopacDepositSource(source, input, context, product);
   return await stageSinopacDeposit(snapshot, input, product, source.readCurrentBalances);
@@ -1125,13 +1120,8 @@ async function runSinopacWorkflow(
     context.signal.throwIfAborted();
     const site = sinopacMmaSite(page, context);
 
-    let deposit: SinopacDepositCollection | null = null;
     const summary = await context.products.collect({
-      deposit: async (product): Promise<ProductCollectionSummary> => {
-        const { sourceCaptureCount, ...collected } = await collectDeposit(site, input, context, product);
-        deposit = collected;
-        return { sourceCaptureCount, rowCount: collected.rowCount };
-      },
+      deposit: (product) => collectDeposit(site, input, context, product),
     }, {
       assertSession,
       attached: {
@@ -1150,14 +1140,6 @@ async function runSinopacWorkflow(
         assertSession,
       },
     });
-    // SinoPac's account counts describe the verified deposit only.
-    const [verified, ...attached] = summary.products;
-    const succeeded = verified?.status === "success" ? deposit as SinopacDepositCollection | null : null;
-    return productRunResult(summary, {
-      counts: {
-        accountCount: succeeded?.accountCount ?? attached.reduce((total, product) => total + product.itemCount, 0),
-        skippedAccountCount: succeeded?.skippedAccountCount ?? 0,
-      },
-    });
+    return productRunResult(summary);
   });
 }

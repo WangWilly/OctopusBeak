@@ -221,7 +221,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     assert.equal(result.outcome.summary?.status, "source-only");
     assert.deepEqual(
       Object.keys(result.outcome.summary?.counts ?? {}).sort(),
-      ["committedCount", "count", "itemCount", "rowCount", "sourceCaptureCount"],
+      ["committedCount", "itemCount", "rowCount", "sourceCaptureCount"],
     );
     assert.equal(observedStartUrl, LOGIN_URL);
     assert.equal(observedBrowserProfile, "ctbc-login");

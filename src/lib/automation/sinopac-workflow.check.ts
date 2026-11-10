@@ -328,7 +328,7 @@ test("a SinoPac snapshot of provider no-data stages source only and never reads 
   assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
     "domestic-deposit:financial.source.admit",
   ]);
-  assert.deepEqual(counts, { accountCount: 1, rowCount: 0, skippedAccountCount: 1, sourceCaptureCount: 1 });
+  assert.deepEqual(counts, { rowCount: 0, sourceCaptureCount: 1, counts: { accountCount: 1, skippedAccountCount: 1 } });
   assert.equal(codes.includes("current-balance-collection-started"), false);
 });
 
@@ -355,7 +355,7 @@ test("a financial SinoPac snapshot reads current balances once and stages the ma
     "2026-09-24T12:00:00+08:00",
     "the balance carries the run clock's Taipei second",
   );
-  assert.deepEqual(counts, { accountCount: 1, rowCount: 1, skippedAccountCount: 0, sourceCaptureCount: 1 });
+  assert.deepEqual(counts, { rowCount: 1, sourceCaptureCount: 1, counts: { accountCount: 1, skippedAccountCount: 0 } });
   assert.deepEqual(codes, [
     "current-balance-collection-started",
     "current-balance-decoding-started",

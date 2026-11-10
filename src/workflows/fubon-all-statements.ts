@@ -295,9 +295,7 @@ async function runFubonWorkflow(
           assertSession,
         },
       });
-      return productRunResult(summary, {
-        counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
-      });
+      return productRunResult(summary);
     } finally {
       stop();
       await signOut(page).catch(() => undefined);

@@ -168,7 +168,6 @@ try {
         rowCount: 10,
         itemCount: 5,
         committedCount: 5,
-        skippedProductCount: 0,
       },
       products: productTypes.map((typeId) => ({ typeId, status: "success", itemCount: 1, committedCount: 1 })),
       status: "financial-admitted",

@@ -282,7 +282,6 @@ test("Cathay all workflow collects and commits selected products independently w
       rowCount: 4,
       itemCount: 4,
       committedCount: 4,
-      count: 2,
     });
     assert.equal(harness.committed.length, 2);
     const statementItem = harness.committed[0]![0] as {
@@ -714,7 +713,7 @@ test("a Cathay run with only an attached product signs in and collects only that
     ["time_deposit", "skipped", "not_selected"],
     ["loan", "skipped", "not_selected"],
   ]);
-  assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 3, itemCount: 1, committedCount: 1, count: 0 });
+  assert.deepEqual(output.counts, { sourceCaptureCount: 0, rowCount: 3, itemCount: 1, committedCount: 1, accountCount: 1 });
   assert.equal(output.status, "completed", "a preview-only run admits no financial data");
 });
 

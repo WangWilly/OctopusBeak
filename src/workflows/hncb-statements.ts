@@ -78,8 +78,6 @@ type HncbCredentials = HncbVerifiedInput["credentials"];
 export type HncbWorkflowInput = HncbVerifiedInput & z.infer<typeof hncbInputSchema>;
 export type HncbDepositInput = Pick<HncbWorkflowInput, "accountFilters">;
 export type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
-/** HNCB's own account count beside the product summary for one deposit collection. */
-export type HncbDepositSummary = ProductCollectionSummary & Readonly<{ accountCount: number }>;
 type DateParts = {
   year: number;
   month: number;
@@ -962,7 +960,7 @@ export type HncbDepositRunner = (
   input: HncbDepositInput,
   context: HncbDepositContext,
   product: ProductCollectionHandle,
-) => Promise<HncbDepositSummary>;
+) => Promise<ProductCollectionSummary>;
 
 function hncbDepositSource(site: HncbNetbankSite): HncbDepositSource {
   return {
@@ -1071,7 +1069,7 @@ export async function stageHncbDeposit(
   snapshot: HncbDepositSourceSnapshot,
   product: ProductCollectionHandle,
   readCurrentBalanceTable: HncbReadCurrentDepositBalanceTable,
-): Promise<HncbDepositSummary> {
+): Promise<ProductCollectionSummary> {
   const { captures } = snapshot;
   if (captures.length === 0)
     throw new Error("No HNCB accounts reached a terminal source result.");
@@ -1104,7 +1102,7 @@ export async function stageHncbDeposit(
     acquire: readCurrentBalanceTable,
   });
   return {
-    accountCount: captures.length,
+    counts: { accountCount: captures.length },
     sourceCaptureCount: captures.length,
     rowCount: captures.reduce((total, capture) => total + capture.downloads.reduce((sum, download) => sum + download.rows.length, 0), 0),
   };
@@ -1144,20 +1142,10 @@ export async function runHncbStatements(
   run: HncbStatementsRun,
 ): Promise<WorkflowRunResult> {
   const { collectDeposit, ...collectOptions } = run;
-  let deposit: HncbDepositSummary | null = null;
   const summary = await context.products.collect({
-    deposit: async (product): Promise<ProductCollectionSummary> => {
-      deposit = await collectDeposit(page, input, context, product);
-      return { sourceCaptureCount: deposit.sourceCaptureCount, rowCount: deposit.rowCount };
-    },
+    deposit: (product) => collectDeposit(page, input, context, product),
   }, collectOptions);
-  const [verified, ...attached] = summary.products;
-  const succeeded = verified?.status === "success" ? deposit as HncbDepositSummary | null : null;
-  return productRunResult(summary, {
-    counts: {
-      accountCount: (succeeded?.accountCount ?? 0) + attached.reduce((total, product) => total + product.itemCount, 0),
-    },
-  });
+  return productRunResult(summary);
 }
 
 /** App-owned entry point for the HNCB domestic-deposit statement workflow. */

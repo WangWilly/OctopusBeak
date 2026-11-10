@@ -4,6 +4,7 @@ import {
   type ProductCollectionRunSummary,
 } from "./product-collection.ts";
 import {
+  aggregateTdccExclusionCounts,
   tdccSummaryMatchesEvidence,
   TDCC_EXCLUSION_COUNT_NAMES,
   TDCC_MAX_SUMMARY_COUNT,
@@ -93,8 +94,6 @@ export function workflowRunResult(result: WorkflowRunResult): WorkflowRunResult 
 export type ProductRunResult = WorkflowRunResult & Readonly<{ products: readonly CollectionProductOutcome[] }>;
 
 export type ProductRunResultOptions = Readonly<{
-  /** Counts only this provider reports, or a provider-scoped value of a run count. */
-  counts?: WorkflowRunCounts;
   /** Preview Financial Data is never admitted, so a completed run stays `completed`. */
   preview?: boolean;
 }>;
@@ -104,7 +103,8 @@ export type ProductRunResultOptions = Readonly<{
  * receipts is `financial-admitted` or `source-only`. Without them it is
  * `no-data` when products were attempted and every one reported absence, and
  * `completed` otherwise, including a run whose only writes were Preview
- * Financial Data.
+ * Financial Data. Its counts are the run's own, the collectors' summed
+ * counts (ADR 0122), and the TDCC exclusions its products' evidence records.
  */
 export function productRunResult(
   summary: ProductCollectionRunSummary,
@@ -117,10 +117,16 @@ export function productRunResult(
       rowCount: summary.rowCount,
       itemCount: summary.itemCount,
       committedCount: summary.committedCount,
-      ...options.counts,
+      ...summary.counts,
+      ...exclusionCounts(summary.products),
     },
     products: summary.products,
   }) as ProductRunResult;
+}
+
+function exclusionCounts(products: readonly CollectionProductOutcome[]): WorkflowRunCounts {
+  const evidence = products.flatMap((product) => product.collection ? [product.collection.exclusionCounts] : []);
+  return evidence.length > 0 ? aggregateTdccExclusionCounts(evidence) : {};
 }
 
 function productRunStatusLabel(summary: ProductCollectionRunSummary, options: ProductRunResultOptions): WorkflowRunStatus {

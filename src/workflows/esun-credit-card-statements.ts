@@ -1282,11 +1282,9 @@ async function runEsunCreditCardWorkflow(
   return context.browser.withPage(async (page) => {
     await authenticateEsunPage(page, input.credentials, context);
 
-    let creditCard: EsunCreditCardCollection | null = null;
     const summary = await context.products.collect({
       credit_card: async (product): Promise<ProductCollectionSummary> => {
         const collected = await collectEsunCreditCard(page, { ...context, event: product.event }, input, product);
-        creditCard = collected;
         return { sourceCaptureCount: 1, rowCount: collected.count };
       },
     }, {
@@ -1300,11 +1298,6 @@ async function runEsunCreditCardWorkflow(
         }),
       },
     });
-    const admitted = summary.products[0]?.status === "success"
-      ? creditCard as EsunCreditCardCollection | null
-      : null;
-    return productRunResult(summary, {
-      counts: { count: admitted?.count ?? 0, canonicalCaptureCount: admitted ? 1 : 0 },
-    });
+    return productRunResult(summary);
   });
 }

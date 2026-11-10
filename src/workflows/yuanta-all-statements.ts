@@ -154,9 +154,7 @@ async function runYuantaWorkflow(
       const { assertSession } = await signIn(context, page, YUANTA_SOURCE, yuantaBankSignInPlan(credentials));
       await context.event("decoding", "started", "source-decoding-started");
       const summary = await context.products.collect(collectors(page), { assertSession });
-      return productRunResult(summary, {
-        counts: { skippedProductCount: summary.products.filter((product) => product.status === "skipped").length },
-      });
+      return productRunResult(summary);
     } finally {
       await signOut(page).catch(() => undefined);
     }
