@@ -137,7 +137,7 @@ async function stageSnapshot(holding: YuantaTradeReportPage, trade: YuantaTradeR
   const result = await stageYuantaTrade(
     { holdings: [holding], trades: [trade] },
     stageInput,
-    yuantaCollectionContext(),
+    yuantaCollectionContext({ now: "2026-09-25T03:04:05.000Z" }),
     yuantaStagingHandle(staged),
   );
   return { result, staged };
@@ -163,6 +163,7 @@ test("stages one canonical investment commit per account from a complete read", 
   const capture = (item!.command.request as { capture: InvestmentValidatedCapture }).capture;
   assert.equal(item!.itemKey, capture.captureId);
   assert.equal(capture.sourceId, "yuanta-trade");
+  assert.equal(capture.observedAt, "2026-09-25T03:04:05.000Z", "the capture is observed at the run clock's instant");
   // A holding is as of its own page's end date, not the run's date range.
   assert.equal(capture.scope.effectiveOn, "2026-08-20");
   assert.deepEqual(
@@ -776,7 +777,7 @@ test("complete Yuanta Trade capture preserves duplicate fills and stable group s
   };
   const credentials = { yuanta_trade_user_id: "synthetic-login" };
   const capture = (transactions: typeof row[]) =>
-    buildYuantaTradeCanonicalCaptures(credentials, [holding], transactions, history)[0]!;
+    buildYuantaTradeCanonicalCaptures(credentials, [holding], transactions, history, () => "2026-09-01T00:00:00.000Z")[0]!;
   const first = capture([row, { ...row }]);
   const firstKeys = first.transactions.map((transaction) => transaction.sourceRecordKey).sort();
   assert.equal(first.transactions.length, 2);

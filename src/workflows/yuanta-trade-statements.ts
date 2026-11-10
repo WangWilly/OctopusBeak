@@ -1346,6 +1346,7 @@ export function buildYuantaTradeCanonicalCaptures(
     dateRange: Readonly<{ startDate: string; endDate: string }>;
     requestedTradeTypes: readonly string[];
   }>,
+  now: () => string,
 ): InvestmentValidatedCapture[] {
   if (tradeRows.some((row) => !row.account_number?.trim()))
     throw new Error("Yuanta Trade transaction has no source account scope.");
@@ -1378,7 +1379,7 @@ export function buildYuantaTradeCanonicalCaptures(
       "holding",
       accountHoldings,
     );
-    const observedAt = new Date().toISOString();
+    const observedAt = now();
     const effectiveDates = [
       ...new Set(
         accountHoldings.map((row) => sourceDate(row.as_of_date ?? "")),
@@ -1745,6 +1746,7 @@ export async function stageYuantaTrade(
       holdingRows,
       tradeRows,
       { dateRange, requestedTradeTypes: input.tradeTypes },
+      () => context.now(),
     );
     if (captures.length === 0) {
       throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
