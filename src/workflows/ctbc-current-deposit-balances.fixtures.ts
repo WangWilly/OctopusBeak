@@ -1,9 +1,7 @@
-import {
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
-  CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
-  type CtbcCurrentDepositResponse,
-} from "./ctbc-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import type { CtbcCurrentDepositResponse } from "./ctbc-current-deposit-balances.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
 
 /** The Taipei `YYYY/MM/DD hh:mm:ss` CTBC writes beside its serverTime. */
 function taipeiDataTime(serverTime: number): string {
@@ -43,7 +41,7 @@ export function ctbcCurrentDepositResponse(
   return {
     evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(payload)) },
     response: {
-      url: `https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+      url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`,
       status: 200,
       method: "POST",
       headers: {
@@ -52,6 +50,6 @@ export function ctbcCurrentDepositResponse(
         "content-type": "application/json;charset=UTF-8",
       },
     },
-    requestPostData: JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: {} }),
+    requestPostData: JSON.stringify({ resource: CONTRACT.requestResource, rqData: {} }),
   };
 }

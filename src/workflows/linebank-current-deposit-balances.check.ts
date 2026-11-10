@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import {
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
   linebankCurrentSourceAccountKey,
 } from "./linebank-current-deposit-balances.ts";
 
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["linebank/domestic-deposit/current-balance-v1"];
+
 const providerHttpDate = "Wed, 09 Sep 2026 02:05:08 GMT";
 const observedAt = "2026-09-09T10:05:09+08:00";
-const endpoint = `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=01`;
+const endpoint = `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}?featureTypeCode=01`;
 
 function response(overrides: Partial<ProviderResponse> = {}) {
   return verifyProviderResponse(LINEBANK_CURRENT_DEPOSIT_RESPONSE, {
@@ -77,7 +77,7 @@ assert.deepEqual(rows[0]?.available, {
 assert.equal(rows[0]?.providerHttpDate, providerHttpDate);
 assert.equal(rows[0]?.effectiveAt, "2026-09-09T02:05:08.000Z");
 assert.equal(rows[0]?.observedAt, observedAt);
-assert.equal(rows[0]?.sourceEvidence.contractVersion, LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION);
+assert.equal(rows[0]?.sourceEvidence.contractVersion, CONTRACT.contractVersion);
 assert.equal(rows[0]?.sourceEvidence.featureTypeCode, "01");
 assert.doesNotMatch(JSON.stringify(rows), /777777|acctBal/u);
 
@@ -129,7 +129,7 @@ assert.throws(
 );
 
 for (const [name, overrides, pattern] of [
-  ["wrong feature", { url: `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=02` }, /endpoint is unexpected/u],
+  ["wrong feature", { url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}?featureTypeCode=02` }, /endpoint is unexpected/u],
   ["extra query", { url: `${endpoint}&page=1` }, /endpoint is unexpected/u],
   ["wrong method", { method: "POST" }, /method is not GET/u],
   ["not JSON", { headers: { date: providerHttpDate, "cache-control": "no-cache, no-store", "content-type": "text/html" } }, /content type/u],

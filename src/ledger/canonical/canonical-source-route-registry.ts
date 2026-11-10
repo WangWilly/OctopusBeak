@@ -4,6 +4,10 @@ import {
   ctbcHumanAttestationFingerprint,
 } from "./ctbc-human-attestation-contract.ts";
 import {
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
+  type CurrentDepositAuthorityRoute,
+} from "./current-deposit-route-contracts.ts";
+import {
   ESUN_CREDIT_CARD_HUMAN_ATTESTED_V4_MANIFEST,
   esunCreditCardHumanAttestedManifestFingerprint,
   ESUN_CREDIT_CARD_IDENTITY_EPOCHS,
@@ -31,7 +35,6 @@ import {
 } from "./sinopac-human-attestation-contract.ts";
 import {
   TDCC_NAMESPACE,
-  TDCC_SETTLEMENT_BALANCE_CONTRACT,
   TDCC_SETTLEMENT_BALANCE_ROUTE,
   TDCC_SETTLEMENT_DEPOSIT_CONTRACT,
   TDCC_SETTLEMENT_DEPOSIT_ROUTE,
@@ -172,6 +175,20 @@ const effectiveTimeOnly = (
   semanticRuleVersion: null,
   effectiveTimeRuleVersion,
 });
+
+/** A current deposit balance route registers exactly what its route contract declares. */
+const currentBalanceRoute = (
+  routeKey: CurrentDepositAuthorityRoute,
+): CanonicalSourceRouteRegistration => {
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[routeKey];
+  return {
+    routeKey,
+    integrationNamespace: contract.integrationNamespace,
+    stream: contract.stream,
+    contractVersions: [contract.contractVersion],
+    ruleCombinations: [effectiveTimeOnly(contract.contractVersion, contract.contractVersion)],
+  };
+};
 
 const registrations: readonly CanonicalSourceRouteRegistration[] = ([
   // Source Capture contracts.
@@ -366,34 +383,10 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     contractVersions: ["foreign-currency/cathay/v1"],
     ruleCombinations: [sameRuleTuple("foreign-currency/cathay/v1", "foreign-currency/cathay/v1")],
   },
-  {
-    routeKey: "cathay/domestic-deposit/current-balance-v1",
-    integrationNamespace: "cathay",
-    stream: "domestic-deposit",
-    contractVersions: ["cathay/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("cathay/current-deposit-balance-v1", "cathay/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "cathay/foreign-currency/current-balance-v1",
-    integrationNamespace: "cathay",
-    stream: "foreign-currency-deposit",
-    contractVersions: ["cathay/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("cathay/current-deposit-balance-v1", "cathay/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "ctbc/domestic-deposit/current-balance-v1",
-    integrationNamespace: "ctbc",
-    stream: "domestic-deposit",
-    contractVersions: ["ctbc/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("ctbc/current-deposit-balance-v1", "ctbc/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "linebank/domestic-deposit/current-balance-v1",
-    integrationNamespace: "linebank",
-    stream: "domestic-deposit",
-    contractVersions: ["linebank/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("linebank/current-deposit-balance-v1", "linebank/current-deposit-balance-v1")],
-  },
+  currentBalanceRoute("cathay/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("cathay/foreign-currency/current-balance-v1"),
+  currentBalanceRoute("ctbc/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("linebank/domestic-deposit/current-balance-v1"),
   {
     routeKey: "linebank/foreign-currency/deposit/v1",
     integrationNamespace: "linebank",
@@ -417,62 +410,14 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     ruleCombinations: [sameRuleTuple("foreign-currency/yuanta/human-attested-v2", "foreign-currency/yuanta/human-attested-v2")],
     occurrenceGroups: "required",
   },
-  {
-    routeKey: "yuanta/domestic-deposit/current-balance-v1",
-    integrationNamespace: "yuanta",
-    stream: "domestic-deposit",
-    contractVersions: ["yuanta/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("yuanta/current-deposit-balance-v1", "yuanta/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "yuanta/foreign-currency/current-balance-v1",
-    integrationNamespace: "yuanta",
-    stream: "foreign-currency-deposit",
-    contractVersions: ["yuanta/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("yuanta/current-deposit-balance-v1", "yuanta/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "fubon/domestic-deposit/current-balance-v1",
-    integrationNamespace: "fubon",
-    stream: "domestic-deposit",
-    contractVersions: ["fubon/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("fubon/current-deposit-balance-v1", "fubon/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "hncb/domestic-deposit/current-balance-v1",
-    integrationNamespace: "hncb",
-    stream: "domestic-deposit",
-    contractVersions: ["hncb/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("hncb/current-deposit-balance-v1", "hncb/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "hncb/domestic-deposit/current-balance-overview-v1",
-    integrationNamespace: "hncb",
-    stream: "domestic-deposit",
-    contractVersions: ["hncb/current-deposit-balance-overview-v1"],
-    ruleCombinations: [effectiveTimeOnly("hncb/current-deposit-balance-overview-v1", "hncb/current-deposit-balance-overview-v1")],
-  },
-  {
-    routeKey: "sinopac/domestic-deposit/current-balance-v1",
-    integrationNamespace: "sinopac",
-    stream: "domestic-deposit",
-    contractVersions: ["sinopac/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("sinopac/current-deposit-balance-v1", "sinopac/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "sinopac/foreign-currency/current-balance-v1",
-    integrationNamespace: "sinopac",
-    stream: "foreign-currency-deposit",
-    contractVersions: ["sinopac/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("sinopac/current-deposit-balance-v1", "sinopac/current-deposit-balance-v1")],
-  },
-  {
-    routeKey: "post/domestic-deposit/current-balance-v1",
-    integrationNamespace: "post",
-    stream: "domestic-deposit",
-    contractVersions: ["post/current-deposit-balance-v1"],
-    ruleCombinations: [effectiveTimeOnly("post/current-deposit-balance-v1", "post/current-deposit-balance-v1")],
-  },
+  currentBalanceRoute("yuanta/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("yuanta/foreign-currency/current-balance-v1"),
+  currentBalanceRoute("fubon/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("hncb/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("hncb/domestic-deposit/current-balance-overview-v1"),
+  currentBalanceRoute("sinopac/domestic-deposit/current-balance-v1"),
+  currentBalanceRoute("sinopac/foreign-currency/current-balance-v1"),
+  currentBalanceRoute("post/domestic-deposit/current-balance-v1"),
   {
     routeKey: "sinopac/foreign-currency/deposit/human-attested-v1",
     integrationNamespace: "sinopac",
@@ -491,13 +436,7 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     ruleCombinations: [sameRuleTuple(TDCC_SETTLEMENT_DEPOSIT_CONTRACT, TDCC_SETTLEMENT_DEPOSIT_ROUTE)],
     occurrenceGroups: "required",
   },
-  {
-    routeKey: TDCC_SETTLEMENT_BALANCE_ROUTE,
-    integrationNamespace: TDCC_NAMESPACE,
-    stream: "domestic-deposit",
-    contractVersions: [TDCC_SETTLEMENT_BALANCE_CONTRACT],
-    ruleCombinations: [effectiveTimeOnly(TDCC_SETTLEMENT_BALANCE_CONTRACT, TDCC_SETTLEMENT_BALANCE_CONTRACT)],
-  },
+  currentBalanceRoute(TDCC_SETTLEMENT_BALANCE_ROUTE),
 
   // E-Invoice canonical capture.  This route is provider-neutral because the
   // Taiwan E-Invoice authority is the contract boundary; connection identity

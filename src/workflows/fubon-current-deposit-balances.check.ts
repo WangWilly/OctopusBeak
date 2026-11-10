@@ -10,14 +10,16 @@ import { frameScope } from "./frame-scope.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   FUBON_CURRENT_DEPOSIT_HEADERS,
   FUBON_CURRENT_DEPOSIT_RESPONSE,
   parseFubonCurrentDepositBalanceSnapshot,
   readFubonCurrentDepositBalanceTable,
   readFubonCurrentDepositTableCells,
 } from "./fubon-current-deposit-balances.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 
 type Cell = {
   kind: "cell";
@@ -135,7 +137,7 @@ function tableLocator(rows: Row[]): FixtureLocator {
 const response = (
   overrides: Partial<ProviderResponse> = {},
 ): ProviderResponse => ({
-  url: `https://ebank.taipeifubon.com.tw${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+  url: `https://ebank.taipeifubon.com.tw${CONTRACT.endpointPath}`,
   status: 200,
   method: "GET",
   headers: {
@@ -262,11 +264,11 @@ assert.throws(
 );
 assert.equal(
   verified(response({ method: "POST" })).endpoint.path,
-  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  CONTRACT.endpointPath,
   "Fubon never established its page's method, so the declaration admits any",
 );
 assert.equal(
-  verified(response({ url: `https://ebank.taipeifubon.com.tw${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?menu=CDS0102` })).url.search,
+  verified(response({ url: `https://ebank.taipeifubon.com.tw${CONTRACT.endpointPath}?menu=CDS0102` })).url.search,
   "?menu=CDS0102",
   "Fubon admits any query on the page navigation",
 );
@@ -387,12 +389,12 @@ async function withDepositShell(
               document.getElementById("menu_CDS").addEventListener("click", (event) => {
                 if (!event.isTrusted) return;
                 document.getElementById("cds").innerHTML =
-                  '<a class="task_CBOQU003 menu_CDS0102" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href=\\'${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}\\'">我的存款</a>';
+                  '<a class="task_CBOQU003 menu_CDS0102" href="javascript:void(0)" onclick="parent.frames.txnFrame.location.href=\\'${CONTRACT.endpointPath}\\'">我的存款</a>';
               });
             </script>`);
         case "/B2C/home.faces":
           return await html(`<p>首頁</p>`);
-        case FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH: {
+        case CONTRACT.endpointPath: {
           if (options.balanceHangs) return;
           const rows = options.headerRowDelayMs === undefined
             ? `${HEADER_ROW}${DATA_ROWS}`
@@ -430,7 +432,7 @@ test("the balance page is reached through 存款交易查詢 and 我的存款, a
     ]);
     assert.equal(rows[0]?.providerHttpDate, PROVIDER_DATE);
     assert.equal(rows[0]?.sourceEvidence.cacheControl, "no-store, no-cache");
-    assert.equal(requested.filter((path) => path === FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH).length, 1);
+    assert.equal(requested.filter((path) => path === CONTRACT.endpointPath).length, 1);
   }));
 
 test("a header row that renders after the table is waited for before the table is parsed", () =>
@@ -445,7 +447,7 @@ test("a run cancelled while the bank holds the balance response rejects with its
     const cancelled = new Error("synthetic cancellation");
     const read = readFubonCurrentDepositBalanceTable(siteFor(page, controller.signal), reader);
     const startedAt = Date.now();
-    while (!requested.includes(FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH)) {
+    while (!requested.includes(CONTRACT.endpointPath)) {
       assert.ok(Date.now() - startedAt < 10_000, "the balance page was never requested");
       await new Promise((resolve) => setTimeout(resolve, 25));
     }

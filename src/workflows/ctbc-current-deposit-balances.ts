@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type { Page, Response } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
@@ -15,17 +16,11 @@ import type { ProviderResponseReader } from "./provider-response-reader.ts";
  * resource request. The response is the balance source; the page text is only
  * used to reach the provider's normal, user-facing route.
  */
-export const CTBC_CURRENT_DEPOSIT_BALANCE_HOST = "www.ctbcbank.com" as const;
-export const CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/IB/api/adapters/IB_Adapter/resource/ebmwResource" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
 /** The provider's observed transport discriminator; its value is never retained. */
 export const CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY = "IIhfvu" as const;
 export const CTBC_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://www.ctbcbank.com/twrbc/twrbc-deposit/qu001/010" as const;
-export const CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE =
-  "/twrbc-deposit/qu001/010" as const;
-export const CTBC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "ctbc/current-deposit-balance-v1" as const;
 export const CTBC_CURRENT_DEPOSIT_BALANCE_METHOD = "POST" as const;
 
 export type CtbcCurrentDepositExactDecimal = Readonly<{
@@ -38,14 +33,14 @@ export type CtbcCurrentDepositExactDecimal = Readonly<{
 /** The ebmwResource POST; the named transport key is its only allowed query. */
 export const CTBC_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "CTBC current deposit",
-  host: CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     method: CTBC_CURRENT_DEPOSIT_BALANCE_METHOD,
     contentType: /^application\/json(?:\s*;|$)/iu,
     search: new RegExp(`^(?:\\?${CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY}(?:=[^&]*)?)?$`, "u"),
   }],
-  cacheControl: ["no-cache", "no-store", "must-revalidate"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -72,11 +67,11 @@ export type CtbcCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
-    requestResource: typeof CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE;
+    endpoint: typeof CONTRACT.endpointPath;
+    requestResource: typeof CONTRACT.requestResource;
     status: 200;
     cacheControl: string;
-    contractVersion: typeof CTBC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -134,7 +129,7 @@ function requireRequest(requestPostData: string | null): void {
     requiredField(request.resource, "request resource"),
     "request resource",
   );
-  if (resource !== CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE)
+  if (resource !== CONTRACT.requestResource)
     throw new Error("CTBC current deposit request resource is unexpected.");
   const rqData = requiredField(request.rqData, "request rqData");
   if (!isRecord(rqData))
@@ -284,11 +279,11 @@ function parseRow(
     providerHttpDate: response.providerDate.raw,
     observedAt: response.observedAt,
     sourceEvidence: {
-      endpoint: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-      requestResource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
+      endpoint: CONTRACT.endpointPath,
+      requestResource: CONTRACT.requestResource,
       status: 200,
       cacheControl: response.cacheControl,
-      contractVersion: CTBC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: CONTRACT.contractVersion,
     },
   };
 }
@@ -374,7 +369,7 @@ function responseDiagnostic(response: Response): CtbcResponseDiagnostic | null {
     const url = new URL(response.url());
     if (
       url.protocol !== "https:" ||
-      url.pathname !== CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH ||
+      url.pathname !== CONTRACT.endpointPath ||
       response.request().method().toUpperCase() !== CTBC_CURRENT_DEPOSIT_BALANCE_METHOD
     )
       return null;
@@ -395,8 +390,8 @@ function summaryResponseCandidate(response: Response): boolean {
   const request = response.request();
   return (
     request.method() === CTBC_CURRENT_DEPOSIT_BALANCE_METHOD &&
-    response.url().startsWith(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`) &&
-    requestResource(request.postData()) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE
+    response.url().startsWith(`https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`) &&
+    requestResource(request.postData()) === CONTRACT.requestResource
   );
 }
 
@@ -454,7 +449,7 @@ export async function readCtbcCurrentDepositBalanceResponse(
   try {
     const captured = await reader.acquire(scope, CTBC_CURRENT_DEPOSIT_RESPONSE, {
       evidence: "json",
-      request: (request) => requestResource(request.postData) === CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
+      request: (request) => requestResource(request.postData) === CONTRACT.requestResource,
       timeoutMs,
       trigger: async () => {
         await clickExactText(scope, "臺幣/轉帳", timeoutMs);

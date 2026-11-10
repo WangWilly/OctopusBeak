@@ -5,6 +5,7 @@ import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
 import { assembleCurrentDepositCapture, type CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
@@ -21,17 +22,9 @@ import {
  * sends this generic dispatcher request; the request discriminants are the
  * only request details retained by this adapter.
  */
-export const POST_CURRENT_DEPOSIT_BALANCE_HOST = "ipost.post.gov.tw" as const;
-export const POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/pst/EsoafDispatcher" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"];
 export const POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://ipost.post.gov.tw/pst/index.html" as const;
-export const POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "post/current-deposit-balance-v1" as const;
-export const POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE = "EB100103" as const;
-export const POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE =
-  "getOverViewById" as const;
-export const POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT = 50 as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -48,13 +41,13 @@ export type PostCurrentDepositExactInteger = Readonly<{
  */
 export const POST_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   label: "Post current deposit",
-  host: POST_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     method: "POST",
     contentType: /^application\/json(?:\s*;|$)/iu,
   }],
-  cacheControl: ["no-store"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "optional",
 };
 
@@ -75,14 +68,14 @@ export type PostCurrentDepositBalanceRow = Readonly<{
   providerServerTimestamp?: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
+    endpoint: typeof CONTRACT.endpointPath;
     status: 200;
     contentType: string;
     cacheControl: string;
-    txnCode: typeof POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE;
-    bizCode: typeof POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE;
-    pageCount: typeof POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT;
-    contractVersion: typeof POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    txnCode: typeof CONTRACT.requestDiscriminant.txnCode;
+    bizCode: typeof CONTRACT.requestDiscriminant.bizCode;
+    pageCount: typeof CONTRACT.requestDiscriminant.pageCount;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -181,9 +174,9 @@ function providerTime(
 
 /** The request body is parsed for its discriminants and never returned. */
 function requireRequest(requestPostData: string | null): {
-  txnCode: typeof POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE;
-  bizCode: typeof POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE;
-  pageCount: typeof POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT;
+  txnCode: typeof CONTRACT.requestDiscriminant.txnCode;
+  bizCode: typeof CONTRACT.requestDiscriminant.bizCode;
+  pageCount: typeof CONTRACT.requestDiscriminant.pageCount;
 } {
   if (typeof requestPostData !== "string" || requestPostData.trim() === "")
     throw new Error("Post current deposit request body is missing.");
@@ -197,16 +190,16 @@ function requireRequest(requestPostData: string | null): {
     throw new Error("Post current deposit request body is not an object.");
   if (!isRecord(request.header))
     throw new Error("Post current deposit request header is missing.");
-  if (request.header.TxnCode !== POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE)
+  if (request.header.TxnCode !== CONTRACT.requestDiscriminant.txnCode)
     throw new Error("Post current deposit request TxnCode is unexpected.");
-  if (request.header.BizCode !== POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE)
+  if (request.header.BizCode !== CONTRACT.requestDiscriminant.bizCode)
     throw new Error("Post current deposit request BizCode is unexpected.");
-  if (!isRecord(request.body) || request.body.pageCount !== POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT)
+  if (!isRecord(request.body) || request.body.pageCount !== CONTRACT.requestDiscriminant.pageCount)
     throw new Error("Post current deposit request pageCount is unexpected.");
   return {
-    txnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-    bizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-    pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
+    txnCode: CONTRACT.requestDiscriminant.txnCode,
+    bizCode: CONTRACT.requestDiscriminant.bizCode,
+    pageCount: CONTRACT.requestDiscriminant.pageCount,
   };
 }
 
@@ -321,14 +314,14 @@ export function parsePostCurrentDepositBalanceSnapshot(input: Readonly<{
         : {}),
       observedAt: input.response.observedAt,
       sourceEvidence: {
-        endpoint: POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        endpoint: CONTRACT.endpointPath,
         status: 200,
         contentType: input.response.contentType,
         cacheControl: input.response.cacheControl,
         txnCode: request.txnCode,
         bizCode: request.bizCode,
         pageCount: request.pageCount,
-        contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        contractVersion: CONTRACT.contractVersion,
       },
     });
   }
@@ -344,10 +337,10 @@ function requestMatchesCurrentBalanceDiscriminants(postData: string | null): boo
     return (
       isRecord(request) &&
       isRecord(request.header) &&
-      request.header.TxnCode === POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE &&
-      request.header.BizCode === POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE &&
+      request.header.TxnCode === CONTRACT.requestDiscriminant.txnCode &&
+      request.header.BizCode === CONTRACT.requestDiscriminant.bizCode &&
       isRecord(request.body) &&
-      request.body.pageCount === POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT
+      request.body.pageCount === CONTRACT.requestDiscriminant.pageCount
     );
   } catch {
     return false;
@@ -437,7 +430,7 @@ export function buildPostCurrentDepositBalanceCapture(
   return assembleCurrentDepositCapture({
     captureId: `post-current-${randomUUID()}`,
     authorityRoute: "post/domestic-deposit/current-balance-v1",
-    contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+    contractVersion: CONTRACT.contractVersion,
     subjectDigest: identity.subjectDigest,
     identity: {
       integrationNamespace: "post",
@@ -452,7 +445,7 @@ export function buildPostCurrentDepositBalanceCapture(
       endDate: scopeDate,
       contractFingerprint: canonicalDigest(
         "post-current-deposit-contract-v1",
-        POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        CONTRACT.contractVersion,
       ),
       preflightFingerprint: canonicalDigest(
         "post-current-deposit-preflight-v1",
@@ -461,7 +454,7 @@ export function buildPostCurrentDepositBalanceCapture(
       ),
     },
     providerResponse: {
-      endpoint: `https://${POST_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
+      endpoint: `https://${CONTRACT.endpointHost}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
       requestDiscriminant: {
@@ -517,10 +510,10 @@ export function buildPostCurrentDepositBalanceCapture(
     time: {
       effectiveAt: row.effectiveAt,
       effectiveTimeBasis: row.effectiveTimeBasis,
-      effectiveTimeRuleVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      effectiveTimeRuleVersion: CONTRACT.contractVersion,
       sourceField: row.effectiveTimeSourceField,
       sourceValue: row.effectiveTimeSourceValue,
-      contractVersion: POST_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: CONTRACT.contractVersion,
     },
     timeInRecord: true,
     compact: {

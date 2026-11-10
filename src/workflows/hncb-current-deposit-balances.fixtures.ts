@@ -1,5 +1,5 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
   type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
@@ -28,7 +28,7 @@ export function hncbCurrentDepositDetailTable(
     view: "detail",
     evidence: { kind: "cells", rows },
     response: {
-      url: `https://${HNCB_CURRENT_DEPOSIT_BALANCE_HOST}${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
+      url: `https://${CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-v1"].endpointHost}${HNCB_TRX_DISPATCHER_PATH}?trx=${HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION}`,
       status: 200,
       method: "GET",
       headers: { date: httpDate, "cache-control": "no-store" },

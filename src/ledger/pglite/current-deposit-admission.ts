@@ -4,10 +4,13 @@ import {
   type CanonicalSourcePage,
 } from "../canonical/canonical-source-evidence.ts";
 import {
-  TDCC_NAMESPACE,
-  TDCC_SETTLEMENT_BALANCE_CONTRACT,
-  TDCC_SETTLEMENT_BALANCE_ROUTE,
-} from "../canonical/tdcc-settlement-contract.ts";
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
+  type CurrentDepositAuthorityRoute,
+  type CurrentDepositEffectiveTimeBasis,
+  type CurrentDepositRequestDiscriminant,
+  type CurrentDepositRouteContract,
+  type CurrentDepositStream,
+} from "../canonical/current-deposit-route-contracts.ts";
 import type { InstitutionKey } from "../../lib/institutions/institutions.ts";
 
 export type CurrentDepositBalanceKind = "ledger" | "available";
@@ -21,7 +24,7 @@ export type CurrentDepositAccountScope = Readonly<{
   integrationNamespace: string;
   sourceConnectionKey: string;
   identityEpochKey: string;
-  stream: "domestic-deposit" | "foreign-currency-deposit";
+  stream: CurrentDepositStream;
   /** Existing canonical source identity. This may be an opaque digest. */
   sourceAccountKey: string;
   /** The maintaining Institution from contract evidence; an Intermediary source must supply it. */
@@ -30,17 +33,11 @@ export type CurrentDepositAccountScope = Readonly<{
 
 export type CurrentDepositTimeEvidence = Readonly<{
   effectiveAt: string;
-  effectiveTimeBasis: "provider-http-date" | "provider-system-time";
+  effectiveTimeBasis: CurrentDepositEffectiveTimeBasis;
   effectiveTimeRuleVersion: string;
   sourceField: string;
   sourceValue: string;
   contractVersion: string;
-}>;
-
-export type CurrentDepositRequestDiscriminant = Readonly<{
-  txnCode: string;
-  bizCode: string;
-  pageCount: number;
 }>;
 
 export type CurrentDepositBalanceObservationInput = Readonly<{
@@ -65,7 +62,7 @@ export type CurrentDepositSourceRecordInput = Readonly<{
 
 export type CurrentDepositBalanceCaptureInput = Readonly<{
   captureId: string;
-  authorityRoute: string;
+  authorityRoute: CurrentDepositAuthorityRoute;
   contractVersion: string;
   subjectDigest: string;
   identity: CurrentDepositAccountScope;
@@ -102,250 +99,7 @@ export class CanonicalCurrentDepositBalanceConflictError extends Error {
   }
 }
 
-type CurrentDepositRouteContract = Readonly<{
-  integrationNamespace: string;
-  stream: CurrentDepositAccountScope["stream"];
-  contractVersion: string;
-  endpointHost: string;
-  endpointPath: string;
-  endpointQuery?: Readonly<Record<string, string>>;
-  /** Additional query keys whose values are validated against a route pattern. */
-  endpointQueryPatterns?: Readonly<Record<string, RegExp>>;
-  /** Optional request discriminator for a shared provider endpoint. */
-  requestResource?: string;
-  /** Optional typed business-operation discriminator for a shared endpoint. */
-  requestDiscriminant?: CurrentDepositRequestDiscriminant;
-  effectiveTimeBasis: CurrentDepositTimeEvidence["effectiveTimeBasis"];
-  effectiveTimeSourceField: string;
-  /**
-   * A provider system time written as Gregorian Asia/Taipei local
-   * `YYYYMMDDhhmmss`, which carries no offset of its own.
-   */
-  systemTimeLexeme?: "taipei-yyyymmddhhmmss";
-  /** Additional provider time evidence accepted by this route. */
-  effectiveTimeAlternates?: readonly Readonly<{
-    effectiveTimeBasis: CurrentDepositTimeEvidence["effectiveTimeBasis"];
-    effectiveTimeSourceField: string;
-  }>[];
-  requiredCacheTokens: readonly string[];
-  fields: Readonly<{
-    ledger: readonly string[];
-    available: readonly string[];
-  }>;
-}>;
-
-export const CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS: Readonly<
-  Record<string, CurrentDepositRouteContract>
-> = Object.freeze({
-  "cathay/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "cathay",
-    stream: "domestic-deposit",
-    contractVersion: "cathay/current-deposit-balance-v1",
-    endpointHost: "www.cathaybk.com.tw",
-    endpointPath:
-      "/OnlineBankingApi/ClientBank/Api/ClientBank/B_ACCT_Q_DepositOverview",
-    effectiveTimeBasis: "provider-system-time",
-    effectiveTimeSourceField: "systemTime",
-    requiredCacheTokens: [],
-    fields: {
-      ledger: ["accountBalance"],
-      available: ["avaliableBalance"],
-    },
-  },
-  "cathay/foreign-currency/current-balance-v1": {
-    integrationNamespace: "cathay",
-    stream: "foreign-currency-deposit",
-    contractVersion: "cathay/current-deposit-balance-v1",
-    endpointHost: "www.cathaybk.com.tw",
-    endpointPath:
-      "/OnlineBankingApi/ClientForeign/Api/ClientForeign/R_ACCT_Q_OverView",
-    effectiveTimeBasis: "provider-system-time",
-    effectiveTimeSourceField: "systemTime",
-    requiredCacheTokens: [],
-    fields: {
-      ledger: ["balance"],
-      available: [],
-    },
-  },
-  "ctbc/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "ctbc",
-    stream: "domestic-deposit",
-    contractVersion: "ctbc/current-deposit-balance-v1",
-    endpointHost: "www.ctbcbank.com",
-    endpointPath: "/IB/api/adapters/IB_Adapter/resource/ebmwResource",
-    requestResource: "/twrbc-deposit/qu001/010",
-    effectiveTimeBasis: "provider-system-time",
-    effectiveTimeSourceField: "serverTime",
-    requiredCacheTokens: ["no-cache", "no-store", "must-revalidate"],
-    fields: {
-      ledger: ["balance"],
-      available: [],
-    },
-  },
-  "fubon/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "fubon",
-    stream: "domestic-deposit",
-    contractVersion: "fubon/current-deposit-balance-v1",
-    endpointHost: "ebank.taipeifubon.com.tw",
-    endpointPath: "/B2C/cboqu/cboqu003/CBOQU003_Home.faces",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-store", "no-cache"],
-    fields: {
-      ledger: ["即時餘額"],
-      available: ["可用餘額"],
-    },
-  },
-  "hncb/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "hncb",
-    stream: "domestic-deposit",
-    contractVersion: "hncb/current-deposit-balance-v1",
-    endpointHost: "netbank.hncb.com.tw",
-    endpointPath: "/netbank/servlet/TrxDispatcher",
-    endpointQuery: { trx: "com.lb.wibc.trx.EAccDDSummary" },
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-store"],
-    fields: {
-      ledger: ["帳上餘額"],
-      available: ["可用餘額"],
-    },
-  },
-  "hncb/domestic-deposit/current-balance-overview-v1": {
-    integrationNamespace: "hncb",
-    stream: "domestic-deposit",
-    contractVersion: "hncb/current-deposit-balance-overview-v1",
-    endpointHost: "netbank.hncb.com.tw",
-    endpointPath: "/netbank/servlet/TrxDispatcher",
-    endpointQuery: {
-      trx: "com.lb.wibc.trx.AcctInfoInq",
-      state: "prompt",
-    },
-    endpointQueryPatterns: {
-      time_str: /^\d{14}$/u,
-    },
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-store"],
-    fields: {
-      ledger: ["帳上餘額"],
-      available: ["原幣"],
-    },
-  },
-  "sinopac/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "sinopac",
-    stream: "domestic-deposit",
-    contractVersion: "sinopac/current-deposit-balance-v1",
-    endpointHost: "mma.sinopac.com",
-    endpointPath: "/ws/bank/bankbal/ws_bankbal.ashx",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-cache", "no-store"],
-    fields: {
-      ledger: ["AvailBalance"],
-      available: [],
-    },
-  },
-  "sinopac/foreign-currency/current-balance-v1": {
-    integrationNamespace: "sinopac",
-    stream: "foreign-currency-deposit",
-    contractVersion: "sinopac/current-deposit-balance-v1",
-    endpointHost: "mma.sinopac.com",
-    endpointPath: "/ws/bank/bankbal/ws_bankbal.ashx",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-cache", "no-store"],
-    fields: {
-      ledger: ["AvailBalance"],
-      available: [],
-    },
-  },
-  "yuanta/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "yuanta",
-    stream: "domestic-deposit",
-    contractVersion: "yuanta/current-deposit-balance-v1",
-    endpointHost: "ebank.yuantabank.com.tw",
-    endpointPath: "/nib/tx/finance_overview_for_summary",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-store"],
-    fields: {
-      ledger: ["帳面餘額"],
-      available: ["可用餘額"],
-    },
-  },
-  "yuanta/foreign-currency/current-balance-v1": {
-    integrationNamespace: "yuanta",
-    stream: "foreign-currency-deposit",
-    contractVersion: "yuanta/current-deposit-balance-v1",
-    endpointHost: "ebank.yuantabank.com.tw",
-    endpointPath: "/nib/tx/finance_overview_for_summary",
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-store"],
-    fields: {
-      ledger: ["帳面餘額"],
-      available: ["可用餘額"],
-    },
-  },
-  "linebank/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "linebank",
-    stream: "domestic-deposit",
-    contractVersion: "linebank/current-deposit-balance-v1",
-    endpointHost: "accessibility.linebank.com.tw",
-    endpointPath: "/v1/account/common/payables",
-    endpointQuery: { featureTypeCode: "01" },
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    requiredCacheTokens: ["no-cache", "no-store"],
-    fields: {
-      ledger: [],
-      available: ["wdrwAvblAmt"],
-    },
-  },
-  [TDCC_SETTLEMENT_BALANCE_ROUTE]: {
-    integrationNamespace: TDCC_NAMESPACE,
-    stream: "domestic-deposit",
-    contractVersion: TDCC_SETTLEMENT_BALANCE_CONTRACT,
-    endpointHost: "epassbooksys.tdcc.com.tw",
-    endpointPath: "/MPSBKV2/rest/tsp/TSP006",
-    effectiveTimeBasis: "provider-system-time",
-    effectiveTimeSourceField: "updateTime",
-    systemTimeLexeme: "taipei-yyyymmddhhmmss",
-    requiredCacheTokens: [],
-    fields: {
-      ledger: ["balanceAmt"],
-      available: ["availableBalance"],
-    },
-  },
-  "post/domestic-deposit/current-balance-v1": {
-    integrationNamespace: "post",
-    stream: "domestic-deposit",
-    contractVersion: "post/current-deposit-balance-v1",
-    endpointHost: "ipost.post.gov.tw",
-    endpointPath: "/pst/EsoafDispatcher",
-    requestDiscriminant: {
-      txnCode: "EB100103",
-      bizCode: "getOverViewById",
-      pageCount: 50,
-    },
-    effectiveTimeBasis: "provider-http-date",
-    effectiveTimeSourceField: "HTTP Date",
-    effectiveTimeAlternates: [
-      {
-        effectiveTimeBasis: "provider-system-time",
-        effectiveTimeSourceField: "SERVER_TIMESTAMP",
-      },
-    ],
-    requiredCacheTokens: ["no-store"],
-    fields: {
-      ledger: ["BAL"],
-      available: [],
-    },
-  },
-});
-
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE =
+export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: CurrentDepositAuthorityRoute =
   "hncb/domestic-deposit/current-balance-overview-v1";
 
 const VALIDATED_CAPTURES = new WeakSet<object>();
@@ -664,8 +418,12 @@ export function validateCapture(
   input: CurrentDepositBalanceCaptureInput,
   options: Readonly<{ allowExistingIdentityKeys?: boolean }> = {},
 ): CurrentDepositRouteContract {
-  const contract =
-    CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[input.authorityRoute];
+  // Captures cross the PGlite boundary untyped, so the route may be any string.
+  const contract = (
+    CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS as Readonly<
+      Record<string, CurrentDepositRouteContract | undefined>
+    >
+  )[input.authorityRoute];
   if (!contract)
     fail("Current deposit authority route is not contract-approved.");
   if (input.contractVersion !== contract.contractVersion)
@@ -787,8 +545,7 @@ export function validateCapture(
         `Current deposit record ${index} content hash does not match its compact evidence.`,
       );
     if (
-      input.authorityRoute ===
-      "hncb/domestic-deposit/current-balance-overview-v1"
+      input.authorityRoute === HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE
     ) {
       const currencyResolution = record.compact.currencyResolution;
       if (

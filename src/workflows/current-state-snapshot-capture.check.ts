@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
+import type { CurrentDepositAuthorityRoute } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   creditCardCurrentBalanceSourceRecordContentHash,
@@ -685,7 +686,7 @@ test("a deposit capture is assembled from its envelope and one record and observ
   });
   const capture = assembleCurrentDepositCapture({
     captureId: "capture",
-    authorityRoute: "synthetic/domestic-deposit/current-balance-v1",
+    authorityRoute: "synthetic/domestic-deposit/current-balance-v1" as string as CurrentDepositAuthorityRoute,
     contractVersion: "synthetic-v1",
     subjectDigest: "subject",
     identity: {

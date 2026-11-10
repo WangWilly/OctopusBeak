@@ -23,12 +23,12 @@ import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-r
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
   type LineBankCurrentDepositAcquired,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/server/verified-entry.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
@@ -37,7 +37,9 @@ import { signIn, type FormPlan } from "./sign-in.ts";
 const LINEBANK_HOST = "accessibility.linebank.com.tw";
 const LOGIN_URL = `https://${LINEBANK_HOST}/login`;
 const TRANSACTION_URL = `https://${LINEBANK_HOST}/transaction`;
-const ACCOUNTS_ENDPOINT = `${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=01`;
+/** The account list and the current-balance snapshot are one payables GET. */
+const PAYABLES_PATH = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["linebank/domestic-deposit/current-balance-v1"].endpointPath;
+const ACCOUNTS_ENDPOINT = `${PAYABLES_PATH}?featureTypeCode=01`;
 const TRANSACTIONS_ENDPOINT = "/v1/account/history/transactions";
 
 /**
@@ -48,7 +50,7 @@ export const LINEBANK_ACCOUNT_LIST_RESPONSE: ProviderResponseDeclaration<"option
   label: "LINE Bank account list",
   host: LINEBANK_HOST,
   endpoints: [{
-    path: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: PAYABLES_PATH,
     method: "GET",
     contentType: /^application\/json(?:\s*;|$)/iu,
     search: /^\?featureTypeCode=01$/u,

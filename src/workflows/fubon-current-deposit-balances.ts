@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type { Locator } from "playwright";
 
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
@@ -16,16 +17,11 @@ import type { ProviderResponseReader } from "./provider-response-reader.ts";
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
  * The query is a provider snapshot and does not represent transaction rows.
  */
-export const FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/B2C/cboqu/cboqu003/CBOQU003_Home.faces" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 export const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID =
   "form1:resultGrid_DataGridBody" as const;
 export const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_SELECTOR =
   'table[id="form1:resultGrid_DataGridBody"]' as const;
-export const FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "fubon/current-deposit-balance-v1" as const;
-export const FUBON_CURRENT_DEPOSIT_BALANCE_HOST =
-  "ebank.taipeifubon.com.tw" as const;
 const FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS = 5_000;
 
 export const FUBON_CURRENT_DEPOSIT_HEADERS = [
@@ -51,12 +47,12 @@ export type FubonCurrentDepositExactDecimal = Readonly<{
 /** The 我的存款 page navigation; Fubon never constrained its method, query or content type. */
 export const FUBON_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "Fubon current deposit",
-  host: FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     search: /^(?:\?.*)?$/u,
   }],
-  cacheControl: ["no-store", "no-cache"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -76,10 +72,10 @@ export type FubonCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
+    endpoint: typeof CONTRACT.endpointPath;
     status: 200;
     cacheControl: string;
-    contractVersion: typeof FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -169,10 +165,10 @@ export function parseFubonCurrentDepositBalanceSnapshot(
       providerHttpDate: response.providerDate.raw,
       observedAt: response.observedAt,
       sourceEvidence: {
-        endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        endpoint: CONTRACT.endpointPath,
         status: 200,
         cacheControl: response.cacheControl,
-        contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        contractVersion: CONTRACT.contractVersion,
       },
     });
   }

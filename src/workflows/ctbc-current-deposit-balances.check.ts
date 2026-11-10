@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import {
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
-  CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
   CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY,
   CTBC_CURRENT_DEPOSIT_RESPONSE,
   parseCtbcCurrentDepositBalanceSnapshot,
 } from "./ctbc-current-deposit-balances.ts";
 
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
+
 const serverTime = 1788919783601;
 const dataTime = "2026/09/09 10:09:43";
-const endpoint = `https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`;
+const endpoint = `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`;
 const requestPostData = JSON.stringify({
-  resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE,
+  resource: CONTRACT.requestResource,
   rqData: {},
   token: "AUTH-TOKEN-MUST-NOT-ESCAPE",
   deviceId: "DEVICE-ID-MUST-NOT-ESCAPE",
@@ -85,7 +85,7 @@ assert.deepEqual(parsed[0]?.ledger, {
 assert.equal(parsed[0]?.providerDataTime, dataTime);
 assert.equal(parsed[0]?.providerServerTime, serverTime);
 assert.equal(parsed[0]?.effectiveAt, "2026-09-09T02:09:43.601Z");
-assert.equal(parsed[0]?.sourceEvidence.requestResource, CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE);
+assert.equal(parsed[0]?.sourceEvidence.requestResource, CONTRACT.requestResource);
 assert.equal(parsed[0]?.observedAt, "2026-09-09T10:10:00+08:00");
 assert.doesNotMatch(
   JSON.stringify(parsed),
@@ -98,7 +98,7 @@ const transportQueryRows = parse(payload(), response({
   }));
 assert.equal(
   transportQueryRows[0]?.sourceEvidence.endpoint,
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+  CONTRACT.endpointPath,
 );
 assert.doesNotMatch(
   JSON.stringify(transportQueryRows),
@@ -147,7 +147,7 @@ assert.throws(
   /request resource is unexpected/u,
 );
 assert.throws(
-  () => parse(payload(), response(), JSON.stringify({ resource: CTBC_CURRENT_DEPOSIT_BALANCE_REQUEST_RESOURCE, rqData: "not-an-object" })),
+  () => parse(payload(), response(), JSON.stringify({ resource: CONTRACT.requestResource, rqData: "not-an-object" })),
   /rqData is not an object/u,
 );
 const responseMetadata = payload();

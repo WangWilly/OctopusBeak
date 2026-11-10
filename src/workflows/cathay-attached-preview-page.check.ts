@@ -5,7 +5,7 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { playwrightCathayAttachedPreviewPort } from "./cathay-attached-preview-page.ts";
 import { sourceReader } from "./provider-response-reader.ts";
-import { CATHAY_CURRENT_DEPOSIT_HOST } from "./cathay-current-deposit-balances.ts";
+import { CATHAY_API_HOST } from "./cathay-statements.ts";
 
 const CANCELLED = new Error("synthetic cancellation");
 
@@ -21,7 +21,7 @@ after(async () => {
 async function withSilentCathay(body: (page: Page) => Promise<void>): Promise<void> {
   const page = await browser.newPage();
   try {
-    await page.route(`https://${CATHAY_CURRENT_DEPOSIT_HOST}/**`, (route) =>
+    await page.route(`https://${CATHAY_API_HOST}/**`, (route) =>
       route.fulfill({ contentType: "text/html; charset=utf-8", body: "<p>載入中</p>" }));
     await body(page);
   } finally {

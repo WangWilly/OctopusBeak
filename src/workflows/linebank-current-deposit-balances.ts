@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { createHash } from "node:crypto";
 
 import { parseProviderDecimal } from "../lib/shared-money/exact-money.ts";
@@ -15,14 +16,9 @@ import type { LineBankAccount } from "./linebank-statements.ts";
  * 可用餘額; `acctBal` is intentionally not admitted because the published
  * source does not give it a ledger meaning.
  */
-export const LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST =
-  "accessibility.linebank.com.tw" as const;
-export const LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/v1/account/common/payables" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["linebank/domestic-deposit/current-balance-v1"];
 export const LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE = "01" as const;
 export const LINEBANK_CURRENT_DEPOSIT_BALANCE_METHOD = "GET" as const;
-export const LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "linebank/current-deposit-balance-v1" as const;
 export const LINEBANK_CURRENT_DEPOSIT_BALANCE_SOURCE_FIELD =
   "wdrwAvblAmt" as const;
 
@@ -36,14 +32,14 @@ export type LineBankCurrentDepositExactDecimal = Readonly<{
 /** The payables GET; featureTypeCode=01 is its only allowed query. */
 export const LINEBANK_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "LINE Bank current deposit",
-  host: LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     method: LINEBANK_CURRENT_DEPOSIT_BALANCE_METHOD,
     contentType: /^application\/json(?:\s*;|$)/iu,
     search: /^\?featureTypeCode=01$/u,
   }],
-  cacheControl: ["no-cache", "no-store"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -62,12 +58,12 @@ export type LineBankCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
+    endpoint: typeof CONTRACT.endpointPath;
     featureTypeCode: typeof LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE;
     status: 200;
     cacheControl: string;
     responseDigest: string;
-    contractVersion: typeof LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -270,12 +266,12 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
       providerHttpDate: providerDate.raw,
       observedAt,
       sourceEvidence: {
-        endpoint: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        endpoint: CONTRACT.endpointPath,
         featureTypeCode: LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE,
         status: 200,
         cacheControl,
         responseDigest: responseDigest(input.rawBody),
-        contractVersion: LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        contractVersion: CONTRACT.contractVersion,
       },
     });
   }

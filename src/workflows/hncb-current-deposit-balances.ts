@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
@@ -8,19 +9,16 @@ import {
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
 import type { BrowserScope } from "./frame-scope.ts";
-import { HNCB_TRX_DISPATCHER_PATH, type HncbMenuRoute, type HncbNetbankSite } from "./hncb-netbank-site.ts";
+import type { HncbMenuRoute, HncbNetbankSite } from "./hncb-netbank-site.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
+
+const DETAIL_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-v1"];
+const OVERVIEW_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"];
 
 export const HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION =
   "com.lb.wibc.trx.EAccDDSummary" as const;
-export const HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "hncb/current-deposit-balance-v1" as const;
-export const HNCB_CURRENT_DEPOSIT_BALANCE_HOST =
-  "netbank.hncb.com.tw" as const;
 export const HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION =
   "com.lb.wibc.trx.AcctInfoInq" as const;
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION =
-  "hncb/current-deposit-balance-overview-v1" as const;
 
 export const HNCB_CURRENT_DEPOSIT_HEADERS = [
   "身份證字號/統一編號",
@@ -65,7 +63,7 @@ function transactionQuery(transaction: string): RegExp {
 
 /** The 帳戶總覽 GET, which must render HTML. */
 export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
-  path: HNCB_TRX_DISPATCHER_PATH,
+  path: OVERVIEW_CONTRACT.endpointPath,
   method: "GET",
   contentType: /^text\/html(?:\s*;|$)/iu,
   search: transactionQuery(HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION),
@@ -73,17 +71,21 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
 
 /** The 活期存款 balance-page GET. */
 export const HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT: ProviderEndpoint = {
-  path: HNCB_TRX_DISPATCHER_PATH,
+  path: DETAIL_CONTRACT.endpointPath,
   method: "GET",
   search: transactionQuery(HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION),
 };
 
-/** Either page may carry the snapshot; each parser accepts only its own endpoint. */
+/**
+ * Either page may carry the snapshot; each parser accepts only its own
+ * endpoint. The two routes share host and cache tokens, so the declaration
+ * reads the detail route's; a check pins that the overview route agrees.
+ */
 export const HNCB_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "HNCB current deposit",
-  host: HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: DETAIL_CONTRACT.endpointHost,
   endpoints: [HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT, HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT],
-  cacheControl: ["no-store"],
+  cacheControl: DETAIL_CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -111,11 +113,11 @@ export type HncbCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof HNCB_TRX_DISPATCHER_PATH;
+    endpoint: typeof DETAIL_CONTRACT.endpointPath;
     transaction: typeof HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION;
     status: 200;
     cacheControl: string;
-    contractVersion: typeof HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof DETAIL_CONTRACT.contractVersion;
     /** The exact authenticated response URL, retained when available. */
     url?: string;
   }>;
@@ -138,11 +140,11 @@ export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof HNCB_TRX_DISPATCHER_PATH;
+    endpoint: typeof OVERVIEW_CONTRACT.endpointPath;
     transaction: typeof HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION;
     status: 200;
     cacheControl: string;
-    contractVersion: typeof HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION;
+    contractVersion: typeof OVERVIEW_CONTRACT.contractVersion;
     url: string;
   }>;
 }>;
@@ -260,11 +262,11 @@ export function parseHncbCurrentDepositBalanceSnapshot(
       providerHttpDate: input.response.providerDate.raw,
       observedAt: input.response.observedAt,
       sourceEvidence: {
-        endpoint: HNCB_TRX_DISPATCHER_PATH,
+        endpoint: DETAIL_CONTRACT.endpointPath,
         transaction: HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
         status: 200,
         cacheControl: input.response.cacheControl,
-        contractVersion: HNCB_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        contractVersion: DETAIL_CONTRACT.contractVersion,
         url: input.response.url.href,
       },
     });
@@ -491,11 +493,11 @@ export function parseHncbCurrentDepositOverviewSnapshot(
       providerHttpDate: input.response.providerDate.raw,
       observedAt: input.response.observedAt,
       sourceEvidence: {
-        endpoint: HNCB_TRX_DISPATCHER_PATH,
+        endpoint: OVERVIEW_CONTRACT.endpointPath,
         transaction: HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
         status: 200,
         cacheControl: input.response.cacheControl,
-        contractVersion: HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
+        contractVersion: OVERVIEW_CONTRACT.contractVersion,
         url: input.response.url.href,
       },
     });
@@ -615,7 +617,7 @@ export const HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE: HncbMenuRoute = {
 };
 
 /** 帳務查詢 → 帳戶總覽 in the menu frame, rendered by the overview GET. */
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE: HncbMenuRoute = {
+export const HNCB_CURRENT_DEPOSIT_OVERVIEW_MENU: HncbMenuRoute = {
   description: "HNCB current deposit overview result table",
   menu: [{ label: "帳務查詢", dispatches: true }, { label: "帳戶總覽", frame: "menu" }],
   reply: endpointResponse(HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT),
@@ -650,7 +652,7 @@ export async function readHncbCurrentDepositOverviewTable(
   site: HncbNetbankSite,
   reader: ProviderResponseReader,
 ): Promise<HncbCurrentDepositTable> {
-  const { scope, response } = await site.read(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE, reader);
+  const { scope, response } = await site.read(HNCB_CURRENT_DEPOSIT_OVERVIEW_MENU, reader);
   return {
     view: "overview",
     evidence: { kind: "cells", rows: await site.frames.race(readHncbCurrentDepositOverviewCells(scope)) },

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { cathayDomesticOverviewBody, cathayOverviewPage } from "./cathay-current-deposit-balances.fixtures.ts";
 import { registerHooks } from "node:module";
@@ -15,12 +16,11 @@ registerHooks({
 });
 
 const {
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH,
   cathayCurrentDepositResponseDeclaration,
   parseCathayCurrentDepositBalanceSnapshot,
 } = await import("./cathay-current-deposit-balances.ts");
+const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"];
+const FOREIGN_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/foreign-currency/current-balance-v1"];
 
 const observedAt = "2026-09-08T21:20:10+08:00";
 const httpDate = "Tue, 08 Sep 2026 13:20:04 GMT";
@@ -30,10 +30,10 @@ const rawResponse = (
   kind: "domestic" | "foreign",
   overrides: Partial<ProviderResponse> = {},
 ): ProviderResponse => ({
-  url: `https://${CATHAY_CURRENT_DEPOSIT_HOST}${
+  url: `https://${DOMESTIC_CONTRACT.endpointHost}${
     kind === "domestic"
-      ? CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH
-      : CATHAY_CURRENT_FOREIGN_ENDPOINT_PATH
+      ? DOMESTIC_CONTRACT.endpointPath
+      : FOREIGN_CONTRACT.endpointPath
   }`,
   status: 200,
   method: "POST",
@@ -267,7 +267,7 @@ assert.throws(
   const read = await readCathayCurrentDepositBalanceResponse(cathayOverviewPage({}, { domestic: overview }), "domestic", running);
   assert.equal(new TextDecoder().decode(read.evidence.bytes), body, "the reader hands over the response bytes undecoded");
   assert.deepEqual(read.uiAccountNumbers, [ui]);
-  assert.equal(read.response.url, `https://www.cathaybk.com.tw${CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH}`);
+  assert.equal(read.response.url, `https://${DOMESTIC_CONTRACT.endpointHost}${DOMESTIC_CONTRACT.endpointPath}`);
   assert.equal(read.response.method, "POST");
   const foreignRead = await readCathayCurrentDepositBalanceResponse(
     cathayOverviewPage({}, { foreign: { body: foreignBody, date: httpDate } }),

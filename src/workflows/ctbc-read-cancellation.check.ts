@@ -5,13 +5,12 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import {
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
-  readCtbcCurrentDepositBalanceResponse,
-} from "./ctbc-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import { readCtbcCurrentDepositBalanceResponse } from "./ctbc-current-deposit-balances.ts";
 import { readCtbcDepositSource } from "./ctbc-statements.ts";
 import { sourceReader } from "./provider-response-reader.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
 
 const CANCELLED = new Error("synthetic cancellation");
 const ABORT_AFTER_MS = 300;
@@ -38,7 +37,7 @@ ${control}
   document.querySelector("[data-control]").addEventListener("click", () => { window.clicks += 1; });
   setTimeout(() => document.getElementById("cover").remove(), ${UNCOVERED_AFTER_MS});
   for (const resource of ["/twrbc-deposit/qu002/010", "/twrbc-deposit/qu002/011"]) {
-    fetch("${CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}", { method: "POST", body: JSON.stringify({ resource }) });
+    fetch("${CONTRACT.endpointPath}", { method: "POST", body: JSON.stringify({ resource }) });
   }
 </script>`;
 
@@ -50,7 +49,7 @@ const resources: Record<string, unknown> = {
 async function withCtbc(control: string, body: (page: Page) => Promise<void>): Promise<void> {
   const page = await browser.newPage();
   try {
-    await page.route(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}/**`, (route) => {
+    await page.route(`https://${CONTRACT.endpointHost}/**`, (route) => {
       const request = route.request();
       if (request.method() !== "POST") {
         return route.fulfill({ contentType: "text/html; charset=utf-8", body: coveredControlPage(control) });
@@ -105,7 +104,7 @@ test("cancelling the run stops a deposit read clicking the account selector", ()
 
 test("cancelling the run stops a current-balance read clicking its menu", () =>
   withCtbc(`<a data-control>臺幣/轉帳</a>`, async (page) => {
-    await page.goto(`https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}/twrbc/`);
+    await page.goto(`https://${CONTRACT.endpointHost}/twrbc/`);
     const reader = sourceReader({
       now: () => new Date().toISOString(),
       text: strictSourceText,

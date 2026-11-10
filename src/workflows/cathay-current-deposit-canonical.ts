@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
+  type CurrentDepositAuthorityRoute,
+} from "../ledger/canonical/current-deposit-route-contracts.ts";
+import {
   CATHAY_CURRENT_DOMESTIC_RESPONSE,
   CATHAY_CURRENT_FOREIGN_RESPONSE,
   parseCathayCurrentDepositBalanceSnapshot,
@@ -53,7 +55,7 @@ function token(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 }
 
-function routeFor(row: CathayCurrentDepositBalanceRow): string {
+function routeFor(row: CathayCurrentDepositBalanceRow): CurrentDepositAuthorityRoute {
   return row.kind === "domestic"
     ? CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE
     : CATHAY_CURRENT_FOREIGN_BALANCE_AUTHORITY_ROUTE;
@@ -83,13 +85,14 @@ function sourceAccountEvidence(row: CathayCurrentDepositBalanceRow): Record<stri
 function timeEvidence(
   row: CathayCurrentDepositBalanceRow,
 ): CurrentDepositTimeEvidence {
+  const { contractVersion } = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[routeFor(row)];
   return {
     effectiveAt: row.effectiveAt,
     effectiveTimeBasis: "provider-system-time",
-    effectiveTimeRuleVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+    effectiveTimeRuleVersion: contractVersion,
     sourceField: "systemTime",
     sourceValue: row.providerSystemTime,
-    contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+    contractVersion,
   };
 }
 
@@ -176,11 +179,12 @@ export function buildCathayCurrentDepositBalanceCaptures(
       currentRow.observations.map((observation) => balanceEntry(currentRow, observation)),
     );
     const route = routeFor(row);
-    const endpoint = `https://${CATHAY_CURRENT_DEPOSIT_HOST}${row.sourceEvidence.endpoint}`;
+    const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
+    const endpoint = `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`;
     captures.push(assembleCurrentDepositCapture({
       captureId: randomUUID(),
       authorityRoute: route,
-      contractVersion: CATHAY_CURRENT_DEPOSIT_CONTRACT_VERSION,
+      contractVersion: contract.contractVersion,
       subjectDigest: context.subjectDigest,
       identity: {
         integrationNamespace: "cathay",

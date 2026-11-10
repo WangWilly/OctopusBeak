@@ -29,19 +29,17 @@ import {
   type FubonParsedDepositStatement,
 } from "../src/workflows/fubon-statements.ts";
 import { deriveFubonSourceConnectionKey, fubonStableLoginScope } from "../src/workflows/fubon-source-connection.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../src/ledger/canonical/current-deposit-route-contracts.ts";
+import type { FubonCurrentDepositBalanceRow } from "../src/workflows/fubon-current-deposit-balances.ts";
 import {
-  FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  type FubonCurrentDepositBalanceRow,
-} from "../src/workflows/fubon-current-deposit-balances.ts";
-import {
-  YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
   type YuantaCurrentDepositBalanceRow,
 } from "../src/workflows/yuanta-current-deposit-balances.ts";
 import { removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
 import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
+
+const FUBON_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
+const YUANTA_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
 
 // Some workflow modules import a sibling as `./x.js` for the bundler; under
 // strip-types the source is the `.ts` file next to it, as the checks resolve it.
@@ -195,10 +193,10 @@ async function collectFubon(
     providerHttpDate: new Date(at).toUTCString(),
     observedAt: at,
     sourceEvidence: {
-      endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+      endpoint: FUBON_BALANCE_CONTRACT.endpointPath,
       status: 200,
       cacheControl: "no-store, no-cache",
-      contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: FUBON_BALANCE_CONTRACT.contractVersion,
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
@@ -270,11 +268,11 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     providerHttpDate: new Date(at).toUTCString(),
     observedAt: at,
     sourceEvidence: {
-      endpoint: YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+      endpoint: YUANTA_BALANCE_CONTRACT.endpointPath,
       method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
       status: 200,
       cacheControl: "no-store",
-      contractVersion: YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: YUANTA_BALANCE_CONTRACT.contractVersion,
     },
   };
   const items: PGliteWorkflowRunItem[] = [];

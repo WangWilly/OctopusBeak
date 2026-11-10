@@ -956,7 +956,7 @@ export class CathayApiClient {
   }
 }
 
-const CATHAY_API_HOST = "www.cathaybk.com.tw";
+export const CATHAY_API_HOST = "www.cathaybk.com.tw";
 const CATHAY_SESSION_PATH = "/MyBank/Customized/GetJWT";
 const CATHAY_USER_PROFILE_PATH = "/OnlineBankingApi/Common/Api/ClientCommon/G_COMM_Q_UserProfile";
 const CATHAY_ACCOUNT_LIST_PATH = "/OnlineBankingApi/Common/Api/ClientCommon/G_CUST_Q_TransAccountList";

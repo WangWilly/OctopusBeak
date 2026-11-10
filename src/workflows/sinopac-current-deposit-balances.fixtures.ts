@@ -1,8 +1,7 @@
-import {
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST,
-  type SinopacCurrentDepositResponse,
-} from "./sinopac-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import type { SinopacCurrentDepositResponse } from "./sinopac-current-deposit-balances.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["sinopac/domestic-deposit/current-balance-v1"];
 
 export type SinopacCurrentDepositFixtureRow = Readonly<{
   account: string;
@@ -38,7 +37,7 @@ export function sinopacCurrentDepositPayloadResponse(
   return {
     evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(payload)) },
     response: {
-      url: `https://${SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST}${SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+      url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`,
       status: 200,
       method: "POST",
       headers: {

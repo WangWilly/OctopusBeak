@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type { Locator } from "playwright";
 
 import { deriveYuantaDomesticDepositAccountKey } from "../ledger/canonical/yuanta-deposit-account-key.ts";
@@ -16,14 +17,12 @@ import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
  * Yuanta's current deposit summary is a source snapshot.  It is reached from
  * the authenticated summary page by clicking the matching `活期明細` link and
  * causes this POST to be rendered in the fmain frame.
+ *
+ * One POST serves both tables, so the declaration reads the domestic route's
+ * contract; a check pins that the foreign route's contract agrees.
  */
-export const YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/nib/tx/finance_overview_for_summary" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
 export const YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD = "POST" as const;
-export const YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "yuanta/current-deposit-balance-v1" as const;
-export const YUANTA_CURRENT_DEPOSIT_BALANCE_HOST =
-  "ebank.yuantabank.com.tw" as const;
 
 export const YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS = [
   "產品名稱",
@@ -61,13 +60,13 @@ export type YuantaCurrentDepositExactDecimal = Readonly<{
 /** The summary card's POST, for both the domestic and the foreign table; Yuanta never constrained its query. */
 export const YUANTA_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "Yuanta current deposit",
-  host: YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
     search: /^(?:\?.*)?$/u,
   }],
-  cacheControl: ["no-store"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -89,11 +88,11 @@ export type YuantaCurrentDepositBalanceRow = Readonly<{
   /** The run's time of observing the response. */
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
+    endpoint: typeof CONTRACT.endpointPath;
     method: typeof YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD;
     status: 200;
     cacheControl: string;
-    contractVersion: typeof YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -239,11 +238,11 @@ export function parseYuantaCurrentDepositBalanceSnapshot(
       providerHttpDate: response.providerDate.raw,
       observedAt: response.observedAt,
       sourceEvidence: {
-        endpoint: YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        endpoint: CONTRACT.endpointPath,
         method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
         status: 200,
         cacheControl: response.cacheControl,
-        contractVersion: YUANTA_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+        contractVersion: CONTRACT.contractVersion,
       },
     });
   }

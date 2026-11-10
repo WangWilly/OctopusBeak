@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import test from "node:test";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
-  POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-  POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
   buildPostCurrentDepositBalanceCapture,
   parsePostCurrentDepositBalanceSnapshot,
   postCurrentBalanceCaptureMatching,
@@ -23,6 +20,8 @@ import { ProviderResponseCheckError } from "../lib/automation/provider-response-
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"];
+
 const observedAt = "2026-09-09T10:14:00+08:00";
 const reader = sourceReader({
   now: () => "2026-09-09T02:14:00.000Z",
@@ -31,7 +30,7 @@ const reader = sourceReader({
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 const conflictingPostAccountNumber = ["0311", "5240", "5293", "96"].join("");
 const response: ProviderResponse = {
-  url: `https://ipost.post.gov.tw${POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+  url: `https://ipost.post.gov.tw${CONTRACT.endpointPath}`,
   status: 200,
   method: "POST",
   headers: {
@@ -42,11 +41,11 @@ const response: ProviderResponse = {
 };
 const requestPostData = JSON.stringify({
   header: {
-    TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-    BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+    TxnCode: CONTRACT.requestDiscriminant.txnCode,
+    BizCode: CONTRACT.requestDiscriminant.bizCode,
     Authorization: "must-not-be-retained",
   },
-  body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+  body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
 });
 
 const psRow = {
@@ -150,9 +149,9 @@ test("Post parser requires the exact request discriminants and generic endpoint"
       parse(payload, {}, JSON.stringify({
         header: {
           TxnCode: "EB100104",
-          BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+          BizCode: CONTRACT.requestDiscriminant.bizCode,
         },
-        body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+        body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
       })),
     /TxnCode/i,
   );
@@ -160,10 +159,10 @@ test("Post parser requires the exact request discriminants and generic endpoint"
     () =>
       parse(payload, {}, JSON.stringify({
         header: {
-          TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
+          TxnCode: CONTRACT.requestDiscriminant.txnCode,
           BizCode: "otherOperation",
         },
-        body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+        body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
       })),
     /BizCode/i,
   );
@@ -216,15 +215,15 @@ class SequencedPostPage extends EventEmitter {
               BizCode: "otherDispatcher",
               Authorization: "WRONG-AUTH-MUST-NOT-BE-RETAINED",
             },
-            body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+            body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
           });
           const correctRequest = JSON.stringify({
             header: {
-              TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-              BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+              TxnCode: CONTRACT.requestDiscriminant.txnCode,
+              BizCode: CONTRACT.requestDiscriminant.bizCode,
               Authorization: "RIGHT-AUTH-MUST-NOT-BE-RETAINED",
             },
-            body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+            body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
           });
           for (const candidate of [
             postReply(JSON.stringify(payload), wrongRequest, this.headers),
@@ -258,8 +257,8 @@ test("Post reader ignores earlier dispatcher responses until exact overview requ
     timeoutMs: 100,
   });
   const selected = JSON.parse(page.selectedRequestBody ?? "{}");
-  assert.equal(selected.header.TxnCode, POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE);
-  assert.equal(selected.header.BizCode, POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE);
+  assert.equal(selected.header.TxnCode, CONTRACT.requestDiscriminant.txnCode);
+  assert.equal(selected.header.BizCode, CONTRACT.requestDiscriminant.bizCode);
   assert.equal(read.evidence.kind, "json");
   const rows = parsePostCurrentDepositBalanceSnapshot({
     payload: JSON.parse(new TextDecoder().decode(read.evidence.bytes)),

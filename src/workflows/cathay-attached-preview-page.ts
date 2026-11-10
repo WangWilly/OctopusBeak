@@ -1,5 +1,6 @@
 import type { Page } from "playwright";
 import {
+  CATHAY_API_HOST,
   cathayApiResponse,
   fetchCathayApiSourceText,
   functionSeqNo,
@@ -7,11 +8,8 @@ import {
   type CathaySession,
 } from "./cathay-statements.ts";
 import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
-import {
-  CATHAY_CURRENT_DEPOSIT_HOST,
-  CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH,
-  CATHAY_CURRENT_DOMESTIC_UI_PATH,
-} from "./cathay-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import { CATHAY_CURRENT_DOMESTIC_UI_PATH } from "./cathay-current-deposit-balances.ts";
 import {
   CATHAY_CARD_ENDPOINTS,
   type CathayAttachedPreviewPort,
@@ -23,7 +21,7 @@ import { frameScope } from "./frame-scope.ts";
 import type { AcceptedProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderBodyAcquisition } from "./provider-response-reader.ts";
 
-const ORIGIN = `https://${CATHAY_CURRENT_DEPOSIT_HOST}`;
+const ORIGIN = `https://${CATHAY_API_HOST}`;
 const CARD_OVERVIEW_URL = `${ORIGIN}/OnlineBanking/CQuery/C0101_BillOverview`;
 const LOAN_OVERVIEW_URL = `${ORIGIN}/OnlineBanking/LoanInq/L0101_LoanInq`;
 const CARD_API_PATH = "/OnlineBankingApi/ClientCard/Api/ClientCard/";
@@ -40,14 +38,14 @@ const CATHAY_CARD_RESPONSE = cathayApiResponse(
 /** The NT-dollar account overview's own request, whose query string Cathay has never constrained. */
 const CATHAY_DOMESTIC_OVERVIEW_RESPONSE = cathayApiResponse(
   "Cathay domestic overview",
-  [CATHAY_CURRENT_DOMESTIC_ENDPOINT_PATH],
+  [CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["cathay/domestic-deposit/current-balance-v1"].endpointPath],
   /^.*$/su,
 );
 
 /** The loan overview page, whose HTTP Date is when its balances were shown. */
 const CATHAY_LOAN_OVERVIEW_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   label: "Cathay loan overview",
-  host: CATHAY_CURRENT_DEPOSIT_HOST,
+  host: CATHAY_API_HOST,
   endpoints: [{ path: new URL(LOAN_OVERVIEW_URL).pathname, method: "GET", search: /^.*$/su }],
   cacheControl: [],
   providerDate: "optional",

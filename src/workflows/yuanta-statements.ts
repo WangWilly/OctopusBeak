@@ -45,7 +45,6 @@ import {
   parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
   YUANTA_CURRENT_DEPOSIT_RESPONSE,
-  YUANTA_CURRENT_DEPOSIT_BALANCE_HOST,
   type YuantaCurrentDepositBalanceRow,
   type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
@@ -60,6 +59,7 @@ import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 /** Yuanta's quick date-range links: the link text and the span it covers, both ends inclusive. */
 export const YUANTA_QUICK_RANGES = [
   { dateRange: "one_week", label: "一週", span: { days: 7 } },
@@ -166,6 +166,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
   if (sourceAccountKey !== row.sourceAccountKey)
     throw new Error("Yuanta current-balance row does not match an existing account.");
   const route = "yuanta/domestic-deposit/current-balance-v1" as const;
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
   const amountPairs: readonly [
     "ledger" | "available",
     string,
@@ -203,10 +204,10 @@ export function buildYuantaCurrentDepositBalanceCapture(
       time: {
         effectiveAt: row.effectiveAt,
         effectiveTimeBasis: "provider-http-date",
-        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+        effectiveTimeRuleVersion: contract.contractVersion,
         sourceField: "HTTP Date",
         sourceValue: row.providerHttpDate,
-        contractVersion: row.sourceEvidence.contractVersion,
+        contractVersion: contract.contractVersion,
       },
       timeInRecord: false,
       compact: {
@@ -223,7 +224,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
   return assembleCurrentDepositCapture({
     captureId: randomUUID(),
     authorityRoute: route,
-    contractVersion: row.sourceEvidence.contractVersion,
+    contractVersion: contract.contractVersion,
     subjectDigest: identity.subjectDigest,
     identity: {
       integrationNamespace: "yuanta",
@@ -238,7 +239,7 @@ export function buildYuantaCurrentDepositBalanceCapture(
       endDate: row.effectiveAt.slice(0, 10),
     },
     providerResponse: {
-      endpoint: `https://${YUANTA_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
+      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },
