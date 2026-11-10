@@ -3,10 +3,10 @@ import test from "node:test";
 import { isDeclaredProviderResponse, type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
   parseSinopacCurrentDepositBalanceSnapshot,
   readSinopacCurrentDepositBalanceResponse,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE,
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,
@@ -26,10 +26,10 @@ const response: ProviderResponse = {
   },
 };
 
-assert.equal(
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  "/ws/bank/bankbal/ws_bankbal.ashx",
-);
+const DOMESTIC_CONTRACT =
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["sinopac/domestic-deposit/current-balance-v1"];
+
+assert.equal(DOMESTIC_CONTRACT.endpointPath, "/ws/bank/bankbal/ws_bankbal.ashx");
 
 const verified = (candidate: ProviderResponse = response) =>
   verifyProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, candidate, "2026-09-09T10:01:02+08:00");
@@ -100,7 +100,7 @@ test("SinoPac balance parser preserves AvailBalance and provider evidence exactl
   assert.equal(rows[2]?.providerFields.maxAvail, "125.000");
   assert.equal(rows[0]?.providerHttpDate, "Wed, 09 Sep 2026 02:00:45 GMT");
   assert.equal(rows[0]?.effectiveAt, "2026-09-09T02:00:45.000Z");
-  assert.equal(rows[0]?.sourceEvidence.endpoint, SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH);
+  assert.equal(rows[0]?.sourceEvidence.endpoint, DOMESTIC_CONTRACT.endpointPath);
   const commaRows = parseSinopacCurrentDepositBalanceSnapshot({
     payload: [{ ...payload[0], SubInfo: [row({ AvailBalance: " 1,234.50 " })] }],
     response: verified(),
@@ -210,7 +210,7 @@ test("SinoPac admits the live numeric transport query and keeps canonical eviden
     response: verified({ ...response, url: `${response.url}?1788926105087=${transportValue}` }),
   });
   assert.equal(rows.length, 3);
-  assert.equal(rows[0]?.sourceEvidence.endpoint, SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH);
+  assert.equal(rows[0]?.sourceEvidence.endpoint, DOMESTIC_CONTRACT.endpointPath);
   assert.doesNotMatch(JSON.stringify(rows), new RegExp(`1788926105087|${transportValue}`, "u"));
 });
 
@@ -258,4 +258,16 @@ test("SinoPac reader returns the balance route's raw body and response", async (
   assert.deepEqual(opened, [SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE, reader]);
   assert.equal(new TextDecoder().decode(read.evidence.bytes), JSON.stringify(payload));
   assert.deepEqual(read.response, response);
+});
+
+test("SinoPac's two current-balance routes share the one declared POST", () => {
+  const foreign = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["sinopac/foreign-currency/current-balance-v1"];
+  for (const contract of [DOMESTIC_CONTRACT, foreign]) {
+    assert.equal(contract.endpointHost, SINOPAC_CURRENT_DEPOSIT_RESPONSE.host);
+    assert.deepEqual(
+      SINOPAC_CURRENT_DEPOSIT_RESPONSE.endpoints.map((endpoint) => endpoint.path),
+      [contract.endpointPath],
+    );
+    assert.deepEqual(contract.requiredCacheTokens, SINOPAC_CURRENT_DEPOSIT_RESPONSE.cacheControl);
+  }
 });

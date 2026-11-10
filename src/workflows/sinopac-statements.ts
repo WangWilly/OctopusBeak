@@ -52,6 +52,10 @@ import {
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import {
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
+  type CurrentDepositAuthorityRoute,
+} from "../ledger/canonical/current-deposit-route-contracts.ts";
+import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
@@ -200,11 +204,12 @@ export function buildSinopacCurrentDepositBalanceCapture(
     );
   }
 
-  const route =
+  const route: CurrentDepositAuthorityRoute =
     row.stream === "domestic-deposit"
       ? "sinopac/domestic-deposit/current-balance-v1"
       : "sinopac/foreign-currency/current-balance-v1";
-  const contractVersion = row.sourceEvidence.contractVersion;
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
+  const contractVersion = contract.contractVersion;
   const balance: CurrentDepositExactAmount = {
     coefficient: row.ledger.coefficient,
     scale: row.ledger.scale,
@@ -240,7 +245,7 @@ export function buildSinopacCurrentDepositBalanceCapture(
     observedAt: row.observedAt,
     scope: { startDate: scopeDate, endDate: scopeDate },
     providerResponse: {
-      endpoint: `https://mma.sinopac.com${row.sourceEvidence.endpoint}`,
+      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },

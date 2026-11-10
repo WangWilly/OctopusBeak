@@ -8,13 +8,14 @@ import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/so
 import { FailureCodeError } from "../lib/automation/workflow-failures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { sinopacCardTransport } from "./sinopac-credit-card.ts";
-import {
-  readSinopacCurrentDepositBalanceResponse,
-  SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-} from "./sinopac-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import { readSinopacCurrentDepositBalanceResponse } from "./sinopac-current-deposit-balances.ts";
 import { SINOPAC_MMA_ORIGIN, sinopacMmaSite } from "./sinopac-mma-site.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { sinopacDepositSource } from "./sinopac-statements.ts";
+
+const SINOPAC_BALANCE_PATH =
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["sinopac/domestic-deposit/current-balance-v1"].endpointPath;
 
 const CANCELLED = new Error("synthetic cancellation");
 const HOME = `${SINOPAC_MMA_ORIGIN}/mma/home.aspx`;
@@ -69,7 +70,7 @@ async function withMma(
           return html(requesting(ACCOUNT_ENDPOINT, `
             setTimeout(() => document.body.insertAdjacentHTML("beforeend", '<input id="StartDate" />'), 300);`));
         case "/mma/bank/bankbal/mma_bankbal.aspx":
-          return html(requesting(`${SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?1788926105087`));
+          return html(requesting(`${SINOPAC_BALANCE_PATH}?1788926105087`));
         case "/mma/never.aspx":
           return html(`<p>載入中</p>`);
         case ACCOUNT_ENDPOINT:
@@ -78,7 +79,7 @@ async function withMma(
           return void route.fulfill(options.transactionStatus === undefined
             ? json(TRANSACTIONS)
             : { status: options.transactionStatus, contentType: "text/html; charset=utf-8", body: MALFORMED });
-        case SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH:
+        case SINOPAC_BALANCE_PATH:
           return void route.fulfill(json(BALANCES));
         case "/ws/echo.ashx":
           return void route.fulfill(json([{ Header: "SUCCESS", Message: "查詢成功" }]));

@@ -1,3 +1,4 @@
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
   type ProviderResponse,
@@ -8,19 +9,8 @@ import {
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { SinopacMmaRoute, SinopacMmaSite } from "./sinopac-mma-site.ts";
 
-/**
- * SinoPac renders the account-summary HTML shell first and fills its balance
- * table from this authenticated POST.  The POST is the balance source; the
- * shell is not a second source of rows or provider time.
- */
-export const SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST =
-  "mma.sinopac.com" as const;
-export const SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH =
-  "/ws/bank/bankbal/ws_bankbal.ashx" as const;
 export const SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://mma.sinopac.com/mma/bank/bankbal/mma_bankbal.aspx?1" as const;
-export const SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION =
-  "sinopac/current-deposit-balance-v1" as const;
 export const SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE =
   "application/json;charset=UTF-8" as const;
 
@@ -35,17 +25,27 @@ export type SinopacCurrentDepositExactDecimal = Readonly<{
   sourceLexeme: string;
 }>;
 
+/**
+ * SinoPac renders the account-summary HTML shell first and fills its balance
+ * table from this authenticated POST.  The POST is the balance source; the
+ * shell is not a second source of rows or provider time.
+ *
+ * One POST serves both streams, so the declaration reads the domestic route's
+ * contract; a check pins that the foreign route's contract agrees.
+ */
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["sinopac/domestic-deposit/current-balance-v1"];
+
 /** The ws_bankbal POST; a 13-digit cache-busting key is its only allowed query. */
 export const SINOPAC_CURRENT_DEPOSIT_RESPONSE: ProviderResponseDeclaration<"required"> = {
   label: "SinoPac current deposit",
-  host: SINOPAC_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CONTRACT.endpointHost,
   endpoints: [{
-    path: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CONTRACT.endpointPath,
     method: "POST",
     contentType: /^application\/json\s*;\s*charset\s*=\s*utf-8$/iu,
     search: /^(?:\?\d{13}(?:=[^&]*)?)?$/u,
   }],
-  cacheControl: ["no-cache", "no-store"],
+  cacheControl: CONTRACT.requiredCacheTokens,
   providerDate: "required",
 };
 
@@ -76,11 +76,11 @@ export type SinopacCurrentDepositBalanceRow = Readonly<{
   providerHttpDate: string;
   observedAt: string;
   sourceEvidence: Readonly<{
-    endpoint: typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH;
+    endpoint: typeof CONTRACT.endpointPath;
     status: 200;
     contentType: typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE;
     cacheControl: string;
-    contractVersion: typeof SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION;
+    contractVersion: typeof CONTRACT.contractVersion;
   }>;
 }>;
 
@@ -215,11 +215,11 @@ function parseRow(
     providerHttpDate: response.providerDate.raw,
     observedAt: response.observedAt,
     sourceEvidence: {
-      endpoint: SINOPAC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+      endpoint: CONTRACT.endpointPath,
       status: 200,
       contentType: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTENT_TYPE,
       cacheControl: response.cacheControl,
-      contractVersion: SINOPAC_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: CONTRACT.contractVersion,
     },
   };
 }
