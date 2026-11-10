@@ -70,9 +70,11 @@ export const strictSourceText: SourceTextPort = {
 /**
  * Collapse every whitespace run in provider text to one space and trim. `\s`
  * and `trim()` already cover U+00A0 and U+3000, so callers need no extra replace.
+ * A non-string throws instead of being stringified, so a provider number that
+ * slipped past a cast fails the read rather than losing its lexical form.
  */
-export function collapseSourceWhitespace(value: unknown): string {
-  return String(value ?? "").replace(/\s+/gu, " ").trim();
+export function collapseSourceWhitespace(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/gu, " ").trim();
 }
 
 /**

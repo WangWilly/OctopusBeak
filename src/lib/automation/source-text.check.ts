@@ -62,10 +62,10 @@ test("collapseSourceWhitespace matches every removed collapse variant over the B
   }
 });
 
-test("collapseSourceWhitespace treats null, undefined and numbers as text", () => {
+test("collapseSourceWhitespace reads null and undefined as empty and refuses a non-string", () => {
   assert.equal(collapseSourceWhitespace(null), "");
   assert.equal(collapseSourceWhitespace(undefined), "");
-  assert.equal(collapseSourceWhitespace(1200), "1200");
+  assert.throws(() => collapseSourceWhitespace(1200 as unknown as string), TypeError);
   assert.equal(collapseSourceWhitespace(" \u3000a \t\u00a0b\n"), "a b");
 });
 

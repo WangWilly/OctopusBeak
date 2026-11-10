@@ -129,7 +129,7 @@ function exactDecimal(
   value: string | number | null | undefined,
   label: string,
 ): { coefficient: string; scale: number } | null {
-  const normalized = collapseSourceWhitespace(value);
+  const normalized = collapseSourceWhitespace(value == null ? value : String(value));
   if (!normalized) return null;
   const match = normalized.match(
     /^([+-]?)(?:(\d{1,3}(?:,\d{3})+)|(\d+))(?:\.(\d+))?$/u,
@@ -157,7 +157,7 @@ function money(
 }
 
 function positiveInteger(value: string | number | null | undefined): number | null {
-  const normalized = collapseSourceWhitespace(value);
+  const normalized = collapseSourceWhitespace(value == null ? value : String(value));
   if (!normalized) return null;
   if (!/^\d+$/u.test(normalized)) return null;
   const parsed = Number(normalized);
