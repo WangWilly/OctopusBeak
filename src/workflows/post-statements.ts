@@ -11,7 +11,6 @@ import type { ElementHandle, Locator, Page } from "playwright";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import {
   admitPostDomesticDepositCaptureEvidence,
   admitPostDomesticDepositFinancialCapture,
@@ -25,8 +24,8 @@ import {
 } from "../ledger/canonical/post-human-attestation-contract.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
-  captureCurrentStateSnapshots,
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
@@ -661,54 +660,34 @@ export async function stagePostDeposit(
       total: statements.length,
     });
   }
-  const captureEntries = captures.map((capture, index) => ({
-    capture,
-    captureId: postCaptureId(observedAt, index),
-  }));
-  const financialInputs: Array<{
-    captureId: string;
-    financialCapture: NonNullable<ReturnType<typeof admitPostDomesticDepositFinancialCapture>["capture"]>;
-  }> = [];
-  const financialCaptures: ExistingPostCurrentDepositFinancialCapture[] = [];
-  const manifest = POST_HUMAN_ATTESTED_V1_MANIFEST;
-  for (const { capture, captureId } of captureEntries) {
-    const input = {
-      capture,
-      captureId: `post-financial-${captureId}`,
-      humanAttestation: manifest,
-    };
-    const financialCapture = await product.validate(() => {
-      const admission = admitPostDomesticDepositFinancialCapture(input);
+  const admissions: DepositAdmission<ExistingPostCurrentDepositFinancialCapture>[] = [];
+  for (const [index, capture] of captures.entries()) {
+    admissions.push(await admitDeposit<ExistingPostCurrentDepositFinancialCapture>(product, () => {
+      const admission = admitPostDomesticDepositFinancialCapture({
+        capture,
+        captureId: `post-financial-${postCaptureId(observedAt, index)}`,
+        humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
+      });
       if (admission.status !== "admitted" || !admission.capture)
         throw new Error(
           `Post domestic deposit financial admission failed: ${[
             ...new Set(admission.diagnostics),
           ].join(", ")}`,
         );
-      return admission.capture;
-    });
-    financialInputs.push({ captureId: input.captureId, financialCapture });
-    financialCaptures.push({ identity: financialCapture.identity });
+      const financialCapture = admission.capture;
+      return {
+        product: "domestic-deposit",
+        capture: financialCapture,
+        balance: { identity: financialCapture.identity },
+      };
+    }));
   }
   // The overview response is staged before opening the execution run. Each
   // row still commits only after its statement identity item has committed.
-  const balances = await captureCurrentStateSnapshots(postCurrentBalanceSnapshot, {
-    captures: financialCaptures,
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: postCurrentBalanceSnapshot,
     acquire: readCurrentBalanceResponse,
-    product,
   });
-
-  context.signal.throwIfAborted();
-  product.stage(
-    ...financialInputs.map((entry) => ({
-      product: "domestic-deposit", itemKey: entry.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-        request: { capture: entry.financialCapture },
-      },
-    } as const)),
-    ...balances.items,
-  );
   return {
     sourceCaptureCount: statements.length,
     rowCount: statements.reduce((sum, statement) => sum + statement.rows.length, 0),
