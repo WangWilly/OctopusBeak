@@ -19,7 +19,7 @@ import {
 import type { WorkflowRunEvent } from "../src/lib/automation/run-event.ts";
 import { strictSourceText } from "../src/lib/automation/source-text.ts";
 import { workflowRunResult, type WorkflowRunResult } from "../src/lib/automation/workflow-run-result.ts";
-import { parsePreviewWrite } from "../src/ledger/pglite/preview-financial-data.ts";
+import { parsePreviewWrite, type PreviewWrite, type PreviewWriteReceipt } from "../src/ledger/pglite/preview-financial-data.ts";
 import {
   APP_WORKFLOW_DEFINITIONS,
   appWorkflowRegistration,
@@ -41,6 +41,43 @@ import {
   createHumanAssistanceContract,
   type HumanAssistanceCompletionStatus,
 } from "../src/lib/automation/human-assistance.ts";
+
+const count = <T>(items: readonly T[], size: (item: T) => number) => items.reduce((total, item) => total + size(item), 0);
+
+/** The receipt the preview write would return; a dry run closes nothing, since closure depends on stored rows. */
+function previewDryRunReceipt(write: PreviewWrite): PreviewWriteReceipt {
+  switch (write.product) {
+    case "deposit":
+    case "foreign_currency": {
+      const { accounts } = write.collection;
+      return {
+        accounts: accounts.length,
+        balances: count(accounts, (account) => account.balances.length),
+        transactions: count(accounts, (account) => account.transactions.length),
+        statements: 0,
+        closedAccounts: 0,
+      };
+    }
+    case "credit_card": {
+      const { accounts } = write.collection;
+      return {
+        accounts: accounts.length,
+        balances: count(accounts, (account) => account.balances.length),
+        transactions: count(accounts, (account) => account.purchases.length),
+        statements: count(accounts, (account) => account.statements.length),
+        closedAccounts: 0,
+      };
+    }
+    case "time_deposit": {
+      const { deposits } = write.collection;
+      return { accounts: deposits.length, balances: count(deposits, (deposit) => deposit.balances.length), transactions: 0, statements: 0, closedAccounts: 0 };
+    }
+    case "loan": {
+      const { loans } = write.collection;
+      return { accounts: loans.length, balances: loans.length, transactions: 0, statements: 0, closedAccounts: 0 };
+    }
+  }
+}
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const AUTOMATION_ROOT = resolve(ROOT, "src", "lib", "automation");
@@ -531,7 +568,7 @@ async function main(args = process.argv.slice(2)) {
     const commitPort = definition.requiresFinancialCommit
       ? createDryRunFinancialCommitPort((count) => { dryRunCount = count; })
       : undefined;
-    let previewDryRun = { accounts: 0, balances: 0, transactions: 0 };
+    let previewDryRun: PreviewWriteReceipt = { accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 };
     const executor = createWorkflowExecutor([definition], {
       ...makePorts(
         interrupt.controller.signal,
@@ -543,19 +580,14 @@ async function main(args = process.argv.slice(2)) {
       ),
       previewWrite: {
         async write(write) {
-          const { collection } = parsePreviewWrite(write);
-          previewDryRun = {
-            accounts: collection.accounts.length,
-            balances: collection.accounts.reduce((sum, account) => sum + account.balances.length, 0),
-            transactions: collection.accounts.reduce((sum, account) => sum + account.transactions.length, 0),
-          };
+          previewDryRun = previewDryRunReceipt(parsePreviewWrite(write));
           return previewDryRun;
         },
       },
     });
     try {
       await executor.run(definition.id, randomUUID(), input, interrupt.controller.signal);
-      stdout.write(`workflow completed; canonical financial dry-run items=${dryRunCount}; preview dry-run accounts=${previewDryRun.accounts} balances=${previewDryRun.balances} transactions=${previewDryRun.transactions}; database writes=0; files=0\n`);
+      stdout.write(`workflow completed; canonical financial dry-run items=${dryRunCount}; preview dry-run accounts=${previewDryRun.accounts} balances=${previewDryRun.balances} transactions=${previewDryRun.transactions} statements=${previewDryRun.statements}; database writes=0; files=0\n`);
     } finally {
       interrupt.dispose();
     }
