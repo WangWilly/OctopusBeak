@@ -139,11 +139,21 @@ export function sanitizeCollectionProductOutcomes(
   return Object.freeze(outcomes);
 }
 
-/** The counts the run itself keeps; a collector never reports them. */
-const RUN_COUNT_NAMES = ["sourceCaptureCount", "rowCount", "itemCount", "committedCount"] as const;
+/** The counts only a provider knows, such as its accounts; a collector reports no other name (ADR 0122). */
+const PRODUCT_COLLECTOR_COUNT_NAMES = [
+  "accountCount",
+  "skippedAccountCount",
+  "canonicalCaptureCount",
+  "holdingPageCount",
+  "holdingGridCount",
+  "holdingRowCount",
+  "tradePageCount",
+  "tradeGridCount",
+  "tradeRowCount",
+] as const satisfies readonly WorkflowRunCountName[];
+const COLLECTOR_COUNT_NAMES: ReadonlySet<string> = new Set(PRODUCT_COLLECTOR_COUNT_NAMES);
 
-/** A count only a provider knows, such as its accounts (ADR 0122). */
-export type ProductCollectorCountName = Exclude<WorkflowRunCountName, typeof RUN_COUNT_NAMES[number]>;
+export type ProductCollectorCountName = typeof PRODUCT_COLLECTOR_COUNT_NAMES[number];
 export type ProductCollectorCounts = Readonly<Partial<Record<ProductCollectorCountName, number>>>;
 
 export type ProductCollectionSummary = Readonly<{
@@ -329,7 +339,7 @@ export function interruptedProductCollectionFromOutput(
     itemCount: readCount("itemCount"),
     committedCount,
     counts: Object.freeze(Object.fromEntries(Object.entries(counts).filter(([name, count]) =>
-      !(RUN_COUNT_NAMES as readonly string[]).includes(name) && isSafeCount(count as number)))),
+      COLLECTOR_COUNT_NAMES.has(name) && isSafeCount(count as number)))),
     status: productRunStatus(products, committedCount),
   }));
 }
@@ -374,8 +384,7 @@ function isSafeCount(value: number): boolean {
 function collectorCountsAreValid(counts: unknown): boolean {
   if (counts === undefined) return true;
   if (!counts || typeof counts !== "object" || Array.isArray(counts)) return false;
-  return Object.entries(counts).every(([name, value]) =>
-    !(RUN_COUNT_NAMES as readonly string[]).includes(name) && isSafeCount(value as number));
+  return Object.entries(counts).every(([name, value]) => COLLECTOR_COUNT_NAMES.has(name) && isSafeCount(value as number));
 }
 
 /** Adds `counts` into `totals` by name. */
@@ -392,14 +401,14 @@ function summedCounts(
   verified: ProductCollectorCounts,
   attached: readonly CollectionProductOutcome[] | null,
 ): ProductCollectorCounts {
-  const totals: Partial<Record<ProductCollectorCountName, number>> = {};
+  const totals: Partial<Record<ProductCollectorCountName, number>> = Object.create(null);
   addCounts(totals, verified);
   if (attached) {
     addCounts(totals, {
       accountCount: attached.reduce((total, product) => total + (product.status === "success" ? product.itemCount : 0), 0),
     });
   }
-  return Object.freeze(totals);
+  return Object.freeze({ ...totals });
 }
 
 function slug(typeId: string): string {
@@ -500,7 +509,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
   let rowCount = 0;
   let itemCount = 0;
   let committedCount = 0;
-  const collectorCounts: Partial<Record<ProductCollectorCountName, number>> = {};
+  const collectorCounts: Partial<Record<ProductCollectorCountName, number>> = Object.create(null);
   let firstFailure: unknown = null;
   let committedAny = false;
   let committedOnlySourceAssertions = true;

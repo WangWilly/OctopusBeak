@@ -16,7 +16,7 @@ A collector returned a fixed `ProductCollectionSummary` (`sourceCaptureCount`, `
 
 **A collector returns its own counts in `ProductCollectionSummary.counts`, and the run sums them by name over the products that succeeded.**
 
-- `counts` holds provider counts only. A collector that reports one of the run's own counts (`sourceCaptureCount`, `rowCount`, `itemCount`, `committedCount`) or an unsafe value fails the run as `workflow-failed`.
+- `counts` holds provider counts only, named from a fixed list: `accountCount`, `skippedAccountCount`, `canonicalCaptureCount`, and the Yuanta securities page, grid and row counts. A collector that reports any other name, including the run's own counts (`sourceCaptureCount`, `rowCount`, `itemCount`, `committedCount`) and the removed duplicates, or an unsafe value, fails the run as `workflow-failed`.
 - Only a product whose outcome is `success` contributes. A failed product's data was not kept, so its counts are not reported either.
 - `accountCount` means the accounts this run brought back, across every product. Each successful Attached Preview Product adds its `itemCount`, because a preview commit item is one account. A Preview Source run reports `accountCount` the same way.
 - `ProductCollectionRunSummary.counts` carries the sums, including on an interrupted run's summary. `productRunResult` takes no `counts`. It reports the run's own counts, the summed counts, and the TDCC exclusion counts aggregated from the products' collection evidence.
