@@ -94,7 +94,7 @@ const linebankWorkflowSource = await readFile(
 assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
 assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
 assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
-assert.match(linebankWorkflowSource, /captureCurrentStateSnapshots\(/u);
+assert.match(linebankWorkflowSource, /stageCanonicalDeposits\(/u);
 assert.match(linebankWorkflowSource, /export const lineBankWorkflow/u);
 assert.match(linebankWorkflowSource, /observedAt:\s*accountSnapshotAt/u);
 assert.doesNotMatch(
