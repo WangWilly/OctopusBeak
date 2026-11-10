@@ -202,7 +202,7 @@ test("SinoPac golden: identical rows receive distinct occurrence slots and stay 
     current: [balanceRow(twdAccount, "TWD", "新台幣", "800")],
   });
   assert.deepEqual(commands(recorded), [
-    "domestic-deposit:financial.mixed.commit",
+    "domestic-deposit:financial.deposit.commit",
     "current-balance:financial.balance.capture",
   ]);
 });

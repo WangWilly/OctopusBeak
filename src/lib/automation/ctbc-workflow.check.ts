@@ -322,7 +322,7 @@ test("CTBC typed workflow collects a complete source in memory and uses the inje
     const balanceItem = harness.committed[0]?.[1] as { product?: string };
     assert.equal(item.provider, "ctbc");
     assert.equal(item.product, "domestic-deposit");
-    assert.equal(item.command?.kind, "financial.mixed.commit");
+    assert.equal(item.command?.kind, "financial.deposit.commit");
     assert.equal(balanceItem.product, "current-balance");
     assert.deepEqual(await readdir(directory), []);
     assert.deepEqual(

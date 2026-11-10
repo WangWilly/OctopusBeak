@@ -93,8 +93,9 @@ export type CanonicalFinancialDepositRecord = {
   occurrenceGroupBucketKey?: string;
 };
 
-/** Source evidence that is not a monetary transaction. Holding observations
- * and credit-card statement evidence never enter generic transaction tables. */
+/** Source evidence that is not a monetary transaction. Holding observations,
+ * credit-card statement summaries and deposit rows a source declines to book
+ * never enter generic transaction tables. */
 export type CanonicalFinancialNonTransactionRecord = {
   recordType: "holding-observation" | "statement-evidence";
   recordKind?: string;

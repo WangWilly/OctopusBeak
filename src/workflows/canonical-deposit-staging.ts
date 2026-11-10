@@ -10,7 +10,6 @@ import type { CanonicalFinancialDepositCapture } from "../ledger/canonical/canon
 import type { CanonicalSourceEvidence } from "../ledger/canonical/canonical-source-evidence.ts";
 import {
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-commands.ts";
 import type { ProductCollectionHandle, ProductStageRequest } from "../lib/automation/product-collection.ts";
@@ -31,7 +30,6 @@ export type DepositDecision<Balance> =
       sourceOnly: CanonicalSourceEvidence;
       capture?: never;
       balance?: never;
-      withSource?: never;
       relationCommands?: never;
     }>
   | Readonly<{
@@ -41,8 +39,6 @@ export type DepositDecision<Balance> =
       sourceOnly?: never;
       /** The capture the current-balance snapshot matches rows against; absent for a capture the snapshot does not cover. */
       balance?: Balance;
-      /** Source evidence committed in the same transaction as the deposit. */
-      withSource?: CanonicalSourceEvidence;
       relationCommands?: ProductStageRequest["relationCommands"];
     }>;
 
@@ -106,16 +102,11 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
       });
       continue;
     }
-    const { capture, withSource, relationCommands } = admission;
+    const { capture, relationCommands } = admission;
     deposits.push({
       product: admission.product,
       itemKey: capture.captureId,
-      command: withSource
-        ? {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: [{ kind: "source", request: withSource }, { kind: "deposit", request: { capture } }] },
-          }
-        : { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
+      command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
       ...(relationCommands ? { relationCommands } : {}),
     });
     if (admission.balance !== undefined) balanceCaptures.push(admission.balance);

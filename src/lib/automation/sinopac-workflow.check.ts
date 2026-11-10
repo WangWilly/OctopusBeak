@@ -346,7 +346,7 @@ test("a financial SinoPac snapshot reads current balances once and stages the ma
   });
   assert.equal(balanceReads, 1);
   assert.deepEqual(staged.map((item) => `${item.product}:${item.command.kind}`), [
-    "domestic-deposit:financial.mixed.commit",
+    "domestic-deposit:financial.deposit.commit",
     `current-balance:${PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND}`,
   ]);
   assert.equal(staged[1]?.itemKey, `current-balance:domestic-deposit:${accountId}`);

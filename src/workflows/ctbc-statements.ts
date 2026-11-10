@@ -1053,10 +1053,9 @@ export async function stageCtbcDeposit(
   for (const capture of validatedCaptures) {
     context.signal.throwIfAborted();
     const captureId = `ctbc-${randomUUID()}`;
-    const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
     admissions.push(await admitDeposit<ExistingCtbcFinancialCapture>(product, () => {
       if (capture.responses.every((response) => response.rows.length === 0))
-        return { product: "domestic-deposit", sourceOnly: source };
+        return { product: "domestic-deposit", sourceOnly: createCtbcDomesticDepositSourceEvidence(capture, captureId) };
       const admission = admitCtbcDomesticDepositFinancialCapture({
         capture,
         captureId: `ctbc-financial-${captureId}`,
@@ -1068,7 +1067,7 @@ export async function stageCtbcDeposit(
         );
       }
       const admitted = admission.capture;
-      return { product: "domestic-deposit", capture: admitted, balance: admitted, withSource: source };
+      return { product: "domestic-deposit", capture: admitted, balance: admitted };
     }));
   }
   await product.event("validation", "completed", "canonical-admission-completed", {

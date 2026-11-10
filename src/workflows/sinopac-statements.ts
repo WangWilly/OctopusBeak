@@ -1025,11 +1025,13 @@ export async function stageSinopacDeposit(
   const admissions: DepositAdmission<ExistingSinopacFinancialCapture>[] = [];
   for (const [index, { capture }] of snapshot.accounts.entries()) {
     admissions.push(await admitDeposit<ExistingSinopacFinancialCapture>(product, () => {
-      const sourceEvidence = capture.product === "domestic-deposit"
-        ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
-        : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`);
       if (capture.downloads.every((download) => download.rows.length === 0))
-        return { product: capture.product, sourceOnly: sourceEvidence };
+        return {
+          product: capture.product,
+          sourceOnly: capture.product === "domestic-deposit"
+            ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
+            : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`),
+        };
       const financial = capture.product === "domestic-deposit"
         ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
             capture,
@@ -1048,7 +1050,6 @@ export async function stageSinopacDeposit(
           identity: financial.capture.identity,
           sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
         },
-        withSource: sourceEvidence,
       };
     }));
   }
