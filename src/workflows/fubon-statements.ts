@@ -61,11 +61,11 @@ import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   parseFubonCurrentDepositBalanceSnapshot,
   readFubonCurrentDepositBalanceTable,
-  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
   FUBON_CURRENT_DEPOSIT_RESPONSE,
   type FubonCurrentDepositBalanceRow,
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
   assembleCurrentDepositCapture,
   readCurrentStateSnapshot,
@@ -186,6 +186,8 @@ export function buildFubonCurrentDepositBalanceCapture(
       "Fubon current deposit account does not match the existing full account-number evidence.",
     );
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  const route = "fubon/domestic-deposit/current-balance-v1" as const;
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
   const amountPairs: readonly [
     "ledger" | "available",
     string,
@@ -223,10 +225,10 @@ export function buildFubonCurrentDepositBalanceCapture(
       time: {
         effectiveAt: row.effectiveAt,
         effectiveTimeBasis: "provider-http-date",
-        effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+        effectiveTimeRuleVersion: contract.contractVersion,
         sourceField: "HTTP Date",
         sourceValue: row.providerHttpDate,
-        contractVersion: row.sourceEvidence.contractVersion,
+        contractVersion: contract.contractVersion,
       },
       timeInRecord: false,
       compact: {
@@ -244,8 +246,8 @@ export function buildFubonCurrentDepositBalanceCapture(
   );
   return assembleCurrentDepositCapture({
     captureId: randomUUID(),
-    authorityRoute: "fubon/domestic-deposit/current-balance-v1",
-    contractVersion: row.sourceEvidence.contractVersion,
+    authorityRoute: route,
+    contractVersion: contract.contractVersion,
     subjectDigest: identity.subjectDigest,
     identity: {
       integrationNamespace: "fubon",
@@ -260,7 +262,7 @@ export function buildFubonCurrentDepositBalanceCapture(
       endDate: row.effectiveAt.slice(0, 10),
     },
     providerResponse: {
-      endpoint: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
+      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
     },

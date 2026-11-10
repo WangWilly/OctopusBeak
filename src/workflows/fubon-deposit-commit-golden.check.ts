@@ -6,16 +6,15 @@ import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { assertDepositCommitGolden, recordDepositCommit } from "./deposit-commit-golden.ts";
 import type { FubonAllWorkflowDependencies } from "./fubon-all-statements.ts";
-import {
-  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
-} from "./fubon-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type {
   FubonDepositAccountOptionEvidence,
   FubonDepositProductContext,
   FubonDepositStatementPageEvidence,
   FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -168,7 +167,7 @@ async function runGolden(
     return stageFubonDeposit({ accounts }, input, context, product, async () => ({
       evidence: { kind: "cells", rows: currentRows },
       response: {
-        url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+        url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`,
         status: 200,
         method: "GET",
         headers: { date: "Thu, 24 Sep 2026 16:00:00 GMT", "cache-control": "no-store, no-cache" },

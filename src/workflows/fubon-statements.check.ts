@@ -26,10 +26,8 @@ import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,
 } from "./fubon-source-connection.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  FUBON_CURRENT_DEPOSIT_BALANCE_HOST,
   type FubonCurrentDepositBalanceRow,
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
@@ -56,6 +54,8 @@ import {
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-client.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 
 const source = await readFile(
   new URL("./fubon-statements.ts", import.meta.url),
@@ -121,10 +121,10 @@ const fubonCurrentCapture = buildFubonCurrentDepositBalanceCapture(
     providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
     observedAt: "2026-08-31T09:00:00+08:00",
     sourceEvidence: {
-      endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+      endpoint: CONTRACT.endpointPath,
       status: 200,
       cacheControl: "no-store, no-cache",
-      contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+      contractVersion: CONTRACT.contractVersion,
     },
   },
   {
@@ -294,10 +294,10 @@ const currentBalanceRow: FubonCurrentDepositBalanceRow = {
   providerHttpDate: "Sat, 31 Jan 2026 12:00:00 GMT",
   observedAt: "2026-01-31T12:00:00.000Z",
   sourceEvidence: {
-    endpoint: FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    endpoint: CONTRACT.endpointPath,
     status: 200,
     cacheControl: "no-store, no-cache",
-    contractVersion: FUBON_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+    contractVersion: CONTRACT.contractVersion,
   },
 };
 /** The staging half's input, and the ranges whose statements each account was read for. */
@@ -338,7 +338,7 @@ function currentTable(rows: readonly FubonCurrentDepositBalanceRow[]): FubonCurr
       ]),
     },
     response: {
-      url: `https://${FUBON_CURRENT_DEPOSIT_BALANCE_HOST}${FUBON_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+      url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`,
       status: 200,
       method: "GET",
       headers: { date: currentBalanceRow.providerHttpDate, "cache-control": "no-store, no-cache" },
