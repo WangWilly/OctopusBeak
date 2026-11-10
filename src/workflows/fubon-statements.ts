@@ -2291,7 +2291,7 @@ export async function stageFubonDeposit(
           };
         });
         admissions.push(admission);
-        if ("sourceOnly" in admission) continue;
+        if (admission.sourceOnly !== undefined) continue;
         if (accountNumber && continuity.status === "unseen")
           continuityByAccountNumber.set(
             accountNumber,
@@ -2317,7 +2317,7 @@ export async function stageFubonDeposit(
     // the statements, so a posting in between breaks a USD-coded account's
     // reconciliation for this run only.
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
-    if (admissions.some((admission) => !("sourceOnly" in admission)) || deferred.length > 0) {
+    if (admissions.some((admission) => admission.sourceOnly === undefined) || deferred.length > 0) {
       currentRows = await readCurrentStateSnapshot(fubonCurrentBalanceSnapshot, {
         acquire: readCurrentBalances,
         product,

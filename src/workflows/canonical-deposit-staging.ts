@@ -29,11 +29,16 @@ export type DepositDecision<Balance> =
       /** Commit only the source evidence, keyed by its capture id. */
       product: string;
       sourceOnly: CanonicalSourceEvidence;
+      capture?: never;
+      balance?: never;
+      withSource?: never;
+      relationCommands?: never;
     }>
   | Readonly<{
       /** Commit the deposit capture, keyed by its capture id. */
       product: string;
       capture: CanonicalFinancialDepositCapture;
+      sourceOnly?: never;
       /** The capture the current-balance snapshot matches rows against; absent for a capture the snapshot does not cover. */
       balance?: Balance;
       /** Source evidence committed in the same transaction as the deposit. */
@@ -85,12 +90,15 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
   admissions: readonly DepositAdmission<Balance>[],
   currentBalance: DepositCurrentBalance<Acquired, Row, Balance, DateRule>,
 ): Promise<readonly Row[]> {
-  if (admissions.length === 0) return [];
+  if (admissions.length === 0) {
+    product.signal.throwIfAborted();
+    return [];
+  }
   const sourceOnly: ProductStageRequest[] = [];
   const deposits: ProductStageRequest[] = [];
   const balanceCaptures: Balance[] = [];
   for (const admission of admissions) {
-    if ("sourceOnly" in admission) {
+    if (admission.sourceOnly !== undefined) {
       sourceOnly.push({
         product: admission.product,
         itemKey: admission.sourceOnly.captureId,
