@@ -4,10 +4,7 @@ import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
-import {
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { YUANTA_ENTRY_URL } from "./yuanta-auth.ts";
 import {
   parseFragment,
@@ -18,12 +15,12 @@ import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import { yuantaQuickRange } from "./yuanta-statements.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
@@ -40,7 +37,6 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   assembleCurrentDepositCapture,
-  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
@@ -2412,10 +2408,9 @@ export async function stageYuantaForeignCurrency(
 ): Promise<ProductCollectionSummary> {
   const { signal, text: sourceText } = context;
   const now = () => context.now();
-  const checkCancelled = () => signal.throwIfAborted();
   const rows = snapshot.downloads.flatMap((download) => download.rows);
 
-  checkCancelled();
+  signal.throwIfAborted();
   const captureOccurrenceId = randomUUID();
   const grouped = new Map<string, ForeignCurrencyTransactionRow[]>();
   for (const row of rows) {
@@ -2444,36 +2439,32 @@ export async function stageYuantaForeignCurrency(
       input.yuantaUserId,
     );
   });
-  const admitted = captures.map((capture) => admitForeignCurrencyDepositCapture(capture));
-  const statementItems: ProductStageRequest[] = admitted.map((capture) => ({
-    product: "foreign-currency-deposit",
-    itemKey: capture.identity.accountNo,
-    command: {
-      kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-      request: { capture },
-    },
-    relationCommands: () => [{
-      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-      request: {
-        sourceConnectionKey: capture.identity.sourceConnectionKey,
-        observedAt: capture.observedAt,
-      },
-    }],
-  }));
-
-  // Current balances are source inputs too. Admit all of them before the
-  // parent opens the one Canonical Financial Commit boundary.
-  const balances = await captureCurrentStateSnapshots(yuantaForeignCurrentBalanceSnapshot, {
-    captures: admitted,
+  const admissions: DepositAdmission<ExistingYuantaForeignFinancialCapture>[] = [];
+  for (const capture of captures) {
+    admissions.push(await admitDeposit<ExistingYuantaForeignFinancialCapture>(product, () => {
+      const admitted = admitForeignCurrencyDepositCapture(capture);
+      return {
+        product: "foreign-currency-deposit",
+        capture: admitted,
+        balance: admitted,
+        relationCommands: () => [{
+          kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
+          request: {
+            sourceConnectionKey: admitted.identity.sourceConnectionKey,
+            observedAt: admitted.observedAt,
+          },
+        }],
+      };
+    }));
+  }
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: yuantaForeignCurrentBalanceSnapshot,
     acquire: async () => {
       if (!snapshot.currentBalances)
         throw new Error("Yuanta foreign current balances were not read for the admitted accounts.");
       return snapshot.currentBalances;
     },
-    product,
   });
-  checkCancelled();
-  product.stage(...statementItems, ...balances.items);
   return {
     sourceCaptureCount: snapshot.downloads.length,
     rowCount: rows.length,
