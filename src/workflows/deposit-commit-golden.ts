@@ -11,11 +11,11 @@ import type {
 } from "../lib/automation/workflow-executor.ts";
 
 /**
- * Pins what a deposit or credit-card workflow hands to the Canonical Financial
- * Commit, and the progress events around it, so a change to any bank's
- * admission can prove its output is unchanged (ADR 0054). Set
- * UPDATE_DEPOSIT_GOLDENS=1 or UPDATE_CREDIT_CARD_GOLDENS=1 to rewrite the
- * recorded files.
+ * Pins what a deposit, credit-card or loan workflow hands to the Canonical
+ * Financial Commit, and the progress events around it, so a change to any
+ * bank's admission can prove its output is unchanged (ADR 0054). Set
+ * UPDATE_DEPOSIT_GOLDENS=1, UPDATE_CREDIT_CARD_GOLDENS=1 or
+ * UPDATE_LOAN_GOLDENS=1 to rewrite the recorded files.
  */
 export type DepositCommitRecorder = Readonly<{
   financialCommit: WorkflowFinancialCommitPort;
@@ -83,6 +83,7 @@ function normalize(value: unknown): Record<string, unknown> {
 const GOLDENS = {
   deposit: { directory: "deposit-commit-goldens", update: "UPDATE_DEPOSIT_GOLDENS" },
   "credit-card": { directory: "credit-card-commit-goldens", update: "UPDATE_CREDIT_CARD_GOLDENS" },
+  loan: { directory: "loan-commit-goldens", update: "UPDATE_LOAN_GOLDENS" },
 } as const;
 
 async function assertCommitGolden(kind: keyof typeof GOLDENS, name: string, actual: unknown): Promise<void> {
@@ -104,6 +105,10 @@ export function assertDepositCommitGolden(name: string, actual: unknown): Promis
 
 export function assertCreditCardCommitGolden(name: string, actual: unknown): Promise<void> {
   return assertCommitGolden("credit-card", name, actual);
+}
+
+export function assertLoanCommitGolden(name: string, actual: unknown): Promise<void> {
+  return assertCommitGolden("loan", name, actual);
 }
 
 /**
