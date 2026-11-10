@@ -1,11 +1,7 @@
-import {
-  POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-  POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  POST_CURRENT_DEPOSIT_BALANCE_HOST,
-  POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
-  POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-  type PostCurrentDepositResponse,
-} from "./post-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import type { PostCurrentDepositResponse } from "./post-current-deposit-balances.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"];
 
 /** A recorded-shape iPost asset-overview response with one PS row per account. */
 export function postCurrentDepositResponse(
@@ -31,7 +27,7 @@ export function postCurrentDepositResponse(
   return {
     evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(payload)) },
     response: {
-      url: `https://${POST_CURRENT_DEPOSIT_BALANCE_HOST}${POST_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+      url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`,
       status: 200,
       method: "POST",
       headers: {
@@ -42,10 +38,10 @@ export function postCurrentDepositResponse(
     },
     requestPostData: JSON.stringify({
       header: {
-        TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-        BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+        TxnCode: CONTRACT.requestDiscriminant.txnCode,
+        BizCode: CONTRACT.requestDiscriminant.bizCode,
       },
-      body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+      body: { pageCount: CONTRACT.requestDiscriminant.pageCount },
     }),
   };
 }

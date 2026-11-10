@@ -9,11 +9,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
-import {
-  POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
-  POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT,
-  POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-} from "../../../workflows/post-current-deposit-balances.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonical/current-deposit-route-contracts.ts";
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { executeTaskRunForCheck } from "./task-run-check-support.ts";
@@ -24,6 +20,9 @@ import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-work
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
+
+const POST_REQUEST =
+  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"].requestDiscriminant;
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -100,10 +99,10 @@ function statementResponse(options: { malformed?: boolean; incomplete?: boolean;
 function balanceResponse(onRead: () => void): Response {
   const requestPostData = JSON.stringify({
     header: {
-      TxnCode: POST_CURRENT_DEPOSIT_BALANCE_TXN_CODE,
-      BizCode: POST_CURRENT_DEPOSIT_BALANCE_BIZ_CODE,
+      TxnCode: POST_REQUEST.txnCode,
+      BizCode: POST_REQUEST.bizCode,
     },
-    body: { pageCount: POST_CURRENT_DEPOSIT_BALANCE_PAGE_COUNT },
+    body: { pageCount: POST_REQUEST.pageCount },
   });
   const payload = [
     {
