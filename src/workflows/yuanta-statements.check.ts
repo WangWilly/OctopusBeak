@@ -616,7 +616,6 @@ try {
       accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
     },
     typedInput,
-    checkContext(),
     yuantaStagingHandle(deferredItems),
     async () => yuantaCurrentDepositTable([workflowCurrentBalanceCells(workflowAccount)], workflowCurrentBalanceRow.providerHttpDate),
   );
@@ -640,7 +639,6 @@ try {
       ],
     },
     { accountFilters: [], ...stableConnectionIdentity },
-    checkContext(),
     yuantaStagingHandle(noDataItems),
     async () => yuantaCurrentDepositTable([
       workflowCurrentBalanceCells(workflowAccount),
@@ -670,7 +668,6 @@ try {
         accounts: [{ account: workflowAccount, query: "download-ready", download: workflowDownload }],
       },
       typedInput,
-      checkContext(cancellation.signal),
       yuantaStagingHandle(canceledItems, [], undefined, { signal: cancellation.signal }),
       async () => assert.fail("a cancelled run must not open the current-balance page"),
     ),
@@ -1071,7 +1068,6 @@ try {
             accounts: [{ account: workflowAccount, query: "download-ready", download }],
           },
           { accountFilters: [], ...stableConnectionIdentity },
-          context,
           yuantaStagingHandle(items, [], undefined, { signal }),
           async () => yuantaCurrentDepositTable(
             [workflowCurrentBalanceCells(workflowAccount)],

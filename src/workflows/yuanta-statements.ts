@@ -3,11 +3,7 @@ import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
-import {
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { parseCsvMatrix } from "../lib/tabular-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod, type CollectionSpan } from "../lib/automation/collection-period.ts";
@@ -19,8 +15,8 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
@@ -31,7 +27,6 @@ import {
   YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_TELEMETRY_VERSION,
   type YuantaDomesticDepositCaptureEvidence,
-  type YuantaDomesticDepositValidatedEvidence,
   type YuantaDomesticDepositDownloadEvidence,
   type YuantaDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
@@ -56,7 +51,6 @@ import {
 } from "./yuanta-current-deposit-balances.ts";
 import {
   assembleCurrentDepositCapture,
-  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
@@ -795,7 +789,6 @@ export async function readYuantaDepositSource(
 export async function stageYuantaDeposit(
   snapshot: YuantaDepositSourceSnapshot,
   input: YuantaStatementsCollectionInput,
-  context: WorkflowContext,
   product: ProductCollectionHandle,
   readCurrentBalanceTable: YuantaReadCurrentDepositBalanceTable,
 ): Promise<ProductCollectionSummary> {
@@ -809,123 +802,86 @@ export async function stageYuantaDeposit(
   const { observedAt, queryRange } = snapshot;
   let rowCount = 0;
   let sourceCaptureCount = 0;
-  const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitYuantaDomesticDepositFinancialCapture>["capture"]>> = [];
-  const sourceOnlyEntries: Array<{
-    capture: YuantaDomesticDepositValidatedEvidence;
-    captureId: string;
-  }> = [];
-  const relationInputs: Array<{
-    captureId: string;
-    evidence: TransactionCounterpartyAccountEvidenceInput[];
-  }> = [];
-
+  const admissions: DepositAdmission<ExistingYuantaFinancialCapture>[] = [];
   for (const read of snapshot.accounts) {
     const { account } = read;
-    const downloaded = read.query === "provider-explicit-no-data"
-      ? yuantaExplicitNoDataDownload()
-      : read.download;
-    if (downloaded.source.terminal !== true)
-      throw new Error(
-        "Yuanta domestic deposit download did not reach a terminal CSV state.",
-      );
-    rowCount += downloaded.rows.length;
-    sourceCaptureCount += 1;
-    const structural = admitYuantaDomesticDepositCaptureEvidence(
-      buildYuantaCapture(account, queryRange, observedAt, downloaded),
-    );
-    if (structural.status !== "admissible" || !structural.capture)
-      throw new Error(
-        `Yuanta domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
-      );
-    const capture = structural.capture;
-    const captureIdSuffix = digestAccountValue(account.value).slice(7, 19);
-    const financialInput = {
-      capture,
-      captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
-      humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
-      // Financial Source Connection identity comes only from the stable
-      // login pair. The attestation manifest remains provenance for the
-      // independently versioned account/identity epoch.
-      sourceConnectionScope,
-      sourceConnectionKey,
-    };
-    const financialAdmission =
-      admitYuantaDomesticDepositFinancialCapture(financialInput);
-    const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
-
-    if (financialAdmission.status !== "admitted") {
-      const disallowed = financialAdmission.diagnostics.filter(
-        (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
-      );
-      if (disallowed.length > 0)
+    admissions.push(await admitDeposit<ExistingYuantaFinancialCapture>(product, () => {
+      const downloaded = read.query === "provider-explicit-no-data"
+        ? yuantaExplicitNoDataDownload()
+        : read.download;
+      if (downloaded.source.terminal !== true)
         throw new Error(
-          `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
+          "Yuanta domestic deposit download did not reach a terminal CSV state.",
         );
-      sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-      continue;
-    }
-    if (!financialAdmission.capture)
-      throw new Error(
-        "Yuanta domestic deposit admission lost its canonical capture.",
+      rowCount += downloaded.rows.length;
+      sourceCaptureCount += 1;
+      const structural = admitYuantaDomesticDepositCaptureEvidence(
+        buildYuantaCapture(account, queryRange, observedAt, downloaded),
       );
-    financialDepositCaptures.push(financialAdmission.capture);
-    relationInputs.push({
-      captureId: financialInput.captureId,
-      evidence: (downloaded.counterpartyAccountEvidence ?? []).map(
-        (evidence) => {
-          const materialized = materializeYuantaCounterpartyEvidence(
-            financialAdmission.capture!,
-            evidence,
+      if (structural.status !== "admissible" || !structural.capture)
+        throw new Error(
+          `Yuanta domestic deposit source admission blocked: ${structural.diagnostics.join(", ")}`,
+        );
+      const capture = structural.capture;
+      const captureIdSuffix = digestAccountValue(account.value).slice(7, 19);
+      const financialAdmission = admitYuantaDomesticDepositFinancialCapture({
+        capture,
+        captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
+        humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
+        // Financial Source Connection identity comes only from the stable
+        // login pair. The attestation manifest remains provenance for the
+        // independently versioned account/identity epoch.
+        sourceConnectionScope,
+        sourceConnectionKey,
+      });
+      const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
+
+      if (financialAdmission.status !== "admitted") {
+        const disallowed = financialAdmission.diagnostics.filter(
+          (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
+        );
+        if (disallowed.length > 0)
+          throw new Error(
+            `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
           );
-          admitCounterpartyAccountEvidence(materialized, "yuanta");
-          return materialized;
-        },
-      ),
-    });
-  }
-
-  // Read and validate the point-in-time page before returning any items. A
-  // failure here must not leave statement captures from this run behind.
-  const balances = await captureCurrentStateSnapshots(yuantaCurrentBalanceSnapshot, {
-    captures: financialDepositCaptures,
-    acquire: readCurrentBalanceTable,
-    product,
-  });
-
-  context.signal.throwIfAborted();
-  const items: ProductStageRequest[] = [];
-  for (const entry of sourceOnlyEntries) items.push({
-    product: "domestic-deposit",
-    itemKey: entry.captureId,
-    command: {
-      kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-      request: createYuantaDomesticDepositSourceEvidence(
-        entry.capture,
-        entry.captureId,
-        stableSourceIdentity,
-      ),
-    },
-  });
-  for (const capture of financialDepositCaptures) {
-    const relation = relationInputs.find((item) => item.captureId === capture.captureId);
-    items.push({
-      product: "domestic-deposit",
-      itemKey: capture.captureId,
-      command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
-      ...(relation ? {
+        return {
+          product: "domestic-deposit",
+          sourceOnly: createYuantaDomesticDepositSourceEvidence(capture, sourceCaptureId, stableSourceIdentity),
+        };
+      }
+      const financialCapture = financialAdmission.capture;
+      if (!financialCapture)
+        throw new Error(
+          "Yuanta domestic deposit admission lost its canonical capture.",
+        );
+      const counterpartyEvidence = (downloaded.counterpartyAccountEvidence ?? []).map((evidence) => {
+        const materialized = materializeYuantaCounterpartyEvidence(financialCapture, evidence);
+        admitCounterpartyAccountEvidence(materialized, "yuanta");
+        return materialized;
+      });
+      return {
+        product: "domestic-deposit",
+        capture: financialCapture,
+        balance: financialCapture,
         relationCommands: () => [{
           kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
           request: {
             sourceConnectionKey,
             integrationNamespace: "yuanta",
-            observedAt: capture.observedAt,
-            counterpartyEvidence: relation.evidence,
+            observedAt: financialCapture.observedAt,
+            counterpartyEvidence,
           },
         }],
-      } : {}),
-    });
+      };
+    }));
   }
-  product.stage(...items, ...balances.items);
+
+  // The step reads and validates the point-in-time page before staging any
+  // item, so a failure there leaves no statement capture from this run behind.
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: yuantaCurrentBalanceSnapshot,
+    acquire: readCurrentBalanceTable,
+  });
 
   return { sourceCaptureCount, rowCount };
 }
@@ -942,7 +898,6 @@ export async function runYuantaStatements(
   return await stageYuantaDeposit(
     snapshot,
     input,
-    context,
     product,
     () => readYuantaCurrentDepositBalanceTable(
       yuantaEbankSite(page, context),
