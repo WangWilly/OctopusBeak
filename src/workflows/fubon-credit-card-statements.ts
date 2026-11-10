@@ -35,6 +35,7 @@ import {
 import {
   canonicalCreditCardCurrentBalanceIdentity,
   creditCardCurrentUsedAmountFromLimitAndAvailable,
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS,
   type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
@@ -356,6 +357,9 @@ type FubonCurrentCreditAcquisition = Readonly<{
   response: ProviderResponse;
 }>;
 
+const FUBON_CURRENT_USED_CREDIT_CONTRACT =
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS["fubon/credit-card/current-used-credit-v1"];
+
 const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   FubonCurrentCreditAcquisition,
   FubonCurrentUsedCreditSnapshot,
@@ -369,14 +373,14 @@ const fubonCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   build: (row, { capture }) => fubonCreditCurrentSnapshotCapture(capture, row),
   response: {
     label: "Fubon current used credit",
-    host: "ebank.taipeifubon.com.tw",
+    host: FUBON_CURRENT_USED_CREDIT_CONTRACT.endpointHost,
     endpoints: [{
-      path: "/B2C/cccqu/cccqu002/CCCQU002_Home.faces",
+      path: FUBON_CURRENT_USED_CREDIT_CONTRACT.endpointPath,
       method: "GET",
       // The bank's dispatcher redirects here with a trailing separator: `?menuId=CCC0201&`.
       search: /^\?(?:menuId=CCC0201(?:&showLogin=false)?|showLogin=false&menuId=CCC0201)&?$/u,
     }],
-    cacheControl: ["no-store", "no-cache"],
+    cacheControl: FUBON_CURRENT_USED_CREDIT_CONTRACT.requiredCacheTokens,
     providerDate: "required",
   },
   parse: (decoded, response) => {
@@ -410,7 +414,7 @@ async function readFubonCurrentUsedCredit(
   try {
     read = await reader.witness(frames, fubonCurrentUsedCreditSnapshot.response, {
       // A chain that leaves the endpoint ends in a reply the declaration refuses, not in no reply.
-      waitFor: endsRequestChainFrom("/B2C/cccqu/cccqu002/CCCQU002_Home.faces", "GET"),
+      waitFor: endsRequestChainFrom(FUBON_CURRENT_USED_CREDIT_CONTRACT.endpointPath, "GET"),
       timeoutMs: 60_000,
       trigger: async (): Promise<FubonCurrentCreditPage> => {
         try {
@@ -460,10 +464,10 @@ function fubonCreditCurrentSnapshotCapture(
   const time = {
     effectiveAt,
     effectiveTimeBasis: "provider-http-date" as const,
-    effectiveTimeRuleVersion: "fubon/credit-card/current-used-credit-v1",
+    effectiveTimeRuleVersion: FUBON_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
     sourceField: "HTTP Date" as const,
     sourceValue: snapshot.httpDate,
-    contractVersion: "fubon/credit-card/current-used-credit-v1",
+    contractVersion: FUBON_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
   };
   const estimate = {
     kind: "estimate" as const,
@@ -475,7 +479,7 @@ function fubonCreditCurrentSnapshotCapture(
   return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: "fubon/credit-card/current-used-credit-v1",
-    contractVersion: "fubon/credit-card/current-used-credit-v1",
+    contractVersion: FUBON_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
     subjectDigest: capture.identity.accountNaturalKey,
     identity: canonicalCreditCardCurrentBalanceIdentity({
       integrationNamespace: "fubon",

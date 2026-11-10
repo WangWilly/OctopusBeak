@@ -17,6 +17,8 @@ import { ESUN_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/esun-credi
 import type { CreditCardMonthTimeline } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   canonicalCreditCardCurrentBalanceIdentity,
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS,
+  type CreditCardCurrentBalanceAuthorityRoute,
   type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
@@ -480,6 +482,9 @@ export function esunCurrentUsedCreditFromSummaryResponse(
   }];
 }
 
+const ESUN_CURRENT_USED_CREDIT_ROUTE = "esun/credit-card/current-used-credit-v2" satisfies CreditCardCurrentBalanceAuthorityRoute;
+const ESUN_CURRENT_USED_CREDIT_CONTRACT = CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS[ESUN_CURRENT_USED_CREDIT_ROUTE];
+
 const esunCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   ProviderBodyAcquisition<"json">,
   EsunCurrentUsedCreditSnapshot,
@@ -493,9 +498,9 @@ const esunCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   build: (row, { capture }) => esunCreditCurrentSnapshotCapture(capture, row),
   response: {
     label: "E.SUN current used credit",
-    host: "ebank.esunbank.com.tw",
-    endpoints: [{ path: "/esb/mib-ccm-portal/ccmA1/ccmA1001/home/getCardSummary" }],
-    cacheControl: [],
+    host: ESUN_CURRENT_USED_CREDIT_CONTRACT.endpointHost,
+    endpoints: [{ path: ESUN_CURRENT_USED_CREDIT_CONTRACT.endpointPath }],
+    cacheControl: ESUN_CURRENT_USED_CREDIT_CONTRACT.requiredCacheTokens,
     providerDate: "required",
   },
   parse: (decoded, response) => esunCurrentUsedCreditFromSummaryResponse(decoded.value, {
@@ -822,7 +827,8 @@ export function esunCreditCurrentSnapshotCapture(
   capture: EsunCreditCardValidatedCapture,
   snapshot: EsunCurrentUsedCreditSnapshot,
 ): CreditCardCurrentBalanceCaptureInput {
-  const route = "esun/credit-card/current-used-credit-v2";
+  const route = ESUN_CURRENT_USED_CREDIT_ROUTE;
+  const contract = ESUN_CURRENT_USED_CREDIT_CONTRACT;
   const effectiveAt = esunCreditCurrentSnapshotInstant(snapshot.queryTime);
   const used = esunExactAmount(snapshot.usedCredit);
   const sourceRecordKey = `sha256:${createHash("sha256")
@@ -834,10 +840,10 @@ export function esunCreditCurrentSnapshotCapture(
   const time = {
     effectiveAt,
     effectiveTimeBasis: "provider-query-time" as const,
-    effectiveTimeRuleVersion: route,
+    effectiveTimeRuleVersion: contract.contractVersion,
     sourceField: "resultTime" as const,
     sourceValue: snapshot.queryTime,
-    contractVersion: route,
+    contractVersion: contract.contractVersion,
   };
   const estimate = {
     kind: "estimate" as const,
@@ -847,7 +853,7 @@ export function esunCreditCurrentSnapshotCapture(
   return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: route,
-    contractVersion: route,
+    contractVersion: contract.contractVersion,
     subjectDigest: capture.identity.accountNaturalKey,
     identity: canonicalCreditCardCurrentBalanceIdentity({
       integrationNamespace: "esun",
