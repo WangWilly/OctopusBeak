@@ -10,6 +10,7 @@ import {
 } from "./provider-response.ts";
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
+import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 
 /**
  * CTBC renders the summary shell first and fills it with this authenticated
@@ -83,10 +84,6 @@ function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function cleanText(value: string): string {
-  return value.replace(/[\u00a0\u3000]/gu, " ").trim();
-}
-
 function requiredField(
   value: unknown,
   name: string,
@@ -107,7 +104,7 @@ function requiredString(
 ): string {
   if (typeof value !== "string")
     throw new Error(`CTBC current deposit ${name} must be a string.`);
-  const text = cleanText(value);
+  const text = trimSourceLexeme(value);
   if (!options.allowEmpty && text.length === 0)
     throw new Error(`CTBC current deposit ${name} is empty.`);
   return text;
@@ -145,7 +142,7 @@ const CTBC_AMOUNT: ProviderDecimalPolicy = {
 function parseExactDecimal(value: unknown, label: string): CtbcCurrentDepositExactDecimal {
   if (typeof value !== "string")
     throw new Error(`CTBC current deposit ${label} must be a string.`);
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = trimSourceLexeme(value);
   const amount = parseProviderDecimal(sourceLexeme, CTBC_AMOUNT);
   if (!amount)
     throw new Error(`CTBC current deposit ${label} is not an exact decimal.`);
