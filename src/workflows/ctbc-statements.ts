@@ -15,9 +15,8 @@ import {
 import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
   CTBC_CURRENT_DEPOSIT_RESPONSE,
   parseCtbcCurrentDepositBalanceSnapshot,
   readCtbcCurrentDepositBalanceResponse,
@@ -54,12 +53,15 @@ const DOMESTIC_DETAILS_URL =
   "https://www.ctbcbank.com/twrbc/twrbc-deposit/qu002/010";
 const NO_DATA_CODE = "9201";
 
+/** Statement and current-balance POSTs share CTBC's one ebmwResource endpoint. */
+const CTBC_EBMW_RESOURCE = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
+
 /** The page's own ebmwResource POSTs; the page builds their query, so any is allowed. */
 const CTBC_DEPOSIT_STATEMENT_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   label: "CTBC deposit statement",
-  host: CTBC_CURRENT_DEPOSIT_BALANCE_HOST,
+  host: CTBC_EBMW_RESOURCE.endpointHost,
   endpoints: [{
-    path: CTBC_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+    path: CTBC_EBMW_RESOURCE.endpointPath,
     method: "POST",
     contentType: /^application\/json(?:\s*;|$)/iu,
     search: /^(?:\?.*)?$/su,
@@ -863,7 +865,6 @@ export function buildCtbcCurrentDepositBalanceCapture(
       "CTBC current deposit accountId does not exactly match existing account evidence.",
     );
 
-  const contractVersion = row.sourceEvidence.contractVersion;
   const balance: CurrentDepositExactAmount = {
     coefficient: row.ledger.coefficient,
     scale: row.ledger.scale,
@@ -877,6 +878,8 @@ export function buildCtbcCurrentDepositBalanceCapture(
   );
   const scopeDate = row.providerDataTime.slice(0, 10).replaceAll("/", "-");
   const route = "ctbc/domestic-deposit/current-balance-v1";
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
+  const contractVersion = contract.contractVersion;
   return assembleCurrentDepositCapture({
     captureId: `ctbc-current-${randomUUID()}`,
     authorityRoute: route,
@@ -901,7 +904,7 @@ export function buildCtbcCurrentDepositBalanceCapture(
       ),
     },
     providerResponse: {
-      endpoint: `https://${CTBC_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}`,
+      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
       status: 200,
       cacheControl: row.sourceEvidence.cacheControl,
       requestResource: row.sourceEvidence.requestResource,
