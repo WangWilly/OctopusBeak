@@ -122,7 +122,6 @@ async function runGolden(name: string, source: DepositSource): Promise<void> {
         accounts: source.accounts,
       },
       input,
-      context,
       product,
       source.readCurrentBalanceTable,
     );

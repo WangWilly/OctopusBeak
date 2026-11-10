@@ -25,6 +25,15 @@ targetRules = ["generic-api-key"]
 paths = ['''^src/workflows/(?:deposit|credit-card)-commit-goldens/[^/]+\.json$''']
 regexes = ['''^esun_instrument_[A-Za-z0-9_-]+$''']
 
+# Foreign-currency deposit captures are keyed by a capture id that ends in a
+# base64url content digest, which the generic key rule reads as an API key.
+[[allowlists]]
+description = "Foreign-currency capture ids in commit goldens"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''^src/workflows/(?:deposit|credit-card)-commit-goldens/[^/]+\.json$''']
+regexes = ['''^foreign-[a-z]+-[A-Za-z0-9_-]{43}$''']
+
 [[rules]]
 id = "libretto-cloud-credential"
 description = "Libretto workflow credential pasted into source or docs"

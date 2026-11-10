@@ -27,12 +27,8 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
-import {
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   admitSinopacStatementCaptureEvidence,
   createSinopacDomesticDepositSourceEvidence,
@@ -63,7 +59,6 @@ import {
 } from "../lib/automation/sinopac-captcha.ts";
 import {
   assembleCurrentDepositCapture,
-  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -1032,24 +1027,16 @@ export async function stageSinopacDeposit(
   product: ProductCollectionHandle,
   readCurrentBalances: SinopacReadCurrentDepositBalanceResponse,
 ): Promise<SinopacDepositCollection & ProductCollectionSummary> {
-  const { event } = product;
   const { observedAt } = snapshot;
   const captureOccurrenceId = sinopacCaptureId(observedAt);
-  const financialCapturesForCurrent: ExistingSinopacFinancialCapture[] = [];
-  const items: ProductStageRequest[] = [];
+  const admissions: DepositAdmission<ExistingSinopacFinancialCapture>[] = [];
   for (const [index, { capture }] of snapshot.accounts.entries()) {
-    const sourceEvidence = capture.product === "domestic-deposit"
-      ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
-      : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`);
-    const empty = capture.downloads.every((download) => download.rows.length === 0);
-    if (empty) {
-      items.push({
-        product: capture.product, itemKey: `${capture.product}:${index}`,
-        command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: sourceEvidence },
-      });
-      continue;
-    }
-    const financialCapture = await product.validate(() => {
+    admissions.push(await admitDeposit<ExistingSinopacFinancialCapture>(product, () => {
+      const sourceEvidence = capture.product === "domestic-deposit"
+        ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
+        : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`);
+      if (capture.downloads.every((download) => download.rows.length === 0))
+        return { product: capture.product, sourceOnly: sourceEvidence };
       const financial = capture.product === "domestic-deposit"
         ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
             capture,
@@ -1061,30 +1048,21 @@ export async function stageSinopacDeposit(
           );
       if (financial.status !== "admitted" || !financial.capture)
         throw new Error(`SinoPac ${capture.product} financial admission failed: ${financial.diagnostics.join(", ")}`);
-      return financial.capture;
-    });
-    items.push({
-      product: capture.product, itemKey: `${capture.product}:${index}`,
-      command: {
-        kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-        request: { steps: [
-          { kind: "source", request: sourceEvidence },
-          { kind: "deposit", request: { capture: financialCapture } },
-        ] },
-      },
-    });
-    financialCapturesForCurrent.push({
-      identity: financialCapture.identity,
-      sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
-    });
+      return {
+        product: capture.product,
+        capture: financial.capture,
+        balance: {
+          identity: financial.capture.identity,
+          sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
+        },
+        withSource: sourceEvidence,
+      };
+    }));
   }
-
-  const balances = await captureCurrentStateSnapshots(sinopacCurrentBalanceSnapshot, {
-    captures: financialCapturesForCurrent,
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: sinopacCurrentBalanceSnapshot,
     acquire: readCurrentBalances,
-    product,
   });
-  product.stage(...items, ...balances.items);
   return {
     accountCount: snapshot.accounts.length,
     rowCount: snapshot.accounts.reduce((count, read) => count + read.rowCount, 0),

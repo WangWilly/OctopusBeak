@@ -1670,10 +1670,11 @@ try {
     yuantaStagingHandle(deferred),
   );
   assert.deepEqual(result, { sourceCaptureCount: 1, rowCount: 1 });
+  const stagedDeposit = deferred[0]?.command.request as { capture: { captureId: string } } | undefined;
   assert.deepEqual(
     deferred.map((item) => [item.product, item.itemKey]),
     [
-      ["foreign-currency-deposit", typedForeignAccount.value],
+      ["foreign-currency-deposit", stagedDeposit?.capture.captureId],
       ["current-deposit-balance", `current-balance:foreign-currency-deposit:${typedForeignAccount.value}:USD`],
     ],
   );

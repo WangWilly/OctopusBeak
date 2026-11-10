@@ -4,11 +4,7 @@ import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { WorkflowAccountIdentityPort, WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { AccountIdentityContinuity } from "../ledger/pglite/account-identity-continuity.ts";
-import {
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
+import { PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import { selectOptionWithoutPointer } from "./browser-interaction.ts";
 import type { BrowserScope } from "./frame-scope.ts";
 import {
@@ -49,7 +45,6 @@ import {
   isUsdCodedCompositeOfOwnLabel,
   type FubonDepositBalanceReconciliation,
   type FubonDomesticDepositAccountIdentity,
-  type FubonDomesticDepositSourceOnlyEvidence,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
 } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
@@ -61,7 +56,6 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import {
@@ -75,12 +69,12 @@ import {
 import {
   assembleCurrentDepositCapture,
   readCurrentStateSnapshot,
-  stageCurrentStateSnapshot,
   type CurrentBalanceCaptureMatching,
   type CurrentDepositBalanceEntry,
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
 } from "./current-state-snapshot-capture.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
@@ -2148,19 +2142,7 @@ export async function stageFubonDeposit(
     sourceConnectionScope,
     sourceConnectionKey: stableSourceConnectionKey,
   } as const;
-  const financialCaptures: ExistingFubonFinancialCapture[] = [];
-  const financialDepositCaptures: Array<NonNullable<ReturnType<typeof admitFubonDomesticDepositFinancialCapture>["capture"]>> = [];
-  const sourceOnlyEntries: Array<{
-    capture:
-      | FubonDomesticDepositValidatedEvidence
-      | FubonDomesticDepositSourceOnlyEvidence;
-    captureId: string;
-  }> = [];
-  const relationInputs: Array<{
-    captureId: string;
-    sourceCapture: FubonDomesticDepositValidatedEvidence;
-    evidence: TransactionCounterpartyAccountEvidenceInput[];
-  }> = [];
+  const admissions: DepositAdmission<ExistingFubonFinancialCapture>[] = [];
   const statementExclusions: FubonStatementExclusion[] = [];
   const ambiguousAccountNumbers = new Set<string>();
   const continuityByAccountNumber = new Map<string, Promise<AccountIdentityContinuity>>();
@@ -2182,6 +2164,9 @@ export async function stageFubonDeposit(
     let sourceCount = 0;
     let rowCount = 0;
 
+    // Continuity is a ledger read, and a later account's continuity depends
+    // on an earlier account's admission, so this loop stays outside
+    // `product.validate` and wraps only the pure admissions (ADR 0106).
     const admitAccount = async (
       account: FubonDepositAccountOption,
       statementEvidence: readonly FubonDepositStatementEvidence[],
@@ -2189,7 +2174,7 @@ export async function stageFubonDeposit(
       if (statementEvidence.some((capture) => capture.providerRouteEvidence?.currency === "unknown"))
         statementExclusions.push({ reason: "account-currency-unproven" });
 
-      const admittedEvidence = statementEvidence.map((capture) => {
+      const admittedEvidence = await product.validate(() => statementEvidence.map((capture) => {
         const admission = admitFubonDomesticDepositCaptureEvidence(capture);
         if (admission.status === "admissible" && admission.capture) {
           return admission.capture;
@@ -2198,18 +2183,19 @@ export async function stageFubonDeposit(
         if (sourceOnly.status === "source-only" && sourceOnly.capture) {
           return sourceOnly.capture;
         }
-        if (admission.status !== "admissible" || !admission.capture) {
-          throw new Error(
-            `Fubon deposit evidence admission blocked: ${admission.diagnostics.join(", ")}`,
-          );
-        }
-        return admission.capture;
-      });
+        throw new Error(
+          `Fubon deposit evidence admission blocked: ${admission.diagnostics.join(", ")}`,
+        );
+      }));
       for (const [index, capture] of admittedEvidence.entries()) {
         const accountDigest = digestEvidenceValue(account.value).slice(7, 19);
         const sourceCaptureId = `fubon-source-${nextTimestamp()}-${accountDigest}-${index}`;
+        const sourceOnly = () => ({
+          product: "domestic-deposit",
+          sourceOnly: createFubonDomesticDepositSourceEvidence(capture, sourceCaptureId, stableSourceIdentity),
+        });
         if (isSourceOnlyFubonDomesticDepositCaptureEvidence(capture)) {
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+          admissions.push(await admitDeposit<ExistingFubonFinancialCapture>(product, sourceOnly));
           continue;
         }
         const derivedIdentity = deriveFubonDomesticDepositAccountIdentity(
@@ -2225,86 +2211,92 @@ export async function stageFubonDeposit(
           if (!ambiguousAccountNumbers.has(accountNumber))
             statementExclusions.push({ reason: "account-identity-ambiguous" });
           ambiguousAccountNumbers.add(accountNumber);
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
+          admissions.push(await admitDeposit<ExistingFubonFinancialCapture>(product, sourceOnly));
           continue;
         }
         const identity: FubonDomesticDepositAccountIdentity = continuity.status === "continued"
           ? continueFubonDomesticDepositAccountIdentity(derivedIdentity, continuity.sourceAccountKey)
           : derivedIdentity;
-        let financialInput = {
-          capture,
-          captureId: `fubon-financial-${nextTimestamp()}-${accountDigest}-${index}`,
-          semantics: buildFubonHumanAttestedFinancialSemantics(capture, identity),
-          humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-          sourceConnectionScope,
-          sourceConnectionKey: stableSourceConnectionKey,
-          ...(continuity.status === "continued"
-            ? { continuedSourceAccountKey: continuity.sourceAccountKey }
-            : {}),
-        };
-        // Run the semantic classifier before the execution boundary. Malformed
-        // amount/time/row/balance data must fail visibly rather than being
-        // hidden as source-only.
-        let financialAdmission =
-          admitFubonDomesticDepositFinancialCapture(financialInput);
-        // A status marker describes one row, not the completeness of the
-        // requested range. Preserve the complete parser capture as source
-        // evidence, then admit the clean rows from the same capture so one
-        // ambiguous row cannot hide the account's range.
-        if (
-          financialAdmission.status !== "admitted" &&
-          financialAdmission.diagnostics.length > 0 &&
-          financialAdmission.diagnostics.every(
-            (diagnostic) => diagnostic === "row-status-unresolved",
-          )
-        ) {
-          const partialInput = {
-            ...financialInput,
-            allowSourceOnlyRows: true,
+        const financialCaptureId = `fubon-financial-${nextTimestamp()}-${accountDigest}-${index}`;
+        const admission = await admitDeposit<ExistingFubonFinancialCapture>(product, () => {
+          const financialInput = {
+            capture,
+            captureId: financialCaptureId,
+            semantics: buildFubonHumanAttestedFinancialSemantics(capture, identity),
+            humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
+            sourceConnectionScope,
+            sourceConnectionKey: stableSourceConnectionKey,
+            ...(continuity.status === "continued"
+              ? { continuedSourceAccountKey: continuity.sourceAccountKey }
+              : {}),
           };
-          const partialAdmission =
-            admitFubonDomesticDepositFinancialCapture(partialInput);
+          // Run the semantic classifier before the execution boundary. Malformed
+          // amount/time/row/balance data must fail visibly rather than being
+          // hidden as source-only.
+          let financialAdmission =
+            admitFubonDomesticDepositFinancialCapture(financialInput);
+          // A status marker describes one row, not the completeness of the
+          // requested range. Preserve the complete parser capture as source
+          // evidence, then admit the clean rows from the same capture so one
+          // ambiguous row cannot hide the account's range.
           if (
-            partialAdmission.status === "admitted" &&
-            partialAdmission.capture &&
-            partialAdmission.capture.records.length > 0
+            financialAdmission.status !== "admitted" &&
+            financialAdmission.diagnostics.length > 0 &&
+            financialAdmission.diagnostics.every(
+              (diagnostic) => diagnostic === "row-status-unresolved",
+            )
           ) {
-            financialInput = partialInput;
-            financialAdmission = partialAdmission;
+            const partialAdmission = admitFubonDomesticDepositFinancialCapture({
+              ...financialInput,
+              allowSourceOnlyRows: true,
+            });
+            if (
+              partialAdmission.status === "admitted" &&
+              partialAdmission.capture &&
+              partialAdmission.capture.records.length > 0
+            ) {
+              financialAdmission = partialAdmission;
+            }
           }
-        }
-        if (financialAdmission.status !== "admitted") {
-          const disallowed = financialAdmission.diagnostics.filter(
-            (diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic),
-          );
-          if (disallowed.length > 0) {
-            throw new Error(
-              `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
+          if (financialAdmission.status !== "admitted") {
+            const disallowed = financialAdmission.diagnostics.filter(
+              (diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic),
             );
+            if (disallowed.length > 0) {
+              throw new Error(
+                `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
+              );
+            }
+            return sourceOnly();
           }
-          sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-          continue;
-        }
-        const financialCapture = financialAdmission.capture;
-        if (!financialCapture)
-          throw new Error(
-            "Fubon domestic deposit admission lost its canonical capture.",
-          );
-        financialCaptures.push(financialCapture);
-        financialDepositCaptures.push(financialCapture);
+          const financialCapture = financialAdmission.capture;
+          if (!financialCapture)
+            throw new Error(
+              "Fubon domestic deposit admission lost its canonical capture.",
+            );
+          const counterpartyEvidence = buildFubonLoanPaymentAccountEvidence(capture, financialCapture);
+          return {
+            product: "domestic-deposit",
+            capture: financialCapture,
+            balance: financialCapture,
+            relationCommands: () => [{
+              kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
+              request: {
+                sourceConnectionKey: stableSourceConnectionKey,
+                integrationNamespace: "fubon",
+                observedAt: financialCapture.observedAt,
+                counterpartyEvidence,
+              },
+            }],
+          };
+        });
+        admissions.push(admission);
+        if (admission.sourceOnly !== undefined) continue;
         if (accountNumber && continuity.status === "unseen")
           continuityByAccountNumber.set(
             accountNumber,
             Promise.resolve({ status: "continued", sourceAccountKey: identity.accountNo }),
           );
-        relationInputs.push({
-          captureId: financialInput.captureId,
-          sourceCapture: capture,
-          evidence: buildFubonLoanPaymentAccountEvidence(
-            capture,
-            financialCapture,
-          ),
-        });
       }
     };
 
@@ -2320,12 +2312,12 @@ export async function stageFubonDeposit(
       await admitAccount(account, buildFubonDepositStatementEvidence(statements));
     }
 
-    // Read and validate the point-in-time page before opening the financial
-    // commit boundary. A failure here must not leave statement captures from
-    // this run behind. The snapshot follows the statements, so a posting in
-    // between breaks a USD-coded account's reconciliation for this run only.
+    // Read the point-in-time page once, before any USD-coded account is
+    // admitted, since its reconciliation needs the rows. The snapshot follows
+    // the statements, so a posting in between breaks a USD-coded account's
+    // reconciliation for this run only.
     let currentRows: readonly FubonCurrentDepositBalanceRow[] = [];
-    if (financialCaptures.length > 0 || deferred.length > 0) {
+    if (admissions.some((admission) => admission.sourceOnly === undefined) || deferred.length > 0) {
       currentRows = await readCurrentStateSnapshot(fubonCurrentBalanceSnapshot, {
         acquire: readCurrentBalances,
         product,
@@ -2346,47 +2338,10 @@ export async function stageFubonDeposit(
 
     // An account number that continues several admitted accounts was
     // already excluded as account-identity-ambiguous (ADR 0049).
-    const balances = financialCaptures.length > 0
-      ? await stageCurrentStateSnapshot(
-        fubonCurrentBalanceSnapshot,
-        currentRows
-          .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber)),
-        { captures: financialCaptures, product },
-      )
-      : { items: [], excluded: [] };
-
-    context.signal.throwIfAborted();
-    const items: ProductStageRequest[] = [];
-    for (const entry of sourceOnlyEntries) items.push({
-        product: "domestic-deposit", itemKey: entry.captureId,
-        command: {
-          kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-          request: createFubonDomesticDepositSourceEvidence(entry.capture, entry.captureId, stableSourceIdentity),
-        },
-    });
-    for (const capture of financialDepositCaptures) {
-        const relation = relationInputs.find((item) => item.captureId === capture.captureId);
-        items.push({
-          product: "domestic-deposit", itemKey: capture.captureId,
-          command: { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
-          ...(relation ? {
-            relationCommands: () => [{
-              kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-              request: {
-                sourceConnectionKey: stableSourceConnectionKey,
-                integrationNamespace: "fubon",
-                observedAt: capture.observedAt,
-                counterpartyEvidence: relation.evidence,
-              },
-            }],
-          } : {}),
-        });
-    }
-
-    product.stage(...items, ...balances.items);
-    // A TWD row whose account has no full account-number evidence among this
-    // run's financial captures; only that balance line stays out.
-    for (const _ of balances.excluded)
+    const balanceRows = currentRows
+      .filter((row) => row.currency === "TWD" && !ambiguousAccountNumbers.has(row.accountNumber));
+    const excludedRows = await stageCanonicalDeposits(product, admissions, { snapshot: fubonCurrentBalanceSnapshot, rows: balanceRows });
+    for (const _ of excludedRows)
       await product.event("collection", "advanced", "deposit-current-balance-excluded-account-number-evidence-missing");
     for (const exclusion of statementExclusions)
       await product.event("collection", "advanced", `deposit-statement-excluded-${exclusion.reason}`);
