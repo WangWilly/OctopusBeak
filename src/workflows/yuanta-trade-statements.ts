@@ -314,7 +314,7 @@ const DEFAULT_TRADE_SUBCATEGORIES: Partial<Record<TradeType, string>> = {
   InternationalSecuritiesTrade: "Stock",
 };
 
-function cleanText(value: string | null | undefined): string {
+function textFromYuantaHtml(value: string | null | undefined): string {
   return decodeHtml(value ?? "")
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
@@ -334,7 +334,7 @@ const YUANTA_SOURCE_MARKET_NO_FIELD = "__source_market_no";
 function normalizeYuantaSourceMarketCode(
   value: string | number | null | undefined,
 ): YuantaForeignSettlementMarketCode | undefined {
-  const normalized = cleanText(
+  const normalized = textFromYuantaHtml(
     value === null || value === undefined ? "" : String(value),
   ).normalize("NFKC");
   return isYuantaForeignSettlementMarketCode(normalized)
@@ -403,7 +403,7 @@ function decodeHtml(value: string): string {
 }
 
 function stripTags(html: string): string {
-  return cleanText(
+  return textFromYuantaHtml(
     html
       .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
       .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
@@ -415,14 +415,14 @@ function rowValue(row: Record<string, unknown>, keys: string[]): string {
   for (const key of keys) {
     const value = row[key];
     if (value !== null && value !== undefined && String(value).length > 0) {
-      return cleanText(String(value));
+      return textFromYuantaHtml(String(value));
     }
   }
   return "";
 }
 
 function cleanOptionalAmount(value: string): string {
-  const text = cleanText(value);
+  const text = textFromYuantaHtml(value);
   return text === "--" ? "" : text;
 }
 
@@ -440,7 +440,7 @@ function reportPeriod(page: ReportPage): string {
 }
 
 function dateSortKey(value: string): string {
-  const match = cleanText(value).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  const match = textFromYuantaHtml(value).match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
   if (!match) return "";
   return `${match[1]}${match[2]}${match[3]}`;
 }
@@ -648,7 +648,7 @@ function extractAssetSummaryRows(html: string): AssetSummaryRow[] {
 
     rows.push({
       assetType,
-      assetName: cleanText(cells[0]),
+      assetName: textFromYuantaHtml(cells[0]),
       assetValueTwd: cleanOptionalAmount(cells[1]),
       unrealizedPnlTwd: cleanOptionalAmount(cells[2]),
     });

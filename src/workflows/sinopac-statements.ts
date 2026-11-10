@@ -364,7 +364,7 @@ export function sinopacLoginEntryUrl(href: string): boolean {
   }
 }
 
-function cleanText(value: string | null | undefined): string {
+function textFromSinopacHtml(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/<br\s*\/?>/gi, " ")
     .replace(/<[^>]*>/g, "")
@@ -410,7 +410,7 @@ export function sinopacQueryWindows(dateRange: DateRange): DateRange[] {
 }
 
 function splitDateTime(value: string): { date: string; time: string } {
-  const text = cleanText(value);
+  const text = textFromSinopacHtml(value);
   const match = text.match(/^(\d{4}\/\d{2}\/\d{2})(?:\s+(.+))?$/);
   return {
     date: match?.[1] ?? text,
@@ -419,7 +419,7 @@ function splitDateTime(value: string): { date: string; time: string } {
 }
 
 function amountColumns(value: string | undefined): [string, string] {
-  const amount = cleanText(value).replace(/^\+/, "");
+  const amount = textFromSinopacHtml(value).replace(/^\+/, "");
   if (!amount) return ["", ""];
   if (amount.startsWith("-")) return [amount.slice(1), ""];
   return ["", amount];
@@ -440,20 +440,20 @@ export function sinopacApiRowsToStatementRows(
   rows: SinopacRawTransactionRow[],
 ): SinopacStatementRow[] {
   return rows
-    .filter((row) => cleanText(row.DataText1) || cleanText(row.DataText3))
+    .filter((row) => textFromSinopacHtml(row.DataText1) || textFromSinopacHtml(row.DataText3))
     .map((row) => {
       const transaction = splitDateTime(row.DataText1 ?? "");
       const [withdrawal, deposit] = amountColumns(row.DataText4);
       const values = [
         transaction.date,
-        cleanText(row.DataText2),
+        textFromSinopacHtml(row.DataText2),
         transaction.time,
-        cleanText(row.DataText3),
+        textFromSinopacHtml(row.DataText3),
         withdrawal,
         deposit,
-        cleanText(row.DataText5),
-        cleanText(row.DataText8),
-        cleanText(row.DataText7),
+        textFromSinopacHtml(row.DataText5),
+        textFromSinopacHtml(row.DataText8),
+        textFromSinopacHtml(row.DataText7),
       ];
       return {
         sortKey: `${values[0]} ${values[2]}`,
@@ -467,15 +467,15 @@ export function sinopacStatementRowsToCsv(rows: SinopacStatementRow[]): string {
 }
 
 function accountLabel(account: SinopacAccount): string {
-  return cleanText(account.DataText);
+  return textFromSinopacHtml(account.DataText);
 }
 
 function accountId(account: SinopacAccount): string {
-  return cleanText(account.DataValue);
+  return textFromSinopacHtml(account.DataValue);
 }
 
 function accountCurrency(account: SinopacAccount): string {
-  return cleanText(account.DisplayText).toUpperCase();
+  return textFromSinopacHtml(account.DisplayText).toUpperCase();
 }
 
 function matchesFilters(account: SinopacAccount, filters: string[]): boolean {
@@ -522,7 +522,7 @@ export function sinopacFilterAccounts(
 
 function accountListFromResponse(response: unknown): SinopacAccount[] {
   const result = sinopacSingleEnvelope<SinopacAccountResponse>(response, "account list");
-  if (result?.Header === "FAIL" && cleanText(result.Message) === "查無資料")
+  if (result?.Header === "FAIL" && textFromSinopacHtml(result.Message) === "查無資料")
     return [];
   if (result?.Header !== "SUCCESS") {
     throw new Error(
@@ -552,7 +552,7 @@ function validateSinopacTransactionRows(
 ): SinopacTransactionResponse {
   if (
     response.Header === "FAIL" &&
-    cleanText(response.Message) === "查無資料"
+    textFromSinopacHtml(response.Message) === "查無資料"
   )
     return response;
   if (response.Header !== "SUCCESS")
@@ -963,7 +963,7 @@ export async function readSinopacDepositSource(
       signal.throwIfAborted();
       if (
         response.Header !== "FAIL" ||
-        cleanText(response.Message) !== "查無資料"
+        textFromSinopacHtml(response.Message) !== "查無資料"
       )
         explicitNoData = false;
       rows.push(...sinopacApiRowsToStatementRows(response.SubInfo ?? []));
