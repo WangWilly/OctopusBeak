@@ -5,11 +5,9 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
-  ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import { PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
 import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import {
   admitForeignCurrencyDepositCapture,
@@ -19,7 +17,8 @@ import {
   buildLinebankCurrentDepositBalanceCapture,
   linebankCurrentBalanceCaptureMatching,
 } from "./linebank-current-deposit-canonical.ts";
-import { captureCurrentStateSnapshots, CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
+import { CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
@@ -1109,6 +1108,9 @@ function selectedCurrentBalanceRows(
   );
 }
 
+/** The admitted account the current-balance snapshot matches a row against. */
+type LineBankCurrentBalanceCapture = Parameters<typeof buildLinebankCurrentDepositBalanceCapture>[1];
+
 function requireCurrentBalanceCoverage(
   selectedRows: readonly LineBankCurrentDepositBalanceRow[],
   accounts: readonly LineBankAccount[],
@@ -1206,7 +1208,7 @@ async function runLineBankWorkflow(
         });
         const observedAt = context.now();
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-        const statementItems: ProductStageRequest[] = [];
+        const admissions: DepositAdmission<LineBankCurrentBalanceCapture>[] = [];
         const captureOccurrenceId = randomUUID();
         const { normalizeLineBankFinancialCapture } = await import(
           "../ledger/canonical/linebank-domestic-deposit.ts"
@@ -1217,7 +1219,7 @@ async function runLineBankWorkflow(
         });
         for (const [index, selected] of selectedSources.entries()) {
           context.signal.throwIfAborted();
-          await product.validate(async () => {
+          admissions.push(await admitDeposit<LineBankCurrentBalanceCapture>(product, async () => {
             const captureId = `linebank-${randomUUID()}`;
             if (linebankAccountCurrency(selected.account) === "TWD") {
               const capture = await linebankHumanAttestedCapture({
@@ -1231,33 +1233,26 @@ async function runLineBankWorkflow(
                 throw new Error("LINE Bank selected domestic source authority is not supported.");
               const admitted = normalizeLineBankFinancialCapture(capture);
               domesticCaptures.push(capture);
-              statementItems.push({
+              return {
                 product: "domestic-deposit",
-                itemKey: captureId,
-                command: {
-                  kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-                  request: { capture: admitted },
+                capture: admitted,
+                balance: {
+                  accountKey: capture.accountKey,
+                  sourceConnection: capture.sourceConnection,
+                  identityEpoch: capture.identityEpoch,
+                  observedAt: capture.observedAt,
                 },
-              });
-            } else {
-              const capture = buildLinebankForeignCurrencyCaptureInput({
-                account: selected.account,
-                dateRange: selected.dateRange,
-                pages: selected.pages,
-                observedAt,
-                captureOccurrenceId: `${captureOccurrenceId}:${index}`,
-              });
-              const admitted = admitForeignCurrencyDepositCapture(capture);
-              statementItems.push({
-                product: "foreign-currency",
-                itemKey: `foreign-currency:${captureOccurrenceId}:${index}`,
-                command: {
-                  kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-                  request: { capture: admitted },
-                },
-              });
+              };
             }
-          });
+            const capture = buildLinebankForeignCurrencyCaptureInput({
+              account: selected.account,
+              dateRange: selected.dateRange,
+              pages: selected.pages,
+              observedAt,
+              captureOccurrenceId: `${captureOccurrenceId}:${index}`,
+            });
+            return { product: "foreign-currency", capture: admitForeignCurrencyDepositCapture(capture) };
+          }));
           await productContext.event("validation", "advanced", "account-source-admitted", {
             completed: index + 1,
             total: selectedSources.length,
@@ -1265,49 +1260,42 @@ async function runLineBankWorkflow(
         }
 
         await productContext.event("validation", "completed", "canonical-admission-completed", {
-          completed: statementItems.length,
+          completed: admissions.length,
           total: selectedSources.length,
         });
         // Admission failures surface as one generic message; decoding and
-        // coverage failures keep their own.
+        // coverage failures keep their own. Staging runs after validate has
+        // cleared the flag, so its errors pass through unchanged.
         let balanceAdmitting = false;
-        let balanceItems: readonly ProductStageRequest[];
         try {
-          ({ items: balanceItems } = await captureCurrentStateSnapshots({
-            product: "current-balance",
-            response: LINEBANK_CURRENT_DEPOSIT_RESPONSE,
-            parse: (decoded, response) => {
-              const rows = selectedCurrentBalanceRows(
-                parseLinebankCurrentDepositBalanceSnapshot({ response, rawBody: decoded.text }),
-                accounts,
-              );
-              balanceAdmitting = true;
-              return rows;
+          await stageCanonicalDeposits(product, admissions, {
+            snapshot: {
+              product: "current-balance",
+              response: LINEBANK_CURRENT_DEPOSIT_RESPONSE,
+              parse: (decoded, response) => {
+                const rows = selectedCurrentBalanceRows(
+                  parseLinebankCurrentDepositBalanceSnapshot({ response, rawBody: decoded.text }),
+                  accounts,
+                );
+                balanceAdmitting = true;
+                return rows;
+              },
+              kind: CURRENT_DEPOSIT_BALANCE_STAGING,
+              matching: linebankCurrentBalanceCaptureMatching,
+              build: buildLinebankCurrentDepositBalanceCapture,
+              validate: ({ rows }) => {
+                balanceAdmitting = false;
+                requireCurrentBalanceCoverage(rows, accounts, domesticCaptures);
+              },
             },
-            kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-            matching: linebankCurrentBalanceCaptureMatching,
-            build: buildLinebankCurrentDepositBalanceCapture,
-            validate: ({ rows }) => {
-              balanceAdmitting = false;
-              requireCurrentBalanceCoverage(rows, accounts, domesticCaptures);
-            },
-          }, {
-            captures: domesticCaptures.map((capture) => ({
-              accountKey: capture.accountKey,
-              sourceConnection: capture.sourceConnection,
-              identityEpoch: capture.identityEpoch,
-              observedAt: capture.observedAt,
-            })),
             acquire: async () => accountSnapshot.currentBalance,
             // The balances ride on the account list read before the statements, so they were observed then.
             observedAt: accountSnapshotAt,
-            product,
-          }));
+          });
         } catch (error) {
           if (!balanceAdmitting) throw error;
           throw new Error("LINE Bank current balance source admission was rejected.");
         }
-        product.stage(...statementItems, ...balanceItems);
         accountCount = accounts.length;
         return {
           sourceCaptureCount: selectedSources.length,
