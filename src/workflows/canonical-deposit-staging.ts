@@ -34,8 +34,8 @@ export type DepositDecision<Balance> =
       /** Commit the deposit capture, keyed by its capture id. */
       product: string;
       capture: CanonicalFinancialDepositCapture;
-      /** The capture the current-balance snapshot matches rows against. */
-      balance: Balance;
+      /** The capture the current-balance snapshot matches rows against; absent for a capture the snapshot does not cover. */
+      balance?: Balance;
       /** Source evidence committed in the same transaction as the deposit. */
       withSource?: CanonicalSourceEvidence;
       relationCommands?: ProductStageRequest["relationCommands"];
@@ -63,6 +63,8 @@ export type DepositCurrentBalance<Acquired extends ProviderAcquisition, Row, Bal
   | Readonly<{
       snapshot: CurrentStateSnapshotDeclaration<Acquired, Row, Balance, DateRule>;
       acquire: () => Promise<Acquired>;
+      /** When the source read the balances, if before the step acquires them. */
+      observedAt?: string;
     }>
   | Readonly<{
       snapshot: CurrentStateSnapshotStaging<Row, Balance>;
@@ -73,7 +75,8 @@ export type DepositCurrentBalance<Acquired extends ProviderAcquisition, Row, Bal
  * Stage every admission and the current balances in one call, after the
  * snapshot has validated, so a broken snapshot stages no deposit. Source-only
  * items come first, then deposits in admission order, then balances. With no
- * admitted deposit the snapshot is neither read nor staged.
+ * admitted deposit that carries a balance capture, the snapshot is neither
+ * read nor staged.
  */
 export async function stageCanonicalDeposits<Acquired extends ProviderAcquisition, Row, Balance, DateRule extends ProviderDateRule>(
   product: Pick<ProductCollectionHandle, "stage"> & SnapshotProduct,
@@ -104,7 +107,7 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
         : { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture } },
       ...(relationCommands ? { relationCommands } : {}),
     });
-    balanceCaptures.push(admission.balance);
+    if (admission.balance !== undefined) balanceCaptures.push(admission.balance);
   }
   const balances = balanceCaptures.length === 0
     ? []
@@ -113,6 +116,7 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
       : (await captureCurrentStateSnapshots(currentBalance.snapshot, {
           captures: balanceCaptures,
           acquire: currentBalance.acquire,
+          ...(currentBalance.observedAt === undefined ? {} : { observedAt: currentBalance.observedAt }),
           product,
         })).items;
   product.signal.throwIfAborted();

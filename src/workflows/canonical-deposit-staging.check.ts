@@ -153,6 +153,16 @@ test("source-only admissions stage alone and never acquire the current balances"
   assert.equal(calls.length, 1);
 });
 
+test("a deposit with no balance capture stages without acquiring the current balances", async () => {
+  const { product, log } = harness();
+  await stageCanonicalDeposits(
+    product,
+    [await admitDeposit<Balance>(product, () => ({ product: "foreign-currency", capture: capture("financial-f") }))],
+    { snapshot: snapshot() as never, acquire: () => assert.fail("a deposit without a balance capture reads no current balances") },
+  );
+  assert.deepEqual(log, ["stage:financial-f"]);
+});
+
 test("no admissions stage nothing", async () => {
   const { product, log, calls } = harness();
   await stageCanonicalDeposits(product, [], rows({ account: "a", amount: "1" }));
