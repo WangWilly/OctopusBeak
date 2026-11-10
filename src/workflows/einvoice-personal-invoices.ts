@@ -28,6 +28,7 @@ import {
 } from "./einvoice-app-transport.ts";
 import type { EInvoiceAppSession } from "./einvoice-app-protocol.ts";
 import { workflowRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type EinvoiceCredentials = {
   einvoice_phone_number?: string;
@@ -62,13 +63,6 @@ function requireCredential(
     throw new Error(`Missing E-Invoice credential ${name}.`);
   }
   return value;
-}
-
-function cleanText(value: string | number | null | undefined): string {
-  return String(value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function monthLabel(month: YearMonth): string {
@@ -117,7 +111,7 @@ const APP_INVOICE_STATUS_KINDS: Readonly<Record<string, "issued" | "revoked">> =
 };
 
 function appInvoiceStatus(header: AppInvoiceHeader): Readonly<{ value: string; kind: "issued" | "revoked" }> {
-  const value = cleanText(header.invStatus);
+  const value = collapseSourceWhitespace(header.invStatus);
   const kind = APP_INVOICE_STATUS_KINDS[value];
   // An unmapped status (the App's void string is not yet observed) cannot be
   // guessed, and the contract forbids admitting the range without it.
@@ -135,7 +129,7 @@ function exactDecimal(
   value: string | number | null | undefined,
   label: string,
 ): { coefficient: string; scale: number } | null {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value == null ? value : String(value));
   if (!normalized) return null;
   const match = normalized.match(
     /^([+-]?)(?:(\d{1,3}(?:,\d{3})+)|(\d+))(?:\.(\d+))?$/u,
@@ -163,7 +157,7 @@ function money(
 }
 
 function positiveInteger(value: string | number | null | undefined): number | null {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value == null ? value : String(value));
   if (!normalized) return null;
   if (!/^\d+$/u.test(normalized)) return null;
   const parsed = Number(normalized);
@@ -198,7 +192,7 @@ export function canonicalOccurrence(
   header: AppInvoiceHeader,
 ): CanonicalEInvoiceOccurrence {
   const dateValue = appInvoiceDateIso(header) ?? "";
-  const timeValue = cleanText(header.invoiceTime);
+  const timeValue = collapseSourceWhitespace(header.invoiceTime);
   const sourceParts = canonicalDateParts(`${dateValue}${timeValue ? `T${timeValue}` : ""}`);
   if (sourceParts) {
     return {
@@ -225,7 +219,7 @@ function canonicalItem(
   sequence: number,
   sequenceFallback: boolean,
 ): CanonicalEInvoiceItemInput {
-  const name = cleanText(source.description) || null;
+  const name = collapseSourceWhitespace(source.description) || null;
   // A line number the provider did not send as a decimal is a missing fact:
   // the item becomes incomplete instead of failing the whole capture.
   const quantity = unlessMalformed(() => exactDecimal(source.quantity, `item ${index + 1} quantity`));
@@ -234,7 +228,7 @@ function canonicalItem(
   if (!name && !quantity && !unitPrice && !amount)
     throw new Error(`E-Invoice item ${index + 1} has no source facts.`);
   const completeness = name && quantity && unitPrice && amount ? "complete" : "incomplete";
-  const providerRowNum = cleanText(source.rowNum) || null;
+  const providerRowNum = collapseSourceWhitespace(source.rowNum) || null;
   return {
     sequence,
     completeness,
@@ -275,9 +269,9 @@ export function mapCanonicalEInvoiceRecord(
   // The App exposes a lifecycle status but no revision sequence, so issued is
   // revision 1 and a revocation, its one successor state, is revision 2.
   const revisionNumber = revisionKind === "revoked" ? 2 : 1;
-  const invoiceNumber = cleanText(header.invNum);
-  const sellerTaxId = cleanText(header.sellerBan);
-  const period = cleanText(header.invPeriod);
+  const invoiceNumber = collapseSourceWhitespace(header.invNum);
+  const sellerTaxId = collapseSourceWhitespace(header.sellerBan);
+  const period = collapseSourceWhitespace(header.invPeriod);
   if (!invoiceNumber) throw new Error("E-Invoice invoice number is required.");
   if (!sellerTaxId) throw new Error(`E-Invoice ${invoiceNumber} seller tax ID is required.`);
   // Invoice numbers are allocated per two-month period (e.g. 11504), so a
@@ -310,7 +304,7 @@ export function mapCanonicalEInvoiceRecord(
     revisionNumber,
     revisionKind,
     sourceIdentifiers: { invoiceNumber, randomNumber: null },
-    seller: { taxId: sellerTaxId, name: cleanText(header.sellerName) || null },
+    seller: { taxId: sellerTaxId, name: collapseSourceWhitespace(header.sellerName) || null },
     total: revisionKind === "revoked"
       ? null
       : money(header.amount, `invoice ${invoiceNumber} total`),

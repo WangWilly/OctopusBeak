@@ -79,6 +79,7 @@ import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const depositAccountSelectSelector = 'select[id="form1:comboAccount"]';
 const depositFastFunctionSelector = "a.input_sel.fastFunctionLinks";
@@ -384,8 +385,8 @@ function escapedRegExp(value: string): string {
 export function deriveFubonDomesticDepositAccountNumberEvidence(
   account: Pick<FubonDepositAccountOption, "value" | "label">,
 ): FubonDomesticDepositAccountNumberEvidence | null {
-  const value = cleanText(account.value);
-  const label = cleanText(account.label);
+  const value = collapseSourceWhitespace(account.value);
+  const label = collapseSourceWhitespace(account.label);
   if (!label) return null;
   const composite = deriveFubonCompositeAccountNumberEvidence({ value, label });
   if (composite) return composite;
@@ -470,7 +471,7 @@ type FubonFinancialCaptureForCounterpartyEvidence = {
 function fullUnmaskedFubonLoanAccountFromPaymentNote(
   value: string,
 ): string | null {
-  const source = cleanText(value);
+  const source = collapseSourceWhitespace(value);
   if (!source || /[*xX•]/u.test(source)) return null;
   const normalized = source.replace(/[\s-]/gu, "");
   // Live Fubon observations expose a 14-digit loan account at the start of
@@ -500,7 +501,7 @@ export function buildFubonLoanPaymentAccountEvidence(
   const evidence: TransactionCounterpartyAccountEvidenceInput[] = [];
   for (const page of capture.pages) {
     for (const row of page.rows) {
-      if (cleanText(row.cells[2]) !== "放款繳款") continue;
+      if (collapseSourceWhitespace(row.cells[2]) !== "放款繳款") continue;
       const accountValue = fullUnmaskedFubonLoanAccountFromPaymentNote(
         row.cells[6],
       );
@@ -543,7 +544,7 @@ function digestTelemetryValue(value: string): `sha256:${string}` {
  * scope through the canonical admission input below.
  */
 function safeTelemetryFieldName(value: string): string | null {
-  const name = cleanText(value);
+  const name = collapseSourceWhitespace(value);
   if (!name || name.length > 96 || !/^[A-Za-z0-9_:.#-]+$/.test(name)) {
     return null;
   }
@@ -604,7 +605,7 @@ export function inspectFubonDepositResponseMetadata(
           : "text");
     fields.set(safeName, {
       name: safeName,
-      type: cleanText(type).toLowerCase(),
+      type: collapseSourceWhitespace(type).toLowerCase(),
     });
 
     const value = attributes.match(/\bvalue\s*=\s*["']([^"']*)["']/i)?.[1];
@@ -829,13 +830,6 @@ function safeAccountKeyFallback(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/[\u00a0\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export type FubonDepositPaginationSignal = {
   nextPage: string | null;
   pageFieldName: string | null;
@@ -888,7 +882,7 @@ function fubonHasHtmlClassOrIdToken(openingTag: string, token: string): boolean 
 }
 
 function fubonStripHtml(value: string): string {
-  return cleanText(value.replace(/<[^>]*>/gu, " "));
+  return collapseSourceWhitespace(value.replace(/<[^>]*>/gu, " "));
 }
 
 function fubonExtractBalancedHtmlElement(
@@ -1303,7 +1297,7 @@ function fubonDepositPaginationContext(
         fubonHtmlAttribute(controlOpening, "aria-label"),
         fubonHtmlAttribute(controlOpening, "title"),
       ]
-        .map(cleanText)
+        .map(collapseSourceWhitespace)
         .find(Boolean) ?? "";
       return {
         tagName: control.tagName,
@@ -1341,7 +1335,7 @@ function fubonParsePaginationAction(
     /setDataGridCurrentPage\s*\(\s*[^,]+,\s*(\d+)\s*,\s*["']([^"']+)["']\s*\)/iu,
   );
   const targetPage = fubonPositivePageNumber(match?.[1] ?? "");
-  const pageFieldName = cleanText(match?.[2]);
+  const pageFieldName = collapseSourceWhitespace(match?.[2]);
   if (
     targetPage === null ||
     !isFubonDepositCurrentPageField(pageFieldName)
@@ -1610,7 +1604,7 @@ function depositDateRangeFields(query: FubonDepositQuery): Record<string, string
 }
 
 function branchNameFromAccount(account: string): string {
-  return cleanText(account.match(/\(([^()]+)\)\s*$/)?.[1]);
+  return collapseSourceWhitespace(account.match(/\(([^()]+)\)\s*$/)?.[1]);
 }
 
 function accountIdFor(account: string, fallback: string): string {
@@ -1664,8 +1658,8 @@ async function readMaskedAccountLabel(
 function isFubonDepositAccountPlaceholder(
   account: FubonDepositAccountOption,
 ): boolean {
-  const value = cleanText(account.value).toLowerCase();
-  const label = cleanText(account.label).toLowerCase();
+  const value = collapseSourceWhitespace(account.value).toLowerCase();
+  const label = collapseSourceWhitespace(account.label).toLowerCase();
   if (!value || !label) return true;
   if (["none", "null", "undefined", "-1"].includes(value)) return true;
   return /^(?:請|请选择)?選擇(?:帳戶|賬戶)?$/.test(label);
@@ -1682,8 +1676,8 @@ export async function readFubonDepositAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const value = collapseSourceWhitespace(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     if (value && label) accounts.push({ label, value });
   }
 

@@ -12,6 +12,7 @@ import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const FOREIGN_STATEMENTS_URL =
   "https://www.cathaybk.com.tw/OnlineBanking/FAcctInq/R0102_FAcctDtlInq_Qry";
@@ -101,13 +102,6 @@ export type CathayForeignStatementObserver = (
   statement: CathayForeignTransferResult,
 ) => void;
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
@@ -126,7 +120,7 @@ function digitsOnly(value: string): string {
 export function deriveCathayForeignAccountNumberEvidence(
   accountNumber: string,
 ): CathayForeignAccountNumberEvidence | null {
-  const value = cleanText(accountNumber).normalize("NFKC");
+  const value = collapseSourceWhitespace(accountNumber).normalize("NFKC");
   if (!/^\d{6,24}$/u.test(value)) return null;
   return {
     value,
@@ -137,14 +131,14 @@ export function deriveCathayForeignAccountNumberEvidence(
 }
 
 function maskAccountLabel(value: string): string {
-  return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
+  return collapseSourceWhitespace(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
 }
 
 function normalizeDate(value: string | null | undefined): string {
-  const text = cleanText(value);
+  const text = collapseSourceWhitespace(value);
   const compact = text.match(/^(\d{4})(\d{2})(\d{2})$/);
   if (compact) return `${compact[1]}/${compact[2]}/${compact[3]}`;
 
@@ -156,7 +150,7 @@ function normalizeDate(value: string | null | undefined): string {
 
 function foreignSummary(info: CathayForeignTransferInfo): string {
   return [info.debitCreditType, info.custName]
-    .map((value) => cleanText(value))
+    .map((value) => collapseSourceWhitespace(value))
     .filter(Boolean)
     .join(" ");
 }
@@ -217,7 +211,7 @@ function functionSeqNo(): string {
 }
 
 function foreignAccountLabel(account: CathayForeignAccount): string {
-  return cleanText(
+  return collapseSourceWhitespace(
     [account.account, account.nickName, account.demandType]
       .filter(Boolean)
       .join(" "),
@@ -250,14 +244,14 @@ function cathaySequence(value: number | string | undefined): string {
       );
     return String(value);
   }
-  const sequence = cleanText(value);
+  const sequence = collapseSourceWhitespace(value);
   if (!sequence)
     throw new Error("Cathay foreign row lacks source sequence identity.");
   return sequence;
 }
 
 function cathayDirection(value: string | undefined): "inflow" | "outflow" {
-  const type = cleanText(value).toUpperCase();
+  const type = collapseSourceWhitespace(value).toUpperCase();
   if (
     type === "D" ||
     type.includes("DEBIT") ||
@@ -288,7 +282,7 @@ export function buildCathayForeignCurrencyCaptureInput(
   const baseCaptureOccurrenceId = captureOccurrenceId.trim();
   if (!baseCaptureOccurrenceId)
     throw new Error("Cathay foreign capture occurrence identity is required.");
-  const currencyCode = cleanText(
+  const currencyCode = collapseSourceWhitespace(
     statement.currencyCode ?? currency,
   ).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currencyCode))
@@ -325,7 +319,7 @@ export function buildCathayForeignCurrencyCaptureInput(
       ).replaceAll("/", "-");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(observedDate))
         throw new Error("Cathay foreign row lacks a source transaction date.");
-      const reportedRateText = cleanText(info.exRate);
+      const reportedRateText = collapseSourceWhitespace(info.exRate);
       return {
         sourceKey: `${account.account}:${currencyCode}:${sequence}`,
         sequence,
@@ -589,7 +583,7 @@ export async function collectCathayForeignFinancialCaptures(
     );
     const statementsByCurrency = new Map<string, CathayForeignTransferResult>();
     for (const statement of statements) {
-      const currency = cleanText(statement.currencyCode);
+      const currency = collapseSourceWhitespace(statement.currencyCode);
       if (!currency || statementsByCurrency.has(currency)) {
         throw new Error(
           "Cathay foreign source has a missing or duplicate currency response.",
@@ -600,7 +594,7 @@ export async function collectCathayForeignFinancialCaptures(
     if (
       statementsByCurrency.size !== currencies.length ||
       currencies.some(
-        (currency) => !statementsByCurrency.has(cleanText(currency)),
+        (currency) => !statementsByCurrency.has(collapseSourceWhitespace(currency)),
       )
     ) {
       throw new Error(
@@ -609,7 +603,7 @@ export async function collectCathayForeignFinancialCaptures(
     }
     for (const currency of currencies) {
       signal.throwIfAborted();
-      const statement = statementsByCurrency.get(cleanText(currency));
+      const statement = statementsByCurrency.get(collapseSourceWhitespace(currency));
       if (!statement) {
         throw new Error(
           "Cathay foreign selected account/currency response is incomplete.",

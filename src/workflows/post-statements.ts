@@ -42,6 +42,7 @@ import {
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { type ProviderRequest, type ProviderResponseReader } from "./provider-response-reader.ts";
 import type { VerificationStage } from "../lib/automation/verification-stage.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const HOME_URL = "https://ipost.post.gov.tw/pst/home.html";
 const INDEX_URL = "https://ipost.post.gov.tw/pst/index.html";
@@ -137,15 +138,8 @@ export type PostWorkflowDependencies = Readonly<{
   collectDeposit?: PostProductRunner;
 }>;
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/[\u00a0\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export function postProviderDateShape(value: string | undefined): string {
-  const clean = cleanText(value);
+  const clean = collapseSourceWhitespace(value);
   if (/^\d{8}$/.test(clean)) return "gregorian-compact";
   if (/^\d{7}$/.test(clean)) return "roc-compact";
   if (/^\d{4}\/\d{2}\/\d{2}$/.test(clean)) return "gregorian-slash";
@@ -156,7 +150,7 @@ export function postProviderDateShape(value: string | undefined): string {
 }
 
 export function postProviderDate(value: string | undefined): string {
-  const clean = cleanText(value);
+  const clean = collapseSourceWhitespace(value);
   const shape = postProviderDateShape(clean);
   if (shape === "gregorian-compact")
     return `${clean.slice(0, 4)}/${clean.slice(4, 6)}/${clean.slice(6, 8)}`;
@@ -172,21 +166,21 @@ export function postProviderDate(value: string | undefined): string {
 }
 
 function postTime(value: string | undefined): string {
-  const clean = cleanText(value);
+  const clean = collapseSourceWhitespace(value);
   const match = clean.match(/^(\d{2})(\d{2})(\d{2})$/);
   if (!match) return clean;
   return `${match[1]}:${match[2]}:${match[3]}`;
 }
 
 function amountFor(row: PostRawStatementRow, flag: "+" | "-"): string {
-  return cleanText(row.DR_FLG) === flag ? cleanText(row.TX_AMT) : "";
+  return collapseSourceWhitespace(row.DR_FLG) === flag ? collapseSourceWhitespace(row.TX_AMT) : "";
 }
 
 function noteFor(row: PostRawStatementRow): string {
   return [
-    cleanText(row.ATTACH_COMMENT),
-    cleanText(row.ADDITIONAL_MEMO_2),
-    cleanText(row.ENGLISH_MEMO),
+    collapseSourceWhitespace(row.ATTACH_COMMENT),
+    collapseSourceWhitespace(row.ADDITIONAL_MEMO_2),
+    collapseSourceWhitespace(row.ENGLISH_MEMO),
   ]
     .filter(Boolean)
     .join(" ");
@@ -203,19 +197,19 @@ export function postRowsToStatementRows(
       accountId,
       sortKey: `${date} ${time}`,
       directionFlag:
-        cleanText(row.DR_FLG) === "+"
+        collapseSourceWhitespace(row.DR_FLG) === "+"
           ? "inflow"
-          : cleanText(row.DR_FLG) === "-"
+          : collapseSourceWhitespace(row.DR_FLG) === "-"
             ? "outflow"
             : "unknown",
       values: [
         date,
         date,
         time,
-        cleanText(row.MEM),
+        collapseSourceWhitespace(row.MEM),
         amountFor(row, "-"),
         amountFor(row, "+"),
-        cleanText(row.BAL_AMT),
+        collapseSourceWhitespace(row.BAL_AMT),
         noteFor(row),
       ],
     };
@@ -437,7 +431,7 @@ function requireCompletePostStatementRows(
     if (!isRecord(value))
       throw new Error("Post statement response contains a malformed transaction row.");
     for (const field of ["PRS_DATE", "TX_TIME", "TX_AMT", "BAL_AMT", "DR_FLG"] as const) {
-      if (typeof value[field] !== "string" || cleanText(value[field]) === "")
+      if (typeof value[field] !== "string" || collapseSourceWhitespace(value[field]) === "")
         throw new Error("Post statement response contains an incomplete transaction row.");
     }
     if (value.DR_FLG !== "+" && value.DR_FLG !== "-")
@@ -493,7 +487,7 @@ export function parsePostStatementResponse(acquired: PostStatementReply): PostQu
     : undefined;
   const startDate = postProviderDate(request.body.DATE);
   const endDate = postProviderDate(request.body.END_DATE);
-  const accountId = cleanText(request.body._USER_ID);
+  const accountId = collapseSourceWhitespace(request.body._USER_ID);
   return {
     accountId,
     queryPeriods: [`${startDate}~${endDate}`],

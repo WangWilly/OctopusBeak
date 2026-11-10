@@ -41,6 +41,7 @@ import {
   type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { periodSpans, type CollectionPeriod } from "../lib/automation/collection-period.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const LOAN_ACCOUNT_SELECTOR = "#form1\\:loanAccountCombo";
 const LOAN_FORM_SELECTOR = "form#form1";
@@ -159,7 +160,7 @@ export function extractFubonLoanAccountEvidence(
   _optionValue: string,
   optionLabel: string,
 ): string | null {
-  const label = cleanText(optionLabel);
+  const label = collapseSourceWhitespace(optionLabel);
   if (!label || /[*xX•]/u.test(label)) return null;
   return label.match(/^(\d{14})\s*[（(][^()（）]+[）)]$/u)?.[1] ?? null;
 }
@@ -219,15 +220,8 @@ const loanHeaders = [
   "備註",
 ];
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/[\u00a0\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function stripHtml(value: string): string {
-  return cleanText(value.replace(/<[^>]*>/gu, " "));
+  return collapseSourceWhitespace(value.replace(/<[^>]*>/gu, " "));
 }
 
 function htmlAttribute(openingTag: string, name: string): string {
@@ -654,7 +648,7 @@ export function parseFubonLoanStatementRows(
   sourceRows: readonly string[][],
 ): string[][] {
   return sourceRows.flatMap((sourceRow) => {
-    const row = sourceRow.map((value) => cleanText(value));
+    const row = sourceRow.map((value) => collapseSourceWhitespace(value));
     if (row.every((value) => value.length === 0)) return [];
     if (
       row.length !== loanHeaders.length ||
@@ -743,8 +737,8 @@ async function readLoanAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const value = cleanText(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const value = collapseSourceWhitespace(await frames.withSignal((signal) => option.getAttribute("value", { signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     if (!value || value === "none" || !label) continue;
     if (!matchesFilter(label, filters)) continue;
     result.push({ label, value });
@@ -793,7 +787,7 @@ async function readAvailableLoanQueryItems(
   const result: QueryItem[] = [];
 
   for (let index = 0; index < count; index += 1) {
-    const value = cleanText(
+    const value = collapseSourceWhitespace(
       await frames.withSignal((signal) => options.nth(index).getAttribute("value", { signal })),
     );
     const parsed = queryItemSchema.safeParse(value);

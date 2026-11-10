@@ -12,6 +12,7 @@ import {
 import { ifFound, type BrowserScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { YuantaEbankSite, YuantaRoute } from "./yuanta-ebank-site.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 /**
  * Yuanta's current deposit summary is a source snapshot.  It is reached from
@@ -107,13 +108,6 @@ const SUMMARY_HEADING: Record<YuantaCurrentDepositKind, string> = {
   foreign: "目前外幣存款總額",
 };
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 const YUANTA_AMOUNT: ProviderDecimalPolicy = {
   internalWhitespace: "strip",
   grouping: "thousands",
@@ -124,7 +118,7 @@ function parseExactDecimal(
   value: string,
   label: string,
 ): YuantaCurrentDepositExactDecimal {
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = collapseSourceWhitespace(value);
   const amount = parseProviderDecimal(sourceLexeme, YUANTA_AMOUNT);
   if (!amount) {
     throw new Error(`Yuanta current deposit ${label} is not an exact decimal.`);
@@ -133,7 +127,7 @@ function parseExactDecimal(
 }
 
 function parseCurrency(value: string, label: string): string {
-  const normalized = cleanText(value).toUpperCase();
+  const normalized = collapseSourceWhitespace(value).toUpperCase();
   // Yuanta's live pages use Traditional Chinese currency labels while its
   // transaction sources expose the corresponding ISO codes. Keep this
   // source-specific alias set explicit and fail closed for other labels.
@@ -151,7 +145,7 @@ function parseCurrency(value: string, label: string): string {
 }
 
 function parseAccount(value: string, label: string): string {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value);
   if (!/^\d{6,24}$/u.test(normalized)) {
     throw new Error(`Yuanta current deposit ${label} account is invalid.`);
   }
@@ -255,13 +249,13 @@ async function readCellTexts(row: Locator, selector: string): Promise<string[]> 
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await cells.nth(index).innerText()));
+    values.push(collapseSourceWhitespace(await cells.nth(index).innerText()));
   }
   return values;
 }
 
 async function tableClass(table: Locator): Promise<Set<string>> {
-  return new Set(cleanText(await table.getAttribute("class")).split(/\s+/u).filter(Boolean));
+  return new Set(collapseSourceWhitespace(await table.getAttribute("class")).split(/\s+/u).filter(Boolean));
 }
 
 /**

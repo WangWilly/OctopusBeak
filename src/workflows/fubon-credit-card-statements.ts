@@ -58,6 +58,7 @@ import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { fubonEbankSite, type FubonEbankSite, type FubonRoute } from "./fubon-ebank-site.ts";
 import { StatementComponentAbsentError } from "../lib/automation/product-collection.ts";
 import { taipeiDate } from "../lib/time/timezone.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type FubonStatementPeriodProbe = {
   periodOffset: number;
@@ -181,24 +182,17 @@ const periodTabs = [
   { offset: 6, label: "前五期" },
 ] as const;
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export function isFubonCreditCardStatementUnavailableText(
   value: string | null | undefined,
 ): boolean {
-  const normalized = cleanText(value).replace(/\s+/gu, "");
+  const normalized = collapseSourceWhitespace(value).replace(/\s+/gu, "");
   return /目前帳單產製中[,，]?暫時無法查詢/u.test(normalized);
 }
 
 function isFubonCreditCardNoRecordText(
   value: string | null | undefined,
 ): boolean {
-  return /查無資料|查無相關資料|無資料|無消費/.test(cleanText(value));
+  return /查無資料|查無相關資料|無資料|無消費/.test(collapseSourceWhitespace(value));
 }
 
 function toAsciiDigits(value: string): string {
@@ -219,7 +213,7 @@ function fullPanCandidate(value: string): string | undefined {
 }
 
 function safeCardLabel(value: string): string {
-  return cleanText(
+  return collapseSourceWhitespace(
     toAsciiDigits(value).replace(
       /(?<!\d)(?:\d[\s-]*){12,19}(?!\d)/gu,
       "",
@@ -244,11 +238,11 @@ function matchesFilter(value: string, filters: string[]): boolean {
 }
 
 function isDateLike(value: string): boolean {
-  return /^\d{3,4}\/\d{2}\/\d{2}$/.test(toAsciiDigits(cleanText(value)));
+  return /^\d{3,4}\/\d{2}\/\d{2}$/.test(toAsciiDigits(collapseSourceWhitespace(value)));
 }
 
 function consumeDateSortKey(row: CsvRow): string {
-  const date = toAsciiDigits(cleanText(row.consume_date));
+  const date = toAsciiDigits(collapseSourceWhitespace(row.consume_date));
   const match = date.match(/^(\d{3,4})\/(\d{2})\/(\d{2})$/);
   if (!match) return "";
 
@@ -266,7 +260,7 @@ export function parseFubonStatementCardLabel(cardLabel: string): {
   cardLabel: string;
   fullPan?: string;
 } {
-  const asciiLabel = toAsciiDigits(cleanText(cardLabel));
+  const asciiLabel = toAsciiDigits(collapseSourceWhitespace(cardLabel));
   const fullPan = fullPanCandidate(asciiLabel);
   const digits = digitsOnly(asciiLabel);
   return {
@@ -663,7 +657,7 @@ async function readCells(frames: FrameScope, row: Locator): Promise<string[]> {
   const count = await cells.count();
   const values: string[] = [];
   for (let index = 0; index < count; index += 1) {
-    values.push(cleanText(await frames.withSignal((signal) => cells.nth(index).textContent({ signal }))));
+    values.push(collapseSourceWhitespace(await frames.withSignal((signal) => cells.nth(index).textContent({ signal }))));
   }
   return values;
 }
@@ -715,7 +709,7 @@ function isFubonDiagnosticDigit(value: string): boolean {
 }
 
 function fubonDateInputShape(value: string): string {
-  const cleaned = cleanText(value);
+  const cleaned = collapseSourceWhitespace(value);
   let digitCount = 0;
   const shape = Array.from(cleaned, (char) => {
     if (isFubonDiagnosticDigit(char)) {
@@ -745,7 +739,7 @@ function throwFubonExplicitDateError(value: string, label: string): never {
 }
 
 function isoFubonDate(value: string, label: string): string {
-  const normalized = toAsciiDigits(cleanText(value))
+  const normalized = toAsciiDigits(collapseSourceWhitespace(value))
     .replace(/^民國\s*/u, "")
     .replace(/[／]/gu, "/")
     .replace(/[．。]/gu, ".")
@@ -758,7 +752,7 @@ function isoFubonDate(value: string, label: string): string {
       /^(\d{3,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|號)?(.*)$/u,
     );
   if (!match) throwFubonExplicitDateError(value, label);
-  const suffix = cleanText(match[4]);
+  const suffix = collapseSourceWhitespace(match[4]);
   if (suffix) {
     const parenthesized = /^(?:\(|（)(.*)(?:\)|）)$/u.exec(suffix);
     const isTextAnnotation =
@@ -781,7 +775,7 @@ function isoFubonDate(value: string, label: string): string {
 }
 
 function exactFubonAmount(value: string, label: string): { amount: string; signed: string } {
-  const normalized = toAsciiDigits(cleanText(value))
+  const normalized = toAsciiDigits(collapseSourceWhitespace(value))
     .replaceAll(",", "")
     .replace(/(?:NT\$|TWD|新臺幣|台幣|元)/giu, "")
     .trim();
@@ -853,7 +847,7 @@ function fubonDirectTableRows(table: FubonHtmlTable, allTables: readonly FubonHt
   }
   return [...direct.matchAll(/<tr\b[^>]*>[\s\S]*?<\/tr>/giu)].map((row) =>
     [...row[0].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/giu)].map((cell) =>
-      cleanText(cell[1]?.replace(/<[^>]+>/gu, " ")),
+      collapseSourceWhitespace(cell[1]?.replace(/<[^>]+>/gu, " ")),
     ),
   );
 }
@@ -929,7 +923,7 @@ function subtractFubonDecimalText(left: string, right: string): string {
 }
 
 function normalizedSummaryHeader(value: string): string {
-  return cleanText(value).replace(/[：:\s]/gu, "");
+  return collapseSourceWhitespace(value).replace(/[：:\s]/gu, "");
 }
 
 function summaryValue(
@@ -945,7 +939,7 @@ function summaryValue(
 }
 
 function isFubonProviderDueStatus(value: string): boolean {
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value);
   // Fubon sometimes returns a non-date status (for example, "尚未出帳") in
   // the due-date cell. Treat any non-empty, letter-bearing, digit-free value
   // as that provider status. Anything containing digits still has to satisfy
@@ -964,13 +958,13 @@ export function parseFubonSettledStatementSummary(
   const values = new Map<string, string>();
   for (let index = 0; index < headers.length; index += 1) {
     const header = normalizedSummaryHeader(headers[index] ?? "");
-    const value = cleanText(cells[index] ?? "");
+    const value = collapseSourceWhitespace(cells[index] ?? "");
     if (header && value) values.set(header, value);
   }
   const paymentValues = new Map<string, string>();
   for (let index = 0; index < paymentHeaders.length; index += 1) {
     const header = normalizedSummaryHeader(paymentHeaders[index] ?? "");
-    const value = cleanText(paymentCells[index] ?? "");
+    const value = collapseSourceWhitespace(paymentCells[index] ?? "");
     if (header && value) paymentValues.set(header, value);
   }
   const period = summaryValue(values, ["帳單年月"], "billing period");
@@ -1259,7 +1253,7 @@ function fullPanForRow(row: CsvRow): string | undefined {
  */
 function maskedCardSourceKey(row: CsvRow): string | undefined {
   for (const value of [row.card_number ?? "", row.card_label ?? ""]) {
-    const normalized = toAsciiDigits(cleanText(value)).replace(/[\s-]/gu, "");
+    const normalized = toAsciiDigits(collapseSourceWhitespace(value)).replace(/[\s-]/gu, "");
     const match = normalized.match(/(?<!\d)(\d{6}\*{2,}\d{4})(?!\d)/u);
     if (match) {
       const token = match[1]!;
@@ -1335,7 +1329,7 @@ function opaqueFubonOccurrenceToken(value: unknown): `sha256:${string}` {
 }
 
 function fubonStatementKeyForRow(row: CsvRow): string | null {
-  const period = cleanText(row.statement_period);
+  const period = collapseSourceWhitespace(row.statement_period);
   return period && period !== "unbilled"
     ? fubonCanonicalDigest("fubon-statement-v2", period)
     : null;
@@ -1350,7 +1344,7 @@ const FUBON_BOOKED_CURRENCY_MARKERS = new Set([
 ]);
 
 function normalizedFubonCurrencyMarker(value: string | undefined): string {
-  return cleanText(value).replace(/\s+/gu, "").toUpperCase();
+  return collapseSourceWhitespace(value).replace(/\s+/gu, "").toUpperCase();
 }
 
 function isFubonBookedCurrencyMarker(value: string | undefined): boolean {
@@ -1375,7 +1369,7 @@ function fubonForeignEvidenceForRow(row: CsvRow): FubonForeignEvidence {
     throw new Error("Fubon foreign currency and amount evidence must be complete together.");
   if (!presence.currencyPresent)
     return { foreignCurrency: null, foreignAmount: null };
-  const foreignCurrency = fubonIsoCurrency(cleanText(row.foreign_currency));
+  const foreignCurrency = fubonIsoCurrency(collapseSourceWhitespace(row.foreign_currency));
   if (foreignCurrency === null)
     throw new Error("Fubon foreign currency label is not an ISO currency.");
   return {
@@ -1393,10 +1387,10 @@ function fubonTransactionOccurrenceBaseKey(
     instrumentKey,
     isoFubonDate(row.consume_date ?? "", "consume date"),
     isoFubonDate(row.posting_date ?? "", "posting date"),
-    cleanText(row.twd_amount),
+    collapseSourceWhitespace(row.twd_amount),
     foreignEvidence.foreignCurrency,
     foreignEvidence.foreignAmount?.signed ?? null,
-    cleanText(row.description),
+    collapseSourceWhitespace(row.description),
   ]);
 }
 
@@ -1432,18 +1426,18 @@ function fubonForeignEvidencePresence(row: CsvRow): {
   unbilled: number;
   rawSourceFieldsPresent: FubonForeignEvidenceDiagnosticPattern["rawSourceFieldsPresent"];
 } {
-  const currencyPresent = cleanText(row.foreign_currency).length > 0;
+  const currencyPresent = collapseSourceWhitespace(row.foreign_currency).length > 0;
   const currencyIsBookedCurrency = isFubonBookedCurrencyMarker(
     row.foreign_currency,
   );
   // A TWD-booked purchase abroad shows the merchant's country code in the
   // foreign-amount column.
-  const foreignAmountText = cleanText(row.foreign_amount);
+  const foreignAmountText = collapseSourceWhitespace(row.foreign_amount);
   const amountPresent =
     foreignAmountText.length > 0 &&
     !(currencyIsBookedCurrency && /^[A-Z]{3}$/u.test(foreignAmountText));
-  const twdAmountPresent = cleanText(row.twd_amount).length > 0;
-  const unbilled = cleanText(row.statement_period) === "unbilled";
+  const twdAmountPresent = collapseSourceWhitespace(row.twd_amount).length > 0;
+  const unbilled = collapseSourceWhitespace(row.statement_period) === "unbilled";
   return {
     currencyPresent,
     amountPresent,
@@ -1531,7 +1525,7 @@ function canonicalTransactionForRow(
   if (/^[+-]?0(?:\.0+)?$/u.test(booked.signed))
     throw new Error("Fubon zero-value credit-card rows cannot establish direction.");
   const foreignEvidence = fubonForeignEvidenceForRow(row);
-  const queriedPeriod = cleanText(row.statement_period);
+  const queriedPeriod = collapseSourceWhitespace(row.statement_period);
   if (!queriedPeriod) throw new Error("Fubon credit-card row is missing its queried statement period.");
   const queryBucket: CreditCardStatementGridBucket = queriedPeriod === "unbilled"
     ? { kind: "unbilled" }
@@ -1545,7 +1539,7 @@ function canonicalTransactionForRow(
     booked.signed,
     foreignEvidence.foreignCurrency,
     foreignEvidence.foreignAmount?.signed ?? null,
-    cleanText(row.description),
+    collapseSourceWhitespace(row.description),
     occurrenceIndex,
   ]);
   return {
@@ -1561,7 +1555,7 @@ function canonicalTransactionForRow(
     bookedCurrency: "TWD",
     foreignCurrency: foreignEvidence.foreignCurrency,
     foreignAmount: foreignEvidence.foreignAmount?.amount ?? null,
-    description: cleanText(row.description),
+    description: collapseSourceWhitespace(row.description),
     billingStatus: row.statement_period === "unbilled" ? "unbilled" : "billed",
     queryBucket,
     ...(statementKey ? { statementKey } : {}),
@@ -1577,7 +1571,7 @@ function instrumentForRows(
 ): FubonCreditCardCaptureInput["instruments"][number] {
   const roles = new Set<FubonCreditCardCaptureInput["instruments"][number]["role"]>();
   for (const row of rows) {
-    const label = cleanText(row.card_label);
+    const label = collapseSourceWhitespace(row.card_label);
     if (/正卡/u.test(label)) roles.add("primary");
     if (/附卡/u.test(label)) roles.add("supplementary");
     if (/虛擬/u.test(label)) roles.add("virtual");
@@ -1620,7 +1614,7 @@ function boundedPreflightCount(value: number): number {
 
 function safePreflightGridValue(value: string | undefined): FubonPreflightGridValue {
   if (value === undefined) return "missing";
-  const normalized = cleanText(value);
+  const normalized = collapseSourceWhitespace(value);
   if (!normalized) return "empty";
   if (!/^\d{1,12}$/u.test(normalized)) return "non-numeric";
   return Number(normalized);
@@ -1908,7 +1902,7 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     const groupKey = rowsByInstrument.rowGroupKeys.get(row);
     const instrumentKey = groupKey ? instrumentKeys.get(groupKey) : undefined;
     if (!instrumentKey) throw new Error("Fubon transaction card instrument is missing.");
-    const period = cleanText(row.statement_period);
+    const period = collapseSourceWhitespace(row.statement_period);
     const rowStatementKey = fubonStatementKeyForRow(row);
     const statementKey =
       rowStatementKey && settledStatementPeriods.has(period)
@@ -1932,8 +1926,8 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     };
   });
   const orderedTransactionDescriptors = transactionDescriptors.slice().sort((left, right) => {
-    const leftPeriod = cleanText(left.row.statement_period);
-    const rightPeriod = cleanText(right.row.statement_period);
+    const leftPeriod = collapseSourceWhitespace(left.row.statement_period);
+    const rightPeriod = collapseSourceWhitespace(right.row.statement_period);
     const leftRank = periodRanks.get(leftPeriod) ?? orderedSummaries.length;
     const rightRank = periodRanks.get(rightPeriod) ?? orderedSummaries.length;
     if (leftRank !== rightRank) return leftRank - rightRank;
@@ -1990,11 +1984,11 @@ export function buildFubonCanonicalCreditCardCaptures(options: {
     (descriptor) => descriptor.transaction,
   );
   const statementTransactions = admittedTransactionDescriptors.filter(
-    (descriptor) => cleanText(descriptor.row.statement_period) !== "unbilled",
+    (descriptor) => collapseSourceWhitespace(descriptor.row.statement_period) !== "unbilled",
   );
   const sourceRecordsByPeriod = new Map<string, string[]>();
   for (const descriptor of statementTransactions) {
-    const period = cleanText(descriptor.row.statement_period);
+    const period = collapseSourceWhitespace(descriptor.row.statement_period);
     const keys = sourceRecordsByPeriod.get(period) ?? [];
     keys.push(descriptor.transaction.sourceRecordKey);
     sourceRecordsByPeriod.set(period, keys);

@@ -66,3 +66,21 @@ export const strictSourceText: SourceTextPort = {
     };
   },
 };
+
+/**
+ * Collapse every whitespace run in provider text to one space and trim. `\s`
+ * and `trim()` already cover U+00A0 and U+3000, so callers need no extra replace.
+ * A non-string throws instead of being stringified, so a provider number that
+ * slipped past a cast fails the read rather than losing its lexical form.
+ */
+export function collapseSourceWhitespace(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * Turn U+00A0 and U+3000 into spaces and trim, keeping interior whitespace,
+ * because the result is the provider lexeme stored as evidence.
+ */
+export function trimSourceLexeme(value: unknown): string {
+  return String(value ?? "").replace(/[\u00a0\u3000]/gu, " ").trim();
+}

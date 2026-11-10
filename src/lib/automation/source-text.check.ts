@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SourceTextIntegrityError, strictSourceText } from "./source-text.ts";
+import {
+  collapseSourceWhitespace,
+  SourceTextIntegrityError,
+  strictSourceText,
+  trimSourceLexeme,
+} from "./source-text.ts";
 
 test("strict source text preserves a UTF-8 character split across chunks", () => {
   const bytes = Buffer.from("安心食品", "utf8");
@@ -30,4 +35,44 @@ test("strict source text decodes Big5 and rejects replacement characters", () =>
     () => strictSourceText.decode(Buffer.from("\uFFFD", "utf8"), "utf-8"),
     SourceTextIntegrityError,
   );
+});
+
+const removedCollapseVariants: ReadonlyArray<readonly [string, (value: string) => string]> = [
+  ["nbsp then \\s", (value) => value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim()],
+  ["nbsp then unicode \\s", (value) => value.replace(/\u00a0/g, " ").replace(/\s+/gu, " ").trim()],
+  [
+    "nbsp and ideographic space then \\s",
+    (value) => value.replace(/[\u00a0\u3000]/g, " ").replace(/\s+/g, " ").trim(),
+  ],
+  ["\\s only", (value) => value.replace(/\s+/g, " ").trim()],
+];
+
+test("collapseSourceWhitespace matches every removed collapse variant over the BMP", () => {
+  for (const [name, reference] of removedCollapseVariants) {
+    for (let code = 0; code <= 0xffff; code += 1) {
+      const c = String.fromCharCode(code);
+      for (const input of [`a${c}${c}b`, `${c}x${c}`, c]) {
+        const expected = reference(input);
+        const actual = collapseSourceWhitespace(input);
+        if (actual !== expected) {
+          assert.fail(`${name} differs for U+${code.toString(16).padStart(4, "0")} in ${JSON.stringify(input)}`);
+        }
+      }
+    }
+  }
+});
+
+test("collapseSourceWhitespace reads null and undefined as empty and refuses a non-string", () => {
+  assert.equal(collapseSourceWhitespace(null), "");
+  assert.equal(collapseSourceWhitespace(undefined), "");
+  assert.throws(() => collapseSourceWhitespace(1200 as unknown as string), TypeError);
+  assert.equal(collapseSourceWhitespace(" \u3000a \t\u00a0b\n"), "a b");
+});
+
+test("trimSourceLexeme keeps interior whitespace and trims both ends", () => {
+  assert.equal(trimSourceLexeme("  a  b\tc  "), "a  b\tc");
+  assert.equal(trimSourceLexeme("1\u00a02\u30003"), "1 2 3");
+  assert.equal(trimSourceLexeme("\u3000\u00a0 12,345 \u00a0\u3000"), "12,345");
+  assert.equal(trimSourceLexeme(null), "");
+  assert.equal(trimSourceLexeme(undefined), "");
 });

@@ -291,7 +291,7 @@ const sourceTransactionHeaders = [
   "補摺日期/票據號碼",
 ];
 
-function cleanText(value: string | null | undefined): string {
+function textFromHncbHtml(value: string | null | undefined): string {
   return (value ?? "")
     .replace(/&#8203;|\u200b/g, "")
     .replace(/&nbsp;|\u00a0|\u3000/g, " ")
@@ -303,7 +303,7 @@ export function isNoStatementDataText(
   value: string | null | undefined,
 ): boolean {
   return /查\s*無\s*資\s*料|無\s*資\s*料|無\s*交\s*易|查\s*無\s*符\s*合/u.test(
-    cleanText(value),
+    textFromHncbHtml(value),
   );
 }
 
@@ -347,7 +347,7 @@ function rocYearValue(year: number): string {
 function metadataValue(rows: string[][], label: string): string {
   for (const row of rows) {
     for (let index = 0; index < row.length - 1; index += 1) {
-      if (cleanText(row[index]) === label) return cleanText(row[index + 1]);
+      if (textFromHncbHtml(row[index]) === label) return textFromHncbHtml(row[index + 1]);
     }
   }
   return "";
@@ -355,7 +355,7 @@ function metadataValue(rows: string[][], label: string): string {
 
 function workbookSheetsFromHtml(content: string): string[][][] {
   return parseHtmlTableMatrices(content).map((rows) =>
-    rows.map((row) => row.map((cell) => cleanText(cell))),
+    rows.map((row) => row.map((cell) => textFromHncbHtml(cell))),
   );
 }
 
@@ -364,8 +364,8 @@ function findTransactionSheet(sheets: string[][][]): string[][] {
     if (
       rows.some(
         (row) =>
-          cleanText(row[0]).startsWith("交易日期") &&
-          row.some((cell) => cleanText(cell) === "交易時間"),
+          textFromHncbHtml(row[0]).startsWith("交易日期") &&
+          row.some((cell) => textFromHncbHtml(cell) === "交易時間"),
       )
     ) {
       return rows;
@@ -377,8 +377,8 @@ function findTransactionSheet(sheets: string[][][]): string[][] {
 function findTransactionHeaderIndex(rows: string[][]): number {
   const index = rows.findIndex(
     (row) =>
-      cleanText(row[0]).startsWith("交易日期") &&
-      row.some((cell) => cleanText(cell) === "交易時間"),
+      textFromHncbHtml(row[0]).startsWith("交易日期") &&
+      row.some((cell) => textFromHncbHtml(cell) === "交易時間"),
   );
   if (index === -1) {
     throw new Error("Downloaded HNCB transaction table is missing headers.");
@@ -398,7 +398,7 @@ export function normalizeHncbTransactionRows(rows: string[][]): string[][] {
   return rows
     .slice(headerIndex + 1)
     .map((row) =>
-      sourceTransactionHeaders.map((_, index) => cleanText(row[index])),
+      sourceTransactionHeaders.map((_, index) => textFromHncbHtml(row[index])),
     )
     .map((row) =>
       row.map((value, index) =>
@@ -664,8 +664,8 @@ async function readAccountOptions(
 
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
-    const label = cleanText(await option.textContent());
-    const value = cleanText(await option.getAttribute("value")) || label;
+    const label = textFromHncbHtml(await option.textContent());
+    const value = textFromHncbHtml(await option.getAttribute("value")) || label;
     if (!label || !value) continue;
     const account = { label, value };
     if (matchesAccountFilter(account, filters)) accounts.push(account);

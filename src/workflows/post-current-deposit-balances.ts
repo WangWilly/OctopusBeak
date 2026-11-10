@@ -16,6 +16,7 @@ import {
   type ProviderEvidence,
   type VerifiedProviderResponse,
 } from "./provider-response.ts";
+import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 
 /**
  * iPost's asset overview is a normal authenticated page.  Its click handler
@@ -97,14 +98,10 @@ function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function cleanText(value: string): string {
-  return value.replace(/[\u00a0\u3000]/gu, " ").trim();
-}
-
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string")
     throw new Error(`Post current deposit ${label} must be a string.`);
-  const text = cleanText(value);
+  const text = trimSourceLexeme(value);
   if (text === "")
     throw new Error(`Post current deposit ${label} is blank.`);
   return text;

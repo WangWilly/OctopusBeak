@@ -5,6 +5,7 @@
  * Nothing here touches the browser.
  */
 import type { YuantaCreditCardStatementSummary } from "../ledger/canonical/yuanta-credit-card-admission.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type YuantaCreditCardMonthOption = {
   index: number;
@@ -107,13 +108,6 @@ export class YuantaCreditCardSummaryParseError extends Error {
   }
 }
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function toAsciiDigits(value: string): string {
   return value.replace(/[０-９]/g, (char) =>
     String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30),
@@ -144,7 +138,7 @@ function htmlAttribute(tag: string, name: string): string {
 }
 
 function stripHtml(value: string): string {
-  return cleanText(
+  return collapseSourceWhitespace(
     decodeHtmlEntities(
       value
         .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
@@ -226,7 +220,7 @@ function parseRwdTablesFromHtml(html: string): string[][][] {
 }
 
 function issuerAmountText(value: string | undefined, label: string): string {
-  const text = cleanText(value ?? "").replaceAll(",", "");
+  const text = collapseSourceWhitespace(value ?? "").replaceAll(",", "");
   if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(text))
     throw new Error(`Yuanta ${label} is not an exact decimal amount.`);
   return text;
@@ -242,7 +236,7 @@ const YUANTA_CURRENT_CREDIT_HEADERS = [
 function yuantaCurrentCreditHeaderIndex(row: readonly string[]): number {
   return row.length >= YUANTA_CURRENT_CREDIT_HEADERS.length &&
     YUANTA_CURRENT_CREDIT_HEADERS.every(
-      (header, index) => cleanText(row[index]) === header,
+      (header, index) => collapseSourceWhitespace(row[index]) === header,
     )
     ? 0
     : -1;
@@ -611,7 +605,7 @@ function uniqueHeaders(row: string[]): string[] {
   const seen = new Map<string, number>();
 
   return row.map((value, index) => {
-    const baseName = cleanText(value) || `column_${index + 1}`;
+    const baseName = collapseSourceWhitespace(value) || `column_${index + 1}`;
     const count = seen.get(baseName) ?? 0;
     seen.set(baseName, count + 1);
     return count === 0 ? baseName : `${baseName}_${count + 1}`;
@@ -959,7 +953,7 @@ function candidateFromYuantaSummaryRow(
   const candidate: YuantaSummaryCandidate = {};
   for (let index = 0; index < headers.length; index += 1) {
     const field = yuantaSummaryField(headers[index] ?? "");
-    const value = cleanText(values[index]);
+    const value = collapseSourceWhitespace(values[index]);
     if (field && value)
       setYuantaSummaryCandidateField(candidate, field, value, {
         ...UNKNOWN_YUANTA_SUMMARY_FIELD_SOURCE,
@@ -977,7 +971,7 @@ function yuantaSummaryTableHeaderIndex(rows: string[][]): number {
       row.some((cell) => yuantaSummaryField(cell) === "period") &&
       !row.some((cell, index) => {
         const field = yuantaSummaryField(cell);
-        const next = cleanText(row[index + 1]);
+        const next = collapseSourceWhitespace(row[index + 1]);
         return (
           field !== undefined &&
           next !== "" &&
@@ -1055,7 +1049,7 @@ function candidateFromYuantaStructuredHeaderRow(
   const candidate: YuantaSummaryCandidate = {};
   for (let index = 0; index < headers.length; index += 1) {
     const field = yuantaSummaryField(headers[index]?.text ?? "");
-    const value = cleanText(values[index]?.text);
+    const value = collapseSourceWhitespace(values[index]?.text);
     if (
       field &&
       value &&
@@ -1155,7 +1149,7 @@ function candidatesFromYuantaSummaryVerticalPeriodColumn(
     throw new Error(
       "Yuanta settled statement summary vertical period column has ambiguous cell spans or position.",
     );
-  const value = cleanText(valueCell.text);
+  const value = collapseSourceWhitespace(valueCell.text);
   // A recognized label in the same column means this is the ordinary
   // same-row key/value layout (the next row starts another field group), not
   // the human-attested vertical period relationship.  Leave it to the normal
@@ -1232,7 +1226,7 @@ function candidatesFromYuantaAttestedPeriodColumn(
     throw new Error(
       "Yuanta settled statement summary exact period contract has an ambiguous span or missing row 1 cell 0.",
     );
-  const value = cleanText(valueCell.text);
+  const value = collapseSourceWhitespace(valueCell.text);
   if (
     !value ||
     yuantaSummaryField(value) !== undefined ||
@@ -1294,7 +1288,7 @@ function candidateFromYuantaAttestedBalanceColumn(
     throw new Error(
       "Yuanta settled statement summary exact balance contract has an ambiguous span or missing value cell.",
     );
-  const value = cleanText(valueCell.text);
+  const value = collapseSourceWhitespace(valueCell.text);
   if (
     !value ||
     yuantaSummaryField(value) !== undefined ||
@@ -1360,7 +1354,7 @@ function candidatesFromYuantaSummaryVerticalGrid(
         );
       seenFields.add(field);
       const valueCell = nextRow[cellIndex];
-      const value = cleanText(valueCell?.text);
+      const value = collapseSourceWhitespace(valueCell?.text);
       // Preserve an empty cell as a missing field so the normal candidate
       // validation path can report an incomplete or invalid
       // summary.  A non-empty label-like value is structurally ambiguous and
@@ -1414,7 +1408,7 @@ function yuantaSummaryCandidatesEquivalent(
     const normalizedRight = normalizedYuantaSummaryCandidateValue(field, rightValue);
     if (normalizedLeft !== undefined && normalizedRight !== undefined) {
       if (normalizedLeft !== normalizedRight) return false;
-    } else if (cleanText(leftValue) !== cleanText(rightValue)) {
+    } else if (collapseSourceWhitespace(leftValue) !== collapseSourceWhitespace(rightValue)) {
       return false;
     }
   }
@@ -1478,7 +1472,7 @@ function removeYuantaSummaryCandidateOverlaps(
     if (
       normalizedValue === undefined &&
       normalizedProtected === undefined &&
-      cleanText(value) !== cleanText(protectedValue)
+      collapseSourceWhitespace(value) !== collapseSourceWhitespace(protectedValue)
     )
       throw new Error(
         `Yuanta settled statement summary has conflicting ${field} candidate evidence.`,
@@ -1596,7 +1590,7 @@ function candidatesFromYuantaSummaryKeyValueRows(
   for (const row of rows) {
     for (let index = 0; index + 1 < row.length; index += 1) {
       const field = yuantaSummaryField(row[index] ?? "");
-      const value = cleanText(row[index + 1]);
+      const value = collapseSourceWhitespace(row[index + 1]);
       if (
         !field ||
         !value ||
@@ -1767,7 +1761,7 @@ function candidateFromYuantaSummaryText(text: string): YuantaSummaryCandidate {
         "iu",
       ),
     );
-    const value = cleanText(match?.[1]);
+    const value = collapseSourceWhitespace(match?.[1]);
     if (value)
       setYuantaSummaryCandidateField(candidate, field, value, {
         ...UNKNOWN_YUANTA_SUMMARY_FIELD_SOURCE,
@@ -1799,7 +1793,7 @@ function normalizedYuantaSummaryCandidateValue(
   } catch {
     return undefined;
   }
-  return cleanText(value);
+  return collapseSourceWhitespace(value);
 }
 
 function mergeYuantaSummaryCandidate(
@@ -1836,7 +1830,7 @@ function mergeYuantaSummaryCandidate(
       normalizedExisting !== undefined
     )
       continue;
-    if (cleanText(existing) !== cleanText(value))
+    if (collapseSourceWhitespace(existing) !== collapseSourceWhitespace(value))
       throw new Error(
         `Yuanta settled statement summary has conflicting ${field} candidate evidence.`,
       );
@@ -2173,7 +2167,7 @@ function parseYuantaCreditCardSettledStatementSummaryPageUnsafe(
       throw new Error("Yuanta settled statement summary dates are not ordered.");
     return {
       period: normalizeYuantaSummaryPeriod(candidate.period),
-      ...(candidate.statementId ? { statementId: cleanText(candidate.statementId) } : {}),
+      ...(candidate.statementId ? { statementId: collapseSourceWhitespace(candidate.statementId) } : {}),
       closeDate,
       issueDate,
       dueDate,
@@ -2183,7 +2177,7 @@ function parseYuantaCreditCardSettledStatementSummaryPageUnsafe(
         "minimum payment",
       ),
       ...(candidate.paymentStatus
-        ? { paymentStatus: cleanText(candidate.paymentStatus) }
+        ? { paymentStatus: collapseSourceWhitespace(candidate.paymentStatus) }
         : {}),
     } satisfies YuantaCreditCardIssuerSummary;
   });

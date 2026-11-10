@@ -8,6 +8,7 @@ import {
 } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import type { SinopacMmaRoute, SinopacMmaSite } from "./sinopac-mma-site.ts";
+import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 
 export const SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://mma.sinopac.com/mma/bank/bankbal/mma_bankbal.aspx?1" as const;
@@ -90,10 +91,6 @@ function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function cleanText(value: string): string {
-  return value.replace(/\u00a0/gu, " ").trim();
-}
-
 function field(row: JsonRecord, name: string, rowIndex: number): unknown {
   if (!Object.prototype.hasOwnProperty.call(row, name)) {
     throw new Error(`SinoPac current deposit row ${rowIndex} is missing ${name}.`);
@@ -108,7 +105,7 @@ function requiredString(
 ): string {
   if (typeof value !== "string")
     throw new Error(`SinoPac current deposit ${label} must be a string.`);
-  const text = cleanText(value);
+  const text = trimSourceLexeme(value);
   if (!options.allowEmpty && text.length === 0)
     throw new Error(`SinoPac current deposit ${label} is empty.`);
   return text;

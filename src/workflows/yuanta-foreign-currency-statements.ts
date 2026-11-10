@@ -50,6 +50,7 @@ import {
   deriveYuantaForeignSettlementLinkageKey,
   YUANTA_FOREIGN_SETTLEMENT_LINKAGE_CONTRACT_VERSION,
 } from "../ledger/canonical/investment-funding-contract.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 export type AccountOption = {
   label: string;
@@ -309,13 +310,6 @@ const foreignCurrencyTransactionHeaders = [
 
 const downloadedForeignCurrencyHeaders =
   foreignCurrencyTransactionHeaders.slice(2);
-
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
 
 /**
  * Result-page contract for the Yuanta foreign-currency statement endpoint.
@@ -1882,14 +1876,14 @@ function digitsOnly(value: string): string {
 }
 
 function maskAccountLabel(value: string): string {
-  return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
+  return collapseSourceWhitespace(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
 }
 
 function stripSpreadsheetTextPrefix(value: string): string {
-  const text = cleanText(value);
+  const text = collapseSourceWhitespace(value);
   return text.replace(/^'+/, "").replace(/'+$/, "");
 }
 
@@ -1983,7 +1977,7 @@ function matchesFilter(
 
 function isUnavailableOption(value: string, label: string): boolean {
   const normalizedValue = value.trim().toLowerCase();
-  const normalizedLabel = cleanText(label).toLowerCase();
+  const normalizedLabel = collapseSourceWhitespace(label).toLowerCase();
   if (
     !normalizedValue ||
     ["0", "-1", "none", "null", "undefined"].includes(normalizedValue)
@@ -2170,7 +2164,7 @@ export async function readYuantaForeignCurrencyAccountOptions(
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableOption(value, label)) continue;
 
     const account = { label, value };
@@ -2203,7 +2197,7 @@ export async function readYuantaForeignCurrencyOptions(
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     if (isUnavailableOption(value, label)) continue;
     currencies.push({ label, value });
   }

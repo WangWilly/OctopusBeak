@@ -9,6 +9,7 @@ import type {
   VerifiedProviderResponse,
 } from "./provider-response.ts";
 import type { LineBankAccount } from "./linebank-statements.ts";
+import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 
 /**
  * LINE Bank's authenticated account selector calls this endpoint before the
@@ -105,16 +106,10 @@ function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function cleanText(value: unknown): string {
-  return String(value ?? "")
-    .replace(/[\u00a0\u3000]/gu, " ")
-    .trim();
-}
-
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string")
     throw new Error(`LINE Bank current deposit ${label} must be a string.`);
-  const result = cleanText(value);
+  const result = trimSourceLexeme(value);
   if (result.length === 0)
     throw new Error(`LINE Bank current deposit ${label} is empty.`);
   return result;
@@ -165,7 +160,7 @@ function parseExactDecimal(
 ): LineBankCurrentDepositExactDecimal {
   if (typeof value !== "string")
     throw new Error(`LINE Bank current deposit ${label} must preserve a string token.`);
-  const sourceLexeme = cleanText(value);
+  const sourceLexeme = trimSourceLexeme(value);
   const amount = parseProviderDecimal(sourceLexeme, {
     internalWhitespace: "reject",
     grouping: "thousands",
@@ -178,7 +173,7 @@ function parseExactDecimal(
 
 function currencyOf(account: LineBankPayablesAccount): string {
   const value = [account.currCd, account.ccyCd, account.crncyCd, account.currency]
-    .map(cleanText)
+    .map(trimSourceLexeme)
     .find(Boolean) ?? "TWD";
   const currency = value.toUpperCase();
   if (!/^[A-Z]{3}$/u.test(currency))
@@ -202,12 +197,12 @@ function accountFromPayload(account: LineBankPayablesAccount): Readonly<LineBank
   return {
     acctNbr: requiredString(account.acctNbr, "acctNbr"),
     arrId: requiredStringish(account.arrId, "arrId"),
-    ...(typeof account.acctNick === "string" ? { acctNick: cleanText(account.acctNick) } : {}),
-    ...(typeof account.pdNm === "string" ? { pdNm: cleanText(account.pdNm) } : {}),
-    ...(typeof account.currCd === "string" ? { currCd: cleanText(account.currCd) } : {}),
-    ...(typeof account.ccyCd === "string" ? { ccyCd: cleanText(account.ccyCd) } : {}),
-    ...(typeof account.crncyCd === "string" ? { crncyCd: cleanText(account.crncyCd) } : {}),
-    ...(typeof account.currency === "string" ? { currency: cleanText(account.currency) } : {}),
+    ...(typeof account.acctNick === "string" ? { acctNick: trimSourceLexeme(account.acctNick) } : {}),
+    ...(typeof account.pdNm === "string" ? { pdNm: trimSourceLexeme(account.pdNm) } : {}),
+    ...(typeof account.currCd === "string" ? { currCd: trimSourceLexeme(account.currCd) } : {}),
+    ...(typeof account.ccyCd === "string" ? { ccyCd: trimSourceLexeme(account.ccyCd) } : {}),
+    ...(typeof account.crncyCd === "string" ? { crncyCd: trimSourceLexeme(account.crncyCd) } : {}),
+    ...(typeof account.currency === "string" ? { currency: trimSourceLexeme(account.currency) } : {}),
   };
 }
 
@@ -223,7 +218,7 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
   const payload = parseLinebankApiJson<LineBankPayablesResponse>(input.rawBody);
   if (!isRecord(payload) || payload.code !== "200")
     throw new Error(
-      `LINE Bank current deposit account list failed: ${isRecord(payload) ? cleanText(payload.message) || "unknown" : "invalid payload"}`,
+      `LINE Bank current deposit account list failed: ${isRecord(payload) ? trimSourceLexeme(payload.message) || "unknown" : "invalid payload"}`,
     );
   if (!isRecord(payload.content))
     throw new Error("LINE Bank current deposit response content is missing.");

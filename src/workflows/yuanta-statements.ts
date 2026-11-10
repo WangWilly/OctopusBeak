@@ -60,6 +60,7 @@ import {
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 /** Yuanta's quick date-range links: the link text and the span it covers, both ends inclusive. */
 export const YUANTA_QUICK_RANGES = [
   { dateRange: "one_week", label: "一週", span: { days: 7 } },
@@ -289,13 +290,6 @@ const downloadedBankHeaders = [
   "備註",
 ];
 
-function cleanText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 /**
  * Provider-versioned live rule: Yuanta domestic-deposit CSV 備註 contains a
  * complete loan account as `00` + the 14-digit loan selector account.  The
@@ -306,7 +300,7 @@ export function yuantaLoanAccountEvidenceFromTransactionNote(
   noteValue: string,
   rowOrdinal: number,
 ): YuantaCounterpartyAccountEvidence | null {
-  const sourceValue = toAsciiDigits(cleanText(noteValue));
+  const sourceValue = toAsciiDigits(collapseSourceWhitespace(noteValue));
   if (!/^00\d{14}$/u.test(sourceValue)) return null;
   return {
     rowOrdinal,
@@ -341,8 +335,8 @@ function escapedRegExp(value: string): string {
 export function deriveYuantaDomesticDepositAccountNumberEvidence(
   account: Readonly<{ label: string; value: string }>,
 ): YuantaDomesticDepositAccountNumberEvidence | null {
-  const value = cleanText(account.value);
-  const label = toAsciiDigits(cleanText(account.label));
+  const value = collapseSourceWhitespace(account.value);
+  const label = toAsciiDigits(collapseSourceWhitespace(account.label));
   if (!/^\d{6,24}$/.test(value) || !label) return null;
   const exactValue = new RegExp(`(?:^|\\D)${escapedRegExp(value)}(?=\\D|$)`);
   if (!exactValue.test(label)) return null;
@@ -355,7 +349,7 @@ export function deriveYuantaDomesticDepositAccountNumberEvidence(
 }
 
 function maskAccountLabel(value: string): string {
-  return cleanText(value).replace(/[0-9０-９]{4,}/g, (digits) => {
+  return collapseSourceWhitespace(value).replace(/[0-9０-９]{4,}/g, (digits) => {
     const normalized = toAsciiDigits(digits);
     return `${"*".repeat(Math.max(4, normalized.length - 4))}${normalized.slice(-4)}`;
   });
@@ -372,7 +366,7 @@ function createTimestampGenerator(): () => string {
 }
 
 function stripSpreadsheetTextPrefix(value: string): string {
-  const text = cleanText(value);
+  const text = collapseSourceWhitespace(value);
   return text.replace(/^'+/, "").replace(/'+$/, "");
 }
 
@@ -468,8 +462,8 @@ function isYuantaDomesticAccountPlaceholder(option: {
   label: string;
   value: string;
 }): boolean {
-  const value = cleanText(option.value).toLowerCase();
-  const label = cleanText(option.label).toLowerCase();
+  const value = collapseSourceWhitespace(option.value).toLowerCase();
+  const label = collapseSourceWhitespace(option.label).toLowerCase();
   if (!value || !label) return true;
   if (["0", "-1", "none", "null", "undefined"].includes(value)) return true;
   return (
@@ -516,7 +510,7 @@ export async function readYuantaDepositAccountOptions(
   for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     const value = (await frames.withSignal((signal) => option.getAttribute("value", { signal }))) ?? "";
-    const label = cleanText(await frames.withSignal((signal) => option.textContent({ signal })));
+    const label = collapseSourceWhitespace(await frames.withSignal((signal) => option.textContent({ signal })));
     const account = { label, value };
     if (isYuantaDomesticAccountPlaceholder(account)) continue;
     availableAccounts.push(account);
