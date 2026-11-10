@@ -26,6 +26,7 @@ import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
 import { classifyFailure, type FailureEvidenceEvent } from "../lib/automation/failure-classification.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
+import { collectSelectedProducts, ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -161,8 +162,8 @@ const source = await readFile(
 assert.doesNotMatch(source, /console\.|emitAutomationProgress/);
 assert.match(source, /positions = await extractFundPositions\(site, input.includeHistoricalTransactions\)/);
 assert.match(source, /evaluateYuantaFundCanonicalAdmission/);
-assert.match(source, /PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND/);
-assert.match(source, /PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND/);
+assert.match(source, /stageCanonicalInvestments\(product, admission\)/u, "fund captures stage through the investment step");
+assert.doesNotMatch(source, /product\.stage\(/u, "the investment step owns the stage call");
 assert.doesNotMatch(source, /createCanonicalInvestmentStore/);
 assert.doesNotMatch(source, /commitCanonicalInvestmentCaptureBatch/);
 assert.doesNotMatch(
@@ -550,6 +551,23 @@ try {
     }, mismatchedPositionItems, new AbortController().signal),
   ));
   assert.equal(mismatchedPositionItems.length, 0, "A partial transaction-number match cannot admit a holding");
+  const rejected = await collectSelectedProducts({
+    provider: "yuanta",
+    productIds: ["fund"],
+    selectedIds: ["fund"],
+    signal: new AbortController().signal,
+    now: () => "2026-09-09T12:00:00.000Z",
+    text: strictSourceText,
+    collect: async (_typeId, product) => await stageYuantaFund(
+      { positions: [{ ...position, paperNo: "FS000000010" }], tables: [overview, basisTable] },
+      { ...fundInput, yuantaUserId: "synthetic-login", yuantaAccount: "synthetic-account" },
+      yuantaCollectionContext({ now: "2026-09-09T12:00:00.000Z" }),
+      product,
+    ),
+    financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
+  }).then(() => null, (error: unknown) => error);
+  assert.ok(rejected instanceof ProductCollectionInterruptedError);
+  assert.equal(rejected.errorCode, "source-validation-failed", "a fund admission that throws fails inside the product's validation");
   const multipleLotItems: PGliteWorkflowRunItem[] = [];
   const secondPosition = { ...position, paperNo: "FS00000002" };
   const secondLot = [...overview.rows[1]];

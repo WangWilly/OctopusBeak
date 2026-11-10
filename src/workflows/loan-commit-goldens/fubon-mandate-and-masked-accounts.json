@@ -1,0 +1,597 @@
+{
+  "result": {
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 2,
+      "rowCount": 4,
+      "itemCount": 2,
+      "committedCount": 2
+    },
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "credit_card",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "loan",
+        "status": "success",
+        "itemCount": 2,
+        "committedCount": 2
+      }
+    ]
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "fubon",
+        "product": "loan"
+      },
+      "items": [
+        {
+          "product": "loan",
+          "itemKey": "sha256:drC8yRaAFbcvdE2ic5EowAgZ1lqEBX96kp8535AB0dY",
+          "command": {
+            "kind": "financial.loan.commit",
+            "request": {
+              "capture": {
+                "captureId": "sha256:drC8yRaAFbcvdE2ic5EowAgZ1lqEBX96kp8535AB0dY",
+                "sourceId": "fubon",
+                "authorityRoute": "fubon/loan/canonical-v2",
+                "contractVersion": "loan/canonical/v2.fubon",
+                "identity": {
+                  "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                  "identityEpochKey": "sha256:QeOmxJ8mj29fzESOh9wTWnSYEF7rK55yBiUwSiHqEkQ",
+                  "accountKey": "sha256:8d1vDg9c0TUPJ_jcoPcJXzhSC2CS8IPQeElv19ETal8",
+                  "subjectDigest": "sha256:MMk5l3Z1nakqalv4jsyOp9Bji3okhZwdJuBAKzVcbxE",
+                  "accountNo": "sha256:s2mkYh3KAgMfejIFbTgmmzhtmCFGS1KfgW6ZpVLOzcc",
+                  "accountNumber": {
+                    "value": "9990_0000_0001_01",
+                    "kind": "loan-account",
+                    "evidenceVersion": "fubon/loan/account-number-v1",
+                    "sourceField": "form1:loanAccountCombo option.text"
+                  },
+                  "accountType": "loan",
+                  "stream": "loan",
+                  "recordKind": "fubon-loan-transaction",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T00:00:01.000Z",
+                "scope": {
+                  "startDate": "2026-03-24",
+                  "endDate": "2026-09-25",
+                  "completeness": "complete-range",
+                  "completenessBasis": "source-declared-terminal-range",
+                  "completenessRuleVersion": "loan/canonical/v2.fubon",
+                  "pageCount": 2,
+                  "terminal": true
+                },
+                "semantics": {
+                  "status": "posted",
+                  "effectiveTimeBasis": "source-reported",
+                  "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                  "timeZone": "Asia/Taipei"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": false,
+                    "rowCount": 2,
+                    "proofKind": "source-declared-terminal-range"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "proofKind": "source-declared-terminal-range"
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:gCBs_1V-bz0OZfSh7Xs6p9JesbX1l5XvqJJTrGB1SvU",
+                    "startDate": "2026-03-24",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "loan/canonical/v2.fubon"
+                  }
+                ],
+                "records": [
+                  {
+                    "sourceRecordKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 1,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:gCBs_1V-bz0OZfSh7Xs6p9JesbX1l5XvqJJTrGB1SvU",
+                      "fingerprint": "sha256:iI9twjFYldGMvwiKlkcuhChK8oLMkh2XC2eDgarfjMY",
+                      "partitionDate": "2026-04-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                    "effectiveOn": "2026-04-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "1250000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "LOAN-PAYMENT",
+                    "sourceDescription": "還款",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "987500",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-04-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v2.fubon"
+                      }
+                    ]
+                  },
+                  {
+                    "sourceRecordKey": "sha256:3zV63L1uqYzYC1tKLneSrgtbu5BIPtgBPPGFci8cKBI",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 2,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:gCBs_1V-bz0OZfSh7Xs6p9JesbX1l5XvqJJTrGB1SvU",
+                      "fingerprint": "sha256:6lzoPL7bmhYHJRnH_zn_NxT5lT2m36TfuQTL4IDx-zw",
+                      "partitionDate": "2026-05-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:3zV63L1uqYzYC1tKLneSrgtbu5BIPtgBPPGFci8cKBI",
+                    "effectiveOn": "2026-05-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "interest",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:3zV63L1uqYzYC1tKLneSrgtbu5BIPtgBPPGFci8cKBI",
+                      "sourceCode": "LOAN-INTEREST",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "1250000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "LOAN-INTEREST",
+                    "sourceDescription": "繳息",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "975000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-05-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v2.fubon"
+                      }
+                    ]
+                  },
+                  {
+                    "sourceRecordKey": "sha256:lqJgq5qdhkvXSvUclQ78Um44n58wCuivJh7LIGMiYSA",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 3,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:gCBs_1V-bz0OZfSh7Xs6p9JesbX1l5XvqJJTrGB1SvU",
+                      "fingerprint": "sha256:FKmViRCVfQQ-ofpCb6ZC5itCYEgVFulM7aevM02I5m0",
+                      "partitionDate": "2026-06-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:lqJgq5qdhkvXSvUclQ78Um44n58wCuivJh7LIGMiYSA",
+                    "effectiveOn": "2026-06-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:lqJgq5qdhkvXSvUclQ78Um44n58wCuivJh7LIGMiYSA",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "5000000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "LOAN-PAYMENT",
+                    "sourceDescription": "本金還款",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "925000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-06-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v2.fubon"
+                      }
+                    ]
+                  }
+                ],
+                "counterpartTransactions": [],
+                "balanceObservations": [
+                  {
+                    "observationKey": "sha256:TfUXxbtY-fIdhwMzctWDJs1KrbJWDPmR_VNuDaQipsQ",
+                    "sourceRecordKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "987500",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-04-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-04-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    }
+                  },
+                  {
+                    "observationKey": "sha256:nRU3KRsek29rB3JAqVlk8GK4jk_FQ6YH8ZFFSBu2d70",
+                    "sourceRecordKey": "sha256:3zV63L1uqYzYC1tKLneSrgtbu5BIPtgBPPGFci8cKBI",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "975000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-05-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:3zV63L1uqYzYC1tKLneSrgtbu5BIPtgBPPGFci8cKBI",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-05-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    }
+                  },
+                  {
+                    "observationKey": "sha256:P2LyzgczfPcXnisHZje2069uiFPhdW8wHGw7YOc0lIQ",
+                    "sourceRecordKey": "sha256:lqJgq5qdhkvXSvUclQ78Um44n58wCuivJh7LIGMiYSA",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "925000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-06-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:lqJgq5qdhkvXSvUclQ78Um44n58wCuivJh7LIGMiYSA",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-06-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    }
+                  }
+                ],
+                "relations": [],
+                "relationCoverage": "not-asserted"
+              }
+            }
+          },
+          "relationCommands": [
+            {
+              "kind": "financial.loanRelations.resolve",
+              "request": {
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "integrationNamespace": "fubon",
+                "observedAt": "2026-09-25T00:00:01.000Z",
+                "counterpartyEvidence": [
+                  {
+                    "captureId": "sha256:drC8yRaAFbcvdE2ic5EowAgZ1lqEBX96kp8535AB0dY",
+                    "sourceRecordKey": "sha256:jdgZjC6ZUxSLG8NufdSS2TSeBkkpM7ZKEjjhaQhEp2Q",
+                    "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                    "identityEpochKey": "sha256:QeOmxJ8mj29fzESOh9wTWnSYEF7rK55yBiUwSiHqEkQ",
+                    "accountValue": "9990_0000_0001_01",
+                    "role": "beneficiary",
+                    "purpose": "loan_repayment",
+                    "scope": "loan_contract",
+                    "evidenceKind": "repayment-mandate",
+                    "sourceField": "loan-account-selector",
+                    "contractVersion": "fubon/loan-account-as-repayment-destination/v1",
+                    "effectiveStartDate": "2026-03-24",
+                    "effectiveEndDate": "2026-09-25",
+                    "accountKey": "sha256:8d1vDg9c0TUPJ_jcoPcJXzhSC2CS8IPQeElv19ETal8"
+                  }
+                ]
+              }
+            }
+          ],
+          "provider": "fubon"
+        },
+        {
+          "product": "loan",
+          "itemKey": "sha256:UB04e2b1u4gxV-tGmojx_K-5_lhu3zXWeHJzFJ4GPlw",
+          "command": {
+            "kind": "financial.loan.commit",
+            "request": {
+              "capture": {
+                "captureId": "sha256:UB04e2b1u4gxV-tGmojx_K-5_lhu3zXWeHJzFJ4GPlw",
+                "sourceId": "fubon",
+                "authorityRoute": "fubon/loan/canonical-v2",
+                "contractVersion": "loan/canonical/v2.fubon",
+                "identity": {
+                  "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                  "identityEpochKey": "sha256:QeOmxJ8mj29fzESOh9wTWnSYEF7rK55yBiUwSiHqEkQ",
+                  "accountKey": "sha256:jWVCY_tk823rdpYEOl2sOXs7p9Bd_v5oNLRAJ36wlP0",
+                  "subjectDigest": "sha256:kGTBVpaTmhc3nEGFKh7CvwmPByqItZ0z6ei4PoscgOE",
+                  "accountNo": "sha256:Bju3A4gUtn2xOZXq9xy-fyWS02zf1wrX6u4VeARPWFY",
+                  "accountType": "loan",
+                  "stream": "loan",
+                  "recordKind": "fubon-loan-transaction",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T00:00:02.000Z",
+                "scope": {
+                  "startDate": "2026-03-24",
+                  "endDate": "2026-09-25",
+                  "completeness": "complete-range",
+                  "completenessBasis": "source-declared-terminal-range",
+                  "completenessRuleVersion": "loan/canonical/v2.fubon",
+                  "pageCount": 1,
+                  "terminal": true
+                },
+                "semantics": {
+                  "status": "posted",
+                  "effectiveTimeBasis": "source-reported",
+                  "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                  "timeZone": "Asia/Taipei"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "proofKind": "source-declared-terminal-range"
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:j-AIFyXBgFyunGAETTnR02emee_XsAzpmEd7xyaNzsQ",
+                    "startDate": "2026-03-24",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "loan/canonical/v2.fubon"
+                  }
+                ],
+                "records": [
+                  {
+                    "sourceRecordKey": "sha256:lWYns3W7GBEObxXxnx3RcMwhsTLUu1WBCVA8Xb5Uxkw",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 1,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:j-AIFyXBgFyunGAETTnR02emee_XsAzpmEd7xyaNzsQ",
+                      "fingerprint": "sha256:hFO-7vuLaLFsBs-D0CEYTODVmOPDA7vE43lPJCgp9hQ",
+                      "partitionDate": "2026-08-10",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:lWYns3W7GBEObxXxnx3RcMwhsTLUu1WBCVA8Xb5Uxkw",
+                    "effectiveOn": "2026-08-10",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:lWYns3W7GBEObxXxnx3RcMwhsTLUu1WBCVA8Xb5Uxkw",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "300000",
+                      "scale": 2
+                    },
+                    "currency": "TWD",
+                    "description": "LOAN-PAYMENT",
+                    "sourceDescription": "LOAN-PAYMENT",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "47000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-08-10",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v2.fubon"
+                      }
+                    ]
+                  }
+                ],
+                "counterpartTransactions": [],
+                "balanceObservations": [
+                  {
+                    "observationKey": "sha256:EYpIkUZ4APqgGx83MG7yB08JMnvuEgoRvCFa6mgAVdA",
+                    "sourceRecordKey": "sha256:lWYns3W7GBEObxXxnx3RcMwhsTLUu1WBCVA8Xb5Uxkw",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "47000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-08-10",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v2.fubon",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:lWYns3W7GBEObxXxnx3RcMwhsTLUu1WBCVA8Xb5Uxkw",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-08-10",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v2.fubon"
+                    }
+                  }
+                ],
+                "relations": [],
+                "relationCoverage": "not-asserted"
+              }
+            }
+          },
+          "relationCommands": [
+            {
+              "kind": "financial.loanRelations.resolve",
+              "request": {
+                "sourceConnectionKey": "sha256:jnQDK_AB5eSHKb7PBHIKuuqp-8FRfDlmWqC1F0pHppU",
+                "integrationNamespace": "fubon",
+                "observedAt": "2026-09-25T00:00:02.000Z",
+                "counterpartyEvidence": []
+              }
+            }
+          ],
+          "provider": "fubon"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "loan-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "loan-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "loan-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "loan-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}

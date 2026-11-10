@@ -1,16 +1,11 @@
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
-import {
-  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
 import { hasAttachedLocator } from "./browser-interaction.ts";
 import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import { periodSpans, type CollectionPeriod } from "../lib/automation/collection-period.ts";
@@ -25,12 +20,17 @@ import {
 } from "../ledger/canonical/yuanta-loan-admission.ts";
 import type {
   YuantaLoanAccountNumberEvidence,
-  YuantaLoanCaptureBuildInput,
   YuantaLoanStatementRow,
 } from "../ledger/canonical/yuanta-loan-admission.ts";
-import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import { requireSourceConnectionIdentity } from "../ledger/canonical/source-connection-identity.ts";
-import type { YuantaCounterpartyAccountEvidence } from "./yuanta-statements.ts";
+import type { LoanCaptureInput } from "../ledger/canonical/loan-financial-contracts.ts";
+import {
+  admitLoan,
+  stageCanonicalLoans,
+  type LoanAdmission,
+  type LoanDecision,
+  type LoanRepaymentMandate,
+} from "./canonical-loan-staging.ts";
 import type { BrowserScope, FrameScope } from "./frame-scope.ts";
 import { yuantaEbankSite, type YuantaEbankSite, type YuantaRoute } from "./yuanta-ebank-site.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
@@ -637,7 +637,7 @@ export function deriveYuantaLoanAccountNumberEvidence(
  */
 export function yuantaLoanSelectorAccountEvidence(
   account: LoanAccountOption,
-): YuantaCounterpartyAccountEvidence {
+): Omit<LoanRepaymentMandate, "sourceRecordKey"> {
   const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
   if (!accountNumber) {
     throw new Error(
@@ -645,12 +645,7 @@ export function yuantaLoanSelectorAccountEvidence(
     );
   }
   return {
-    rowOrdinal: 0,
     accountValue: accountNumber.value,
-    role: "beneficiary",
-    purpose: "loan_repayment",
-    scope: "loan_contract",
-    evidenceKind: "repayment-mandate",
     sourceField: "貸款帳號",
     contractVersion: YUANTA_LOAN_SELECTOR_ACCOUNT_MANDATE_CONTRACT_VERSION,
   };
@@ -782,67 +777,14 @@ export function assembleYuantaLoanStatement(
   };
 }
 
-type YuantaLoanCaptureForEvidence = {
-  captureId: string;
-  identity: {
-    sourceConnectionKey: string;
-    identityEpochKey: string;
-    accountKey: string;
-  };
-  scope: {
-    startDate: string;
-    endDate: string;
-  };
-  records: readonly {
-    sourceRecordKey: string;
-    occurrenceIndex: number;
-  }[];
-};
-
-function sourceRecordKeyForYuantaLoanEvidence(
-  capture: YuantaLoanCaptureForEvidence,
-  evidence: YuantaCounterpartyAccountEvidence,
-): string {
-  if (evidence.sourceRecordKey?.trim()) return evidence.sourceRecordKey.trim();
-  if (evidence.rowOrdinal === undefined)
-    throw new Error(
-      "Yuanta loan counterparty evidence must identify a source record or row ordinal.",
-    );
-  if (!Number.isSafeInteger(evidence.rowOrdinal) || evidence.rowOrdinal < 0)
-    throw new Error("Yuanta loan counterparty evidence row ordinal is invalid.");
-  const rowOrdinal = evidence.rowOrdinal;
-  const candidates = capture.records.filter(
-    (record) => record.occurrenceIndex === rowOrdinal + 1,
-  );
+/** The selector account is account-level evidence, anchored to the capture's first source row. */
+function yuantaLoanMandateSourceRecordKey(capture: LoanCaptureInput): string {
+  const candidates = capture.records.filter((record) => record.sourceSequenceIndex === 1);
   if (candidates.length !== 1)
     throw new Error(
       "Yuanta loan counterparty evidence row does not identify exactly one canonical source record.",
     );
   return candidates[0]!.sourceRecordKey;
-}
-
-function materializeYuantaLoanCounterpartyEvidence(
-  capture: YuantaLoanCaptureForEvidence,
-  evidence: YuantaCounterpartyAccountEvidence,
-): TransactionCounterpartyAccountEvidenceInput {
-  return {
-    ...evidence,
-    ...(evidence.evidenceKind === "repayment-mandate" && !evidence.accountKey
-      ? { accountKey: capture.identity.accountKey }
-      : {}),
-    ...(evidence.evidenceKind === "repayment-mandate" &&
-    evidence.effectiveStartDate === undefined &&
-    evidence.effectiveEndDate === undefined
-      ? {
-          effectiveStartDate: capture.scope.startDate,
-          effectiveEndDate: capture.scope.endDate,
-        }
-      : {}),
-    captureId: capture.captureId,
-    sourceRecordKey: sourceRecordKeyForYuantaLoanEvidence(capture, evidence),
-    sourceConnectionKey: capture.identity.sourceConnectionKey,
-    identityEpochKey: capture.identity.identityEpochKey,
-  };
 }
 
 /** The markup of the first #resultdiv in the scope, read without waiting for one to attach. */
@@ -953,95 +895,79 @@ export async function readYuantaLoanSource(
   return { range, accounts };
 }
 
-/** Build and stage one loan capture per account from a read snapshot. */
+function admitYuantaLoan(
+  { account, statement: parsed, observedAt }: YuantaLoanStatementRead,
+  range: YuantaLoanSourceSnapshot["range"],
+  identity: Readonly<{ sourceConnectionScope: string; sourceConnectionKey: string }>,
+): LoanDecision {
+  if (
+    !parsed.completeness ||
+    parsed.pages.length !== parsed.completeness.pageCount
+  ) {
+    throw new Error(
+      "Yuanta loan result lacks explicit complete terminal page evidence.",
+    );
+  }
+  const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
+  const capture = buildYuantaLoanCapture({
+    accountValue: account.value,
+    ...(accountNumber ? { accountNumber } : {}),
+    sourceConnectionScope: identity.sourceConnectionScope,
+    observedAt,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    scope: {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: "loan/canonical/v1.yuanta",
+      pageCount: parsed.completeness.pageCount,
+      terminal: parsed.completeness.terminal,
+    },
+    pages: parsed.pages,
+    // The loan result has no source-linked deposit-side transaction.
+    // Empty linkage arrays are therefore explicitly not asserted as
+    // complete relation coverage.
+    relationCoverage: "not-asserted",
+    counterpartTransactions: [],
+    relations: [],
+    rows: parsed.rows.map<YuantaLoanStatementRow>((row) => ({
+      transactionDate: row.transactionDate,
+      postingDate: row.postingDate,
+      paymentItem: row.paymentItem,
+      transactionAmount: row.transactionAmount,
+      balanceAfterTransaction: row.balanceAfterTransaction,
+    })),
+  });
+  assertYuantaLoanCaptureAccountNumberEvidence(capture);
+  return {
+    capture,
+    sourceConnectionKey: identity.sourceConnectionKey,
+    integrationNamespace: "yuanta",
+    repaymentMandate: {
+      ...yuantaLoanSelectorAccountEvidence(account),
+      sourceRecordKey: yuantaLoanMandateSourceRecordKey(capture),
+    },
+  };
+}
+
+/** Admit and stage one loan capture per account from a read snapshot. */
 export async function stageYuantaLoan(
   snapshot: YuantaLoanSourceSnapshot,
   input: YuantaLoanCollectionInput,
-  context: WorkflowContext,
   product: ProductCollectionHandle,
 ): Promise<ProductCollectionSummary> {
-  const { sourceConnectionScope, sourceConnectionKey } =
-    requireSourceConnectionIdentity("yuanta", "Yuanta loan", input);
-  const { signal } = context;
-  const canonicalRange = snapshot.range;
-  let rowCount = 0;
-  const collectedItems: ProductStageRequest[] = [];
-
-  for (const { account, statement: parsed, observedAt } of snapshot.accounts) {
-    if (
-      !parsed.completeness ||
-      parsed.pages.length !== parsed.completeness.pageCount
-    ) {
-      throw new Error(
-        "Yuanta loan result lacks explicit complete terminal page evidence.",
-      );
-    }
-    const accountRows = parsed.rows;
-    rowCount += accountRows.length;
-
-    const accountNumber = deriveYuantaLoanAccountNumberEvidence(account);
-    const captureInput: YuantaLoanCaptureBuildInput = {
-      accountValue: account.value,
-      ...(accountNumber ? { accountNumber } : {}),
-      sourceConnectionScope,
-      observedAt,
-      startDate: canonicalRange.startDate,
-      endDate: canonicalRange.endDate,
-      scope: {
-        startDate: canonicalRange.startDate,
-        endDate: canonicalRange.endDate,
-        completeness: "complete-range",
-        completenessBasis: "source-declared-terminal-range",
-        completenessRuleVersion: "loan/canonical/v1.yuanta",
-        pageCount: parsed.completeness.pageCount,
-        terminal: parsed.completeness.terminal,
-      },
-      pages: parsed.pages,
-      // The loan result has no source-linked deposit-side transaction.
-      // Empty linkage arrays are therefore explicitly not asserted as
-      // complete relation coverage.
-      relationCoverage: "not-asserted",
-      counterpartTransactions: [],
-      relations: [],
-      rows: accountRows.map<YuantaLoanStatementRow>((row) => ({
-        transactionDate: row.transactionDate,
-        postingDate: row.postingDate,
-        paymentItem: row.paymentItem,
-        transactionAmount: row.transactionAmount,
-        balanceAfterTransaction: row.balanceAfterTransaction,
-      })),
-    };
-    const capture = buildYuantaLoanCapture(captureInput);
-    assertYuantaLoanCaptureAccountNumberEvidence(capture);
-    const sourceEvidence = [yuantaLoanSelectorAccountEvidence(account)];
-    collectedItems.push({
-      product: "loan",
-      itemKey: capture.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-        request: { capture },
-      },
-      relationCommands: () => [
-        {
-          kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-          request: {
-            sourceConnectionKey,
-            integrationNamespace: "yuanta",
-            observedAt: capture.observedAt,
-            counterpartyEvidence: sourceEvidence.map((evidence) =>
-              materializeYuantaLoanCounterpartyEvidence(capture, evidence),
-            ),
-          },
-        },
-      ],
-    });
+  const identity = requireSourceConnectionIdentity("yuanta", "Yuanta loan", input);
+  const admissions: LoanAdmission[] = [];
+  for (const account of snapshot.accounts) {
+    product.signal.throwIfAborted();
+    admissions.push(await admitLoan(product, () => admitYuantaLoan(account, snapshot.range, identity)));
   }
-
-  signal.throwIfAborted();
-  product.stage(...collectedItems);
+  stageCanonicalLoans(product, admissions);
   return {
     sourceCaptureCount: snapshot.accounts.length,
-    rowCount,
+    rowCount: snapshot.accounts.reduce((count, { statement }) => count + statement.rows.length, 0),
   };
 }
 
@@ -1053,5 +979,5 @@ export async function runYuantaLoanStatements(
 ): Promise<ProductCollectionSummary> {
   requireSourceConnectionIdentity("yuanta", "Yuanta loan", input);
   const snapshot = await readYuantaLoanSource(page, input, context, product);
-  return await stageYuantaLoan(snapshot, input, context, product);
+  return await stageYuantaLoan(snapshot, input, product);
 }

@@ -2,10 +2,6 @@ import type { APIRequestContext, Locator, Page, Response } from "playwright";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
-import {
   admitCanonicalInvestmentCapture,
   YUANTA_FOREIGN_SETTLEMENT_CONTRACT_VERSION,
   type InvestmentFundingEvidence,
@@ -53,6 +49,7 @@ import type { VerifiedRunInput, VerifiedWorkflowEntry } from "../lib/automation/
 import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type ShellPlan } from "./sign-in.ts";
 import type { ProductCollectionHandle, ProductCollectionSummary } from "../lib/automation/product-collection.ts";
+import { admitInvestments, stageCanonicalInvestments } from "./canonical-investment-staging.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 
@@ -1349,6 +1346,7 @@ export function buildYuantaTradeCanonicalCaptures(
     dateRange: Readonly<{ startDate: string; endDate: string }>;
     requestedTradeTypes: readonly string[];
   }>,
+  now: () => string,
 ): InvestmentValidatedCapture[] {
   if (tradeRows.some((row) => !row.account_number?.trim()))
     throw new Error("Yuanta Trade transaction has no source account scope.");
@@ -1381,7 +1379,7 @@ export function buildYuantaTradeCanonicalCaptures(
       "holding",
       accountHoldings,
     );
-    const observedAt = new Date().toISOString();
+    const observedAt = now();
     const effectiveDates = [
       ...new Set(
         accountHoldings.map((row) => sourceDate(row.as_of_date ?? "")),
@@ -1740,7 +1738,7 @@ export async function stageYuantaTrade(
     completed: total,
     total,
   });
-  const { tradeRows, holdingRows, captures } = await product.validate(() => {
+  const admission = await admitInvestments(product, () => {
     const tradeRows = normalizeTradeRows(trades, dateRange);
     const holdingRows = normalizeHoldingRows(holdings, dateRange);
     const captures: InvestmentValidatedCapture[] = buildYuantaTradeCanonicalCaptures(
@@ -1748,29 +1746,15 @@ export async function stageYuantaTrade(
       holdingRows,
       tradeRows,
       { dateRange, requestedTradeTypes: input.tradeTypes },
+      () => context.now(),
     );
     if (captures.length === 0) {
       throw new Error("YuanTa Trade source contains no account-scoped investment capture.");
     }
     return { tradeRows, holdingRows, captures };
   });
-  context.signal.throwIfAborted();
-
-  product.stage(...captures.map((capture) => ({
-    product: "investment",
-    itemKey: capture.captureId,
-    command: {
-      kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-      request: { capture },
-    },
-    relationCommands: () => [{
-      kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-      request: {
-        sourceConnectionKey: capture.identity.sourceConnectionKey,
-        observedAt: capture.observedAt,
-      },
-    }],
-  })));
+  stageCanonicalInvestments(product, admission);
+  const { tradeRows, holdingRows, captures } = admission;
   return {
     summary: {
       sourceCaptureCount: total,

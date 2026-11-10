@@ -1,0 +1,640 @@
+{
+  "result": {
+    "status": "financial-admitted",
+    "counts": {
+      "sourceCaptureCount": 2,
+      "rowCount": 4,
+      "itemCount": 2,
+      "committedCount": 2
+    },
+    "products": [
+      {
+        "typeId": "deposit",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "foreign_currency",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "credit_card",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      },
+      {
+        "typeId": "loan",
+        "status": "success",
+        "itemCount": 2,
+        "committedCount": 2
+      },
+      {
+        "typeId": "fund",
+        "status": "skipped",
+        "itemCount": 0,
+        "committedCount": 0,
+        "skipReason": "not_selected"
+      }
+    ]
+  },
+  "executions": [
+    {
+      "options": {
+        "provider": "yuanta",
+        "product": "loan"
+      },
+      "items": [
+        {
+          "product": "loan",
+          "itemKey": "sha256:7BtelIJV2Cu5iMUv3nSso_hq237KWygbT5ytTQaHi8Y",
+          "command": {
+            "kind": "financial.loan.commit",
+            "request": {
+              "capture": {
+                "captureId": "sha256:7BtelIJV2Cu5iMUv3nSso_hq237KWygbT5ytTQaHi8Y",
+                "sourceId": "yuanta",
+                "authorityRoute": "yuanta/loan/canonical-v1",
+                "contractVersion": "loan/canonical/v1.yuanta",
+                "identity": {
+                  "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                  "identityEpochKey": "sha256:Q1koRxigQI4vAOejjwSnB5SAh1e0WTQyhsbi8p8S_yI",
+                  "accountKey": "sha256:D3MhQPQ-G2Q2FcyYK_6MTv6qK60iTtOuHa4M9aEQ_GM",
+                  "subjectDigest": "sha256:X9dYQiDA4hR6GBd_plH9OUa8uH0eM0_QwxD_umBed8M",
+                  "accountNo": "sha256:hjKOxoqdjhtdApvD4gY-q0k2Al1zHG4_21cztW968vM",
+                  "accountNumber": {
+                    "value": "9990_0000_0001_01",
+                    "kind": "loan-account",
+                    "evidenceVersion": "yuanta/loan/account-number-v1",
+                    "sourceField": "#acctno option.value"
+                  },
+                  "accountType": "loan",
+                  "stream": "loan",
+                  "recordKind": "yuanta-loan-transaction",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T00:00:01.000Z",
+                "scope": {
+                  "startDate": "2025-09-24",
+                  "endDate": "2026-09-25",
+                  "completeness": "complete-range",
+                  "completenessBasis": "source-declared-terminal-range",
+                  "completenessRuleVersion": "loan/canonical/v1.yuanta",
+                  "pageCount": 2,
+                  "terminal": true
+                },
+                "semantics": {
+                  "status": "posted",
+                  "effectiveTimeBasis": "source-reported",
+                  "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                  "timeZone": "Asia/Taipei"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": false,
+                    "rowCount": 2,
+                    "proofKind": "source-declared-terminal-range"
+                  },
+                  {
+                    "pageOrdinal": 1,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "proofKind": "source-declared-terminal-range"
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:eiq12shVldLOPfeOanCha3ItIr2bu6p83dWovJrjLw8",
+                    "startDate": "2025-09-24",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "loan/canonical/v1.yuanta"
+                  }
+                ],
+                "records": [
+                  {
+                    "sourceRecordKey": "sha256:bIJe_0YkAS5cUb4Gm6uEvz4lSZ0-cvmk2Xo488ZscCM",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 1,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:eiq12shVldLOPfeOanCha3ItIr2bu6p83dWovJrjLw8",
+                      "fingerprint": "sha256:CyQ4_umSvKyCCOJdD88OGsMmyRyVXc7acBOVvxgNbvA",
+                      "partitionDate": "2026-04-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:zBMUcn3t19Zvo42Uj9921UWczSmq-eAY9nnIylMStsM",
+                    "effectiveOn": "2026-04-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:bIJe_0YkAS5cUb4Gm6uEvz4lSZ0-cvmk2Xo488ZscCM",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "12500",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "還款",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "987500",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-04-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v1.yuanta"
+                      }
+                    ]
+                  },
+                  {
+                    "sourceRecordKey": "sha256:l1mJ-JAKCCCuAnF66tr39CApf_Qi877DBssMtzt39lE",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 2,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:eiq12shVldLOPfeOanCha3ItIr2bu6p83dWovJrjLw8",
+                      "fingerprint": "sha256:dvXKc09lRQOXxTgirqPWSlleQjceQaCQG4-LkZpiMKk",
+                      "partitionDate": "2026-05-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:Bb6SzmFjkXrMn3RsZVblSKxXbzVcE7hHMKd1A0f_i94",
+                    "effectiveOn": "2026-05-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "interest",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:l1mJ-JAKCCCuAnF66tr39CApf_Qi877DBssMtzt39lE",
+                      "sourceCode": "LOAN-INTEREST",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "12500",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "繳息",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "975000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-05-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v1.yuanta"
+                      }
+                    ]
+                  },
+                  {
+                    "sourceRecordKey": "sha256:ogyS5OP4rDscyUoGXHpSpq8FQLX5DfWp3ewmJneEEKw",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 3,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:eiq12shVldLOPfeOanCha3ItIr2bu6p83dWovJrjLw8",
+                      "fingerprint": "sha256:QLexE0vhLLw6b3Jzph_CnKja0RI8vgcYkXh2YoBbrSQ",
+                      "partitionDate": "2026-06-05",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:kzRQH0Q-yy4fdKHou0yOPZqqwu6XugFO-d715r1Z7yg",
+                    "effectiveOn": "2026-06-05",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:ogyS5OP4rDscyUoGXHpSpq8FQLX5DfWp3ewmJneEEKw",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "50000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "本金還款",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "925000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-06-05",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v1.yuanta"
+                      }
+                    ]
+                  }
+                ],
+                "counterpartTransactions": [],
+                "balanceObservations": [
+                  {
+                    "observationKey": "sha256:iXHfYyTReodQT88JtTu3box8q8IM8sQXFzsk9Jc7Ah4",
+                    "sourceRecordKey": "sha256:bIJe_0YkAS5cUb4Gm6uEvz4lSZ0-cvmk2Xo488ZscCM",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "987500",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-04-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:bIJe_0YkAS5cUb4Gm6uEvz4lSZ0-cvmk2Xo488ZscCM",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-04-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    }
+                  },
+                  {
+                    "observationKey": "sha256:so7TQeOzfxR5fblCcKYbQqU-6OmQumbEHgXxs33l2DU",
+                    "sourceRecordKey": "sha256:l1mJ-JAKCCCuAnF66tr39CApf_Qi877DBssMtzt39lE",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "975000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-05-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:l1mJ-JAKCCCuAnF66tr39CApf_Qi877DBssMtzt39lE",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-05-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    }
+                  },
+                  {
+                    "observationKey": "sha256:MzFM4Uy9OtLuvpAE89d8u6osWmpxjTsxonSa_g5iGps",
+                    "sourceRecordKey": "sha256:ogyS5OP4rDscyUoGXHpSpq8FQLX5DfWp3ewmJneEEKw",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "925000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-06-05",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:ogyS5OP4rDscyUoGXHpSpq8FQLX5DfWp3ewmJneEEKw",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-06-05",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    }
+                  }
+                ],
+                "relations": [],
+                "relationCoverage": "not-asserted"
+              }
+            }
+          },
+          "relationCommands": [
+            {
+              "kind": "financial.loanRelations.resolve",
+              "request": {
+                "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                "integrationNamespace": "yuanta",
+                "observedAt": "2026-09-25T00:00:01.000Z",
+                "counterpartyEvidence": [
+                  {
+                    "captureId": "sha256:7BtelIJV2Cu5iMUv3nSso_hq237KWygbT5ytTQaHi8Y",
+                    "sourceRecordKey": "sha256:bIJe_0YkAS5cUb4Gm6uEvz4lSZ0-cvmk2Xo488ZscCM",
+                    "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                    "identityEpochKey": "sha256:Q1koRxigQI4vAOejjwSnB5SAh1e0WTQyhsbi8p8S_yI",
+                    "accountValue": "9990_0000_0001_01",
+                    "role": "beneficiary",
+                    "purpose": "loan_repayment",
+                    "scope": "loan_contract",
+                    "evidenceKind": "repayment-mandate",
+                    "sourceField": "貸款帳號",
+                    "contractVersion": "yuanta/loan-statement-selector-account/v1",
+                    "effectiveStartDate": "2025-09-24",
+                    "effectiveEndDate": "2026-09-25",
+                    "accountKey": "sha256:D3MhQPQ-G2Q2FcyYK_6MTv6qK60iTtOuHa4M9aEQ_GM"
+                  }
+                ]
+              }
+            }
+          ],
+          "provider": "yuanta"
+        },
+        {
+          "product": "loan",
+          "itemKey": "sha256:a56OxqdG1B7f2SU3-3Onp2A2kMCIYTRlp9eQEHBd870",
+          "command": {
+            "kind": "financial.loan.commit",
+            "request": {
+              "capture": {
+                "captureId": "sha256:a56OxqdG1B7f2SU3-3Onp2A2kMCIYTRlp9eQEHBd870",
+                "sourceId": "yuanta",
+                "authorityRoute": "yuanta/loan/canonical-v1",
+                "contractVersion": "loan/canonical/v1.yuanta",
+                "identity": {
+                  "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                  "identityEpochKey": "sha256:Q1koRxigQI4vAOejjwSnB5SAh1e0WTQyhsbi8p8S_yI",
+                  "accountKey": "sha256:sgJcRaNVoBr8bV-uugx6EO8EfvcVYdGwq9IfWL9Bx8U",
+                  "subjectDigest": "sha256:oFf9hQmbsowhS4-RYNfcIEvySC8lXunSgr6BNKGS1is",
+                  "accountNo": "sha256:yeNHJl3fQPAy-ngXkGLzQa8x9_wbRPpBCSNsY9H1bsM",
+                  "accountNumber": {
+                    "value": "9990_0000_0002_02",
+                    "kind": "loan-account",
+                    "evidenceVersion": "yuanta/loan/account-number-v1",
+                    "sourceField": "#acctno option.value"
+                  },
+                  "accountType": "loan",
+                  "stream": "loan",
+                  "recordKind": "yuanta-loan-transaction",
+                  "currency": "TWD"
+                },
+                "observedAt": "2026-09-25T00:00:02.000Z",
+                "scope": {
+                  "startDate": "2025-09-24",
+                  "endDate": "2026-09-25",
+                  "completeness": "complete-range",
+                  "completenessBasis": "source-declared-terminal-range",
+                  "completenessRuleVersion": "loan/canonical/v1.yuanta",
+                  "pageCount": 1,
+                  "terminal": true
+                },
+                "semantics": {
+                  "status": "posted",
+                  "effectiveTimeBasis": "source-reported",
+                  "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                  "timeZone": "Asia/Taipei"
+                },
+                "pages": [
+                  {
+                    "pageOrdinal": 0,
+                    "responseCode": "200",
+                    "terminal": true,
+                    "rowCount": 1,
+                    "proofKind": "source-declared-terminal-range"
+                  }
+                ],
+                "occurrenceGroupCoverage": [
+                  {
+                    "scopeKey": "sha256:ygUYx5nKjQwXOMSJWvBFixn_NxwYxFap8eWPHLYULPQ",
+                    "startDate": "2025-09-24",
+                    "endDate": "2026-09-25",
+                    "contractVersion": "loan/canonical/v1.yuanta"
+                  }
+                ],
+                "records": [
+                  {
+                    "sourceRecordKey": "sha256:PCkSVo0_XGsl6ELJLFFAJ-T566VKxxIzM_tgcRchqIg",
+                    "occurrenceIndex": 1,
+                    "sourceSequenceIndex": 1,
+                    "occurrenceGroup": {
+                      "scopeKey": "sha256:ygUYx5nKjQwXOMSJWvBFixn_NxwYxFap8eWPHLYULPQ",
+                      "fingerprint": "sha256:XrFi3oJQ2TWzaQeD1xWtvsujX8EknxEWfxJB-I-cmbY",
+                      "partitionDate": "2026-08-10",
+                      "ordinal": 1
+                    },
+                    "occurrenceCollisionKey": "sha256:7MZZjP6R4WxgexJl9KvH5dBhSlAZgwaAYUE_u5A--vA",
+                    "effectiveOn": "2026-08-10",
+                    "sourceTime": {
+                      "localTime": "00:00:00",
+                      "precision": "date",
+                      "timeOrigin": "defaulted_local_midnight"
+                    },
+                    "postingStatus": "posted",
+                    "eventKind": "payment",
+                    "eventEvidence": {
+                      "kind": "source-coded-loan-event",
+                      "sourceRecordKey": "sha256:PCkSVo0_XGsl6ELJLFFAJ-T566VKxxIzM_tgcRchqIg",
+                      "sourceCode": "LOAN-PAYMENT",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    },
+                    "direction": "inflow",
+                    "amount": {
+                      "coefficient": "3000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "description": "繳款",
+                    "balanceSourceEvidence": [
+                      {
+                        "kind": "source-reported-balance",
+                        "balanceKind": "loan_outstanding",
+                        "balanceField": "balance-after-transaction",
+                        "balance": {
+                          "coefficient": "47000",
+                          "scale": 0
+                        },
+                        "effectiveAtField": "transaction-date",
+                        "effectiveAt": "2026-08-10",
+                        "effectiveAtPrecision": "date",
+                        "effectiveAtTimeOrigin": "source_reported",
+                        "storageAnchor": "effective-at-date-only",
+                        "contractVersion": "loan/canonical/v1.yuanta"
+                      }
+                    ]
+                  }
+                ],
+                "counterpartTransactions": [],
+                "balanceObservations": [
+                  {
+                    "observationKey": "sha256:GUYiP2kiNEk7qwGXL-mH-DjcKiVGqFD2IZKAMwjid1g",
+                    "sourceRecordKey": "sha256:PCkSVo0_XGsl6ELJLFFAJ-T566VKxxIzM_tgcRchqIg",
+                    "balanceKind": "loan_outstanding",
+                    "balance": {
+                      "coefficient": "47000",
+                      "scale": 0
+                    },
+                    "currency": "TWD",
+                    "effectiveAt": "2026-08-10",
+                    "effectiveAtPrecision": "date",
+                    "effectiveAtTimeOrigin": "source_reported",
+                    "effectiveTimeBasis": "source-reported",
+                    "effectiveTimeRuleVersion": "loan/canonical/v1.yuanta",
+                    "effectiveTimeEvidence": {
+                      "kind": "source-reported-balance-effective-time",
+                      "sourceRecordKey": "sha256:PCkSVo0_XGsl6ELJLFFAJ-T566VKxxIzM_tgcRchqIg",
+                      "sourceField": "statement-as-of",
+                      "sourceFieldRole": "transaction-date",
+                      "value": "2026-08-10",
+                      "precision": "date",
+                      "timeOrigin": "source_reported",
+                      "storageAnchor": "effective-at-date-only",
+                      "contractVersion": "loan/canonical/v1.yuanta"
+                    }
+                  }
+                ],
+                "relations": [],
+                "relationCoverage": "not-asserted"
+              }
+            }
+          },
+          "relationCommands": [
+            {
+              "kind": "financial.loanRelations.resolve",
+              "request": {
+                "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                "integrationNamespace": "yuanta",
+                "observedAt": "2026-09-25T00:00:02.000Z",
+                "counterpartyEvidence": [
+                  {
+                    "captureId": "sha256:a56OxqdG1B7f2SU3-3Onp2A2kMCIYTRlp9eQEHBd870",
+                    "sourceRecordKey": "sha256:PCkSVo0_XGsl6ELJLFFAJ-T566VKxxIzM_tgcRchqIg",
+                    "sourceConnectionKey": "sha256:NuilXEhK_z8y-1Ykm_s45zNMnT0sO_pqzqIzbDSlH1I",
+                    "identityEpochKey": "sha256:Q1koRxigQI4vAOejjwSnB5SAh1e0WTQyhsbi8p8S_yI",
+                    "accountValue": "9990_0000_0002_02",
+                    "role": "beneficiary",
+                    "purpose": "loan_repayment",
+                    "scope": "loan_contract",
+                    "evidenceKind": "repayment-mandate",
+                    "sourceField": "貸款帳號",
+                    "contractVersion": "yuanta/loan-statement-selector-account/v1",
+                    "effectiveStartDate": "2025-09-24",
+                    "effectiveEndDate": "2026-09-25",
+                    "accountKey": "sha256:sgJcRaNVoBr8bV-uugx6EO8EfvcVYdGwq9IfWL9Bx8U"
+                  }
+                ]
+              }
+            }
+          ],
+          "provider": "yuanta"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "stage": "preparation",
+      "outcome": "completed",
+      "code": "input-validated"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "started",
+      "code": "authentication-started"
+    },
+    {
+      "stage": "authentication",
+      "outcome": "completed",
+      "code": "authentication-completed"
+    },
+    {
+      "stage": "decoding",
+      "outcome": "started",
+      "code": "source-decoding-started"
+    },
+    {
+      "stage": "collection",
+      "outcome": "started",
+      "code": "loan-collection-started",
+      "counts": {
+        "activity": "query",
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "collection",
+      "outcome": "completed",
+      "code": "loan-collection-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "decoding",
+      "outcome": "completed",
+      "code": "loan-source-decoding-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "loan-source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2,
+        "statementType": "loan"
+      }
+    },
+    {
+      "stage": "validation",
+      "outcome": "completed",
+      "code": "source-validation-completed",
+      "counts": {
+        "completed": 2,
+        "total": 2
+      }
+    }
+  ]
+}

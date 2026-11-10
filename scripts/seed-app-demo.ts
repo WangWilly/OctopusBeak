@@ -314,6 +314,7 @@ function collectYuantaTrade(date: string): PGliteWorkflowRunItem[] {
     holdings,
     [],
     { dateRange: { startDate: slash(addDays(date, -89)), endDate: slash(date) }, requestedTradeTypes: ["普通買賣"] },
+    () => new Date().toISOString(),
   ).map((capture) => ({
     provider: "yuanta-trade",
     product: "investment",

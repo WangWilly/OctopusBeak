@@ -2,10 +2,6 @@ import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
-import {
-  PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-  PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
 import type {
   LoanCapturePage,
   LoanSourceCompletenessEvidence,
@@ -16,7 +12,6 @@ import {
   FUBON_LOAN_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   assertFubonLoanCaptureAccountNumberEvidence,
   buildFubonLoanCapture,
-  type FubonLoanCaptureBuildInput,
   type FubonLoanAccountNumberEvidence,
   type FubonLoanStatementRow,
 } from "../ledger/canonical/fubon-loan-admission.ts";
@@ -38,8 +33,8 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
+import { admitLoan, stageCanonicalLoans, type LoanAdmission, type LoanDecision } from "./canonical-loan-staging.ts";
 import { periodSpans, type CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
@@ -94,17 +89,9 @@ async function acceptLoanReply(
   return (await reader.accept(fubonLoanStatementResponse(reply.postedTo), reply)).evidence.text;
 }
 
-const queryItemSchema = z.enum([
-  "TRANSACTION_DETAIL_QUERY",
-  "PARTLY_PAID_TRANSACTION_DETAIL_QUERY",
-  "DATES_DETAIL_QUERY",
-  "DYNAMIC_BRANCH_DETAIL_QUERY",
-]);
-
-type QueryItem = z.infer<typeof queryItemSchema>;
-
-const DEFAULT_QUERY_ITEMS: QueryItem[] = ["TRANSACTION_DETAIL_QUERY"];
-const SUPPORTED_NORMALIZED_QUERY_ITEM: QueryItem = "TRANSACTION_DETAIL_QUERY";
+const LOAN_QUERY_ITEM_SELECTOR = "#form1\\:queryItemCombo";
+/** The one query item whose result the loan capture is built from. */
+const TRANSACTION_DETAIL_QUERY = "TRANSACTION_DETAIL_QUERY";
 
 /** Fubon's quick loan periods: the option value and the span it covers, both ends inclusive. */
 const QUICK_LOAN_PERIODS = [
@@ -132,8 +119,6 @@ export function fubonLoanQuery(period: CollectionPeriod): FubonLoanQuery {
 
 const inputSchema = z.object({
   loanAccountLabels: z.array(z.string()).default([]),
-  queryItem: queryItemSchema.optional(),
-  queryItems: z.array(queryItemSchema).optional(),
   downloadFormat: z.enum(["TXT", "EXCEL", "PDF"]).default("EXCEL"),
 });
 
@@ -195,7 +180,7 @@ type ParsedFubonLoanPage = {
   pagination: FubonLoanPaginationSignal;
 };
 
-type ParsedLoanStatement = {
+export type FubonParsedLoanStatement = {
   loanAccount: string;
   accountNumber?: FubonLoanAccountNumberEvidence;
   loanAccountId: string;
@@ -689,33 +674,6 @@ type LoanAccountOption = {
   value: string;
 };
 
-function requestedQueryItems(input: FubonLoanStatementsInput): QueryItem[] {
-  const requested =
-    input.queryItems && input.queryItems.length > 0
-      ? input.queryItems
-      : input.queryItem
-        ? [input.queryItem]
-        : DEFAULT_QUERY_ITEMS;
-  const unsupported = requested.filter(
-    (queryItem) => queryItem !== SUPPORTED_NORMALIZED_QUERY_ITEM,
-  );
-  if (unsupported.length > 0) {
-    throw new Error(
-      `fubon-loan-statements normalized output only supports ${SUPPORTED_NORMALIZED_QUERY_ITEM}; unsupported query items: ${unsupported.join(
-        ", ",
-      )}`,
-    );
-  }
-
-  return requested;
-}
-
-function hasExplicitQueryItems(input: FubonLoanStatementsInput): boolean {
-  return Boolean(
-    input.queryItem || (input.queryItems && input.queryItems.length > 0),
-  );
-}
-
 async function readLoanAccountOptions(
   site: FubonEbankSite,
   scope: BrowserScope,
@@ -765,15 +723,15 @@ async function selectLoanAccount(
   );
   await site.waitForMaskToClear();
 
-  return await site.frames.scopeWith("#form1\\:queryItemCombo");
+  return await site.frames.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
 }
 
-async function readAvailableLoanQueryItems(
+async function offersTransactionDetailQuery(
   site: FubonEbankSite,
   scope: BrowserScope,
-): Promise<QueryItem[]> {
+): Promise<boolean> {
   const { frames } = site;
-  const combo = scope.locator("#form1\\:queryItemCombo");
+  const combo = scope.locator(LOAN_QUERY_ITEM_SELECTOR);
   await frames.withSignal((signal) =>
     combo.locator("option").first().waitFor({
       state: "attached",
@@ -784,37 +742,23 @@ async function readAvailableLoanQueryItems(
 
   const options = combo.locator("option");
   const count = await frames.race(options.count());
-  const result: QueryItem[] = [];
-
   for (let index = 0; index < count; index += 1) {
     const value = collapseSourceWhitespace(
       await frames.withSignal((signal) => options.nth(index).getAttribute("value", { signal })),
     );
-    const parsed = queryItemSchema.safeParse(value);
-    if (parsed.success && !result.includes(parsed.data)) {
-      result.push(parsed.data);
-    }
+    if (value === TRANSACTION_DETAIL_QUERY) return true;
   }
-
-  return result;
+  return false;
 }
 
 async function configureLoanQuery(
   site: FubonEbankSite,
   query: FubonLoanQuery,
-  queryItem: QueryItem,
 ): Promise<BrowserScope> {
   const { frames } = site;
-  const scope = await frames.scopeWith("#form1\\:queryItemCombo");
-  const availableQueryItems = await readAvailableLoanQueryItems(site, scope);
-  if (!availableQueryItems.includes(queryItem)) {
-    throw new Error(
-      `Loan query item is not available for this account: ${queryItem}`,
-    );
-  }
-
+  const scope = await frames.scopeWith(LOAN_QUERY_ITEM_SELECTOR);
   await frames.race(
-    selectOptionWithoutPointer(scope.locator("#form1\\:queryItemCombo"), queryItem),
+    selectOptionWithoutPointer(scope.locator(LOAN_QUERY_ITEM_SELECTOR), TRANSACTION_DETAIL_QUERY),
   );
   await site.waitForMaskToClear();
 
@@ -953,7 +897,7 @@ export function assembleFubonLoanStatement(
   pages: readonly ParsedFubonLoanPage[],
   account: LoanAccountOption,
   query: FubonLoanQuery,
-): ParsedLoanStatement {
+): FubonParsedLoanStatement {
   const firstPage = pages[0];
   if (!firstPage)
     throw new Error("Fubon loan query returned no response page.");
@@ -1001,7 +945,7 @@ async function fetchFubonLoanStatementPages(
   query: FubonLoanQuery,
   reader: ProviderResponseReader,
   silent = false,
-): Promise<ParsedLoanStatement> {
+): Promise<FubonParsedLoanStatement> {
   const pages: ParsedFubonLoanPage[] = [];
   const requests = new Set<string>();
   let html = firstHtml;
@@ -1041,7 +985,7 @@ export async function parseFubonLoanStatementForCollection(
   query: FubonLoanQuery,
   sourceText: SourceTextPort,
   reader: ProviderResponseReader,
-): Promise<ParsedLoanStatement> {
+): Promise<FubonParsedLoanStatement> {
   sourceText.assertIntact(html);
   const parsed = await fetchFubonLoanStatementPages(
     site,
@@ -1057,6 +1001,143 @@ export async function parseFubonLoanStatementForCollection(
   return parsed;
 }
 
+/** One loan account's complete statement, as read. */
+export type FubonLoanStatementRead = Readonly<{
+  statement: FubonParsedLoanStatement;
+  /** When the account's traversal finished; its capture is observed then. */
+  observedAt: string;
+}>;
+
+export type FubonLoanSourceSnapshot = Readonly<{
+  /** The canonical range of the query, fixed before the first account is read. */
+  range: Readonly<{ startDate: string; endDate: string }>;
+  accounts: readonly FubonLoanStatementRead[];
+}>;
+
+/** Read every loan account's statement pages over the product's collection period (ADR 0065). */
+export async function readFubonLoanSource(
+  page: Page,
+  input: FubonLoanProductInput,
+  context: WorkflowContext,
+  product: ProductCollectionHandle,
+): Promise<FubonLoanSourceSnapshot> {
+  const site = fubonEbankSite(page, context);
+  await product.reportActivity("query");
+  let scope = await site.open(LOAN_STATEMENTS_ROUTE);
+  const loanAccounts = await readLoanAccountOptions(site, scope, input.loanAccountLabels);
+  const period = product.collectionPeriod();
+  const query = fubonLoanQuery(period);
+  const skippedReasons: string[] = [];
+  const accounts: FubonLoanStatementRead[] = [];
+
+  for (const account of loanAccounts) {
+    context.signal.throwIfAborted();
+    scope = await selectLoanAccount(site, account);
+    if (!(await offersTransactionDetailQuery(site, scope))) {
+      skippedReasons.push("No loan transaction detail query is available for this account.");
+      continue;
+    }
+
+    context.signal.throwIfAborted();
+    scope = await configureLoanQuery(site, query);
+    await product.reportActivity("query");
+    const html = await fetchLoanQueryHtml(site, product.reader);
+    const statement = await parseFubonLoanStatementForCollection(
+      site,
+      html,
+      account,
+      query,
+      context.text,
+      product.reader,
+    );
+    accounts.push({ statement, observedAt: context.now() });
+  }
+
+  if (accounts.length === 0 && skippedReasons.length > 0)
+    throw new StatementComponentAbsentError(
+      `No Fubon loan statement query is available. First skipped account reason: ${skippedReasons[0]}`,
+    );
+  return { range: { startDate: period.start, endDate: period.end }, accounts };
+}
+
+function admitFubonLoan(
+  { statement: parsed, observedAt }: FubonLoanStatementRead,
+  range: FubonLoanSourceSnapshot["range"],
+  identity: Readonly<{ sourceConnectionScope: string; sourceConnectionKey: string }>,
+): LoanDecision {
+  const completeness = parsed.completeness;
+  if (!completeness || parsed.pages.length !== completeness.pageCount)
+    throw new Error("Fubon loan result lacks explicit complete terminal page evidence.");
+  const capture = buildFubonLoanCapture({
+    accountValue: parsed.sourceAccountValue,
+    ...(parsed.accountNumber ? { accountNumber: parsed.accountNumber } : {}),
+    sourceConnectionScope: identity.sourceConnectionScope,
+    observedAt,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    scope: {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      completeness: "complete-range",
+      completenessBasis: "source-declared-terminal-range",
+      completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
+      pageCount: completeness.pageCount,
+      terminal: completeness.terminal,
+    },
+    pages: parsed.pages,
+    // Fubon exposes no source-linked deposit transaction in this response.
+    relationCoverage: "not-asserted",
+    counterpartTransactions: [],
+    relations: [],
+    rows: parsed.rows.map<FubonLoanStatementRow>((row) => ({
+      transactionDate: row[0] ?? "",
+      transactionContent: row[1] ?? "",
+      transactionAmount: row[2] ?? "",
+      balanceAfterTransaction: row[6] ?? "",
+    })),
+  });
+  assertFubonLoanCaptureAccountNumberEvidence(capture);
+  const repaymentAccount = extractFubonLoanAccountEvidence(
+    parsed.sourceAccountValue,
+    parsed.loanAccount,
+  );
+  const provenanceRecord = capture.records[0];
+  return {
+    capture,
+    sourceConnectionKey: identity.sourceConnectionKey,
+    integrationNamespace: "fubon",
+    ...(repaymentAccount && provenanceRecord
+      ? {
+          repaymentMandate: {
+            accountValue: repaymentAccount,
+            sourceRecordKey: provenanceRecord.sourceRecordKey,
+            sourceField: "loan-account-selector",
+            contractVersion: FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION,
+          },
+        }
+      : {}),
+  };
+}
+
+/** Admit and stage one loan capture per account from a read snapshot. */
+export async function stageFubonLoan(
+  snapshot: FubonLoanSourceSnapshot,
+  input: FubonLoanProductInput,
+  product: ProductCollectionHandle,
+): Promise<ProductCollectionSummary> {
+  const identity = requireSourceConnectionIdentity("fubon", "Fubon loan", input);
+  const admissions: LoanAdmission[] = [];
+  for (const account of snapshot.accounts) {
+    product.signal.throwIfAborted();
+    admissions.push(await admitLoan(product, () => admitFubonLoan(account, snapshot.range, identity)));
+  }
+  stageCanonicalLoans(product, admissions);
+  return {
+    sourceCaptureCount: admissions.length,
+    rowCount: snapshot.accounts.reduce((count, { statement }) => count + statement.rows.length, 0),
+  };
+}
+
 export async function runFubonLoanStatements(
   page: Page,
   input: FubonLoanProductInput,
@@ -1068,145 +1149,7 @@ export async function runFubonLoanStatements(
       'fubon-loan-statements normalized collection currently supports downloadFormat="EXCEL" only.',
     );
   }
-
-  const {
-    sourceConnectionScope,
-    sourceConnectionKey: relationSourceConnectionKey,
-  } = requireSourceConnectionIdentity("fubon", "Fubon loan", input);
-  const site = fubonEbankSite(page, context);
-  await product.reportActivity("query");
-  let scope = await site.open(LOAN_STATEMENTS_ROUTE);
-  const loanAccounts = await readLoanAccountOptions(site, scope, input.loanAccountLabels);
-  const queryItems = requestedQueryItems(input);
-  const explicitQueryItems = hasExplicitQueryItems(input);
-  const period = product.collectionPeriod();
-  const query = fubonLoanQuery(period);
-  const dateRange = { startDate: period.start, endDate: period.end };
-  const skippedReasons: string[] = [];
-  const items: ProductStageRequest[] = [];
-  let rowCount = 0;
-
-  for (const account of loanAccounts) {
-    context.signal.throwIfAborted();
-    scope = await selectLoanAccount(site, account);
-    const availableQueryItems = await readAvailableLoanQueryItems(site, scope);
-    const accountQueryItems = queryItems.filter((queryItem) =>
-      availableQueryItems.includes(queryItem),
-    );
-    const unavailableQueryItems = queryItems.filter(
-      (queryItem) => !availableQueryItems.includes(queryItem),
-    );
-    if (explicitQueryItems) {
-      for (const queryItem of unavailableQueryItems)
-        skippedReasons.push(`Loan query item is not available for this account: ${queryItem}`);
-    }
-    if (accountQueryItems.length === 0) {
-      skippedReasons.push("No requested loan statement query is available for this account.");
-      continue;
-    }
-
-    for (const queryItem of accountQueryItems) {
-      context.signal.throwIfAborted();
-      scope = await configureLoanQuery(site, query, queryItem);
-      await product.reportActivity("query");
-      const html = await fetchLoanQueryHtml(site, product.reader);
-      const parsed = await parseFubonLoanStatementForCollection(
-        site,
-        html,
-        account,
-        query,
-        context.text,
-        product.reader,
-      );
-      const completeness = parsed.completeness;
-      if (!completeness || parsed.pages.length !== completeness.pageCount)
-        throw new Error("Fubon loan result lacks explicit complete terminal page evidence.");
-      const captureInput: FubonLoanCaptureBuildInput = {
-        accountValue: parsed.sourceAccountValue,
-        ...(parsed.accountNumber ? { accountNumber: parsed.accountNumber } : {}),
-        sourceConnectionScope,
-        observedAt: context.now(),
-        startDate: dateRange.startDate,
-        endDate: dateRange.endDate,
-        scope: {
-          startDate: dateRange.startDate,
-          endDate: dateRange.endDate,
-          completeness: "complete-range",
-          completenessBasis: "source-declared-terminal-range",
-          completenessRuleVersion: FUBON_LOAN_CONTRACT_VERSION,
-          pageCount: completeness.pageCount,
-          terminal: completeness.terminal,
-        },
-        pages: parsed.pages,
-        // Fubon exposes no source-linked deposit transaction in this response.
-        relationCoverage: "not-asserted",
-        counterpartTransactions: [],
-        relations: [],
-        rows: parsed.rows.map<FubonLoanStatementRow>((row) => ({
-          transactionDate: row[0] ?? "",
-          transactionContent: row[1] ?? "",
-          transactionAmount: row[2] ?? "",
-          balanceAfterTransaction: row[6] ?? "",
-        })),
-      };
-      const capture = buildFubonLoanCapture(captureInput);
-      assertFubonLoanCaptureAccountNumberEvidence(capture);
-      const repaymentAccount = extractFubonLoanAccountEvidence(
-        parsed.sourceAccountValue,
-        parsed.loanAccount,
-      );
-      const provenanceRecord = capture.records[0];
-      items.push({
-        product: "loan",
-        itemKey: `${capture.captureId}:${queryItem}`,
-        command: {
-          kind: PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
-          request: { capture },
-        },
-        relationCommands: () => [
-          {
-            kind: PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-            request: {
-              sourceConnectionKey: relationSourceConnectionKey,
-              integrationNamespace: "fubon",
-              observedAt: capture.observedAt,
-              counterpartyEvidence:
-                repaymentAccount && provenanceRecord
-                  ? [
-                      {
-                        captureId: capture.captureId,
-                        sourceRecordKey: provenanceRecord.sourceRecordKey,
-                        sourceConnectionKey: capture.identity.sourceConnectionKey,
-                        identityEpochKey: capture.identity.identityEpochKey,
-                        accountValue: repaymentAccount,
-                        role: "beneficiary",
-                        purpose: "loan_repayment",
-                        scope: "loan_contract",
-                        evidenceKind: "repayment-mandate",
-                        sourceField: "loan-account-selector",
-                        contractVersion: FUBON_LOAN_ACCOUNT_MANDATE_CONTRACT_VERSION,
-                        effectiveStartDate: capture.scope.startDate,
-                        effectiveEndDate: capture.scope.endDate,
-                        accountKey: capture.identity.accountKey,
-                      },
-                    ]
-                  : [],
-            },
-          },
-        ],
-      });
-      rowCount += parsed.rows.length;
-    }
-  }
-
-  if (items.length === 0 && skippedReasons.length > 0)
-    throw new StatementComponentAbsentError(
-      `No Fubon loan statement query is available. First skipped account reason: ${skippedReasons[0]}`,
-    );
-  context.signal.throwIfAborted();
-  product.stage(...items);
-  return {
-    sourceCaptureCount: items.length,
-    rowCount,
-  };
+  requireSourceConnectionIdentity("fubon", "Fubon loan", input);
+  const snapshot = await readFubonLoanSource(page, input, context, product);
+  return await stageFubonLoan(snapshot, input, product);
 }

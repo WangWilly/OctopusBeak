@@ -18,6 +18,7 @@ import { YUANTA_SOURCE } from "../lib/automation/server/sources/yuanta.ts";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { collectSelectedProducts, ProductCollectionInterruptedError } from "../lib/automation/product-collection.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -50,12 +51,7 @@ assert.deepEqual(
     label: "秀朗 - 信貸中放 - 12345678901234",
   }),
   {
-    rowOrdinal: 0,
     accountValue: "12345678901234",
-    role: "beneficiary",
-    purpose: "loan_repayment",
-    scope: "loan_contract",
-    evidenceKind: "repayment-mandate",
     sourceField: "貸款帳號",
     contractVersion: "yuanta/loan-statement-selector-account/v1",
   },
@@ -134,8 +130,8 @@ assert.doesNotMatch(
 );
 assert.match(loanSource, /sourceText\??\.assertIntact/u);
 assert.doesNotMatch(loanSource, /RepaymentRouteInventory/);
-assert.match(loanSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/u);
-assert.match(loanSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/u);
+assert.match(loanSource, /stageCanonicalLoans\(product, admissions\)/u, "loans stage through the loan step");
+assert.doesNotMatch(loanSource, /product\.stage\(/u, "the loan step owns the stage call");
 assert.doesNotMatch(
   loanSource,
   /canonicalLoanCaptureSpines|persistCanonicalLoanCaptureExtensions|commitCanonicalFinancialDepositCaptureBatchInTransaction/u,
@@ -228,12 +224,49 @@ test("Yuanta loan typed collection admits complete source without writing or com
         "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
       ),
     },
-    yuantaCollectionContext({ now: "2026-02-01T00:00:00.000Z" }),
     yuantaStagingHandle(deferred),
   );
   assert.deepEqual(collection, { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0]?.product, "loan");
+});
+
+test("Yuanta loan anchors its selector mandate to the first source row of a capture with distinct rows", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  const testLoanAccount = "1234".repeat(3) + "12";
+  const row = (date: string, amount: string, balance: string) => ({
+    accountLabel: "房屋貸款", transactionDate: date, postingDate: date,
+    paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+    transactionAmount: amount, balanceAfterTransaction: balance,
+    overpayment: "0.00", sortTime: null,
+  });
+  await stageYuantaLoan(
+    {
+      range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      accounts: [{
+        account: { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount },
+        observedAt: "2026-02-01T00:00:00.000Z",
+        statement: {
+          rows: [row("2026/01/15", "12500.00", "87500.00"), row("2026/01/20", "100.00", "87400.00")],
+          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 2, proofKind: "source-declared-terminal-range" }],
+        },
+      }],
+    },
+    {
+      loanAccountFilters: [],
+      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      sourceConnectionKey: deriveSourceConnectionIdentityKey("yuanta", "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001"),
+    },
+    yuantaStagingHandle(deferred),
+  );
+  const capture = (deferred[0]!.command.request as { capture: { records: readonly { sourceRecordKey: string; sourceSequenceIndex: number }[] } }).capture;
+  const [relation] = deferred[0]!.relationCommands!(null);
+  const evidence = (relation!.request as { counterpartyEvidence: readonly { sourceRecordKey: string; accountValue: string }[] }).counterpartyEvidence;
+  assert.deepEqual(
+    evidence.map(({ sourceRecordKey, accountValue }) => [sourceRecordKey, accountValue]),
+    [[capture.records.find((record) => record.sourceSequenceIndex === 1)!.sourceRecordKey, testLoanAccount]],
+  );
 });
 
 test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
@@ -261,12 +294,51 @@ test("Yuanta loan typed collection rejects an incomplete source before yielding 
           "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
         ),
       },
-      yuantaCollectionContext(),
       yuantaStagingHandle(deferred),
     ),
     /explicit complete terminal page evidence/u,
   );
   assert.deepEqual(deferred, []);
+});
+
+test("a Yuanta loan whose selector hides the full account fails inside the product's validation", async () => {
+  const failed = await collectSelectedProducts({
+    provider: "yuanta",
+    productIds: ["loan"],
+    selectedIds: ["loan"],
+    signal: new AbortController().signal,
+    now: () => "2026-02-01T00:00:00.000Z",
+    text: strictSourceText,
+    collect: async (_typeId, product) => await stageYuantaLoan(
+      {
+        range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+        accounts: [{
+          account: { label: "房屋貸款 - ******1234", value: "opaque-loan" },
+          observedAt: "2026-02-01T00:00:00.000Z",
+          statement: {
+            rows: [{
+              accountLabel: "房屋貸款", transactionDate: "2026/01/15", postingDate: "2026/01/15",
+              paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+              transactionAmount: "12500.00", balanceAfterTransaction: "87500.00",
+              overpayment: "0.00", sortTime: null,
+            }],
+            completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+            pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+          },
+        }],
+      },
+      {
+        loanAccountFilters: [],
+        sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+        sourceConnectionKey: deriveSourceConnectionIdentityKey("yuanta", "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001"),
+      },
+      product,
+    ),
+    financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
+  }).then(() => null, (error: unknown) => error);
+  assert.ok(failed instanceof ProductCollectionInterruptedError);
+  assert.equal(failed.errorCode, "source-validation-failed");
+  assert.match(String((failed as Error & { cause?: unknown }).cause), /one matching full 14-digit account/u);
 });
 
 test("builds and validates a canonical Yuanta loan capture from source rows", () => {
