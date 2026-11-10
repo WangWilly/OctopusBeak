@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Refined by [ADR 0126](0126-cathay-stages-through-the-deposit-step.md): Cathay commits with the deposit command too, and `financial.mixed.commit` is removed.
+
 Refines [ADR 0121](0121-deposit-sources-stage-through-one-step-that-runs-their-admission.md). Settles the unified deposit command that ADR 0121 deferred. Decided in [issue 413](https://github.com/WangWilly/OctopusBeak/issues/413).
 
 ## Context
@@ -22,7 +24,7 @@ One case lost evidence on the deposit path. Fubon's partial admission (`row-stat
 
 - `withSource` is removed from `DepositDecision`. SinoPac and CTBC build their structural capture only for a source-only account, as HNCB, Fubon and Yuanta do.
 - A row a source declines to book but observed in the requested range travels in the deposit capture as a `statement-evidence` non-transaction record. It is persisted as a source record and never becomes a transaction. Fubon's partial admission now keeps each unresolved row this way. Its keys derive from the row's content and from its repeat count among identical rows, under their own digest prefix, so the same row re-admits as the same occurrence and never collides with the posted row it may later become. Page row counts are the source's row counts again.
-- `financial.mixed.commit` stays for sources that commit more than one domain in one item (Cathay).
+- `financial.mixed.commit` stayed for Cathay, which committed every account of a product in one item. [ADR 0126](0126-cathay-stages-through-the-deposit-step.md) removes it.
 
 ## Considered options
 
