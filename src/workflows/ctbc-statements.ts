@@ -1137,18 +1137,14 @@ async function runCtbcWorkflow(
   return context.browser.withPage(async (page) => {
     await signIn(context, page, CTBC_SOURCE, ctbcSignInPlan(input.credentials));
 
-    let count = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const productContext: WorkflowContext = { ...context, event: product.event };
         await productContext.event("decoding", "started", "source-decoding-started");
-        const collected = await collectDeposit(page, input, productContext, product);
-        // stageCtbcDeposit admits only when every selected account was captured.
-        count = collected.sourceCaptureCount;
-        return collected;
+        return await collectDeposit(page, input, productContext, product);
       },
     });
 
-    return productRunResult(summary, { counts: { count } });
+    return productRunResult(summary);
   });
 }

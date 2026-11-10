@@ -741,15 +741,13 @@ async function runPostWorkflow(
   return await context.browser.withPage(async (page) => {
     await signIn(context, page, POST_SOURCE, postSignInPlan(input.credentials));
 
-    let accountCount = 0;
     const summary = await context.products.collect({
       deposit: async (product): Promise<ProductCollectionSummary> => {
         const collected = await collectDeposit(page, input, context, product);
         // Every admitted account is one source capture.
-        accountCount = collected.sourceCaptureCount;
-        return collected;
+        return { ...collected, counts: { accountCount: collected.sourceCaptureCount } };
       },
     });
-    return productRunResult(summary, { counts: { accountCount } });
+    return productRunResult(summary);
   });
 }

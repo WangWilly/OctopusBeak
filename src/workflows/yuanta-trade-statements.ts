@@ -1855,14 +1855,12 @@ async function runYuantaTradeWorkflow(
     await authenticateYuantaTradePage(page, input.credentials, context);
     context.signal.throwIfAborted();
 
-    let collected: YuantaTradeCollectedCounts | undefined;
     const summary = await context.products.collect({
       securities: async (product): Promise<ProductCollectionSummary> => {
         const staged = await collectSecurities(page, collectionInput(product.collectionPeriod()), context, product);
-        collected = staged.counts;
-        return staged.summary;
+        return { ...staged.summary, counts: staged.counts };
       },
     });
-    return productRunResult(summary, { counts: collected });
+    return productRunResult(summary);
   });
 }

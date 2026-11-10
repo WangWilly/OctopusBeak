@@ -75,6 +75,7 @@ export function summarizeInterruptedProductCollection(
     rowCount: summary.rowCount,
     itemCount: summary.itemCount,
     committedCount: summary.committedCount,
+    ...summary.counts,
     ...exclusionCounts,
   }, summary.products);
 }

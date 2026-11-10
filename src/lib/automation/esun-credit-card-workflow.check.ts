@@ -94,9 +94,8 @@ test("E.SUN typed workflow commits a complete in-memory source through the injec
       assert.equal(harness.committed[0]?.length, 1);
       assert.equal((harness.committed[0]?.[0] as { provider?: string }).provider, "esun");
       assert.equal(output.status, "financial-admitted");
-      assert.equal(output.counts.canonicalCaptureCount, 1);
       assert.equal(output.counts.sourceCaptureCount, 1, "E.SUN reports its one Source Capture (ADR 0064)");
-      assert.equal(output.counts.count, monthCount);
+      assert.equal(output.counts.rowCount, monthCount);
       assert.deepEqual(harness.events.find(({ code }) => code === "source-validation-completed")?.counts,
         { completed: 1, total: 1 }, "the run closes validation with that capture");
       assert.equal("files" in (output as object), false);
@@ -259,7 +258,6 @@ test("a failing attached deposit leaves the card committed and reported", () => 
   assert.equal(harness.previewWrites.length, 0, "a failed product writes nothing");
   assert.deepEqual(outcomes(output), [["credit_card", "success", null], ["deposit", "failed", "source-validation-failed"]]);
   assert.equal(output.status, "partial");
-  assert.equal(output.counts.canonicalCaptureCount, 1);
 }));
 
 test("an attached-only selection signs in, skips the card, and writes the deposit", () => withManagedSecret(async () => {
@@ -270,7 +268,6 @@ test("an attached-only selection signs in, skips the card, and writes the deposi
   assert.equal(harness.committed.length, 0, "no canonical commit without the card");
   assert.equal(harness.previewWrites.length, 1);
   assert.deepEqual(outcomes(output), [["credit_card", "skipped", "not_selected"], ["deposit", "success", null]]);
-  assert.equal(output.counts.canonicalCaptureCount, 0);
   assert.equal(harness.events.some(({ code }) => code === "timeline-collected"), false);
 }));
 
@@ -344,7 +341,6 @@ test("a card failure reports the card failed with its classified code beside the
     assert.equal(harness.previewWrites.length, 1, name);
     assert.deepEqual(outcomes(output), [["credit_card", "failed", errorCode], ["deposit", "success", null]], name);
     assert.equal(output.status, "partial", name);
-    assert.equal(output.counts.canonicalCaptureCount, 0, name);
   }
 }));
 

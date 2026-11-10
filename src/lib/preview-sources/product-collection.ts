@@ -202,6 +202,10 @@ function previewRunSummary(run: PreviewProductRun): ProductCollectionRunSummary 
     rowCount: run.receipts.reduce((total, receipt) => total + receipt.transactions, 0),
     itemCount: run.products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
+    // A preview commit item is one account; only a successful product's accounts count (ADR 0122).
+    counts: Object.freeze({
+      accountCount: run.products.reduce((total, product) => total + (product.status === "success" ? product.itemCount : 0), 0),
+    }),
     status: productRunStatus(run.products, committed),
   });
 }
@@ -224,7 +228,7 @@ export function previewRunOutput(run: PreviewProductRun): ProductRunResult {
     const first = attempted.find((product) => product.status === "failed")!;
     throw withCause(new ProductCollectionInterruptedError(first.errorCode ?? "source-collection-failed", summary), run.firstFailure);
   }
-  return productRunResult(summary, { preview: true, counts: { accountCount: summary.committedCount } });
+  return productRunResult(summary, { preview: true });
 }
 
 function withCause<E extends Error>(error: E, cause: unknown): E {

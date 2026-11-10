@@ -12,7 +12,7 @@ import {
   type ProductCollector,
 } from "./product-collection.ts";
 import { FailureCodeError } from "./workflow-failures.ts";
-import { aggregateTdccExclusionCounts, createTdccRunSummary } from "./tdcc-collection-summary.ts";
+import { createTdccRunSummary } from "./tdcc-collection-summary.ts";
 import { productRunResult, type WorkflowRunResult } from "./workflow-run-result.ts";
 import type { TDCC_PRODUCTS } from "./server/sources/tdcc.ts";
 import type { VerifiedRunInput, VerifiedWorkflowEntry } from "./server/verified-entry.ts";
@@ -100,10 +100,7 @@ export function createTdccWorkflow(
       }
 
       const summary = runSummary.summarize(collectedSummary);
-      return productRunResult(summary, {
-        counts: aggregateTdccExclusionCounts(summary.products.flatMap((product) =>
-          product.collection ? [product.collection.exclusionCounts] : [])),
-      });
+      return productRunResult(summary);
     },
   };
 }

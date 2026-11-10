@@ -4,7 +4,6 @@ import type { TdccProductCollection } from "../../workflows/tdcc-epassbook-colle
 import type { CollectionProductOutcome, ProductCollectionRunSummary } from "./product-collection.ts";
 import { productRunResult } from "./workflow-run-result.ts";
 import {
-  aggregateTdccExclusionCounts,
   createTdccRunSummary,
   TDCC_MAX_SUMMARY_COUNT,
   TdccCollectionSummaryInvariantError,
@@ -13,10 +12,7 @@ import {
   type TdccValidatedExclusion,
 } from "./tdcc-collection-summary.ts";
 
-const tdccResult = (summary: ProductCollectionRunSummary) => productRunResult(summary, {
-  counts: aggregateTdccExclusionCounts(summary.products.flatMap((product) =>
-    product.collection ? [product.collection.exclusionCounts] : [])),
-});
+const tdccResult = (summary: ProductCollectionRunSummary) => productRunResult(summary);
 
 const empty: TdccProductCollection = { items: [], sourceCaptureCount: 1, rowCount: 0 };
 // The summary must treat commit items as opaque; only the product runner validates them.
@@ -34,6 +30,7 @@ function base(products: readonly CollectionProductOutcome[]): ProductCollectionR
     rowCount: 0,
     itemCount: products.reduce((n, product) => n + product.itemCount, 0),
     committedCount,
+    counts: {},
     status: products.some((product) => product.status === "failed")
       ? committedCount > 0 ? "partial" : "failed" : "completed",
   };

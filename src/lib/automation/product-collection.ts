@@ -15,6 +15,7 @@ import {
   WORKFLOW_FAILURE_ENDS_RUN,
   type TypedWorkflowErrorCode,
 } from "./workflow-failures.ts";
+import type { WorkflowRunCountName } from "./workflow-run-result.ts";
 import type {
   WorkflowEventCounts,
   WorkflowFinancialCommitPort,
@@ -138,9 +139,18 @@ export function sanitizeCollectionProductOutcomes(
   return Object.freeze(outcomes);
 }
 
+/** The counts the run itself keeps; a collector never reports them. */
+const RUN_COUNT_NAMES = ["sourceCaptureCount", "rowCount", "itemCount", "committedCount"] as const;
+
+/** A count only a provider knows, such as its accounts (ADR 0122). */
+export type ProductCollectorCountName = Exclude<WorkflowRunCountName, typeof RUN_COUNT_NAMES[number]>;
+export type ProductCollectorCounts = Readonly<Partial<Record<ProductCollectorCountName, number>>>;
+
 export type ProductCollectionSummary = Readonly<{
   sourceCaptureCount: number;
   rowCount: number;
+  /** This product's provider counts; the run sums them over the products that succeeded (ADR 0122). */
+  counts?: ProductCollectorCounts;
   /** Use only when the completed source response explicitly proves no data. */
   noDataEvidence?: boolean;
   /** The source completed with intentional exclusions and no admitted items. */
@@ -153,6 +163,11 @@ export type ProductCollectionRunSummary = Readonly<{
   rowCount: number;
   itemCount: number;
   committedCount: number;
+  /**
+   * The successful products' provider counts summed by name, with each
+   * successful Attached Preview Product's items as accounts (ADR 0122).
+   */
+  counts: ProductCollectorCounts;
   /** Receipts of verified products only, when Attached Preview Products also wrote; absent means every receipt is verified. */
   verifiedCommittedCount?: number;
   /** Every verified item the run committed was a source assertion (ADR 0064); absent means false. */
@@ -313,6 +328,8 @@ export function interruptedProductCollectionFromOutput(
     rowCount: readCount("rowCount"),
     itemCount: readCount("itemCount"),
     committedCount,
+    counts: Object.freeze(Object.fromEntries(Object.entries(counts).filter(([name, count]) =>
+      !(RUN_COUNT_NAMES as readonly string[]).includes(name) && isSafeCount(count as number)))),
     status: productRunStatus(products, committedCount),
   }));
 }
@@ -352,6 +369,37 @@ export type CollectSelectedProductsOptions<TId extends CollectionProductTypeId> 
 
 function isSafeCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
+}
+
+function collectorCountsAreValid(counts: unknown): boolean {
+  if (counts === undefined) return true;
+  if (!counts || typeof counts !== "object" || Array.isArray(counts)) return false;
+  return Object.entries(counts).every(([name, value]) =>
+    !(RUN_COUNT_NAMES as readonly string[]).includes(name) && isSafeCount(value as number));
+}
+
+/** Adds `counts` into `totals` by name. */
+function addCounts(totals: Partial<Record<ProductCollectorCountName, number>>, counts: ProductCollectorCounts | undefined): void {
+  for (const [name, value] of Object.entries(counts ?? {}) as [ProductCollectorCountName, number][]) {
+    const next = (totals[name] ?? 0) + value;
+    if (!isSafeCount(next)) throw new FailureCodeError("workflow-failed");
+    totals[name] = next;
+  }
+}
+
+/** Sums the successful products' counts by name, adding the attached accounts when `attached` ran. */
+function summedCounts(
+  verified: ProductCollectorCounts,
+  attached: readonly CollectionProductOutcome[] | null,
+): ProductCollectorCounts {
+  const totals: Partial<Record<ProductCollectorCountName, number>> = {};
+  addCounts(totals, verified);
+  if (attached) {
+    addCounts(totals, {
+      accountCount: attached.reduce((total, product) => total + (product.status === "success" ? product.itemCount : 0), 0),
+    });
+  }
+  return Object.freeze(totals);
 }
 
 function slug(typeId: string): string {
@@ -397,6 +445,7 @@ function summarize(
   rowCount: number,
   itemCount: number,
   committedCount: number,
+  counts: ProductCollectorCounts,
 ): ProductCollectionRunSummary {
   return Object.freeze({
     products: Object.freeze([...outcomes]),
@@ -404,6 +453,7 @@ function summarize(
     rowCount,
     itemCount,
     committedCount,
+    counts: Object.freeze({ ...counts }),
     status: productRunStatus(outcomes, committedCount),
   });
 }
@@ -450,6 +500,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
   let rowCount = 0;
   let itemCount = 0;
   let committedCount = 0;
+  const collectorCounts: Partial<Record<ProductCollectorCountName, number>> = {};
   let firstFailure: unknown = null;
   let committedAny = false;
   let committedOnlySourceAssertions = true;
@@ -460,7 +511,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
   for (const typeId of selectedIds) {
     if (signal.aborted) {
       throw new ProductCollectionInterruptedError("cancelled", summarize(
-        orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+        orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,
       ));
     }
     const stagedItems: PGliteWorkflowRunItem[] = [];
@@ -507,6 +558,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
 
       if (!isSafeCount(collected.sourceCaptureCount)
         || !isSafeCount(collected.rowCount)
+        || !collectorCountsAreValid(collected.counts)
         || (collected.noDataEvidence !== undefined && typeof collected.noDataEvidence !== "boolean")
         || (collected.completeWithExclusions !== undefined && typeof collected.completeWithExclusions !== "boolean")
         || (collected.completeWithExclusions === true
@@ -522,6 +574,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         if (collected.completeWithExclusions === true) {
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
+          addCounts(collectorCounts, collected.counts);
           completedByType.set(typeId, createOutcome(typeId, "success"));
           await emitProductEvent("collection", "completed", `${codePrefix}-collection-completed-with-exclusions`, {
             completed: sourceCountForProduct,
@@ -529,7 +582,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           });
           if (signal.aborted) {
             throw new ProductCollectionInterruptedError("cancelled", summarize(
-              orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+              orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,
             ));
           }
         } else if (collected.noDataEvidence === true) {
@@ -539,7 +592,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           await emitProductEvent("collection", "completed", `${codePrefix}-collection-no-data`);
           if (signal.aborted) {
             throw new ProductCollectionInterruptedError("cancelled", summarize(
-              orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+              orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,
             ));
           }
         } else {
@@ -590,7 +643,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           errorCode: "commit-outcome-unknown",
         });
         completedByType.set(typeId, commitFailure);
-        const partialSummary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
+        const partialSummary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts);
         throw new ProductCollectionInterruptedError("commit-outcome-unknown", partialSummary);
       }
 
@@ -603,7 +656,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           errorCode,
         }));
         throw new ProductCollectionInterruptedError(errorCode, summarize(
-          orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+          orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,
         ));
       }
       if (commitResult.status !== "completed") {
@@ -631,6 +684,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         continue;
       }
 
+      addCounts(collectorCounts, collected.counts);
       completedByType.set(typeId, createOutcome(typeId, "success", productItemCount, receiptsForProduct));
     } catch (error) {
       if (error instanceof ProductCollectionInterruptedError) throw error;
@@ -644,7 +698,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           completedByType.set(typeId, createOutcome(typeId, "failed", existing?.itemCount ?? 0, existing?.committedCount ?? 0, {
             errorCode: sessionCode,
           }));
-          const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
+          const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts);
           throw new ProductCollectionInterruptedError(sessionCode, summary);
         }
       };
@@ -660,7 +714,7 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
           }));
         }
         await endOnLostSession();
-        const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
+        const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts);
         throw withCause(new ProductCollectionInterruptedError(errorCode, summary), error);
       }
 
@@ -678,12 +732,12 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
 
     if (signal.aborted) {
       throw new ProductCollectionInterruptedError("cancelled", summarize(
-        orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount,
+        orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,
       ));
     }
   }
 
-  const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount);
+  const summary = summarize(orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts);
   if (signal.aborted) throw new ProductCollectionInterruptedError("cancelled", summary);
   const finished = finishProductCollectionRun(
     { ...summary, sourceOnly: committedAny && committedOnlySourceAssertions },
@@ -722,6 +776,7 @@ function finishProductCollectionRun(
     rowCount: verified.rowCount + (attached?.receipts.reduce((total, receipt) => total + receipt.transactions, 0) ?? 0),
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount: committed,
+    counts: summedCounts(verified.counts, attached?.products ?? null),
     ...(attached ? { verifiedCommittedCount: verified.committedCount } : {}),
     ...(verified.sourceOnly ? { sourceOnly: true } : {}),
     status: productRunStatus(products, committed),

@@ -6,7 +6,7 @@ import { isWorkflowRunResult, productRunResult, workflowRunResult } from "./work
 
 function summary(
   products: readonly CollectionProductOutcome[],
-  extra: Partial<ProductCollectionRunSummary> = {},
+  extra: Partial<Omit<ProductCollectionRunSummary, "counts">> & Readonly<{ counts?: ProductCollectionRunSummary["counts"] }> = {},
 ): ProductCollectionRunSummary {
   const committedCount = products.reduce((total, product) => total + product.committedCount, 0);
   return {
@@ -15,6 +15,7 @@ function summary(
     rowCount: 3,
     itemCount: products.reduce((total, product) => total + product.itemCount, 0),
     committedCount,
+    counts: {},
     status: productRunStatus(products, committedCount),
     ...extra,
   };
@@ -43,10 +44,10 @@ test("a product run's status follows its verified receipts and reported absence"
   }
 });
 
-test("a product run result carries the run counts, overridden by provider-scoped counts", () => {
-  assert.deepEqual(productRunResult(summary([success]), { counts: { accountCount: 1, rowCount: 2 } }).counts, {
+test("a product run result carries the run counts and the collectors' summed counts", () => {
+  assert.deepEqual(productRunResult(summary([success], { counts: { accountCount: 1 } })).counts, {
     sourceCaptureCount: 1,
-    rowCount: 2,
+    rowCount: 3,
     itemCount: 2,
     committedCount: 2,
     accountCount: 1,

@@ -131,7 +131,6 @@ async function runCathayAllWorkflow(
       context.signal,
     );
     const observedAt = context.now();
-    let statementCaptureCount = 0;
     const acquireCurrentBalances = (kind: "domestic" | "foreign", product: ProductCollectionHandle) => () =>
       readCathayCurrentDepositBalanceResponse(page, kind, product);
 
@@ -214,7 +213,6 @@ async function runCathayAllWorkflow(
           product,
         });
         product.stage(...balances);
-        statementCaptureCount += domestic.captureCount;
         return {
           // Keep this legacy field scoped to statement-source captures;
           // the run counts the staged balance command items.
@@ -279,7 +277,6 @@ async function runCathayAllWorkflow(
           product,
         });
         product.stage(...balances);
-        statementCaptureCount += foreign.captures.length;
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,
@@ -297,8 +294,6 @@ async function runCathayAllWorkflow(
       },
     });
 
-    return productRunResult(summary, {
-      counts: { count: statementCaptureCount },
-    });
+    return productRunResult(summary);
   });
 }

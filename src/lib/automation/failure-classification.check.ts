@@ -15,7 +15,7 @@ const signal = (name: NonNullable<FailureEvidenceEvent["signal"]>): FailureEvide
   ({ stage: "authentication", outcome: "failed", signal: name });
 const timeout = Object.assign(new Error("private provider text"), { name: "TimeoutError" });
 const untyped = new Error("contains private account 123");
-const emptySummary = { status: "failed", sourceCaptureCount: 0, rowCount: 0, itemCount: 0, committedCount: 0, products: [] } as const;
+const emptySummary = { status: "failed", sourceCaptureCount: 0, rowCount: 0, itemCount: 0, committedCount: 0, counts: {}, products: [] } as const;
 
 const cases: ReadonlyArray<readonly [string, Partial<FailureEvidence>, TypedWorkflowErrorCode]> = [
   ["a missing solver route outranks a thrown error", { error: new SourceUnavailableError(), events: [signal("solver-route-unavailable")] }, "verification-configuration-failed"],

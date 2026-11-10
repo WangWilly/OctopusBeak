@@ -176,7 +176,6 @@ try {
         rowCount: 9,
         itemCount: 3,
         committedCount: 3,
-        skippedProductCount: 0,
       },
       products: [
         { typeId: "deposit", status: "success", itemCount: 1, committedCount: 1 },

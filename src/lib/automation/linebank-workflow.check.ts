@@ -318,7 +318,7 @@ test("LINE Bank typed workflow admits complete in-memory sources through the inj
       status: "financial-admitted",
       counts: {
         sourceCaptureCount: 1, rowCount: 1, itemCount: 2, committedCount: 2,
-        accountCount: 1, statementRowCount: 1, financialItemCount: 2,
+        accountCount: 1,
       },
       products: [{ typeId: "deposit", status: "success", itemCount: 2, committedCount: 2 }],
     });
@@ -352,7 +352,7 @@ test("a LINE Bank run that commits a zero-record capture is financial-admitted, 
   const harness = createContext({ page: createPage({ noTransactions: true }) });
   const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
   assert.equal(result.status, "financial-admitted", "LINE Bank stages no source assertion, so a committed run is financial (ADR 0064)");
-  assert.equal(result.counts.statementRowCount, 0);
+  assert.equal(result.counts.rowCount, 0);
   assert.ok((result.counts.committedCount ?? 0) > 0);
 });
 
