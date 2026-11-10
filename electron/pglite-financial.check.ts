@@ -515,55 +515,6 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
   }
 });
 
-test("worker named mixed command keeps raw and derived source captures atomic", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-mixed-rpc-"));
-  const worker = new Worker(new URL("./pglite-view-worker.ts", import.meta.url), {
-    execArgv: ["--experimental-strip-types"],
-    workerData: { dataDir, settingsPath: join(dataDir, "settings.json") },
-  });
-  const client = createPGliteViewWorkerClient(worker);
-  try {
-    const result = await client.financial.request("financial.mixed.commit", [{
-      steps: [
-        { kind: "source", request: sourceCommitRequest("raw-rpc").capture },
-        { kind: "financial", request: sourceCommitRequest("derived-rpc") },
-      ],
-    }]);
-    assert.equal(result.admissions.length, 1);
-    assert.equal(result.financial.length, 1);
-    const spending = await client.financial.request("financial.spending.current", []);
-    assert.deepEqual(spending.canonical.transactions, [], "the live read returns a compact summary, not full transaction rows");
-    assert.equal(spending.purchaseReport.summary?.recordCount, 0, "the unclassified source fact is outside the purchase row set");
-    const committedPage = await client.financial.request("financial.spending.recordPage", [{
-      knowledgeAt: spending.purchaseReport.knowledgeAt,
-      month: "2026-01",
-      day: "2026-01-01",
-    }]);
-    assert.ok(!("stale" in committedPage));
-    assert.deepEqual(committedPage.records, [], "the mixed command's unclassified fact is not a purchase row");
-    const invalid = sourceCommitRequest("invalid-rpc");
-    await assert.rejects(client.financial.request("financial.mixed.commit", [{
-      steps: [
-        { kind: "source", request: sourceCommitRequest("rollback-rpc").capture },
-        { kind: "financial", request: { ...invalid, account: { ...invalid.account, accountType: "invalid" as "depository" } } },
-      ],
-    }]), /PGlite financial operation failed/u);
-    const reopened = await client.financial.request("financial.spending.current", []);
-    assert.deepEqual(reopened.canonical.transactions, [], "a failed mixed command keeps the compact response shape");
-    assert.equal(reopened.purchaseReport.summary?.recordCount, 0, "a failed mixed command must not add a purchase row");
-    const afterRollbackPage = await client.financial.request("financial.spending.recordPage", [{
-      knowledgeAt: reopened.purchaseReport.knowledgeAt,
-      month: "2026-01",
-      day: "2026-01-01",
-    }]);
-    assert.ok(!("stale" in afterRollbackPage));
-    assert.deepEqual(afterRollbackPage.records, [], "rollback preserves the empty eligible purchase page");
-  } finally {
-    await client.close();
-    await rm(dataDir, { recursive: true, force: true });
-  }
-});
-
 /** Every dependency a view can name, each recording its watchers so a check can fire them. */
 function fakeDependencies(watch: () => void = () => {}) {
   const watchers: LiveViewDependencySignals[] = [];

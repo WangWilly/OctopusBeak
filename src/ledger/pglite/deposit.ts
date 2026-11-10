@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
+import type { PGliteStore } from "./transaction.ts";
 import {
   commitPGliteCanonicalFinancialCapture,
-  commitPGliteCanonicalFinancialCaptureInTransaction,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalFinancialCommitResult,
   type PGliteCanonicalFinancialCommitRequest,
@@ -706,19 +705,3 @@ export async function commitPGliteCanonicalDepositCapture(
   );
   return readDepositCommit(store, normalized, result);
 }
-
-/** Compose deposit evidence with another domain inside one owner transaction. */
-export async function commitPGliteCanonicalDepositCaptureInTransaction(
-  transaction: PGliteTransaction,
-  request: PGliteCanonicalDepositCommitRequest | CanonicalFinancialDepositCapture,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalDepositCommitResult> {
-  const normalized = normalizeRequest(request);
-  const result = await commitPGliteCanonicalFinancialCaptureInTransaction(
-    transaction,
-    toFinancialRequest(normalized),
-    options,
-  );
-  return readDepositCommit(transaction, normalized, result);
-}
-

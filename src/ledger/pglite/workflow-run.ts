@@ -122,12 +122,7 @@ function diagnostic(
 }
 
 function admissionSummaries(value: unknown): readonly PGliteWorkflowAdmissionSummary[] {
-  const mixed = value && typeof value === "object" && "admissions" in value
-    ? value as { admissions?: unknown; financial?: unknown; deposits?: unknown }
-    : null;
-  const values = mixed
-    ? [mixed.admissions, mixed.financial, mixed.deposits].flatMap((part) => Array.isArray(part) ? part : [])
-    : Array.isArray(value) ? value : [value];
+  const values = Array.isArray(value) ? value : [value];
   if (values.length === 0) throw new Error("Financial command returned no source admissions.");
   return Object.freeze(values.map((candidate) => {
     if (!candidate || typeof candidate !== "object")

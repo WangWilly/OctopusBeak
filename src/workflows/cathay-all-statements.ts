@@ -25,14 +25,19 @@ import {
   type CathayForeignQueryRange,
 } from "./cathay-foreign-statements.ts";
 import {
-  captureCathayDomesticCurrentBalances,
-  captureCathayForeignCurrentBalances,
+  cathayDomesticCurrentBalanceSnapshot,
+  cathayForeignCurrentBalanceSnapshot,
+  type CathayAdmittedDeposit,
 } from "./cathay-current-deposit-canonical.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import { PGLITE_CANONICAL_MIXED_COMMIT_COMMAND } from "../ledger/pglite/workflow-client.ts";
-import type { PGliteCanonicalMixedCommitStep } from "../ledger/pglite/mixed-commit.ts";
+import {
+  admitCathayDomesticDepositCapture,
+  type CathayDomesticDepositSyncInput,
+} from "../ledger/canonical/cathay-domestic-deposit-admission.ts";
+import type { CanonicalFinancialDepositCapture } from "../ledger/canonical/canonical-financial-deposit-admission.ts";
 import type { WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { CATHAY_CREDENTIAL_FIELDS, CATHAY_PRODUCTS } from "../lib/automation/server/sources/cathay.ts";
@@ -83,7 +88,18 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 }>;
 
 
-/** The foreign API takes the period's dates directly. */
+function admitCathayDomesticAccount(account: CathayDomesticDepositSyncInput): CanonicalFinancialDepositCapture {
+  try {
+    return admitCathayDomesticDepositCapture(account);
+  } catch (error) {
+    throw new Error("Cathay domestic source admission rejected an account's source.", { cause: error });
+  }
+}
+
+function admittedDeposits(admissions: readonly DepositAdmission<CathayAdmittedDeposit>[]): readonly CathayAdmittedDeposit[] {
+  return admissions.flatMap(({ balance }) => balance === undefined ? [] : [balance]);
+}
+
 /** The foreign-currency query asks for the same dates as the domestic one, leap-day start included. */
 function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRange {
   const { startDate, endDate } = cathayQueryPeriod(period);
@@ -176,47 +192,37 @@ async function runCathayAllWorkflow(
           )(page, input, session, product, observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
-        if (
-          domestic.captureCount === 0 ||
-          domestic.requests.length !== domestic.captureCount
-        ) {
+        if (domestic.accounts.length === 0) {
           throw new Error("Cathay domestic selected source set is incomplete.");
         }
         await context.event("collection", "completed", "domestic-collection-completed", {
-          completed: domestic.captureCount,
-          total: domestic.captureCount,
+          completed: domestic.accounts.length,
+          total: domestic.accounts.length,
         });
         await context.event("validation", "started", "domestic-admission-started", {
-          total: domestic.requests.length,
+          total: domestic.accounts.length,
         });
-        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
-        for (const request of domestic.requests) {
+        const admissions: DepositAdmission<CathayAdmittedDeposit>[] = [];
+        for (const account of domestic.accounts) {
           context.signal.throwIfAborted();
-          statementSteps.push({ kind: "financial", request });
+          admissions.push(await admitDeposit<CathayAdmittedDeposit>(product, () => {
+            const deposit = admitCathayDomesticAccount(account);
+            return { product: "domestic-statements", capture: deposit, balance: deposit };
+          }));
         }
-        product.stage({
-          product: "domestic-statements",
-          itemKey: `statements:${context.runId}:domestic`,
-          command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: statementSteps },
-          },
-        });
         await context.event("validation", "completed", "domestic-admission-completed", {
-          completed: domestic.requests.length,
-          total: domestic.requests.length,
+          completed: domestic.accounts.length,
+          total: domestic.accounts.length,
         });
         await product.reportActivity("query");
-        const balances = await captureCathayDomesticCurrentBalances({
-          admitted: domestic.requests,
+        await stageCanonicalDeposits(product, admissions, {
+          snapshot: cathayDomesticCurrentBalanceSnapshot(admittedDeposits(admissions)),
           acquire: acquireCurrentBalances("domestic", product),
-          product,
         });
-        product.stage(...balances);
         return {
           // Keep this legacy field scoped to statement-source captures;
           // the run counts the staged balance command items.
-          sourceCaptureCount: domestic.captureCount,
+          sourceCaptureCount: domestic.accounts.length,
           rowCount: domestic.rowCount,
         };
       },
@@ -250,33 +256,23 @@ async function runCathayAllWorkflow(
         await context.event("validation", "started", "foreign-admission-started", {
           total: foreign.captures.length,
         });
-        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
+        const admissions: DepositAdmission<CathayAdmittedDeposit>[] = [];
         for (const capture of foreign.captures) {
           context.signal.throwIfAborted();
-          statementSteps.push({
-            kind: "deposit",
-            request: { capture: admitForeignCurrencyDepositCapture(capture) },
-          });
+          admissions.push(await admitDeposit<CathayAdmittedDeposit>(product, () => {
+            const deposit = admitForeignCurrencyDepositCapture(capture);
+            return { product: "foreign-currency-statements", capture: deposit, balance: deposit };
+          }));
         }
-        product.stage({
-          product: "foreign-currency-statements",
-          itemKey: `statements:${context.runId}:foreign-currency`,
-          command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: statementSteps },
-          },
-        });
         await context.event("validation", "completed", "foreign-admission-completed", {
           completed: foreign.captures.length,
           total: foreign.captures.length,
         });
         await product.reportActivity("query");
-        const balances = await captureCathayForeignCurrentBalances({
-          admitted: foreign.captures,
+        await stageCanonicalDeposits(product, admissions, {
+          snapshot: cathayForeignCurrentBalanceSnapshot(admittedDeposits(admissions)),
           acquire: acquireCurrentBalances("foreign", product),
-          product,
         });
-        product.stage(...balances);
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,

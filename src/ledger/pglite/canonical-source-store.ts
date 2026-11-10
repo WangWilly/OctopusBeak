@@ -1898,17 +1898,6 @@ export async function admitPGliteCanonicalSourceCaptureInTransaction(
   return persistSourceCapture(transaction, cloneEvidence(request), options);
 }
 
-/** Commit typed financial facts inside a caller-owned PGlite transaction. */
-export async function commitPGliteCanonicalFinancialCaptureInTransaction(
-  transaction: PGliteTransaction,
-  request: PGliteCanonicalFinancialCommitRequest,
-  options: PGliteCanonicalCommitOptions = {},
-): Promise<PGliteCanonicalFinancialCommitResult> {
-  const snapshot = cloneFinancialRequest(request);
-  validateFinancialRequest(snapshot);
-  return commitFinancialRequestInTransaction(transaction, snapshot, options);
-}
-
 /** What the shared financial commit wrote, for a domain command that adds its own rows before projecting. */
 export type PGliteAdmittedFinancialCapture = Readonly<{
   result: PGliteCanonicalFinancialCommitResult;

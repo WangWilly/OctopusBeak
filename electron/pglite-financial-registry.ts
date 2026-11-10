@@ -9,9 +9,6 @@ import {
   commitPGliteCanonicalDepositCapture,
 } from "../src/ledger/pglite/deposit.ts";
 import {
-  commitPGliteCanonicalMixedCapture,
-} from "../src/ledger/pglite/mixed-commit.ts";
-import {
   commitPGliteCanonicalBalanceCapture,
 } from "../src/ledger/pglite/balance.ts";
 import {
@@ -125,7 +122,6 @@ export function createPGliteFinancialRegistry(
     "financial.source.admit": ([request], options) => source.admit(request, options),
     "financial.source.commit": ([request], options) => source.commit(request, options),
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),
-    "financial.mixed.commit": ([request], options) => commitPGliteCanonicalMixedCapture(store, request, options),
     "financial.balance.capture": ([request], options) => commitPGliteCanonicalBalanceCapture(store, request, options),
     "financial.einvoice.commit": ([request], options) => commitPGliteCanonicalEInvoiceCapture(store, request, options),
     "financial.creditCard.commit": ([request], options) => commitPGliteCanonicalCreditCardCapture(store, request, options),

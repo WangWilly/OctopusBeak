@@ -4,16 +4,15 @@ import { PGlite } from "@electric-sql/pglite";
 import {
   SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   admitSinopacStatementCaptureEvidence,
-  createSinopacDomesticDepositSourceEvidence,
   buildSinopacForeignCurrencyFinancialCaptureForPGlite,
   type SinopacStatementCaptureEvidence,
 } from "./sinopac-provider-admission.ts";
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "./sinopac-domestic-adapter.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
-import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
+import { commitPGliteCanonicalDepositCapture } from "./deposit.ts";
 import { PGliteStore } from "./transaction.ts";
 
-test("SinoPac source and human-attested deposit facts commit atomically in PGlite", async () => {
+test("SinoPac human-attested deposit facts commit in PGlite", async () => {
   const duplicateRow = {
     rowOrdinal: 0,
     values: ["2026/08/03", "2026/08/02", "09:10", "SYNTHETIC TRANSFER", "100", "", "900", "SYNTHETIC NOTE", ""],
@@ -66,12 +65,8 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
   try {
-    const result = await commitPGliteCanonicalMixedCapture(store, { steps: [
-      { kind: "source", request: createSinopacDomesticDepositSourceEvidence(capture, "sinopac-source-synthetic") },
-      { kind: "deposit", request: { capture: financial.capture! } },
-    ] });
-    assert.equal(result.admissions.length, 1);
-    assert.equal(result.deposits.length, 1);
+    const result = await commitPGliteCanonicalDepositCapture(store, { capture: financial.capture! });
+    assert.equal(result.transactions.length, 2);
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 2);
 
     const nextSource: SinopacStatementCaptureEvidence = {
@@ -101,10 +96,7 @@ test("SinoPac source and human-attested deposit facts commit atomically in PGlit
       financial.capture?.records.map((record) => record.occurrenceKey),
       "unrelated row insertion leaves SinoPac duplicate group slots stable",
     );
-    await commitPGliteCanonicalMixedCapture(store, { steps: [
-      { kind: "source", request: createSinopacDomesticDepositSourceEvidence(nextAdmitted.capture!, "sinopac-source-synthetic-growth") },
-      { kind: "deposit", request: { capture: nextFinancial.capture! } },
-    ] });
+    await commitPGliteCanonicalDepositCapture(store, { capture: nextFinancial.capture! });
     assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM financial_transactions")).rows[0]?.count, 3);
   } finally {
     await store.close();

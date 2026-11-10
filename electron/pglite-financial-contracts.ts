@@ -36,10 +36,6 @@ import type {
   PGliteCanonicalDepositCommitResult,
 } from "../src/ledger/pglite/deposit.ts";
 import type {
-  PGliteCanonicalMixedCommitRequest,
-  PGliteCanonicalMixedCommitResult,
-} from "../src/ledger/pglite/mixed-commit.ts";
-import type {
   PGliteCanonicalBalanceCaptureRequest,
   PGliteCanonicalBalanceCommitResult,
 } from "../src/ledger/pglite/balance.ts";
@@ -243,18 +239,6 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   "financial.deposit.commit": operation<[request: PGliteCanonicalDepositCommitRequest], PGliteCanonicalDepositCommitResult>(
     (args) => args.length === 1 && plainRecord(args[0])
       && plainRecord((args[0] as Record<string, unknown>).capture),
-    { lane: "background", canonicalCommit: true },
-  ),
-  "financial.mixed.commit": operation<[request: PGliteCanonicalMixedCommitRequest], PGliteCanonicalMixedCommitResult>(
-    (args) => args.length === 1 && plainRecord(args[0])
-      && Array.isArray((args[0] as Record<string, unknown>).steps)
-      && ((args[0] as Record<string, unknown>).steps as unknown[]).length > 0
-      && ((args[0] as Record<string, unknown>).steps as unknown[]).every((step) =>
-        plainRecord(step)
-        && (step.kind === "source" && sourceEvidenceShape(step.request)
-          || step.kind === "financial" && sourceCommitShape(step.request)
-          || step.kind === "deposit" && plainRecord(step.request)
-            && plainRecord(step.request.capture))),
     { lane: "background", canonicalCommit: true },
   ),
   "financial.balance.capture": operation<[request: PGliteCanonicalBalanceCaptureRequest], PGliteCanonicalBalanceCommitResult>(

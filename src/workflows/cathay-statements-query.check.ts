@@ -13,10 +13,11 @@ import {
   collectCathayDomesticFinancialRequests,
 } from "./cathay-statements.ts";
 import {
+  admitCathayDomesticDepositCapture,
   CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH,
   CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION,
-} from "../ledger/pglite/cathay-domestic-admission.ts";
-import { cathayOpaqueIdentity } from "../ledger/pglite/cathay-domestic-adapter.ts";
+  cathayOpaqueIdentity,
+} from "../ledger/canonical/cathay-domestic-deposit-admission.ts";
 
 const dateScopeTelemetry = classifyCathayDateScopeMismatch(
   { startDate: "2025-01-01", endDate: "2025-12-31" },
@@ -452,7 +453,7 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
   },
 );
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);
-assert.equal(directApiCollection.captureCount, 2);
+assert.equal(directApiCollection.accounts.length, 2);
 assert.equal(directApiCollection.rowCount, 0);
 
 {
@@ -474,7 +475,7 @@ assert.equal(directApiCollection.rowCount, 0);
         },
       },
     );
-    const committed = JSON.stringify(collection.requests);
+    const committed = JSON.stringify(collection.accounts.map(admitCathayDomesticDepositCapture));
     assert.ok(committed.includes(cathayOpaqueIdentity(CATHAY_DOMESTIC_DEPOSIT_SOURCE_CONNECTION)), "the contract's source connection");
     assert.ok(committed.includes(cathayOpaqueIdentity(CATHAY_DOMESTIC_DEPOSIT_IDENTITY_EPOCH)), "the contract's identity epoch");
     assert.ok(!committed.includes(cathayOpaqueIdentity("shell-connection")), "not the shell's source connection");

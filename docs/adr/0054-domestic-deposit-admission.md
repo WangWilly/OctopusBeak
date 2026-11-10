@@ -2,6 +2,8 @@
 
 Status: rejected
 
+Refined by [ADR 0126](0126-cathay-stages-through-the-deposit-step.md): Cathay no longer commits a run's statements as one atomic item, and the mixed commit is removed.
+
 ## Decision
 
 The six bank deposit admissions (CTBC, Post, HNCB, Yuanta, Fubon, and SinoPac domestic) stay separate modules. They share only `canonicalDigest`, the SHA-256 domain digest every one of them already computed byte for byte. A shared admission module with one Deposit Source Adapter per bank, and typed commit submissions in place of the PGlite commands workflows build, were both proposed and rejected after reading all six banks.
@@ -19,7 +21,7 @@ An adapter would have to pass every one of these as a parameter. Its interface w
 ## Considered options
 
 - **A shared admission module with a Deposit Source Adapter per bank.** Rejected for the reasons above.
-- **Typed commit submissions, with the commit choosing the command, the atomic grouping, and the order.** Rejected. The commit cannot choose the grouping, because Cathay deliberately commits all of one run's domestic statements as one atomic item and only the workflow knows that. It cannot choose the command either. A mixed commit with one step is not equivalent to that step's own command: the direct commit turns a database error into a typed admission error that the run records as an item failure, while the mixed commit lets the error propagate as a fatal run failure. Every other kind maps one-to-one to its command, so the submission type would only rename commands across twenty workflows.
+- **Typed commit submissions, with the commit choosing the command, the atomic grouping, and the order.** Rejected. The commit cannot choose the grouping, because Cathay deliberately commits all of one run's domestic statements as one atomic item and only the workflow knows that. [ADR 0126](0126-cathay-stages-through-the-deposit-step.md) later found that grouping protected no invariant and removed it. It cannot choose the command either. A mixed commit with one step is not equivalent to that step's own command: the direct commit turns a database error into a typed admission error that the run records as an item failure, while the mixed commit lets the error propagate as a fatal run failure. Every other kind maps one-to-one to its command, so the submission type would only rename commands across twenty workflows.
 - **Relation commands as a list built with the item, instead of a callback after commit.** Rejected. Building Yuanta's loan relation evidence can throw for a complete account with no records in range. Inside the post-commit callback, that becomes a relation warning and the loan still commits. Built with the item, it fails the whole run.
 
 ## Consequences
