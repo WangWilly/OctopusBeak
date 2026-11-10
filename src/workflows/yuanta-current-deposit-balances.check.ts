@@ -7,8 +7,8 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { sourceReader } from "./provider-response-reader.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   YUANTA_CURRENT_DEPOSIT_DOMESTIC_HEADERS,
   YUANTA_CURRENT_DEPOSIT_FOREIGN_HEADERS,
   YUANTA_CURRENT_DEPOSIT_RESPONSE,
@@ -17,6 +17,9 @@ import {
   readYuantaCurrentDepositTableCells,
 } from "./yuanta-current-deposit-balances.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
+
+const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
+const BALANCE_PATH = DOMESTIC_CONTRACT.endpointPath;
 
 type Cell = {
   kind: "cell";
@@ -115,7 +118,7 @@ function data(values: readonly string[], hidden: readonly string[] = []): Row {
 const rawResponse = (
   overrides: Partial<ProviderResponse> = {},
 ): ProviderResponse => ({
-  url: `https://ebank.yuantabank.com.tw${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`,
+  url: `https://ebank.yuantabank.com.tw${BALANCE_PATH}`,
   status: 200,
   method: "POST",
   headers: {
@@ -296,7 +299,7 @@ assert.throws(
   /method is not POST/u,
 );
 assert.equal(
-  verified(rawResponse({ url: `https://ebank.yuantabank.com.tw${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?cid=x` })).url.search,
+  verified(rawResponse({ url: `https://ebank.yuantabank.com.tw${BALANCE_PATH}?cid=x` })).url.search,
   "?cid=x",
   "Yuanta admits any query on the summary POST",
 );
@@ -381,7 +384,7 @@ async function readThroughShell(
           return await html(`<iframe name="fmenu" src="/nib/menu.jsp"></iframe><iframe name="fmain" src="/nib/tx/fxtransactiondetails${query}"></iframe>`);
         case "/nib/tx/summary":
           return await html(SUMMARY_PAGE);
-        case YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH: {
+        case BALANCE_PATH: {
           if (options.holdBalance) {
             options.holdBalance();
             return;
@@ -426,7 +429,7 @@ test("the foreign reader reopens the summary with the session's cid, reveals the
   const { rows, served, clicks } = await readThroughShell("foreign");
   assert.ok(served.includes(`GET /nib/tx/summary?type=page&cid=${CID}`), "fmain is sent back to the summary route");
   assert.deepEqual(clicks, { tab: 1, hidden: false }, "the FX tab is clicked once and the hidden link never");
-  assert.ok(served.includes(`POST ${YUANTA_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}`));
+  assert.ok(served.includes(`POST ${BALANCE_PATH}`));
   assert.deepEqual(
     rows.map((row) => [row.kind, row.accountNumber, row.currency, row.ledger.sourceLexeme, row.providerHttpDate]),
     [["foreign", "0011223344556677", "USD", "1,010.75", balanceHeaders.date]],
@@ -460,3 +463,15 @@ assert.doesNotMatch(source, /\bfetch\s*\(/u);
 assert.doesNotMatch(source, /click\(\{\s*force:/u);
 
 console.log("yuanta-current-deposit-balances.check passed");
+
+test("Yuanta's two current-balance routes share the one declared POST", () => {
+  const foreign = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/foreign-currency/current-balance-v1"];
+  for (const contract of [DOMESTIC_CONTRACT, foreign]) {
+    assert.equal(contract.endpointHost, YUANTA_CURRENT_DEPOSIT_RESPONSE.host);
+    assert.deepEqual(
+      YUANTA_CURRENT_DEPOSIT_RESPONSE.endpoints.map((endpoint) => endpoint.path),
+      [contract.endpointPath],
+    );
+    assert.deepEqual(contract.requiredCacheTokens, YUANTA_CURRENT_DEPOSIT_RESPONSE.cacheControl);
+  }
+});
