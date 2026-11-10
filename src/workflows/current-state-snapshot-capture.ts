@@ -9,6 +9,7 @@
  * and the standard current-balance progress events.
  */
 import type { CanonicalSourcePage } from "../ledger/canonical/canonical-source-evidence.ts";
+import type { CurrentDepositAuthorityRoute } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
   admitCreditCardCurrentBalanceCapture,
   creditCardCurrentBalanceSourceRecord,
@@ -416,9 +417,13 @@ export type CurrentStateCaptureKind<Entry, SourceRecord, Observation> = Readonly
  * page evidence. The module makes that page the one terminal page, counts its
  * rows, and adds every record and observation.
  */
-export type CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence> = Readonly<{
+export type CurrentStateCaptureEnvelope<
+  Identity,
+  ProviderResponseEvidence,
+  Route extends string = string,
+> = Readonly<{
   captureId: string;
-  authorityRoute: string;
+  authorityRoute: Route;
   contractVersion: string;
   subjectDigest: string;
   identity: Identity;
@@ -434,11 +439,18 @@ export type CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence> = Re
 }>;
 
 /** Assemble a Current-state provider snapshot capture from its envelope and balance entries. */
-export function assembleCurrentStateCapture<Entry, SourceRecord, Observation, Identity, ProviderResponseEvidence>(
+export function assembleCurrentStateCapture<
+  Entry,
+  SourceRecord,
+  Observation,
+  Identity,
+  ProviderResponseEvidence,
+  Route extends string,
+>(
   kind: CurrentStateCaptureKind<Entry, SourceRecord, Observation>,
-  envelope: CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence>,
+  envelope: CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence, Route>,
   entries: readonly Entry[],
-): Omit<CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence>, "page"> & Readonly<{
+): Omit<CurrentStateCaptureEnvelope<Identity, ProviderResponseEvidence, Route>, "page"> & Readonly<{
   pages: readonly CanonicalSourcePage[];
   records: readonly SourceRecord[];
   observations: readonly Observation[];
@@ -504,7 +516,11 @@ const CURRENT_DEPOSIT_BALANCE: CurrentStateCaptureKind<
 
 /** Assemble a current deposit balance capture from its envelope and balance entries. */
 export function assembleCurrentDepositCapture(
-  envelope: CurrentStateCaptureEnvelope<CurrentDepositAccountScope, CurrentDepositBalanceCaptureInput["providerResponse"]>,
+  envelope: CurrentStateCaptureEnvelope<
+    CurrentDepositAccountScope,
+    CurrentDepositBalanceCaptureInput["providerResponse"],
+    CurrentDepositAuthorityRoute
+  >,
   entries: readonly CurrentDepositBalanceEntry[],
 ): CurrentDepositBalanceCaptureInput {
   return assembleCurrentStateCapture(CURRENT_DEPOSIT_BALANCE, envelope, entries);

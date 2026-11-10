@@ -25,6 +25,7 @@ import {
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
+import type { CurrentDepositAuthorityRoute } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositTimeEvidence,
@@ -53,7 +54,7 @@ function token(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
 }
 
-function routeFor(row: CathayCurrentDepositBalanceRow): string {
+function routeFor(row: CathayCurrentDepositBalanceRow): CurrentDepositAuthorityRoute {
   return row.kind === "domestic"
     ? CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE
     : CATHAY_CURRENT_FOREIGN_BALANCE_AUTHORITY_ROUTE;
