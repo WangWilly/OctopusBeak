@@ -45,7 +45,7 @@ import {
   readCurrentStateSnapshot,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
+import { admitCreditCards, stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderResponse } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
@@ -2255,30 +2255,30 @@ export async function stageFubonCreditCard(
         },
       };
 
-  const canonicalCaptures =
-    capture.snapshotMode === "full"
-      ? buildFubonCanonicalCreditCardCaptures({
-          captureId: capture.captureId,
-          observedAt: capture.capturedAt,
-          statementRows: sortedStatementRows,
-          unbilledRows: sortedUnbilledRows,
-          summaries,
-          gridStates,
-          input,
-          panFingerprintKey: input.panFingerprintKey,
-      })
-      : [];
-  if (capture.snapshotMode !== "full")
-    throw new Error("Fubon credit-card source is incomplete for the selected product scope.");
-  if (canonicalCaptures.length === 0 &&
-    statementRows.length + unbilledRows.length > 0)
-    throw new Error("Fubon credit-card source has no admissible Canonical Financial Commit capture.");
+  const cards = await admitCreditCards(product, () => {
+    if (capture.snapshotMode !== "full")
+      throw new Error("Fubon credit-card source is incomplete for the selected product scope.");
+    const canonicalCaptures = buildFubonCanonicalCreditCardCaptures({
+      captureId: capture.captureId,
+      observedAt: capture.capturedAt,
+      statementRows: sortedStatementRows,
+      unbilledRows: sortedUnbilledRows,
+      summaries,
+      gridStates,
+      input,
+      panFingerprintKey: input.panFingerprintKey,
+    });
+    if (canonicalCaptures.length === 0 &&
+      statementRows.length + unbilledRows.length > 0)
+      throw new Error("Fubon credit-card source has no admissible Canonical Financial Commit capture.");
+    return canonicalCaptures.map((canonical) => ({
+      capture: canonical,
+      request: fubonCreditCardCommandRequest(canonical, fubonCanonicalSpineCapture(canonical)),
+    }));
+  });
   await stageCanonicalCreditCards(
     product,
-    canonicalCaptures.map((capture) => ({
-      capture,
-      request: fubonCreditCardCommandRequest(capture, fubonCanonicalSpineCapture(capture)),
-    })),
+    cards,
     currentUsedCredit && { snapshot: fubonCurrentUsedCreditSnapshot, rows: currentUsedCredit },
   );
   context.signal.throwIfAborted();

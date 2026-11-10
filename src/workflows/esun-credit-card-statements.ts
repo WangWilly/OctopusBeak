@@ -27,7 +27,7 @@ import {
   readCurrentStateSnapshot,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
+import { admitCreditCards, stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   type ProviderBodyAcquisition,
@@ -1210,7 +1210,7 @@ export async function stageEsunCreditCard(
       grid: timeline,
     },
   };
-  const canonicalCapture: EsunCreditCardValidatedCapture = await product.validate(() => {
+  const cards = await admitCreditCards(product, () => {
     let admitted: EsunCreditCardValidatedCapture | undefined;
     try {
       admitted = buildEsunCanonicalCreditCardCapture({
@@ -1228,19 +1228,19 @@ export async function stageEsunCreditCard(
       throw new Error("E.SUN source failed canonical admission validation.");
     }
     if (!admitted) throw new Error("E.SUN source failed canonical completeness validation.");
-    return admitted;
+    return [{
+      capture: admitted,
+      request: creditCardCommandRequestFromCanonicalCapture(
+        esunCanonicalSpineCapture(admitted),
+        esunNeutralCreditCardCapture(admitted),
+      ),
+    }];
   });
   context.signal.throwIfAborted();
 
   await stageCanonicalCreditCards(
     product,
-    [{
-      capture: canonicalCapture,
-      request: creditCardCommandRequestFromCanonicalCapture(
-        esunCanonicalSpineCapture(canonicalCapture),
-        esunNeutralCreditCardCapture(canonicalCapture),
-      ),
-    }],
+    cards,
     currentUsedCredit && { snapshot: esunCurrentUsedCreditSnapshot, rows: currentUsedCredit },
   );
 

@@ -31,7 +31,7 @@ import {
   readCurrentStateSnapshot,
   type CurrentStateSnapshotDeclaration,
 } from "./current-state-snapshot-capture.ts";
-import { stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
+import { admitCreditCards, stageCanonicalCreditCards, type CurrentUsedCreditCapture } from "./canonical-credit-card-staging.ts";
 import type { ProviderCharset, ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import {
   endsRequestChainFrom,
@@ -1367,28 +1367,29 @@ export async function stageYuantaCreditCard(
       };
 
   if (isFullCapture) {
-    const canonicalCaptures = buildYuantaCanonicalCreditCardCaptures({
-      capture,
-      identity: canonicalHumanAttestation,
-      instrumentFingerprintSecret,
-      allMonthOptions,
-      selectedMonthOptions,
-      includeUnbilled: input.includeUnbilled,
-      includeSummary: input.includeSummary,
-      terminalPages,
-      billedRows,
-      unbilledRows,
-      statementSummaries,
-    });
+    const cards = await admitCreditCards(product, () =>
+      buildYuantaCanonicalCreditCardCaptures({
+        capture,
+        identity: canonicalHumanAttestation,
+        instrumentFingerprintSecret,
+        allMonthOptions,
+        selectedMonthOptions,
+        includeUnbilled: input.includeUnbilled,
+        includeSummary: input.includeSummary,
+        terminalPages,
+        billedRows,
+        unbilledRows,
+        statementSummaries,
+      }).map((canonical) => ({
+        capture: canonical,
+        request: creditCardCommandRequestFromCanonicalCapture(
+          yuantaCanonicalSpineCapture(canonical),
+          yuantaNeutralCreditCardCapture(canonical),
+        ),
+      })));
     await stageCanonicalCreditCards(
       product,
-      canonicalCaptures.map((capture) => ({
-        capture,
-        request: creditCardCommandRequestFromCanonicalCapture(
-          yuantaCanonicalSpineCapture(capture),
-          yuantaNeutralCreditCardCapture(capture),
-        ),
-      })),
+      cards,
       currentUsedCredit && { snapshot: yuantaCurrentUsedCreditSnapshot, rows: currentUsedCredit },
     );
   }

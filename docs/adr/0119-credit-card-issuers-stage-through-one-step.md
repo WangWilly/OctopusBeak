@@ -4,6 +4,8 @@ Status: accepted
 
 Refines how [ADR 0108](0108-a-broken-credit-card-current-snapshot-fails-the-card-capture.md) holds its guarantee.
 
+Refined by [ADR 0121](0121-deposit-sources-stage-through-one-step-that-runs-their-admission.md): issuers admit their cards through `admitCreditCards`, inside `product.validate`.
+
 ## Context
 
 Fubon, Yuanta and E.SUN each wrote the same staging tail by hand: key each card commit by its capture id, bind the current used credit to a card, stage the snapshot, and stage the items. E.SUN staged its card before it staged the snapshot. A broken snapshot still failed the E.SUN card capture, but only because the run discards a product's staged items when the collector throws.
