@@ -8,7 +8,7 @@ import { sourceReader } from "./provider-response-reader.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import {
   HNCB_CURRENT_DEPOSIT_DETAIL_ROUTE,
-  HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE,
+  HNCB_CURRENT_DEPOSIT_OVERVIEW_MENU,
 } from "./hncb-current-deposit-balances.ts";
 import {
   HNCB_NETBANK_ORIGIN,
@@ -134,7 +134,7 @@ test("a transaction route opens in main from another signed-in page and returns 
 
 test("the overview menu route waits for the accounting POST, then clicks 帳戶總覽 in the menu frame", () =>
   withHncbShell(async (page, served) => {
-    const { scope, response } = await site(page).read(HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE, reader);
+    const { scope, response } = await site(page).read(HNCB_CURRENT_DEPOSIT_OVERVIEW_MENU, reader);
     assert.equal(frameName(scope), "main");
     assert.equal(new URL(response.url).searchParams.get("trx"), "com.lb.wibc.trx.AcctInfoInq");
     assert.equal(response.method, "GET");

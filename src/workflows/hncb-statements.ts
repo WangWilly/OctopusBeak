@@ -24,9 +24,7 @@ import type { VerificationStage } from "../lib/automation/verification-stage.ts"
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
-  HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION,
-  HNCB_CURRENT_DEPOSIT_BALANCE_HOST,
   parseHncbCurrentDepositBalanceSnapshot,
   parseHncbCurrentDepositOverviewSnapshot,
   HNCB_CURRENT_DEPOSIT_RESPONSE,
@@ -40,6 +38,7 @@ import {
   type CurrentDepositBalanceCaptureInput,
   type CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
@@ -135,7 +134,12 @@ export function buildHncbCurrentDepositBalanceCapture(
     );
   const isOverview =
     String(row.sourceEvidence.transaction) === HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION ||
-    String(row.sourceEvidence.contractVersion) === HNCB_CURRENT_DEPOSIT_OVERVIEW_CONTRACT_VERSION;
+    String(row.sourceEvidence.contractVersion) ===
+      CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"].contractVersion;
+  const route = isOverview
+    ? "hncb/domestic-deposit/current-balance-overview-v1"
+    : "hncb/domestic-deposit/current-balance-v1";
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
   const providerCurrency = row.currency.trim().toUpperCase();
   const canonicalCurrency = identity.currency?.trim().toUpperCase() ?? "";
   if (!isOverview && !providerCurrency)
@@ -163,16 +167,16 @@ export function buildHncbCurrentDepositBalanceCapture(
   const time = {
     effectiveAt: row.effectiveAt,
     effectiveTimeBasis: "provider-http-date",
-    effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+    effectiveTimeRuleVersion: contract.contractVersion,
     sourceField: "HTTP Date",
     sourceValue: row.providerHttpDate,
-    contractVersion: row.sourceEvidence.contractVersion,
+    contractVersion: contract.contractVersion,
   } as const;
   const entries = amountPairs.map(([balanceKind, sourceField, balance]) => ({
     sourceRecordKey: canonicalDigest(
       "hncb-current-deposit-source-record-v1",
       sourceAccountKey,
-      row.sourceEvidence.contractVersion,
+      contract.contractVersion,
       currency,
       balanceKind,
       row.effectiveAt,
@@ -182,7 +186,7 @@ export function buildHncbCurrentDepositBalanceCapture(
     providerKey: canonicalDigest(
       "hncb-current-deposit-provider-record-v1",
       row.accountNumber,
-      row.sourceEvidence.contractVersion,
+      contract.contractVersion,
       currency,
       balanceKind,
       row.effectiveAt,
@@ -210,13 +214,11 @@ export function buildHncbCurrentDepositBalanceCapture(
   }));
   const endpoint =
     row.sourceEvidence.url ??
-    `https://${HNCB_CURRENT_DEPOSIT_BALANCE_HOST}${row.sourceEvidence.endpoint}?trx=${encodeURIComponent(row.sourceEvidence.transaction)}`;
+    `https://${contract.endpointHost}${row.sourceEvidence.endpoint}?trx=${encodeURIComponent(row.sourceEvidence.transaction)}`;
   return assembleCurrentDepositCapture({
     captureId: randomUUID(),
-    authorityRoute: isOverview
-      ? "hncb/domestic-deposit/current-balance-overview-v1"
-      : "hncb/domestic-deposit/current-balance-v1",
-    contractVersion: row.sourceEvidence.contractVersion,
+    authorityRoute: route,
+    contractVersion: contract.contractVersion,
     subjectDigest: identity.subjectDigest,
     identity: {
       integrationNamespace: "hncb",

@@ -490,6 +490,21 @@ assert.throws(
   /not an exact decimal/u,
 );
 
+{
+  const { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } = await import("../ledger/canonical/current-deposit-route-contracts.ts");
+  const detail = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-v1"];
+  const overview = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"];
+  for (const contract of [detail, overview]) {
+    assert.equal(contract.endpointHost, HNCB_CURRENT_DEPOSIT_RESPONSE.host, "both HNCB routes share the declared host");
+    assert.deepEqual(contract.requiredCacheTokens, HNCB_CURRENT_DEPOSIT_RESPONSE.cacheControl, "both HNCB routes share the declared cache tokens");
+  }
+  assert.deepEqual(
+    HNCB_CURRENT_DEPOSIT_RESPONSE.endpoints.map((endpoint) => endpoint.path),
+    [overview.endpointPath, detail.endpointPath],
+    "each HNCB endpoint is its route's contract path",
+  );
+}
+
 const source = await readFile(new URL("./hncb-current-deposit-balances.ts", import.meta.url), "utf8");
 assert.doesNotMatch(source, /\bfetch\s*\(/u);
 
