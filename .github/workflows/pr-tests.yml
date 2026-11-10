@@ -99,6 +99,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          lfs: true
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 25.9.0
+          cache: npm
+
+      # Same retry as the lanes: onnxruntime-node's install script downloads
+      # its native binary and a transient host timeout fails npm ci.
+      - name: Install dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              echo "npm ci failed; retrying in 15s (attempt $attempt of 3)." >&2
+              sleep 15
+            fi
+          done
+          exit 1
+
+      - name: Typecheck
+        run: npm run typecheck
+
   test:
     name: Tests
     needs: lane
