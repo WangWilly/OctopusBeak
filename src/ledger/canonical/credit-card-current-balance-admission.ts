@@ -65,7 +65,7 @@ export type CreditCardCurrentBalanceSourceRecordInput = Readonly<{
 
 export type CreditCardCurrentBalanceCaptureInput = Readonly<{
   captureId: string;
-  authorityRoute: string;
+  authorityRoute: CreditCardCurrentBalanceAuthorityRoute;
   contractVersion: string;
   subjectDigest: string;
   identity: CreditCardCurrentBalanceIdentity;
@@ -109,7 +109,7 @@ export class CanonicalCreditCardCurrentBalanceConflictError extends Error {
   }
 }
 
-type CreditCardRouteContract = Readonly<{
+export type CreditCardRouteContract = Readonly<{
   integrationNamespace: CreditCardCurrentBalanceIdentity["integrationNamespace"];
   contractVersion: string;
   endpointHost: string;
@@ -127,9 +127,7 @@ type CreditCardRouteContract = Readonly<{
 }>;
 
 /** Reviewed endpoints and fields for current issuer credit snapshots. */
-export const CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS: Readonly<
-  Record<string, CreditCardRouteContract>
-> = Object.freeze({
+export const CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS = Object.freeze({
   "yuanta/credit-card/current-used-credit-v1": {
     integrationNamespace: "yuanta",
     contractVersion: "yuanta/credit-card/current-used-credit-v1",
@@ -187,9 +185,12 @@ export const CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS: Readonly<
     effectiveTimeBasis: "provider-http-date",
     effectiveTimeSourceField: "HTTP Date",
   },
-});
+} as const satisfies Readonly<Record<string, CreditCardRouteContract>>);
 
-const CREDIT_CARD_IDENTITY_EPOCHS: Readonly<Record<
+export type CreditCardCurrentBalanceAuthorityRoute =
+  keyof typeof CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS;
+
+export const CREDIT_CARD_IDENTITY_EPOCHS: Readonly<Record<
   CreditCardCurrentBalanceIdentity["integrationNamespace"],
   CreditCardIdentityEpochs
 >> = {
@@ -414,7 +415,10 @@ function parseEndpoint(endpoint: string, contract: CreditCardRouteContract): voi
 }
 
 export function validateCreditCardCurrentBalanceCapture(input: CreditCardCurrentBalanceCaptureInput): CreditCardRouteContract {
-  const contract = CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS[input.authorityRoute];
+  // A capture reaches admission untyped, so its route is looked up as any string.
+  const contract = (CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS as Readonly<
+    Record<string, CreditCardRouteContract | undefined>
+  >)[input.authorityRoute];
   if (!contract) fail("Credit-card current-balance authority route is not contract-approved.");
   if (input.contractVersion !== contract.contractVersion)
     fail("Credit-card capture contract version does not match its route.");

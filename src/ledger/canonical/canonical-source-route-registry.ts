@@ -1,3 +1,8 @@
+import {
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS,
+  CREDIT_CARD_IDENTITY_EPOCHS,
+  type CreditCardCurrentBalanceAuthorityRoute,
+} from "./credit-card-current-balance-admission.ts";
 import { supersededCreditCardSpineEpochKeys } from "./credit-card-identity-epochs.ts";
 import {
   CTBC_HUMAN_ATTESTED_V1_MANIFEST,
@@ -190,6 +195,23 @@ const currentBalanceRoute = (
   };
 };
 
+/** A credit-card current balance route registers what its route contract declares. */
+const creditCardCurrentBalanceRoute = (
+  routeKey: CreditCardCurrentBalanceAuthorityRoute,
+): CanonicalSourceRouteRegistration => {
+  const contract = CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS[routeKey];
+  return {
+    routeKey,
+    integrationNamespace: contract.integrationNamespace,
+    stream: "credit-card",
+    contractVersions: [contract.contractVersion],
+    ruleCombinations: [effectiveTimeOnly(contract.contractVersion, contract.contractVersion)],
+    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(
+      CREDIT_CARD_IDENTITY_EPOCHS[contract.integrationNamespace],
+    ),
+  };
+};
+
 const registrations: readonly CanonicalSourceRouteRegistration[] = ([
   // Source Capture contracts.
   {
@@ -336,38 +358,10 @@ const registrations: readonly CanonicalSourceRouteRegistration[] = ([
     occurrenceGroupCoverage: "queried-buckets",
     supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(YUANTA_CREDIT_CARD_IDENTITY_EPOCHS),
   },
-  {
-    routeKey: "yuanta/credit-card/current-used-credit-v1",
-    integrationNamespace: "yuanta",
-    stream: "credit-card",
-    contractVersions: ["yuanta/credit-card/current-used-credit-v1"],
-    ruleCombinations: [effectiveTimeOnly("yuanta/credit-card/current-used-credit-v1", "yuanta/credit-card/current-used-credit-v1")],
-    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(YUANTA_CREDIT_CARD_IDENTITY_EPOCHS),
-  },
-  {
-    routeKey: "esun/credit-card/current-used-credit-v1",
-    integrationNamespace: "esun",
-    stream: "credit-card",
-    contractVersions: ["esun/credit-card/current-used-credit-v1"],
-    ruleCombinations: [effectiveTimeOnly("esun/credit-card/current-used-credit-v1", "esun/credit-card/current-used-credit-v1")],
-    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS),
-  },
-  {
-    routeKey: "esun/credit-card/current-used-credit-v2",
-    integrationNamespace: "esun",
-    stream: "credit-card",
-    contractVersions: ["esun/credit-card/current-used-credit-v2"],
-    ruleCombinations: [effectiveTimeOnly("esun/credit-card/current-used-credit-v2", "esun/credit-card/current-used-credit-v2")],
-    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(ESUN_CREDIT_CARD_IDENTITY_EPOCHS),
-  },
-  {
-    routeKey: "fubon/credit-card/current-used-credit-v1",
-    integrationNamespace: "fubon",
-    stream: "credit-card",
-    contractVersions: ["fubon/credit-card/current-used-credit-v1"],
-    ruleCombinations: [effectiveTimeOnly("fubon/credit-card/current-used-credit-v1", "fubon/credit-card/current-used-credit-v1")],
-    supersededIdentityEpochs: supersededCreditCardSpineEpochKeys(FUBON_CREDIT_CARD_IDENTITY_EPOCHS),
-  },
+  creditCardCurrentBalanceRoute("yuanta/credit-card/current-used-credit-v1"),
+  creditCardCurrentBalanceRoute("esun/credit-card/current-used-credit-v1"),
+  creditCardCurrentBalanceRoute("esun/credit-card/current-used-credit-v2"),
+  creditCardCurrentBalanceRoute("fubon/credit-card/current-used-credit-v1"),
   {
     routeKey: "cathay/domestic-deposit/v1",
     integrationNamespace: "cathay",

@@ -21,6 +21,7 @@ import { YUANTA_CREDIT_CARD_IDENTITY_EPOCHS } from "../ledger/canonical/yuanta-c
 import { statementGridQueryShortfalls } from "../ledger/canonical/credit-card-query-inventory.ts";
 import {
   canonicalCreditCardCurrentBalanceIdentity,
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS,
   type CreditCardCurrentBalanceCaptureInput,
   type CreditCardExactAmount,
 } from "../ledger/canonical/credit-card-current-balance-admission.ts";
@@ -323,11 +324,14 @@ const YUANTA_CARD_UNBILLED_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   providerDate: "optional",
 };
 
+const YUANTA_CURRENT_USED_CREDIT_CONTRACT =
+  CREDIT_CARD_CURRENT_BALANCE_ROUTE_CONTRACTS["yuanta/credit-card/current-used-credit-v1"];
+
 /** The summary page's own POST, whose first page also carries current used credit. */
 const YUANTA_CARD_SUMMARY_RESPONSE: ProviderResponseDeclaration<"optional"> = {
   label: "Yuanta credit-card summary",
   host: YUANTA_EBANK_HOST,
-  endpoints: [{ path: "/nib/tx/creditcardsummary", method: "POST", search: ANY_QUERY, charset: UTF_8 }],
+  endpoints: [{ path: YUANTA_CURRENT_USED_CREDIT_CONTRACT.endpointPath, method: "POST", search: ANY_QUERY, charset: UTF_8 }],
   cacheControl: [],
   providerDate: "optional",
 };
@@ -631,7 +635,7 @@ export async function loadYuantaCreditCardSummaryPage(
       evidence: "text",
       timeoutMs: 30_000,
       // A redirect hop is skipped: the reply read is the one that ends the summary POST's chain.
-      waitFor: endsRequestChainFrom("/nib/tx/creditcardsummary", "POST"),
+      waitFor: endsRequestChainFrom(YUANTA_CURRENT_USED_CREDIT_CONTRACT.endpointPath, "POST"),
       trigger: async () => {
         navigated = navigate().then(
           (value) => ({ status: "fulfilled", value }),
@@ -789,10 +793,10 @@ function yuantaCreditCurrentSnapshotCapture(
   const time = {
     effectiveAt,
     effectiveTimeBasis: "provider-http-date" as const,
-    effectiveTimeRuleVersion: "yuanta/credit-card/current-used-credit-v1",
+    effectiveTimeRuleVersion: YUANTA_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
     sourceField: "HTTP Date" as const,
     sourceValue: snapshot.httpDate,
-    contractVersion: "yuanta/credit-card/current-used-credit-v1",
+    contractVersion: YUANTA_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
   };
   const estimate = {
     kind: "estimate" as const,
@@ -802,7 +806,7 @@ function yuantaCreditCurrentSnapshotCapture(
   return assembleCurrentCreditCardCapture({
     captureId: `${capture.captureId}:current-used-credit`,
     authorityRoute: "yuanta/credit-card/current-used-credit-v1",
-    contractVersion: "yuanta/credit-card/current-used-credit-v1",
+    contractVersion: YUANTA_CURRENT_USED_CREDIT_CONTRACT.contractVersion,
     subjectDigest: capture.identity.accountNaturalKey,
     identity: canonicalCreditCardCurrentBalanceIdentity({
       integrationNamespace: "yuanta",
@@ -854,9 +858,9 @@ const yuantaCurrentUsedCreditSnapshot: CurrentStateSnapshotDeclaration<
   build: (row, { capture }) => yuantaCreditCurrentSnapshotCapture(capture, row),
   response: {
     label: "Yuanta current used credit",
-    host: "ebank.yuantabank.com.tw",
-    endpoints: [{ path: "/nib/tx/creditcardsummary", method: "POST" }],
-    cacheControl: ["no-store"],
+    host: YUANTA_CURRENT_USED_CREDIT_CONTRACT.endpointHost,
+    endpoints: [{ path: YUANTA_CURRENT_USED_CREDIT_CONTRACT.endpointPath, method: "POST" }],
+    cacheControl: YUANTA_CURRENT_USED_CREDIT_CONTRACT.requiredCacheTokens,
     providerDate: "required",
   },
   parse: (decoded, response) => {
