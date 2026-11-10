@@ -545,8 +545,7 @@ export function validateCapture(
         `Current deposit record ${index} content hash does not match its compact evidence.`,
       );
     if (
-      input.authorityRoute ===
-      "hncb/domestic-deposit/current-balance-overview-v1"
+      input.authorityRoute === HNCB_CURRENT_DEPOSIT_OVERVIEW_ROUTE
     ) {
       const currencyResolution = record.compact.currencyResolution;
       if (
