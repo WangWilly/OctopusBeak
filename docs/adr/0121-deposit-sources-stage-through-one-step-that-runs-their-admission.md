@@ -9,7 +9,7 @@ Extends [ADR 0119](0119-credit-card-issuers-stage-through-one-step.md) to deposi
 SinoPac, HNCB, CTBC, Post, LINE Bank, Fubon, Yuanta and Yuanta foreign currency each wrote the same staging tail by hand: decide whether a capture is source-only or financial, build its command, match the current balances, check the abort signal, and stage everything once. The copies drifted:
 
 - **Item keys.** SinoPac keyed items by position (`domestic-deposit:0`). LINE Bank keyed foreign-currency items by position, Yuanta foreign currency by account number, and CTBC by an occurrence id that differs from the capture id. The others keyed by capture id.
-- **Abort check.** SinoPac and HNCB staged without checking the abort signal after the balance snapshot validated.
+- **Abort check.** SinoPac, HNCB, CTBC and LINE Bank staged without checking the abort signal after the balance snapshot validated.
 - **Validation.** Yuanta and Fubon ran their admissions outside `product.validate`, so an admission that threw failed as `source-collection-failed` instead of `source-validation-failed`.
 - **Order.** HNCB, Yuanta and Fubon staged source-only items before deposits. SinoPac and CTBC staged them in account order.
 
@@ -35,6 +35,7 @@ The step is split in two, not one function that takes admission callbacks, becau
   - Yuanta: the terminal-download check, the evidence and financial admissions, the lost-capture check, and the counterparty evidence admission.
   - Yuanta foreign currency: the capture admission.
   - Fubon: the evidence admission, the financial admission, and the lost-capture check.
+  - HNCB: the lost-capture check.
   - SinoPac, Fubon and Yuanta: building the source evidence, which cannot fail on well-formed captures.
 - Success-path run events and the other sources' goldens are unchanged, because `validate` reports only failures.
 - A new deposit source writes only its admission. Credit-card issuers move to the same shape in a follow-up change.
