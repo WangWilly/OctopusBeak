@@ -13,6 +13,7 @@ import type { CurrentDepositAuthorityRoute } from "../ledger/canonical/current-d
 import {
   admitCreditCardCurrentBalanceCapture,
   creditCardCurrentBalanceSourceRecord,
+  type CreditCardCurrentBalanceAuthorityRoute,
   type CreditCardCurrentBalanceCaptureInput,
   type CreditCardCurrentBalanceEstimate,
   type CreditCardCurrentBalanceIdentity,
@@ -571,7 +572,8 @@ const CURRENT_CREDIT_CARD_BALANCE: CurrentStateCaptureKind<
 export function assembleCurrentCreditCardCapture(
   envelope: CurrentStateCaptureEnvelope<
     CreditCardCurrentBalanceIdentity,
-    CreditCardCurrentBalanceCaptureInput["providerResponse"]
+    CreditCardCurrentBalanceCaptureInput["providerResponse"],
+    CreditCardCurrentBalanceAuthorityRoute
   >,
   entries: readonly CurrentCreditCardBalanceEntry[],
 ): CreditCardCurrentBalanceCaptureInput {
