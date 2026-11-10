@@ -453,7 +453,7 @@ const directApiCollection = await collectCathayDomesticFinancialRequests(
   },
 );
 assert.deepEqual(requestedAccounts, ["0001", "20002"]);
-assert.equal(directApiCollection.captureCount, 2);
+assert.equal(directApiCollection.accounts.length, 2);
 assert.equal(directApiCollection.rowCount, 0);
 
 {

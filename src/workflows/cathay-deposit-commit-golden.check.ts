@@ -124,7 +124,7 @@ test("Cathay domestic and foreign accounts commit statements beside their curren
   };
   const workflow = cathayAllWorkflow({
     createSession: async () => ({ jwtToken: "synthetic-token", customerId: "synthetic", idType: "synthetic" }),
-    collectDomestic: async () => ({ accounts, captureCount: accounts.length, rowCount: 6 }),
+    collectDomestic: async () => ({ accounts, rowCount: 6 }),
     collectForeign: async () => ({
       captures,
       selectedStatementCount: captures.length,

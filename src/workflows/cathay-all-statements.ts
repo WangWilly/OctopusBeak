@@ -192,15 +192,12 @@ async function runCathayAllWorkflow(
           )(page, input, session, product, observedAt, cathayQueryPeriod(product.collectionPeriod())),
           context.signal,
         );
-        if (
-          domestic.captureCount === 0 ||
-          domestic.accounts.length !== domestic.captureCount
-        ) {
+        if (domestic.accounts.length === 0) {
           throw new Error("Cathay domestic selected source set is incomplete.");
         }
         await context.event("collection", "completed", "domestic-collection-completed", {
-          completed: domestic.captureCount,
-          total: domestic.captureCount,
+          completed: domestic.accounts.length,
+          total: domestic.accounts.length,
         });
         await context.event("validation", "started", "domestic-admission-started", {
           total: domestic.accounts.length,
@@ -225,7 +222,7 @@ async function runCathayAllWorkflow(
         return {
           // Keep this legacy field scoped to statement-source captures;
           // the run counts the staged balance command items.
-          sourceCaptureCount: domestic.captureCount,
+          sourceCaptureCount: domestic.accounts.length,
           rowCount: domestic.rowCount,
         };
       },

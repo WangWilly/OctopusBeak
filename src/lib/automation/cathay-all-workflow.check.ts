@@ -219,7 +219,6 @@ function collectionDependencies(
     collectDomestic: async () =>
       override.domestic ?? {
         accounts: [DOMESTIC_ACCOUNT_INPUT],
-        captureCount: 1,
         rowCount: 3,
       },
     collectForeign: async () =>
@@ -384,7 +383,6 @@ test("Cathay all workflow reports incomplete domestic collection without blockin
     collectionDependencies({
       domestic: {
         accounts: [],
-        captureCount: 1,
         rowCount: 0,
       },
     }),
@@ -544,6 +542,33 @@ test("Cathay foreign collector reports a missing selected currency without block
   );
 });
 
+test("a Cathay deposit admission that throws fails its product as a validation failure", async () => {
+  for (const [override, failed] of [
+    [{
+      domestic: {
+        accounts: [{
+          ...DOMESTIC_ACCOUNT_INPUT,
+          pages: [{ ...DOMESTIC_ACCOUNT_INPUT.pages[0]!, rawResponse: DOMESTIC_ACCOUNT_INPUT.pages[0]!.rawResponse.replace('"count":3', '"count":4') }],
+        }],
+        rowCount: 3,
+      },
+    }, "domestic"],
+    [{ foreign: { captures: [{ ...FOREIGN_CAPTURE, records: [{ ...FOREIGN_CAPTURE.records[0]!, sourceKey: " " }] }], selectedStatementCount: 1, rowCount: 1, accountKeys: [FOREIGN_ACCOUNT] } }, "foreign_currency"],
+  ] satisfies [Parameters<typeof collectionDependencies>[0], "domestic" | "foreign_currency"][]) {
+    const harness = contextHarness();
+    const output = await runCathay(harness.context, bothProductsInput, collectionDependencies(override));
+    assert.equal(output.status, "partial");
+    assert.deepEqual(
+      output.products!.map((product) => [product.typeId, product.status, product.errorCode]),
+      [
+        ["domestic", failed === "domestic" ? "failed" : "success", failed === "domestic" ? "source-validation-failed" : undefined],
+        ["foreign_currency", failed === "foreign_currency" ? "failed" : "success", failed === "foreign_currency" ? "source-validation-failed" : undefined],
+      ],
+    );
+    assert.equal(harness.committed.length, 1);
+  }
+});
+
 test("Cathay malformed source decoding is isolated to its product and keeps the summary free of source data", async () => {
   const harness = contextHarness();
   const output = await runCathay(
@@ -555,8 +580,7 @@ test("Cathay malformed source decoding is isolated to its product and keeps the 
         harness.context.text.decode(Uint8Array.from([0xff]), "utf-8");
         return {
           accounts: [DOMESTIC_ACCOUNT_INPUT],
-          captureCount: 1,
-          rowCount: 3,
+            rowCount: 3,
         };
       },
     },

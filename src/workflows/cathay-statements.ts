@@ -1096,7 +1096,6 @@ function parseCathayTransferResponse(
 export type CathayDomesticFinancialCollection = Readonly<{
   /** One admission input per selected account. */
   accounts: readonly CathayDomesticDepositSyncInput[];
-  captureCount: number;
   rowCount: number;
 }>;
 
@@ -1179,7 +1178,6 @@ export async function collectCathayDomesticFinancialRequests(
   }
   return {
     accounts: accountInputs,
-    captureCount: accountInputs.length,
     rowCount: stagedStatements.reduce(
       (sum, statement) => sum + (statement.details?.length ?? 0),
       0,
