@@ -5,9 +5,8 @@ import {
   linebankCurrentBalanceCaptureMatching,
   LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
 } from "./linebank-current-deposit-canonical.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   parseLinebankCurrentDepositBalanceSnapshot,
 } from "./linebank-current-deposit-balances.ts";
@@ -15,6 +14,8 @@ import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts
 import { verifyProviderResponse } from "./provider-response.ts";
 import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
+
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["linebank/domestic-deposit/current-balance-v1"];
 
 const routeRegistration = canonicalSourceRouteRegistration(
   LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
@@ -34,7 +35,7 @@ assert.deepEqual(routeRegistration, {
 });
 
 const response = {
-  url: `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=01`,
+  url: `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}?featureTypeCode=01`,
   status: 200,
   method: "GET",
   headers: {

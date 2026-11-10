@@ -4,11 +4,9 @@ import type {
   CurrentDepositBalanceCaptureInput,
   CurrentDepositExactAmount,
 } from "../ledger/pglite/current-deposit-admission.ts";
+import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
   LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE,
-  LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST,
   type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
 import {
@@ -18,6 +16,7 @@ import {
 
 export const LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE =
   "linebank/domestic-deposit/current-balance-v1" as const;
+const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE];
 
 type ExistingLineBankFinancialCapture = Readonly<{
   accountKey: string;
@@ -34,10 +33,10 @@ function timeEvidence(row: LineBankCurrentDepositBalanceRow) {
   return {
     effectiveAt: row.effectiveAt,
     effectiveTimeBasis: "provider-http-date" as const,
-    effectiveTimeRuleVersion: row.sourceEvidence.contractVersion,
+    effectiveTimeRuleVersion: CONTRACT.contractVersion,
     sourceField: "HTTP Date",
     sourceValue: row.providerHttpDate,
-    contractVersion: row.sourceEvidence.contractVersion,
+    contractVersion: CONTRACT.contractVersion,
   };
 }
 
@@ -61,7 +60,7 @@ export function buildLinebankCurrentDepositBalanceCapture(
     scale: row.available.scale,
   };
   const identity = `${row.sourceAccountKey}|${row.currency}|available|${row.effectiveAt}`;
-  const endpoint = `https://${LINEBANK_CURRENT_DEPOSIT_BALANCE_HOST}${LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH}?featureTypeCode=${LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE}`;
+  const endpoint = `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}?featureTypeCode=${LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE}`;
   const sourceConnectionKey = token(
     "linebank-connection",
     financialCapture.sourceConnection,
@@ -73,7 +72,7 @@ export function buildLinebankCurrentDepositBalanceCapture(
   );
   const contractFingerprint = token(
     "linebank-current-deposit-contract-v1",
-    LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+    CONTRACT.contractVersion,
   );
   const preflightFingerprint = token(
     "linebank-current-deposit-preflight-v1",
@@ -82,7 +81,7 @@ export function buildLinebankCurrentDepositBalanceCapture(
   return assembleCurrentDepositCapture({
     captureId: `linebank-current-${randomUUID()}`,
     authorityRoute: LINEBANK_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
-    contractVersion: LINEBANK_CURRENT_DEPOSIT_BALANCE_CONTRACT_VERSION,
+    contractVersion: CONTRACT.contractVersion,
     subjectDigest: financialCapture.accountKey,
     identity: {
       integrationNamespace: "linebank",
@@ -110,7 +109,7 @@ export function buildLinebankCurrentDepositBalanceCapture(
       preflightFingerprint,
       metadata: {
         source: "linebank-current-deposit-payables",
-        endpoint: LINEBANK_CURRENT_DEPOSIT_BALANCE_ENDPOINT_PATH,
+        endpoint: CONTRACT.endpointPath,
         featureTypeCode: LINEBANK_CURRENT_DEPOSIT_BALANCE_FEATURE_TYPE_CODE,
         accountNumber: row.accountNumber,
         arrangementId: row.arrangementId,
