@@ -19,13 +19,11 @@ import {
   type CurrentDepositBalanceEntry,
   type CurrentBalanceCaptureMatching,
   CURRENT_DEPOSIT_BALANCE_STAGING,
+  type CurrentStateSnapshotDeclaration,
   type SnapshotProduct,
 } from "./current-state-snapshot-capture.ts";
 import type { DecodedProviderEvidence, VerifiedProviderResponse } from "./provider-response.ts";
-import {
-  admitForeignCurrencyDepositCapture,
-  type ForeignCurrencyDepositCaptureInput,
-} from "../ledger/canonical/foreign-currency-deposit-admission.ts";
+import type { CanonicalFinancialDepositCapture } from "../ledger/canonical/canonical-financial-deposit-admission.ts";
 import type { ProductStageRequest } from "../lib/automation/product-collection.ts";
 import type {
   CurrentDepositBalanceCaptureInput,
@@ -346,72 +344,68 @@ function groupForeignAccounts(
   return [...accounts].map(([sourceAccountKey, accountRows]) => ({ sourceAccountKey, rows: accountRows }));
 }
 
-type CathayForeignAdmittedIdentity = Readonly<{
-  accountNo: string;
-  sourceConnectionKey: string;
-  identityEpochKey: string;
-  subjectDigest: string;
+/** The admitted deposit capture a Cathay balance row joins to. */
+export type CathayAdmittedDeposit = Readonly<{
+  identity: Pick<
+    CanonicalFinancialDepositCapture["identity"],
+    "sourceConnectionKey" | "identityEpochKey" | "stream" | "subjectDigest" | "accountNo" | "sourceAccountKey"
+  >;
 }>;
 
+function admittedAccountKey({ identity }: CathayAdmittedDeposit): string {
+  return identity.sourceAccountKey ?? identity.accountNo;
+}
+
 /**
- * Cathay foreign currency keys a balance by the admitted account number. The
- * last capture for an account wins and is never checked for ambiguity, and a
- * row for an account the run did not admit is skipped silently.
+ * A Cathay balance row joins the admitted deposit of its account. Captures
+ * sharing an account, such as one per foreign currency, must agree on its
+ * identity, and a row for an account the run did not admit is skipped.
  */
-export const cathayForeignCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+export const cathayCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
   Readonly<{ sourceAccountKey: string }>,
-  CathayForeignAdmittedIdentity
+  CathayAdmittedDeposit
 > = {
-  captureKey: (identity) => identity.accountNo,
+  captureKey: admittedAccountKey,
   rowKey: (row) => row.sourceAccountKey,
-  duplicates: "last-wins",
-  sameIdentity: () => true,
-  ambiguousMessage: "Cathay current foreign deposit identities are ambiguous.",
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) => kept.identity.subjectDigest === candidate.identity.subjectDigest,
+  ambiguousMessage: "Cathay admitted deposit identities are ambiguous.",
+  oneScope: {
+    scope: ({ identity }) => `${identity.sourceConnectionKey}\u0000${identity.identityEpochKey}\u0000${identity.stream}`,
+    message: "Cathay admitted deposits do not share one source identity.",
+  },
   unmatched: { kind: "skip" },
 };
 
-/** Stage one balance capture per admitted foreign account, holding every currency the overview lists for it. */
-export async function captureCathayForeignCurrentBalances(
-  input: CathayCurrentDepositSnapshotInput<ForeignCurrencyDepositCaptureInput>,
-): Promise<readonly ProductStageRequest[]> {
-  const identities = input.admitted.map((capture): CathayForeignAdmittedIdentity => {
-    const { identity } = admitForeignCurrencyDepositCapture(capture);
-    return {
-      accountNo: capture.accountNo,
+/** One balance capture per admitted foreign account, holding every currency the overview lists for it. */
+export function cathayForeignCurrentBalanceSnapshot(
+  admitted: readonly CathayAdmittedDeposit[],
+): CurrentStateSnapshotDeclaration<CathayCurrentDepositResponse, CathayForeignOverviewAccount, CathayAdmittedDeposit> {
+  return {
+    product: "foreign-current-balance",
+    response: CATHAY_CURRENT_FOREIGN_RESPONSE,
+    parse: (decoded, response, acquired) =>
+      groupForeignAccounts(parseOverview("foreign", decoded, response, acquired)),
+    kind: CURRENT_DEPOSIT_BALANCE_STAGING,
+    matching: cathayCurrentBalanceCaptureMatching,
+    build: (account, { identity }) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
       sourceConnectionKey: identity.sourceConnectionKey,
       identityEpochKey: identity.identityEpochKey,
       subjectDigest: identity.subjectDigest,
-    };
-  });
-  const { items } = await captureCurrentStateSnapshots(
-    {
-      product: "foreign-current-balance",
-      response: CATHAY_CURRENT_FOREIGN_RESPONSE,
-      parse: (decoded, response, acquired) =>
-        groupForeignAccounts(parseOverview("foreign", decoded, response, acquired)),
-      kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-      matching: cathayForeignCurrentBalanceCaptureMatching,
-      build: (account, identity) => onlyCapture(buildCathayCurrentDepositBalanceCaptures(account.rows, {
-        sourceConnectionKey: identity.sourceConnectionKey,
-        identityEpochKey: identity.identityEpochKey,
-        subjectDigest: identity.subjectDigest,
-        observedAt: account.rows[0]!.observedAt,
-        scopeDate: account.rows[0]!.observedAt.slice(0, 10),
-      })),
-      validate: ({ matched }) => {
-        if (matched.length === 0) {
-          throw new Error("Cathay current foreign balance response did not contain an admitted account.");
-        }
-        requireEveryAdmittedAccount(
-          identities.map(({ accountNo }) => accountNo),
-          matched,
-          "Cathay current foreign balance response omitted an admitted account.",
-        );
-      },
+      observedAt: account.rows[0]!.observedAt,
+      scopeDate: account.rows[0]!.observedAt.slice(0, 10),
+    })),
+    validate: ({ matched }) => {
+      if (matched.length === 0) {
+        throw new Error("Cathay current foreign balance response did not contain an admitted account.");
+      }
+      requireEveryAdmittedAccount(
+        admitted.map(admittedAccountKey),
+        matched,
+        "Cathay current foreign balance response omitted an admitted account.",
+      );
     },
-    { ...input, captures: identities },
-  );
-  return items;
+  };
 }
 
 function onlyCapture(

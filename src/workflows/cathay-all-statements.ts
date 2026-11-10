@@ -26,8 +26,10 @@ import {
 } from "./cathay-foreign-statements.ts";
 import {
   captureCathayDomesticCurrentBalances,
-  captureCathayForeignCurrentBalances,
+  cathayForeignCurrentBalanceSnapshot,
+  type CathayAdmittedDeposit,
 } from "./cathay-current-deposit-canonical.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
@@ -83,7 +85,10 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 }>;
 
 
-/** The foreign API takes the period's dates directly. */
+function admittedDeposits(admissions: readonly DepositAdmission<CathayAdmittedDeposit>[]): readonly CathayAdmittedDeposit[] {
+  return admissions.flatMap(({ balance }) => balance === undefined ? [] : [balance]);
+}
+
 /** The foreign-currency query asks for the same dates as the domestic one, leap-day start included. */
 function cathayForeignQueryRange(period: CollectionPeriod): CathayForeignQueryRange {
   const { startDate, endDate } = cathayQueryPeriod(period);
@@ -250,33 +255,23 @@ async function runCathayAllWorkflow(
         await context.event("validation", "started", "foreign-admission-started", {
           total: foreign.captures.length,
         });
-        const statementSteps: PGliteCanonicalMixedCommitStep[] = [];
+        const admissions: DepositAdmission<CathayAdmittedDeposit>[] = [];
         for (const capture of foreign.captures) {
           context.signal.throwIfAborted();
-          statementSteps.push({
-            kind: "deposit",
-            request: { capture: admitForeignCurrencyDepositCapture(capture) },
-          });
+          admissions.push(await admitDeposit<CathayAdmittedDeposit>(product, () => {
+            const deposit = admitForeignCurrencyDepositCapture(capture);
+            return { product: "foreign-currency-statements", capture: deposit, balance: deposit };
+          }));
         }
-        product.stage({
-          product: "foreign-currency-statements",
-          itemKey: `statements:${context.runId}:foreign-currency`,
-          command: {
-            kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-            request: { steps: statementSteps },
-          },
-        });
         await context.event("validation", "completed", "foreign-admission-completed", {
           completed: foreign.captures.length,
           total: foreign.captures.length,
         });
         await product.reportActivity("query");
-        const balances = await captureCathayForeignCurrentBalances({
-          admitted: foreign.captures,
+        await stageCanonicalDeposits(product, admissions, {
+          snapshot: cathayForeignCurrentBalanceSnapshot(admittedDeposits(admissions)),
           acquire: acquireCurrentBalances("foreign", product),
-          product,
         });
-        product.stage(...balances);
         return {
           sourceCaptureCount: foreign.captures.length,
           rowCount: foreign.rowCount,

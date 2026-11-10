@@ -295,13 +295,10 @@ test("Cathay all workflow collects and commits selected products independently w
     );
     const foreignItem = harness.committed[1]![0] as {
       product: string;
-      command: { request: { steps: readonly { kind: string }[] } };
+      command: { kind: string };
     };
     assert.equal(foreignItem.product, "foreign-currency-statements");
-    assert.deepEqual(
-      foreignItem.command.request.steps.map((step) => step.kind),
-      ["deposit"],
-    );
+    assert.equal(foreignItem.command.kind, "financial.deposit.commit");
     assert.deepEqual(
       output.products!.map((product) => [product.typeId, product.status]),
       [

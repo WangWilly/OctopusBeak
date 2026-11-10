@@ -9,8 +9,8 @@ import {
 import {
   buildCathayCurrentDepositBalanceCaptures,
   captureCathayDomesticCurrentBalances,
-  captureCathayForeignCurrentBalances,
-  cathayForeignCurrentBalanceCaptureMatching,
+  cathayCurrentBalanceCaptureMatching,
+  cathayForeignCurrentBalanceSnapshot,
   CATHAY_CURRENT_DOMESTIC_BALANCE_AUTHORITY_ROUTE,
   CATHAY_CURRENT_FOREIGN_BALANCE_AUTHORITY_ROUTE,
 } from "./cathay-current-deposit-canonical.ts";
@@ -28,7 +28,8 @@ import {
 import { buildCathayDomesticFinancialRequestsForPGlite } from "../ledger/pglite/cathay-domestic-adapter.ts";
 import { CATHAY_FOREIGN_CURRENCY_DEPOSIT_FIXTURE_V1 } from "../ledger/canonical/foreign-currency-deposit.fixtures.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { captureCurrentStateSnapshots, indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import { verifyProviderResponse } from "./provider-response.ts";
 import {
   cathayDomesticOverviewBody,
@@ -296,14 +297,18 @@ await assert.rejects(
       originalAmount: { amount: record.amount, currency },
     })),
   });
-  const foreignBalances = (
-    admitted: readonly ReturnType<typeof foreignCapture>[],
+  const foreignBalances = async (
+    captures: readonly ReturnType<typeof foreignCapture>[],
     overview: typeof foreignOverview = foreignOverview,
-  ) => captureCathayForeignCurrentBalances({
-    ...snapshotHarness(),
-    admitted,
-    acquire: async () => cathayOverviewAcquired("foreign", overview),
-  });
+  ) => {
+    const admitted = captures.map((capture) => admitForeignCurrencyDepositCapture(capture));
+    const { items } = await captureCurrentStateSnapshots(cathayForeignCurrentBalanceSnapshot(admitted), {
+      ...snapshotHarness(),
+      captures: admitted,
+      acquire: async () => cathayOverviewAcquired("foreign", overview),
+    });
+    return items;
+  };
 
   const items = await foreignBalances([foreignCapture(foreignAccount, "USD"), foreignCapture(foreignAccount, "JPY")]) as readonly StagedBalance[];
   assert.deepEqual(
@@ -327,18 +332,26 @@ await assert.rejects(
 
   const identity = {
     accountNo: foreignAccount,
+    sourceAccountKey: foreignAccount,
     sourceConnectionKey: "sha256:cathay-connection",
     identityEpochKey: "sha256:cathay-epoch",
-    subjectDigest: "sha256:cathay-subject-first",
+    stream: "foreign-currency-deposit",
+    subjectDigest: "sha256:cathay-subject",
   };
-  const lastIdentity = { ...identity, subjectDigest: "sha256:cathay-subject-last" };
+  const first = { identity };
+  const sameAccount = { identity: { ...identity } };
   assert.deepEqual(
-    indexCurrentBalanceCaptures(
-      [identity, lastIdentity],
-      cathayForeignCurrentBalanceCaptureMatching,
-    ).match([{ sourceAccountKey: foreignAccount }]).matched.map(({ capture }) => capture),
-    [lastIdentity],
-    "the last admitted identity for an account wins without an ambiguity check",
+    indexCurrentBalanceCaptures([first, sameAccount], cathayCurrentBalanceCaptureMatching)
+      .match([{ sourceAccountKey: foreignAccount }]).matched.map(({ capture }) => capture),
+    [first],
+    "captures of one account that agree on its identity keep the first",
+  );
+  assert.throws(
+    () => indexCurrentBalanceCaptures(
+      [first, { identity: { ...identity, subjectDigest: "sha256:cathay-other-subject" } }],
+      cathayCurrentBalanceCaptureMatching,
+    ),
+    /^Error: Cathay admitted deposit identities are ambiguous\.$/u,
   );
 }
 
