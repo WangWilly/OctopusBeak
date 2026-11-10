@@ -1,9 +1,5 @@
 import type { Frame, Locator, Page } from "playwright";
 import { z } from "zod";
-import {
-  PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
 import type { SourceTextPort } from "../lib/automation/source-text.ts";
 import {
   admitCanonicalInvestmentCapture,
@@ -25,8 +21,8 @@ import {
   StatementComponentAbsentError,
   type ProductCollectionHandle,
   type ProductCollectionSummary,
-  type ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
+import { admitInvestments, stageCanonicalInvestments } from "./canonical-investment-staging.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { aggregateYuantaFundHoldingLots } from "./yuanta-fund-holdings.ts";
@@ -1662,13 +1658,13 @@ export function assertYuantaFundCanonicalAdmission(
   );
 }
 
-function yuantaFundCanonicalItems(
+function yuantaFundCanonicalCaptures(
   input: YuantaFundCollectionInput,
   positions: readonly FundPosition[],
   tables: readonly ParsedTable[],
   historyProof: YuantaFundHistoryProof | undefined,
   now: () => string,
-): ProductStageRequest[] {
+): InvestmentValidatedCapture[] {
   const admission = evaluateYuantaFundCanonicalAdmission(tables, positions, historyProof);
   assertYuantaFundCanonicalAdmission(admission);
 
@@ -1840,23 +1836,7 @@ function yuantaFundCanonicalItems(
   }
   if (captures.length === 0)
     throw new Error("Yuanta fund admission produced no canonical captures.");
-  return captures.map((capture) => ({
-    product: "investment",
-    itemKey: capture.captureId,
-    command: {
-      kind: PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND,
-      request: { capture },
-    },
-    relationCommands: () => [
-      {
-        kind: PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
-        request: {
-          sourceConnectionKey: capture.identity.sourceConnectionKey,
-          observedAt: capture.observedAt,
-        },
-      },
-    ],
-  }));
+  return captures;
 }
 
 /**
@@ -2093,15 +2073,16 @@ export async function stageYuantaFund(
   context.signal.throwIfAborted();
   context.text.assertIntact(JSON.stringify(snapshot.tables));
 
-  const items = yuantaFundCanonicalItems(
-    input,
-    snapshot.positions,
-    snapshot.tables,
-    validateYuantaFundHistoryProof(snapshot, input, product.collectionPeriod),
-    () => context.now(),
-  );
-  context.signal.throwIfAborted();
-  product.stage(...items);
+  const admission = await admitInvestments(product, () => ({
+    captures: yuantaFundCanonicalCaptures(
+      input,
+      snapshot.positions,
+      snapshot.tables,
+      validateYuantaFundHistoryProof(snapshot, input, product.collectionPeriod),
+      () => context.now(),
+    ),
+  }));
+  stageCanonicalInvestments(product, admission);
   return {
     sourceCaptureCount: snapshot.tables.length,
     rowCount: snapshot.tables.reduce(
