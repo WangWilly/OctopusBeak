@@ -31,11 +31,12 @@ function credentialsFromEnvironment(): EsunCredentials | string[] {
   ) as EsunCredentials;
 }
 
-const probeDefinition: WorkflowDefinition<EsunCredentials, ProbeReport> = {
+/** The report is no workflow run result, so the definition hands it to `onReport` and returns nothing. */
+const probeDefinition = (onReport: (report: ProbeReport) => void): WorkflowDefinition<EsunCredentials> => ({
   id: "esun-deposit-probe",
   requiresFinancialCommit: false,
   async run(context, credentials) {
-    return await context.browser.withPage(async (page) => {
+    await context.browser.withPage(async (page) => {
       const observedRequests = observePortalRequests(page);
       await authenticateEsunPage(page, credentials, context);
       await waitForPortalSession(page);
@@ -46,10 +47,10 @@ const probeDefinition: WorkflowDefinition<EsunCredentials, ProbeReport> = {
         observedRequests,
       });
       await context.event("collection", report.complete ? "completed" : "failed", report.complete ? "collection-completed" : "collection-failed");
-      return report;
+      onReport(report);
     });
   },
-};
+});
 
 async function main(args: readonly string[]) {
   if (args.includes("--help") || args.includes("-h")) {
@@ -70,7 +71,9 @@ async function main(args: readonly string[]) {
   const controller = new AbortController();
   const onInterrupt = () => controller.abort();
   process.once("SIGINT", onInterrupt);
-  const executor = createWorkflowExecutor([probeDefinition as WorkflowDefinition], {
+  let report: ProbeReport | undefined;
+  const definition = probeDefinition((probeReport) => { report = probeReport; });
+  const executor = createWorkflowExecutor([definition as WorkflowDefinition], {
     browser: createDevelopmentBrowserPort(controller.signal, undefined, undefined, {
       headless: args.includes("--headless"),
       profile: workflowBrowserProfileForWorkflow("esun-credit-card-statements"),
@@ -81,7 +84,8 @@ async function main(args: readonly string[]) {
     now: () => new Date().toISOString(),
   });
   try {
-    const report = await executor.run(probeDefinition.id, randomUUID(), credentials, controller.signal) as ProbeReport;
+    await executor.run(definition.id, randomUUID(), credentials, controller.signal);
+    if (!report) throw new Error("The deposit probe finished without a report.");
     stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return report.complete ? 0 : 1;
   } catch {
