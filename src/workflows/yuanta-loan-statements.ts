@@ -795,7 +795,7 @@ type YuantaLoanCaptureForEvidence = {
   };
   records: readonly {
     sourceRecordKey: string;
-    occurrenceIndex: number;
+    sourceSequenceIndex: number;
   }[];
 };
 
@@ -811,8 +811,9 @@ function sourceRecordKeyForYuantaLoanEvidence(
   if (!Number.isSafeInteger(evidence.rowOrdinal) || evidence.rowOrdinal < 0)
     throw new Error("Yuanta loan counterparty evidence row ordinal is invalid.");
   const rowOrdinal = evidence.rowOrdinal;
+  // occurrenceIndex counts within a group of identical rows; the row ordinal is a capture position.
   const candidates = capture.records.filter(
-    (record) => record.occurrenceIndex === rowOrdinal + 1,
+    (record) => record.sourceSequenceIndex === rowOrdinal + 1,
   );
   if (candidates.length !== 1)
     throw new Error(

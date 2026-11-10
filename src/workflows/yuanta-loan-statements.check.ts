@@ -236,6 +236,45 @@ test("Yuanta loan typed collection admits complete source without writing or com
   assert.equal(deferred[0]?.product, "loan");
 });
 
+test("Yuanta loan anchors its selector mandate to the first source row of a capture with distinct rows", async () => {
+  const deferred: PGliteWorkflowRunItem[] = [];
+  const testLoanAccount = "1234".repeat(3) + "12";
+  const row = (date: string, amount: string, balance: string) => ({
+    accountLabel: "房屋貸款", transactionDate: date, postingDate: date,
+    paymentItem: "LOAN-PAYMENT", interestStartDate: "", interestEndDate: "",
+    transactionAmount: amount, balanceAfterTransaction: balance,
+    overpayment: "0.00", sortTime: null,
+  });
+  await stageYuantaLoan(
+    {
+      range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+      accounts: [{
+        account: { label: `房屋貸款 - ${testLoanAccount}`, value: testLoanAccount },
+        observedAt: "2026-02-01T00:00:00.000Z",
+        statement: {
+          rows: [row("2026/01/15", "12500.00", "87500.00"), row("2026/01/20", "100.00", "87400.00")],
+          completeness: { pageCount: 1, terminal: true, proofKind: "source-declared-terminal-range" },
+          pages: [{ pageOrdinal: 0, responseCode: "200", terminal: true, rowCount: 2, proofKind: "source-declared-terminal-range" }],
+        },
+      }],
+    },
+    {
+      loanAccountFilters: [],
+      sourceConnectionScope: "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001",
+      sourceConnectionKey: deriveSourceConnectionIdentityKey("yuanta", "YUANTA-USER-001\u0000YUANTA-ACCOUNT-001"),
+    },
+    yuantaCollectionContext({ now: "2026-02-01T00:00:00.000Z" }),
+    yuantaStagingHandle(deferred),
+  );
+  const capture = (deferred[0]!.command.request as { capture: { records: readonly { sourceRecordKey: string; sourceSequenceIndex: number }[] } }).capture;
+  const [relation] = deferred[0]!.relationCommands!(null);
+  const evidence = (relation!.request as { counterpartyEvidence: readonly { sourceRecordKey: string; accountValue: string }[] }).counterpartyEvidence;
+  assert.deepEqual(
+    evidence.map(({ sourceRecordKey, accountValue }) => [sourceRecordKey, accountValue]),
+    [[capture.records.find((record) => record.sourceSequenceIndex === 1)!.sourceRecordKey, testLoanAccount]],
+  );
+});
+
 test("Yuanta loan typed collection rejects an incomplete source before yielding items", async () => {
   const loanAccountNumber = ["1234567", "8901234"].join("");
   const deferred: PGliteWorkflowRunItem[] = [];
