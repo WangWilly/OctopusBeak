@@ -23,6 +23,10 @@ SinoPac, HNCB, CTBC, Post, LINE Bank, Fubon, Yuanta and Yuanta foreign currency 
 
 The step is split in two, not one function that takes admission callbacks, because LINE Bank and CTBC report per-account progress events between admissions and Fubon admits some accounts only after reading the balance rows. The brand keeps the ADR 0106 guarantee that a single function would have given: a decision written without `admitDeposit` does not typecheck as an admission. The brand guards against forgetting `validate`, not against forging an admission on purpose, such as by spreading a real one with a different capture.
 
+### Credit-card issuers
+
+`src/workflows/canonical-credit-card-staging.ts` takes the same shape. `admitCreditCards(product, admit)` runs an issuer's admission inside `product.validate` and brands the cards it returns, and `stageCanonicalCreditCards` accepts only branded cards. An issuer admits its cards once per run, not once per capture, because it builds every card from one read of its billed and unbilled grids. E.SUN already admitted inside `validate`. Fubon and Yuanta built their cards outside it.
+
 ## Considered options
 
 - **Unify the deposit command.** SinoPac and CTBC commit source evidence with the deposit in one mixed command; the others commit the deposit alone. Deferred: the step carries both through `withSource`, and choosing one needs its own look at what the ledger does with the source evidence.
@@ -38,4 +42,5 @@ The step is split in two, not one function that takes admission callbacks, becau
   - HNCB: the lost-capture check.
   - SinoPac, HNCB, Fubon and Yuanta: building the source evidence, which cannot fail on well-formed captures.
 - Success-path run events and the other sources' goldens are unchanged, because `validate` reports only failures.
-- A new deposit source writes only its admission. Credit-card issuers move to the same shape in a follow-up change.
+- Credit-card issuers: Fubon's incomplete-scope check, its no-admissible-capture check and its card build, Yuanta's card build, and every issuer's commit request build now fail as `source-validation-failed`. The credit-card commit goldens are unchanged.
+- A new deposit source or card issuer writes only its admission.
