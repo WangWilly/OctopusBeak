@@ -36,7 +36,7 @@ import { FUBON_SOURCE } from "../lib/automation/server/sources/fubon.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite, type FubonEbankSite } from "./fubon-ebank-site.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 
-const { runFubonLoanStatements, fubonLoanStatementsInputSchema, fubonLoanQuery } = await import("./fubon-loan-statements.ts");
+const { runFubonLoanStatements, stageFubonLoan, fubonLoanStatementsInputSchema, fubonLoanQuery } = await import("./fubon-loan-statements.ts");
 const { buildFubonLoanCapture, assertFubonLoanCaptureAccountNumberEvidence } =
   await import("../ledger/canonical/fubon-loan-admission.ts");
 const { FUBON_LOAN_CONTRACT_VERSION } =
@@ -56,12 +56,8 @@ assert.match(source, /StatementComponentAbsentError/);
 assert.match(source, /No Fubon loan account is available/);
 assert.doesNotMatch(source, /pageCount:\s*1/);
 assert.match(source, /relationCoverage:\s*["']not-asserted["']/);
-const runSource = source.slice(
-  source.indexOf("export async function runFubonLoanStatements"),
-);
-assert.match(runSource, /PGLITE_CANONICAL_LOAN_COMMIT_COMMAND/);
-assert.match(runSource, /PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND/);
-assert.match(runSource, /relationCommands: \(\) => \[/);
+assert.match(source, /stageCanonicalLoans\(product, admissions\)/u, "loans stage through the loan step");
+assert.doesNotMatch(source, /product\.stage\(/u, "the loan step owns the stage call");
 assert.doesNotMatch(
   source,
   /loanPaymentMatchCandidates|matchLoanPaymentsToDepositOutflows/u,
@@ -71,16 +67,6 @@ assert.match(
   source,
   /FUBON_LOAN_TERMINAL_RULE_VERSION\s*=\s*["']fubon-loan-terminal-v2["']/u,
   "the live-verified static result terminal rule must be versioned",
-);
-const loanCommitMarker = runSource.indexOf(
-  "PGLITE_CANONICAL_LOAN_COMMIT_COMMAND",
-);
-const loanResolverMarker = runSource.indexOf(
-  "PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND",
-);
-assert.ok(
-  loanCommitMarker >= 0 && loanResolverMarker > loanCommitMarker,
-  "loan relation resolution must be emitted with the PGlite capture item",
 );
 assert.doesNotMatch(
   source,
@@ -834,6 +820,48 @@ test("Fubon loan fails a query reply with status 500 inside the product's valida
   assert.equal(failed.errorCode, "source-validation-failed");
   const cause = (failed as Error & { cause?: unknown }).cause;
   assert.ok(cause instanceof ProviderResponseCheckError && cause.check === "response-status");
+});
+
+test("a Fubon loan statement without terminal page evidence fails inside the product's validation", async () => {
+  const credentials = { fubon_user_id: "synthetic-user-id", fubon_account: "synthetic-user" };
+  const failed = await collectSelectedProducts({
+    provider: "fubon",
+    productIds: ["loan"],
+    selectedIds: ["loan"],
+    signal: new AbortController().signal,
+    now: () => "2026-02-01T00:00:00.000Z",
+    text: strictSourceText,
+    collect: async (_typeId, product) => await stageFubonLoan(
+      {
+        range: { startDate: "2026-01-01", endDate: "2026-01-31" },
+        accounts: [{
+          observedAt: "2026-02-01T00:00:00.000Z",
+          statement: {
+            loanAccount: shellLoanAccounts[0]!.label,
+            loanAccountId: "synthetic-loan",
+            sourceAccountValue: shellLoanAccounts[0]!.value,
+            queryPeriod: "2026/01/01~2026/01/31",
+            branchName: "synthetic-branch",
+            accountType: "synthetic-loan",
+            currency: "TWD",
+            rows: [loanRow("2026/01/05", "還款", "900.00")],
+            completeness: null,
+            pages: [{ pageOrdinal: 0, responseCode: "200", terminal: false, rowCount: 1, proofKind: "source-declared-terminal-range" }],
+          },
+        }],
+      },
+      {
+        ...fubonLoanStatementsInputSchema.parse({}),
+        sourceConnectionScope: fubonStableLoginScope(credentials)!,
+        sourceConnectionKey: deriveFubonSourceConnectionKey(credentials)!,
+      },
+      product,
+    ),
+    financialCommit: { execute: async () => { throw new Error("a failed product must not commit"); } },
+  }).then(() => null, (error: unknown) => error);
+  assert.ok(failed instanceof ProductCollectionInterruptedError);
+  assert.equal(failed.errorCode, "source-validation-failed");
+  assert.match(String((failed as Error & { cause?: unknown }).cause), /explicit complete terminal page evidence/u);
 });
 
 test("Fubon loan stops inside a held query postback when the run is cancelled", async () => {
