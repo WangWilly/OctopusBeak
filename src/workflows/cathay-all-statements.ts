@@ -91,8 +91,8 @@ export type CathayAllProviderWorkflowDependencies = Readonly<{
 function admitCathayDomesticAccount(account: CathayDomesticDepositSyncInput): CanonicalFinancialDepositCapture {
   try {
     return admitCathayDomesticDepositCapture(account);
-  } catch {
-    throw new Error("Cathay domestic source admission rejected the selected source set.");
+  } catch (error) {
+    throw new Error("Cathay domestic source admission rejected an account's source.", { cause: error });
   }
 }
 
