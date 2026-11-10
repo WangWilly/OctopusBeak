@@ -4,10 +4,6 @@ import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
 import {
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
-import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
   createCtbcDomesticDepositSourceEvidence,
@@ -36,7 +32,6 @@ import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/wor
 import type {
   ProductCollectionHandle,
   ProductCollectionSummary,
-  ProductStageRequest,
 } from "../lib/automation/product-collection.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import { CTBC_CREDENTIAL_FIELDS, CTBC_PRODUCTS, CTBC_SOURCE } from "../lib/automation/server/sources/ctbc.ts";
@@ -46,9 +41,9 @@ import { frameScope, type FrameScope } from "./frame-scope.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   assembleCurrentDepositCapture,
-  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -1050,9 +1045,7 @@ export async function stageCtbcDeposit(
     }));
   }
 
-  const manifest = CTBC_HUMAN_ATTESTED_V1_MANIFEST;
-  const financialCaptures: ExistingCtbcFinancialCapture[] = [];
-  const items: ProductStageRequest[] = [];
+  const admissions: DepositAdmission<ExistingCtbcFinancialCapture>[] = [];
   await product.event("validation", "started", "canonical-admission-started", {
     completed: 0,
     total: validatedCaptures.length,
@@ -1061,52 +1054,32 @@ export async function stageCtbcDeposit(
     context.signal.throwIfAborted();
     const captureId = `ctbc-${randomUUID()}`;
     const source = createCtbcDomesticDepositSourceEvidence(capture, captureId);
-    if (capture.responses.every((response) => response.rows.length === 0)) {
-      items.push({
-        product: "domestic-deposit",
-        itemKey: captureId,
-        command: { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source },
-      });
-      continue;
-    }
-    const admitted = await product.validate(() => {
+    admissions.push(await admitDeposit<ExistingCtbcFinancialCapture>(product, () => {
+      if (capture.responses.every((response) => response.rows.length === 0))
+        return { product: "domestic-deposit", sourceOnly: source };
       const admission = admitCtbcDomesticDepositFinancialCapture({
         capture,
         captureId: `ctbc-financial-${captureId}`,
-        humanAttestation: manifest,
+        humanAttestation: CTBC_HUMAN_ATTESTED_V1_MANIFEST,
       });
       if (admission.status !== "admitted" || !admission.capture) {
         throw new Error(
           `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
         );
       }
-      return admission.capture;
-    });
-    financialCaptures.push(admitted);
-    items.push({
-      product: "domestic-deposit",
-      itemKey: captureId,
-      command: {
-        kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-        request: { steps: [
-          { kind: "source", request: source },
-          { kind: "deposit", request: { capture: admitted } },
-        ] },
-      },
-    });
+      const admitted = admission.capture;
+      return { product: "domestic-deposit", capture: admitted, balance: admitted, withSource: source };
+    }));
   }
   await product.event("validation", "completed", "canonical-admission-completed", {
     completed: validatedCaptures.length,
     total: validatedCaptures.length,
   });
   context.signal.throwIfAborted();
-  const balances = await captureCurrentStateSnapshots(ctbcCurrentBalanceSnapshot, {
-    captures: financialCaptures,
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: ctbcCurrentBalanceSnapshot,
     acquire: readCurrentBalanceResponse,
-    product,
   });
-
-  product.stage(...items, ...balances.items);
   return {
     sourceCaptureCount: validatedCaptures.length,
     rowCount: snapshot.output.rowCount,

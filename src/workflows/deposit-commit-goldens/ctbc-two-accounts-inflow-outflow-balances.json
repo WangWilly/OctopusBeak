@@ -8,7 +8,7 @@
       "items": [
         {
           "product": "domestic-deposit",
-          "itemKey": "ctbc-uuid-1",
+          "itemKey": "ctbc-financial-ctbc-uuid-1",
           "command": {
             "kind": "financial.mixed.commit",
             "request": {
@@ -352,7 +352,7 @@
         },
         {
           "product": "domestic-deposit",
-          "itemKey": "ctbc-uuid-2",
+          "itemKey": "ctbc-financial-ctbc-uuid-2",
           "command": {
             "kind": "financial.mixed.commit",
             "request": {
