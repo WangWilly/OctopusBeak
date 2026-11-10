@@ -75,6 +75,7 @@ export type DepositCurrentBalance<Acquired extends ProviderAcquisition, Row, Bal
  * Stage every admission and the current balances in one call, after the
  * snapshot has validated, so a broken snapshot stages no deposit. Source-only
  * items come first, then deposits in admission order, then balances. With no
+ * admissions it stages nothing. With no
  * admitted deposit that carries a balance capture, the snapshot is neither
  * read nor staged. Returns the rows the snapshot's `exclude` policy left out,
  * for the source to report.
@@ -84,6 +85,7 @@ export async function stageCanonicalDeposits<Acquired extends ProviderAcquisitio
   admissions: readonly DepositAdmission<Balance>[],
   currentBalance: DepositCurrentBalance<Acquired, Row, Balance, DateRule>,
 ): Promise<readonly Row[]> {
+  if (admissions.length === 0) return [];
   const sourceOnly: ProductStageRequest[] = [];
   const deposits: ProductStageRequest[] = [];
   const balanceCaptures: Balance[] = [];
