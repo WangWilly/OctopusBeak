@@ -2236,9 +2236,9 @@ export async function stageFubonDeposit(
           let financialAdmission =
             admitFubonDomesticDepositFinancialCapture(financialInput);
           // A status marker describes one row, not the completeness of the
-          // requested range. Preserve the complete parser capture as source
-          // evidence, then admit the clean rows from the same capture so one
-          // ambiguous row cannot hide the account's range.
+          // requested range. Admit the clean rows and keep each unresolved row
+          // as statement evidence in the same capture, so one ambiguous row
+          // cannot hide the account's range.
           if (
             financialAdmission.status !== "admitted" &&
             financialAdmission.diagnostics.length > 0 &&

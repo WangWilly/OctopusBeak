@@ -3,6 +3,7 @@ import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
+  type CanonicalFinancialNonTransactionRecord,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
@@ -1805,6 +1806,8 @@ function normalizeFubonDomesticDepositFinancialCapture(
   const queryStart = input.capture.queryRange.startDate.replace(/\//g, "-");
   const queryEnd = input.capture.queryRange.endDate.replace(/\//g, "-");
   const records: CanonicalFinancialDepositRecord[] = [];
+  const unresolvedRows: CanonicalFinancialNonTransactionRecord[] = [];
+  const unresolvedRepeats = new Map<string, number>();
   const groupRows: Array<{
     record: CanonicalFinancialDepositRecord;
     partitionDate: string;
@@ -1837,11 +1840,43 @@ function normalizeFubonDomesticDepositFinancialCapture(
     if (!balanceAfter) diagnostics.push("balance-invalid");
     if (!time) diagnostics.push("source-time-invalid");
     if (!amount || !balanceAfter || !time || !direction) continue;
-    // The structural source capture remains authoritative for a row with a
-    // provider status marker. Validate its value shape above, then leave that
-    // row out of the financial record set when the workflow explicitly uses
-    // the partial admission mode.
-    if (sourceOnlyRow) continue;
+    if (sourceOnlyRow) {
+      // Content plus a repeat count, not position: the same row re-admits as the same occurrence after rows shift.
+      const contentHash = canonicalDigest(
+        "fubon-unresolved-row-content-v1",
+        ...normalizedOccurrenceIdentityCells(cells),
+      );
+      const repeat = unresolvedRepeats.get(contentHash) ?? 0;
+      unresolvedRepeats.set(contentHash, repeat + 1);
+      const occurrenceKey = canonicalDigest(
+        "fubon-unresolved-row-occurrence-v1",
+        identity.subjectDigest,
+        contentHash,
+        String(repeat),
+      );
+      unresolvedRows.push({
+        recordType: "statement-evidence",
+        occurrenceKey,
+        collisionKey: occurrenceKey,
+        providerKey: "human-attested:no-provider-key",
+        contentHash,
+        sequenceLexeme: `${page.pageOrdinal}:${row.rowOrdinal}`,
+        compactJson: JSON.stringify({
+          evidenceVersion: FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
+          subjectDigest: identity.subjectDigest,
+          currency: semantics.account.currency,
+          date: time.localDate,
+          time: time.localTime,
+          direction,
+          amount,
+          balanceAfter,
+          contentHash,
+          rowStatusEvidence: rowStatus.evidence,
+        }),
+        description,
+      });
+      continue;
+    }
     const contentHash = canonicalDigest(
       "fubon-observed-composite-content-v2",
       ...normalizedOccurrenceIdentityCells(cells),
@@ -1931,17 +1966,6 @@ function normalizeFubonDomesticDepositFinancialCapture(
       input.capture.pages.at(-1)?.terminal === true &&
       input.capture.pages.every((page) => page.paginationAmbiguous !== true),
   });
-  const financialRowCountByPage = new Map<number, number>();
-  if (allowSourceOnlyRows) {
-    for (const page of input.capture.pages) {
-      financialRowCountByPage.set(
-        page.pageOrdinal,
-        page.rows.filter(
-          (row) => classifyFubonDomesticDepositRow(row.cells).status === "posted",
-        ).length,
-      );
-    }
-  }
   const canonicalCapture = admitCanonicalFinancialDepositCapture({
     captureId: input.captureId,
     authorityRoute: semantics.authority.route,
@@ -1996,9 +2020,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       pageOrdinal: page.pageOrdinal,
       responseCode: "200",
       terminal: page.terminal,
-      rowCount: allowSourceOnlyRows
-        ? financialRowCountByPage.get(page.pageOrdinal) ?? 0
-        : page.rows.length,
+      rowCount: page.rows.length,
       responseDigest: canonicalDigest(
         "fubon-page-v3",
         String(page.pageOrdinal),
@@ -2012,10 +2034,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
         pageOrdinal: page.pageOrdinal,
         responseSequence: page.responseSequence,
         terminal: page.terminal,
-        rowCount: allowSourceOnlyRows
-          ? financialRowCountByPage.get(page.pageOrdinal) ?? 0
-          : page.rows.length,
-        ...(allowSourceOnlyRows ? { sourceRowCount: page.rows.length } : {}),
+        rowCount: page.rows.length,
         providerPageSize: page.providerPageSize ?? null,
         providerTotalCount: page.providerTotalCount ?? null,
         paginationEvidence: page.paginationEvidence ?? null,
@@ -2029,6 +2048,7 @@ function normalizeFubonDomesticDepositFinancialCapture(
       }),
     })),
     records: occurrenceGroups.records,
+    ...(unresolvedRows.length > 0 ? { nonTransactionRecords: unresolvedRows } : {}),
     occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
   return { status: "admitted", capture: canonicalCapture, diagnostics: [] };
