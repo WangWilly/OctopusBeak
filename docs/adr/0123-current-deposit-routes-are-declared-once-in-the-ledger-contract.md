@@ -2,6 +2,8 @@
 
 Status: accepted
 
+Extended to credit-card current balance routes by [ADR 0124](0124-credit-card-current-balance-routes-are-declared-once-too.md).
+
 Refines [ADR 0096](0096-the-snapshot-module-verifies-the-provider-response.md): a current deposit source still declares the response that carries its snapshot, but the declaration reads its host, path and Cache-Control directives from the route contract. Keeps [ADR 0107](0107-the-snapshot-module-assembles-every-current-state-capture.md): each bank still names its route key and mints its capture id. Holds [ADR 0035](0035-source-contract-catalog-and-rule-admission.md) and [ADR 0085](0085-opening-a-store-installs-newly-registered-contracts.md): the registry installed into the store is unchanged.
 
 ## Context
@@ -37,4 +39,4 @@ The provider date rule is not shared. The contract names the time evidence admis
 - No persisted value changes. The deposit commit goldens are unchanged.
 - A misspelled route key in a builder is a type error.
 - A new current deposit route adds one contract entry, names its key in its builder, and adds its registration at the position it takes in the registry.
-- Credit-card current balance contracts are still declared separately.
+- Credit-card current balance routes follow the same rule (ADR 0124).
