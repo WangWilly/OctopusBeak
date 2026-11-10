@@ -11,7 +11,7 @@ import { createObankSource } from "../../src/lib/preview-sources/obank-source.ts
 import { browserHttp } from "../../src/lib/preview-sources/browser-http.ts";
 import { createRakutenSource } from "../../src/lib/preview-sources/rakuten-source.ts";
 import type { PreviewSource } from "../../src/lib/preview-sources/registry.ts";
-import type { PreviewCaptchaSolver } from "../../src/lib/preview-sources/source-kit.ts";
+import type { PreviewCaptchaChallenge, PreviewCaptchaSolver } from "../../src/lib/preview-sources/source-kit.ts";
 import { taishinBrowserSession } from "../../src/lib/preview-sources/taishin-login-form.ts";
 import { TAISHIN_PREVIEW_SOURCE } from "../../src/lib/preview-sources/taishin-source.ts";
 import type { PreviewWorkflowContext } from "../../src/lib/preview-sources/workflow.ts";
@@ -65,8 +65,13 @@ class ChallengeCaptured extends Error {
   }
 }
 
+function imageChallenge(challenge: PreviewCaptchaChallenge): Extract<PreviewCaptchaChallenge, { image: Buffer }> {
+  if (!("image" in challenge)) throw new Error("CAPTCHA calibration labels image challenges only; the source presented audio.");
+  return challenge;
+}
+
 const recordAndStop: PreviewCaptchaSolver = async (_context, challenge) => {
-  throw new ChallengeCaptured(Buffer.from(challenge.image));
+  throw new ChallengeCaptured(Buffer.from(imageChallenge(challenge).image));
 };
 
 function calibrationContext(browser: WorkflowBrowserPort, signal: AbortSignal): PreviewWorkflowContext {
@@ -80,7 +85,7 @@ function calibrationContext(browser: WorkflowBrowserPort, signal: AbortSignal): 
     event: async () => {},
     signalEvent: async () => {},
     preview: {
-      write: async () => { throw new Error("CAPTCHA calibration never writes preview data."); },
+      collect: async () => { throw new Error("CAPTCHA calibration never collects preview data."); },
       observe: () => {},
     },
   };
@@ -98,7 +103,7 @@ async function captureThroughSource(
 ): Promise<CapturedChallenge> {
   const source = create({ solveCaptcha: recordAndStop });
   try {
-    await source.run(calibrationContext(browser, signal), { startUrl: source.startUrl, credentials: {} });
+    await source.run(calibrationContext(browser, signal), { startUrl: source.startUrl, credentials: {}, products: source.products });
   } catch (error) {
     if (error instanceof ChallengeCaptured) return { image: error.image };
     throw error;
@@ -108,7 +113,7 @@ async function captureThroughSource(
 
 async function captureTaishin(browser: WorkflowBrowserPort, signal: AbortSignal): Promise<CapturedChallenge> {
   return taishinBrowserSession(calibrationContext(browser, signal), TAISHIN_PREVIEW_SOURCE.startUrl, async ({ form }) => {
-    const { image, expectedLength } = await form.captcha();
+    const { image, expectedLength } = imageChallenge(await form.captcha());
     return expectedLength === undefined ? { image } : { image, declaredLength: expectedLength };
   });
 }
