@@ -32,4 +32,5 @@ A collector returned a fixed `ProductCollectionSummary` (`sourceCaptureCount`, `
 
 - Run details show `accountCount` as the sum across products. SinoPac reports more accounts when its deposit succeeds alongside attached products. CTBC and Post no longer report counts for a product whose commit failed.
 - Commit goldens that record a run result change only by losing removed counts: the Fubon and Yuanta deposit and credit-card goldens lose `skippedProductCount`, and the E.SUN credit-card goldens lose `count` and `canonicalCaptureCount`.
+- A TDCC run in which no product recorded collection evidence no longer reports its exclusion counts as zeros; it omits them.
 - A collector's extra counts travel with its summary, so no workflow keeps a closure or reads a product by position to report them.

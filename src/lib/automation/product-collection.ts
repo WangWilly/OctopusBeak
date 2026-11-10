@@ -574,12 +574,12 @@ export async function collectSelectedProducts<TId extends CollectionProductTypeI
         if (collected.completeWithExclusions === true) {
           sourceCaptureCount += sourceCountForProduct;
           rowCount += rowsForProduct;
-          addCounts(collectorCounts, collected.counts);
           completedByType.set(typeId, createOutcome(typeId, "success"));
           await emitProductEvent("collection", "completed", `${codePrefix}-collection-completed-with-exclusions`, {
             completed: sourceCountForProduct,
             total: sourceCountForProduct,
           });
+          addCounts(collectorCounts, collected.counts);
           if (signal.aborted) {
             throw new ProductCollectionInterruptedError("cancelled", summarize(
               orderedOutcomes(), sourceCaptureCount, rowCount, itemCount, committedCount, collectorCounts,

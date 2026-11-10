@@ -78,7 +78,6 @@ type HncbCredentials = HncbVerifiedInput["credentials"];
 export type HncbWorkflowInput = HncbVerifiedInput & z.infer<typeof hncbInputSchema>;
 export type HncbDepositInput = Pick<HncbWorkflowInput, "accountFilters">;
 export type HncbDateRange = Readonly<{ startDate: string; endDate: string }>;
-/** HNCB's own account count beside the product summary for one deposit collection. */
 type DateParts = {
   year: number;
   month: number;
