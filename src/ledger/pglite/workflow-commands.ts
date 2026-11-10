@@ -24,8 +24,6 @@ export const PGLITE_CANONICAL_LOAN_COMMIT_COMMAND =
   "financial.loan.commit" as const;
 export const PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND =
   "financial.investment.commit" as const;
-export const PGLITE_CANONICAL_MIXED_COMMIT_COMMAND =
-  "financial.mixed.commit" as const;
 export const PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND =
   "financial.loanRelations.resolve" as const;
 export const PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND =

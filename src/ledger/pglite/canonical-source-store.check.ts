@@ -8,7 +8,6 @@ import {
 } from "./canonical-source-store.ts";
 import { PGliteStore } from "./transaction.ts";
 import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
-import { commitPGliteCanonicalMixedCapture } from "./mixed-commit.ts";
 import {
   getPGliteHumanAttestationStatus,
   revokePGliteHumanAttestationInTransaction,
@@ -129,36 +128,6 @@ test("PGlite occurrence continuity rejects unsupported stored payloads without r
         error.reason === "occurrence-conflict",
     );
     assert.deepEqual(await counts(store), before);
-  } finally {
-    await store.close();
-  }
-});
-
-test("mixed raw evidence and derived financial facts commit or roll back together", async () => {
-  const database = await createTestPGlite("ledger");
-  const store = new PGliteStore(database);
-  try {
-    const committed = await commitPGliteCanonicalMixedCapture(store, {
-      steps: [
-        { kind: "source", request: request("raw-1", token("x"), token("y")).capture },
-        { kind: "financial", request: request("derived-1") },
-      ],
-    });
-    assert.equal(committed.admissions.length, 1);
-    assert.equal(committed.financial.length, 1);
-    assert.deepEqual(await counts(store), {
-      captures: 2, commits: 3, provenance: 1, records: 2, revisions: 1, transactions: 1,
-    });
-    const invalid = request("derived-bad");
-    await assert.rejects(commitPGliteCanonicalMixedCapture(store, {
-      steps: [
-        { kind: "source", request: request("raw-rollback", token("u"), token("v")).capture },
-        { kind: "financial", request: { ...invalid, account: { ...invalid.account, accountType: "invalid" as "depository" } } },
-      ],
-    }));
-    assert.deepEqual(await counts(store), {
-      captures: 2, commits: 3, provenance: 1, records: 2, revisions: 1, transactions: 1,
-    });
   } finally {
     await store.close();
   }

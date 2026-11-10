@@ -19,7 +19,6 @@ import {
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "./workflow-commands.ts";
 import type {
@@ -52,7 +51,6 @@ import type {
   PGliteCanonicalInvestmentRelationResolutionResult,
 } from "./relations.ts";
 import type { CanonicalEInvoiceCaptureInput } from "../canonical/einvoice-contract.ts";
-import type { PGliteCanonicalMixedCommitRequest, PGliteCanonicalMixedCommitResult } from "./mixed-commit.ts";
 
 export {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
@@ -65,7 +63,6 @@ export {
   PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND,
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 };
 
@@ -86,7 +83,6 @@ type PGliteWorkflowCommandContracts = {
   [PGLITE_CANONICAL_CREDIT_CARD_BALANCE_COMMAND]: CommandContract<PGliteCanonicalCreditCardBalanceCaptureRequest, PGliteCanonicalCreditCardCommitResult>;
   [PGLITE_CANONICAL_LOAN_COMMIT_COMMAND]: CommandContract<PGliteCanonicalLoanCommitRequest, PGliteCanonicalLoanCommitResult>;
   [PGLITE_CANONICAL_INVESTMENT_COMMIT_COMMAND]: CommandContract<PGliteCanonicalInvestmentCommitRequest, PGliteCanonicalInvestmentCommitResult>;
-  [PGLITE_CANONICAL_MIXED_COMMIT_COMMAND]: CommandContract<PGliteCanonicalMixedCommitRequest, PGliteCanonicalMixedCommitResult>;
   [PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND]: CommandContract<PGliteCanonicalLoanRelationResolutionRequest, PGliteCanonicalLoanRelationResolutionResult>;
   [PGLITE_CANONICAL_INVESTMENT_RELATIONS_RESOLVE_COMMAND]: CommandContract<PGliteCanonicalInvestmentRelationResolutionRequest, PGliteCanonicalInvestmentRelationResolutionResult>;
 };
