@@ -3,10 +3,6 @@ import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Frame, Locator, Page, Route } from "playwright";
 import { z } from "zod";
-import {
-  PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-  PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-} from "../ledger/pglite/workflow-client.ts";
 import { parseHtmlTableMatrices } from "../lib/tabular-text.ts";
 import {
   deriveHncbDomesticDepositAccountNumberEvidence,
@@ -62,9 +58,9 @@ import {
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import { collectHncbCreditCards, playwrightHncbCardPages } from "./hncb-credit-card.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   assembleCurrentDepositCapture,
-  captureCurrentStateSnapshots,
   type CurrentBalanceCaptureMatching,
   type CurrentStateSnapshotDeclaration,
   CURRENT_DEPOSIT_BALANCE_STAGING,
@@ -1079,74 +1075,34 @@ export async function stageHncbDeposit(
   const { captures } = snapshot;
   if (captures.length === 0)
     throw new Error("No HNCB accounts reached a terminal source result.");
-  const financialCaptures: ExistingHncbFinancialCapture[] = [];
-  const sourceOnlyEntries: Array<{
-    capture: HncbDomesticDepositValidatedEvidence;
-    captureId: string;
-  }> = [];
-  const financialInputs: Array<{
-    captureId: string;
-    financialCapture: NonNullable<ReturnType<typeof admitHncbDomesticDepositFinancialCapture>["capture"]>;
-  }> = [];
-
   const captureId = hncbCaptureId(snapshot.observedAt);
-  const manifest = HNCB_HUMAN_ATTESTED_V1_MANIFEST;
+  const admissions: DepositAdmission<ExistingHncbFinancialCapture>[] = [];
   for (const [index, capture] of captures.entries()) {
-    const input = {
-      capture,
-      captureId: `hncb-financial-${captureId}-${index}`,
-      humanAttestation: manifest,
-    };
-    const admission = await product.validate(() => {
-      const admitted = admitHncbDomesticDepositFinancialCapture(input);
-      if (admitted.status !== "admitted" && !admitted.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic))
+    admissions.push(await admitDeposit<ExistingHncbFinancialCapture>(product, () => {
+      const admitted = admitHncbDomesticDepositFinancialCapture({
+        capture,
+        captureId: `hncb-financial-${captureId}-${index}`,
+        humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST,
+      });
+      if (admitted.status === "admitted") {
+        if (!admitted.capture)
+          throw new Error("HNCB domestic deposit admission lost its canonical capture.");
+        return { product: "domestic-deposit", capture: admitted.capture, balance: admitted.capture };
+      }
+      if (!admitted.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic))
         throw new Error(
           `HNCB domestic deposit financial admission failed: ${admitted.diagnostics.join(", ")}`,
         );
-      return admitted;
-    });
-    const sourceCaptureId = `hncb-source-${captureId}-${index}`;
-    if (admission.status !== "admitted") {
-      sourceOnlyEntries.push({ capture, captureId: sourceCaptureId });
-      continue;
-    }
-    if (!admission.capture)
-      throw new Error(
-        "HNCB domestic deposit admission lost its canonical capture.",
-      );
-    financialInputs.push({
-      captureId: input.captureId,
-      financialCapture: admission.capture,
-    });
-    financialCaptures.push(admission.capture);
+      return {
+        product: "domestic-deposit",
+        sourceOnly: createHncbDomesticDepositSourceEvidence(capture, `hncb-source-${captureId}-${index}`),
+      };
+    }));
   }
-
-  // Read and validate the point-in-time page before opening the financial
-  // commit boundary. A failure here must not leave statement captures from
-  // this run behind.
-  const balances = await captureCurrentStateSnapshots(hncbCurrentBalanceSnapshot, {
-    captures: financialCaptures,
+  await stageCanonicalDeposits(product, admissions, {
+    snapshot: hncbCurrentBalanceSnapshot,
     acquire: readCurrentBalanceTable,
-    product,
   });
-
-  product.stage(
-    ...sourceOnlyEntries.map((entry) => ({
-      product: "domestic-deposit", itemKey: entry.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
-        request: createHncbDomesticDepositSourceEvidence(entry.capture, entry.captureId),
-      },
-    } as const)),
-    ...financialInputs.map((entry) => ({
-      product: "domestic-deposit", itemKey: entry.captureId,
-      command: {
-        kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
-        request: { capture: entry.financialCapture },
-      },
-    } as const)),
-    ...balances.items,
-  );
   return {
     accountCount: captures.length,
     sourceCaptureCount: captures.length,
