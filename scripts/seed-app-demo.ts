@@ -30,12 +30,13 @@ import {
 } from "../src/workflows/fubon-statements.ts";
 import { deriveFubonSourceConnectionKey, fubonStableLoginScope } from "../src/workflows/fubon-source-connection.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../src/ledger/canonical/current-deposit-route-contracts.ts";
-import type { FubonCurrentDepositBalanceRow } from "../src/workflows/fubon-current-deposit-balances.ts";
+import type { FubonCurrentDepositTable } from "../src/workflows/fubon-current-deposit-balances.ts";
 import {
   YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
-  type YuantaCurrentDepositBalanceRow,
+  type YuantaCurrentDepositTable,
 } from "../src/workflows/yuanta-current-deposit-balances.ts";
-import { removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
+import { productCollectionHandle, type ProductCollectionHandle } from "../src/lib/automation/product-collection.ts";
+import { freshPage, removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
 import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
 
 const FUBON_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
@@ -87,6 +88,19 @@ function pricePath(start: number, end: number, phase: number, decimals: number) 
     const value = (start + (end - start) * t) * (1 + wave);
     return Number(value.toFixed(decimals));
   };
+}
+
+/** The product handle a collection run gives a collector, staging into `items` and reading the provider at `at`. */
+function demoProductHandle(provider: string, items: PGliteWorkflowRunItem[], at: string): ProductCollectionHandle {
+  return productCollectionHandle({
+    now: () => at,
+    text: strictSourceText,
+    signal: new AbortController().signal,
+    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider }))); },
+    reportActivity: async () => undefined,
+    event: async () => undefined,
+    collectionPeriod: () => { throw new Error("The demo stages a read snapshot; it never plans a collection period."); },
+  });
 }
 
 // ── 台北富邦 TWD deposit ────────────────────────────────────────────────────
@@ -179,24 +193,16 @@ async function collectFubon(
   const { statement, balance, rowCount } = fubonStatementThrough(rows, date);
   if (rowCount === 0) return [];
   const at = `${date}T01:20:00.000Z`;
-  const currentRow: FubonCurrentDepositBalanceRow = {
-    source: "fubon",
-    accountNumber: FUBON_ACCOUNT.value,
-    accountNickname: "薪轉戶",
-    depositType: "活期儲蓄存款",
-    branchName: FUBON_ACCOUNT.branchName,
-    currency: "TWD",
-    currencySourceLexeme: "台幣",
-    instantBalance: { coefficient: String(balance * 100), scale: 2, sourceLexeme: `${money(balance)}.00` },
-    availableBalance: { coefficient: String(balance * 100), scale: 2, sourceLexeme: `${money(balance)}.00` },
-    effectiveAt: at,
-    providerHttpDate: new Date(at).toUTCString(),
-    observedAt: at,
-    sourceEvidence: {
-      endpoint: FUBON_BALANCE_CONTRACT.endpointPath,
+  const currentTable: FubonCurrentDepositTable = {
+    evidence: {
+      kind: "cells",
+      rows: [[FUBON_ACCOUNT.value, "薪轉戶", "活期儲蓄存款", FUBON_ACCOUNT.branchName, "台幣", `${money(balance)}.00`, `${money(balance)}.00`, "", "", ""]],
+    },
+    response: {
+      url: `https://${FUBON_BALANCE_CONTRACT.endpointHost}${FUBON_BALANCE_CONTRACT.endpointPath}`,
       status: 200,
-      cacheControl: "no-store, no-cache",
-      contractVersion: FUBON_BALANCE_CONTRACT.contractVersion,
+      method: "GET",
+      headers: { date: new Date(at).toUTCString(), "cache-control": "no-store, no-cache" },
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
@@ -209,11 +215,7 @@ async function collectFubon(
     now: () => new Date().toISOString(),
     text: strictSourceText,
     accountIdentity: { continuity: accountIdentityContinuity },
-  } as never, {
-    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "fubon" }))); },
-    reportActivity: async () => undefined,
-    event: async () => undefined,
-  }, async () => [currentRow]);
+  } as never, demoProductHandle("fubon", items, at), async () => currentTable);
   return items;
 }
 
@@ -254,32 +256,24 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     });
   if (rows.length === 0) return [];
   const at = `${date}T01:25:00.000Z`;
-  const amount = { coefficient: String(Math.round(balance * 100)), scale: 2, sourceLexeme: balance.toFixed(2) };
-  const current: YuantaCurrentDepositBalanceRow = {
-    source: "yuanta",
-    kind: "foreign",
-    stream: "foreign-currency-deposit",
-    accountNumber: YUANTA_FX_ACCOUNT.value,
-    sourceAccountKey: YUANTA_FX_ACCOUNT.value,
-    currency: "USD",
-    available: amount,
-    ledger: amount,
-    effectiveAt: at,
-    providerHttpDate: new Date(at).toUTCString(),
-    observedAt: at,
-    sourceEvidence: {
-      endpoint: YUANTA_BALANCE_CONTRACT.endpointPath,
-      method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
+  const usdBalance = balance.toFixed(2);
+  const currentBalances: YuantaCurrentDepositTable = {
+    evidence: {
+      kind: "cells",
+      rows: [["營業部", "外幣綜合存款", "USD", YUANTA_FX_ACCOUNT.value, usdBalance, usdBalance, "32.05", money(Math.round(balance * 32.05))]],
+    },
+    response: {
+      url: `https://${YUANTA_BALANCE_CONTRACT.endpointHost}${YUANTA_BALANCE_CONTRACT.endpointPath}`,
       status: 200,
-      cacheControl: "no-store",
-      contractVersion: YUANTA_BALANCE_CONTRACT.contractVersion,
+      method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
+      headers: { date: new Date(at).toUTCString(), "cache-control": "no-store" },
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
   await stageYuantaForeignCurrency({
     accounts: [YUANTA_FX_ACCOUNT],
     downloads: [{ account: YUANTA_FX_ACCOUNT, currency: { label: "美元", value: "USD" }, rows }],
-    currentBalances: [current],
+    currentBalances,
   }, {
     queryRange: { startDate: addDays(date, -179), endDate: date },
     accountFilters: [],
@@ -290,11 +284,7 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     signal: new AbortController().signal,
     text: strictSourceText,
     now: () => at,
-  } as never, {
-    stage: (...requests) => { items.push(...requests.map((request) => ({ ...request, provider: "yuanta" }))); },
-    reportActivity: async () => undefined,
-    event: async () => undefined,
-  });
+  } as never, demoProductHandle("yuanta", items, at));
   return items;
 }
 
@@ -415,7 +405,7 @@ function maicoinFetch(date: () => string): typeof fetch {
       return json(CRYPTO.map((coin) => ({ currency: coin.currency, balance: coin.balance, locked: "0" })));
     if (url.pathname === "/api/v3/wallet/m/accounts") return json([]);
     if (url.pathname === "/api/v3/markets")
-      return json(CRYPTO.filter((coin) => coin.currency !== "twd").map((coin) => ({
+      return json(CRYPTO.map((coin) => ({
         id: `${coin.currency}twd`, base_unit: coin.currency, quote_unit: "twd", status: "active",
       })));
     if (url.pathname === "/api/v3/tickers")
@@ -485,7 +475,7 @@ export async function seedAppDemo(userData: string) {
     }
 
     // USD rates through the exchange-rate workflow's own persistence path.
-    const rateRows = [];
+    const rateRows: { date: string; base: string; quote: string; rate: number }[] = [];
     for (let date = FIRST_DAY; date <= TODAY; date = addDays(date, 1)) {
       const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
       if (weekday === 0 || weekday === 6) continue;
@@ -510,16 +500,16 @@ export async function seedAppDemo(userData: string) {
     const spendingQuery = createPGliteSpendingQuery(store);
     let categorized = 0;
     for (const month of ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]) {
-      const page = await spendingQuery.recordPage({ knowledgeAt: await latestKnowledge(), month, limit: 200, categoryCodes: [SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR] });
+      const page = freshPage(await spendingQuery.recordPage({ knowledgeAt: await latestKnowledge(), month, limit: 200, categoryCodes: [SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR] }));
       for (const record of page.records) {
-        const category = record.transaction?.integrationNamespace === "fubon" ? categoryOf(record.description ?? "") : null;
+        const category = record.transaction?.stream === "domestic-deposit" ? categoryOf(record.description ?? "") : null;
         if (!category) throw new Error(`Unclassified demo purchase: ${record.description}`);
         await setPGliteSpendingPurchaseCategory(store, { purchaseId: record.purchaseId, knowledgeAt: await latestKnowledge(), categoryCode: category });
         categorized += 1;
       }
     }
     committed.categorizedBankPurchases = categorized;
-    const pending = await spendingQuery.pendingOverview({ knowledgeAt: await latestKnowledge() });
+    const pending = freshPage(await spendingQuery.pendingOverview({ knowledgeAt: await latestKnowledge() }));
     if (pending.pendingCount !== 3) throw new Error(`The bank data changed the pending merge pairs: ${pending.pendingCount}`);
 
     const fubonFinal = fubonStatementThrough(deposits, TODAY).balance;

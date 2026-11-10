@@ -9,6 +9,7 @@ import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { commitPGliteCanonicalEInvoiceCapture } from "../src/ledger/pglite/einvoice.ts";
 import { commitPGliteCanonicalCreditCardCapture } from "../src/ledger/pglite/credit-card.ts";
 import { commitPGliteCanonicalCreditCardBalanceCapture } from "../src/ledger/pglite/credit-card.ts";
+import { admitCreditCardCurrentBalanceCapture } from "../src/ledger/canonical/credit-card-current-balance-admission.ts";
 import { creditCardBalanceCommandRequest, creditCardCommandRequestFromCanonicalCapture } from "../src/ledger/pglite/credit-card-adapters.ts";
 import { setPGliteSpendingPurchaseCategory } from "../src/ledger/pglite/purchase-category-command.ts";
 import { applyPGliteSpendingPageAction } from "../src/ledger/pglite/spending-command.ts";
@@ -30,7 +31,7 @@ import {
   type InvoiceCaptureRecord,
 } from "../src/workflows/einvoice-personal-invoices.ts";
 import { writeAutomationSettingsFile } from "../src/lib/automation/server/config-files.ts";
-import { SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR } from "../src/lib/spending/model.ts";
+import { SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR, type SpendingPageReadResult } from "../src/lib/spending/model.ts";
 
 /**
  * Disposable Spending demo for screen recordings of the merge flow.
@@ -336,6 +337,12 @@ async function latestKnowledge(store: PGliteStore): Promise<number> {
   return Number(row?.value ?? 0);
 }
 
+/** The seed reads at the knowledge point it just wrote, so a stale read means the seed is broken. */
+export function freshPage<T extends object>(result: SpendingPageReadResult<T>): T {
+  if ("stale" in result) throw new Error(`Spending page read was stale; the knowledge point is ${result.knowledgeAt}.`);
+  return result;
+}
+
 function uuidText(value: Uint8Array): string {
   const hex = Buffer.from(value).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -447,7 +454,7 @@ export async function seedSpendingDemo(userData: string) {
         httpDate: new Date(`${date}T01:30:00Z`).toUTCString(),
       });
       await commitPGliteCanonicalCreditCardBalanceCapture(store, creditCardBalanceCommandRequest(
-        { ...snapshot, captureId: `${snapshot.captureId}:${date}` },
+        admitCreditCardCurrentBalanceCapture({ ...snapshot, captureId: `${snapshot.captureId}:${date}` }),
         cardRequest.identity,
       ));
     }
@@ -478,7 +485,7 @@ export async function seedSpendingDemo(userData: string) {
     const query = createPGliteSpendingQuery(store);
     const unclassified = new Set<string>();
     for (const month of MONTHS) {
-      const page = await query.recordPage({ knowledgeAt: await latestKnowledge(store), month, limit: 100, categoryCodes: [SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR] });
+      const page = freshPage(await query.recordPage({ knowledgeAt: await latestKnowledge(store), month, limit: 100, categoryCodes: [SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR] }));
       for (const record of page.records) unclassified.add(record.purchaseId);
     }
     for (const row of invoiceRows) {
@@ -495,7 +502,7 @@ export async function seedSpendingDemo(userData: string) {
 
     // Merge the September pair through the page action, as a user would.
     let knowledgeAt = await latestKnowledge(store);
-    const pending = await query.candidatePage({ knowledgeAt, month: null, limit: 100 });
+    const pending = freshPage(await query.candidatePage({ knowledgeAt, month: null, limit: 100 }));
     const septemberPair = pending.items.find((item) =>
       item.invoiceRecord?.invoice?.revision.invoiceNumber === SEPTEMBER_MERGED_INVOICE.number);
     if (!septemberPair) throw new Error("The September demo pair was not offered as a candidate.");
@@ -509,8 +516,8 @@ export async function seedSpendingDemo(userData: string) {
     });
 
     knowledgeAt = await latestKnowledge(store);
-    const overview = await query.pendingOverview({ knowledgeAt });
-    const remaining = await query.candidatePage({ knowledgeAt, month: null, limit: 100 });
+    const overview = freshPage(await query.pendingOverview({ knowledgeAt }));
+    const remaining = freshPage(await query.candidatePage({ knowledgeAt, month: null, limit: 100 }));
     const pairs = remaining.items.map((item) =>
       `${item.invoiceRecord?.invoice?.revision.invoiceNumber ?? "?"} ↔ ${item.paymentRecord?.transaction?.description ?? "?"} (${item.candidate.strength})`);
     const expected = new Set(OCTOBER_INVOICES.slice(0, 3).map((entry) => entry.number));
