@@ -284,7 +284,7 @@ const financialSnapshot: CtbcDepositSourceSnapshot = {
   assert.deepEqual(await harness.stage(financialSnapshot, [currentBalance]), { sourceCaptureCount: 1, rowCount: 1 });
   assert.equal(harness.balanceReads, 1);
   assert.deepEqual(harness.staged.map((item) => [item.product, item.command.kind]), [
-    ["domestic-deposit", "financial.mixed.commit"],
+    ["domestic-deposit", "financial.deposit.commit"],
     ["current-balance", "financial.balance.capture"],
   ]);
 }

@@ -8,7 +8,6 @@ import {
   PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND,
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_LOAN_RELATIONS_RESOLVE_COMMAND,
-  PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
 } from "../ledger/pglite/workflow-commands.ts";
 import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
@@ -82,7 +81,6 @@ async function admissions(product: Parameters<typeof admitDeposit>[0]): Promise<
       product: "foreign-currency",
       capture: capture("financial-c"),
       balance: { account: "c" },
-      withSource: source("source-c"),
     })),
   ];
 }
@@ -103,13 +101,7 @@ test("source-only items, then deposits, then balances stage in one call, each ke
   assert.deepEqual(staged!.map(({ product, command }) => [product, command]), [
     ["domestic-deposit", { kind: PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND, request: source("source-b") }],
     ["domestic-deposit", { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture: capture("financial-a") } }],
-    ["foreign-currency", {
-      kind: PGLITE_CANONICAL_MIXED_COMMIT_COMMAND,
-      request: { steps: [
-        { kind: "source", request: source("source-c") },
-        { kind: "deposit", request: { capture: capture("financial-c") } },
-      ] },
-    }],
+    ["foreign-currency", { kind: PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND, request: { capture: capture("financial-c") } }],
     ["current-balance", { kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND, request: { account: "a", amount: "100" } }],
     ["current-balance", { kind: PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND, request: { account: "c", amount: "5" } }],
   ]);
