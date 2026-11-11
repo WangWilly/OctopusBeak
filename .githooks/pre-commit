@@ -41,11 +41,6 @@ const allowedPrivacyFindings = new Set([
   "src/lib/shared-ledger/server/mock-data.ts:142: long account-like number 0132****8900",
   "src/lib/shared-ledger/server/mock-data.ts:160: long account-like number 9988**6600",
   "src/lib/shared-ledger/server/mock-data.ts:176: long account-like number 9988**6600",
-  "src/workflows/cathay-current-deposit-balances.check.ts:49: long account-like number 0000********9012",
-  "src/workflows/cathay-current-deposit-balances.check.ts:49: long account-like number 0000********9999",
-  "src/workflows/cathay-current-deposit-balances.check.ts:91: long account-like number 1234****9012",
-  "src/workflows/cathay-current-deposit-balances.check.ts:116: long account-like number 1234****9012",
-  "src/workflows/cathay-current-deposit-balances.check.ts:124: long account-like number 1234****9012",
   "src/workflows/linebank-current-deposit-balances.check.ts:69: long account-like number 0123****8901",
 ]);
 
