@@ -8,7 +8,19 @@ import type {
 } from "../lib/automation/product-collection.ts";
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
-import type { LineBankHumanAttestedV13ValidatedCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
+import {
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  linebankEpochMillisecondsFromSourceDateTime,
+  linebankHumanAttestedV13AuthorityKind,
+  normalizeLineBankFinancialCapture,
+  validateLineBankHumanAttestedV13Capture,
+  type LineBankAccount,
+  type LineBankHumanAttestedV13ValidatedCapture,
+  type LineBankTransactionPage,
+  type LineBankTransactionRow,
+  type LineBankTransactionSourceEnvelope,
+} from "../ledger/canonical/linebank-domestic-deposit.ts";
 import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
@@ -85,17 +97,6 @@ type LineBankVerifiedInput = VerifiedRunInput<typeof LINEBANK_CREDENTIAL_FIELDS,
 type LineBankCredentials = LineBankVerifiedInput["credentials"];
 export type LineBankWorkflowInput = LineBankVerifiedInput & z.infer<typeof lineBankInputSchema>;
 
-export type LineBankAccount = {
-  acctNbr?: string;
-  arrId?: string;
-  acctNick?: string;
-  pdNm?: string;
-  currCd?: string;
-  ccyCd?: string;
-  crncyCd?: string;
-  currency?: string;
-};
-
 export const LINEBANK_FOREIGN_ACCOUNT_NUMBER_EVIDENCE_VERSION =
   "linebank/foreign-account/account-number-v1" as const;
 
@@ -139,51 +140,6 @@ type LineBankAccountsResponse = {
   } | null;
 };
 
-export type LineBankTransactionRow = {
-  txSeqNbr?: number | string;
-  txDt?: string;
-  txTm?: string;
-  /** Observed source type: epoch milliseconds. */
-  txDtm?: number;
-  dpstWdrwDsCd?: string;
-  bizTxFuncTpCd?: string;
-  bizTxFuncTpNm?: string;
-  crrnDpstNthCnt?: number;
-  ctptCustLineUid?: string | null;
-  fxsTxId?: string | null;
-  rltvTxArrId?: string | null;
-  txCaseCd?: string;
-  txAmt?: number | string;
-  afTxBal?: number | string;
-  cncdTxYn?: string;
-  cnclTxYn?: string;
-  txRmkCont?: string;
-  txMemoVal?: string | null;
-};
-
-/** Scalar account/product/status fields observed in the transaction response. */
-export type LineBankTransactionSourceEnvelope = {
-  acctNbr?: string;
-  arrId?: string;
-  acctNick?: string;
-  acctBal?: number | string;
-  wdrwAvblAmt?: number | string;
-  acctColrTpCd?: string;
-  acctColrTpVal?: string;
-  acctCardImgUrl?: string | null;
-  pdCd?: string;
-  pdNm?: string;
-  simpAcctTpCd?: string | null;
-  jntAcctMbrTpCd?: string;
-  isSecuAcctBndg?: boolean;
-  debitCardFundBlcknYn?: string;
-  txBlcknYn?: string;
-  opnDtm?: number;
-  jntMbrListCnt?: number;
-  totJntAcctMbrCnt?: number;
-  rcntTxfrListCnt?: number;
-};
-
 export type LineBankTransactionResponseContent =
   LineBankTransactionSourceEnvelope & {
     pageNbr?: number;
@@ -197,20 +153,6 @@ export type LineBankTransactionsResponse = {
   code?: string;
   message?: string;
   content?: LineBankTransactionResponseContent | null;
-};
-
-/** A page preserves the source response envelope instead of reducing it to
- * rendered statement rows. The canonical contract uses these counts to prove that
- * the requested range was completely collected before admitting any record. */
-export type LineBankTransactionPage = {
-  pageNbr: number;
-  pageCnt: number;
-  totTxCnt: number;
-  txCnt: number;
-  rows: LineBankTransactionRow[];
-  source?: LineBankTransactionSourceEnvelope;
-  responseCode?: string;
-  responseMessage?: string;
 };
 
 export type LineBankStatementRow = {
@@ -234,49 +176,6 @@ function formatTime(value: string | undefined): string {
   const raw = collapseSourceWhitespace(value).padStart(6, "0");
   if (!/^\d{6}$/.test(raw)) return collapseSourceWhitespace(value);
   return `${raw.slice(0, 2)}:${raw.slice(2, 4)}:${raw.slice(4, 6)}`;
-}
-
-/** Reconstruct the source timestamp using Taiwan's fixed UTC+8 offset. */
-export function linebankEpochMillisecondsFromSourceDateTime(
-  txDt: string | undefined,
-  txTm: string | undefined,
-): number {
-  const date = collapseSourceWhitespace(txDt);
-  const time = collapseSourceWhitespace(txTm);
-  const dateMatch = date.match(/^(\d{4})(\d{2})(\d{2})$/);
-  const timeMatch = time.match(/^(\d{2})(\d{2})(\d{2})$/);
-  if (!dateMatch || !timeMatch) {
-    throw new Error("LINE Bank transaction source date/time is invalid.");
-  }
-  const year = Number(dateMatch[1]);
-  const month = Number(dateMatch[2]);
-  const day = Number(dateMatch[3]);
-  const hour = Number(timeMatch[1]);
-  const minute = Number(timeMatch[2]);
-  const second = Number(timeMatch[3]);
-  const calendarDate = new Date(Date.UTC(year, month - 1, day));
-  if (
-    calendarDate.getUTCFullYear() !== year ||
-    calendarDate.getUTCMonth() !== month - 1 ||
-    calendarDate.getUTCDate() !== day ||
-    hour > 23 ||
-    minute > 59 ||
-    second > 59
-  ) {
-    throw new Error("LINE Bank transaction source date/time is invalid.");
-  }
-  const epochMilliseconds = Date.UTC(
-    year,
-    month - 1,
-    day,
-    hour - 8,
-    minute,
-    second,
-  );
-  if (!Number.isSafeInteger(epochMilliseconds)) {
-    throw new Error("LINE Bank transaction source time is out of range.");
-  }
-  return epochMilliseconds;
 }
 
 export function linebankValidateTransactionTime(
@@ -1022,12 +921,6 @@ export async function linebankHumanAttestedCapture(input: {
   observedAt: string;
 }): Promise<LineBankHumanAttestedV13ValidatedCapture | null> {
   const source = input.pages[0]?.source;
-  const {
-    LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
-    LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
-    linebankHumanAttestedV13AuthorityKind,
-    validateLineBankHumanAttestedV13Capture,
-  } = await import("../ledger/canonical/linebank-domestic-deposit.ts");
   if (
     !source ||
     linebankHumanAttestedV13AuthorityKind(source) !== "personal-main"
@@ -1206,9 +1099,6 @@ async function runLineBankWorkflow(
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
         const admissions: DepositAdmission<LineBankCurrentBalanceCapture>[] = [];
         const captureOccurrenceId = randomUUID();
-        const { normalizeLineBankFinancialCapture } = await import(
-          "../ledger/canonical/linebank-domestic-deposit.ts"
-        );
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
           total: selectedSources.length,

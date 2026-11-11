@@ -21,8 +21,10 @@ import { signalRunEvent, type WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowExecutor } from "./workflow-executor.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
-  lineBankWorkflow,
   type LineBankAccount,
+} from "../../ledger/canonical/linebank-domestic-deposit.ts";
+import {
+  lineBankWorkflow,
   type LineBankTransactionsResponse,
 } from "../../workflows/linebank-statements.ts";
 
