@@ -1,7 +1,7 @@
 import type {
   LineBankAccount,
   LineBankTransactionPage,
-} from "../../workflows/linebank-statements.ts";
+} from "./linebank-domestic-deposit.ts";
 
 /**
  * Sanitized shape evidence from one live response. Every value below is
