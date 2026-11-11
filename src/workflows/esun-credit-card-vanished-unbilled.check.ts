@@ -5,20 +5,20 @@ import {
   deriveEsunCanonicalHumanAttestation,
   type CaptureMetadata,
   type StatementRow,
-} from "../../workflows/esun-credit-card-statements.ts";
+} from "./esun-credit-card-statements.ts";
 import {
   esunCanonicalSpineCapture,
   esunNeutralCreditCardCapture,
-} from "../canonical/esun-credit-card-admission.ts";
-import { createTestPGlite } from "./baseline-test-template.ts";
-import { creditCardCommandRequestFromCanonicalCapture } from "./credit-card-adapters.ts";
+} from "../ledger/canonical/esun-credit-card-admission.ts";
+import { createTestPGlite } from "../ledger/pglite/baseline-test-template.ts";
+import { creditCardCommandRequestFromCanonicalCapture } from "../ledger/pglite/credit-card-adapters.ts";
 import {
   commitPGliteCanonicalCreditCardCapture,
   PGliteCanonicalCreditCardAdmissionError,
   type PGliteCanonicalCreditCardCaptureRequest,
-} from "./credit-card.ts";
-import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
-import { PGliteStore } from "./transaction.ts";
+} from "../ledger/pglite/credit-card.ts";
+import { PGliteCanonicalSourceAdmissionError } from "../ledger/pglite/source-admission-validation.ts";
+import { PGliteStore } from "../ledger/pglite/transaction.ts";
 
 // An unbilled authorization the issuer cancels (a released hotel deposit, a
 // voided order) leaves the complete unbilled listing without a billed
