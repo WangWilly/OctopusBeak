@@ -83,7 +83,8 @@ function transactionResponse(options: {
     code: "200",
     content: {
       ...source,
-      ...(options.requested ? { acctNbr: String(options.requested.acctNbr), arrId: String(options.requested.arrId) } : {}),
+      ...(typeof options.requested?.acctNbr === "string" ? { acctNbr: options.requested.acctNbr } : {}),
+      ...(typeof options.requested?.arrId === "string" ? { arrId: options.requested.arrId } : {}),
       pageNbr: options.pageNbr,
       pageCnt: 1000,
       totTxCnt: options.empty ? 0 : options.incomplete ? 2 : 1,
@@ -474,6 +475,7 @@ async function balanceFailure(listedAccounts: readonly Readonly<Record<string, u
     return true;
   });
   assert.equal(harness.commits.length, 0);
+  assert.ok(reason !== undefined, "the rejection carried a cause message");
   return reason;
 }
 
