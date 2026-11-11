@@ -34,11 +34,6 @@ export type AppWorkflowWorkerStart = Readonly<{
   pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
-/** What a worker thread starts from: the core start and, for a browser workflow, the page it attaches to. */
-export type AppWorkflowWorkerThreadData = AppWorkflowWorkerStart & Readonly<{
-  browserConnection?: AppWorkflowBrowserConnection;
-}>;
-
 /** A host call (ADR 0072); its method's contract in app-workflow-host-calls.ts validates the request. */
 export type HostCallFrame = Readonly<{
   protocolVersion: 3;

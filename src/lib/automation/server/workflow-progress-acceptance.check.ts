@@ -1,23 +1,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { WorkerOptions } from "node:worker_threads";
 import test from "node:test";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { taskById } from "./tasks.ts";
-import type {
-  AppWorkflowWorkerHandle,
-} from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type {
   AppWorkflowWorkerInboundFrame,
   AppWorkflowWorkerOutboundFrame,
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, inProcessCheckHost, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -64,8 +61,6 @@ function call(method: string, request: unknown): AppWorkflowWorkerOutboundFrame 
 }
 
 class SequencedWorkflowWorker extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   private readonly frames: ScriptedFrame[];
   private readonly onEventAcknowledged: (eventId: string, runId: string) => Promise<void>;
   private current: Readonly<{ callId: string; eventId: string; runId: string }> | null = null;
@@ -262,20 +257,13 @@ test("runner progress spans selected product stages, survives a same-run retry, 
         attempt: input.attempt,
         maxAttempts: 3,
       }), {
-        workflowBrowserPort: () => ({
-          async withPage(run) { return await run({} as never); },
-        }),
-        appWorkflowBrowserConnectionForRun: (runId) => ({
-          endpoint: "http://127.0.0.1:43121",
-          targetId: `fixture-page-${runId}`,
-        }),
-        appWorkflowWorkerFactory: (_workerPath, options: WorkerOptions) =>
+        executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
           new SequencedWorkflowWorker(
-            options.workerData as AppWorkflowWorkerStart,
+            start,
             input.steps,
             input.terminal,
             onEventAcknowledged,
-          ),
+          ) }),
       });
       return { taskRunId, outcome, initialProgress: startingProgress.get(taskRunId) ?? null };
     };
@@ -410,12 +398,9 @@ test("runner progress spans selected product stages, survives a same-run retry, 
       maxAttempts: 1,
       pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv,
-      workflowBrowserPort: () => {
-        throw new Error("Exchange-rate progress must not open a browser.");
-      },
-      appWorkflowWorkerFactory: (_workerPath, options: WorkerOptions) =>
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
         new SequencedWorkflowWorker(
-          options.workerData as AppWorkflowWorkerStart,
+          start,
           [
             { eventId: "exchange-run-start", event: { stage: "preparation", outcome: "started", code: "run-started" } },
             {
@@ -425,7 +410,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
           ],
           { kind: "completed", summary: null },
           onEventAcknowledged,
-        ),
+        ) }),
     });
     assert.equal(exchangeRateResult.status, "completed");
     const exchangeRunId = exchangeRateResult.taskRunId;

@@ -25,6 +25,7 @@ import {
   type HostCallRequest,
 } from "./app-workflow-host-calls.ts";
 import { runAppWorkflowWorker, runAppWorkflowWorkerThread } from "./app-workflow-worker-runtime.ts";
+import { chromiumThreadHost } from "./execution-host.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
@@ -391,6 +392,35 @@ test("bundled internal worker validates workerData and returns a sanitized frame
     errorCode: "protocol-invalid",
   });
   assert.equal(JSON.stringify(terminal).includes("must-not-be-returned"), false);
+});
+
+test("the Chromium thread host hands a browser workflow's thread its DevTools descriptor", async () => {
+  assert.throws(
+    () => chromiumThreadHost.launchWorker(start, { browserConnection: () => null }),
+    /connection is unavailable/u,
+  );
+  const worker = chromiumThreadHost.launchWorker(start, {
+    browserConnection: () => ({ endpoint: "http://127.0.0.1:9", targetId: "fixture-target" }),
+  });
+  try {
+    const terminal = await new Promise<AppWorkflowWorkerOutboundFrame>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("The thread did not end its run.")), 10_000);
+      worker.on("error", (error) => { clearTimeout(timeout); reject(error); });
+      worker.on("message", (value: unknown) => {
+        const frame = parseAppWorkflowWorkerOutboundFrame(value);
+        if (frame.kind === "call") {
+          worker.postMessage(reply(frame.callId));
+        } else {
+          clearTimeout(timeout);
+          resolve(frame);
+        }
+      });
+    });
+    assert.equal(terminal.kind, "failed");
+    assert.equal(terminal.taskRunId, start.taskRunId, "the thread accepted its start and ran the workflow");
+  } finally {
+    await worker.terminate();
+  }
 });
 
 test("worker runs a definition through typed ports and the bounded host request protocol", async () => {

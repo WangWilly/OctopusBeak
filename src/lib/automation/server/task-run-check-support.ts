@@ -10,12 +10,13 @@ import {
   type HumanAssistanceRoute,
 } from "./app-workflow-human-assistance.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
-import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
+import { parseAppWorkflowWorkerOutboundFrame, type AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
   runAppWorkflowWorker,
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
+import type { AppWorkflowWorkerHandle, ExecutionHost } from "./execution-host.ts";
 import type { AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
@@ -131,12 +132,19 @@ export function firstRoundForCheck(
 }
 
 /** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
-export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port">;
+export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "browser">;
+
+export type InProcessCheckHostOptions = CheckWorkerPorts & Readonly<{
+  /** The browser a browser workflow's worker runs in, built from the page the round asked for. */
+  browser?: (page: AppWorkflowBrowserHostInput) => WorkflowBrowserPort;
+  /** Frames a check scripts in place of the real worker. */
+  scriptedWorker?: (start: AppWorkflowWorkerStart) => AppWorkflowWorkerHandle;
+}>;
 
 /** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
-export function inProcessAppWorkflowWorker(
-  workerData: unknown,
-  ports: CheckWorkerPorts = {},
+function inProcessWorker(
+  start: AppWorkflowWorkerStart,
+  options: Omit<AppWorkflowWorkerRuntimeOptions, "port">,
 ): AppWorkflowWorkerHandle {
   const channel = new MessageChannel();
   const worker = new EventEmitter() as EventEmitter & AppWorkflowWorkerHandle;
@@ -158,36 +166,33 @@ export function inProcessAppWorkflowWorker(
   });
   setImmediate(() => {
     worker.emit("online");
-    const { browserConnection: _browserConnection, ...start } = workerData as Record<string, unknown>;
-    void runAppWorkflowWorker(start, { ...ports, port: channel.port1 });
+    void runAppWorkflowWorker(start, { ...options, port: channel.port1 });
   });
   return worker;
 }
 
-const hostPageForWorker: WorkflowBrowserPort = {
-  async withPage(run) { return await run({} as never); },
-};
-
-/** The host keeps its production wiring; the page and RPC-backed ports reach the worker from the check. */
-function supervisedWithCheckWorker(
-  seams: AutomationTaskExecutionSeams,
-  workerPorts: CheckWorkerPorts,
-): AutomationTaskExecutionSeams {
-  let workerBrowser: WorkflowBrowserPort | undefined;
+/**
+ * An execution host that opens no browser: the round's worker is the real
+ * worker runtime in this process holding the check's ports, or the check's
+ * scripted worker.
+ */
+export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): ExecutionHost {
+  const { browser, scriptedWorker, ...ports } = options;
+  const pages = new Map<string, WorkflowBrowserPort>();
   return {
-    ...seams,
-    workflowBrowserPort: (input) => {
-      workerBrowser = seams.workflowBrowserPort?.(input);
-      return hostPageForWorker;
+    async withPage(page, use) {
+      if (browser) pages.set(page.taskRunId, browser(page));
+      try {
+        return await use();
+      } finally {
+        pages.delete(page.taskRunId);
+      }
     },
-    appWorkflowBrowserConnectionForRun: (runId) => ({
-      endpoint: "http://127.0.0.1:43121",
-      targetId: `host-page-${runId}`,
-    }),
-    appWorkflowWorkerFactory: (_path, worker) => inProcessAppWorkflowWorker(worker.workerData, {
-      ...workerPorts,
-      ...(workerBrowser ? { browser: workerBrowser } : {}),
-    }),
+    launchWorker(start) {
+      if (scriptedWorker) return scriptedWorker(start);
+      const page = pages.get(start.taskRunId);
+      return inProcessWorker(start, { ...ports, ...(page ? { browser: page } : {}) });
+    },
   };
 }
 
@@ -261,8 +266,6 @@ export async function executeTaskRunForCheck(
       onRunOpened?: (run: ActiveAutomationTaskRun) => void;
       /** Receives each Workflow execution the round begins. */
       executions?: WorkflowExecution[];
-      /** Run the production supervised path against an in-process worker holding these ports. */
-      workerPorts?: CheckWorkerPorts;
     }>,
 ): Promise<{
   status: AutomationTaskRun["status"];
@@ -271,7 +274,7 @@ export async function executeTaskRunForCheck(
   outcome: TypedWorkflowOutcome;
 }> {
   const {
-    taskRunId, onRunOpened, executions, workerPorts,
+    taskRunId, onRunOpened, executions,
     pgliteRpc, credentials, settings, userDataDirectory, launchEnv, launchVerificationSettings,
     attempt, maxAttempts, retrying, executionId, assistanceRoute,
     ...seams
@@ -294,12 +297,7 @@ export async function executeTaskRunForCheck(
   const opened = await openTaskRunForCheck(persistence, taskRunId);
   const active = executions ? observingExecutions(opened, executions) : opened;
   onRunOpened?.(active);
-  const report = await runAutomationTaskExecution(
-    plan,
-    active,
-    round,
-    workerPorts ? supervisedWithCheckWorker(seams, workerPorts) : seams,
-  );
+  const report = await runAutomationTaskExecution(plan, active, round, seams);
   const run = await active.finish(report);
   return { status: run.status, taskRunId, run, outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } };
 }

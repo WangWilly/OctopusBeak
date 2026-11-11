@@ -23,7 +23,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { executeTaskRunForCheck }, {
+const [{ taskById }, { executeTaskRunForCheck, inProcessCheckHost }, {
   appWorkflowRegistration,
   workflowBrowserProfileForWorkflow,
   workflowStartUrlForWorkflow,
@@ -111,12 +111,14 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit },
-      workflowBrowserPort: ({ startUrl, browserProfile }) => {
-        observedStartUrl = startUrl;
-        observedBrowserProfile = browserProfile;
-        return browser;
-      },
+      executionHost: inProcessCheckHost({
+        financialCommit,
+        browser: ({ startUrl, browserProfile }) => {
+          observedStartUrl = startUrl;
+          observedBrowserProfile = browserProfile;
+          return browser;
+        },
+      }),
     });
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");

@@ -12,7 +12,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
@@ -162,8 +162,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     const firstResult = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: firstRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      workerPorts: { financialCommit: committedFinancialCommit() },
-      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
+      executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
     });
     assert.equal(firstResult.status, "completed");
     const completedRun = await provider.automation.taskRunById(firstRun.taskRunId);
@@ -209,8 +208,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
     const rejectedResult = await executeTaskRunForCheck(task, provider.automation, {
       taskRunId: rejectedRun.taskRunId,
       launchEnv: testCredentialEnvironment(),
-      workerPorts: { financialCommit: rejectedCommit },
-      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal),
+      executionHost: inProcessCheckHost({ financialCommit: rejectedCommit, browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
     });
     assert.equal(rejectedResult.status, "failed");
     const rejectedRecord = await provider.automation.taskRunById(rejectedRun.taskRunId);
@@ -226,8 +224,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
         shutdownActive = active;
       },
       launchEnv: testCredentialEnvironment(),
-      workerPorts: { financialCommit: committedFinancialCommit() },
-      workflowBrowserPort: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000),
+      executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000) }),
     });
     // Wait until the run is actively executing, then shut down.
     await new Promise((resolve) => setTimeout(resolve, 500));

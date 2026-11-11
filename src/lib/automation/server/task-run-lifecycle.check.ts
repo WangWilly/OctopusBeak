@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import test, { after } from "node:test";
-import type { WorkerOptions } from "node:worker_threads";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -11,10 +10,10 @@ import type { AutomationRuntimeTaskSnapshot } from "$lib/desktop/api.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
-import { runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 
 const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
@@ -47,8 +46,6 @@ async function until(predicate: () => boolean | Promise<boolean>, message: strin
 type WorkerMode = "completes" | "stops-on-cancel" | "ignores-cancel";
 
 class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   terminated = false;
   readonly started = deferred();
   readonly start: AppWorkflowWorkerStart;
@@ -101,11 +98,11 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
 function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): typeof runAutomationTaskExecution {
   return (plan, run, round, seams) => runAutomationTaskExecution(plan, run, round, {
     ...seams,
-    appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
-      const worker = new ScriptedWorker(workerOptions.workerData as AppWorkflowWorkerStart, mode);
+    executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
+      const worker = new ScriptedWorker(start, mode);
       workers.push(worker);
       return worker;
-    },
+    } }),
   });
 }
 

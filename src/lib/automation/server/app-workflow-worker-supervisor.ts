@@ -1,5 +1,3 @@
-import { join } from "node:path";
-import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { TypedWorkflowErrorCode } from "./typed-workflow-outcome.ts";
 import type { WorkflowRunResult } from "../workflow-run-result.ts";
 import {
@@ -11,14 +9,10 @@ import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowWorkerOutboundFrame,
-  parseAppWorkflowBrowserConnection,
   parseAppWorkflowWorkerStart,
-  type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerStart,
-  type AppWorkflowWorkerThreadData,
 } from "./app-workflow-worker-protocol.ts";
-import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
-import { appWorkflowRegistration } from "./app-workflow-registry.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import { createHostCallDispatcher, HostCallRefusal, type HostCallHandlers } from "./app-workflow-host-calls.ts";
 import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
@@ -36,33 +30,10 @@ export type AppWorkflowWorkerOutcome =
     previewResponses?: PreviewResponseShapes;
   }>;
 
-type WorkerDataStream = {
-  on(event: "data", listener: (chunk: unknown) => void): unknown;
-  off(event: "data", listener: (chunk: unknown) => void): unknown;
-  resume(): unknown;
-};
-
-/** The small part of Worker used here also gives focused tests a local fake seam. */
-export interface AppWorkflowWorkerHandle {
-  on(event: "online", listener: () => void): this;
-  on(event: "message", listener: (value: unknown) => void): this;
-  on(event: "error", listener: (error: unknown) => void): this;
-  on(event: "exit", listener: (code: number) => void): this;
-  off(event: "online", listener: () => void): this;
-  off(event: "message", listener: (value: unknown) => void): this;
-  off(event: "error", listener: (error: unknown) => void): this;
-  off(event: "exit", listener: (code: number) => void): this;
-  postMessage(value: AppWorkflowWorkerInboundFrame): void;
-  terminate(): Promise<number> | number;
-  readonly stdout?: WorkerDataStream | null;
-  readonly stderr?: WorkerDataStream | null;
-}
-
 export type RunSupervisedAppWorkflowOptions = Readonly<{
   runId: string;
   workflowId: string;
   input: unknown;
-  browserConnection?: AppWorkflowBrowserConnection;
   pgliteRpc?: AppWorkflowWorkerStart["pgliteRpc"];
   signal: AbortSignal;
   /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
@@ -72,10 +43,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
    * is answered only after its handler resolves, so after it is persisted.
    */
   hostCalls: HostCallHandlers;
-  /** Defaults to the sibling bundle emitted by the Electron build. */
-  workerPath?: string;
-  /** Test seam; production always uses node:worker_threads. */
-  workerFactory?: (path: string, options: WorkerOptions) => AppWorkflowWorkerHandle;
+  /** Starts this run's worker, as the execution host does. */
+  launchWorker: (start: AppWorkflowWorkerStart) => AppWorkflowWorkerHandle;
   /** Bounds how long a cancelled or unhealthy worker may ignore its cancel frame. */
   cancelGraceMs?: number;
   /** Bounds worker cleanup after a valid terminal frame. */
@@ -111,10 +80,6 @@ function uncertaintyCannotBeCancelled(outcome: AppWorkflowWorkerOutcome): boolea
   return outcome.status === "failed" && outcome.errorCode === "commit-outcome-unknown";
 }
 
-function defaultWorkerFactory(path: string, options: WorkerOptions): AppWorkflowWorkerHandle {
-  return new Worker(path, options);
-}
-
 /**
  * Own one typed workflow worker from Electron main. Events are acknowledged only
  * after their operational-database append finishes; raw worker errors and output
@@ -127,7 +92,7 @@ export async function runSupervisedAppWorkflow(
   const controller = new AbortController();
   const signal = controller.signal;
 
-  let start: AppWorkflowWorkerThreadData;
+  let start: AppWorkflowWorkerStart;
   try {
     start = parseAppWorkflowWorkerStart({
       protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -136,32 +101,19 @@ export async function runSupervisedAppWorkflow(
       input: options.input,
       ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}),
     });
-    const nonbrowser = appWorkflowRegistration(start.workflowId)?.runtime.kind === "nonbrowser";
-    if (nonbrowser === (options.browserConnection !== undefined)) throw new Error("browser connection mismatch");
-    if (options.browserConnection) {
-      start = { ...start, browserConnection: parseAppWorkflowBrowserConnection(options.browserConnection) };
-    }
   } catch {
     return failed("protocol-invalid", "protocol");
   }
 
-  const factory = options.workerFactory ?? defaultWorkerFactory;
-  const workerPath = options.workerPath
-    ?? (typeof __dirname === "string"
-      ? join(__dirname, "app-workflow-worker.cjs")
-      : join(process.cwd(), "build-electron", "app-workflow-worker.cjs"));
   let worker: AppWorkflowWorkerHandle;
   try {
-    worker = factory(
-      workerPath,
-      { workerData: start, stdout: true, stderr: true },
-    );
+    worker = options.launchWorker(start);
   } catch {
     return failed("worker-start-failed", "worker-start");
   }
-  // workerData contains credentials. Drop the supervisor's reference as soon as
-  // worker_threads has received its structured clone.
-  start = undefined as unknown as AppWorkflowWorkerThreadData;
+  // The start contains credentials. Drop the supervisor's reference as soon as
+  // the host has handed it to the worker.
+  start = undefined as unknown as AppWorkflowWorkerStart;
 
   let settled = false;
   let workerOnline = false;
@@ -170,7 +122,6 @@ export async function runSupervisedAppWorkflow(
   let pendingOutcome: AppWorkflowWorkerOutcome | null = null;
   let cancelTimer: ReturnType<typeof setTimeout> | undefined;
   let terminalTimer: ReturnType<typeof setTimeout> | undefined;
-  const streamDrains: Array<{ stream: WorkerDataStream; listener: (chunk: unknown) => void }> = [];
 
   return await new Promise<AppWorkflowWorkerOutcome>((resolve) => {
     const clearTimers = () => {
@@ -188,8 +139,6 @@ export async function runSupervisedAppWorkflow(
       worker.off("error", onError);
       worker.off("exit", onExit);
       worker.off("online", onOnline);
-      for (const { stream, listener } of streamDrains) stream.off("data", listener);
-      streamDrains.length = 0;
       worker = undefined as unknown as AppWorkflowWorkerHandle;
     };
     const settle = (outcome: AppWorkflowWorkerOutcome) => {
@@ -357,14 +306,6 @@ export async function runSupervisedAppWorkflow(
       });
     };
 
-    // Captured output is drained and discarded. It is never sent to a log.
-    for (const stream of [worker.stdout, worker.stderr]) {
-      if (!stream) continue;
-      const discard = (_chunk: unknown) => undefined;
-      streamDrains.push({ stream, listener: discard });
-      stream.on("data", discard);
-      stream.resume();
-    }
     worker.on("message", onMessage);
     worker.on("error", onError);
     worker.on("exit", onExit);

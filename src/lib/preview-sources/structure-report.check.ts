@@ -25,7 +25,7 @@ const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewWorkflowDefinition, takePreviewObservations } = await import("./workflow.ts");
 const { runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
-const { CHECK_PGLITE_RPC, executeTaskRunForCheck } = await import("../automation/server/task-run-check-support.ts");
+const { CHECK_PGLITE_RPC, executeTaskRunForCheck, inProcessCheckHost } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
 const { createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
 const { createTestPGlite } = await import("../../ledger/pglite/baseline-test-template.ts");
@@ -198,11 +198,8 @@ test("a failed preview run sanitizes its observations inside the worker and rele
 });
 
 class TerminalFakeWorker extends EventEmitter {
-  readonly stdout = null;
-  readonly stderr = null;
-  constructor(workerData: WorkerOptions["workerData"], terminal: (taskRunId: string) => Record<string, unknown>) {
+  constructor(start: { taskRunId: string }, terminal: (taskRunId: string) => Record<string, unknown>) {
     super();
-    const start = workerData as { taskRunId: string };
     setImmediate(() => {
       this.emit("online");
       this.emit("message", { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, ...terminal(start.taskRunId) });
@@ -237,9 +234,7 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
         taskRunId,
         pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv: {},
-        workflowBrowserPort: () => ({ async withPage(work) { return await work({} as never); } }),
-        appWorkflowBrowserConnectionForRun: (runId) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${runId}` }),
-        appWorkflowWorkerFactory: (_path, options) => new TerminalFakeWorker(options.workerData, terminal),
+        executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TerminalFakeWorker(start, terminal) }),
       });
       return { result, taskRunId };
     };

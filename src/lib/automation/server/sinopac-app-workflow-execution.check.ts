@@ -11,7 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -192,11 +192,13 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browser;
-      },
+      executionHost: inProcessCheckHost({
+        financialCommit, now: () => "2026-09-25T12:00:00.000Z",
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browser;
+        },
+      }),
     });
 
     const run = await provider.automation.taskRunById(taskRunId);
@@ -226,8 +228,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
         taskRunId: rejectedRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
-        workerPorts: { financialCommit, now: () => "2026-09-25T12:00:00.000Z" },
-        workflowBrowserPort: () => invalidBrowser,
+        executionHost: inProcessCheckHost({ financialCommit, now: () => "2026-09-25T12:00:00.000Z", browser: () => invalidBrowser }),
       });
       assert.equal(rejected.status, "failed", fault);
       assert.equal(committed.length, 1, `${fault} is rejected before Canonical Financial Commit`);

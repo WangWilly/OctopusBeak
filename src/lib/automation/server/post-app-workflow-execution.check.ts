@@ -12,7 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonical/current-deposit-route-contracts.ts";
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
 import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
@@ -266,14 +266,14 @@ test("Post App task dispatches the typed provider with human assistance, complet
       },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit: commitPort,
         now: () => "2026-09-25T12:00:00.000Z",
-      },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browser;
-      },
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browser;
+        },
+      }),
     });
 
     const run = await provider.automation.taskRunById(taskRunId);
@@ -325,8 +325,7 @@ test("Post App dispatch names each unread statement's failure before commit", as
         taskRunId,
         launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
-        workerPorts: { financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) },
-        workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
+        executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
       });
       assert.equal(result.status, "failed");
       assert.equal(committed.length, 0);
@@ -364,10 +363,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      workerPorts: {
-        financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
+      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
     });
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
@@ -397,10 +393,7 @@ test("Post App dispatch without a verification route fails with a configuration 
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
-        financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
+      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
     });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");

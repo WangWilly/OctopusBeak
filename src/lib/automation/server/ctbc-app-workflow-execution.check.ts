@@ -11,7 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
 import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -204,15 +204,15 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
-      },
-      workflowBrowserPort: ({ startUrl, browserProfile }) => {
-        observedStartUrl = startUrl;
-        observedBrowserProfile = browserProfile;
-        return browser;
-      },
+        browser: ({ startUrl, browserProfile }) => {
+          observedStartUrl = startUrl;
+          observedBrowserProfile = browserProfile;
+          return browser;
+        },
+      }),
     });
 
     const run = await provider.automation.taskRunById(taskRunId);
@@ -254,8 +254,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId: incompleteRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit },
-      workflowBrowserPort: () => incompleteBrowser,
+      executionHost: inProcessCheckHost({ financialCommit, browser: () => incompleteBrowser }),
     });
     assert.equal(incomplete.status, "failed");
     assert.equal(incomplete.outcome.errorCode, "source-validation-failed");
@@ -275,8 +274,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId: malformedRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit },
-      workflowBrowserPort: () => malformedBrowser,
+      executionHost: inProcessCheckHost({ financialCommit, browser: () => malformedBrowser }),
     });
     assert.equal(malformed.status, "failed");
     assert.equal(malformed.outcome.errorCode, "source-integrity-failed");
@@ -302,11 +300,11 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
-      },
-      workflowBrowserPort: () => cancellationBrowser,
+        browser: () => cancellationBrowser,
+      }),
     });
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.outcome.errorCode, "cancelled");
@@ -331,15 +329,15 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       taskRunId: ambiguousRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit: {
           async execute() {
             commitAttempts += 1;
             throw new Error("synthetic transport loss after commit dispatch");
           },
         },
-      },
-      workflowBrowserPort: () => ambiguousBrowser,
+        browser: () => ambiguousBrowser,
+      }),
     });
     assert.equal(ambiguous.status, "failed");
     assert.equal(ambiguous.outcome.errorCode, "commit-outcome-unknown");

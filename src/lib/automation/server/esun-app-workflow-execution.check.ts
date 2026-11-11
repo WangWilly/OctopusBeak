@@ -14,7 +14,7 @@ import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -247,14 +247,14 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browserPort;
-      },
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browserPort;
+        },
+      }),
     });
 
     const run = await provider.automation.taskRunById(taskRunId);
@@ -303,11 +303,11 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
       onRunOpened: (active) => {
         cancellationRun = active;
       },
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: () => cancelBrowser,
+        browser: () => cancelBrowser,
+      }),
     });
     assert.equal(cancelledResult.status, "cancelled");
     assert.equal((await provider.automation.taskRunById(cancelRunId))?.status, "cancelled");
@@ -338,11 +338,11 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
       taskRunId,
       launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
+      executionHost: inProcessCheckHost({
         financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(hostPage.page); } }),
+        browser: () => ({ async withPage(run) { return run(hostPage.page); } }),
+      }),
     });
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "failed");

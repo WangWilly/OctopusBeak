@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { WorkerOptions } from "node:worker_threads";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -17,16 +16,14 @@ import {
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
-import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart, AppWorkflowWorkerThreadData } from "./app-workflow-worker-protocol.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { NO_PROVENANCE } from "../../shared-ledger/provenance.ts";
 
 class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   readonly start: AppWorkflowWorkerStart;
   private readonly startCallId = randomUUID();
   private readonly completeCallId = randomUUID();
@@ -226,14 +223,12 @@ try {
     round,
     {
       ...seams,
-      appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
-        const start = workerOptions.workerData as AppWorkflowWorkerThreadData;
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
         exchangeWorkerStarts += 1;
         assert.equal(start.workflowId, "exchange-rates");
-        assert.equal(start.browserConnection, undefined);
         assert.ok(start.pgliteRpc);
         return new ExchangeRateWorkerFixture(start);
-      },
+      } }),
     },
   );
   const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, exchangeExecution));

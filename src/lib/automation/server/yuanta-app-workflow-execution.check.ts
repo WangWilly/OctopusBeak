@@ -24,7 +24,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { executeTaskRunForCheck }, {
+const [{ taskById }, { executeTaskRunForCheck, inProcessCheckHost }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }, { YUANTA_ENTRY_URL }] = await Promise.all([
@@ -102,11 +102,13 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
       taskRunId: created.taskRunId,
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browser;
-      },
+      executionHost: inProcessCheckHost({
+        financialCommit,
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browser;
+        },
+      }),
     });
     const run = await provider.automation.taskRunById(created.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
