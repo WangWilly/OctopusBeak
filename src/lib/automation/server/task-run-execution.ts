@@ -1,5 +1,5 @@
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
-import { createTdccSessionHost, tdccSessionHostCalls, type TdccSessionHost } from "./tdcc-session-host.ts";
+import { createTdccSessionHost, tdccSessionHostCalls } from "./tdcc-session-host.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
 import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
@@ -62,8 +62,6 @@ export type WorkflowExecutionRound = Readonly<{
 
 /** Test seams of a Workflow execution; production leaves each at its default. */
 export type AutomationTaskExecutionSeams = Readonly<{
-  /** The host side of a TDCC run's session port. Production reads credentials.json. */
-  createTdccSessionHost?: () => TdccSessionHost;
   /** The supervised App workflow worker. Production uses Worker. */
   appWorkflowWorkerFactory?: RunSupervisedAppWorkflowOptions["workerFactory"];
   /** Proves that the worker receives the active host descriptor. */
@@ -165,11 +163,6 @@ function createBrowserRuntimeIdentityRecorder(
   };
 }
 
-function tdccSessionHost(plan: TaskRunPlan, seams: AutomationTaskExecutionSeams): TdccSessionHost {
-  if (seams.createTdccSessionHost) return seams.createTdccSessionHost();
-  return createTdccSessionHost(createTdccSecretStore(plan.credentials));
-}
-
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
   const { plan, seams } = context;
   const { task, workflowId, launchEnv } = plan;
@@ -235,7 +228,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
-          ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(plan, seams)) : {}),
+          ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
         ...(seams.appWorkflowWorkerFactory
           ? { workerFactory: seams.appWorkflowWorkerFactory }
