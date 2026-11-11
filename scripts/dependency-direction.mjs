@@ -217,3 +217,34 @@ export function electronImportsInSrc({ files = walk("src").filter((file) => isCo
     .filter((specifier) => packageName(specifier) === "electron")
     .map((specifier) => ({ file, specifier })));
 }
+
+/** Every module specifier a file names, type-only imports and `import("…")` types included. */
+function namedSpecifiers(file, text) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const specifiers = [];
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) specifiers.push(node.moduleSpecifier.text);
+    else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) specifiers.push(node.arguments[0].text);
+    else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)
+      && ts.isStringLiteral(node.argument.literal)) specifiers.push(node.argument.literal.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return specifiers;
+}
+
+/**
+ * Every src/ledger module, checks included, that names a src/workflows module,
+ * even for types: the ledger owns what it admits, and a workflow builds it.
+ */
+export function ledgerImportsOfWorkflows({
+  files = walk("src/ledger").filter((file) => /\.(ts|mjs|js)$/.test(file)),
+  read = (file) => readFileSync(join(REPO_ROOT, file), "utf8"),
+  isFile = isRepoFile,
+} = {}) {
+  return files.flatMap((file) => namedSpecifiers(file, read(file))
+    .filter((specifier) => resolveSpecifier(file, specifier, isFile)?.file?.startsWith("src/workflows/"))
+    .map((specifier) => ({ file, specifier })));
+}

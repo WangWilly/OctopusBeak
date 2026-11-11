@@ -3,6 +3,7 @@ import test from "node:test";
 import { join } from "node:path";
 import {
   electronImportsInSrc,
+  ledgerImportsOfWorkflows,
   moduleReferences,
   REPO_ROOT,
   rendererViolations,
@@ -112,4 +113,25 @@ test("a src/ module importing electron is reported", () => {
     }),
     [{ file: "src/lib/a.ts", specifier: "electron" }],
   );
+});
+
+test("no src/ledger module names a src/workflows module", () => {
+  assert.deepEqual(ledgerImportsOfWorkflows(), []);
+});
+
+test("a ledger module's type-only, re-exported or import() type reference to a workflow is reported", () => {
+  const files = {
+    "src/ledger/canonical/a.ts": `import type { A } from "../../workflows/a.ts"; export const a = 1;`,
+    "src/ledger/canonical/b.check.ts": `export { b } from "../../workflows/b.ts";`,
+    "src/ledger/pglite/c.ts": `type C = import("../../workflows/c.ts").C;`,
+    "src/ledger/pglite/d.ts": `import { d } from "../canonical/d.ts";`,
+    "src/workflows/a.ts": "", "src/workflows/b.ts": "", "src/workflows/c.ts": "", "src/ledger/canonical/d.ts": "",
+  };
+  const tree = fakeTree(files);
+  const found = ledgerImportsOfWorkflows({ files: Object.keys(files).filter((file) => file.startsWith("src/ledger/")), ...tree });
+  assert.deepEqual(found.map(({ file }) => file), [
+    "src/ledger/canonical/a.ts",
+    "src/ledger/canonical/b.check.ts",
+    "src/ledger/pglite/c.ts",
+  ]);
 });

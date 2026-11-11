@@ -30,4 +30,4 @@ The check follows static, side-effect, re-export, `export *`, `import()`, `requi
 ## Considered options
 
 - **ESLint with an import-boundaries plugin.** Rejected for now. The repo runs no ESLint, and the rules need the route graph, not folder globs.
-- **Rules for ledger, lib and workflows directions.** Deferred until those modules are separated. A rule that starts with dozens of exceptions does not hold a boundary.
+- **Rules for ledger, lib and workflows directions.** Deferred until those modules are separated. A rule that starts with dozens of exceptions does not hold a boundary. [ADR 0131](0131-the-ledger-never-names-a-workflow-module.md) adds the ledger → workflows rule.
