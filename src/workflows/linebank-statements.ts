@@ -630,8 +630,6 @@ function filterAccounts(
   return accounts.filter((account) => {
     const currency = linebankAccountCurrency(account);
     return (
-      accountId(account) &&
-      linebankArrangementId(account.arrId) &&
       matchesFilters(account, accountFilters) &&
       (currencies.size === 0 || currencies.has(currency))
     );
@@ -828,13 +826,18 @@ export class LineBankApiClient {
     const accounts = await this.validate(() => {
       if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
         throw new Error("LINE Bank account list is incomplete.");
-      // Read each listed identity's type before filtering keys on it.
+      // Every listed account must carry its identity, whatever the run
+      // selects: the current-balance parse demands it of each listed account,
+      // and a foreign-only run never reaches that parse.
       for (const account of payload.content.dpstAcctList) {
         if (account === null || typeof account !== "object" || Array.isArray(account))
           throw new Error("LINE Bank account list entry is not an object.");
-        if (account.acctNbr != null && typeof account.acctNbr !== "string")
+        if (typeof account.acctNbr !== "string")
           throw new Error("LINE Bank acctNbr must be a string.");
-        linebankArrangementId(account.arrId);
+        if (!collapseSourceWhitespace(account.acctNbr))
+          throw new Error("LINE Bank acctNbr is empty.");
+        if (!linebankArrangementId(account.arrId))
+          throw new Error("LINE Bank arrId is empty.");
       }
       return payload.content.dpstAcctList;
     });

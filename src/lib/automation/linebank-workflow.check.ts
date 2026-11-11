@@ -513,6 +513,17 @@ test("LINE Bank names a listed acctNbr or entry it cannot read", async () => {
     assert.equal(await balanceFailure([listedAccount(), entry as never]), "LINE Bank account list entry is not an object.");
 });
 
+test("LINE Bank rejects a listed account without its identity even when the run reaches no current balance", async () => {
+  const foreign = listedAccount({ currCd: "USD" });
+  for (const [entry, reason] of [
+    [{ acctNbr: undefined }, "LINE Bank acctNbr must be a string."],
+    [{ acctNbr: "   " }, "LINE Bank acctNbr is empty."],
+    [{ arrId: undefined }, "LINE Bank arrId is empty."],
+    [{ arrId: "" }, "LINE Bank arrId is empty."],
+  ] as const)
+    assert.equal(await balanceFailure([foreign, listedAccount({ ...entry })]), reason);
+});
+
 test("LINE Bank names the field a current balance fails to decode", async () => {
   assert.equal(
     await balanceFailure([listedAccount({ wdrwAvblAmt: "9OO.00" })]),
