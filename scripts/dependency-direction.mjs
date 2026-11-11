@@ -257,12 +257,19 @@ export function ledgerImportsOfWorkflows({
  * wire real electron RPC servers.
  */
 export function srcImportsOfElectron({
-  files = walk("src").filter(isCode),
+  files = walk("src").filter((file) => isCode(file) || file.endsWith(".cjs")),
   read = (file) => readFileSync(join(REPO_ROOT, file), "utf8"),
   isFile = isRepoFile,
 } = {}) {
   const namesElectron = (resolved) => (resolved?.file ?? resolved?.unresolved)?.startsWith("electron/");
-  return files.filter((file) => !isCheckFile(file)).flatMap((file) => namedSpecifiers(file, scriptSource(file, read(file)))
-    .filter((specifier) => namesElectron(resolveSpecifier(file, specifier, isFile)))
-    .map((specifier) => ({ file, specifier })));
+  // Only checks are exempt: a fixture or check-support module can ship, and
+  // production code that imports one would reach electron/ through it.
+  return files.filter((file) => !/\.check\./u.test(file)).flatMap((file) => {
+    const text = read(file);
+    // Type-level names, plus the require() and new URL(…, import.meta.url) forms only the runtime walk sees.
+    const specifiers = new Set([...namedSpecifiers(file, scriptSource(file, text)), ...runtimeSpecifiers(file, text)]);
+    return [...specifiers]
+      .filter((specifier) => namesElectron(resolveSpecifier(file, specifier, isFile)))
+      .map((specifier) => ({ file, specifier }));
+  });
 }
