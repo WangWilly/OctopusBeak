@@ -20,7 +20,7 @@ import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
-import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
+import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart, AppWorkflowWorkerThreadData } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { NO_PROVENANCE } from "../../shared-ledger/provenance.ts";
 
@@ -227,7 +227,7 @@ try {
     {
       ...seams,
       appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
-        const start = workerOptions.workerData as AppWorkflowWorkerStart;
+        const start = workerOptions.workerData as AppWorkflowWorkerThreadData;
         exchangeWorkerStarts += 1;
         assert.equal(start.workflowId, "exchange-rates");
         assert.equal(start.browserConnection, undefined);

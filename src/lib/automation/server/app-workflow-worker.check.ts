@@ -5,15 +5,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { MessageChannel, Worker } from "node:worker_threads";
+import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
 import { join } from "node:path";
 import test from "node:test";
 import { FailureCodeError } from "../workflow-failures.ts";
-import type { WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import type { WorkflowBrowserPort, WorkflowDefinition, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { PGliteWorkflowRunItem, PGliteWorkflowRunResult } from "../../../ledger/pglite/workflow-run.ts";
 import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
+  parseAppWorkflowBrowserConnection,
   parseAppWorkflowWorkerOutboundFrame,
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerOutboundFrame,
@@ -23,7 +24,7 @@ import {
   type HostCallMethod,
   type HostCallRequest,
 } from "./app-workflow-host-calls.ts";
-import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
+import { runAppWorkflowWorker, runAppWorkflowWorkerThread } from "./app-workflow-worker-runtime.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
@@ -34,10 +35,6 @@ const start = {
   workflowId: FIXTURE_WORKFLOW_ID,
   taskRunId: "run-fixture-1",
   input: { credential: "sensitive-fixture" },
-  browserConnection: {
-    endpoint: "http://127.0.0.1:9222",
-    targetId: "fixture-target",
-  },
   pgliteRpc: { endpoint: "/tmp/octopusbeak-fixture.sock", token: "a".repeat(32) },
 } as const;
 
@@ -188,24 +185,79 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     () => parseAppWorkflowWorkerStart({ ...start, input: { credential: "x".repeat(2_000_000) } }),
     /protocol rejected/u,
   );
-  const { browserConnection: _browserConnection, ...nonBrowserStart } = start;
   assert.equal(parseAppWorkflowWorkerStart({
-    ...nonBrowserStart,
+    ...start,
     workflowId: "exchange-rates",
     input: null,
   }).workflowId, "exchange-rates");
   assert.throws(() => parseAppWorkflowWorkerStart({
     ...start,
-    workflowId: "exchange-rates",
-    input: null,
-    browserConnection: start.browserConnection,
-  }), /protocol rejected/u);
+    browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
+  }), /protocol rejected/u, "the core start never carries a DevTools descriptor");
   assert.throws(() => parseAppWorkflowWorkerStart({
-    ...nonBrowserStart,
+    ...start,
     workflowId: "sync-maicoin",
     input: null,
     pgliteRpc: undefined,
   }), /protocol rejected/u);
+});
+
+test("a DevTools descriptor is a bare loopback page", () => {
+  const connection = { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" };
+  assert.deepEqual(parseAppWorkflowBrowserConnection(connection), connection);
+  for (const invalid of [
+    { ...connection, endpoint: "https://127.0.0.1:9222" },
+    { ...connection, endpoint: "http://localhost:9222" },
+    { ...connection, endpoint: "http://127.0.0.1" },
+    { ...connection, endpoint: "http://127.0.0.1:9222/json" },
+    { ...connection, endpoint: "http://127.0.0.1:9222/?q=1" },
+    { ...connection, endpoint: "http://127.0.0.1:9222/#page" },
+    { ...connection, targetId: "page/../other" },
+    { ...connection, extra: true },
+  ]) {
+    assert.throws(() => parseAppWorkflowBrowserConnection(invalid), /protocol rejected/u, JSON.stringify(invalid));
+  }
+});
+
+async function startRefusal(run: (port: MessagePort) => Promise<void>) {
+  const channel = new MessageChannel();
+  const frames: unknown[] = [];
+  channel.port2.on("message", (value: unknown) => frames.push(value));
+  try {
+    await run(channel.port1);
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    channel.port1.close();
+    channel.port2.close();
+  }
+  return frames;
+}
+
+const REFUSED_START = [{ protocolVersion: 3, kind: "failed", taskRunId: null, errorCode: "protocol-invalid" }];
+const exchangeRateStart = { ...start, workflowId: "exchange-rates", input: null };
+const hostPage: WorkflowBrowserPort = { async withPage() { throw new Error("unused"); } };
+
+test("a browser workflow starts only with a browser and a nonbrowser workflow only without one", async () => {
+  assert.deepEqual(await startRefusal((port) => runAppWorkflowWorker(start, { port })), REFUSED_START);
+  assert.deepEqual(
+    await startRefusal((port) => runAppWorkflowWorker(exchangeRateStart, { port, browser: hostPage })),
+    REFUSED_START,
+  );
+});
+
+test("the worker thread turns its DevTools descriptor into the browser and refuses a missing or invalid one", async () => {
+  const browserConnection = { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" };
+  for (const workerData of [
+    start,
+    { ...start, browserConnection: { ...browserConnection, endpoint: "http://10.0.0.1:9222" } },
+    { ...exchangeRateStart, browserConnection },
+  ]) {
+    assert.deepEqual(
+      await startRefusal((port) => runAppWorkflowWorkerThread({ port, workerData })),
+      REFUSED_START,
+      JSON.stringify(workerData),
+    );
+  }
 });
 
 test("worker terminal frame round-trips bounded product outcomes and rejects malformed products", () => {
@@ -389,9 +441,8 @@ test("worker runs a definition through typed ports and the bounded host request 
   });
 
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
-      workerData: start,
       resolveDefinition: () => definition,
       browser: {
         async withPage(run) {
@@ -473,14 +524,13 @@ test("a browser workflow that needs only account identity reaches it through the
   try {
     await server.ready;
     await runAppWorkflowWorker({
-      port: channel.port1,
-      workerData: {
-        ...start,
-        pgliteRpc: {
-          endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-          token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-        },
+      ...start,
+      pgliteRpc: {
+        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
       },
+    }, {
+      port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
     });
@@ -514,9 +564,8 @@ test("a workflow output that is not exactly a run result fails the run without c
     },
   } as unknown as WorkflowDefinition;
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
-      workerData: start,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
     });
@@ -566,9 +615,8 @@ test("a product failure inside a partial run appends one correlated diagnostic r
   process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE = diagnosticPath;
   process.env.OCTOPUSBEAK_APP_ROOT = process.cwd();
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker({ ...start, input: { statementTypes: ["deposit", "credit_card"] } }, {
       port: channel.port1,
-      workerData: { ...start, input: { statementTypes: ["deposit", "credit_card"] } },
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
       financialCommit: {
@@ -629,9 +677,8 @@ test("worker failures cross the boundary only as a stable error code", async () 
     },
   };
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
       port: channel.port1,
-      workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
     });
@@ -669,9 +716,8 @@ test("a Cathay run that needs device registration keeps that code across the wor
     },
   };
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
       port: channel.port1,
-      workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
     });
@@ -732,9 +778,8 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       },
     };
     try {
-      await runAppWorkflowWorker({
+      await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
         port: channel.port1,
-        workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
         resolveDefinition: () => definition,
         browser: { async withPage() { throw new Error("unused"); } },
       });
@@ -768,9 +813,8 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
     },
   };
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
       port: channel.port1,
-      workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
     });
@@ -809,9 +853,8 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     if (isAcknowledgedCall(frame)) channel.port2.postMessage(reply(frame.callId));
   });
   try {
-    const running = runAppWorkflowWorker({
+    const running = runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
       port: channel.port1,
-      workerData: (({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start),
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
     });
@@ -869,9 +912,8 @@ test("a settlement that finishes after cancellation still reaches the host", asy
     });
   });
   try {
-    await runAppWorkflowWorker({
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
-      workerData: start,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
       financialCommit,

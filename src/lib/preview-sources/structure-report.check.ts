@@ -173,14 +173,12 @@ test("a failed preview run sanitizes its observations inside the worker and rele
   });
   try {
     await runAppWorkflowWorker({
+      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+      workflowId: definition.id,
+      taskRunId: "run-preview-1",
+      input: { startUrl: PREVIEW_FIXTURE_SOURCE.startUrl, credentials: {} },
+    }, {
       port: channel.port1,
-      workerData: {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        workflowId: definition.id,
-        taskRunId: "run-preview-1",
-        input: { startUrl: PREVIEW_FIXTURE_SOURCE.startUrl, credentials: {} },
-        browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
-      },
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
       previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 }) },

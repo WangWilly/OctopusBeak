@@ -131,7 +131,7 @@ export function firstRoundForCheck(
 }
 
 /** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
-export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "workerData">;
+export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port">;
 
 /** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
 export function inProcessAppWorkflowWorker(
@@ -158,7 +158,8 @@ export function inProcessAppWorkflowWorker(
   });
   setImmediate(() => {
     worker.emit("online");
-    void runAppWorkflowWorker({ ...ports, port: channel.port1, workerData });
+    const { browserConnection: _browserConnection, ...start } = workerData as Record<string, unknown>;
+    void runAppWorkflowWorker(start, { ...ports, port: channel.port1 });
   });
   return worker;
 }

@@ -11,10 +11,14 @@ import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowWorkerOutboundFrame,
+  parseAppWorkflowBrowserConnection,
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerStart,
+  type AppWorkflowWorkerThreadData,
 } from "./app-workflow-worker-protocol.ts";
+import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
+import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { createHostCallDispatcher, HostCallRefusal, type HostCallHandlers } from "./app-workflow-host-calls.ts";
 import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
@@ -58,7 +62,7 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   runId: string;
   workflowId: string;
   input: unknown;
-  browserConnection?: AppWorkflowWorkerStart["browserConnection"];
+  browserConnection?: AppWorkflowBrowserConnection;
   pgliteRpc?: AppWorkflowWorkerStart["pgliteRpc"];
   signal: AbortSignal;
   /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
@@ -123,16 +127,20 @@ export async function runSupervisedAppWorkflow(
   const controller = new AbortController();
   const signal = controller.signal;
 
-  let start: AppWorkflowWorkerStart;
+  let start: AppWorkflowWorkerThreadData;
   try {
     start = parseAppWorkflowWorkerStart({
       protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
       workflowId: options.workflowId,
       taskRunId: options.runId,
       input: options.input,
-      ...(options.browserConnection ? { browserConnection: options.browserConnection } : {}),
       ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}),
     });
+    const nonbrowser = appWorkflowRegistration(start.workflowId)?.runtime.kind === "nonbrowser";
+    if (nonbrowser === (options.browserConnection !== undefined)) throw new Error("browser connection mismatch");
+    if (options.browserConnection) {
+      start = { ...start, browserConnection: parseAppWorkflowBrowserConnection(options.browserConnection) };
+    }
   } catch {
     return failed("protocol-invalid", "protocol");
   }
@@ -153,7 +161,7 @@ export async function runSupervisedAppWorkflow(
   }
   // workerData contains credentials. Drop the supervisor's reference as soon as
   // worker_threads has received its structured clone.
-  start = undefined as unknown as AppWorkflowWorkerStart;
+  start = undefined as unknown as AppWorkflowWorkerThreadData;
 
   let settled = false;
   let workerOnline = false;

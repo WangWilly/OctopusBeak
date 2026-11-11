@@ -29,7 +29,7 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForWorkflow } from "./app-workflow-registry.ts";
-import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
+import type { AppWorkflowWorkerStart, AppWorkflowWorkerThreadData, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -101,7 +101,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     this.isEventPersisted = isEventPersisted;
     setImmediate(() => {
       this.emit("online");
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData as AppWorkflowWorkerThreadData;
       this.emit("message", this.calls.call("worker-start-event", "event", {
         event: {
           runId: start.taskRunId,
@@ -116,7 +116,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     const answered = this.calls.answered(frame);
     if (answered === "worker-commit-settled") {
       // The settlement crossed a stop; the worker now ends the cancelled run.
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData as AppWorkflowWorkerThreadData;
       setImmediate(() => {
         this.emit("message", { protocolVersion: 3, kind: "cancelled", taskRunId: start.taskRunId });
         this.emit("exit", 0);
@@ -125,7 +125,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     }
     if (frame.kind === "reply" && answered === "worker-assistance-request") {
       if (this.scenario === "assistance-completion") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData as AppWorkflowWorkerThreadData;
         const status = frame.ok ? (frame.result as { status: string }).status : null;
         setImmediate(() => {
           this.emit("message", status === "entered"
@@ -149,7 +149,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     if (frame.kind === "reply") {
       this.eventAckAfterPersistence = this.isEventPersisted();
       if (this.scenario === "product-invariant") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData as AppWorkflowWorkerThreadData;
         setImmediate(() => {
           if (answered === "worker-start-event") {
             this.emit("message", this.calls.call("foreign-collection", "event", {
@@ -175,7 +175,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           { contract: assistanceContract },
         )));
       } else if (this.scenario === "validation-failure" && answered === "worker-start-event") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData as AppWorkflowWorkerThreadData;
         setImmediate(() => {
           this.emit("message", {
             protocolVersion: 3,
@@ -201,7 +201,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           });
         }
       } else if (this.scenario !== "assistance-completion" && answered === "worker-start-event") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData as AppWorkflowWorkerThreadData;
         setImmediate(() => this.emit("message", this.calls.call("worker-commit-started", "commitAttempt", {
           attempt: { phase: "started", attemptId: `attempt-${start.taskRunId}`, product: "financial", total: 1 },
         })));
@@ -209,7 +209,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel-settled") {
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData as AppWorkflowWorkerThreadData;
       // The canonical request stops between items and returns a known cancelled result.
       setImmediate(() => this.emit("message", this.calls.call("worker-commit-settled", "commitAttempt", {
         attempt: { phase: "settled", attemptId: `attempt-${start.taskRunId}`, outcome: "cancelled", committedCount: 0 },
@@ -217,7 +217,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel") {
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData as AppWorkflowWorkerThreadData;
       setImmediate(() => {
         this.emit("message", {
           protocolVersion: 3,
@@ -375,7 +375,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
     const store = new PGliteStore(database);
     try {
       const provider = createPgliteOperationalProvider(store);
-      let start: AppWorkflowWorkerStart | undefined;
+      let start: AppWorkflowWorkerThreadData | undefined;
       const taskRunId = await createRun(provider, task);
       const result = await executeTaskRunForCheck(task, provider.automation, {
         taskRunId,
@@ -383,7 +383,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
         launchEnv: {},
         workflowBrowserPort: () => { throw new Error("Nonbrowser task opened a browser."); },
         appWorkflowWorkerFactory: (_path, options) => {
-          start = options.workerData as AppWorkflowWorkerStart;
+          start = options.workerData as AppWorkflowWorkerThreadData;
           return new NonBrowserFakeWorker(start);
         },
       });
@@ -433,7 +433,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       options: { forceTerminated?: boolean } = {},
     ) => {
       const taskRunId = await createRun(provider, task);
-      let startData: AppWorkflowWorkerStart | undefined;
+      let startData: AppWorkflowWorkerThreadData | undefined;
       let worker: TaskExecutionFakeWorker | undefined;
       let active: ActiveAutomationTaskRun | undefined;
       let resolveWorkerCreated!: () => void;
@@ -457,7 +457,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
           targetId: `host-page-${runId}`,
         }),
         appWorkflowWorkerFactory: (_workerPath, workerOptions) => {
-          startData = workerOptions.workerData as AppWorkflowWorkerStart;
+          startData = workerOptions.workerData as AppWorkflowWorkerThreadData;
           resolveWorkerCreated();
           worker = new TaskExecutionFakeWorker(
             workerOptions.workerData,
@@ -579,7 +579,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
       [einvoicePasswordFixtureEnvKey]: "fixture-password",
     };
     const taskRunId = await createRun(provider, task);
-    let workerStart: AppWorkflowWorkerStart | undefined;
+    let workerStart: AppWorkflowWorkerThreadData | undefined;
     let hostInput: Record<string, unknown> | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
     const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), active, firstRoundForCheck(), {
@@ -598,7 +598,7 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
         targetId: `host-page-${runId}`,
       }),
       appWorkflowWorkerFactory: (_workerPath, options) => {
-        workerStart = options.workerData as AppWorkflowWorkerStart;
+        workerStart = options.workerData as AppWorkflowWorkerThreadData;
         return new NonBrowserFakeWorker(workerStart);
       },
     });
