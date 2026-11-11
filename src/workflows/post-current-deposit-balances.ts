@@ -8,7 +8,12 @@ import {
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import { frameScope } from "./frame-scope.ts";
-import { assembleCurrentDepositCapture, type CurrentBalanceCaptureMatching } from "./current-state-snapshot-capture.ts";
+import {
+  assembleCurrentDepositCapture,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
+  type CurrentBalanceCaptureMatching,
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   type ProviderResponse,
@@ -24,12 +29,12 @@ import { trimSourceLexeme } from "../lib/automation/source-text.ts";
  * only request details retained by this adapter.
  */
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"];
-export const POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
+const POST_CURRENT_DEPOSIT_BALANCE_PAGE_URL =
   "https://ipost.post.gov.tw/pst/index.html" as const;
 
 type JsonRecord = Record<string, unknown>;
 
-export type PostCurrentDepositExactInteger = Readonly<{
+type PostCurrentDepositExactInteger = Readonly<{
   coefficient: string;
   scale: 0;
   /** The provider BAL string after surrounding whitespace cleanup only. */
@@ -398,7 +403,7 @@ export async function readPostCurrentDepositBalanceResponse(
  * Join a PS row to an already admitted Post financial account.  This function
  * never creates identity keys from a current-summary row.
  */
-export function buildPostCurrentDepositBalanceCapture(
+function buildPostCurrentDepositBalanceCapture(
   row: PostCurrentDepositBalanceRow,
   financialCapture: ExistingPostCurrentDepositFinancialCapture,
 ): CurrentDepositBalanceCaptureInput {
@@ -538,7 +543,7 @@ export function buildPostCurrentDepositBalanceCapture(
  * spanning more than one connection or epoch fail closed before matching. A
  * row with no admitted capture fails the run. The first capture wins.
  */
-export const postCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+const postCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
   Readonly<{ stream: string; sourceAccountKey: string }>,
   ExistingPostCurrentDepositFinancialCapture
 > = {
@@ -564,4 +569,22 @@ export const postCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
     message:
       "Post current deposit snapshot contains an account without an existing admitted identity.",
   },
+};
+
+export const postCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  PostCurrentDepositResponse,
+  PostCurrentDepositBalanceRow,
+  ExistingPostCurrentDepositFinancialCapture,
+  "optional"
+> = {
+  product: "current-balance",
+  response: POST_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response, acquired) => parsePostCurrentDepositBalanceSnapshot({
+    payload: decoded.value,
+    response,
+    requestPostData: acquired.requestPostData,
+  }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
+  matching: postCurrentBalanceCaptureMatching,
+  build: buildPostCurrentDepositBalanceCapture,
 };
