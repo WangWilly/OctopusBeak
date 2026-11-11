@@ -4,12 +4,17 @@ import { type ProviderResponse, verifyProviderResponse } from "./provider-respon
 import {
   CTBC_CURRENT_DEPOSIT_BALANCE_TRANSPORT_QUERY_KEY,
   CTBC_CURRENT_DEPOSIT_RESPONSE,
+  ctbcCurrentBalanceSnapshot,
   parseCtbcCurrentDepositBalanceSnapshot,
+  type ExistingCtbcFinancialCapture,
 } from "./ctbc-current-deposit-balances.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
 
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["ctbc/domestic-deposit/current-balance-v1"];
 
 const serverTime = 1788919783601;
+const accountNumber = ["0000", "1234", "5678", "9100"].join("");
 const dataTime = "2026/09/09 10:09:43";
 const endpoint = `https://${CONTRACT.endpointHost}${CONTRACT.endpointPath}`;
 const requestPostData = JSON.stringify({
@@ -54,7 +59,7 @@ function payload(): Record<string, unknown> {
           totalAmount: "13,155",
           infoList: [
             {
-              accountId: "0000123456789100",
+              accountId: accountNumber,
               balance: "13,155",
               digiSvType: "",
               acctType: "01",
@@ -74,8 +79,8 @@ function payload(): Record<string, unknown> {
 const parsed = parse(payload(), response());
 
 assert.equal(parsed.length, 1);
-assert.equal(parsed[0]?.accountNumber, "0000123456789100");
-assert.equal(parsed[0]?.sourceAccountKey, "0000123456789100");
+assert.equal(parsed[0]?.accountNumber, accountNumber);
+assert.equal(parsed[0]?.sourceAccountKey, accountNumber);
 assert.equal(parsed[0]?.currency, "TWD");
 assert.deepEqual(parsed[0]?.ledger, {
   coefficient: "13155",
@@ -186,7 +191,7 @@ assert.throws(
 );
 
 for (const [field, value, pattern] of [
-  ["accountId", "000012345678910", /sixteen-digit/u],
+  ["accountId", accountNumber.slice(0, -1), /sixteen-digit/u],
   ["balance", "13,15", /balance is not an exact decimal/u],
   ["acctType", "1", /acctType is invalid/u],
   ["openDt", "20260230", /openDt is invalid/u],
@@ -214,3 +219,93 @@ for (const [name, overrides, pattern] of [
     name,
   );
 }
+
+const conflictingAccountNumber = ["0000", "1234", "5678", "9101"].join("");
+const existingIdentity: ExistingCtbcFinancialCapture = {
+  authorityRoute: "ctbc/domestic-deposit/human-attested-v1",
+  identity: {
+    integrationNamespace: "ctbc",
+    sourceConnectionKey: "sha256:ctbc-connection",
+    identityEpochKey: "sha256:ctbc-epoch",
+    stream: "domestic-deposit",
+    subjectDigest: "sha256:ctbc-subject",
+    accountNo: accountNumber,
+    sourceAccountKey: accountNumber,
+    accountNumber: { value: accountNumber },
+    currency: "TWD",
+  },
+};
+const otherAccount = {
+  ...existingIdentity.identity,
+  accountNo: conflictingAccountNumber,
+  sourceAccountKey: conflictingAccountNumber,
+  accountNumber: { value: conflictingAccountNumber },
+};
+
+/** Drive the declaration over this check's summary reply for the admitted captures. */
+function snapshot(captures: readonly ExistingCtbcFinancialCapture[]) {
+  return captureCurrentStateSnapshots(ctbcCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => ({
+      evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(payload())) },
+      response: response(),
+      requestPostData,
+    }),
+    product: snapshotCheckProduct({ now: "2026-09-09T02:10:00.000Z" }),
+  });
+}
+
+{
+  const staged = await snapshot([existingIdentity]);
+  assert.equal(staged.matched[0]?.capture, existingIdentity);
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", `current-balance:domestic-deposit:${accountNumber}`],
+  ]);
+  const request = stagedBalanceRequest(staged.items[0]);
+  assert.equal(request.capture.routeKey, "ctbc/domestic-deposit/current-balance-v1");
+  assert.equal(request.capture.sourceConnectionKey, "sha256:ctbc-connection");
+  assert.equal(request.capture.identityEpoch, "sha256:ctbc-epoch");
+  assert.equal(request.capture.subjectDigest, "sha256:ctbc-subject");
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-09", "2026-09-09"]);
+  assert.equal(request.account.sourceAccountKey, accountNumber);
+  assert.equal(request.account.currency, "TWD");
+  assert.equal(request.observations.length, 1);
+  assert.equal(request.observations[0]?.balanceKind, "ledger");
+  assert.deepEqual(request.observations[0]?.balance, { coefficient: "13155", scale: 0 });
+  assert.equal(request.observations[0]?.effectiveAt, "2026-09-09T02:09:43.601Z");
+  assert.equal(request.observations[0]?.evidenceSourceField, "serverTime");
+  assert.equal(request.observations[0]?.evidenceSourceValue, String(serverTime));
+  assert.equal(request.capture.records[0]?.compact.sourceField, "balance");
+  assert.equal(request.capture.records[0]?.compact.requestResource, CONTRACT.requestResource);
+  assert.doesNotMatch(
+    JSON.stringify(staged.items),
+    /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|DEVICE-ID|deviceId/u,
+  );
+}
+
+await assert.rejects(
+  snapshot([{ ...existingIdentity, identity: otherAccount }]),
+  /^Error: CTBC current deposit snapshot has no admitted account identity\.$/u,
+  "a summary row without an admitted identity rejects the snapshot",
+);
+for (const otherScope of [
+  { sourceConnectionKey: "sha256:other-ctbc-connection" },
+  { identityEpochKey: "sha256:other-ctbc-epoch" },
+])
+  await assert.rejects(
+    snapshot([existingIdentity, { ...existingIdentity, identity: { ...otherAccount, ...otherScope } }]),
+    /^Error: CTBC current deposit captures span more than one source connection or identity epoch\.$/u,
+    "a capture outside the run's connection and epoch fails closed",
+  );
+await assert.rejects(
+  snapshot([{
+    ...existingIdentity,
+    identity: { ...otherAccount, sourceAccountKey: accountNumber },
+  }]),
+  /exactly match existing account evidence/u,
+  "a capture keyed to the row whose account evidence differs is refused",
+);
+await assert.rejects(
+  snapshot([{ ...existingIdentity, authorityRoute: "ctbc/domestic-deposit/preflight-v1" }]),
+  /not an admitted TWD CTBC account/u,
+);

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Locator, Page } from "playwright";
 import { z } from "zod";
@@ -16,16 +15,11 @@ import {
 } from "../ledger/canonical/ctbc-human-attestation-contract.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  CTBC_CURRENT_DEPOSIT_RESPONSE,
-  parseCtbcCurrentDepositBalanceSnapshot,
+  ctbcCurrentBalanceSnapshot,
   readCtbcCurrentDepositBalanceResponse,
-  type CtbcCurrentDepositBalanceRow,
   type CtbcCurrentDepositResponse,
+  type ExistingCtbcFinancialCapture,
 } from "./ctbc-current-deposit-balances.ts";
-import {
-  type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositExactAmount,
-} from "../ledger/pglite/current-deposit-admission.ts";
 import type { WorkflowContext, WorkflowContextWith } from "../lib/automation/workflow-executor.ts";
 import type {
   ProductCollectionHandle,
@@ -40,12 +34,6 @@ import type { ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
-import {
-  assembleCurrentDepositCapture,
-  type CurrentBalanceCaptureMatching,
-  type CurrentStateSnapshotDeclaration,
-  CURRENT_DEPOSIT_BALANCE_STAGING,
-} from "./current-state-snapshot-capture.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 
 const LOGIN_URL = "https://www.ctbcbank.com/twrbc/twrbc-general/ot001/010";
@@ -182,21 +170,6 @@ export type CtbcDepositSourceSnapshot = {
   output: Readonly<{ count: number; rowCount: number }>;
   captures: CtbcObservedAccountCapture[];
 };
-
-type ExistingCtbcFinancialCapture = Readonly<{
-  authorityRoute: string;
-  identity: Readonly<{
-    integrationNamespace: string;
-    sourceConnectionKey: string;
-    identityEpochKey: string;
-    stream: string;
-    subjectDigest: string;
-    accountNo: string;
-    sourceAccountKey?: string;
-    accountNumber?: Readonly<{ value: string }> | null;
-    currency: string | null;
-  }>;
-}>;
 
 export type CtbcStatementRow = {
   accountingDate: string;
@@ -830,177 +803,6 @@ function buildCtbcCapture(
     },
   };
 }
-
-/**
- * Join the current summary to an already admitted CTBC statement identity.
- * The provider accountId is retained as exact evidence, including leading
- * zeroes; no current-summary row can create a new canonical account.
- */
-export function buildCtbcCurrentDepositBalanceCapture(
-  row: CtbcCurrentDepositBalanceRow,
-  financialCapture: ExistingCtbcFinancialCapture,
-): CurrentDepositBalanceCaptureInput {
-  const identity = financialCapture.identity;
-  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-  if (
-    financialCapture.authorityRoute !== "ctbc/domestic-deposit/human-attested-v1" ||
-    identity.integrationNamespace !== "ctbc" ||
-    identity.stream !== "domestic-deposit" ||
-    identity.currency !== "TWD"
-  )
-    throw new Error("CTBC current deposit identity is not an admitted TWD CTBC account.");
-  if (
-    identity.accountNo !== row.accountNumber ||
-    sourceAccountKey !== row.sourceAccountKey ||
-    identity.accountNumber?.value !== row.accountNumber
-  )
-    throw new Error(
-      "CTBC current deposit accountId does not exactly match existing account evidence.",
-    );
-
-  const balance: CurrentDepositExactAmount = {
-    coefficient: row.ledger.coefficient,
-    scale: row.ledger.scale,
-  };
-  const sourceRecordKey = canonicalDigest(
-    "ctbc-current-deposit-source-record-v1",
-    sourceAccountKey,
-    row.effectiveAt,
-    balance.coefficient,
-    String(balance.scale),
-  );
-  const scopeDate = row.providerDataTime.slice(0, 10).replaceAll("/", "-");
-  const route = "ctbc/domestic-deposit/current-balance-v1";
-  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
-  const contractVersion = contract.contractVersion;
-  return assembleCurrentDepositCapture({
-    captureId: `ctbc-current-${randomUUID()}`,
-    authorityRoute: route,
-    contractVersion,
-    subjectDigest: identity.subjectDigest,
-    identity: {
-      integrationNamespace: "ctbc",
-      sourceConnectionKey: identity.sourceConnectionKey,
-      identityEpochKey: identity.identityEpochKey,
-      stream: "domestic-deposit",
-      sourceAccountKey,
-    },
-    observedAt: row.observedAt,
-    scope: {
-      startDate: scopeDate,
-      endDate: scopeDate,
-      contractFingerprint: canonicalDigest("ctbc-current-deposit-contract-v1", route),
-      preflightFingerprint: canonicalDigest(
-        "ctbc-current-deposit-preflight-v1",
-        identity.subjectDigest,
-        scopeDate,
-      ),
-    },
-    providerResponse: {
-      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
-      status: 200,
-      cacheControl: row.sourceEvidence.cacheControl,
-      requestResource: row.sourceEvidence.requestResource,
-    },
-    page: {
-      metadata: {
-        source: "ctbc-current-deposit-summary",
-        endpoint: row.sourceEvidence.endpoint,
-        resource: row.sourceEvidence.requestResource,
-        accountId: row.accountNumber,
-        providerServerTime: row.providerServerTime,
-        providerDataTime: row.providerDataTime,
-        providerHttpDate: row.providerHttpDate,
-      },
-    },
-  }, [{
-    sourceRecordKey,
-    providerKey: canonicalDigest(
-      "ctbc-current-deposit-provider-record-v1",
-      sourceAccountKey,
-      row.effectiveAt,
-    ),
-    observationKey: canonicalDigest("ctbc-current-deposit-observation-v1", sourceAccountKey),
-    balanceKind: "ledger",
-    sourceField: "balance",
-    currency: row.currency,
-    value: balance,
-    time: {
-      effectiveAt: row.effectiveAt,
-      effectiveTimeBasis: "provider-system-time",
-      effectiveTimeRuleVersion: contractVersion,
-      sourceField: "serverTime",
-      sourceValue: String(row.providerServerTime),
-      contractVersion,
-    },
-    timeInRecord: true,
-    compact: {
-      source: "ctbc",
-      accountId: row.accountNumber,
-      sourceAccountKey,
-      currency: row.currency,
-      sourceLexeme: row.ledger.sourceLexeme,
-      providerFields: { ...row.providerFields },
-      providerServerTime: row.providerServerTime,
-      providerDataTime: row.providerDataTime,
-      providerHttpDate: row.providerHttpDate,
-      requestResource: row.sourceEvidence.requestResource,
-      sourceEvidence: { ...row.sourceEvidence },
-    },
-  }]);
-}
-
-/**
- * CTBC keys a balance by each capture's own stream and source account key.
- * Every CTBC capture carries one constant source connection and the identity
- * epoch of the run's single human attestation manifest, so captures spanning
- * more than one connection or epoch fail closed before matching. A row with
- * no admitted capture fails the run. The first capture wins.
- */
-export const ctbcCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
-  Readonly<{ stream: string; sourceAccountKey: string }>,
-  ExistingCtbcFinancialCapture
-> = {
-  captureKey: ({ identity }) =>
-    `${identity.stream}\u0000${identity.sourceAccountKey ?? identity.accountNo}`,
-  rowKey: (row) => `${row.stream}\u0000${row.sourceAccountKey}`,
-  duplicates: "first-wins",
-  sameIdentity: (kept, candidate) =>
-    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
-    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
-    kept.authorityRoute === candidate.authorityRoute &&
-    kept.identity.accountNo === candidate.identity.accountNo &&
-    kept.identity.accountNumber?.value === candidate.identity.accountNumber?.value &&
-    kept.identity.subjectDigest === candidate.identity.subjectDigest &&
-    kept.identity.currency === candidate.identity.currency,
-  ambiguousMessage: "CTBC current deposit identities are ambiguous across financial captures.",
-  oneScope: {
-    scope: ({ identity }) => `${identity.sourceConnectionKey}\u0000${identity.identityEpochKey}`,
-    message:
-      "CTBC current deposit captures span more than one source connection or identity epoch.",
-  },
-  unmatched: {
-    kind: "throw",
-    message: "CTBC current deposit snapshot has no admitted account identity.",
-  },
-};
-
-const ctbcCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  CtbcCurrentDepositResponse,
-  CtbcCurrentDepositBalanceRow,
-  ExistingCtbcFinancialCapture
-> = {
-  product: "current-balance",
-  response: CTBC_CURRENT_DEPOSIT_RESPONSE,
-  parse: (decoded, response, acquired) => parseCtbcCurrentDepositBalanceSnapshot({
-    payload: decoded.value,
-    response,
-    requestPostData: acquired.requestPostData,
-  }),
-  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-  matching: ctbcCurrentBalanceCaptureMatching,
-  build: buildCtbcCurrentDepositBalanceCapture,
-};
 
 /**
  * Build and stage domestic-deposit items from a read snapshot. Source admission
