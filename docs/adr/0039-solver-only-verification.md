@@ -20,7 +20,7 @@ The verification actor policy is removed. There is no `VERIFICATION_ACTORS` tabl
 
 The desktop UI has no Assist viewer and no manual Resume. The IPC channels `automation:resumeHumanAssistance`, `automation:viewerScreenshot`, `automation:viewerInspect`, `automation:viewerInput`, and `automation:viewerCompletionCheck` are removed.
 
-`npm run workflow:dev` runs its `humanAssistance` port through the App's local solver route (`routeVerificationActor` with `verificationRoutingDependencies`) against the development page that it registers with `registerAppWorkflowPage`. It fails closed for any workflow or stage the App would not route. It does not run the ten-round CAPTCHA Retry Campaign of [ADR 0015](0015-bounded-captcha-retry-campaigns.md), so a retryable outcome ends the development run.
+`npm run workflow:dev` runs its `humanAssistance` port through the App's local solver route (`routeVerificationActor` with `verificationRoutingDependencies`) against the development page that it registers with `registerAppWorkflowPage`. It fails closed for any workflow or stage the App would not route. It does not run the CAPTCHA Retry Campaign of [ADR 0015](0015-bounded-captcha-retry-campaigns.md), capped at three rounds by [ADR 0046](0046-in-page-captcha-refresh.md), so a retryable outcome ends the development run.
 
 ## Considered options
 
