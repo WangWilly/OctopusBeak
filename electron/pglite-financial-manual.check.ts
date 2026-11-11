@@ -7,7 +7,8 @@ import {
   createPGliteLiveViewDependencies,
   type LocalDateClock,
 } from "./pglite-financial-live-dependencies.ts";
-import { createPGliteFinancialLiveViews, type PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
+import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
+import type { PGliteFinancialLiveView } from "../src/lib/pglite-rpc/pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteLedgerHost } from "./pglite-ledger-host.ts";
 import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
