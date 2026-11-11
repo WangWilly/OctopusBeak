@@ -10,6 +10,7 @@ import {
   type StartAutomationTaskOptions,
 } from "./runner.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
+import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
@@ -27,12 +28,14 @@ export function createAutomationRuntime(
     settings: AutomationSettingsStore;
     userDataDirectory: string;
     forceQuitAvailableAfterMs?: number;
+    /** Test seam for the Workflow execution. */
+    runExecution?: typeof runAutomationTaskExecution;
   }>,
 ) {
   const state = createAutomationRuntimeState(undefined, {
     knownTaskIds: new Set(AUTOMATION_TASKS.map((task) => task.id)),
   });
-  const runner = createAutomationRunner({ runtime: state, ...options });
+  const runner = createAutomationRunner({ runtime: state, provider, ...options });
   const live = (): AutomationLiveRuns => ({
     snapshot: state.snapshot(),
     activeTaskIds: runner.activeTaskIds(),
@@ -61,7 +64,7 @@ export function createAutomationRuntime(
       const current = await runner.current(taskId);
       if (current) return { started: taskId, runId: current.runId, runtime: current.runtime };
       const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel(), options.settings);
-      const started = await runner.start(task.id, provider, runOptions);
+      const started = await runner.start(task.id, runOptions);
       return { started: task.id, runId: started.runId, runtime: started.runtime };
     },
 
@@ -85,7 +88,7 @@ export function createAutomationRuntime(
             continue;
           }
           const task = assertAutomationTaskCanStartInModel(taskId, model, options.settings);
-          const run = await runner.start(task.id, provider, runOptions);
+          const run = await runner.start(task.id, runOptions);
           if (run.adopted) {
             results[task.id] = { status: "already_running", runId: run.runId };
             continue;
@@ -102,13 +105,13 @@ export function createAutomationRuntime(
     },
 
     /** Skips the admission check; only the packaged browser fixture's synthetic tasks start this way. */
-    startWithoutAdmission: (taskId: string) => runner.start(taskId, provider),
+    startWithoutAdmission: (taskId: string) => runner.start(taskId),
     cancel: (taskId: string, expectedRunId?: string) => runner.cancel(taskId, expectedRunId),
     forceTerminate: (taskId: string, expectedRunId?: string) => runner.forceTerminate(taskId, expectedRunId),
     whileStopped: <T>(work: () => Promise<T>) => runner.whileStopped(work),
     /** Stop every run without waiting, for a fatal exit. */
     abortAll: () => runner.abortAll(),
-    shutdown: () => runner.shutdown(provider),
+    shutdown: () => runner.shutdown(),
   });
 }
 

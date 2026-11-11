@@ -50,7 +50,6 @@ function harness() {
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck(settingsDirectory) });
   const execute: typeof runAutomationTaskExecution = async (plan, run) => {
     active += 1;
     peak = Math.max(peak, active);
@@ -63,10 +62,16 @@ function harness() {
       throw new Error("Synthetic source failure releases the workflow slot.");
     } finally { active -= 1; }
   };
+  const runner = createAutomationRunner({
+    runtime: createAutomationRuntimeState(),
+    provider,
+    runExecution: execute,
+    ...runnerHostForCheck(settingsDirectory),
+  });
   return {
     runs, entered, releases, provider, execute, runner,
     get peak() { return peak; },
-    start: (id: string) => runner.start(id, provider, { runExecution: execute }),
+    start: (id: string) => runner.start(id),
   };
 }
 async function tick() { await new Promise<void>((resolve) => setImmediate(resolve)); }
@@ -109,7 +114,7 @@ test("App shutdown interrupts queued work without starting it or waiting for a f
   await until(() => h.entered.length === 3);
   await h.start("fubon-all-statements");
   for (const release of h.releases.values()) release();
-  await h.runner.shutdown(h.provider, { finalizePersistedRuns: async () => undefined });
+  await h.runner.shutdown({ finalizePersistedRuns: async () => undefined });
   assert.ok(!h.entered.includes("fubon-all-statements"));
   assert.equal(h.runs.get("queue-fubon-all-statements")?.status, "interrupted");
   assert.equal(h.runner.hasActive(), false);

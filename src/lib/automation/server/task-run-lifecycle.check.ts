@@ -21,7 +21,8 @@ const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
 after(() => database.close());
 const runtime = createAutomationRuntimeState();
-const runner = createAutomationRunner({ runtime, ...runnerHostForCheck() });
+const runnerFor = (provider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
+  createAutomationRunner({ runtime, provider, runExecution, ...runnerHostForCheck() });
 
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {
@@ -113,10 +114,27 @@ function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): type
 test(
   "a cancellation that arrives while the run row is being created ends that run and leaves the previous run's state alone",
   async () => {
-    const provider = providerWith();
+    const creating = deferred();
+    const releaseCreate = deferred();
+    let holdCreate = false;
+    const base = createPgliteOperationalProvider(store).automation;
+    const runner = runnerFor(providerWith(new Proxy(base, {
+      get(target, property) {
+        if (property !== "createTaskRun") {
+          const value = Reflect.get(target, property);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async (input: Parameters<typeof base.createTaskRun>[0]) => {
+          if (holdCreate) {
+            creating.resolve();
+            await releaseCreate.promise;
+          }
+          return target.createTaskRun(input);
+        };
+      },
+    })), workerExecution("completes"));
     const firstFinished = deferred<AutomationTaskRun>();
-    const first = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("completes"),
+    const first = await runner.start("exchange-rates", {
       onSettled: (_taskId, run) => run && firstFinished.resolve(run),
     });
     assert.equal((await firstFinished.promise).status, "completed");
@@ -126,26 +144,10 @@ test(
       const task = snapshot.tasks.find((candidate) => candidate.taskId === "exchange-rates");
       if (task) published.push(task);
     });
-    const creating = deferred();
-    const releaseCreate = deferred();
-    const base = createPgliteOperationalProvider(store).automation;
-    const delayed = providerWith(new Proxy(base, {
-      get(target, property) {
-        if (property !== "createTaskRun") {
-          const value = Reflect.get(target, property);
-          return typeof value === "function" ? value.bind(target) : value;
-        }
-        return async (input: Parameters<typeof base.createTaskRun>[0]) => {
-          creating.resolve();
-          await releaseCreate.promise;
-          return target.createTaskRun(input);
-        };
-      },
-    }));
+    holdCreate = true;
     const finished: AutomationTaskRun[] = [];
     try {
-      const starting = runner.start("exchange-rates", delayed, {
-        runExecution: workerExecution("completes"),
+      const starting = runner.start("exchange-rates", {
         onSettled: (_taskId, run) => run && finished.push(run),
       });
       await creating.promise;
@@ -173,11 +175,10 @@ test(
 test(
   "force-quit ends the workflow worker immediately and records a forced cancellation",
   async () => {
-    const provider = providerWith();
     const workers: ScriptedWorker[] = [];
+    const runner = runnerFor(providerWith(), workerExecution("ignores-cancel", workers));
     const finished = deferred<AutomationTaskRun>();
-    const started = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("ignores-cancel", workers),
+    const started = await runner.start("exchange-rates", {
       onSettled: (_taskId, run) => run && finished.resolve(run),
     });
     try {
@@ -202,9 +203,9 @@ test(
   "a run whose runner fails before execution still reports a terminal finish",
   async () => {
     const provider = { automation: createPgliteOperationalProvider(store).automation } as AutomationPersistenceProvider;
+    const runner = runnerFor(provider, workerExecution("completes"));
     const finished = deferred<AutomationTaskRun>();
-    const started = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("completes"),
+    const started = await runner.start("exchange-rates", {
       onSettled: (_taskId, run) => run && finished.resolve(run),
     });
     try {

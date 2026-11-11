@@ -39,8 +39,6 @@ export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
   /** Called once the run ends, with `null` when its record could not be finalized. */
   onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
-  /** Test/worker seam for the async execution runner. */
-  runExecution?: typeof runAutomationTaskExecution;
 };
 
 export type StartedAutomationTask = {
@@ -90,12 +88,16 @@ type ClaimedTask = {
 
 export function createAutomationRunner(options: Readonly<{
   runtime: AutomationRuntimeState;
+  provider: AutomationPersistenceProvider;
+  /** Test seam for the Workflow execution. */
+  runExecution?: typeof runAutomationTaskExecution;
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
   userDataDirectory: string;
   forceQuitAvailableAfterMs?: number;
 }>) {
-  const { runtime } = options;
+  const { runtime, provider } = options;
+  const runExecution = options.runExecution ?? runAutomationTaskExecution;
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;
@@ -113,8 +115,6 @@ export function createAutomationRunner(options: Readonly<{
   async function execute(
     task: AutomationTask,
     run: ActiveAutomationTaskRun,
-    provider: AutomationPersistenceProvider,
-    runOptions: StartAutomationTaskOptions,
   ): Promise<TaskRunReport> {
     let ticket: ReturnType<typeof queue.enter>;
     try {
@@ -140,7 +140,6 @@ export function createAutomationRunner(options: Readonly<{
         settings: options.settings,
         userDataDirectory: options.userDataDirectory,
       });
-      const runExecution = runOptions.runExecution ?? runAutomationTaskExecution;
       return await runCaptchaRetryCampaign({
         plan,
         run,
@@ -160,12 +159,10 @@ export function createAutomationRunner(options: Readonly<{
   async function drive(
     task: AutomationTask,
     run: ActiveAutomationTaskRun,
-    provider: AutomationPersistenceProvider,
-    runOptions: StartAutomationTaskOptions,
   ) {
     let report: TaskRunReport;
     try {
-      report = await execute(task, run, provider, runOptions);
+      report = await execute(task, run);
     } catch {
       console.error("automation-task-run-failed");
       report = { summary: null, failure: { code: "workflow-failed", proven: false } };
@@ -180,7 +177,6 @@ export function createAutomationRunner(options: Readonly<{
 
   async function open(
     task: AutomationTask,
-    provider: AutomationPersistenceProvider,
     runOptions: StartAutomationTaskOptions,
   ): Promise<ActiveAutomationTaskRun> {
     const created = await provider.automation.createTaskRun({
@@ -227,7 +223,6 @@ export function createAutomationRunner(options: Readonly<{
   return {
     async start(
       taskId: string,
-      provider: AutomationPersistenceProvider,
       runOptions: StartAutomationTaskOptions = {},
     ): Promise<StartedAutomationTask> {
       if (shuttingDown) throw new Error("App workflow runtime is shutting down.");
@@ -243,7 +238,7 @@ export function createAutomationRunner(options: Readonly<{
       const device = sourceDeviceForTask(taskId);
       const holder = device?.lock.claim("sync");
       if (device && holder) throw new SourceDeviceBusyError(device.source, holder);
-      const entry: ClaimedTask = { opening: open(task, provider, runOptions) };
+      const entry: ClaimedTask = { opening: open(task, runOptions) };
       claimed.set(taskId, entry);
       let run: ActiveAutomationTaskRun;
       try {
@@ -254,7 +249,7 @@ export function createAutomationRunner(options: Readonly<{
       }
       entry.run = run;
       // Release before notifying so an observer may start the task again.
-      entry.lifecycle = drive(task, run, provider, runOptions).then((finished) => {
+      entry.lifecycle = drive(task, run).then((finished) => {
         release(taskId, entry);
         try {
           runOptions.onSettled?.(taskId, finished);
@@ -324,7 +319,6 @@ export function createAutomationRunner(options: Readonly<{
     },
 
     async shutdown(
-      provider: AutomationPersistenceProvider,
       dependencies: Partial<{
         finalizePersistedRuns: typeof finalizeOrphanedRuns;
       }> = {},

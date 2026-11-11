@@ -66,7 +66,30 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
 test("commit admission goes through the runner's active run to its current execution's launched scope", async () => {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
+  const runner = createAutomationRunner({
+    runtime: createAutomationRuntimeState(),
+    provider,
+    runExecution: async (_task, run) => {
+      await run.transition("running");
+      observed.beforeExecution = admits(run.taskRunId);
+      const first = run.beginExecution("round-1", { collectionScope: launchedCollectionScope(fubon, launch) });
+      observed.unchanged = admits(run.taskRunId);
+      current = changed;
+      observed.changed = admits(run.taskRunId);
+      current = launch;
+      observed.reverted = admits(run.taskRunId);
+      first.end();
+      observed.afterEnd = admits(run.taskRunId);
+      assert.equal(first.collectionScope(), null);
+      const second = run.beginExecution("round-2", { collectionScope: launchedCollectionScope(fubon, launch) });
+      observed.secondExecution = admits(run.taskRunId);
+      current = changed;
+      observed.secondChanged = admits(run.taskRunId);
+      second.end();
+      return { summary: null, failure: null };
+    },
+    ...runnerHostForCheck(),
+  });
   const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
   const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
   let current = launch;
@@ -75,28 +98,7 @@ test("commit admission goes through the runner's active run to its current execu
   let finished!: () => void;
   const done = new Promise<void>((resolve) => { finished = resolve; });
   try {
-    const { runId } = await runner.start("exchange-rates", provider, {
-      onSettled: () => finished(),
-      runExecution: async (_task, run) => {
-        await run.transition("running");
-        observed.beforeExecution = admits(run.taskRunId);
-        const first = run.beginExecution("round-1", { collectionScope: launchedCollectionScope(fubon, launch) });
-        observed.unchanged = admits(run.taskRunId);
-        current = changed;
-        observed.changed = admits(run.taskRunId);
-        current = launch;
-        observed.reverted = admits(run.taskRunId);
-        first.end();
-        observed.afterEnd = admits(run.taskRunId);
-        assert.equal(first.collectionScope(), null);
-        const second = run.beginExecution("round-2", { collectionScope: launchedCollectionScope(fubon, launch) });
-        observed.secondExecution = admits(run.taskRunId);
-        current = changed;
-        observed.secondChanged = admits(run.taskRunId);
-        second.end();
-        return { summary: null, failure: null };
-      },
-    });
+    const { runId } = await runner.start("exchange-rates", { onSettled: () => finished() });
     await done;
     assert.deepEqual(observed, {
       beforeExecution: true,
