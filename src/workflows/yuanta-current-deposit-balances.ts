@@ -475,7 +475,7 @@ export type ExistingYuantaFinancialCapture = Readonly<{
 /**
  * What differs between the domestic and foreign current balances. The digest
  * namespaces are literals, never derived from the route contracts (ADR 0123,
- * ADR 0124), and the foreign product label stays as committed.
+ * ADR 0124).
  */
 const YUANTA_CURRENT_BALANCE_KINDS = {
   domestic: {
