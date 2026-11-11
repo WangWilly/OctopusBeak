@@ -31,7 +31,6 @@ import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
   linebankAccountCurrency,
-  linebankAccountKey,
   linebankCurrentBalanceSnapshot,
   type ExistingLineBankFinancialCapture,
   type LineBankCurrentDepositAcquired,
@@ -399,6 +398,17 @@ export function linebankApiRowsToStatementRows(
         values,
       };
     });
+}
+
+/** The provider's account identity is a composite of the two source fields.
+ * Keep the delimiter explicit so two different pairs cannot concatenate to the
+ * same opaque key (for example, `12` + `3` versus `1` + `23`). */
+export function linebankAccountKey(account: LineBankAccount): string {
+  const accountNumber = collapseSourceWhitespace(account.acctNbr);
+  const arrangementId = collapseSourceWhitespace(account.arrId);
+  return accountNumber && arrangementId
+    ? `${accountNumber}:${arrangementId}`
+    : "";
 }
 
 export function linebankValidateTransactionPageSequence(
@@ -1088,33 +1098,12 @@ async function runLineBankWorkflow(
           completed: admissions.length,
           total: selectedSources.length,
         });
-        const balances = linebankCurrentBalanceSnapshot(accounts, domesticCaptures);
-        // Admission failures surface as one generic message; decoding and
-        // coverage failures keep their own. Staging runs after validate has
-        // cleared the flag, so its errors pass through unchanged.
-        let balanceAdmitting = false;
-        try {
-          await stageCanonicalDeposits(product, admissions, {
-            snapshot: {
-              ...balances,
-              parse: (...read) => {
-                const rows = balances.parse(...read);
-                balanceAdmitting = true;
-                return rows;
-              },
-              validate: (match) => {
-                balanceAdmitting = false;
-                balances.validate?.(match);
-              },
-            },
-            acquire: async () => accountSnapshot.currentBalance,
-            // The balances ride on the account list read before the statements, so they were observed then.
-            observedAt: accountSnapshotAt,
-          });
-        } catch (error) {
-          if (!balanceAdmitting) throw error;
-          throw new Error("LINE Bank current balance source admission was rejected.");
-        }
+        await stageCanonicalDeposits(product, admissions, {
+          snapshot: linebankCurrentBalanceSnapshot(accounts, domesticCaptures),
+          acquire: async () => accountSnapshot.currentBalance,
+          // The balances ride on the account list read before the statements, so they were observed then.
+          observedAt: accountSnapshotAt,
+        });
         return {
           sourceCaptureCount: selectedSources.length,
           rowCount: statementRowCount,

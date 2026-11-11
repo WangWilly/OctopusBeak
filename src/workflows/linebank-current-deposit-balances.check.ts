@@ -242,9 +242,9 @@ const payablesBody = `{"code":"200","message":"success","content":{"dpstAcctList
 function snapshot(
   captures: readonly ExistingLineBankFinancialCapture[],
   accounts: readonly LineBankAccount[] = [selectedAccount],
-  { admitted = domesticCapture, reply = payablesBody } = {},
+  { admitted = [domesticCapture], reply = payablesBody } = {},
 ) {
-  return captureCurrentStateSnapshots(linebankCurrentBalanceSnapshot(accounts, [admitted]), {
+  return captureCurrentStateSnapshots(linebankCurrentBalanceSnapshot(accounts, admitted), {
     captures,
     acquire: async () => ({
       evidence: { kind: "json", bytes: new TextEncoder().encode(reply) },
@@ -330,12 +330,38 @@ for (const [name, space] of [["no-break space", "\u00a0"], ["ideographic space",
     identityEpoch: admitted.identityEpoch,
     observedAt: admitted.observedAt,
   }], [account], {
-    admitted,
+    admitted: [admitted],
     reply: payablesBody.replace('"arr-main"', JSON.stringify(account.arrId)),
   });
   const { capture, account: stagedAccount } = stagedBalanceRequest(staged.items[0]);
   assert.equal(capture.subjectDigest, admitted.accountKey, `an arrId with a ${name} keys the balance by the admitted account`);
   assert.equal(stagedAccount.sourceAccountKey, admitted.accountKey, `an arrId with a ${name} keys the balance by the admitted account`);
+}
+
+{
+  const twins = ["x y", "x  y"].map((arrId) => ({ acctNbr: mainAccountNumber, arrId, currCd: "TWD" }));
+  const admitted = twins.map(admitDomestic);
+  const reply = `{"code":"200","message":"success","content":{"dpstAcctList":${JSON.stringify(
+    twins.map((twin, index) => ({ ...twin, wdrwAvblAmt: `${index + 1}.00` })),
+  )}}}`;
+  const capturesOf = (selected: typeof admitted) => selected.map((capture) => ({
+    accountKey: capture.accountKey,
+    sourceConnection: capture.sourceConnection,
+    identityEpoch: capture.identityEpoch,
+    observedAt: capture.observedAt,
+  }));
+  const one = await snapshot(capturesOf([admitted[1]!]), [twins[1]!], { admitted: [admitted[1]!], reply });
+  assert.deepEqual(
+    one.items.map((item) => stagedBalanceRequest(item).account.sourceAccountKey),
+    [admitted[1]!.accountKey],
+    "an arrangement that differs from the selected one only in whitespace is not selected",
+  );
+  const both = await snapshot(capturesOf(admitted), twins, { admitted, reply });
+  assert.deepEqual(
+    both.items.map((item) => stagedBalanceRequest(item).account.sourceAccountKey).sort(),
+    admitted.map((capture) => capture.accountKey).sort(),
+    "two selected arrangements that differ only in whitespace are covered as two accounts",
+  );
 }
 
 console.log("linebank-current-deposit-balances.check passed");

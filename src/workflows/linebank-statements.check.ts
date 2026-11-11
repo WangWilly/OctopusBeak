@@ -18,10 +18,11 @@ import {
   linebankValidateSourceOccurrenceFields,
   linebankValidateTransactionTime,
   linebankValidateTransactionPageSequence,
+  linebankAccountKey,
   linebankAutoDismissApprovedAlert,
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
-import { linebankAccountCurrency, linebankAccountKey } from "./linebank-current-deposit-balances.ts";
+import { linebankAccountCurrency } from "./linebank-current-deposit-balances.ts";
 import { frameScope } from "./frame-scope.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
 import {

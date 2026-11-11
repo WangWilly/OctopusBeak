@@ -464,13 +464,10 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
 const listedAccount = (fields: Readonly<Record<string, unknown>> = {}) => ({ ...account, wdrwAvblAmt: "900.00", ...fields });
 
 /** Run LINE Bank over this account list, which must fail validation before any commit, and return the failure's reason. */
-async function balanceFailure(
-  listedAccounts: readonly Readonly<Record<string, unknown>>[],
-  accountFilters: readonly string[] = [],
-) {
+async function balanceFailure(listedAccounts: readonly Readonly<Record<string, unknown>>[]) {
   const harness = createContext({ page: createPage({ listedAccounts }) });
   let reason: string | undefined;
-  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, { ...input, accountFilters: [...accountFilters] }), (error: unknown) => {
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input), (error: unknown) => {
     assert.ok(error instanceof ProductCollectionInterruptedError);
     assert.equal(error.errorCode, "source-validation-failed");
     assert.ok(error.cause instanceof Error);
@@ -482,30 +479,20 @@ async function balanceFailure(
   return reason;
 }
 
-test("LINE Bank reports a current balance it parsed but cannot admit as a rejected balance source", async () => {
-  // Selection treats arrangements that differ only in whitespace as one
-  // account, so the filtered-out "x  y" keeps its balance row, which matches
-  // no capture this run admitted.
-  assert.equal(
-    await balanceFailure(
-      [listedAccount({ arrId: "x y" }), listedAccount({ arrId: "x  y", acctNick: "Savings" })],
-      ["main account"],
-    ),
-    "LINE Bank current balance source admission was rejected.",
-  );
+test("LINE Bank tells apart current balances of arrangements that differ only in whitespace", async () => {
+  const twins = [listedAccount({ arrId: "x y" }), listedAccount({ arrId: "x  y", acctNick: "Savings" })];
+  for (const [accountFilters, itemCount] of [[["main account"], 2], [[], 4]] as const) {
+    const harness = createContext({ page: createPage({ listedAccounts: twins }) });
+    const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, { ...input, accountFilters: [...accountFilters] });
+    assert.equal(result.status, "financial-admitted");
+    assert.equal(result.counts.itemCount, itemCount, `${accountFilters.length === 0 ? "both" : "one"} selected stage a deposit and a balance each`);
+  }
 });
 
-test("LINE Bank keeps its own message for a current-balance failure outside admission", async () => {
+test("LINE Bank names the field a current balance fails to decode", async () => {
   assert.equal(
     await balanceFailure([listedAccount({ wdrwAvblAmt: "9OO.00" })]),
     "LINE Bank current deposit account 0 wdrwAvblAmt is not an exact decimal.",
     "a balance that does not parse names its decoding failure",
-  );
-  // Two arrangements that differ only in whitespace are one selected account
-  // but two admitted captures, so the matched snapshot fails its coverage check.
-  assert.equal(
-    await balanceFailure([listedAccount({ arrId: "x  y" }), listedAccount({ arrId: "x y" })]),
-    "LINE Bank current balance source does not cover every selected domestic account.",
-    "a snapshot that fails its coverage check names that failure",
   );
 });
