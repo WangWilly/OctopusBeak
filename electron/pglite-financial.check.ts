@@ -11,14 +11,10 @@ import type { LiveViewDependency, LiveViewDependencySignals } from "./pglite-fin
 import { createPGliteFinancialLiveViews, type LiveViewRegistry } from "./pglite-financial-live-views.ts";
 import {
   PGLITE_FINANCIAL_OPERATIONS,
-  type PGliteFinancialPort,
   type PGliteFinancialOperation,
 } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
-import {
-  createPGliteFinancialRegistry,
-  prewarmPGlitePairingCandidates,
-} from "./pglite-financial-registry.ts";
+import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-requirements.ts";
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
@@ -185,23 +181,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
-
-test("pairing prewarm builds the version's pairing index without materializing Spending", async () => {
-  const requested: unknown[] = [];
-  const financial = {
-    request: async (operation: string, args: readonly unknown[]) => {
-      requested.push([operation, ...args]);
-      return 7;
-    },
-  } as unknown as PGliteFinancialPort;
-  assert.deepEqual(await prewarmPGlitePairingCandidates(financial, { dataVersion: 7 }), {
-    status: "ready", dataVersion: 7, reused: false,
-  });
-  assert.deepEqual(await prewarmPGlitePairingCandidates(financial, { dataVersion: 6 }), {
-    status: "stale", dataVersion: 7, requestedVersion: 6,
-  });
-  assert.deepEqual(requested, [["financial.spending.prewarmPairing", 7], ["financial.spending.prewarmPairing", 6]]);
-});
 
 test("one worker exposes named financial reads/writes and complete live snapshots", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "octopus-beak-financial-rpc-check-"));

@@ -67,6 +67,14 @@ test("a finished candidate page frees its id", async () => {
   await second;
 });
 
+test("a pairing prewarm asks only for the version's pairing index and reports it ready", async () => {
+  const { service, requests } = harness();
+  const prewarm = service.prewarmPairingCandidates({ dataVersion: 7 });
+  assert.deepEqual(requests.map(({ operation, args }) => [operation, ...args]), [["financial.spending.prewarmPairing", 7]]);
+  requests[0]!.finish(7);
+  assert.deepEqual(await prewarm, { status: "ready", dataVersion: 7, reused: false });
+});
+
 test("a pairing prewarm reports a stale version when the ledger has moved on", async () => {
   const { service, requests } = harness();
   const prewarm = service.prewarmPairingCandidates({ dataVersion: 6 });

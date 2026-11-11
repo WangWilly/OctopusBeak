@@ -8,6 +8,7 @@ import {
   REPO_ROOT,
   rendererViolations,
   runtimeSpecifiers,
+  srcImportsOfElectron,
 } from "./dependency-direction.mjs";
 
 function fakeTree(files) {
@@ -99,6 +100,20 @@ test("a .ts module importing only types from a server module still brings it int
   ]);
 });
 
+test("the renderer is refused the PGlite RPC layer's runtime code but may import its types", () => {
+  const files = {
+    "src/routes/+page.svelte": `<script lang="ts">import { view } from "$lib/feature/view.ts"; import { api } from "$lib/feature/api.ts";</script>`,
+    "src/lib/feature/view.ts": `import type { Dtos } from "../pglite-rpc/live-views.ts"; export const view = 1;`,
+    "src/lib/feature/api.ts": `import { call } from "../pglite-rpc/worker-call.ts"; export const api = call;`,
+    "src/lib/pglite-rpc/live-views.ts": `export type Dtos = {};`,
+    "src/lib/pglite-rpc/worker-call.ts": `export const call = 1;`,
+  };
+  const { violations } = rendererViolations({ entries: ["src/routes/+page.svelte"], ...fakeTree(files) });
+  assert.deepEqual(violations.map(describe), [
+    "src/routes/+page.svelte > src/lib/feature/api.ts imports ../pglite-rpc/worker-call.ts (the PGlite RPC protocol layer, which runs in main and its workers)",
+  ]);
+});
+
 test("a path that names no file is refused instead of skipping its subtree", () => {
   const files = { "src/routes/+page.svelte": `<script lang="ts">import { x } from "$lib/x";</script>` };
   const { violations } = rendererViolations({ entries: ["src/routes/+page.svelte"], ...fakeTree(files) });
@@ -133,5 +148,37 @@ test("a ledger module's type-only, re-exported or import() type reference to a w
     "src/ledger/canonical/a.ts",
     "src/ledger/canonical/b.check.ts",
     "src/ledger/pglite/c.ts",
+  ]);
+});
+
+test("no non-check src/ module names an electron/ module", () => {
+  assert.deepEqual(srcImportsOfElectron(), []);
+});
+
+test("a src/ module's type-only, value, re-exported, require() or worker-URL reference to electron/ is reported; only a check's is not", () => {
+  const files = {
+    "src/lib/a.ts": `import type { A } from "../../electron/a.ts"; export const a = 1;`,
+    "src/lib/b.ts": `import { b } from "../../electron/b.ts";`,
+    "src/lib/c.ts": `export { c } from "../../electron/c.ts";`,
+    "src/lib/d.ts": `type D = import("../../electron/d.ts").D;`,
+    "src/lib/e.check.ts": `import { e } from "../../electron/e.ts";`,
+    "src/lib/check-support/f.ts": `import { f } from "../../../electron/f.ts";`,
+    "src/lib/g.ts": `import { g } from "../pglite-rpc/g.ts";`,
+    "src/lib/h.ts": `const h = require("../../electron/h.ts");`,
+    "src/lib/i.ts": `new Worker(new URL("../../electron/i.ts", import.meta.url));`,
+    "src/lib/j-fixture.ts": `import { j } from "../../electron/j.ts";`,
+    "electron/a.ts": "", "electron/b.ts": "", "electron/c.ts": "", "electron/d.ts": "", "electron/e.ts": "",
+    "electron/f.ts": "", "src/lib/pglite-rpc/g.ts": "", "electron/h.ts": "", "electron/i.ts": "", "electron/j.ts": "",
+  };
+  const found = srcImportsOfElectron({ files: Object.keys(files).filter((file) => file.startsWith("src/")), ...fakeTree(files) });
+  assert.deepEqual(found, [
+    { file: "src/lib/a.ts", specifier: "../../electron/a.ts" },
+    { file: "src/lib/b.ts", specifier: "../../electron/b.ts" },
+    { file: "src/lib/c.ts", specifier: "../../electron/c.ts" },
+    { file: "src/lib/d.ts", specifier: "../../electron/d.ts" },
+    { file: "src/lib/check-support/f.ts", specifier: "../../../electron/f.ts" },
+    { file: "src/lib/h.ts", specifier: "../../electron/h.ts" },
+    { file: "src/lib/i.ts", specifier: "../../electron/i.ts" },
+    { file: "src/lib/j-fixture.ts", specifier: "../../electron/j.ts" },
   ]);
 });

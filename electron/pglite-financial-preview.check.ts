@@ -3,7 +3,7 @@ import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createLocalDateClock } from "./pglite-financial-live-dependencies.ts";
-import type { PGliteFinancialLiveView } from "./pglite-financial-live-views.ts";
+import type { PGliteFinancialLiveView } from "../src/lib/pglite-rpc/pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteLedgerHost, type PGliteLedgerHost } from "./pglite-ledger-host.ts";
 import { createSpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";

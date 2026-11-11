@@ -152,6 +152,7 @@ export function rendererRefusal(resolved) {
     return null;
   }
   if (resolved.file.startsWith("electron/")) return "Electron main code";
+  if (resolved.file.startsWith("src/lib/pglite-rpc/")) return "the PGlite RPC protocol layer, which runs in main and its workers";
   if (resolved.file.split("/").includes("server")) return "a server module";
   return null;
 }
@@ -247,4 +248,28 @@ export function ledgerImportsOfWorkflows({
   return files.flatMap((file) => namedSpecifiers(file, read(file))
     .filter((specifier) => resolveSpecifier(file, specifier, isFile)?.file?.startsWith("src/workflows/"))
     .map((specifier) => ({ file, specifier })));
+}
+
+/**
+ * Every non-check src/ module that names a module under electron/, even for
+ * types: src/ is the shared code both processes run, and electron/ holds only
+ * main-process wiring (ADR 0133). Checks are exempt because integration checks
+ * wire real electron RPC servers.
+ */
+export function srcImportsOfElectron({
+  files = walk("src").filter((file) => isCode(file) || file.endsWith(".cjs")),
+  read = (file) => readFileSync(join(REPO_ROOT, file), "utf8"),
+  isFile = isRepoFile,
+} = {}) {
+  const namesElectron = (resolved) => (resolved?.file ?? resolved?.unresolved)?.startsWith("electron/");
+  // Only checks are exempt: a fixture or check-support module can ship, and
+  // production code that imports one would reach electron/ through it.
+  return files.filter((file) => !/\.check\./u.test(file)).flatMap((file) => {
+    const text = read(file);
+    // Type-level names, plus the require() and new URL(…, import.meta.url) forms only the runtime walk sees.
+    const specifiers = new Set([...namedSpecifiers(file, scriptSource(file, text)), ...runtimeSpecifiers(file, text)]);
+    return [...specifiers]
+      .filter((specifier) => namesElectron(resolveSpecifier(file, specifier, isFile)))
+      .map((specifier) => ({ file, specifier }));
+  });
 }

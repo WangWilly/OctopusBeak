@@ -1,5 +1,5 @@
 import { writable, type Readable } from "svelte/store";
-import type { FinancialLiveViewDtos, PGliteFinancialLiveView } from "../../../../electron/pglite-financial-live-views.ts";
+import type { FinancialLiveViewDtos, PGliteFinancialLiveView } from "../../pglite-rpc/pglite-financial-live-views.ts";
 import type { DataViewsApi } from "../../desktop/api.ts";
 import { createViewStores, type ViewState } from "../../data-views/client/view-stores.ts";
 import {

@@ -1,9 +1,8 @@
 import type {
   PGliteFinancialExpectedSources,
-  PGliteFinancialOperation,
   PGliteFinancialRegistry,
-  PGliteFinancialResult,
 } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import type { PGliteFinancialLiveView } from "../src/lib/pglite-rpc/pglite-financial-live-views.ts";
 import type { PGliteWorkScheduler } from "./pglite-financial-rpc-server.ts";
 import type { PGliteFinancialPreviewEvents, PGliteFinancialRegistryPageActions } from "./pglite-financial-registry.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
@@ -51,14 +50,7 @@ const FINANCIAL_LIVE_VIEWS = {
     dependsOn: ["exchangeRates", "preview", "manual", "today"],
   },
   "financial.spending.current": SPENDING_LIVE_VIEW,
-} as const satisfies Partial<Record<PGliteFinancialOperation, FinancialLiveViewDefinition>>;
-
-export type PGliteFinancialLiveView = keyof typeof FINANCIAL_LIVE_VIEWS;
-
-/** The DTO each live view publishes: the result of the operation it loads. */
-export type FinancialLiveViewDtos = {
-  readonly [View in PGliteFinancialLiveView]: PGliteFinancialResult<View>;
-};
+} as const satisfies Record<PGliteFinancialLiveView, FinancialLiveViewDefinition>;
 
 function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {
   return Object.hasOwn(FINANCIAL_LIVE_VIEWS, view);
