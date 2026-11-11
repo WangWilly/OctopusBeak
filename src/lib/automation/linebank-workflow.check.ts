@@ -464,10 +464,13 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
 const listedAccount = (fields: Readonly<Record<string, unknown>> = {}) => ({ ...account, wdrwAvblAmt: "900.00", ...fields });
 
 /** Run LINE Bank over this account list, which must fail validation before any commit, and return the failure's reason. */
-async function balanceFailure(listedAccounts: readonly Readonly<Record<string, unknown>>[]) {
+async function balanceFailure(
+  listedAccounts: readonly Readonly<Record<string, unknown>>[],
+  accountFilters: readonly string[] = [],
+) {
   const harness = createContext({ page: createPage({ listedAccounts }) });
   let reason: string | undefined;
-  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input), (error: unknown) => {
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, { ...input, accountFilters: [...accountFilters] }), (error: unknown) => {
     assert.ok(error instanceof ProductCollectionInterruptedError);
     assert.equal(error.errorCode, "source-validation-failed");
     assert.ok(error.cause instanceof Error);
@@ -480,10 +483,14 @@ async function balanceFailure(listedAccounts: readonly Readonly<Record<string, u
 }
 
 test("LINE Bank reports a current balance it parsed but cannot admit as a rejected balance source", async () => {
-  // The balance row keys the arrangement with the NBSP folded to a space; the
-  // admitted capture keeps it, so the parsed row matches no admitted capture.
+  // Selection treats arrangements that differ only in whitespace as one
+  // account, so the filtered-out "x  y" keeps its balance row, which matches
+  // no capture this run admitted.
   assert.equal(
-    await balanceFailure([listedAccount({ arrId: "arr\u00a0main" })]),
+    await balanceFailure(
+      [listedAccount({ arrId: "x y" }), listedAccount({ arrId: "x  y", acctNick: "Savings" })],
+      ["main account"],
+    ),
     "LINE Bank current balance source admission was rejected.",
   );
 });

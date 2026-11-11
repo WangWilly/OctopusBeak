@@ -8,9 +8,10 @@ import type {
   ProviderEvidence,
   VerifiedProviderResponse,
 } from "./provider-response.ts";
-import type {
-  LineBankAccount,
-  LineBankHumanAttestedV13ValidatedCapture,
+import {
+  canonicalOpaqueAccountKey,
+  type LineBankAccount,
+  type LineBankHumanAttestedV13ValidatedCapture,
 } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import { collapseSourceWhitespace, trimSourceLexeme } from "../lib/automation/source-text.ts";
 import type {
@@ -194,18 +195,6 @@ function currencyOf(account: LineBankPayablesAccount): string {
   return currency;
 }
 
-/** Stable account key shared with the existing LINE Bank transaction admission. */
-export function linebankCurrentSourceAccountKey(
-  accountNumber: string,
-  arrangementId: string,
-): string {
-  const composite = `${accountNumber}:${arrangementId}`;
-  const digest = createHash("sha256")
-    .update(JSON.stringify(["linebank", "account", composite]), "utf8")
-    .digest("hex");
-  return `sha256:${digest}`;
-}
-
 function accountFromPayload(account: LineBankPayablesAccount): Readonly<LineBankAccount> {
   return {
     acctNbr: requiredString(account.acctNbr, "acctNbr"),
@@ -249,7 +238,12 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
     if (!/^\d{12}$/u.test(accountNumber))
       throw new Error(`LINE Bank current deposit account ${index} acctNbr must be twelve digits.`);
     const arrangementId = requiredStringish(account.arrId, `account ${index} arrId`);
-    const key = linebankCurrentSourceAccountKey(accountNumber, arrangementId);
+    // The admitted capture's key wins: hash the provider's own values, not the
+    // lexemes above, whose folded U+00A0/U+3000 would name another account.
+    const key = canonicalOpaqueAccountKey({
+      acctNbr: String(account.acctNbr),
+      arrId: String(account.arrId),
+    });
     if (seen.has(key))
       throw new Error("LINE Bank current deposit dpstAcctList contains a duplicate account.");
     seen.add(key);
