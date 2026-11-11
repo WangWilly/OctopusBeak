@@ -492,10 +492,12 @@ test("LINE Bank tells apart current balances of arrangements that differ only in
 });
 
 test("LINE Bank reads an unquoted integer arrId the way its current balance and ledger do", async () => {
-  const harness = createContext({ page: createPage({ listedAccounts: [listedAccount({ arrId: 123 })] }) });
-  const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
-  assert.equal(result.status, "financial-admitted");
-  assert.equal(result.counts.itemCount, 2, "the account stages its deposit and its current balance");
+  for (const arrId of [123, 0]) {
+    const harness = createContext({ page: createPage({ listedAccounts: [listedAccount({ arrId })] }) });
+    const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
+    assert.equal(result.status, "financial-admitted", `arrId ${arrId}`);
+    assert.equal(result.counts.itemCount, 2, `arrId ${arrId} stages its deposit and its current balance`);
+  }
 });
 
 test("LINE Bank names arrId when it is neither a string nor a safe integer", async () => {

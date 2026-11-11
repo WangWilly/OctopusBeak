@@ -631,7 +631,7 @@ function filterAccounts(
     const currency = linebankAccountCurrency(account);
     return (
       accountId(account) &&
-      account.arrId &&
+      linebankArrangementId(account.arrId) &&
       matchesFilters(account, accountFilters) &&
       (currencies.size === 0 || currencies.has(currency))
     );
@@ -828,6 +828,8 @@ export class LineBankApiClient {
     const accounts = await this.validate(() => {
       if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
         throw new Error("LINE Bank account list is incomplete.");
+      // The current-balance parse reads every listed arrId the same way.
+      for (const account of payload.content.dpstAcctList) linebankArrangementId(account.arrId);
       return payload.content.dpstAcctList;
     });
     return {

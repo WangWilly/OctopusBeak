@@ -132,7 +132,7 @@ function requiredString(value: unknown, label: string): string {
 function requiredStringish(value: unknown, label: string): string {
   if (typeof value === "string") return requiredString(value, label);
   if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
-  throw new Error(`LINE Bank current deposit ${label} must be a string.`);
+  throw new Error(`LINE Bank current deposit ${label} must be a string or a safe integer.`);
 }
 
 function responseDigest(rawBody: string): string {
