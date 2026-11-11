@@ -9,7 +9,12 @@ import type {
 import type { CollectionPeriod } from "../lib/automation/collection-period.ts";
 import { productRunResult, type WorkflowRunResult } from "../lib/automation/workflow-run-result.ts";
 import {
+  LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+  LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
   linebankEpochMillisecondsFromSourceDateTime,
+  linebankHumanAttestedV13AuthorityKind,
+  normalizeLineBankFinancialCapture,
+  validateLineBankHumanAttestedV13Capture,
   type LineBankAccount,
   type LineBankHumanAttestedV13ValidatedCapture,
   type LineBankTransactionPage,
@@ -916,12 +921,6 @@ export async function linebankHumanAttestedCapture(input: {
   observedAt: string;
 }): Promise<LineBankHumanAttestedV13ValidatedCapture | null> {
   const source = input.pages[0]?.source;
-  const {
-    LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
-    LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
-    linebankHumanAttestedV13AuthorityKind,
-    validateLineBankHumanAttestedV13Capture,
-  } = await import("../ledger/canonical/linebank-domestic-deposit.ts");
   if (
     !source ||
     linebankHumanAttestedV13AuthorityKind(source) !== "personal-main"
@@ -1100,9 +1099,6 @@ async function runLineBankWorkflow(
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
         const admissions: DepositAdmission<LineBankCurrentBalanceCapture>[] = [];
         const captureOccurrenceId = randomUUID();
-        const { normalizeLineBankFinancialCapture } = await import(
-          "../ledger/canonical/linebank-domestic-deposit.ts"
-        );
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
           total: selectedSources.length,
