@@ -46,9 +46,6 @@ const allowedPrivacyFindings = new Set([
   "src/workflows/cathay-current-deposit-balances.check.ts:91: long account-like number 1234****9012",
   "src/workflows/cathay-current-deposit-balances.check.ts:116: long account-like number 1234****9012",
   "src/workflows/cathay-current-deposit-balances.check.ts:124: long account-like number 1234****9012",
-  "src/workflows/hncb-current-deposit-balances.check.ts:212: long account-like number 0012******9012",
-  "src/workflows/hncb-current-deposit-balances.check.ts:236: long account-like number 0012****7890",
-  "src/workflows/hncb-current-deposit-balances.check.ts:358: long account-like number 1669****5670",
   "src/workflows/linebank-current-deposit-balances.check.ts:69: long account-like number 0123****8901",
   "src/workflows/sinopac-current-deposit-balances.check.ts:119: long account-like number 1410******5621",
 ]);

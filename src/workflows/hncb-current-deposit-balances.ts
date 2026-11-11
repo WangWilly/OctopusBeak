@@ -1,4 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import type {
+  CurrentDepositBalanceCaptureInput,
+  CurrentDepositExactAmount,
+} from "../ledger/pglite/current-deposit-admission.ts";
 import type { Frame, Locator, Page } from "playwright";
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
 import {
@@ -12,6 +18,12 @@ import type { BrowserScope } from "./frame-scope.ts";
 import type { HncbMenuRoute, HncbNetbankSite } from "./hncb-netbank-site.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import {
+  assembleCurrentDepositCapture,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
+  type CurrentBalanceCaptureMatching,
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 
 const DETAIL_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-v1"];
 const OVERVIEW_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"];
@@ -51,7 +63,7 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_HEADERS = [
   "其他查詢",
 ] as const;
 
-export type HncbCurrentDepositExactDecimal = Readonly<{
+type HncbCurrentDepositExactDecimal = Readonly<{
   coefficient: string;
   scale: number;
   sourceLexeme: string;
@@ -63,7 +75,7 @@ function transactionQuery(transaction: string): RegExp {
 }
 
 /** The 帳戶總覽 GET, which must render HTML. */
-export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
+const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
   path: OVERVIEW_CONTRACT.endpointPath,
   method: "GET",
   contentType: /^text\/html(?:\s*;|$)/iu,
@@ -71,7 +83,7 @@ export const HNCB_CURRENT_DEPOSIT_OVERVIEW_ENDPOINT: ProviderEndpoint = {
 };
 
 /** The 活期存款 balance-page GET. */
-export const HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT: ProviderEndpoint = {
+const HNCB_CURRENT_DEPOSIT_DETAIL_ENDPOINT: ProviderEndpoint = {
   path: DETAIL_CONTRACT.endpointPath,
   method: "GET",
   search: transactionQuery(HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION),
@@ -103,7 +115,7 @@ function endpointResponse(endpoint: ProviderEndpoint): ProviderResponseDeclarati
   return { ...HNCB_CURRENT_DEPOSIT_RESPONSE, endpoints: [endpoint] };
 }
 
-export type HncbCurrentDepositBalanceRow = Readonly<{
+type HncbCurrentDepositBalanceRow = Readonly<{
   source: "hncb";
   accountNumber: string;
   currency: string;
@@ -129,7 +141,7 @@ export type HncbCurrentDepositBalanceRow = Readonly<{
  * but the provider may omit the currency cell for a zero-balance account.
  * Currency is resolved only after this row is joined to an admitted account.
  */
-export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
+type HncbCurrentDepositOverviewBalanceRow = Readonly<{
   source: "hncb";
   accountNumber: string;
   currency: string;
@@ -150,7 +162,7 @@ export type HncbCurrentDepositOverviewBalanceRow = Readonly<{
   }>;
 }>;
 
-export type HncbCurrentDepositSnapshotInput = Readonly<{
+type HncbCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: VerifiedProviderResponse<"required">;
 }>;
@@ -653,3 +665,195 @@ export async function readHncbCurrentDepositOverviewTable(
     response,
   };
 }
+
+/** The admitted HNCB statement identity a current balance joins. */
+export type ExistingHncbFinancialCapture = Readonly<{
+  identity: Readonly<{
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    subjectDigest: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+    accountNumber?: Readonly<{ value: string }> | null;
+    currency?: string | null;
+  }>;
+}>;
+
+type HncbCurrentDepositRow =
+  | HncbCurrentDepositBalanceRow
+  | HncbCurrentDepositOverviewBalanceRow;
+
+/** Join HNCB's full numeric account evidence to the existing financial
+ * identity and retain both provider balance fields independently. */
+function buildHncbCurrentDepositBalanceCapture(
+  row: HncbCurrentDepositRow,
+  financialCapture: ExistingHncbFinancialCapture,
+): CurrentDepositBalanceCaptureInput {
+  const identity = financialCapture.identity;
+  const accountEvidence = identity.accountNumber?.value;
+  if (accountEvidence !== row.accountNumber)
+    throw new Error(
+      "HNCB current deposit account does not match the existing full account-number evidence.",
+    );
+  const isOverview =
+    String(row.sourceEvidence.transaction) === HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION ||
+    String(row.sourceEvidence.contractVersion) ===
+      CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["hncb/domestic-deposit/current-balance-overview-v1"].contractVersion;
+  const route = isOverview
+    ? "hncb/domestic-deposit/current-balance-overview-v1"
+    : "hncb/domestic-deposit/current-balance-v1";
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
+  const providerCurrency = row.currency.trim().toUpperCase();
+  const canonicalCurrency = identity.currency?.trim().toUpperCase() ?? "";
+  if (!isOverview && !providerCurrency)
+    throw new Error("HNCB current deposit detail row is missing provider currency.");
+  if (isOverview && !providerCurrency && !/^[A-Z]{3}$/u.test(canonicalCurrency))
+    throw new Error(
+      "HNCB current deposit overview cannot resolve blank currency without an admitted canonical account currency.",
+    );
+  if (providerCurrency && !/^[A-Z]{3}$/u.test(providerCurrency))
+    throw new Error("HNCB current deposit currency is invalid.");
+  if (providerCurrency && canonicalCurrency && providerCurrency !== canonicalCurrency)
+    throw new Error("HNCB current deposit currency contradicts the existing canonical account.");
+  const currency = providerCurrency || canonicalCurrency;
+  const currencyResolution = providerCurrency ? "provider" : "canonical-account";
+  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  const availableSourceField = isOverview ? "原幣" : "可用餘額";
+  const amountPairs: readonly [
+    "ledger" | "available",
+    string,
+    CurrentDepositExactAmount,
+  ][] = [
+    ["ledger", "帳上餘額", row.ledger],
+    ["available", availableSourceField, row.available],
+  ];
+  const time = {
+    effectiveAt: row.effectiveAt,
+    effectiveTimeBasis: "provider-http-date",
+    effectiveTimeRuleVersion: contract.contractVersion,
+    sourceField: "HTTP Date",
+    sourceValue: row.providerHttpDate,
+    contractVersion: contract.contractVersion,
+  } as const;
+  const entries = amountPairs.map(([balanceKind, sourceField, balance]) => ({
+    sourceRecordKey: canonicalDigest(
+      "hncb-current-deposit-source-record-v1",
+      sourceAccountKey,
+      contract.contractVersion,
+      currency,
+      balanceKind,
+      row.effectiveAt,
+      balance.coefficient,
+      String(balance.scale),
+    ),
+    providerKey: canonicalDigest(
+      "hncb-current-deposit-provider-record-v1",
+      row.accountNumber,
+      contract.contractVersion,
+      currency,
+      balanceKind,
+      row.effectiveAt,
+    ),
+    observationKey: canonicalDigest(
+      "hncb-current-deposit-observation-v1",
+      sourceAccountKey,
+    ),
+    balanceKind,
+    sourceField,
+    currency,
+    value: balance,
+    time,
+    timeInRecord: false,
+    compact: {
+      accountNumber: row.accountNumber,
+      currencySourceLexeme: row.currencySourceLexeme,
+      currencyResolution,
+      ...(canonicalCurrency ? { canonicalCurrency } : {}),
+      effectiveAt: row.effectiveAt,
+      effectiveTimeSourceField: "HTTP Date",
+      effectiveTimeSourceValue: row.providerHttpDate,
+      sourceEvidence: { ...row.sourceEvidence },
+    },
+  }));
+  const endpoint =
+    row.sourceEvidence.url ??
+    `https://${contract.endpointHost}${row.sourceEvidence.endpoint}?trx=${encodeURIComponent(row.sourceEvidence.transaction)}`;
+  return assembleCurrentDepositCapture({
+    captureId: randomUUID(),
+    authorityRoute: route,
+    contractVersion: contract.contractVersion,
+    subjectDigest: identity.subjectDigest,
+    identity: {
+      integrationNamespace: "hncb",
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      stream: "domestic-deposit",
+      sourceAccountKey,
+    },
+    observedAt: row.observedAt,
+    scope: {
+      startDate: row.effectiveAt.slice(0, 10),
+      endDate: row.effectiveAt.slice(0, 10),
+    },
+    providerResponse: {
+      endpoint,
+      status: 200,
+      cacheControl: row.sourceEvidence.cacheControl,
+    },
+    page: {
+      metadata: {
+        source: isOverview
+          ? "hncb-current-deposit-account-overview"
+          : "hncb-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceFieldCount: entries.length,
+        currencyResolution,
+      },
+    },
+  }, entries);
+}
+
+/**
+ * HNCB keys a balance by the full account number. A capture without account
+ * number evidence is left out of the index, and a row with no admitted capture
+ * fails the run. The first capture under a number wins.
+ */
+const hncbCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ accountNumber: string }>,
+  ExistingHncbFinancialCapture
+> = {
+  captureKey: (capture) => capture.identity.accountNumber?.value || undefined,
+  rowKey: (row) => row.accountNumber,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    (kept.identity.sourceAccountKey ?? kept.identity.accountNo) ===
+      (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest &&
+    (kept.identity.currency ?? null) === (candidate.identity.currency ?? null),
+  ambiguousMessage: "HNCB current deposit identities are ambiguous across financial captures.",
+  unmatched: {
+    kind: "throw",
+    message:
+      "HNCB current deposit snapshot contains an account without existing full account-number evidence.",
+  },
+};
+
+export const hncbCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  HncbCurrentDepositTable,
+  HncbCurrentDepositRow,
+  ExistingHncbFinancialCapture
+> = {
+  product: "current-balance",
+  response: HNCB_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response, acquired) => {
+    const snapshot = { rows: decoded.rows, response };
+    return acquired.view === "overview"
+      ? parseHncbCurrentDepositOverviewSnapshot(snapshot)
+      : parseHncbCurrentDepositBalanceSnapshot(snapshot);
+  },
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
+  matching: hncbCurrentBalanceCaptureMatching,
+  build: buildHncbCurrentDepositBalanceCapture,
+};
