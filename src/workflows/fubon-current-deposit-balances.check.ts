@@ -17,7 +17,11 @@ import {
   parseFubonCurrentDepositBalanceSnapshot,
   readFubonCurrentDepositBalanceTable,
   readFubonCurrentDepositTableCells,
+  fubonCurrentBalanceSnapshot,
+  type ExistingFubonFinancialCapture,
 } from "./fubon-current-deposit-balances.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
 
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 
@@ -336,6 +340,76 @@ assert.throws(
     }),
   /currency is invalid/u,
   "an unmapped currency label fails closed",
+);
+
+const existingIdentity: ExistingFubonFinancialCapture = {
+  identity: {
+    sourceConnectionKey: "sha256:fubon-current-connection",
+    identityEpochKey: "sha256:fubon-current-epoch",
+    subjectDigest: "sha256:fubon-current-subject",
+    accountNo: "sha256:fubon-current-account",
+    sourceAccountKey: "sha256:fubon-current-account",
+    accountNumber: { value: twdRow[0] },
+  },
+};
+
+/** Drive the declaration over this check's 我的存款 table for the admitted captures. */
+function snapshot(captures: readonly ExistingFubonFinancialCapture[]) {
+  return captureCurrentStateSnapshots(fubonCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => ({ evidence: { kind: "cells" as const, rows: visibleRows }, response: response() }),
+    product: snapshotCheckProduct({ now: "2026-09-08T13:40:20.000Z" }),
+  });
+}
+
+{
+  const staged = await snapshot([existingIdentity, existingIdentity]);
+  assert.deepEqual(
+    staged.matched.map(({ capture }) => capture),
+    [existingIdentity],
+    "same account identity across date ranges is deduplicated",
+  );
+  assert.deepEqual(
+    staged.excluded.map((row) => row.accountNumber),
+    [visibleRows[1][0]],
+    "a row without admitted account-number evidence is excluded, not thrown",
+  );
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", "current-balance:domestic-deposit:sha256:fubon-current-account"],
+  ]);
+  const request = stagedBalanceRequest(staged.items[0]);
+  assert.equal(request.capture.routeKey, "fubon/domestic-deposit/current-balance-v1");
+  assert.equal(request.capture.sourceConnectionKey, "sha256:fubon-current-connection");
+  assert.equal(request.capture.identityEpoch, "sha256:fubon-current-epoch");
+  assert.equal(request.capture.subjectDigest, "sha256:fubon-current-subject");
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-08", "2026-09-08"]);
+  assert.equal(request.account.sourceAccountKey, "sha256:fubon-current-account");
+  assert.equal(request.account.currency, "TWD");
+  assert.equal(request.capture.records.length, 2);
+  assert.deepEqual(
+    request.capture.records.map((record) => [record.compact.sourceField, record.compact.accountNumber]),
+    [["即時餘額", twdRow[0]], ["可用餘額", twdRow[0]]],
+  );
+  assert.deepEqual(
+    request.observations.map((observation) => [observation.balanceKind, observation.balance]),
+    [
+      ["ledger", { coefficient: "0", scale: 0, sourceLexeme: "0" }],
+      ["available", { coefficient: "-125050", scale: 2, sourceLexeme: "-1,250.50" }],
+    ],
+  );
+  for (const observation of request.observations) {
+    assert.equal(observation.effectiveAt, "2026-09-08T13:40:10.000Z");
+    assert.equal(observation.evidenceSourceField, "HTTP Date");
+    assert.equal(observation.evidenceSourceValue, "Tue, 08 Sep 2026 13:40:10 GMT");
+  }
+}
+
+await assert.rejects(
+  snapshot([
+    existingIdentity,
+    { identity: { ...existingIdentity.identity, sourceAccountKey: "sha256:other-account" } },
+  ]),
+  /ambiguous across financial captures/u,
 );
 
 const source = await readFile(new URL("./fubon-current-deposit-balances.ts", import.meta.url), "utf8");

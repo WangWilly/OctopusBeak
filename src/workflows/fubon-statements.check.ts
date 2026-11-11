@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
 import { buildFubonLoanPaymentAccountEvidence } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import {
-  buildFubonCurrentDepositBalanceCapture,
   deriveFubonDomesticDepositAccountNumberEvidence,
-  fubonCurrentBalanceCaptureMatching,
   fubonDepositQueries,
   parseFubonDepositPaginationSignal,
   readFubonDepositAccountOptions,
@@ -28,9 +25,12 @@ import {
 } from "./fubon-source-connection.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
+  fubonCurrentBalanceSnapshot,
   type FubonCurrentDepositBalanceRow,
   type FubonCurrentDepositTable,
 } from "./fubon-current-deposit-balances.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct } from "./current-state-snapshot-capture.fixtures.ts";
 import { FUBON_EBANK_ENTRY_URL, fubonEbankSite } from "./fubon-ebank-site.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import {
@@ -106,84 +106,6 @@ const accountOption = {
   ...rawAccountOption,
   accountNumber: deriveFubonDomesticDepositAccountNumberEvidence(rawAccountOption)!,
 };
-const fubonCurrentCapture = buildFubonCurrentDepositBalanceCapture(
-  {
-    source: "fubon",
-    accountNumber,
-    accountNickname: "synthetic",
-    depositType: "活期",
-    branchName: "012",
-    currency: "TWD",
-    currencySourceLexeme: "台幣",
-    instantBalance: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
-    availableBalance: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
-    effectiveAt: "2026-08-31T01:00:00.000Z",
-    providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
-    observedAt: "2026-08-31T09:00:00+08:00",
-    sourceEvidence: {
-      endpoint: CONTRACT.endpointPath,
-      status: 200,
-      cacheControl: "no-store, no-cache",
-      contractVersion: CONTRACT.contractVersion,
-    },
-  },
-  {
-    identity: {
-      sourceConnectionKey: "sha256:fubon-current-connection",
-      identityEpochKey: "sha256:fubon-current-epoch",
-      subjectDigest: "sha256:fubon-current-subject",
-      accountNo: "sha256:fubon-current-account",
-      sourceAccountKey: "sha256:fubon-current-account",
-      accountNumber: { value: accountNumber },
-    },
-  },
-);
-assert.equal(fubonCurrentCapture.identity.sourceAccountKey, "sha256:fubon-current-account");
-assert.deepEqual(
-  fubonCurrentCapture.observations.map((observation) => observation.sourceField),
-  ["即時餘額", "可用餘額"],
-);
-assert.equal(fubonCurrentCapture.records.length, 2);
-const fubonExistingIdentity = {
-  identity: {
-    sourceConnectionKey: "sha256:fubon-current-connection",
-    identityEpochKey: "sha256:fubon-current-epoch",
-    subjectDigest: "sha256:fubon-current-subject",
-    accountNo: "sha256:fubon-current-account",
-    sourceAccountKey: "sha256:fubon-current-account",
-    accountNumber: { value: accountNumber },
-  },
-};
-{
-  const match = indexCurrentBalanceCaptures(
-    [fubonExistingIdentity, fubonExistingIdentity],
-    fubonCurrentBalanceCaptureMatching,
-  ).match([{ accountNumber }, { accountNumber: "synthetic-unadmitted-number" }]);
-  assert.deepEqual(
-    match.matched.map(({ capture }) => capture),
-    [fubonExistingIdentity],
-    "same account identity across date ranges is deduplicated",
-  );
-  assert.deepEqual(
-    match.excluded,
-    [{ accountNumber: "synthetic-unadmitted-number" }],
-    "a row without admitted account-number evidence is excluded, not thrown",
-  );
-}
-assert.throws(
-  () =>
-    indexCurrentBalanceCaptures([
-      fubonExistingIdentity,
-      {
-        identity: {
-          ...fubonExistingIdentity.identity,
-          sourceAccountKey: "sha256:other-account",
-        },
-      },
-    ], fubonCurrentBalanceCaptureMatching).match([]),
-  /ambiguous across financial captures/u,
-);
-
 const relationAccount = "01234567890123";
 const relationEvidenceCapture: FubonDepositStatementEvidence = {
   evidenceVersion: "capture-evidence-v2",
@@ -764,8 +686,11 @@ try {
     [continuedKey, continuedKey],
   );
   assert.ok(balanceAccountKeys(continuedRun.items).includes(continuedKey), "the current balance links to the continued account");
-  assert.doesNotThrow(() =>
-    indexCurrentBalanceCaptures(financialCapturesOf(continuedRun.items), fubonCurrentBalanceCaptureMatching).match([]));
+  await assert.doesNotReject(captureCurrentStateSnapshots(fubonCurrentBalanceSnapshot, {
+    captures: financialCapturesOf(continuedRun.items),
+    acquire: async () => currentTable([currentBalanceRow, secondTwdRow]),
+    product: snapshotCheckProduct({ now: currentBalanceRow.observedAt }),
+  }));
   assert.deepEqual(exclusions(continuedRun.result.events), []);
   assert.deepEqual(
     continuedRun.requests.map((request) => request.identifier.value).sort(),
