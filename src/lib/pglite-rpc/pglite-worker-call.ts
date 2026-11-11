@@ -1,7 +1,7 @@
 import {
   isWorkflowFailureCorrelation,
   type WorkflowFailureCorrelation,
-} from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+} from "../automation/server/workflow-failure-diagnostics.ts";
 
 /**
  * The call machinery shared by the PGlite worker's financial and operational

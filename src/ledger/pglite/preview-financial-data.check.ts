@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
-} from "../../../electron/pglite-operational-rpc.ts";
+} from "../../lib/pglite-rpc/pglite-operational-rpc.ts";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";

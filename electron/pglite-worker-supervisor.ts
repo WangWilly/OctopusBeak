@@ -1,5 +1,5 @@
-import { PGliteFinancialError, type PGliteFinancialRpcClient } from "./pglite-financial-rpc-client.ts";
-import { operationalProviderOver, PGliteOperationalError } from "./pglite-operational-rpc.ts";
+import { PGliteFinancialError, type PGliteFinancialRpcClient } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { operationalProviderOver, PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 
 /** A worker that keeps crashing more often than this gives up instead of looping. */

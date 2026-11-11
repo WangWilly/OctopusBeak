@@ -1,7 +1,7 @@
-import type { AssetsPageDto } from "../src/lib/assets/types.ts";
-import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
-import type { ManualAssetCommand, ManualAssetCommandResult } from "../src/lib/manual-assets/manual-assets.ts";
-import type { OverviewPageDto } from "../src/lib/overview/types.ts";
+import type { AssetsPageDto } from "../assets/types.ts";
+import type { LiabilitiesPageDto } from "../liabilities/types.ts";
+import type { ManualAssetCommand, ManualAssetCommandResult } from "../manual-assets/manual-assets.ts";
+import type { OverviewPageDto } from "../overview/types.ts";
 import type {
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
@@ -21,52 +21,52 @@ import type {
   SpendingPendingOverviewRequest,
   SpendingRecordPageDto,
   SpendingRecordPageRequest,
-} from "../src/lib/spending/model.ts";
-import type { SpendingLoadInput } from "../src/lib/spending/contracts.ts";
-import type { CanonicalOverviewExpectedSource } from "../src/ledger/canonical/canonical-overview-query.ts";
+} from "../spending/model.ts";
+import type { SpendingLoadInput } from "../spending/contracts.ts";
+import type { CanonicalOverviewExpectedSource } from "../../ledger/canonical/canonical-overview-query.ts";
 import type {
   PGliteCanonicalFinancialCommitRequest,
   PGliteCanonicalFinancialCommitResult,
   PGliteCanonicalSourceAdmissionRequest,
   PGliteCanonicalSourceAdmissionReceipt,
   PGliteCanonicalCommitOptions,
-} from "../src/ledger/pglite/canonical-source-store.ts";
+} from "../../ledger/pglite/canonical-source-store.ts";
 import type {
   PGliteCanonicalDepositCommitRequest,
   PGliteCanonicalDepositCommitResult,
-} from "../src/ledger/pglite/deposit.ts";
+} from "../../ledger/pglite/deposit.ts";
 import type {
   PGliteCanonicalBalanceCaptureRequest,
   PGliteCanonicalBalanceCommitResult,
-} from "../src/ledger/pglite/balance.ts";
+} from "../../ledger/pglite/balance.ts";
 import type {
   PGliteCanonicalEInvoiceCommitResult,
-} from "../src/ledger/pglite/einvoice.ts";
+} from "../../ledger/pglite/einvoice.ts";
 import type {
   PGliteCanonicalCreditCardBalanceCaptureRequest,
   PGliteCanonicalCreditCardCaptureRequest,
   PGliteCanonicalCreditCardCommitResult,
-} from "../src/ledger/pglite/credit-card.ts";
+} from "../../ledger/pglite/credit-card.ts";
 import type {
   PGliteCanonicalLoanCommitRequest,
   PGliteCanonicalLoanCommitResult,
-} from "../src/ledger/pglite/loan.ts";
+} from "../../ledger/pglite/loan.ts";
 import type {
   PGliteCanonicalInvestmentCommitRequest,
   PGliteCanonicalInvestmentCommitResult,
-} from "../src/ledger/pglite/investment.ts";
-import type { TdccAdmittedFundAccount } from "../src/ledger/canonical/tdcc-investment-admission.ts";
-import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../src/ledger/pglite/account-identity-continuity.ts";
-import type { SpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
+} from "../../ledger/pglite/investment.ts";
+import type { TdccAdmittedFundAccount } from "../../ledger/canonical/tdcc-investment-admission.ts";
+import type { AccountIdentityContinuity, AccountIdentityContinuityRequest } from "../../ledger/pglite/account-identity-continuity.ts";
+import type { SpendingPageVersion } from "../../ledger/pglite/spending-page.ts";
 import type {
   PGliteCanonicalLoanRelationResolutionRequest,
   PGliteCanonicalLoanRelationResolutionResult,
   PGliteCanonicalInvestmentRelationResolutionRequest,
   PGliteCanonicalInvestmentRelationResolutionResult,
-} from "../src/ledger/pglite/relations.ts";
-import type { SafeWorkflowFailureError, WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
-import type { PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
-import type { CanonicalEInvoiceCaptureInput } from "../src/ledger/canonical/einvoice-contract.ts";
+} from "../../ledger/pglite/relations.ts";
+import type { SafeWorkflowFailureError, WorkflowFailureCorrelation } from "../automation/server/workflow-failure-diagnostics.ts";
+import type { PGliteWorkflowAdmissionReason } from "../../ledger/pglite/workflow-client.ts";
+import type { CanonicalEInvoiceCaptureInput } from "../../ledger/canonical/einvoice-contract.ts";
 import { plainRecord } from "./pglite-worker-call.ts";
 
 /**

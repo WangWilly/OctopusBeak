@@ -1,4 +1,4 @@
-import type { FinancialBridge } from "../../../electron/pglite-financial-contracts.ts";
+import type { FinancialBridge } from "../pglite-rpc/pglite-financial-contracts.ts";
 import type {
   AutomationCredentialGroup,
   AutomationPageModel,

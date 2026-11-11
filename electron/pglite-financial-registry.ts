@@ -52,7 +52,7 @@ import {
   readOverviewPage,
   type FinancialPageScope,
 } from "../src/ledger/pglite/financial-pages.ts";
-import type { PGliteFinancialPort, PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
+import type { PGliteFinancialPort, PGliteFinancialRegistry } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 
 export type PGliteFinancialPreviewEvents = Readonly<{
   onPreviewVisibilityChanged?(listener: () => void): () => void;

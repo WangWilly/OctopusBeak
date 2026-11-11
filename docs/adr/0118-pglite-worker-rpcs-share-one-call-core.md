@@ -20,7 +20,7 @@ ADR 0072 rejected sharing a correlator between the workflow host-call channel an
 
 ## Decision
 
-**One module, `electron/pglite-worker-call.ts`, owns the call machinery. Both PGlite protocols are built on it. The wire format does not change.**
+**One module, `src/lib/pglite-rpc/pglite-worker-call.ts`, owns the call machinery. Both PGlite protocols are built on it. The wire format does not change.**
 
 - The core exports `WorkerPort`, `plainRecord`, `createWorkerCallClient`, and `createWorkerCallServer`. The client half allocates ids, matches responses by id, ignores responses for unknown ids, gates sends on `ready`, sends a cancel frame when a caller's signal aborts, and rejects every pending call on close. The server half checks the request envelope, refuses calls after close and calls that reuse an active id, posts each response, and waits for active calls on close.
 - Each protocol keeps its own frame kinds, versions, contract table, argument decoding, error class, and failure vocabulary. Only the financial protocol has lanes, latest-wins coalescing, commit admission, and cancellation. The core takes these as callbacks.

@@ -10,7 +10,7 @@ import {
   type RendererFinancialGroup,
   type RendererFinancialMethod,
   type RendererFinancialOperation,
-} from "./pglite-financial-contracts.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 
 export type InvokeChannel = {
   [Namespace in keyof OctopusBeakInvokeChannels]: OctopusBeakInvokeChannels[Namespace][keyof OctopusBeakInvokeChannels[Namespace]];

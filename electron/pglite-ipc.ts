@@ -10,7 +10,7 @@ import {
 } from "../src/lib/desktop/api.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import type { OctopusBeakDataViewChannels } from "./preload.ts";
-import { plainRecord } from "./pglite-worker-call.ts";
+import { plainRecord } from "../src/lib/pglite-rpc/pglite-worker-call.ts";
 
 export const DATA_VIEWS_SUBSCRIBE_CHANNEL = "data-views:subscribe" as const satisfies OctopusBeakDataViewChannels["subscribe"];
 export const DATA_VIEWS_UNSUBSCRIBE_CHANNEL = "data-views:unsubscribe" as const satisfies OctopusBeakDataViewChannels["unsubscribe"];

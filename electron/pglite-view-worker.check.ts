@@ -10,8 +10,8 @@ import {
   createPGliteViewWorkerClient,
   PGLITE_WORKER_SHUTDOWN_TIMEOUT_MS,
 } from "./pglite-view-worker-client.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
-import { PGliteOperationalError } from "./pglite-operational-rpc.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import { startPGliteViewWorker } from "./pglite-view-worker.ts";
 import type { PGliteLedgerHost } from "./pglite-ledger-host.ts";
 import type { SpendingPageActionRequest } from "../src/lib/spending/model.ts";

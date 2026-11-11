@@ -3,8 +3,8 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server, type Socket } from "node:net";
-import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
+import { createPGliteOperationalRpcServer, type PGliteOperationalDomains } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcServer,
   type PGliteCanonicalCommitAdmission,
@@ -18,9 +18,9 @@ import {
   LineSocketPort,
   PGliteChildTransportError,
   validToken,
-} from "../src/lib/automation/server/pglite-child-rpc-client.ts";
-import { plainRecord } from "./pglite-worker-call.ts";
-export * from "../src/lib/automation/server/pglite-child-rpc-client.ts";
+} from "../src/lib/pglite-rpc/pglite-child-rpc-client.ts";
+import { plainRecord } from "../src/lib/pglite-rpc/pglite-worker-call.ts";
+export * from "../src/lib/pglite-rpc/pglite-child-rpc-client.ts";
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const AUTH_TIMEOUT_MS = 10_000;

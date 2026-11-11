@@ -11,8 +11,8 @@ import {
   type PGliteChildProvider,
 } from "./pglite-child-rpc.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
-import { PGLITE_OPERATIONAL_OPERATIONS } from "./pglite-operational-rpc.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { PGLITE_OPERATIONAL_OPERATIONS } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 
 function providerForWorker(client: ReturnType<typeof createPGliteViewWorkerClient>): PGliteChildProvider {
   return {

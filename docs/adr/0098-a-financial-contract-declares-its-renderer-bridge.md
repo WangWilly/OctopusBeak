@@ -12,7 +12,7 @@ Ten financial operations are open to the renderer: nine Spending operations and 
 
 **The financial RPC is four modules, by what changes them.**
 
-- `pglite-financial-contracts.ts`: the contract table and every type derived from it. Its own imports are type-only.
+- `pglite-financial-contracts.ts`: the contract table and every type derived from it. Its own imports are type-only, except `plainRecord` from the worker call core.
 - `pglite-financial-rpc-client.ts`: the client.
 - `pglite-financial-rpc-server.ts`: the server, the work scheduler, lane coalescing, failure categorisation and diagnostics.
 - `pglite-financial-registry.ts`: the handlers, the page-action events, the local port and the pairing prewarm.
@@ -26,4 +26,4 @@ Ten financial operations are open to the renderer: nine Spending operations and 
 ## Consequences
 
 - A new renderer financial operation is a marked contract, its registry handler, and one preload line. `api.ts` and the forwarding handlers follow from the contract.
-- Renderer code reads its financial bridge types from `electron/pglite-financial-contracts.ts`, type-only, as the Financial page already did from the live views.
+- Renderer code reads its financial bridge types from `src/lib/pglite-rpc/pglite-financial-contracts.ts`, type-only, as the Financial page already did from the live views.

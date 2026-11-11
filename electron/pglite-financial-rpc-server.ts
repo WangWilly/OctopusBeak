@@ -18,9 +18,9 @@ import {
   type PGliteFinancialOperation,
   type PGliteFinancialResponse,
   type PGliteFinancialPort,
-} from "./pglite-financial-contracts.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
-import { createWorkerCallServer, plainRecord, type WorkerCall, type WorkerPort } from "./pglite-worker-call.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { createWorkerCallServer, plainRecord, type WorkerCall, type WorkerPort } from "../src/lib/pglite-rpc/pglite-worker-call.ts";
 
 export type PGliteFinancialRpcServer = Readonly<{ close(): Promise<void> }>;
 

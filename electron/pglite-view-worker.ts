@@ -11,7 +11,7 @@ import {
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
-import { createPGliteOperationalRpcServer } from "./pglite-operational-rpc.ts";
+import { createPGliteOperationalRpcServer } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import { createLocalDateClock } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
 import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";

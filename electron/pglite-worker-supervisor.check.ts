@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
-import { PGliteOperationalError } from "./pglite-operational-rpc.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
+import { PGliteOperationalError } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { superviseWorker } from "./pglite-worker-supervisor.ts";
 

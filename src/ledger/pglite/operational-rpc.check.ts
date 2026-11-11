@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { MessageChannel } from "node:worker_threads";
 import test from "node:test";
-import { createPGliteOperationalRpcClient, createPGliteOperationalRpcServer } from "../../../electron/pglite-operational-rpc.ts";
+import { createPGliteOperationalRpcClient, createPGliteOperationalRpcServer } from "../../lib/pglite-rpc/pglite-operational-rpc.ts";
 import {
   createPgliteOperationalProvider,
 } from "./operational.ts";

@@ -9,8 +9,8 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { PGliteFinancialRegistry } from "../../../../electron/pglite-financial-contracts.ts";
-import { createPGliteFinancialRpcClient } from "../../../../electron/pglite-financial-rpc-client.ts";
+import type { PGliteFinancialRegistry } from "../../pglite-rpc/pglite-financial-contracts.ts";
+import { createPGliteFinancialRpcClient } from "../../pglite-rpc/pglite-financial-rpc-client.ts";
 import { createPGliteFinancialRpcServer } from "../../../../electron/pglite-financial-rpc-server.ts";
 import { createPGliteFinancialLocalPort } from "../../../../electron/pglite-financial-registry.ts";
 import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
