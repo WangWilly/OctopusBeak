@@ -282,17 +282,6 @@ export function parseLinebankCurrentDepositBalanceSnapshot(
   return rows;
 }
 
-/** The provider's account identity is a composite of the two source fields.
- * Keep the delimiter explicit so two different pairs cannot concatenate to the
- * same opaque key (for example, `12` + `3` versus `1` + `23`). */
-export function linebankAccountKey(account: LineBankAccount): string {
-  const accountNumber = collapseSourceWhitespace(account.acctNbr);
-  const arrangementId = collapseSourceWhitespace(account.arrId);
-  return accountNumber && arrangementId
-    ? `${accountNumber}:${arrangementId}`
-    : "";
-}
-
 export function linebankAccountCurrency(account: LineBankAccount): string {
   return collapseSourceWhitespace(
     account.currCd ??
@@ -312,11 +301,9 @@ function selectedCurrentBalanceRows(
   accounts: readonly LineBankAccount[],
 ): readonly LineBankCurrentDepositBalanceRow[] {
   const selectedAccountKeys = new Set(
-    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
+    accounts.map(canonicalOpaqueAccountKey).filter(Boolean),
   );
-  return rows.filter((row) =>
-    selectedAccountKeys.has(linebankAccountKey(row.account)),
-  );
+  return rows.filter((row) => selectedAccountKeys.has(row.sourceAccountKey));
 }
 
 function requireCurrentBalanceCoverage(
@@ -327,7 +314,7 @@ function requireCurrentBalanceCoverage(
   const selectedTwdAccountKeys = new Set(
     accounts
       .filter((account) => linebankAccountCurrency(account) === "TWD")
-      .map((account) => linebankAccountKey(account)),
+      .map(canonicalOpaqueAccountKey),
   );
   const admittedTwdAccountKeys = new Set(
     domesticCaptures.map((capture) => capture.accountKey),

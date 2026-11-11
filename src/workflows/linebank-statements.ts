@@ -31,7 +31,6 @@ import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
   linebankAccountCurrency,
-  linebankAccountKey,
   linebankCurrentBalanceSnapshot,
   type ExistingLineBankFinancialCapture,
   type LineBankCurrentDepositAcquired,
@@ -399,6 +398,17 @@ export function linebankApiRowsToStatementRows(
         values,
       };
     });
+}
+
+/** The provider's account identity is a composite of the two source fields.
+ * Keep the delimiter explicit so two different pairs cannot concatenate to the
+ * same opaque key (for example, `12` + `3` versus `1` + `23`). */
+export function linebankAccountKey(account: LineBankAccount): string {
+  const accountNumber = collapseSourceWhitespace(account.acctNbr);
+  const arrangementId = collapseSourceWhitespace(account.arrId);
+  return accountNumber && arrangementId
+    ? `${accountNumber}:${arrangementId}`
+    : "";
 }
 
 export function linebankValidateTransactionPageSequence(
