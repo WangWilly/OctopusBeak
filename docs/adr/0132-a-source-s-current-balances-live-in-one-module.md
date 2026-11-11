@@ -42,6 +42,6 @@ Yuanta's domestic and foreign builders were two copies of one function. They dif
 ## Consequences
 
 - One file answers what a source's current balance is and how it joins an admitted account.
-- A builder does not repeat a check that its matching key already makes. SinoPac's currency and stream guards, the HNCB and Fubon account-number guards, and LINE Bank's account-key guard were removed (#432), because each sat behind a matching key that already includes the field.
+- A builder does not repeat a check that its matching key already makes. SinoPac's currency and stream guards, the HNCB and Fubon account-number guards, and LINE Bank's account-key guard were removed (#432), because each sat behind a matching key that already includes the field. SinoPac's domestic-must-be-TWD check also relies on its parser, which marks a row domestic exactly when its currency is TWD.
 - No persisted value changes. The deposit commit goldens are byte-identical.
 - Credit-card current snapshots are unchanged.
