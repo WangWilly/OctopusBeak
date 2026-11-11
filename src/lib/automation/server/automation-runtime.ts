@@ -23,11 +23,19 @@ export type AutomationStartResult = Readonly<
   | { taskId: string; status: "error"; error: Error }
 >;
 
+/** A start's result once its run ended; `run` is `null` when the record could not be finalized. */
+export type SettledAutomationStart = Readonly<
+  | (Extract<AutomationStartResult, { status: "started" }> & { run: AutomationTaskRun | null })
+  | Exclude<AutomationStartResult, { status: "started" }>
+>;
+
 export type StartAutomationTasksOptions = Readonly<{
   scheduledAtUtc?: string;
-  /** Called once a started run ends, with `null` when its record could not be finalized. */
-  onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
+  /** Called once, after every task this start started has ended. */
+  onSettled?: (results: readonly SettledAutomationStart[]) => void;
 }>;
+
+type Admission = Readonly<{ result: AutomationStartResult; settled: Promise<SettledAutomationStart> }>;
 
 const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
@@ -57,37 +65,29 @@ export function createAutomationRuntime(
   });
   const desktopModel = () => loadAutomationDesktopModel(provider, live(), options.credentials, options.settings.read());
 
-  function admit(
-    taskId: string,
-    model: AutomationDesktopModel,
-    startOptions: StartAutomationTasksOptions,
-  ): Promise<AutomationStartResult> {
+  const unstarted = (result: Exclude<AutomationStartResult, { status: "started" }>): Admission => ({ result, settled: Promise.resolve(result) });
+
+  function admit(taskId: string, model: AutomationDesktopModel, scheduledAtUtc: string | undefined): Promise<Admission> {
     const existing = claimedRunId(taskId);
     if (existing) {
       return existing.then(
-        (runId) => ({ taskId, status: "already_running", runId }),
-        (error: unknown) => ({ taskId, status: "error", error: asError(error) }),
+        (runId) => unstarted({ taskId, status: "already_running", runId }),
+        (error: unknown) => unstarted({ taskId, status: "error", error: asError(error) }),
       );
     }
     let claimed: ClaimedAutomationTask;
     try {
       const task = assertAutomationTaskCanStartInModel(taskId, model, options.settings);
-      claimed = claim(task.id, { scheduledAtUtc: startOptions.scheduledAtUtc });
+      claimed = claim(task.id, { scheduledAtUtc });
     } catch (error) {
-      return Promise.resolve({ taskId, status: "error", error: asError(error) });
+      return Promise.resolve(unstarted({ taskId, status: "error", error: asError(error) }));
     }
     return claimed.runId.then(
       (runId) => {
-        void claimed.settled.then((run) => {
-          try {
-            startOptions.onSettled?.(taskId, run);
-          } catch {
-            console.error("automation-task-run-settled-observer-failed");
-          }
-        });
-        return { taskId, status: "started", runId };
+        const result = { taskId, status: "started", runId } as const;
+        return { result, settled: claimed.settled.then((run) => ({ ...result, run })) };
       },
-      (error: unknown) => ({ taskId, status: "error", error: asError(error) }),
+      (error: unknown) => unstarted({ taskId, status: "error", error: asError(error) }),
     );
   }
 
@@ -111,15 +111,30 @@ export function createAutomationRuntime(
      * Start each task through one admission: the desktop model is read once,
      * then every task is checked and claimed with nothing awaited between, so
      * a task another start holds is `already_running`, never a second run.
+     * `onSettled` sees every result, after every task this start started ended.
      */
     async start(taskIds: readonly string[], startOptions: StartAutomationTasksOptions = {}): Promise<AutomationStartResult[]> {
       if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
         throw new TypeError("Task IDs must be an array of strings.");
       }
-      if (taskIds.length === 0) return [];
-      const model = await desktopModel();
-      const admissions = [...new Set(taskIds)].map((taskId) => admit(taskId, model, startOptions));
-      return Promise.all(admissions);
+      const unique = [...new Set(taskIds)];
+      const admissions: Promise<Admission>[] = [];
+      if (unique.length) {
+        const model = await desktopModel();
+        for (const taskId of unique) admissions.push(admit(taskId, model, startOptions.scheduledAtUtc));
+      }
+      const admitted = await Promise.all(admissions);
+      const { onSettled } = startOptions;
+      if (onSettled) {
+        void Promise.all(admitted.map(({ settled }) => settled)).then((settled) => {
+          try {
+            onSettled(settled);
+          } catch {
+            console.error("automation-task-run-settled-observer-failed");
+          }
+        });
+      }
+      return admitted.map(({ result }) => result);
     },
   });
 }

@@ -78,7 +78,9 @@ export function runnerHostForCheck(directory = ".") {
 export async function startForCheck(runtime: Pick<AutomationRuntime, "start">, taskId: string) {
   let settle!: (run: AutomationTaskRun | null) => void;
   const settled = new Promise<AutomationTaskRun | null>((resolve) => { settle = resolve; });
-  const [result] = await runtime.start([taskId], { onSettled: (_taskId, run) => settle(run) });
+  const [result] = await runtime.start([taskId], {
+    onSettled: ([settled]) => settle(settled?.status === "started" ? settled.run : null),
+  });
   if (result?.status !== "started") throw result?.status === "error" ? result.error : new Error(`${taskId} did not start`);
   return { runId: result.runId, settled };
 }

@@ -34,7 +34,7 @@ import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
 } from "./credential-file.ts";
-import { runAndSummarize, type CollectionResult } from "./collection-summary.ts";
+import { reportCollection, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
 import type { eraseSignInDetails } from "./sign-in-erasure.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
@@ -287,7 +287,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
   const unsubscribeFromRuntime = runtime.subscribe((snapshot) => deps.publishRuntimeChanged(snapshot));
   const runManual = (taskIds: readonly string[]) => {
     const onFinished = deps.onManualCollectionFinished;
-    return onFinished ? runAndSummarize(runtime, taskIds, {}, onFinished) : runtime.start(taskIds);
+    return runtime.start(taskIds, onFinished ? { onSettled: reportCollection(onFinished) } : {});
   };
   const knownTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
 

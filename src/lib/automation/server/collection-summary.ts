@@ -1,6 +1,6 @@
 import type { NotificationTarget } from "../../desktop/api.ts";
 import { userActionForFailure, userActionMessage, type UserAction } from "../workflow-failures.ts";
-import type { AutomationRuntime, AutomationStartResult, StartAutomationTasksOptions } from "./automation-runtime.ts";
+import type { SettledAutomationStart } from "./automation-runtime.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 
@@ -22,40 +22,24 @@ export type CollectionResult = {
 export const isSourceTask = (taskId: string) => Boolean(taskById(taskId)?.credentialGroupId);
 
 /**
- * Starts the tasks and reports their sources together once every started one
- * has ended. A source that was already running belongs to the batch that
- * started it; one that could not start counts as not synced. Tasks without a
- * source, such as exchange rates, are never reported.
+ * The sources a settled batch reports: each source it started, and each it
+ * could not start as not synced. A source already running belongs to the
+ * batch that started it. Tasks without a source, such as exchange rates, are
+ * never reported.
  */
-export async function runAndSummarize(
-  runtime: Pick<AutomationRuntime, "start">,
-  taskIds: readonly string[],
-  startOptions: Omit<StartAutomationTasksOptions, "onSettled">,
-  onFinished: (results: CollectionResult[]) => void,
-): Promise<AutomationStartResult[]> {
-  const settled = new Map<string, AutomationTaskRun | null>();
-  let included: string[] | null = null;
-  const reportWhenComplete = () => {
-    if (!included || included.some((taskId) => !settled.has(taskId))) return;
-    const results = included.map((taskId) => ({ taskId, run: settled.get(taskId) ?? null }));
-    included = null;
+export function collectionResults(settled: readonly SettledAutomationStart[]): CollectionResult[] {
+  return settled.flatMap((start) => {
+    if (!isSourceTask(start.taskId) || start.status === "already_running") return [];
+    return [{ taskId: start.taskId, run: start.status === "started" ? start.run : null }];
+  });
+}
+
+/** A batch's `onSettled` that reports its sources once; a batch without a source reports nothing. */
+export function reportCollection(onFinished: (results: CollectionResult[]) => void) {
+  return (settled: readonly SettledAutomationStart[]) => {
+    const results = collectionResults(settled);
     if (results.length) onFinished(results);
   };
-  const started = await runtime.start(taskIds, {
-    ...startOptions,
-    onSettled: (taskId, run) => {
-      settled.set(taskId, run);
-      reportWhenComplete();
-    },
-  });
-  const status = new Map(started.map((result) => [result.taskId, result.status]));
-  included = [...new Set(taskIds)].filter((taskId) =>
-    isSourceTask(taskId) && status.has(taskId) && status.get(taskId) !== "already_running");
-  for (const taskId of included) {
-    if (status.get(taskId) !== "started") settled.set(taskId, null);
-  }
-  reportWhenComplete();
-  return started;
 }
 
 const MAX_NAMED_SOURCES = 3;

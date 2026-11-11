@@ -6,9 +6,8 @@ import test from "node:test";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { createAutomationRuntime } from "./automation-runtime.ts";
+import { createAutomationRuntime, type SettledAutomationStart } from "./automation-runtime.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
-import type { AutomationTaskRun } from "./store.ts";
 import { CHECK_PGLITE_RPC, runnerHostForCheck } from "./task-run-check-support.ts";
 import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 
@@ -26,6 +25,8 @@ async function withRuntime(
     await store.close();
   }
 }
+
+const settles = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -53,9 +54,13 @@ test("a start refuses a task the admission check does not know", () => withRunti
 test("two concurrent starts of one task start it once, and only the start that claimed it settles it", async () => {
   const release = deferred();
   await withRuntime(async (runtime) => {
-    const settledBy: Array<[string, string, AutomationTaskRun["status"] | null]> = [];
+    const settledBy: Array<[string, string, string]> = [];
     const start = (caller: string) => runtime.start(["exchange-rates"], {
-      onSettled: (taskId, run) => settledBy.push([caller, taskId, run?.status ?? null]),
+      onSettled: (results) => {
+        for (const result of results) {
+          settledBy.push([caller, result.status, result.status === "started" ? result.run?.status ?? "unfinalized" : "-"]);
+        }
+      },
     });
     const [first, second] = await Promise.all([start("first"), start("second")]);
     const results = [...first!, ...second!];
@@ -64,12 +69,46 @@ test("two concurrent starts of one task start it once, and only the start that c
     assert.equal(started.length, 1, "exactly one start claims the task");
     assert.equal(running.length, 1, "the other start reports the task already running");
     assert.equal(running[0]!.runId, started[0]!.runId, "both name the one run");
-    const claimer = first![0]!.status === "started" ? "first" : "second";
+    const [claimer, other] = first![0]!.status === "started" ? ["first", "second"] : ["second", "first"];
+    await settles();
+    assert.deepEqual(settledBy, [[other, "already_running", "-"]], "a start that started nothing settles at once");
 
     release.resolve();
-    while (runtime.hasActive()) await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.deepEqual(settledBy, [[claimer, "exchange-rates", "completed"]]);
+    while (runtime.hasActive()) await settles();
+    await settles();
+    assert.deepEqual(settledBy, [[other, "already_running", "-"], [claimer, "started", "completed"]]);
+  }, {
+    runExecution: async (_plan, run) => {
+      await run.transition("running");
+      await release.promise;
+      return { summary: null, failure: null };
+    },
+  });
+});
+
+test("a batch settles once, after every task it started ended, with the tasks it could not start", async () => {
+  const release = deferred();
+  await withRuntime(async (runtime) => {
+    const batches: Array<{ batch: string; results: readonly SettledAutomationStart[] }> = [];
+    const first = await runtime.start(["exchange-rates", "not-a-task"], {
+      onSettled: (results) => batches.push({ batch: "first", results }),
+    });
+    assert.deepEqual(first.map(({ taskId, status }) => [taskId, status]), [["exchange-rates", "started"], ["not-a-task", "error"]]);
+    const second = await runtime.start(["exchange-rates"], {
+      onSettled: (results) => batches.push({ batch: "second", results }),
+    });
+    await settles();
+    assert.deepEqual(batches.map(({ batch }) => batch), ["second"], "the first batch waits for its started run");
+    assert.deepEqual(second.map(({ status }) => status), ["already_running"]);
+
+    release.resolve();
+    while (runtime.hasActive()) await settles();
+    await settles();
+    assert.deepEqual(batches.map(({ batch }) => batch), ["second", "first"], "each batch settles exactly once");
+    assert.deepEqual(
+      batches[1]!.results.map((result) => [result.taskId, result.status, result.status === "started" ? result.run?.status : null]),
+      [["exchange-rates", "started", "completed"], ["not-a-task", "error", null]],
+    );
   }, {
     runExecution: async (_plan, run) => {
       await run.transition("running");
