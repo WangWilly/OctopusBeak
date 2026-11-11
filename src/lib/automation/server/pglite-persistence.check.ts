@@ -10,14 +10,14 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
 } from "./automation-desktop-service.ts";
+import { createAutomationRuntime } from "./automation-runtime.ts";
 import {
-  createAutomationRunner,
   hydrateAutomationRuntimeState,
 } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { openTaskRunForCheck, runnerHostForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
@@ -211,12 +211,10 @@ try {
     await activeRun.transition("running");
     return { summary: null, failure: null };
   };
-  const runnerFor = (runProvider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
-    createAutomationRunner({ runtime: createAutomationRuntimeState(), provider: runProvider, runExecution, ...runnerHostForCheck() });
-  const runToEnd = async (runProvider: AutomationPersistenceProvider, runner = runnerFor(runProvider, deterministicExecution)) => {
-    let settle!: () => void;
-    const settled = new Promise<void>((resolve) => { settle = resolve; });
-    const { runId } = await runner.start("exchange-rates", { onSettled: () => settle() });
+  const runtimeFor = (runProvider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
+    createAutomationRuntime(runProvider, { ...runnerHostForCheck(), runExecution });
+  const runToEnd = async (runProvider: AutomationPersistenceProvider, runtime = runtimeFor(runProvider, deterministicExecution)) => {
+    const { runId, settled } = await startForCheck(runtime, "exchange-rates");
     await settled;
     const finished = await runProvider.automation.taskRunById(runId);
     assert.ok(finished, "the started run has a record");
@@ -238,7 +236,7 @@ try {
       },
     },
   );
-  const exchangeExecutionResult = await runToEnd(provider, runnerFor(provider, exchangeExecution));
+  const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, exchangeExecution));
   assert.equal(exchangeExecutionResult.status, "completed");
   assert.equal(exchangeWorkerStarts, 1, "the App runner must dispatch exchange sync through a supervised worker");
   assert.deepEqual(
@@ -250,8 +248,7 @@ try {
   assert.equal(executionResult.status, "completed");
   assert.equal((await provider.automation.latestTaskRuns())["exchange-rates"]?.status, "completed");
 
-  const started = await runnerFor(provider, deterministicExecution).start("exchange-rates");
-  assert.equal(started.taskId, "exchange-rates");
+  const started = await startForCheck(runtimeFor(provider, deterministicExecution), "exchange-rates");
   await new Promise<void>((resolve) => setTimeout(resolve, 25));
   assert.equal((await provider.automation.taskRunById(started.runId))?.status, "completed");
 
@@ -290,11 +287,11 @@ try {
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    const runner = runnerFor(rejectedProvider, deterministicExecution);
-    await runToEnd(rejectedProvider, runner);
+    const runtime = runtimeFor(rejectedProvider, deterministicExecution);
+    await runToEnd(rejectedProvider, runtime);
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(unhandled, []);
-    assert.equal(runner.hasActive(), false, "a failed finalization still releases the task");
+    assert.equal(runtime.hasActive(), false, "a failed finalization still releases the task");
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }

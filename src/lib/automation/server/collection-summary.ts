@@ -1,7 +1,6 @@
-import type { AutomationRunManyResult, NotificationTarget } from "../../desktop/api.ts";
+import type { NotificationTarget } from "../../desktop/api.ts";
 import { userActionForFailure, userActionMessage, type UserAction } from "../workflow-failures.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
-import type { StartAutomationTaskOptions } from "./runner.ts";
+import type { AutomationRuntime, AutomationStartResult, StartAutomationTasksOptions } from "./automation-runtime.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
 
@@ -29,11 +28,11 @@ export const isSourceTask = (taskId: string) => Boolean(taskById(taskId)?.creden
  * source, such as exchange rates, are never reported.
  */
 export async function runAndSummarize(
-  runtime: Pick<AutomationRuntime, "runMany">,
+  runtime: Pick<AutomationRuntime, "start">,
   taskIds: readonly string[],
-  runOptions: Omit<StartAutomationTaskOptions, "onSettled">,
+  startOptions: Omit<StartAutomationTasksOptions, "onSettled">,
   onFinished: (results: CollectionResult[]) => void,
-): Promise<AutomationRunManyResult> {
+): Promise<AutomationStartResult[]> {
   const settled = new Map<string, AutomationTaskRun | null>();
   let included: string[] | null = null;
   const reportWhenComplete = () => {
@@ -42,17 +41,18 @@ export async function runAndSummarize(
     included = null;
     if (results.length) onFinished(results);
   };
-  const started = await runtime.runMany([...taskIds], {
-    ...runOptions,
+  const started = await runtime.start(taskIds, {
+    ...startOptions,
     onSettled: (taskId, run) => {
       settled.set(taskId, run);
       reportWhenComplete();
     },
   });
+  const status = new Map(started.map((result) => [result.taskId, result.status]));
   included = [...new Set(taskIds)].filter((taskId) =>
-    isSourceTask(taskId) && started.results[taskId] && started.results[taskId]!.status !== "already_running");
+    isSourceTask(taskId) && status.has(taskId) && status.get(taskId) !== "already_running");
   for (const taskId of included) {
-    if (started.results[taskId]?.status !== "started") settled.set(taskId, null);
+    if (status.get(taskId) !== "started") settled.set(taskId, null);
   }
   reportWhenComplete();
   return started;

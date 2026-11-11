@@ -5,11 +5,7 @@ import type {
   AutomationPersistenceProvider,
   AutomationTaskRun,
 } from "./store.ts";
-import { AUTOMATION_CREDENTIAL_GROUPS, taskById } from "./tasks.ts";
-import {
-  isStatementSelectionGroup,
-  selectStatementTypes,
-} from "../statement-selection.ts";
+import { taskById } from "./tasks.ts";
 import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
 import { runCaptchaRetryCampaign } from "./captcha-retry-campaign.ts";
 import { captchaRoundExecution } from "./captcha-round-execution.ts";
@@ -35,19 +31,15 @@ export async function hydrateAutomationRuntimeState(
   return state.snapshot();
 }
 
-export type StartAutomationTaskOptions = {
-  scheduledAtUtc?: string;
-  /** Called once the run ends, with `null` when its record could not be finalized. */
-  onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
-};
+export type ClaimAutomationTaskOptions = Readonly<{ scheduledAtUtc?: string }>;
 
-export type StartedAutomationTask = {
-  taskId: string;
-  runId: string;
-  /** Set when another start had already claimed the task; this start's run options are not used. */
-  adopted?: true;
-  runtime: ReturnType<AutomationRuntimeState["snapshot"]>;
-};
+/** A task this runner claimed: its run once the row exists, and its end. */
+export type ClaimedAutomationTask = Readonly<{
+  /** Rejects when the run row could not be created; the task is released. */
+  runId: Promise<string>;
+  /** The terminal record, or `null` when the run never opened or could not be finalized. */
+  settled: Promise<AutomationTaskRun | null>;
+}>;
 
 type AutomationTask = NonNullable<ReturnType<typeof taskById>>;
 
@@ -71,19 +63,10 @@ function validateScheduledAtUtc(value: string | undefined) {
   }
 }
 
-function assertStatementSelection(task: AutomationTask, settings: AutomationSettingsStore) {
-  const group = task.credentialGroupId
-    ? AUTOMATION_CREDENTIAL_GROUPS.find((candidate) => candidate.id === task.credentialGroupId)
-    : null;
-  if (group && isStatementSelectionGroup(group)) {
-    selectStatementTypes(group, { ...settings.read(), [group.enabledKey]: true }, "strict");
-  }
-}
-
 type ClaimedTask = {
   opening: Promise<ActiveAutomationTaskRun>;
   run?: ActiveAutomationTaskRun;
-  lifecycle?: Promise<void>;
+  lifecycle?: Promise<AutomationTaskRun | null>;
 };
 
 export function createAutomationRunner(options: Readonly<{
@@ -177,7 +160,7 @@ export function createAutomationRunner(options: Readonly<{
 
   async function open(
     task: AutomationTask,
-    runOptions: StartAutomationTaskOptions,
+    claimOptions: ClaimAutomationTaskOptions,
   ): Promise<ActiveAutomationTaskRun> {
     const created = await provider.automation.createTaskRun({
       taskId: task.id,
@@ -186,7 +169,7 @@ export function createAutomationRunner(options: Readonly<{
       attempt: 1,
       maxAttempts: task.maxAttempts,
       startedAt: new Date().toISOString(),
-      scheduledAtUtc: runOptions.scheduledAtUtc,
+      scheduledAtUtc: claimOptions.scheduledAtUtc,
     });
     const row = await provider.automation.taskRunById(created.taskRunId);
     if (!row) throw new Error(`Failed to create automation task run: ${task.id}`);
@@ -221,50 +204,45 @@ export function createAutomationRunner(options: Readonly<{
   }
 
   return {
-    async start(
-      taskId: string,
-      runOptions: StartAutomationTaskOptions = {},
-    ): Promise<StartedAutomationTask> {
+    /**
+     * Claim the task and open its run. Every refusal throws before anything
+     * awaits, so two claims of one task can never both succeed.
+     */
+    claim(taskId: string, claimOptions: ClaimAutomationTaskOptions = {}): ClaimedAutomationTask {
       if (shuttingDown) throw new Error("App workflow runtime is shutting down.");
       if (holds > 0) throw new Error("Automation is paused while local data is being deleted.");
       const task = appExecutorTask(taskId);
-      validateScheduledAtUtc(runOptions.scheduledAtUtc);
-      assertStatementSelection(task, options.settings);
-      const existing = claimed.get(taskId);
-      if (existing) {
-        const run = await existing.opening;
-        return { taskId, runId: run.taskRunId, runtime: runtime.snapshot(), adopted: true };
-      }
+      validateScheduledAtUtc(claimOptions.scheduledAtUtc);
+      if (claimed.has(taskId)) throw new Error(`Automation task is already running: ${taskId}`);
       const device = sourceDeviceForTask(taskId);
       const holder = device?.lock.claim("sync");
       if (device && holder) throw new SourceDeviceBusyError(device.source, holder);
-      const entry: ClaimedTask = { opening: open(task, runOptions) };
+      const entry: ClaimedTask = { opening: open(task, claimOptions) };
       claimed.set(taskId, entry);
-      let run: ActiveAutomationTaskRun;
-      try {
-        run = await entry.opening;
-      } catch (error) {
-        release(taskId, entry);
-        throw error;
-      }
-      entry.run = run;
-      // Release before notifying so an observer may start the task again.
-      entry.lifecycle = drive(task, run).then((finished) => {
-        release(taskId, entry);
-        try {
-          runOptions.onSettled?.(taskId, finished);
-        } catch {
-          console.error("automation-task-run-settled-observer-failed");
-        }
-      });
-      return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
+      const opened = entry.opening.then(
+        (run) => {
+          entry.run = run;
+          const lifecycle = drive(task, run).then((finished) => {
+            release(taskId, entry);
+            return finished;
+          });
+          entry.lifecycle = lifecycle;
+          return { taskRunId: run.taskRunId, lifecycle };
+        },
+        (error: unknown) => {
+          release(taskId, entry);
+          throw error;
+        },
+      );
+      return {
+        runId: opened.then(({ taskRunId }) => taskRunId),
+        settled: opened.then(({ lifecycle }) => lifecycle, () => null),
+      };
     },
 
-    async current(taskId: string) {
-      const entry = claimed.get(taskId);
-      if (!entry) return null;
-      const run = await entry.opening.catch(() => null);
-      return run ? { runId: run.taskRunId, runtime: runtime.snapshot() } : null;
+    /** The run id of the task's current claim, or null when nothing holds it. */
+    claimedRunId(taskId: string): Promise<string> | null {
+      return claimed.get(taskId)?.opening.then((run) => run.taskRunId) ?? null;
     },
 
     activeRun,

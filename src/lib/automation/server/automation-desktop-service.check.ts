@@ -5,13 +5,12 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AutomationRuntimeSnapshot } from "../../desktop/api.ts";
 import { DataVersionMismatchError, type DataVersionSnapshot } from "../../shared-shell/data-version.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationRuntime, StartAutomationTasksOptions } from "./automation-runtime.ts";
 import {
   createAutomationDesktopService,
   type AutomationDesktopServiceDeps,
 } from "./automation-desktop-service.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { StartAutomationTaskOptions } from "./runner.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { AutomationCredentialStore } from "./config-files.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
@@ -288,16 +287,9 @@ test("a sync the person starts reports its sources once they end, and exchange r
   const runtime = {
     snapshot: () => state.snapshot(),
     subscribe: state.subscribe,
-    run: async (taskId: string, options: StartAutomationTaskOptions = {}) => {
+    start: async (taskIds: string[], options: StartAutomationTasksOptions = {}) => {
       if (options.onSettled) settled.push(options.onSettled);
-      return { started: taskId, runId: "run", runtime: state.snapshot() };
-    },
-    runMany: async (taskIds: string[], options: StartAutomationTaskOptions = {}) => {
-      if (options.onSettled) settled.push(options.onSettled);
-      return {
-        started: taskIds,
-        results: Object.fromEntries(taskIds.map((taskId) => [taskId, { status: "started" as const, runId: taskId }])),
-      };
+      return taskIds.map((taskId) => ({ taskId, status: "started" as const, runId: taskId }));
     },
   } as unknown as AutomationRuntime;
   const reports: string[][] = [];
@@ -310,7 +302,8 @@ test("a sync the person starts reports its sources once they end, and exchange r
   await service.run("sync-tdcc");
   settled.shift()!("sync-tdcc", finished("sync-tdcc"));
   await service.run("exchange-rates");
-  assert.equal(settled.length, 0, "exchange rates are not a source");
+  settled.shift()!("exchange-rates", finished("exchange-rates"));
+  assert.equal(reports.length, 1, "exchange rates are not a source");
 
   await service.runMany(["sync-tdcc", "fubon-all-statements"]);
   const onSettled = settled.shift()!;
@@ -328,7 +321,7 @@ test("a single source the person could not start is reported as not synced", asy
   const runtime = {
     snapshot: () => state.snapshot(),
     subscribe: state.subscribe,
-    run: async () => { throw new Error("device busy"); },
+    start: async (taskIds: string[]) => taskIds.map((taskId) => ({ taskId, status: "error" as const, error: new Error("device busy") })),
   } as unknown as AutomationRuntime;
   const reports: unknown[] = [];
   const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });

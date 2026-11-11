@@ -1,6 +1,8 @@
 import type {
   AutomationCredentialStateDto,
   AutomationCredentialStatus,
+  AutomationRunManyResult,
+  AutomationRunManyTaskResult,
   AutomationRuntimeSnapshot,
   NotificationTarget,
 } from "../../desktop/api.ts";
@@ -16,7 +18,7 @@ import {
 } from "../runtime-invariants.ts";
 import { isValidExternalPrerequisiteMetadata } from "../external-prerequisite.ts";
 import { isStatementSelectionGroup, selectStatementTypes } from "../statement-selection.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationRuntime, AutomationStartResult } from "./automation-runtime.ts";
 import {
   applyAutomationCredentialState,
   CERTIFICATE_FILE_CREDENTIAL_KEYS,
@@ -32,7 +34,7 @@ import {
   CERTIFICATE_FILE_EXTENSIONS,
   validateCertificateFilePath,
 } from "./credential-file.ts";
-import { isSourceTask, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
+import { runAndSummarize, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds } from "./scheduled-collection.ts";
 import type { eraseSignInDetails } from "./sign-in-erasure.ts";
 import type { AutomationPersistenceProvider, AutomationTaskHistoryRow } from "./store.ts";
@@ -115,6 +117,25 @@ export type AutomationDesktopServiceDeps<Owner> = Readonly<{
   onAutomationRuntimeFatal?: (details: { code: string; stage: string }) => void;
   log?: AutomationDesktopLog;
 }>;
+
+/** The renderer's shape for a batch start. */
+function runManyResult(results: readonly AutomationStartResult[]): AutomationRunManyResult {
+  const errors: Record<string, string> = {};
+  const byTask: Record<string, AutomationRunManyTaskResult> = {};
+  for (const result of results) {
+    if (result.status === "error") {
+      errors[result.taskId] = result.error.message;
+      byTask[result.taskId] = { status: "error", error: result.error.message };
+    } else {
+      byTask[result.taskId] = { status: result.status, runId: result.runId };
+    }
+  }
+  return {
+    started: results.flatMap((result) => (result.status === "started" ? [result.taskId] : [])),
+    results: byTask,
+    ...(Object.keys(errors).length ? { errors } : {}),
+  };
+}
 
 function registrationSource(value: unknown): DeviceRegistrationSource {
   const source = typeof value === "string" ? deviceRegistrationSource(value) : null;
@@ -264,9 +285,9 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     // The details block reports a retryable, user-facing error if this fails.
   });
   const unsubscribeFromRuntime = runtime.subscribe((snapshot) => deps.publishRuntimeChanged(snapshot));
-  const runManual = (taskIds: string[]) => {
+  const runManual = (taskIds: readonly string[]) => {
     const onFinished = deps.onManualCollectionFinished;
-    return onFinished ? runAndSummarize(runtime, taskIds, {}, onFinished) : runtime.runMany(taskIds);
+    return onFinished ? runAndSummarize(runtime, taskIds, {}, onFinished) : runtime.start(taskIds);
   };
   const knownTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
 
@@ -356,18 +377,14 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     },
     async run(taskId: string) {
       await ensureAutomationRuntimeReady("automation-run");
-      const onFinished = deps.onManualCollectionFinished;
-      if (!onFinished || !isSourceTask(taskId)) return runtime.run(taskId);
-      try {
-        return await runtime.run(taskId, { onSettled: (_taskId, run) => onFinished([{ taskId, run }]) });
-      } catch (error) {
-        onFinished([{ taskId, run: null }]);
-        throw error;
-      }
+      const [result] = await runManual([taskId]);
+      if (!result) throw new Error(`Automation task did not start: ${taskId}`);
+      if (result.status === "error") throw result.error;
+      return { started: taskId, runId: result.runId, runtime: runtime.snapshot() };
     },
     async runMany(taskIds: string[]) {
       await ensureAutomationRuntimeReady("automation-run-many");
-      return runManual(taskIds);
+      return runManyResult(await runManual(taskIds));
     },
     cancel: (taskId: string, expectedRunId?: string) => runtime.cancel(taskId, expectedRunId),
     forceTerminate: (taskId: string, expectedRunId?: string) => runtime.forceTerminate(taskId, expectedRunId),
@@ -416,7 +433,7 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     async collectAllSources() {
       await ensureAutomationRuntimeReady("collect-all-sources");
       const model = await runtime.desktopModel();
-      return runManual(scheduledCollectionTaskIds(model.automation));
+      return runManyResult(await runManual(scheduledCollectionTaskIds(model.automation)));
     },
     /** Stops publishing runtime changes. */
     close() {

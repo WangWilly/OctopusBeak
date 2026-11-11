@@ -71,7 +71,7 @@ function harness() {
   return {
     runs, entered, releases, provider, execute, runner,
     get peak() { return peak; },
-    start: (id: string) => runner.start(id),
+    start: (id: string) => runner.claim(id).runId,
   };
 }
 async function tick() { await new Promise<void>((resolve) => setImmediate(resolve)); }

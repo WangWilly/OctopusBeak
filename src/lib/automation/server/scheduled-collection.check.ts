@@ -7,7 +7,7 @@ import {
   type UserAction,
 } from "../workflow-failures.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationRuntime, AutomationStartResult, StartAutomationTasksOptions } from "./automation-runtime.ts";
 import { collectionNotification, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds, startScheduledCollection } from "./scheduled-collection.ts";
 import type { AutomationTaskRun } from "./store.ts";
@@ -176,24 +176,18 @@ test("scheduled collection reports once, after every started source ends", async
         ],
       },
     }),
-    runMany: async (
-      taskIds: string[],
-      options: { scheduledAtUtc?: string; onSettled?: (taskId: string, run: AutomationTaskRun | null) => void },
-    ) => {
+    start: async (taskIds: string[], options: StartAutomationTasksOptions) => {
       assert.deepEqual(taskIds, ["sync-tdcc", "fubon-all-statements", "sinopac-statements", "linebank-statements"]);
       assert.equal(options.scheduledAtUtc, "2026-07-14T23:00:00.000Z");
-      // One source ends before runMany returns; another ends later.
+      // One source ends before start returns; another ends later.
       options.onSettled!("sync-tdcc", run({ status: "completed", appWorkflowOutcome: null }));
       settledLater.push(() => options.onSettled!("fubon-all-statements", null));
-      return {
-        started: ["sync-tdcc", "fubon-all-statements"],
-        results: {
-          "sync-tdcc": { status: "started" as const, runId: "a" },
-          "fubon-all-statements": { status: "started" as const, runId: "b" },
-          "sinopac-statements": { status: "already_running" as const, runId: "c" },
-          "linebank-statements": { status: "error" as const, error: "could not start" },
-        },
-      };
+      return [
+        { taskId: "sync-tdcc", status: "started", runId: "a" },
+        { taskId: "fubon-all-statements", status: "started", runId: "b" },
+        { taskId: "sinopac-statements", status: "already_running", runId: "c" },
+        { taskId: "linebank-statements", status: "error", error: new Error("could not start") },
+      ];
     },
   } as unknown as AutomationRuntime;
 
@@ -248,26 +242,20 @@ test("runs the person cancelled or the App stopped are left out of the summary",
 test("a batch leaves out exchange rates and tasks it did not start", async () => {
   const reports: CollectionResult[][] = [];
   const runtime = {
-    runMany: async (
-      taskIds: string[],
-      options: { onSettled?: (taskId: string, run: AutomationTaskRun | null) => void },
-    ) => {
+    start: async (taskIds: readonly string[], options: StartAutomationTasksOptions = {}): Promise<AutomationStartResult[]> => {
       assert.deepEqual(taskIds, ["exchange-rates", "sync-tdcc"]);
       options.onSettled!("exchange-rates", run({ taskId: "exchange-rates", status: "completed" }));
       options.onSettled!("sync-tdcc", run({ status: "completed", appWorkflowOutcome: null }));
-      return {
-        started: ["exchange-rates", "sync-tdcc"],
-        results: {
-          "exchange-rates": { status: "started" as const, runId: "x" },
-          "sync-tdcc": { status: "started" as const, runId: "a" },
-        },
-      };
+      return [
+        { taskId: "exchange-rates", status: "started", runId: "x" },
+        { taskId: "sync-tdcc", status: "started", runId: "a" },
+      ];
     },
   };
   await runAndSummarize(runtime, ["exchange-rates", "sync-tdcc"], {}, (results) => reports.push(results));
   assert.deepEqual(reports.map((results) => results.map(({ taskId }) => taskId)), [["sync-tdcc"]]);
 
-  const none = { runMany: async () => ({ started: [], results: {} }) };
+  const none = { start: async () => [] };
   await runAndSummarize(none, ["exchange-rates"], {}, (results) => reports.push(results));
   assert.equal(reports.length, 1, "a batch without a source reports nothing");
 });

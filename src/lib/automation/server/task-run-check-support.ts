@@ -16,6 +16,7 @@ import {
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
 import {
@@ -71,6 +72,15 @@ export function runnerHostForCheck(directory = ".") {
     settings: settingsStoreForCheck(join(directory, AUTOMATION_SETTINGS_FILE)),
     userDataDirectory: resolve(directory),
   };
+}
+
+/** Start one task through the runtime's admission; `settled` is its terminal record. */
+export async function startForCheck(runtime: Pick<AutomationRuntime, "start">, taskId: string) {
+  let settle!: (run: AutomationTaskRun | null) => void;
+  const settled = new Promise<AutomationTaskRun | null>((resolve) => { settle = resolve; });
+  const [result] = await runtime.start([taskId], { onSettled: (_taskId, run) => settle(run) });
+  if (result?.status !== "started") throw result?.status === "error" ? result.error : new Error(`${taskId} did not start`);
+  return { runId: result.runId, settled };
 }
 
 /** By default the settings file in whatever directory the check is in when it reads. */
