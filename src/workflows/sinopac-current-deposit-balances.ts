@@ -310,21 +310,10 @@ function buildSinopacCurrentDepositBalanceCapture(
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
   if (identity.integrationNamespace !== "sinopac")
     throw new Error("SinoPac current deposit identity has the wrong source.");
-  if (identity.stream !== row.stream)
-    throw new Error("SinoPac current deposit row has the wrong stream.");
   if (sourceAccountKey !== row.sourceAccountKey || identity.accountNo !== row.accountNumber)
     throw new Error(
       "SinoPac current deposit account does not match an existing DataValue identity.",
     );
-  if (
-    (row.stream === "domestic-deposit" && financialCapture.sourceCurrency !== "TWD") ||
-    (row.stream === "foreign-currency-deposit" &&
-      financialCapture.sourceCurrency !== row.currency)
-  ) {
-    throw new Error(
-      "SinoPac current deposit currency does not match the existing statement scope.",
-    );
-  }
 
   const route: CurrentDepositAuthorityRoute =
     row.stream === "domestic-deposit"

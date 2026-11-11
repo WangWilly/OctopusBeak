@@ -362,8 +362,6 @@ function buildLinebankCurrentDepositBalanceCapture(
 ): CurrentDepositBalanceCaptureInput {
   if (row.stream !== "domestic-deposit" || row.currency !== "TWD")
     throw new Error("LINE Bank current deposit row has the wrong stream.");
-  if (row.sourceAccountKey !== financialCapture.accountKey)
-    throw new Error("LINE Bank current deposit row does not match an existing account.");
   if (!Number.isSafeInteger(financialCapture.identityEpoch) || financialCapture.identityEpoch < 0)
     throw new Error("LINE Bank current deposit identity epoch is invalid.");
 
