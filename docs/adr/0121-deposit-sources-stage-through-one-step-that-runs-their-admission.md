@@ -4,6 +4,8 @@ Status: accepted
 
 Refined by [ADR 0125](0125-a-deposit-commits-its-own-source-evidence.md): every deposit source commits with the deposit command, and `withSource` is removed.
 
+Refined by [ADR 0130](0130-a-deposit-admission-returns-its-verdict.md): a source's admission returns the verdict its deposit decision carries.
+
 Extends [ADR 0119](0119-credit-card-issuers-stage-through-one-step.md) to deposit sources. Holds [ADR 0106](0106-the-product-handle-decides-what-is-a-validation-failure.md) and [ADR 0108](0108-a-broken-credit-card-current-snapshot-fails-the-card-capture.md) for every deposit source by structure.
 
 ## Context

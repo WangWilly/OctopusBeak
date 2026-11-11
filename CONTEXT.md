@@ -315,6 +315,10 @@ _Avoid_: Mutable assertion status, financial event, duplicate unchanged assertio
 The integration contract and sync preflight must resolve and validate every required candidate before it can become a Canonical Assertion; an indeterminate, unsupported, or mutually incompatible candidate cancels the attempted Source Capture, emits an operational error, and does not proceed into canonical storage or projection. Required canonical classifications never use `unknown`, while an unsupported optional fact is omitted rather than represented by an unknown assertion.
 _Avoid_: Persisted conflict candidate, last-write-wins, silent fallback
 
+**Deposit verdict**:
+What a deposit source's financial admission decides for one Source Capture: commit it as a deposit capture, or commit only its source evidence because the source cannot prove the capture's financial facts. The admission returns the verdict and owns every rule that chooses between the two, such as a capture with no rows or a capture blocked only by unproven authority; a capture it may commit neither way is refused with its diagnostics instead of returned (ADR 0130).
+_Avoid_: Admission status, blocked result, workflow source-only fallback
+
 **Canonical financial commit**:
 The indivisible visibility boundary that admits one complete Source Capture and makes its Source Records, canonical identities and facts, Assertion lineage, and affected current projections durable together. A failed admission, processing run, or Contract Purge exposes none of its partial financial effects; Sign-in Details, Integration configuration, and non-financial preferences are operational state outside this boundary.
 _Avoid_: Partial Capture commit, eventually consistent projection, cross-store financial write

@@ -4,6 +4,8 @@ Status: accepted
 
 Refined by [ADR 0126](0126-cathay-stages-through-the-deposit-step.md): Cathay commits with the deposit command too, and `financial.mixed.commit` is removed.
 
+Refined by [ADR 0130](0130-a-deposit-admission-returns-its-verdict.md): Fubon's partial admission runs inside its financial admission, not in the workflow.
+
 Refines [ADR 0121](0121-deposit-sources-stage-through-one-step-that-runs-their-admission.md). Settles the unified deposit command that ADR 0121 deferred. Decided in [issue 413](https://github.com/WangWilly/OctopusBeak/issues/413).
 
 ## Context
