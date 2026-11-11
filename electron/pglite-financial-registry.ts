@@ -152,14 +152,3 @@ export function createPGliteFinancialLocalPort(registry: PGliteFinancialRegistry
     ) => Promise<never>)(args, options),
   });
 }
-
-/** Build the version's pairing index ahead of a click, never a full Spending read. */
-export async function prewarmPGlitePairingCandidates(
-  financial: PGliteFinancialPort,
-  input: Readonly<{ dataVersion: number }>,
-) {
-  const currentVersion = await financial.request("financial.spending.prewarmPairing", [input.dataVersion]);
-  return currentVersion === input.dataVersion
-    ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
-    : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
-}

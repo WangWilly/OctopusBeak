@@ -1,6 +1,5 @@
 import type { SpendingCandidatePageRequest, SpendingPairingPrewarmInput } from "../model.ts";
 import type { PGliteFinancialPort } from "../../pglite-rpc/pglite-financial-contracts.ts";
-import { prewarmPGlitePairingCandidates } from "../../../../electron/pglite-financial-registry.ts";
 
 /** Everything the spending desktop service reaches outside itself. */
 export type SpendingDesktopServiceDeps = Readonly<{
@@ -33,7 +32,12 @@ export function createSpendingDesktopService({ financial }: SpendingDesktopServi
       controller.abort();
       return true;
     },
-    prewarmPairingCandidates: (input: SpendingPairingPrewarmInput) =>
-      prewarmPGlitePairingCandidates(financial, input),
+    /** Build the version's pairing index ahead of a click, never a full Spending read. */
+    async prewarmPairingCandidates(input: SpendingPairingPrewarmInput) {
+      const currentVersion = await financial.request("financial.spending.prewarmPairing", [input.dataVersion]);
+      return currentVersion === input.dataVersion
+        ? { status: "ready" as const, dataVersion: input.dataVersion, reused: false }
+        : { status: "stale" as const, dataVersion: currentVersion, requestedVersion: input.dataVersion };
+    },
   };
 }
