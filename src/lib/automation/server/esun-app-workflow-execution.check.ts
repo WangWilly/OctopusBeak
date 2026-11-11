@@ -13,8 +13,7 @@ import type { WorkflowRunEvent } from "../run-event.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -160,18 +159,6 @@ function fakePage(now: Date, options: { signInWithCredentials?: boolean } = {}) 
   };
 }
 
-async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
-  const created = await provider.automation.createTaskRun({
-    taskId: "esun-credit-card-statements",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  return created.taskRunId;
-}
-
 test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit", async () => {
   const task = taskById("esun-credit-card-statements");
   assert.ok(task);
@@ -223,7 +210,6 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
   let observedStartUrl: string | undefined;
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const financialCommit: WorkflowFinancialCommitPort = {
       async execute(items) {
         const received = [];
@@ -243,19 +229,19 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         return run(hostPage.page);
       },
     };
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
-      workerPorts: {
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browserPort;
-      },
-    });
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browserPort;
+        },
+      }),
+      environment: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({ events: run?.events.map(({ stage, code, completed, total }) => [stage, code, completed, total]), committed: committed.length }));
@@ -273,21 +259,19 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     assert.ok(run?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(root), [], "typed App dispatch writes no source or output files");
 
-    const cancelRunId = await createRun(provider);
     const cancelPage = fakePage(now);
     const cancelBrowser: WorkflowBrowserPort = {
       async withPage(runPage) {
         return runPage(cancelPage.page);
       },
     };
-    let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancelOnCollectionStart = new Proxy(provider.automation, {
       get(target, key) {
         if (key === "appendRunEvent") {
           return async (event: WorkflowRunEvent) => {
             await target.appendRunEvent(event);
             if (event.code === "collection-started") {
-              void cancellationRun?.requestStop("cancelled");
+              void cancellationRuntime.cancel(task.id);
               await new Promise((resolve) => setTimeout(resolve, 75));
             }
           };
@@ -296,21 +280,18 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const cancelledResult = await executeTaskRunForCheck(task, cancelOnCollectionStart, {
-      taskRunId: cancelRunId,
-      launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
-      onRunOpened: (active) => {
-        cancellationRun = active;
-      },
-      workerPorts: {
+    const cancellationRuntime = runtimeForCheck({ ...provider, automation: cancelOnCollectionStart }, {
+      executionHost: inProcessCheckHost({
         financialCommit,
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: () => cancelBrowser,
+        browser: () => cancelBrowser,
+      }),
+      environment: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
     });
+    const cancelledResult = await runForCheck(cancellationRuntime, task.id);
     assert.equal(cancelledResult.status, "cancelled");
-    assert.equal((await provider.automation.taskRunById(cancelRunId))?.status, "cancelled");
+    assert.equal((await provider.automation.taskRunById(cancelledResult.taskRunId))?.status, "cancelled");
     assert.equal(committed.length, 1, "cancelled E.SUN run does not reach financial commit");
     assert.deepEqual(await readdir(root), []);
   } finally {
@@ -332,18 +313,17 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
   const hostPage = fakePage(now, { signInWithCredentials: false });
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     let commits = 0;
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      launchEnv: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
-      workerPorts: {
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: inProcessCheckHost({
         financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
         now: () => now.toISOString(),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(hostPage.page); } }),
-    });
+        browser: () => ({ async withPage(run) { return run(hostPage.page); } }),
+      }),
+      environment: { ...testEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const taskRunId = result.taskRunId;
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "failed");
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");

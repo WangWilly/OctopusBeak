@@ -11,8 +11,12 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonical/current-deposit-route-contracts.ts";
 import { taskById } from "./tasks.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck } from "./task-run-check-support.ts";
+import {
+  executeRoundForCheck,
+  inProcessCheckHost,
+  runForCheck,
+  runtimeForCheck,
+} from "./task-run-check-support.ts";
 import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
@@ -256,8 +260,15 @@ test("Post App task dispatches the typed provider with human assistance, complet
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
+    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
+      executionHost: inProcessCheckHost({
+        financialCommit: commitPort,
+        now: () => "2026-09-25T12:00:00.000Z",
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browser;
+        },
+      }),
       async assistanceRoute(request) {
         assert.equal(request.contract.stageId, "ipost-login-captcha");
         assert.equal(request.contract.targets[0]?.id, "captcha-input");
@@ -266,14 +277,6 @@ test("Post App task dispatches the typed provider with human assistance, complet
       },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
-        financialCommit: commitPort,
-        now: () => "2026-09-25T12:00:00.000Z",
-      },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browser;
-      },
     });
 
     const run = await provider.automation.taskRunById(taskRunId);
@@ -319,15 +322,13 @@ test("Post App dispatch names each unread statement's failure before commit", as
       [{ incomplete: true }, "source-validation-failed"],
       [{ statementTimeout: true }, "source-collection-failed"],
     ] as const) {
-      const taskRunId = await createRun(provider);
       const page = fakePostPage({ signedIn: true, ...source });
-      const result = await executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
-        launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      const result = await runForCheck(runtimeForCheck(provider, {
+        executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
+        environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
-        workerPorts: { financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) },
-        workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
-      });
+      }), task.id);
+      const taskRunId = result.taskRunId;
       assert.equal(result.status, "failed");
       assert.equal(committed.length, 0);
       const run = await provider.automation.taskRunById(taskRunId);
@@ -348,26 +349,18 @@ test("Post App dispatch cancellation during human assistance does not collect or
   const previousDirectory = process.cwd();
   const store = new PGliteStore(await createTestPGlite("operational"));
   const committed: unknown[][] = [];
-  let cancellationRun: ActiveAutomationTaskRun | undefined;
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
     const taskRunId = await createRun(provider);
     const page = fakePostPage();
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      assistanceRoute: () => {
-        void cancellationRun?.requestStop("cancelled");
+    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
+      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
+      assistanceRoute: (request) => {
+        void request.run.requestStop("cancelled");
       },
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      onRunOpened: (active) => {
-        cancellationRun = active;
-      },
-      workerPorts: {
-        financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
     });
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
@@ -391,18 +384,12 @@ test("Post App dispatch without a verification route fails with a configuration 
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const page = fakePostPage();
-    await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
+    const { run } = await executeRoundForCheck(task, provider.automation, await createRun(provider), {
+      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
       launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: {
-        financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2),
-      },
-      workflowBrowserPort: () => ({ async withPage(run) { return run(page); } }),
     });
-    const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
     assert.ok(run?.events.some((event) => event.signal === "solver-route-unavailable"));
   } finally {

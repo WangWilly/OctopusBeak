@@ -89,23 +89,22 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
       });
     });
     await runAppWorkflowWorker({
-      port: channel.port1,
-      workerData: {
-        protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-        workflowId: "sync-maicoin",
-        taskRunId: "maicoin-worker-run",
-        input: {
-          credentials: {
-            accessKey: "test-access",
-            secretKey: "test-secret",
-            subAccount: "main",
-          },
-        },
-        pgliteRpc: {
-          endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-          token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+      workflowId: "sync-maicoin",
+      taskRunId: "maicoin-worker-run",
+      input: {
+        credentials: {
+          accessKey: "test-access",
+          secretKey: "test-secret",
+          subAccount: "main",
         },
       },
+      pgliteRpc: {
+        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+      },
+    }, {
+      port: channel.port1,
     });
     const result = await terminal;
     assert.equal(result.kind, "completed", JSON.stringify(result));

@@ -1,12 +1,9 @@
 import { createTdccSecretStore } from "./tdcc-secret-store.ts";
-import { createTdccSessionHost, tdccSessionHostCalls, type TdccSessionHost } from "./tdcc-session-host.ts";
+import { createTdccSessionHost, tdccSessionHostCalls } from "./tdcc-session-host.ts";
 import type { ActiveAutomationTaskRun, TaskRunReport, WorkflowExecution } from "./active-task-run.ts";
 import { launchedCollectionScope } from "./collection-scope.ts";
 import type { AutomationTaskProgress } from "../types.ts";
-import type {
-  WorkflowBrowserPort,
-  WorkflowProgressStatementType,
-} from "../workflow-executor.ts";
+import type { WorkflowProgressStatementType } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
 import {
   projectWorkflowRunProgress,
@@ -21,20 +18,14 @@ import {
   buildWorkflowFailureDiagnostic,
 } from "./workflow-failure-diagnostics.ts";
 import { rememberFailureDiagnostic } from "./error-report.ts";
-import {
-  createAppWorkflowBrowserPort,
-  type AppWorkflowBrowserConnection,
-  type AppWorkflowBrowserHostInput,
-} from "./app-browser-host.ts";
+import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
+import type { ExecutionHost } from "./execution-host.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 import {
   createAppWorkflowHumanAssistancePort,
   type HumanAssistanceRoute,
 } from "./app-workflow-human-assistance.ts";
-import {
-  runSupervisedAppWorkflow,
-  type RunSupervisedAppWorkflowOptions,
-} from "./app-workflow-worker-supervisor.ts";
+import { runSupervisedAppWorkflow } from "./app-workflow-worker-supervisor.ts";
 import { workflowNeedsPgliteRpc } from "./app-workflow-registry.ts";
 import { previewStructureReports, type PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 import type { TaskRunPlan } from "./task-run-plan.ts";
@@ -45,7 +36,7 @@ type ExecutionContext = Readonly<{
   run: ActiveAutomationTaskRun;
   execution: WorkflowExecution;
   round: WorkflowExecutionRound;
-  seams: AutomationTaskExecutionSeams;
+  host: ExecutionHost;
 }>;
 
 /** What the CAPTCHA Retry Campaign tells one Workflow execution about its round. */
@@ -60,19 +51,12 @@ export type WorkflowExecutionRound = Readonly<{
   assistanceRoute?: HumanAssistanceRoute;
 }>;
 
-/** Test seams of a Workflow execution; production leaves each at its default. */
-export type AutomationTaskExecutionSeams = Readonly<{
-  /** The host side of a TDCC run's session port. Production reads credentials.json. */
-  createTdccSessionHost?: () => TdccSessionHost;
-  /** The supervised App workflow worker. Production uses Worker. */
-  appWorkflowWorkerFactory?: RunSupervisedAppWorkflowOptions["workerFactory"];
-  /** Proves that the worker receives the active host descriptor. */
-  appWorkflowBrowserConnectionForRun?: (
-    taskRunId: string,
-  ) => AppWorkflowBrowserConnection | null;
-  /** The browser a browser workflow runs in. Production opens the App browser host. */
-  workflowBrowserPort?: (input: AppWorkflowBrowserHostInput) => WorkflowBrowserPort;
-}>;
+/** Execute one workflow round of an Active Automation Task Run and report its outcome. */
+export type TaskRunExecution = (
+  plan: TaskRunPlan,
+  run: ActiveAutomationTaskRun,
+  round: WorkflowExecutionRound,
+) => Promise<TaskRunReport>;
 
 function createWorkflowProgressReporter(context: ExecutionContext, input: unknown) {
   let progress = context.run.current().progress ?? indeterminateProgress(context.run.current().attempt);
@@ -165,13 +149,8 @@ function createBrowserRuntimeIdentityRecorder(
   };
 }
 
-function tdccSessionHost(plan: TaskRunPlan, seams: AutomationTaskExecutionSeams): TdccSessionHost {
-  if (seams.createTdccSessionHost) return seams.createTdccSessionHost();
-  return createTdccSessionHost(createTdccSecretStore(plan.credentials));
-}
-
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
-  const { plan, seams } = context;
+  const { plan, host } = context;
   const { task, workflowId, launchEnv } = plan;
   const { definition, runtime } = plan.registration;
 
@@ -196,9 +175,9 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
     const input = plan.registration.inputFromEnvironment(launchEnv);
     const progressReporter = createWorkflowProgressReporter(context, input);
     const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime) ? plan.pgliteRpc : undefined;
-    const browser = runtime.kind === "nonbrowser"
+    const page = runtime.kind === "nonbrowser"
       ? undefined
-      : (seams.workflowBrowserPort ?? createAppWorkflowBrowserPort)({
+      : {
         taskId: task.id,
         taskRunId: context.run.taskRunId,
         signal,
@@ -209,19 +188,18 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
         onRuntimeIdentity: browserRuntimeIdentity.record,
         execution: context.execution,
         nativeDialogOwner: "worker",
-      });
+      } satisfies AppWorkflowBrowserHostInput;
     const humanAssistance = createAppWorkflowHumanAssistancePort({
       run: context.run,
       execution: context.execution,
     });
 
-    const runWorker = async (browserConnection?: AppWorkflowBrowserConnection) => {
+    const runWorker = async () => {
       signal.throwIfAborted();
       return await runSupervisedAppWorkflow({
         runId: context.run.taskRunId,
         workflowId,
         input,
-        ...(browserConnection ? { browserConnection } : {}),
         ...(pgliteRpc ? { pgliteRpc } : {}),
         signal,
         forceSignal,
@@ -235,23 +213,15 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
               return { status: "failed" };
             }
           },
-          ...(definition.requiresTdcc ? tdccSessionHostCalls(tdccSessionHost(plan, seams)) : {}),
+          ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
-        ...(seams.appWorkflowWorkerFactory
-          ? { workerFactory: seams.appWorkflowWorkerFactory }
-          : {}),
+        launchWorker: (start) => host.launchWorker(start, context.execution),
       });
     };
-    const outcome = browser
-      ? await browser.withPage(async () => {
+    const outcome = page
+      ? await host.withPage(page, async () => {
         await browserRuntimeIdentity.flush();
-        const browserConnection = seams.appWorkflowBrowserConnectionForRun
-          ? seams.appWorkflowBrowserConnectionForRun(context.run.taskRunId)
-          : context.execution.browserConnection();
-        if (!browserConnection) {
-          throw new Error("The App browser worker connection is unavailable for this active run.");
-        }
-        return await runWorker(browserConnection);
+        return await runWorker();
       })
       : await runWorker();
     workerOutcome = outcome;
@@ -310,29 +280,26 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
 
 const CANCELLED: TaskRunReport = { summary: null, failure: { code: "cancelled", proven: true } };
 
-/** Execute one workflow round of an Active Automation Task Run and report its outcome. */
-export async function runAutomationTaskExecution(
-  plan: TaskRunPlan,
-  run: ActiveAutomationTaskRun,
-  round: WorkflowExecutionRound,
-  seams: AutomationTaskExecutionSeams = {},
-): Promise<TaskRunReport> {
-  if (run.signal.aborted) return CANCELLED;
-  const { attempt } = round;
-  const current = run.current();
-  const started = await run.transition("running", {
-    attempt,
-    maxAttempts: round.maxAttempts,
-    progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
-  });
-  if (!started) return CANCELLED;
-  const execution = run.beginExecution(round.executionId, {
-    assistanceRoute: round.assistanceRoute,
-    collectionScope: launchedCollectionScope(plan.task, plan.launchEnv),
-  });
-  try {
-    return await executeSupervisedAppWorkflow({ plan, run, execution, round, seams });
-  } finally {
-    execution.end();
-  }
+/** The Workflow execution whose rounds get their page and worker from `host`. */
+export function createTaskRunExecution(host: ExecutionHost): TaskRunExecution {
+  return async (plan, run, round) => {
+    if (run.signal.aborted) return CANCELLED;
+    const { attempt } = round;
+    const current = run.current();
+    const started = await run.transition("running", {
+      attempt,
+      maxAttempts: round.maxAttempts,
+      progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
+    });
+    if (!started) return CANCELLED;
+    const execution = run.beginExecution(round.executionId, {
+      assistanceRoute: round.assistanceRoute,
+      collectionScope: launchedCollectionScope(plan.task, plan.launchEnv),
+    });
+    try {
+      return await executeSupervisedAppWorkflow({ plan, run, execution, round, host });
+    } finally {
+      execution.end();
+    }
+  };
 }

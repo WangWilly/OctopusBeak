@@ -1,6 +1,7 @@
 import { isWorkflowRunResult, type WorkflowRunResult } from "../workflow-run-result.ts";
 import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { TYPED_WORKFLOW_ERROR_CODES } from "../workflow-failures.ts";
+import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
 import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
 import {
   sanitizeSafeWorkflowFailureError,
@@ -30,7 +31,6 @@ export type AppWorkflowWorkerStart = Readonly<{
   workflowId: string;
   taskRunId: string;
   input: unknown;
-  browserConnection?: Readonly<{ endpoint: string; targetId: string }>;
   pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
@@ -141,7 +141,7 @@ export function boundedJson(value: unknown): boolean {
   }
 }
 
-function validLoopbackConnection(value: unknown): value is AppWorkflowWorkerStart["browserConnection"] {
+function validLoopbackConnection(value: unknown): value is AppWorkflowBrowserConnection {
   if (!isRecord(value) || !exactKeys(value, ["endpoint", "targetId"])) return false;
   if (typeof value.endpoint !== "string" || typeof value.targetId !== "string") return false;
   try {
@@ -169,10 +169,15 @@ function validPGliteRpc(value: unknown): value is NonNullable<AppWorkflowWorkerS
     && PGLITE_TOKEN.test(value.token);
 }
 
+export function parseAppWorkflowBrowserConnection(value: unknown): AppWorkflowBrowserConnection {
+  if (!validLoopbackConnection(value)) invalid();
+  return value;
+}
+
 export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerStart {
   if (!isRecord(value) || !exactKeys(value, [
     "protocolVersion", "workflowId", "taskRunId", "input",
-  ], ["browserConnection", "pgliteRpc"])) invalid();
+  ], ["pgliteRpc"])) invalid();
   // An unregistered workflow has no runtime to check the start against.
   const runtime = typeof value.workflowId === "string"
     ? appWorkflowRegistration(value.workflowId)?.runtime
@@ -186,7 +191,6 @@ export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerSt
     || typeof value.taskRunId !== "string"
     || !SAFE_ID.test(value.taskRunId)
     || !Object.hasOwn(value, "input")
-    || (nonbrowser ? Object.hasOwn(value, "browserConnection") : !validLoopbackConnection(value.browserConnection))
     || (nonbrowser && !Object.hasOwn(value, "pgliteRpc"))
     || (Object.hasOwn(value, "pgliteRpc") && !validPGliteRpc(value.pgliteRpc))
     || !boundedJson(value)

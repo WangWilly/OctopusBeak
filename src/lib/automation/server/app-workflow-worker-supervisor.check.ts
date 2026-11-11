@@ -2,11 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import test from "node:test";
-import type { WorkerOptions } from "node:worker_threads";
-import type {
-  AppWorkflowWorkerHandle,
-  RunSupervisedAppWorkflowOptions,
-} from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { RunSupervisedAppWorkflowOptions } from "./app-workflow-worker-supervisor.ts";
 import { runSupervisedAppWorkflow } from "./app-workflow-worker-supervisor.ts";
 import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
@@ -17,11 +14,10 @@ import { tdccSessionHostCalls } from "./tdcc-session-host.ts";
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
 const FIXTURE_WORKFLOW_ID = "ctbc-statements";
 
-const base: Omit<RunSupervisedAppWorkflowOptions, "workerPath" | "workerFactory"> = {
+const base: Omit<RunSupervisedAppWorkflowOptions, "launchWorker"> = {
   runId: "supervised-run-1",
   workflowId: FIXTURE_WORKFLOW_ID,
   input: { credential: "secret-test-value" },
-  browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
   signal: new AbortController().signal,
   hostCalls: {
     event: async () => undefined,
@@ -40,21 +36,9 @@ function reply(callId: string, result: unknown = null) {
   return { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "reply", callId, ok: true, result } as const;
 }
 
-class FakeDataStream extends EventEmitter {
-  resumed = false;
-  resume() { this.resumed = true; return this; }
-}
-
 class FakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly sent: AppWorkflowWorkerInboundFrame[] = [];
   terminated = false;
-  readonly stdout = new FakeDataStream();
-  readonly stderr = new FakeDataStream();
-  readonly workerData: WorkerOptions["workerData"];
-  constructor(workerData: WorkerOptions["workerData"]) {
-    super();
-    this.workerData = workerData;
-  }
   postMessage(frame: AppWorkflowWorkerInboundFrame) { this.sent.push(frame); }
   terminate() {
     this.terminated = true;
@@ -73,8 +57,8 @@ function harness(overrides: Partial<typeof base> = {}) {
     ...base,
     ...overrides,
     hostCalls: { ...base.hostCalls, ...overrides.hostCalls },
-    workerFactory: (_path, options) => {
-      worker = new FakeWorker(options.workerData);
+    launchWorker: () => {
+      worker = new FakeWorker();
       return worker;
     },
   });
@@ -106,10 +90,6 @@ test("worker events are ACKed only after operational event persistence settles",
   task.worker.send({ protocolVersion: 3, kind: "completed", taskRunId: base.runId, summary: { counts: { count: 1 } } });
   task.worker.exit(0);
   assert.deepEqual(await task.run, { status: "completed", errorCode: null, summary: { counts: { count: 1 } } });
-  assert.equal(task.worker.stdout.resumed, true);
-  assert.equal(task.worker.stderr.resumed, true);
-  assert.equal(task.worker.stdout.listenerCount("data"), 0);
-  assert.equal(task.worker.stderr.listenerCount("data"), 0);
   for (const event of ["online", "message", "error", "exit"]) {
     assert.equal(task.worker.listenerCount(event), 0, `listener ${event} is removed`);
   }
@@ -232,7 +212,7 @@ test("invalid outbound frames are rejected, cancelled, and force-terminated", as
 test("worker creation failure returns only its stable code", async () => {
   const outcome = await runSupervisedAppWorkflow({
     ...base,
-    workerFactory: () => { throw new Error("secret worker startup detail"); },
+    launchWorker: () => { throw new Error("secret worker startup detail"); },
   });
   assert.deepEqual(outcome, {
     status: "failed",

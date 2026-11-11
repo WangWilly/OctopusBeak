@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,7 +14,7 @@ import type {
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 
-const [{ taskById }, { executeTaskRunForCheck }, {
+const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }, { YUANTA_TRADE_LOGIN_URL }] = await Promise.all([
@@ -57,6 +57,9 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   );
 
   const root = await mkdtemp(join(tmpdir(), "yuanta-trade-app-workflow-"));
+  const certificates = await mkdtemp(join(tmpdir(), "yuanta-trade-certificate-"));
+  const certificatePath = join(certificates, "certificate.pfx");
+  await writeFile(certificatePath, "synthetic certificate");
   const previousDirectory = process.cwd();
   const store = new PGliteStore(await createTestPGlite("operational"));
   let observedStartUrl: string | undefined;
@@ -78,25 +81,18 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: task.id,
-      kind: task.kind,
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: created.taskRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: inProcessCheckHost({
+        financialCommit,
+        browser: ({ startUrl }) => {
+          observedStartUrl = startUrl;
+          return browser;
+        },
+      }),
+      environment: { ...syntheticEnvironment(), [credentialKey("CA_PATH")]: certificatePath, OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-      workerPorts: { financialCommit },
-      workflowBrowserPort: ({ startUrl }) => {
-        observedStartUrl = startUrl;
-        return browser;
-      },
-    });
-    const run = await provider.automation.taskRunById(created.taskRunId);
+    }), task.id);
+    const run = await provider.automation.taskRunById(result.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, YUANTA_TRADE_LOGIN_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");
@@ -108,5 +104,6 @@ test("Yuanta Trade dispatch uses the typed App workflow and maps credentials", a
     process.chdir(previousDirectory);
     await store.close();
     await rm(root, { recursive: true, force: true });
+    await rm(certificates, { recursive: true, force: true });
   }
 });

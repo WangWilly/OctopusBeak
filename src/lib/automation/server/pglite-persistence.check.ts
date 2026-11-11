@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { WorkerOptions } from "node:worker_threads";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -16,17 +15,15 @@ import {
 } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
+import type { TaskRunExecution } from "./task-run-execution.ts";
+import { inProcessCheckHost, openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { NO_PROVENANCE } from "../../shared-ledger/provenance.ts";
 
 class ExchangeRateWorkerFixture extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   readonly start: AppWorkflowWorkerStart;
   private readonly startCallId = randomUUID();
   private readonly completeCallId = randomUUID();
@@ -207,36 +204,31 @@ try {
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeWorkerStarts = 0;
-  const deterministicExecution: typeof runAutomationTaskExecution = async (_task, activeRun) => {
+  const deterministicExecution: TaskRunExecution = async (_task, activeRun) => {
     await activeRun.transition("running");
     return { summary: null, failure: null };
   };
-  const runtimeFor = (runProvider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
-    createAutomationRuntime(runProvider, { ...runnerHostForCheck(), runExecution });
-  const runToEnd = async (runProvider: AutomationPersistenceProvider, runtime = runtimeFor(runProvider, deterministicExecution)) => {
+  const runtimeFor = (
+    runProvider: AutomationPersistenceProvider,
+    execution: Pick<Parameters<typeof createAutomationRuntime>[1], "runExecution" | "executionHost">,
+  ) => createAutomationRuntime(runProvider, { ...runnerHostForCheck(), ...execution });
+  const runToEnd = async (
+    runProvider: AutomationPersistenceProvider,
+    runtime = runtimeFor(runProvider, { runExecution: deterministicExecution }),
+  ) => {
     const { runId, settled } = await startForCheck(runtime, "exchange-rates");
     await settled;
     const finished = await runProvider.automation.taskRunById(runId);
     assert.ok(finished, "the started run has a record");
     return finished;
   };
-  const exchangeExecution: typeof runAutomationTaskExecution = (plan, activeRun, round, seams) => runAutomationTaskExecution(
-    plan,
-    activeRun,
-    round,
-    {
-      ...seams,
-      appWorkflowWorkerFactory: (_path: string, workerOptions: WorkerOptions) => {
-        const start = workerOptions.workerData as AppWorkflowWorkerStart;
-        exchangeWorkerStarts += 1;
-        assert.equal(start.workflowId, "exchange-rates");
-        assert.equal(start.browserConnection, undefined);
-        assert.ok(start.pgliteRpc);
-        return new ExchangeRateWorkerFixture(start);
-      },
-    },
-  );
-  const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, exchangeExecution));
+  const exchangeHost = inProcessCheckHost({ scriptedWorker: (start) => {
+    exchangeWorkerStarts += 1;
+    assert.equal(start.workflowId, "exchange-rates");
+    assert.ok(start.pgliteRpc);
+    return new ExchangeRateWorkerFixture(start);
+  } });
+  const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, { executionHost: exchangeHost }));
   assert.equal(exchangeExecutionResult.status, "completed");
   assert.equal(exchangeWorkerStarts, 1, "the App runner must dispatch exchange sync through a supervised worker");
   assert.deepEqual(
@@ -248,7 +240,7 @@ try {
   assert.equal(executionResult.status, "completed");
   assert.equal((await provider.automation.latestTaskRuns())["exchange-rates"]?.status, "completed");
 
-  const started = await startForCheck(runtimeFor(provider, deterministicExecution), "exchange-rates");
+  const started = await startForCheck(runtimeFor(provider, { runExecution: deterministicExecution }), "exchange-rates");
   await new Promise<void>((resolve) => setTimeout(resolve, 25));
   assert.equal((await provider.automation.taskRunById(started.runId))?.status, "completed");
 
@@ -287,7 +279,7 @@ try {
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    const runtime = runtimeFor(rejectedProvider, deterministicExecution);
+    const runtime = runtimeFor(rejectedProvider, { runExecution: deterministicExecution });
     await runToEnd(rejectedProvider, runtime);
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(unhandled, []);

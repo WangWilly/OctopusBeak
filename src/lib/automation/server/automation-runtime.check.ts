@@ -9,9 +9,9 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAutomationRuntime, type SettledAutomationStart } from "./automation-runtime.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { CHECK_PGLITE_RPC, runnerHostForCheck } from "./task-run-check-support.ts";
-import type { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { TaskRunExecution } from "./task-run-execution.ts";
 
-type RuntimeOptions = { directory?: string; runExecution?: typeof runAutomationTaskExecution };
+type RuntimeOptions = { directory?: string; runExecution?: TaskRunExecution };
 
 async function withRuntime(
   check: (runtime: ReturnType<typeof createAutomationRuntime>) => Promise<void>,

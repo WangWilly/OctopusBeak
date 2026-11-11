@@ -33,13 +33,15 @@ import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowWorkerOutboundFrame,
+  parseAppWorkflowBrowserConnection,
   parseAppWorkflowWorkerStart,
+  isRecord,
   type AppWorkflowWorkerInboundFrame,
   type AppWorkflowWorkerOutboundFrame,
   type AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
 import { appWorkflowRegistration } from "./app-workflow-registry.ts";
-import { withAppWorkflowBrowserPage } from "./app-browser-host.ts";
+import { withAppWorkflowBrowserPage, type AppWorkflowBrowserConnection } from "./app-browser-host.ts";
 import {
   createPGliteChildRpcClient,
   type PGliteChildRpcClient,
@@ -79,10 +81,9 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   port: MessagePort;
-  workerData: unknown;
   /** Test seam; production resolves from the App's typed workflow catalog. */
   resolveDefinition?: (workflowId: string) => WorkflowDefinition | null;
-  /** Test seam; production attaches to the run-scoped App browser page. */
+  /** The page a browser workflow runs in; a nonbrowser workflow is refused one. */
   browser?: WorkflowBrowserPort;
   /** Test seam; production creates this port from the authenticated PGlite RPC. */
   financialCommit?: WorkflowFinancialCommitPort;
@@ -117,32 +118,67 @@ function throwOnProtocolFailure() {
   return new AppWorkflowWorkerProtocolError();
 }
 
-function appBrowserPort(start: AppWorkflowWorkerStart): WorkflowBrowserPort {
+function appBrowserPort(connection: AppWorkflowBrowserConnection): WorkflowBrowserPort {
   return {
     async withPage(run) {
-      if (!start.browserConnection) throw new AppWorkflowWorkerProtocolError();
-      return await withAppWorkflowBrowserPage(start.browserConnection, run);
+      return await withAppWorkflowBrowserPage(connection, run);
     },
   };
 }
 
+const nonbrowserPage: WorkflowBrowserPort = {
+  async withPage() {
+    throw new AppWorkflowWorkerProtocolError();
+  },
+};
+
+function refuseStart(port: MessagePort) {
+  const failed: AppWorkflowWorkerOutboundFrame = {
+    protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
+    kind: "failed",
+    taskRunId: null,
+    errorCode: "protocol-invalid",
+  };
+  try { port.postMessage(parseAppWorkflowWorkerOutboundFrame(failed)); } catch { /* no raw transport error */ }
+}
+
+/**
+ * The worker thread's entry: a browser workflow's `workerData` carries the
+ * loopback DevTools page it attaches to, which becomes the core's browser.
+ */
+export async function runAppWorkflowWorkerThread(
+  options: Readonly<{ port: MessagePort; workerData: unknown }>,
+): Promise<void> {
+  const { port, workerData } = options;
+  if (!isRecord(workerData) || !Object.hasOwn(workerData, "browserConnection")) {
+    return await runAppWorkflowWorker(workerData, { port });
+  }
+  const { browserConnection, ...start } = workerData;
+  let connection: AppWorkflowBrowserConnection;
+  try {
+    connection = parseAppWorkflowBrowserConnection(browserConnection);
+  } catch {
+    refuseStart(port);
+    return;
+  }
+  await runAppWorkflowWorker(start, { port, browser: appBrowserPort(connection) });
+}
+
 /** Execute one typed definition inside the App-managed Node worker. */
 export async function runAppWorkflowWorker(
+  workerData: unknown,
   options: AppWorkflowWorkerRuntimeOptions,
 ): Promise<void> {
   let start: AppWorkflowWorkerStart;
   try {
-    start = parseAppWorkflowWorkerStart(options.workerData);
+    start = parseAppWorkflowWorkerStart(workerData);
+    const nonbrowser = appWorkflowRegistration(start.workflowId)?.runtime.kind === "nonbrowser";
+    if (nonbrowser === (options.browser !== undefined)) throw new AppWorkflowWorkerProtocolError();
   } catch {
-    const failed: AppWorkflowWorkerOutboundFrame = {
-      protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
-      kind: "failed",
-      taskRunId: null,
-      errorCode: "protocol-invalid",
-    };
-    try { options.port.postMessage(parseAppWorkflowWorkerOutboundFrame(failed)); } catch { /* no raw transport error */ }
+    refuseStart(options.port);
     return;
   }
+  const browser = options.browser;
 
   const controller = new AbortController();
   const events: WorkflowRunEvent[] = [];
@@ -252,9 +288,8 @@ export async function runAppWorkflowWorker(
         return status;
       },
     };
-    const browser = options.browser ?? appBrowserPort(start);
     const ports: WorkflowExecutorPorts = {
-      browser,
+      browser: browser ?? nonbrowserPage,
       text: strictSourceText,
       humanAssistance,
       ...capabilityPorts,

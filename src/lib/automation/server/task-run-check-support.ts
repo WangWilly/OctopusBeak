@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { join, resolve } from "node:path";
 import { MessageChannel } from "node:worker_threads";
@@ -10,31 +12,29 @@ import {
   type HumanAssistanceRoute,
 } from "./app-workflow-human-assistance.ts";
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
-import { parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
+import { parseAppWorkflowWorkerOutboundFrame, type AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
   runAppWorkflowWorker,
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
+import type { AppWorkflowWorkerHandle, ExecutionHost } from "./execution-host.ts";
+import { createAutomationRuntime, type AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
-import {
-  runAutomationTaskExecution,
-  type AutomationTaskExecutionSeams,
-  type WorkflowExecutionRound,
-} from "./task-run-execution.ts";
+import type { AutomationPersistencePort, AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+import { createTaskRunExecution, type WorkflowExecutionRound } from "./task-run-execution.ts";
 import {
   resolveTaskRunPlan,
   type TaskRunPlan,
   type TaskRunPlanDependencies,
 } from "./task-run-plan.ts";
-import { taskById, type AutomationTask } from "./tasks.ts";
+import { AUTOMATION_CREDENTIAL_GROUPS, taskById, type AutomationTask } from "./tasks.ts";
 import {
   AUTOMATION_CREDENTIALS_FILE,
   AUTOMATION_SETTINGS_FILE,
   createAutomationCredentialStore,
   createAutomationSettingsStore,
+  splitAutomationUpdates,
   type AutomationCredentialCodec,
   type AutomationCredentialStore,
   type AutomationSettingsFile,
@@ -85,6 +85,52 @@ export async function startForCheck(runtime: Pick<AutomationRuntime, "start">, t
   return { runId: result.runId, settled };
 }
 
+/**
+ * A runtime over `provider` whose rounds run on `executionHost`, with every
+ * source enabled, the settings `environment` names in settings.json and the
+ * rest of it in credentials.json, in a directory of their own. User data is
+ * in `userDataDirectory`, the check's directory by default.
+ */
+export function runtimeForCheck(
+  provider: Omit<AutomationPersistenceProvider, "pgliteWorkflow">,
+  options: Readonly<{
+    executionHost: ExecutionHost;
+    environment?: NodeJS.ProcessEnv;
+    userDataDirectory?: string;
+  }>,
+): AutomationRuntime {
+  const directory = mkdtempSync(join(tmpdir(), "task-run-check-"));
+  process.once("exit", () => rmSync(directory, { recursive: true, force: true }));
+  const host = runnerHostForCheck(directory);
+  const environment = Object.fromEntries(
+    Object.entries(options.environment ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  const { settings } = splitAutomationUpdates(environment);
+  host.settings.write({
+    ...Object.fromEntries(AUTOMATION_CREDENTIAL_GROUPS.map((group) => [group.enabledKey, true])),
+    ...settings,
+  });
+  host.credentials.write(Object.fromEntries(Object.entries(environment).filter(([key]) => !Object.hasOwn(settings, key))));
+  return createAutomationRuntime({ ...provider, pgliteWorkflow: CHECK_PGLITE_RPC }, {
+    ...host,
+    userDataDirectory: resolve(options.userDataDirectory ?? "."),
+    executionHost: options.executionHost,
+  });
+}
+
+/** Run one task to its end through the runtime's admission, queue and CAPTCHA Retry Campaign. */
+export async function runForCheck(runtime: Pick<AutomationRuntime, "start">, taskId: string) {
+  const { runId, settled } = await startForCheck(runtime, taskId);
+  const run = await settled;
+  if (!run) throw new Error(`${taskId} run ${runId} was not finalized`);
+  return {
+    taskRunId: runId,
+    status: run.status,
+    run,
+    outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } satisfies TypedWorkflowOutcome,
+  };
+}
+
 /** By default the settings file in whatever directory the check is in when it reads. */
 export function settingsStoreForCheck(
   path: string = AUTOMATION_SETTINGS_FILE,
@@ -131,12 +177,19 @@ export function firstRoundForCheck(
 }
 
 /** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
-export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "workerData">;
+export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "browser">;
+
+export type InProcessCheckHostOptions = CheckWorkerPorts & Readonly<{
+  /** The browser a browser workflow's worker runs in, built from the page the round asked for. */
+  browser?: (page: AppWorkflowBrowserHostInput) => WorkflowBrowserPort;
+  /** Frames a check scripts in place of the real worker. */
+  scriptedWorker?: (start: AppWorkflowWorkerStart) => AppWorkflowWorkerHandle;
+}>;
 
 /** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
-export function inProcessAppWorkflowWorker(
-  workerData: unknown,
-  ports: CheckWorkerPorts = {},
+function inProcessWorker(
+  start: AppWorkflowWorkerStart,
+  options: Omit<AppWorkflowWorkerRuntimeOptions, "port">,
 ): AppWorkflowWorkerHandle {
   const channel = new MessageChannel();
   const worker = new EventEmitter() as EventEmitter & AppWorkflowWorkerHandle;
@@ -158,35 +211,33 @@ export function inProcessAppWorkflowWorker(
   });
   setImmediate(() => {
     worker.emit("online");
-    void runAppWorkflowWorker({ ...ports, port: channel.port1, workerData });
+    void runAppWorkflowWorker(start, { ...options, port: channel.port1 });
   });
   return worker;
 }
 
-const hostPageForWorker: WorkflowBrowserPort = {
-  async withPage(run) { return await run({} as never); },
-};
-
-/** The host keeps its production wiring; the page and RPC-backed ports reach the worker from the check. */
-function supervisedWithCheckWorker(
-  seams: AutomationTaskExecutionSeams,
-  workerPorts: CheckWorkerPorts,
-): AutomationTaskExecutionSeams {
-  let workerBrowser: WorkflowBrowserPort | undefined;
+/**
+ * An execution host that opens no browser: the round's worker is the real
+ * worker runtime in this process holding the check's ports, or the check's
+ * scripted worker.
+ */
+export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): ExecutionHost {
+  const { browser, scriptedWorker, ...ports } = options;
+  const pages = new Map<string, WorkflowBrowserPort>();
   return {
-    ...seams,
-    workflowBrowserPort: (input) => {
-      workerBrowser = seams.workflowBrowserPort?.(input);
-      return hostPageForWorker;
+    async withPage(page, use) {
+      if (browser) pages.set(page.taskRunId, browser(page));
+      try {
+        return await use();
+      } finally {
+        pages.delete(page.taskRunId);
+      }
     },
-    appWorkflowBrowserConnectionForRun: (runId) => ({
-      endpoint: "http://127.0.0.1:43121",
-      targetId: `host-page-${runId}`,
-    }),
-    appWorkflowWorkerFactory: (_path, worker) => inProcessAppWorkflowWorker(worker.workerData, {
-      ...workerPorts,
-      ...(workerBrowser ? { browser: workerBrowser } : {}),
-    }),
+    launchWorker(start) {
+      if (scriptedWorker) return scriptedWorker(start);
+      const page = pages.get(start.taskRunId);
+      return inProcessWorker(start, { ...ports, ...(page ? { browser: page } : {}) });
+    },
   };
 }
 
@@ -248,57 +299,37 @@ export async function requestAssistanceForCheck(
   }
 }
 
-/** Execute one workflow round over an existing run and finish it, as the runner does. */
-export async function executeTaskRunForCheck(
+/**
+ * One Workflow execution of an existing run, finished by its run owner, for
+ * a check whose round carries its own assistance route or none. The runner's
+ * CAPTCHA Retry Campaign routes a Verified source's requests to the App's
+ * solver, which reads a hosted page; a check that needs neither starts its
+ * task through `runtimeForCheck`.
+ */
+export async function executeRoundForCheck(
   task: AutomationTask,
   persistence: AutomationPersistencePort,
-  options: Partial<TaskRunPlanDependencies>
-    & Partial<WorkflowExecutionRound>
-    & AutomationTaskExecutionSeams
-    & Readonly<{
-      taskRunId: string;
-      onRunOpened?: (run: ActiveAutomationTaskRun) => void;
-      /** Receives each Workflow execution the round begins. */
-      executions?: WorkflowExecution[];
-      /** Run the production supervised path against an in-process worker holding these ports. */
-      workerPorts?: CheckWorkerPorts;
-    }>,
-): Promise<{
-  status: AutomationTaskRun["status"];
-  taskRunId: string;
-  run: AutomationTaskRun;
-  outcome: TypedWorkflowOutcome;
-}> {
-  const {
-    taskRunId, onRunOpened, executions, workerPorts,
-    pgliteRpc, credentials, settings, userDataDirectory, launchEnv, launchVerificationSettings,
-    attempt, maxAttempts, retrying, executionId, assistanceRoute,
-    ...seams
-  } = options;
-  const plan = planForCheck(task, {
-    ...(pgliteRpc ? { pgliteRpc } : {}),
-    ...(credentials ? { credentials } : {}),
-    ...(settings ? { settings } : {}),
-    ...(userDataDirectory ? { userDataDirectory } : {}),
-    launchEnv,
-    launchVerificationSettings,
-  });
-  const round = firstRoundForCheck({
-    ...(attempt === undefined ? {} : { attempt }),
-    ...(maxAttempts === undefined ? {} : { maxAttempts }),
-    ...(retrying === undefined ? {} : { retrying }),
-    ...(executionId === undefined ? {} : { executionId }),
-    assistanceRoute,
-  });
+  taskRunId: string,
+  options: Readonly<{
+    executionHost: ExecutionHost;
+    assistanceRoute?: HumanAssistanceRoute;
+    launchEnv?: NodeJS.ProcessEnv;
+    userDataDirectory?: string;
+    onRunOpened?: (run: ActiveAutomationTaskRun) => void;
+    /** Receives each Workflow execution the round begins. */
+    executions?: WorkflowExecution[];
+  }>,
+) {
+  const { executionHost, assistanceRoute, launchEnv, userDataDirectory, onRunOpened, executions } = options;
+  const plan = planForCheck(task, { launchEnv, ...(userDataDirectory ? { userDataDirectory } : {}) });
   const opened = await openTaskRunForCheck(persistence, taskRunId);
   const active = executions ? observingExecutions(opened, executions) : opened;
   onRunOpened?.(active);
-  const report = await runAutomationTaskExecution(
-    plan,
-    active,
-    round,
-    workerPorts ? supervisedWithCheckWorker(seams, workerPorts) : seams,
-  );
+  const report = await createTaskRunExecution(executionHost)(plan, active, firstRoundForCheck({ assistanceRoute }));
   const run = await active.finish(report);
-  return { status: run.status, taskRunId, run, outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } };
+  return {
+    status: run.status,
+    run,
+    outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } satisfies TypedWorkflowOutcome,
+  };
 }

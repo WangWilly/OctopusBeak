@@ -5,7 +5,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { WorkerOptions } from "node:worker_threads";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
@@ -14,7 +13,7 @@ import type { PGliteFinancialRegistry } from "../../../../electron/pglite-financ
 import { createPGliteFinancialRpcClient } from "../../../../electron/pglite-financial-rpc-client.ts";
 import { createPGliteFinancialRpcServer } from "../../../../electron/pglite-financial-rpc-server.ts";
 import { createPGliteFinancialLocalPort } from "../../../../electron/pglite-financial-registry.ts";
-import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
   collectionScopeAdmitsCommit,
@@ -24,7 +23,7 @@ import {
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, credentialStoreForCheck, inProcessCheckHost, runForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../../../ledger/pglite/workflow-run.ts";
@@ -159,14 +158,12 @@ test("an admission check that throws fails the write without calling it refused"
 });
 
 class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
-  readonly workerData: WorkerOptions["workerData"];
+  readonly workerData: AppWorkflowWorkerStart;
   private readonly registry: PGliteFinancialRegistry;
   private readonly run: ActiveAutomationTaskRun;
   private readonly editSettings: () => Promise<void>;
   constructor(
-    workerData: WorkerOptions["workerData"],
+    workerData: AppWorkflowWorkerStart,
     registry: PGliteFinancialRegistry,
     run: ActiveAutomationTaskRun,
     editSettings: () => Promise<void>,
@@ -189,7 +186,7 @@ class CommittingFakeWorker extends EventEmitter implements AppWorkflowWorkerHand
   private async work() {
     // Report nothing before the supervisor has seen the worker come online.
     await new Promise((resolve) => setImmediate(resolve));
-    const start = this.workerData as AppWorkflowWorkerStart;
+    const start = this.workerData;
     const ports = memoryPair();
     const server = createPGliteFinancialRpcServer(
       ports[1],
@@ -271,41 +268,21 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
   try {
     process.chdir(root);
     await writeConfig(launchSettings, launchCredentials);
-    const provider = createPgliteOperationalProvider(store);
-    const { taskRunId } = await provider.automation.createTaskRun({
-      taskId: fubon.id,
-      kind: fubon.kind,
-      status: "preparing",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    let activeRun: ActiveAutomationTaskRun | undefined;
-    const result = await executeTaskRunForCheck(fubon, provider.automation, {
-      taskRunId,
-      onRunOpened: (run) => { activeRun = run; },
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        ...automationConfigEnv({ baseEnv: {}, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
-      },
-      workflowBrowserPort: () => ({
-        async withPage(run) { return await run({} as never); },
-      }),
-      appWorkflowBrowserConnectionForRun: (runId) => ({
-        endpoint: "http://127.0.0.1:43121",
-        targetId: `host-page-${runId}`,
-      }),
-      appWorkflowWorkerFactory: (_path, options) => new CommittingFakeWorker(
-        options.workerData,
+    const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
+    const runtime = createAutomationRuntime(provider, {
+      ...runnerHostForCheck(),
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) => new CommittingFakeWorker(
+        start,
         registry,
-        activeRun!,
+        runtime.activeRun(start.taskRunId)!,
         () => writeConfig(
           { ...launchSettings, ...edit.settings },
           { ...launchCredentials, ...edit.credentials },
         ),
-      ),
+      ) }),
     });
-    const run = await provider.automation.taskRunById(taskRunId);
+    const result = await runForCheck(runtime, fubon.id);
+    const { taskRunId, run } = result;
     const attempts = (await provider.automation.commitAttempts(taskRunId)).map((attempt) => attempt.outcome);
     return { result, run, commits, attempts };
   } finally {

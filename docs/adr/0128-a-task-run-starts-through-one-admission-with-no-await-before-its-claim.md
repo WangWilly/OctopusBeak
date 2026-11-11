@@ -17,7 +17,7 @@ The Automation runtime (`automation-runtime.ts`) wrapped the runner (`runner.ts`
 
 ## Decision
 
-**`AutomationRuntime` is the one module callers use to start and control Task Runs.** `createAutomationRuntime(provider, { credentials, settings, userDataDirectory, forceQuitAvailableAfterMs?, runExecution? })` builds the runner with the provider and the execution seam. The runner's lifecycle members are the runtime's own members. Its `claim` and `claimedRunId` stay inside the runtime.
+**`AutomationRuntime` is the one module callers use to start and control Task Runs.** `createAutomationRuntime(provider, { credentials, settings, userDataDirectory, forceQuitAvailableAfterMs?, runExecution? })` builds the runner with the provider and the execution seam. [ADR 0129](0129-a-workflow-execution-gets-its-page-and-worker-from-one-execution-host.md) replaces that seam with an execution host given at construction; `runExecution` remains only for checks that replace whole rounds. The runner's lifecycle members are the runtime's own members. Its `claim` and `claimedRunId` stay inside the runtime.
 
 **One entry starts tasks: `start(taskIds, { scheduledAtUtc?, onSettled? })`.** It returns one `AutomationStartResult` per distinct task: `started` with its run id, `already_running` with the run id of the start that holds it, or `error` with the refusal. A single manual run is a batch of one.
 

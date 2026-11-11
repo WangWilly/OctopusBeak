@@ -5,24 +5,25 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { WorkerOptions } from "node:worker_threads";
 import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type {
-  AppWorkflowWorkerHandle,
-} from "./app-workflow-worker-supervisor.ts";
+import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
 import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
 import {
   CHECK_PGLITE_RPC,
-  executeTaskRunForCheck,
+  executeRoundForCheck,
   firstRoundForCheck,
+  inProcessCheckHost,
   observingExecutions,
   openTaskRunForCheck,
   planForCheck,
+  runForCheck,
+  runtimeForCheck,
 } from "./task-run-check-support.ts";
-import { runAutomationTaskExecution, type AutomationTaskExecutionSeams } from "./task-run-execution.ts";
+import { createTaskRunExecution } from "./task-run-execution.ts";
 import {
   completeAppWorkflowHumanAssistance,
   type AppWorkflowHumanAssistanceRequest,
@@ -83,15 +84,13 @@ class ScriptedHostCalls {
 }
 
 class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   eventAckAfterPersistence = false;
-  readonly workerData: WorkerOptions["workerData"];
+  readonly workerData: AppWorkflowWorkerStart;
   private readonly calls = new ScriptedHostCalls();
   private readonly scenario: WorkerScenario;
   private readonly isEventPersisted: () => boolean;
   constructor(
-    workerData: WorkerOptions["workerData"],
+    workerData: AppWorkflowWorkerStart,
     scenario: WorkerScenario,
     isEventPersisted: () => boolean,
   ) {
@@ -101,7 +100,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     this.isEventPersisted = isEventPersisted;
     setImmediate(() => {
       this.emit("online");
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData;
       this.emit("message", this.calls.call("worker-start-event", "event", {
         event: {
           runId: start.taskRunId,
@@ -116,7 +115,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     const answered = this.calls.answered(frame);
     if (answered === "worker-commit-settled") {
       // The settlement crossed a stop; the worker now ends the cancelled run.
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData;
       setImmediate(() => {
         this.emit("message", { protocolVersion: 3, kind: "cancelled", taskRunId: start.taskRunId });
         this.emit("exit", 0);
@@ -125,7 +124,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     }
     if (frame.kind === "reply" && answered === "worker-assistance-request") {
       if (this.scenario === "assistance-completion") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData;
         const status = frame.ok ? (frame.result as { status: string }).status : null;
         setImmediate(() => {
           this.emit("message", status === "entered"
@@ -149,7 +148,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
     if (frame.kind === "reply") {
       this.eventAckAfterPersistence = this.isEventPersisted();
       if (this.scenario === "product-invariant") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData;
         setImmediate(() => {
           if (answered === "worker-start-event") {
             this.emit("message", this.calls.call("foreign-collection", "event", {
@@ -175,7 +174,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           { contract: assistanceContract },
         )));
       } else if (this.scenario === "validation-failure" && answered === "worker-start-event") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData;
         setImmediate(() => {
           this.emit("message", {
             protocolVersion: 3,
@@ -201,7 +200,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
           });
         }
       } else if (this.scenario !== "assistance-completion" && answered === "worker-start-event") {
-        const start = this.workerData as AppWorkflowWorkerStart;
+        const start = this.workerData;
         setImmediate(() => this.emit("message", this.calls.call("worker-commit-started", "commitAttempt", {
           attempt: { phase: "started", attemptId: `attempt-${start.taskRunId}`, product: "financial", total: 1 },
         })));
@@ -209,7 +208,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel-settled") {
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData;
       // The canonical request stops between items and returns a known cancelled result.
       setImmediate(() => this.emit("message", this.calls.call("worker-commit-settled", "commitAttempt", {
         attempt: { phase: "settled", attemptId: `attempt-${start.taskRunId}`, outcome: "cancelled", committedCount: 0 },
@@ -217,7 +216,7 @@ class TaskExecutionFakeWorker extends EventEmitter implements AppWorkflowWorkerH
       return;
     }
     if (frame.kind === "cancel" && this.scenario === "commit-cancel") {
-      const start = this.workerData as AppWorkflowWorkerStart;
+      const start = this.workerData;
       setImmediate(() => {
         this.emit("message", {
           protocolVersion: 3,
@@ -241,32 +240,27 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
   const diagnosticPath = join(directory, "workflow-failures.jsonl");
   const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
+  const previousEnvironment = {
+    OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE,
+    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
+  };
+  process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE = diagnosticPath;
+  process.env.OCTOPUSBEAK_APP_ROOT = process.cwd();
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        LIBRETTO_CLOUD_CTBC_USER_ID: "private-user-id",
-        LIBRETTO_CLOUD_CTBC_ACCOUNT: "private-account-id",
-        LIBRETTO_CLOUD_CTBC_PASSWORD: "private-password",
-        OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: diagnosticPath,
-        OCTOPUSBEAK_APP_ROOT: process.cwd(),
-      },
-      workflowBrowserPort: () => ({
-        async withPage(run) { return await run({} as never); },
-      }),
-      appWorkflowBrowserConnectionForRun: (runId) => ({
-        endpoint: "http://127.0.0.1:43121",
-        targetId: `host-page-${runId}`,
-      }),
-      appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(
-        options.workerData,
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TaskExecutionFakeWorker(
+        start,
         "validation-failure",
         () => true,
-      ),
-    });
+      ) }),
+      environment: {
+        [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "private-user-id",
+        [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "private-account-id",
+        [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "private-password",
+      },
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -285,6 +279,10 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
     });
     assert.doesNotMatch(diagnosticText, /private-user-id|private-account-id|private-password|private-provider-detail/u);
   } finally {
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -307,8 +305,6 @@ test("command-only tasks are rejected before persistence or execution", async ()
 });
 
 class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
-  readonly stdout = null;
-  readonly stderr = null;
   readonly start: AppWorkflowWorkerStart;
   readonly exchange: boolean;
   private readonly calls = new ScriptedHostCalls();
@@ -375,23 +371,22 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
     const store = new PGliteStore(database);
     try {
       const provider = createPgliteOperationalProvider(store);
-      let start: AppWorkflowWorkerStart | undefined;
-      const taskRunId = await createRun(provider, task);
-      const result = await executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
-        pgliteRpc: { endpoint: "/tmp/worker-test.sock", token: "a".repeat(32) },
-        launchEnv: {},
-        workflowBrowserPort: () => { throw new Error("Nonbrowser task opened a browser."); },
-        appWorkflowWorkerFactory: (_path, options) => {
-          start = options.workerData as AppWorkflowWorkerStart;
-          return new NonBrowserFakeWorker(start);
+      let workerStart: AppWorkflowWorkerStart | undefined;
+      const result = await runForCheck(runtimeForCheck(provider, {
+        executionHost: {
+          ...inProcessCheckHost({ scriptedWorker: (start) => {
+            workerStart = start;
+            return new NonBrowserFakeWorker(start);
+          } }),
+          withPage: () => { throw new Error("Nonbrowser task opened a browser."); },
         },
-      });
+        environment: taskId === "sync-maicoin" ? { [["MAX", "ACCESS", "KEY"].join("_")]: "synthetic-access", [["MAX", "SECRET", "KEY"].join("_")]: "synthetic-secret" } : {},
+      }), task.id);
+      const taskRunId = result.taskRunId;
       assert.equal(result.status, "completed");
-      assert.ok(start);
-      assert.equal(start.workflowId, taskId);
-      assert.equal(start.browserConnection, undefined);
-      assert.equal(start.pgliteRpc?.endpoint, "/tmp/worker-test.sock");
+      assert.ok(workerStart);
+      assert.equal(workerStart.workflowId, taskId);
+      assert.deepEqual(workerStart.pgliteRpc, CHECK_PGLITE_RPC);
       const run = await provider.automation.taskRunById(taskRunId);
       assert.equal(run?.status, "completed");
       assert.ok(run?.events.some((event) => event.code === "run-started"));
@@ -439,28 +434,19 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
       let assistanceRequest: AppWorkflowHumanAssistanceRequest | undefined;
-      const execution = executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
+      const execution = executeRoundForCheck(task, provider.automation, taskRunId, {
         // The scenario resumes the stage itself; the route only keeps it
         // from failing closed as unrouted.
         assistanceRoute: (request) => { assistanceRequest = request; },
-        pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv,
         onRunOpened: (run) => {
           active = run;
         },
-        workflowBrowserPort: () => ({
-          async withPage(run) { return await run({} as never); },
-        }),
-        appWorkflowBrowserConnectionForRun: (runId) => ({
-          endpoint: "http://127.0.0.1:43121",
-          targetId: `host-page-${runId}`,
-        }),
-        appWorkflowWorkerFactory: (_workerPath, workerOptions) => {
-          startData = workerOptions.workerData as AppWorkflowWorkerStart;
+        executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
+          startData = start;
           resolveWorkerCreated();
           worker = new TaskExecutionFakeWorker(
-            workerOptions.workerData,
+            start,
             scenario,
             () => persistedEvents.has(`${startData?.taskRunId}:worker-check-started`),
           );
@@ -470,7 +456,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
             if (options.forceTerminated) void active?.requestStop("forced");
           });
           return worker;
-        },
+        } }),
       });
 
       if (!startData) {
@@ -494,9 +480,6 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.equal(startData.workflowId, task.workflowId);
       assert.equal(startData.input && typeof startData.input, "object");
       assert.deepEqual(startData.pgliteRpc, CHECK_PGLITE_RPC);
-      assert.ok(startData.browserConnection);
-      assert.match(startData.browserConnection.endpoint, /^http:\/\/127\.0\.0\.1:\d+$/u);
-      assert.ok(startData.browserConnection.targetId.length > 0);
       assert.equal(taskRunId, startData.taskRunId);
 
       if (scenario === "assistance-completion") {
@@ -580,33 +563,23 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     };
     const taskRunId = await createRun(provider, task);
     let workerStart: AppWorkflowWorkerStart | undefined;
-    let hostInput: Record<string, unknown> | undefined;
+    let hostInput: AppWorkflowBrowserHostInput | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
-    const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), active, firstRoundForCheck(), {
-      workflowBrowserPort: (input) => {
-        hostInput = input as unknown as Record<string, unknown>;
-        return {
-          async withPage(run) {
-            const callback = hostInput?.onRuntimeIdentity;
-            if (typeof callback === "function") callback(runtimeIdentity);
-            return await run({} as never);
-          },
-        };
+    const outcome = await createTaskRunExecution({
+      ...inProcessCheckHost({ scriptedWorker: (start) => {
+        workerStart = start;
+        return new NonBrowserFakeWorker(start);
+      } }),
+      async withPage(page, use) {
+        hostInput = page;
+        page.onRuntimeIdentity?.(runtimeIdentity);
+        return await use();
       },
-      appWorkflowBrowserConnectionForRun: (runId) => ({
-        endpoint: "http://127.0.0.1:43121",
-        targetId: `host-page-${runId}`,
-      }),
-      appWorkflowWorkerFactory: (_workerPath, options) => {
-        workerStart = options.workerData as AppWorkflowWorkerStart;
-        return new NonBrowserFakeWorker(workerStart);
-      },
-    });
+    })(planForCheck(task, { launchEnv }), active, firstRoundForCheck());
 
     assert.equal(outcome.failure, null);
     assert.ok(workerStart, "E-Invoice creates the supervised worker");
     assert.equal(workerStart.workflowId, "einvoice-personal-invoices");
-    assert.ok(workerStart.browserConnection, "the worker receives the App browser connection");
     assert.equal(typeof hostInput?.onRuntimeIdentity, "function");
     assert.equal(hostInput?.browserProfile, undefined, "E-Invoice uses the shared default profile");
     assert.equal(taskRunId, workerStart.taskRunId);
@@ -644,22 +617,19 @@ test("runtime identity remains on a failed run when browser launch fails before 
       LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
       [einvoicePasswordFixtureEnvKey]: "fixture-password",
     };
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv,
-      workflowBrowserPort: (input) => ({
-        async withPage() {
-          const callback = (input as unknown as { onRuntimeIdentity?: (identity: typeof runtimeIdentity) => void }).onRuntimeIdentity;
-          callback?.(runtimeIdentity);
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: {
+        async withPage(page) {
+          page.onRuntimeIdentity?.(runtimeIdentity);
           throw new Error("private browser launch detail");
         },
-      }),
-      appWorkflowWorkerFactory: () => {
-        throw new Error("Browser launch failure must happen before worker startup.");
+        launchWorker() {
+          throw new Error("Browser launch failure must happen before worker startup.");
+        },
       },
-    });
+      environment: launchEnv,
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -679,21 +649,21 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
   const store = new PGliteStore(database);
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
+    const result = await runForCheck(runtimeForCheck(provider, {
+      executionHost: {
+        async withPage() {
+          throw new BrowserRuntimeConfigurationError("unsupported-profile");
+        },
+        launchWorker() {
+          throw new Error("An unsupported profile must fail before worker startup.");
+        },
+      },
+      environment: {
         LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
         [einvoicePasswordFixtureEnvKey]: "fixture-password",
       },
-      workflowBrowserPort: () => {
-        throw new BrowserRuntimeConfigurationError("unsupported-profile");
-      },
-      appWorkflowWorkerFactory: () => {
-        throw new Error("An unsupported profile must fail before worker startup.");
-      },
-    });
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -756,20 +726,14 @@ test("supervised product invariant failures retain the worker code instead of gu
   const store = new PGliteStore(await createTestPGlite("operational"));
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        LIBRETTO_CLOUD_CTBC_USER_ID: "synthetic-user",
-        LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
-        LIBRETTO_CLOUD_CTBC_PASSWORD: "synthetic-password",
+    const { run } = await runForCheck(runtimeForCheck(provider, {
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TaskExecutionFakeWorker(start, "product-invariant", () => true) }),
+      environment: {
+        [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user",
+        [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+        [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
       },
-      workflowBrowserPort: () => ({ async withPage(run) { return await run({} as never); } }),
-      appWorkflowBrowserConnectionForRun: (id) => ({ endpoint: "http://127.0.0.1:43121", targetId: `host-page-${id}` }),
-      appWorkflowWorkerFactory: (_path, options) => new TaskExecutionFakeWorker(options.workerData, "product-invariant", () => true),
-    });
-    const run = await provider.automation.taskRunById(taskRunId);
+    }), task.id);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "workflow-failed");
     assert.equal(run?.appWorkflowOutcome?.summary?.counts.committedCount, 4);
     assert.equal(run?.status, "failed", "a fatal invariant remains a failure with retained receipts");
@@ -782,15 +746,6 @@ const ctbcLaunchEnv = {
   [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
   [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
   [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
-};
-const checkHostPage: Pick<AutomationTaskExecutionSeams, "workflowBrowserPort" | "appWorkflowBrowserConnectionForRun"> = {
-  workflowBrowserPort: () => ({
-    async withPage(run) { return await run({} as never); },
-  }),
-  appWorkflowBrowserConnectionForRun: (runId) => ({
-    endpoint: "http://127.0.0.1:43121",
-    targetId: `host-page-${runId}`,
-  }),
 };
 
 test("an execution logs each worker and host event once, unmoved by the store cap and pruning, and proves the unrouted solver", async () => {
@@ -812,14 +767,11 @@ test("an execution logs each worker and host event once, unmoved by the store ca
     const executions: WorkflowExecution[] = [];
     // No route is registered: the host writes solver-route-unavailable and the
     // worker only sees its rejected request.
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
+    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
       executions,
-      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: ctbcLaunchEnv,
-      ...checkHostPage,
-      appWorkflowWorkerFactory: (_path, options) =>
-        new TaskExecutionFakeWorker(options.workerData, "assistance-completion", () => true),
+      executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
+        new TaskExecutionFakeWorker(start, "assistance-completion", () => true) }),
     });
     assert.equal(result.outcome.errorCode, "verification-configuration-failed");
     assert.equal(executions.length, 1);
@@ -847,15 +799,13 @@ test("two executions of one run each log only their own events, and only the ret
     const executions: WorkflowExecution[] = [];
     const run = observingExecutions(await openTaskRunForCheck(provider.automation, taskRunId), executions);
     const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
-    const execute = (attempt: number) => runAutomationTaskExecution(plan, run, {
+    const execution = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) =>
+      new TaskExecutionFakeWorker(start, "validation-failure", () => true) }));
+    const execute = (attempt: number) => execution(plan, run, {
       attempt,
       maxAttempts: 2,
       executionId: `round-${attempt}`,
       retrying: attempt > 1,
-    }, {
-      ...checkHostPage,
-      appWorkflowWorkerFactory: (_path, options) =>
-        new TaskExecutionFakeWorker(options.workerData, "validation-failure", () => true),
     });
     assert.equal((await execute(1)).failure?.code, "source-validation-failed");
     assert.equal(run.currentExecution(), null, "the execution ends with its workflow start");

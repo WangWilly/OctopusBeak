@@ -10,7 +10,8 @@ import {
   type ClaimedAutomationTask,
 } from "./runner.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
-import type { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { TaskRunExecution } from "./task-run-execution.ts";
+import type { ExecutionHost } from "./execution-host.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
@@ -51,8 +52,10 @@ export function createAutomationRuntime(
     settings: AutomationSettingsStore;
     userDataDirectory: string;
     forceQuitAvailableAfterMs?: number;
-    /** Test seam for the Workflow execution. */
-    runExecution?: typeof runAutomationTaskExecution;
+    /** Where each round's page and worker come from; the App's Chromium thread host by default. */
+    executionHost?: ExecutionHost;
+    /** Replaces whole rounds, for checks of the run lifecycle without a workflow. */
+    runExecution?: TaskRunExecution;
   }>,
 ) {
   const state = createAutomationRuntimeState(undefined, {
