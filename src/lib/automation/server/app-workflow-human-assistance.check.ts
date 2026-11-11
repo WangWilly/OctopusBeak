@@ -220,3 +220,26 @@ test("each execution of a run has its own route and cannot see an earlier execut
     assert.equal(await secondWaiting, "entered");
     second.end();
   }));
+
+test("an execution refuses a second assistance request while its first is waiting", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    const assistance = createAppWorkflowHumanAssistancePort({ run, execution });
+    const firstWaiting = assistance.request(contract, new AbortController().signal);
+    const firstRequest = await routes.next(1);
+    const firstWaiter = execution.pendingAssistance();
+
+    await assert.rejects(
+      assistance.request({ ...contract, stageId: "second-stage" }, new AbortController().signal),
+      /already has a pending human assistance request/u,
+    );
+    assert.equal(routes.requests.length, 1, "the refused request never reaches the route");
+    assert.equal(execution.pendingAssistance(), firstWaiter, "the first request still holds the execution's waiter");
+    assert.equal(run.current().status, "waiting_for_human");
+    assert.equal(run.current().humanAssistanceContract?.stageId, "sinopac-login-captcha");
+
+    await completeAppWorkflowHumanAssistance(firstRequest);
+    assert.equal(await firstWaiting, "entered");
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
+  }));
