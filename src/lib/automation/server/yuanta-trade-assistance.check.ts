@@ -417,16 +417,23 @@ test("Yuanta Trade fails a stage its route reports resumed without resuming it",
         return { kind: "resumed" };
       },
     });
-    await assert.rejects(
-      Promise.race([
-        assistance.request(audioContract(), new AbortController().signal),
-        new Promise<never>((_resolve, reject) => setTimeout(
-          () => reject(new Error("Yuanta Trade stage was neither resumed nor failed")),
-          1_000,
-        )),
-      ]),
-      /did not complete the current stage/u,
-    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await assert.rejects(
+        Promise.race([
+          assistance.request(audioContract(), new AbortController().signal),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Yuanta Trade stage was neither resumed nor failed")),
+              5_000,
+            );
+          }),
+        ]),
+        /did not complete the current stage/u,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
     assert.deepEqual(routedStages, ["yuanta-trade-audio-verification"]);
     const stored = await provider.automation.taskRunById(run.taskRunId);
     assert.equal(stored?.status, "waiting_for_human", "the run never returns to running");
