@@ -41,7 +41,6 @@ const allowedPrivacyFindings = new Set([
   "src/lib/shared-ledger/server/mock-data.ts:142: long account-like number 0132****8900",
   "src/lib/shared-ledger/server/mock-data.ts:160: long account-like number 9988**6600",
   "src/lib/shared-ledger/server/mock-data.ts:176: long account-like number 9988**6600",
-  "src/workflows/linebank-current-deposit-balances.check.ts:69: long account-like number 0123****8901",
 ]);
 
 function addFinding(finding) {

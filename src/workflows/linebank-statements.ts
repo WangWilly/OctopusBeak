@@ -25,20 +25,16 @@ import {
   admitForeignCurrencyDepositCapture,
   type ForeignCurrencyDepositCaptureInput,
 } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
-import {
-  buildLinebankCurrentDepositBalanceCapture,
-  linebankCurrentBalanceCaptureMatching,
-} from "./linebank-current-deposit-canonical.ts";
-import { CURRENT_DEPOSIT_BALANCE_STAGING } from "./current-state-snapshot-capture.ts";
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import type { ProviderResponse, ProviderResponseDeclaration } from "./provider-response.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import {
   parseLinebankApiJson,
-  LINEBANK_CURRENT_DEPOSIT_RESPONSE,
-  parseLinebankCurrentDepositBalanceSnapshot,
+  linebankAccountCurrency,
+  linebankAccountKey,
+  linebankCurrentBalanceSnapshot,
+  type ExistingLineBankFinancialCapture,
   type LineBankCurrentDepositAcquired,
-  type LineBankCurrentDepositBalanceRow,
 } from "./linebank-current-deposit-balances.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { LINEBANK_CREDENTIAL_FIELDS, LINEBANK_PRODUCTS, LINEBANK_SOURCE } from "../lib/automation/server/sources/linebank.ts";
@@ -121,16 +117,6 @@ export function deriveLinebankAccountNumberEvidence(
   };
 }
 
-/** The provider's account identity is a composite of the two source fields.
- * Keep the delimiter explicit so two different pairs cannot concatenate to the
- * same opaque key (for example, `12` + `3` versus `1` + `23`). */
-export function linebankAccountKey(account: LineBankAccount): string {
-  const accountNumber = collapseSourceWhitespace(account.acctNbr);
-  const arrangementId = collapseSourceWhitespace(account.arrId);
-  return accountNumber && arrangementId
-    ? `${accountNumber}:${arrangementId}`
-    : "";
-}
 
 type LineBankAccountsResponse = {
   code?: string;
@@ -606,15 +592,6 @@ function accountLabel(account: LineBankAccount): string {
   );
 }
 
-export function linebankAccountCurrency(account: LineBankAccount): string {
-  return collapseSourceWhitespace(
-    account.currCd ??
-      account.ccyCd ??
-      account.crncyCd ??
-      account.currency ??
-      "TWD",
-  ).toUpperCase();
-}
 
 function matchesFilters(account: LineBankAccount, filters: string[]): boolean {
   if (filters.length === 0) return true;
@@ -982,45 +959,7 @@ export function linebankSignInPlan(credentials: LineBankCredentials): FormPlan {
   };
 }
 
-/**
- * Keep the balance rows of the selected accounts, and require exactly one
- * for each selected TWD account, each of which this run admitted.
- */
-function selectedCurrentBalanceRows(
-  rows: readonly LineBankCurrentDepositBalanceRow[],
-  accounts: readonly LineBankAccount[],
-): readonly LineBankCurrentDepositBalanceRow[] {
-  const selectedAccountKeys = new Set(
-    accounts.map((account) => linebankAccountKey(account)).filter(Boolean),
-  );
-  return rows.filter((row) =>
-    selectedAccountKeys.has(linebankAccountKey(row.account)),
-  );
-}
 
-/** The admitted account the current-balance snapshot matches a row against. */
-type LineBankCurrentBalanceCapture = Parameters<typeof buildLinebankCurrentDepositBalanceCapture>[1];
-
-function requireCurrentBalanceCoverage(
-  selectedRows: readonly LineBankCurrentDepositBalanceRow[],
-  accounts: readonly LineBankAccount[],
-  domesticCaptures: readonly LineBankHumanAttestedV13ValidatedCapture[],
-): void {
-  const selectedTwdAccountKeys = new Set(
-    accounts
-      .filter((account) => linebankAccountCurrency(account) === "TWD")
-      .map((account) => linebankAccountKey(account)),
-  );
-  const admittedTwdAccountKeys = new Set(
-    domesticCaptures.map((capture) => capture.accountKey),
-  );
-  const selectedTwdSourceKeys = new Set(selectedRows.map((row) => row.sourceAccountKey));
-  if (selectedTwdAccountKeys.size !== admittedTwdAccountKeys.size ||
-    selectedRows.length !== selectedTwdAccountKeys.size ||
-    selectedTwdSourceKeys.size !== admittedTwdAccountKeys.size ||
-    [...selectedTwdSourceKeys].some((key) => !admittedTwdAccountKeys.has(key)))
-    throw new Error("LINE Bank current balance source does not cover every selected domestic account.");
-}
 
 /** App-owned LINE Bank provider. All selected source pages are collected and admitted before commit. */
 export const lineBankWorkflow: VerifiedWorkflowEntry<
@@ -1097,7 +1036,7 @@ async function runLineBankWorkflow(
         });
         const observedAt = context.now();
         const domesticCaptures: LineBankHumanAttestedV13ValidatedCapture[] = [];
-        const admissions: DepositAdmission<LineBankCurrentBalanceCapture>[] = [];
+        const admissions: DepositAdmission<ExistingLineBankFinancialCapture>[] = [];
         const captureOccurrenceId = randomUUID();
         await productContext.event("validation", "started", "canonical-admission-started", {
           completed: 0,
@@ -1105,7 +1044,7 @@ async function runLineBankWorkflow(
         });
         for (const [index, selected] of selectedSources.entries()) {
           context.signal.throwIfAborted();
-          admissions.push(await admitDeposit<LineBankCurrentBalanceCapture>(product, async () => {
+          admissions.push(await admitDeposit<ExistingLineBankFinancialCapture>(product, async () => {
             const captureId = `linebank-${randomUUID()}`;
             if (linebankAccountCurrency(selected.account) === "TWD") {
               const capture = await linebankHumanAttestedCapture({
@@ -1149,6 +1088,7 @@ async function runLineBankWorkflow(
           completed: admissions.length,
           total: selectedSources.length,
         });
+        const balances = linebankCurrentBalanceSnapshot(accounts, domesticCaptures);
         // Admission failures surface as one generic message; decoding and
         // coverage failures keep their own. Staging runs after validate has
         // cleared the flag, so its errors pass through unchanged.
@@ -1156,22 +1096,15 @@ async function runLineBankWorkflow(
         try {
           await stageCanonicalDeposits(product, admissions, {
             snapshot: {
-              product: "current-balance",
-              response: LINEBANK_CURRENT_DEPOSIT_RESPONSE,
-              parse: (decoded, response) => {
-                const rows = selectedCurrentBalanceRows(
-                  parseLinebankCurrentDepositBalanceSnapshot({ response, rawBody: decoded.text }),
-                  accounts,
-                );
+              ...balances,
+              parse: (...read) => {
+                const rows = balances.parse(...read);
                 balanceAdmitting = true;
                 return rows;
               },
-              kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-              matching: linebankCurrentBalanceCaptureMatching,
-              build: buildLinebankCurrentDepositBalanceCapture,
-              validate: ({ rows }) => {
+              validate: (match) => {
                 balanceAdmitting = false;
-                requireCurrentBalanceCoverage(rows, accounts, domesticCaptures);
+                balances.validate?.(match);
               },
             },
             acquire: async () => accountSnapshot.currentBalance,

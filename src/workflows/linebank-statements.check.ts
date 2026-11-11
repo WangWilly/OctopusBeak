@@ -10,8 +10,6 @@ import { ProviderResponseCheckError } from "../lib/automation/provider-response-
 import {
   LINEBANK_LOGIN_TIMEOUT_MS,
   LineBankApiClient,
-  linebankAccountCurrency,
-  linebankAccountKey,
   linebankApiRowsToStatementRows,
   linebankEnsureTransactionPage,
   linebankIsSignedIn,
@@ -23,6 +21,7 @@ import {
   linebankAutoDismissApprovedAlert,
   buildLinebankForeignCurrencyCaptureInput,
 } from "./linebank-statements.ts";
+import { linebankAccountCurrency, linebankAccountKey } from "./linebank-current-deposit-balances.ts";
 import { frameScope } from "./frame-scope.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
 import {
@@ -94,8 +93,7 @@ const linebankWorkflowSource = await readFile(
   "utf8",
 );
 assert.match(linebankWorkflowSource, /fetchAccountSnapshot\(/u);
-assert.match(linebankWorkflowSource, /parseLinebankCurrentDepositBalanceSnapshot/u);
-assert.match(linebankWorkflowSource, /linebankCurrentBalanceCaptureMatching/u);
+assert.match(linebankWorkflowSource, /linebankCurrentBalanceSnapshot\(accounts, domesticCaptures\)/u);
 assert.match(linebankWorkflowSource, /stageCanonicalDeposits\(/u);
 assert.match(linebankWorkflowSource, /export const lineBankWorkflow/u);
 assert.match(linebankWorkflowSource, /observedAt:\s*accountSnapshotAt/u);
