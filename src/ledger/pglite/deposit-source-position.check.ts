@@ -14,7 +14,7 @@ import { admitFubonDomesticDepositCaptureEvidence, admitFubonDomesticDepositFina
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
 import * as fubon from "../canonical/fubon-domestic-deposit-admission.ts";
 
-const account = "12345678901234";
+const account = "123456789";
 const observedAt = "2026-01-31T12:00:00+08:00";
 const queryRange = { startDate: "2026/01/01", endDate: "2026/01/31" };
 const digest = `sha256:${createHash("sha256").update("synthetic statement").digest("hex")}` as const;
@@ -77,8 +77,9 @@ test("HNCB transaction content remains stable when a new row precedes it", () =>
         accountSelector: "select#acct1", queryFormSelector: 'form[name="form1"]', downloadSelector: 'input[name="excel_download"]' },
     });
     assert.ok(structural.capture, structural.diagnostics.join(","));
-    const result = admitHncbDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `hncb-position-${shifted}`, humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    const result = admitHncbDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `hncb-position-${shifted}`,
+      sourceCaptureId: `hncb-position-source-${shifted}`, humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST });
+    assert.ok(result.capture);
     return result.capture;
   });
 });

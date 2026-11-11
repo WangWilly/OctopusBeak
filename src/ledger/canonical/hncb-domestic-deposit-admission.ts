@@ -6,6 +6,7 @@ import {
   type CanonicalFinancialDepositRecord,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "./deposit-verdict.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import {
   HNCB_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -842,16 +843,10 @@ export function buildHncbHumanAttestedFinancialSemantics(
 export type HncbDomesticDepositFinancialAdmissionInput = {
   capture: HncbDomesticDepositValidatedEvidence;
   captureId: string;
+  /** The capture id of the source evidence committed when the capture is source-only. */
+  sourceCaptureId: string;
   humanAttestation?: HncbHumanAttestedV1Manifest;
   semantics?: HncbDomesticDepositFinancialSemantics;
-};
-
-
-
-export type HncbDomesticDepositFinancialAdmissionResult = {
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
-  diagnostics: string[];
 };
 
 
@@ -1274,22 +1269,23 @@ function hncbFinancialDiagnosticsFor(
 
 
 
+/**
+ * Admit the capture as financial data. A capture blocked only by unproven
+ * authority, semantics or attestation commits its source evidence alone.
+ */
 export function admitHncbDomesticDepositFinancialCapture(
   input: HncbDomesticDepositFinancialAdmissionInput,
-): HncbDomesticDepositFinancialAdmissionResult {
+): DepositVerdict {
   const result = hncbFinancialDiagnosticsFor(input);
-  if (result.diagnostics.length > 0 || !result.capture)
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: result.diagnostics,
-    };
-  return { status: "admitted", capture: result.capture, diagnostics: [] };
+  if (result.diagnostics.length === 0 && result.capture) return { capture: result.capture };
+  if (!result.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic))
+    throw new DepositAdmissionRefused("HNCB domestic deposit", result.diagnostics);
+  return { sourceOnly: createHncbDomesticDepositSourceEvidence(input.capture, input.sourceCaptureId) };
 }
 
 
 
-export function isHncbSourceOnlyFinancialDiagnostic(
+function isHncbSourceOnlyFinancialDiagnostic(
   diagnostic: string,
 ): boolean {
   return new Set([
