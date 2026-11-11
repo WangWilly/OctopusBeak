@@ -16,7 +16,7 @@ import {
   readYuantaCurrentDepositBalanceTable,
   readYuantaCurrentDepositTableCells,
   yuantaForeignCurrentBalanceSnapshot,
-  type ExistingYuantaForeignFinancialCapture,
+  type ExistingYuantaFinancialCapture,
 } from "./yuanta-current-deposit-balances.ts";
 import { yuantaCurrentDepositTable } from "./yuanta-current-deposit-balances.fixtures.ts";
 import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
@@ -464,7 +464,7 @@ test("cancelling the run interrupts the balance response wait", async () => {
 });
 
 const foreignAccount = foreignRows[0][3];
-const admittedForeignAccount: ExistingYuantaForeignFinancialCapture = {
+const admittedForeignAccount: ExistingYuantaFinancialCapture = {
   identity: {
     sourceConnectionKey: "sha256:yuanta-fx-connection",
     identityEpochKey: "sha256:yuanta-fx-epoch",
@@ -478,7 +478,7 @@ const foreignJpyRow = [foreignUsdRow[0], foreignUsdRow[1], "日幣", foreignAcco
 
 /** Drive the foreign declaration over a summary table of `rows` for the admitted captures. */
 function foreignSnapshot(
-  captures: readonly ExistingYuantaForeignFinancialCapture[],
+  captures: readonly ExistingYuantaFinancialCapture[],
   rows: readonly (readonly string[])[],
 ) {
   return captureCurrentStateSnapshots(yuantaForeignCurrentBalanceSnapshot, {

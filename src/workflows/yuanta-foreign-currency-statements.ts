@@ -29,7 +29,7 @@ import {
 import {
   readYuantaCurrentDepositBalanceTable,
   yuantaForeignCurrentBalanceSnapshot,
-  type ExistingYuantaForeignFinancialCapture,
+  type ExistingYuantaFinancialCapture,
   type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
 import {
@@ -2273,9 +2273,9 @@ export async function stageYuantaForeignCurrency(
       input.yuantaUserId,
     );
   });
-  const admissions: DepositAdmission<ExistingYuantaForeignFinancialCapture>[] = [];
+  const admissions: DepositAdmission<ExistingYuantaFinancialCapture>[] = [];
   for (const capture of captures) {
-    admissions.push(await admitDeposit<ExistingYuantaForeignFinancialCapture>(product, () => {
+    admissions.push(await admitDeposit<ExistingYuantaFinancialCapture>(product, () => {
       const admitted = admitForeignCurrencyDepositCapture(capture);
       return {
         product: "foreign-currency-deposit",
