@@ -481,7 +481,6 @@ const YUANTA_CURRENT_BALANCE_KINDS = {
   domestic: {
     stream: "domestic-deposit",
     route: "yuanta/domestic-deposit/current-balance-v1",
-    product: "current-balance",
     label: "Yuanta",
     sourceRecordNamespace: "yuanta-current-deposit-source-record-v1",
     providerRecordNamespace: "yuanta-current-deposit-provider-record-v1",
@@ -493,7 +492,6 @@ const YUANTA_CURRENT_BALANCE_KINDS = {
   foreign: {
     stream: "foreign-currency-deposit",
     route: "yuanta/foreign-currency/current-balance-v1",
-    product: "current-deposit-balance",
     label: "Yuanta foreign",
     sourceRecordNamespace: "yuanta-foreign-current-deposit-source-record-v1",
     providerRecordNamespace: "yuanta-foreign-current-deposit-provider-record-v1",
@@ -505,7 +503,6 @@ const YUANTA_CURRENT_BALANCE_KINDS = {
 } as const satisfies Record<YuantaCurrentDepositKind, Readonly<{
   stream: YuantaCurrentDepositStream;
   route: CurrentDepositAuthorityRoute;
-  product: string;
   label: string;
   sourceRecordNamespace: string;
   providerRecordNamespace: string;
@@ -648,7 +645,7 @@ function yuantaCurrentBalanceDeclaration(
   ExistingYuantaFinancialCapture
 > {
   return {
-    product: YUANTA_CURRENT_BALANCE_KINDS[kind].product,
+    product: "current-balance",
     response: YUANTA_CURRENT_DEPOSIT_RESPONSE,
     parse: (decoded, response) => parseYuantaCurrentDepositBalanceSnapshot({ kind, rows: decoded.rows, response }),
     kind: CURRENT_DEPOSIT_BALANCE_STAGING,

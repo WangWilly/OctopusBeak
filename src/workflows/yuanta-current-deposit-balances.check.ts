@@ -496,8 +496,8 @@ function foreignSnapshot(
     "the key carries no currency, so one admitted account matches its row in every currency",
   );
   assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
-    ["current-deposit-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:USD`],
-    ["current-deposit-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:JPY`],
+    ["current-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:USD`],
+    ["current-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:JPY`],
   ]);
   const request = stagedBalanceRequest(staged.items[0]);
   assert.equal(request.capture.routeKey, "yuanta/foreign-currency/current-balance-v1");
