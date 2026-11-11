@@ -117,10 +117,10 @@ test("main credential snapshot and mapping stay within the 50ms P95 budget", asy
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "ACCOUNT")]: "synthetic-account",
       [syntheticCredentialKey("LIBRETTO", "CLOUD", "FUBON", "PASSWORD")]: "synthetic-password",
     }));
-    const { credentialStoreForCheck, settingsStoreForCheck } = await import("../src/lib/automation/server/task-run-check-support.ts");
+    const { credentialStoreForCheck, settingsStoreForCheck } = await import("./task-run-check-support.ts");
     const credentials = credentialStoreForCheck(join(directory, "credentials.json"));
     const settings = settingsStoreForCheck(join(directory, "settings.json"));
-    const desktopApi = await import("../src/lib/automation/server/automation-desktop-model.ts");
+    const desktopApi = await import("./automation-desktop-model.ts");
     const samples: number[] = [];
     for (let index = 0; index < 100; index += 1) {
       const startedAt = performance.now();

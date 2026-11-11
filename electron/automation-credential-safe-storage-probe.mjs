@@ -9,7 +9,7 @@ import {
   createAutomationSettingsStore,
 } from "../src/lib/automation/server/config-files.ts";
 import { readAutomationCredentialState } from "../src/lib/automation/server/automation-desktop-model.ts";
-import { toAutomationCredentialStateDto } from "./automation-credential-state.ts";
+import { toAutomationCredentialStateDto } from "../src/lib/automation/server/automation-credential-state.ts";
 
 function reportAndExit(report, code) {
   process.stdout.write(`${JSON.stringify(report)}\n`, () => app.exit(code));

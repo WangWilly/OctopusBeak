@@ -45,7 +45,7 @@ import { withAppWorkflowBrowserPage, type AppWorkflowBrowserConnection } from ".
 import {
   createPGliteChildRpcClient,
   type PGliteChildRpcClient,
-} from "../../../../electron/pglite-child-rpc-client.ts";
+} from "./pglite-child-rpc-client.ts";
 import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
 

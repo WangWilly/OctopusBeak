@@ -11,7 +11,7 @@ import {
 import type { WorkflowRunEvent } from "../run-event.ts";
 import type { CommitAttempt, CommitAttemptReport } from "../commit-attempt.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
-import type { PGliteWorkflowRpc } from "../../../../electron/pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "./pglite-child-rpc-client.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 
 export type { AutomationTaskKind, AutomationTaskStatus } from "../types.ts";
