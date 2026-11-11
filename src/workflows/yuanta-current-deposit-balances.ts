@@ -530,8 +530,6 @@ function buildYuantaCurrentDepositBalanceCapture(
     throw new Error(`Yuanta ${kind} current-balance row has the wrong stream.`);
   const identity = financialCapture.identity;
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-  if (sourceAccountKey !== row.sourceAccountKey)
-    throw new Error(`${spec.label} current-balance row does not match an existing account.`);
   const route = spec.route;
   const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
   const amountPairs: readonly [
