@@ -117,7 +117,7 @@ test(
     const firstFinished = deferred<AutomationTaskRun>();
     const first = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("completes"),
-      onFinished: firstFinished.resolve,
+      onSettled: (_taskId, run) => run && firstFinished.resolve(run),
     });
     assert.equal((await firstFinished.promise).status, "completed");
 
@@ -146,7 +146,7 @@ test(
     try {
       const starting = runner.start("exchange-rates", delayed, {
         runExecution: workerExecution("completes"),
-        onFinished: (run) => finished.push(run),
+        onSettled: (_taskId, run) => run && finished.push(run),
       });
       await creating.promise;
       const cancelling = runner.cancel("exchange-rates");
@@ -178,7 +178,7 @@ test(
     const finished = deferred<AutomationTaskRun>();
     const started = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("ignores-cancel", workers),
-      onFinished: finished.resolve,
+      onSettled: (_taskId, run) => run && finished.resolve(run),
     });
     try {
       await until(() => workers.length === 1, "the workflow worker never started");
@@ -205,14 +205,14 @@ test(
     const finished = deferred<AutomationTaskRun>();
     const started = await runner.start("exchange-rates", provider, {
       runExecution: workerExecution("completes"),
-      onFinished: finished.resolve,
+      onSettled: (_taskId, run) => run && finished.resolve(run),
     });
     try {
       const run = await Promise.race([
         finished.promise,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
       ]);
-      assert.ok(run, "onFinished was not called for a run the runner failed");
+      assert.ok(run, "onSettled did not report the finished record for a run the runner failed");
       assert.equal(run.taskRunId, started.runId);
       assert.equal(run.status, "failed");
     } finally {

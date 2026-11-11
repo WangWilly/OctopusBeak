@@ -127,7 +127,7 @@ test("the runner hands the PGlite capability to the execution as a typed value, 
     plan = executionPlan;
     return { summary: null, failure: null };
   };
-  await runner.start("exchange-rates", provider, { runExecution, onFinished: finished.resolve });
+  await runner.start("exchange-rates", provider, { runExecution, onSettled: (_taskId, run) => run && finished.resolve(run) });
   await finished.promise;
   assert.deepEqual(plan?.pgliteRpc, provider.pgliteWorkflow);
   assert.equal(
@@ -215,7 +215,7 @@ test("an execution that throws after starting a commit still ends commit outcome
   };
   await runner.start("exchange-rates", providerStub(automation), {
     runExecution,
-    onFinished: finished.resolve,
+    onSettled: (_taskId, run) => run && finished.resolve(run),
   });
   const run = await finished.promise;
   assert.equal(run.status, "failed");
@@ -235,7 +235,7 @@ test("cancellation reaches the typed execution through the run's signal and ends
   };
   const { runId } = await runner.start("exchange-rates", provider, {
     runExecution,
-    onFinished: finished.resolve,
+    onSettled: (_taskId, run) => run && finished.resolve(run),
   });
   await started.promise;
   assert.equal(runner.hasActive(), true);
@@ -293,7 +293,7 @@ test("force-quit aborts the run's force signal and settles only after the execut
   };
   const { runId } = await runner.start("exchange-rates", provider, {
     runExecution,
-    onFinished: finished.resolve,
+    onSettled: (_taskId, run) => run && finished.resolve(run),
   });
   await started.promise;
   await assert.rejects(
@@ -340,7 +340,7 @@ test("a cancellation still persisting for a finished run never reaches the task'
     return { summary: null, failure: null };
   };
   const firstFinished = deferred<AutomationTaskRun>();
-  const first = await runner.start("exchange-rates", provider, { runExecution, onFinished: firstFinished.resolve });
+  const first = await runner.start("exchange-rates", provider, { runExecution, onSettled: (_taskId, run) => run && firstFinished.resolve(run) });
   while (executions.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
   const cancellation = runner.cancel("exchange-rates", first.runId);
   await gateReached.promise;
@@ -384,10 +384,8 @@ test("a run whose record cannot be finalized still settles, and a second start a
     return { summary: null, failure: null };
   };
   const settled = deferred<[string, AutomationTaskRun | null]>();
-  const finished: AutomationTaskRun[] = [];
   const first = await runner.start("exchange-rates", provider, {
     runExecution,
-    onFinished: (run) => finished.push(run),
     onSettled: (taskId, run) => settled.resolve([taskId, run]),
   });
   assert.equal(first.adopted, undefined);
@@ -396,5 +394,4 @@ test("a run whose record cannot be finalized still settles, and a second start a
   assert.equal(second.runId, first.runId);
   release.resolve();
   assert.deepEqual(await settled.promise, ["exchange-rates", null]);
-  assert.deepEqual(finished, [], "onFinished still sees only finished runs");
 });

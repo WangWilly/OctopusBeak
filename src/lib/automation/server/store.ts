@@ -134,12 +134,6 @@ export type AutomationPersistenceProvider = Readonly<{
   canonicalReset?: Readonly<{ requiredNamespaces(): Promise<readonly string[]> }>;
 }>;
 
-export function createAutomationPersistenceProvider(
-  automation: AutomationPersistencePort,
-): AutomationPersistenceProvider {
-  return Object.freeze({ automation });
-}
-
 /** Fields an update may change. Status moves only through the transition functions. */
 export type AutomationTaskRunUpdate = Partial<
   Pick<

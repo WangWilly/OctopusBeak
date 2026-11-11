@@ -37,9 +37,6 @@ export async function hydrateAutomationRuntimeState(
 
 export type StartAutomationTaskOptions = {
   scheduledAtUtc?: string;
-  /** Adopt an existing persisted run instead of creating one. */
-  taskRunId?: string;
-  onFinished?: (run: AutomationTaskRun) => void;
   /** Called once the run ends, with `null` when its record could not be finalized. */
   onSettled?: (taskId: string, run: AutomationTaskRun | null) => void;
   /** Test/worker seam for the async execution runner. */
@@ -186,23 +183,17 @@ export function createAutomationRunner(options: Readonly<{
     provider: AutomationPersistenceProvider,
     runOptions: StartAutomationTaskOptions,
   ): Promise<ActiveAutomationTaskRun> {
-    let row: AutomationTaskRun | null;
-    if (runOptions.taskRunId) {
-      row = await provider.automation.taskRunById(runOptions.taskRunId);
-      if (!row) throw new Error(`Missing automation task run: ${runOptions.taskRunId}`);
-    } else {
-      const created = await provider.automation.createTaskRun({
-        taskId: task.id,
-        kind: task.kind,
-        status: "preparing",
-        attempt: 1,
-        maxAttempts: task.maxAttempts,
-        startedAt: new Date().toISOString(),
-        scheduledAtUtc: runOptions.scheduledAtUtc,
-      });
-      row = await provider.automation.taskRunById(created.taskRunId);
-      if (!row) throw new Error(`Failed to create automation task run: ${task.id}`);
-    }
+    const created = await provider.automation.createTaskRun({
+      taskId: task.id,
+      kind: task.kind,
+      status: "preparing",
+      attempt: 1,
+      maxAttempts: task.maxAttempts,
+      startedAt: new Date().toISOString(),
+      scheduledAtUtc: runOptions.scheduledAtUtc,
+    });
+    const row = await provider.automation.taskRunById(created.taskRunId);
+    if (!row) throw new Error(`Failed to create automation task run: ${task.id}`);
     return openActiveTaskRun({
       run: row,
       persistence: provider.automation,
@@ -266,30 +257,12 @@ export function createAutomationRunner(options: Readonly<{
       entry.lifecycle = drive(task, run, provider, runOptions).then((finished) => {
         release(taskId, entry);
         try {
-          if (finished) runOptions.onFinished?.(finished);
-        } catch {
-          console.error("automation-task-run-finished-observer-failed");
-        }
-        try {
           runOptions.onSettled?.(taskId, finished);
         } catch {
           console.error("automation-task-run-settled-observer-failed");
         }
       });
       return { taskId, runId: run.taskRunId, runtime: runtime.snapshot() };
-    },
-
-    /** Start a task and wait for its terminal run. */
-    async run(
-      taskId: string,
-      provider: AutomationPersistenceProvider,
-      runOptions: StartAutomationTaskOptions = {},
-    ): Promise<AutomationTaskRun> {
-      const started = await this.start(taskId, provider, runOptions);
-      await claimed.get(taskId)?.lifecycle;
-      const finished = await provider.automation.taskRunById(started.runId);
-      if (!finished) throw new Error(`Missing automation task run: ${started.runId}`);
-      return finished;
     },
 
     async current(taskId: string) {

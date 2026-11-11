@@ -208,6 +208,15 @@ try {
 
   let exchangeWorkerStarts = 0;
   const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
+  const runToEnd = async (runProvider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) => {
+    let settle!: () => void;
+    const settled = new Promise<void>((resolve) => { settle = resolve; });
+    const { runId } = await runner.start("exchange-rates", runProvider, { runExecution, onSettled: () => settle() });
+    await settled;
+    const finished = await runProvider.automation.taskRunById(runId);
+    assert.ok(finished, "the started run has a record");
+    return finished;
+  };
   const exchangeExecution: typeof runAutomationTaskExecution = (plan, activeRun, round, seams) => runAutomationTaskExecution(
     plan,
     activeRun,
@@ -224,9 +233,7 @@ try {
       },
     },
   );
-  const exchangeExecutionResult = await runner.run("exchange-rates", provider, {
-    runExecution: exchangeExecution,
-  });
+  const exchangeExecutionResult = await runToEnd(provider, exchangeExecution);
   assert.equal(exchangeExecutionResult.status, "completed");
   assert.equal(exchangeWorkerStarts, 1, "the App runner must dispatch exchange sync through a supervised worker");
   assert.deepEqual(
@@ -239,9 +246,7 @@ try {
     await activeRun.transition("running");
     return { summary: null, failure: null };
   };
-  const executionResult = await runner.run("exchange-rates", provider, {
-    runExecution: deterministicExecution,
-  });
+  const executionResult = await runToEnd(provider, deterministicExecution);
   assert.equal(executionResult.status, "completed");
   assert.equal((await provider.automation.latestTaskRuns())["exchange-rates"]?.status, "completed");
 
@@ -265,9 +270,7 @@ try {
     },
   });
   const delayedProvider: AutomationPersistenceProvider = { ...provider, automation: delayedAutomation };
-  const delayedResult = await runner.run("exchange-rates", delayedProvider, {
-    runExecution: deterministicExecution,
-  });
+  const delayedResult = await runToEnd(delayedProvider, deterministicExecution);
   assert.equal(delayedResult.status, "completed");
 
   let rejectedLookups = 0;
@@ -289,9 +292,7 @@ try {
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    await runner.run("exchange-rates", rejectedProvider, {
-      runExecution: deterministicExecution,
-    });
+    await runToEnd(rejectedProvider, deterministicExecution);
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(unhandled, []);
     assert.equal(runner.hasActive(), false, "a failed finalization still releases the task");

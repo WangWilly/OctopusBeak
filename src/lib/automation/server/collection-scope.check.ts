@@ -76,7 +76,7 @@ test("commit admission goes through the runner's active run to its current execu
   const done = new Promise<void>((resolve) => { finished = resolve; });
   try {
     const { runId } = await runner.start("exchange-rates", provider, {
-      onFinished: () => finished(),
+      onSettled: () => finished(),
       runExecution: async (_task, run) => {
         await run.transition("running");
         observed.beforeExecution = admits(run.taskRunId);
