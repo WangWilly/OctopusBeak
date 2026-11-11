@@ -9,8 +9,10 @@ import type { FubonAllWorkflowDependencies } from "./fubon-all-statements.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import type {
   FubonDepositAccountOptionEvidence,
-  FubonDepositProductContext,
   FubonDepositStatementPageEvidence,
+} from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
+import type {
+  FubonDepositProductContext,
   FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
 

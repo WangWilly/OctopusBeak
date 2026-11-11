@@ -22,7 +22,8 @@ import {
 } from "./relations.ts";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
-import { buildFubonLoanPaymentAccountEvidence, type FubonDepositStatementEvidence } from "../../workflows/fubon-statements.ts";
+import { buildFubonLoanPaymentAccountEvidence } from "../../workflows/fubon-statements.ts";
+import type { FubonDepositStatementEvidence } from "../canonical/fubon-domestic-deposit-admission.ts";
 import { buildFubonLoanCapture } from "../canonical/fubon-loan-admission.ts";
 
 const token = (value: string): `sha256:${string}` =>

@@ -3,6 +3,7 @@ import test from "node:test";
 import * as fubon from "./fubon-domestic-deposit-admission.ts";
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "./fubon-human-attestation-contract.ts";
 import { deriveSourceConnectionIdentityKey } from "./source-connection-identity.ts";
+import { DepositAdmissionRefused } from "./deposit-verdict.ts";
 
 const accountDigits = "12345678901234";
 const scope = "synthetic-fubon-user\0synthetic-fubon-account";
@@ -49,6 +50,7 @@ function admitWithAccountValue(
   return fubon.admitFubonDomesticDepositFinancialCapture({
     capture: structural.capture,
     captureId: `fubon-composite-${value}`,
+    sourceCaptureId: `fubon-composite-source-${value}`,
     sourceConnectionScope: scope,
     sourceConnectionKey,
     ...(continuedSourceAccountKey === undefined ? {} : { continuedSourceAccountKey }),
@@ -181,8 +183,7 @@ test("route currency is TWD for a plain or TWD-coded option and for a USD-coded 
 
 test("a USD-coded composite option with a reconciling balance record admits with V3 evidence", () => {
   const result = admitWithAccountValue(`123-00${accountDigits}-USD-02`, reconcilingRecord);
-  assert.ok(result.capture, result.diagnostics.join(","));
-  assert.equal(result.diagnostics.includes("currency-unproven"), false);
+  assert.ok(result.capture);
   assert.equal(
     result.capture.identity.accountNumber?.evidenceVersion,
     fubon.FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION_V3,
@@ -201,12 +202,8 @@ for (const [name, value, record] of [
 ] as const) {
   test(`${name} stays out of financial admission even when route evidence says TWD`, () => {
     const result = admitWithAccountValue(value, record);
-    assert.equal(result.capture, null, `${name} must not admit as TWD`);
-    assert.ok(result.diagnostics.includes("currency-unproven"), result.diagnostics.join(","));
-    assert.ok(
-      result.diagnostics.every(fubon.isFubonSourceOnlyFinancialDiagnostic),
-      `diagnostics must route to source-only: ${result.diagnostics.join(",")}`,
-    );
+    assert.equal(result.capture, undefined, `${name} must not admit as TWD`);
+    assert.equal(result.sourceOnly?.captureId, `fubon-composite-source-${value}`, `${name} commits its source evidence alone`);
   });
 }
 
@@ -273,8 +270,7 @@ test("composite account-number evidence is versioned by currency code and reject
 
 test("a TWD-coded composite option in the same position still admits", () => {
   const result = admitWithAccountValue(`123-00${accountDigits}-TWD-01`);
-  assert.ok(result.capture, result.diagnostics.join(","));
-  assert.equal(result.diagnostics.includes("currency-unproven"), false);
+  assert.ok(result.capture);
 });
 
 test("identity stability is the contract: account identity keys stay fixed", () => {
@@ -318,9 +314,9 @@ test("identity pins stay fixed for a TWD-coded composite, a USD-coded composite,
 
 test("a rewritten option continued under the admitted key admits the same identity and transaction keys", () => {
   const twd = admitWithAccountValue(twdValue);
-  assert.ok(twd.capture, twd.diagnostics.join(","));
+  assert.ok(twd.capture);
   const rewritten = admitWithAccountValue(`456-00${accountDigits}-USD-03`, reconcilingRecord, twd.capture.identity.sourceAccountKey);
-  assert.ok(rewritten.capture, rewritten.diagnostics.join(","));
+  assert.ok(rewritten.capture);
   const identityFields = ({ accountNo, sourceAccountKey, subjectDigest, identityEpochKey }: typeof twd.capture.identity) =>
     ({ accountNo, sourceAccountKey, subjectDigest, identityEpochKey });
   assert.deepEqual(identityFields(rewritten.capture.identity), identityFields(twd.capture.identity));
@@ -333,9 +329,10 @@ test("a rewritten option continued under the admitted key admits the same identi
 
 test("a continuation needs account-number evidence and an opaque key", () => {
   const twd = admitWithAccountValue(twdValue);
-  assert.ok(twd.capture, twd.diagnostics.join(","));
-  const unevidenced = admitWithAccountValue("SYNTHETIC-FUBON-ACCOUNT-VALUE", undefined, twd.capture.identity.sourceAccountKey);
-  assert.equal(unevidenced.capture, null);
-  assert.ok(unevidenced.diagnostics.includes("account-identity-unproven"));
+  assert.ok(twd.capture);
+  assert.throws(
+    () => admitWithAccountValue("SYNTHETIC-FUBON-ACCOUNT-VALUE", undefined, twd.capture.identity.sourceAccountKey),
+    (error: unknown) => error instanceof DepositAdmissionRefused && error.diagnostics.includes("account-identity-unproven"),
+  );
   assert.throws(() => admitWithAccountValue(twdValue, undefined, "not-an-opaque-key"), /opaque source token/u);
 });

@@ -19,9 +19,9 @@ import {
   type FubonCurrentDepositBalanceRead,
   type FubonDepositProductContext,
   type FubonStatementsInput,
-  type FubonDepositStatementEvidence,
   type FubonParsedDepositStatement,
 } from "./fubon-statements.ts";
+import type { FubonDepositStatementEvidence } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import {
   deriveFubonSourceConnectionKey,
   fubonStableLoginScope,

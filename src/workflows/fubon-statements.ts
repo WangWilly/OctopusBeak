@@ -37,13 +37,17 @@ import {
   FUBON_DOMESTIC_DEPOSIT_PROVIDER_ROUTE_CONTRACT,
   FUBON_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
   FUBON_HUMAN_ATTESTED_V1_MANIFEST,
-  isFubonSourceOnlyFinancialDiagnostic,
   isSourceOnlyFubonDomesticDepositCaptureEvidence,
   deriveFubonCompositeAccountNumberEvidence,
   fubonDepositLatestStatementRow,
   fubonDepositRouteCurrency,
   isUsdCodedCompositeOfOwnLabel,
+  type FubonDepositAccountOptionEvidence,
   type FubonDepositBalanceReconciliation,
+  type FubonDepositPaginationAmbiguityReason,
+  type FubonDepositStatementEvidence,
+  type FubonDepositStatementPageEvidence,
+  type FubonDepositStatementRowEvidence,
   type FubonDomesticDepositAccountIdentity,
   type FubonDomesticDepositValidatedEvidence,
   type FubonDomesticDepositAccountNumberEvidence,
@@ -361,18 +365,6 @@ export type FubonDepositAccountOption = {
   value: string;
 };
 
-/**
- * Versioned evidence emitted at the existing Fubon form-postback boundary.
- * The values are retained only as a typed hand-off to the Fubon adapter; no
- * provider financial semantics are inferred from the HTML table.
- */
-export type FubonDepositAccountOptionEvidence = {
-  value: string;
-  label: string;
-  branchName: string;
-  accountNumber?: FubonDomesticDepositAccountNumberEvidence;
-};
-
 function escapedRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -400,59 +392,6 @@ export function deriveFubonDomesticDepositAccountNumberEvidence(
     sourceField: "form1:comboAccount option.value",
   };
 }
-
-export type FubonDepositStatementRowEvidence = {
-  rowOrdinal: number;
-  /** The seven cells in the source table's declared header order. */
-  cells: readonly [string, string, string, string, string, string, string];
-  /** Reserved for a provider-emitted transaction identifier; never inferred. */
-  sourceOccurrenceId?: string;
-};
-
-export type FubonDepositStatementPageEvidence = {
-  pageOrdinal: number;
-  responseSequence: number;
-  terminal: boolean;
-  nextPage: string | null;
-  pageFieldName: string | null;
-  /** Provider-derived pagination signal; absent means pagination is ambiguous. */
-  paginationEvidence?: "next-page" | "terminal-no-next";
-  /** No traversable next page was parsed, but provider pagination controls were ambiguous. */
-  paginationAmbiguous?: true;
-  paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
-  queryRange: { startDate: string; endDate: string };
-  selectedAccount: FubonDepositAccountOptionEvidence;
-  /** Provider page-size evidence used to distinguish a short terminal page from a truncated full page. */
-  providerPageSize?: number;
-  /** Provider result-count evidence used to prove a complete terminal page. */
-  providerTotalCount?: number;
-  rows: readonly FubonDepositStatementRowEvidence[];
-  zeroObservation: "empty-page" | "non-empty-page";
-};
-
-export type FubonDepositStatementEvidence = {
-  evidenceVersion: typeof FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
-  source: "fubon";
-  observedAt: string;
-  account: FubonDepositAccountOptionEvidence;
-  queryRange: { startDate: string; endDate: string };
-  pages: readonly FubonDepositStatementPageEvidence[];
-  zeroObservation: "empty-range" | "non-empty-range";
-  /** Positive evidence that this capture came from the exact domestic TWD endpoint. */
-  providerRouteEvidence?: {
-    endpointPath: string;
-    contract: string;
-    currency: "TWD" | "FX" | "unknown";
-    balanceReconciliation?: FubonDepositBalanceReconciliation;
-  };
-  /** Empty ranges are canonical only when the provider explicitly says no data. */
-  zeroResultAuthority?: "provider-explicit-no-data" | "unproven";
-  provenance: {
-    source: "fubon-ebank-domestic-deposit-form-postback";
-    responseBodyRetained: false;
-    semantics: "unresolved";
-  };
-};
 
 type FubonFinancialCaptureForCounterpartyEvidence = {
   captureId: string;
@@ -840,14 +779,6 @@ export type FubonDepositPaginationSignal = {
   paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
   providerPageSize?: number;
 };
-
-export type FubonDepositPaginationAmbiguityReason =
-  | "result-context-missing"
-  | "malformed-result-action"
-  | "forward-control-unrecognized"
-  | "forward-target-untraversable"
-  | "current-page-unresolved"
-  | "terminal-proof-missing";
 
 function fubonHtmlAttribute(openingTag: string, name: string): string {
   const match = [
@@ -2215,9 +2146,13 @@ export async function stageFubonDeposit(
           : derivedIdentity;
         const financialCaptureId = `fubon-financial-${nextTimestamp()}-${accountDigest}-${index}`;
         const admission = await admitDeposit<ExistingFubonFinancialCapture>(product, () => {
-          const financialInput = {
+          // Run the semantic classifier before the execution boundary. Malformed
+          // amount/time/row/balance data must fail visibly rather than being
+          // hidden as source-only.
+          const verdict = admitFubonDomesticDepositFinancialCapture({
             capture,
             captureId: financialCaptureId,
+            sourceCaptureId,
             semantics: buildFubonHumanAttestedFinancialSemantics(capture, identity),
             humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
             sourceConnectionScope,
@@ -2225,51 +2160,9 @@ export async function stageFubonDeposit(
             ...(continuity.status === "continued"
               ? { continuedSourceAccountKey: continuity.sourceAccountKey }
               : {}),
-          };
-          // Run the semantic classifier before the execution boundary. Malformed
-          // amount/time/row/balance data must fail visibly rather than being
-          // hidden as source-only.
-          let financialAdmission =
-            admitFubonDomesticDepositFinancialCapture(financialInput);
-          // A status marker describes one row, not the completeness of the
-          // requested range. Admit the clean rows and keep each unresolved row
-          // as statement evidence in the same capture, so one ambiguous row
-          // cannot hide the account's range.
-          if (
-            financialAdmission.status !== "admitted" &&
-            financialAdmission.diagnostics.length > 0 &&
-            financialAdmission.diagnostics.every(
-              (diagnostic) => diagnostic === "row-status-unresolved",
-            )
-          ) {
-            const partialAdmission = admitFubonDomesticDepositFinancialCapture({
-              ...financialInput,
-              allowSourceOnlyRows: true,
-            });
-            if (
-              partialAdmission.status === "admitted" &&
-              partialAdmission.capture &&
-              partialAdmission.capture.records.length > 0
-            ) {
-              financialAdmission = partialAdmission;
-            }
-          }
-          if (financialAdmission.status !== "admitted") {
-            const disallowed = financialAdmission.diagnostics.filter(
-              (diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic),
-            );
-            if (disallowed.length > 0) {
-              throw new Error(
-                `Fubon deposit financial admission failed: ${disallowed.join(", ")}`,
-              );
-            }
-            return sourceOnly();
-          }
-          const financialCapture = financialAdmission.capture;
-          if (!financialCapture)
-            throw new Error(
-              "Fubon domestic deposit admission lost its canonical capture.",
-            );
+          });
+          if (verdict.sourceOnly) return { ...verdict, product: "domestic-deposit" };
+          const financialCapture = verdict.capture;
           const counterpartyEvidence = buildFubonLoanPaymentAccountEvidence(capture, financialCapture);
           return {
             product: "domestic-deposit",

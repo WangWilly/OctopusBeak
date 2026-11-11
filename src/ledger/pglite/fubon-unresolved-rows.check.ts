@@ -11,18 +11,22 @@ const rule = fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY;
 const scope = "synthetic-fubon-user\0synthetic-fubon-account";
 const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", scope);
 
-function partialCapture(captureId: string) {
+const reversal = ["2026/01/03", "08:00:00", "SYNTHETIC DEPOSIT", "100", "", "0", "沖正"] as const;
+
+function admitRows(captureId: string, rows: "posted-and-reversal" | "reversal-only") {
   const raw = structuredClone(fubon.FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2);
   const page = raw.pages[0]!;
   const posted = page.rows[0]!;
-  const reversal = ["2026/01/03", "08:00:00", "SYNTHETIC DEPOSIT", "100", "", "0", "沖正"] as const;
-  page.rows = [posted, { ...posted, rowOrdinal: 1, cells: reversal }];
+  page.rows = rows === "posted-and-reversal"
+    ? [posted, { ...posted, rowOrdinal: 1, cells: reversal }]
+    : [{ ...posted, cells: reversal }];
   const structural = fubon.admitFubonDomesticDepositCaptureEvidence(raw);
   assert.ok(structural.capture, structural.diagnostics.join(","));
   const identity = fubon.deriveFubonDomesticDepositAccountIdentity(structural.capture.account, FUBON_HUMAN_ATTESTED_V1_MANIFEST, sourceConnectionKey);
   const input: fubon.FubonDomesticDepositFinancialAdmissionInput = {
     capture: structural.capture,
     captureId,
+    sourceCaptureId: `${captureId}-source`,
     sourceConnectionScope: scope,
     sourceConnectionKey,
     humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
@@ -38,11 +42,28 @@ function partialCapture(captureId: string) {
       occurrence: { ruleVersion: fubon.FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
     },
   };
-  assert.deepEqual(fubon.admitFubonDomesticDepositFinancialCapture(input).diagnostics, ["row-status-unresolved"]);
-  const partial = fubon.admitFubonDomesticDepositFinancialCapture({ ...input, allowSourceOnlyRows: true });
-  assert.ok(partial.capture, partial.diagnostics.join(","));
-  return partial.capture;
+  return fubon.admitFubonDomesticDepositFinancialCapture(input);
 }
+
+function partialCapture(captureId: string) {
+  const { capture } = admitRows(captureId, "posted-and-reversal");
+  assert.ok(capture);
+  return capture;
+}
+
+test("a Fubon capture blocked only by an unresolved row admits its posted row and keeps the unresolved one as statement evidence", () => {
+  const verdict = admitRows("fubon-partial-verdict", "posted-and-reversal");
+  assert.equal(verdict.sourceOnly, undefined);
+  assert.equal(verdict.capture?.captureId, "fubon-partial-verdict");
+  assert.equal(verdict.capture?.records.length, 1);
+  assert.equal(verdict.capture?.nonTransactionRecords?.length, 1);
+});
+
+test("a Fubon capture whose only rows are unresolved commits its source evidence alone", () => {
+  const verdict = admitRows("fubon-unresolved-only", "reversal-only");
+  assert.equal(verdict.capture, undefined);
+  assert.equal(verdict.sourceOnly?.captureId, "fubon-unresolved-only-source");
+});
 
 async function sourceRecordStatuses(store: PGliteStore, captureId: string): Promise<string[]> {
   const rows = await store.query<{ payload_json: string }>(

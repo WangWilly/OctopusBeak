@@ -47,6 +47,7 @@ test("Fubon transaction content remains stable when a new row precedes it", () =
     const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", scope);
     const identity = fubon.deriveFubonDomesticDepositAccountIdentity(structural.capture.account, FUBON_HUMAN_ATTESTED_V1_MANIFEST, sourceConnectionKey);
     const result = admitFubonDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `fubon-position-${shifted}`,
+      sourceCaptureId: `fubon-position-source-${shifted}`,
       sourceConnectionScope: scope, sourceConnectionKey, humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
       semantics: {
         evidenceVersion: fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -59,7 +60,7 @@ test("Fubon transaction content remains stable when a new row precedes it", () =
         completeness: { basis: fubon.FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS, ruleVersion: fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY, absenceAuthority: fubon.FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY },
         occurrence: { ruleVersion: fubon.FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
       } });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    assert.ok(result.capture);
     return result.capture;
   });
 });

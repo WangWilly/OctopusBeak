@@ -6,6 +6,7 @@ import {
   type CanonicalFinancialNonTransactionRecord,
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "./deposit-verdict.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
 import {
@@ -17,7 +18,6 @@ import {
   isFubonHumanAttestedV1Manifest,
   type FubonHumanAttestedV1Manifest,
 } from "./fubon-human-attestation-contract.ts";
-import type { FubonDepositStatementEvidence } from "../../workflows/fubon-statements.ts";
 
 // Keep the contract token duplicated as a literal so canonical checks can run
 // without loading Playwright-only workflow dependencies in Node's test runner.
@@ -157,6 +157,79 @@ export const FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2: FubonDomesticDepositCapt
       semantics: "unresolved",
     },
   };
+
+/**
+ * Versioned evidence emitted at the existing Fubon form-postback boundary.
+ * The values are retained only as a typed hand-off to the Fubon adapter; no
+ * provider financial semantics are inferred from the HTML table.
+ */
+export type FubonDepositAccountOptionEvidence = {
+  value: string;
+  label: string;
+  branchName: string;
+  accountNumber?: FubonDomesticDepositAccountNumberEvidence;
+};
+
+export type FubonDepositPaginationAmbiguityReason =
+  | "result-context-missing"
+  | "malformed-result-action"
+  | "forward-control-unrecognized"
+  | "forward-target-untraversable"
+  | "current-page-unresolved"
+  | "terminal-proof-missing";
+
+export type FubonDepositStatementRowEvidence = {
+  rowOrdinal: number;
+  /** The seven cells in the source table's declared header order. */
+  cells: readonly [string, string, string, string, string, string, string];
+  /** Reserved for a provider-emitted transaction identifier; never inferred. */
+  sourceOccurrenceId?: string;
+};
+
+export type FubonDepositStatementPageEvidence = {
+  pageOrdinal: number;
+  responseSequence: number;
+  terminal: boolean;
+  nextPage: string | null;
+  pageFieldName: string | null;
+  /** Provider-derived pagination signal; absent means pagination is ambiguous. */
+  paginationEvidence?: "next-page" | "terminal-no-next";
+  /** No traversable next page was parsed, but provider pagination controls were ambiguous. */
+  paginationAmbiguous?: true;
+  paginationAmbiguityReason?: FubonDepositPaginationAmbiguityReason;
+  queryRange: { startDate: string; endDate: string };
+  selectedAccount: FubonDepositAccountOptionEvidence;
+  /** Provider page-size evidence used to distinguish a short terminal page from a truncated full page. */
+  providerPageSize?: number;
+  /** Provider result-count evidence used to prove a complete terminal page. */
+  providerTotalCount?: number;
+  rows: readonly FubonDepositStatementRowEvidence[];
+  zeroObservation: "empty-page" | "non-empty-page";
+};
+
+export type FubonDepositStatementEvidence = {
+  evidenceVersion: typeof FUBON_DOMESTIC_DEPOSIT_EVIDENCE_VERSION;
+  source: "fubon";
+  observedAt: string;
+  account: FubonDepositAccountOptionEvidence;
+  queryRange: { startDate: string; endDate: string };
+  pages: readonly FubonDepositStatementPageEvidence[];
+  zeroObservation: "empty-range" | "non-empty-range";
+  /** Positive evidence that this capture came from the exact domestic TWD endpoint. */
+  providerRouteEvidence?: {
+    endpointPath: string;
+    contract: string;
+    currency: "TWD" | "FX" | "unknown";
+    balanceReconciliation?: FubonDepositBalanceReconciliation;
+  };
+  /** Empty ranges are canonical only when the provider explicitly says no data. */
+  zeroResultAuthority?: "provider-explicit-no-data" | "unproven";
+  provenance: {
+    source: "fubon-ebank-domestic-deposit-form-postback";
+    responseBodyRetained: false;
+    semantics: "unresolved";
+  };
+};
 
 export type FubonDomesticDepositCaptureEvidence = FubonDepositStatementEvidence;
 
@@ -1183,13 +1256,9 @@ export type FubonDomesticDepositFinancialAdmissionInput = {
    */
   sourceConnectionScope?: string;
   sourceConnectionKey?: string;
-  /**
-   * Workflow-only admission mode: retain status-marked rows in structural
-   * source evidence, while admitting the clean rows from the same complete
-   * capture as financial records.
-   */
-  allowSourceOnlyRows?: boolean;
   continuedSourceAccountKey?: string;
+  /** The capture id of the source evidence committed when the capture is source-only. */
+  sourceCaptureId: string;
 };
 
 export type FubonDomesticDepositFinancialAdmissionDiagnostic =
@@ -1241,14 +1310,14 @@ export type FubonDomesticDepositFinancialAdmissionDiagnostic =
   | "source-connection-key-mismatch"
   | "row-status-unresolved";
 
-export type FubonDomesticDepositFinancialAdmissionResult = {
+type FubonFinancialAttempt = {
   status: "admitted" | "blocked";
   capture: CanonicalFinancialDepositValidatedCapture | null;
   diagnostics: FubonDomesticDepositFinancialAdmissionDiagnostic[];
 };
 
 /** Only these conservative uncertainties may be downgraded to source-only. */
-export function isFubonSourceOnlyFinancialDiagnostic(
+function isFubonSourceOnlyFinancialDiagnostic(
   diagnostic: FubonDomesticDepositFinancialAdmissionDiagnostic,
 ): boolean {
   return new Set<FubonDomesticDepositFinancialAdmissionDiagnostic>([
@@ -1576,9 +1645,14 @@ function hasValidatedEvidence(
   return isAdmittedFubonDomesticDepositCaptureEvidence(value);
 }
 
+/**
+ * With `allowSourceOnlyRows`, a status-marked row travels as statement
+ * evidence while the clean rows of the same complete capture are admitted.
+ */
 function normalizeFubonDomesticDepositFinancialCapture(
   input: FubonDomesticDepositFinancialAdmissionInput,
-): FubonDomesticDepositFinancialAdmissionResult {
+  allowSourceOnlyRows: boolean,
+): FubonFinancialAttempt {
   const diagnostics: FubonDomesticDepositFinancialAdmissionDiagnostic[] = [];
   if (input === null || typeof input !== "object") {
     diagnostics.push("scope-invalid", "runtime-evidence-brand-missing");
@@ -1805,7 +1879,6 @@ function normalizeFubonDomesticDepositFinancialCapture(
     record: CanonicalFinancialDepositRecord;
     partitionDate: string;
   }> = [];
-  const allowSourceOnlyRows = input.allowSourceOnlyRows === true;
   for (const { page, row } of rows) {
     const cells = row.cells;
     const rowStatus = classifyFubonDomesticDepositRow(cells);
@@ -2047,8 +2120,35 @@ function normalizeFubonDomesticDepositFinancialCapture(
   return { status: "admitted", capture: canonicalCapture, diagnostics: [] };
 }
 
+/**
+ * Admit the capture as financial data. A capture blocked only by unproven
+ * currency, authority, semantics, attestation or pagination commits its
+ * source evidence alone.
+ */
 export function admitFubonDomesticDepositFinancialCapture(
   input: FubonDomesticDepositFinancialAdmissionInput,
-): FubonDomesticDepositFinancialAdmissionResult {
-  return normalizeFubonDomesticDepositFinancialCapture(input);
+): DepositVerdict {
+  let attempt = normalizeFubonDomesticDepositFinancialCapture(input, false);
+  // A status marker describes one row, not the completeness of the requested
+  // range. Admit the clean rows and keep each unresolved row as statement
+  // evidence in the same capture, so one ambiguous row cannot hide the
+  // account's range.
+  if (
+    attempt.status !== "admitted" &&
+    attempt.diagnostics.length > 0 &&
+    attempt.diagnostics.every((diagnostic) => diagnostic === "row-status-unresolved")
+  ) {
+    const partial = normalizeFubonDomesticDepositFinancialCapture(input, true);
+    if (partial.status === "admitted" && partial.capture && partial.capture.records.length > 0)
+      attempt = partial;
+  }
+  if (attempt.status === "admitted" && attempt.capture) return { capture: attempt.capture };
+  const disallowed = attempt.diagnostics.filter((diagnostic) => !isFubonSourceOnlyFinancialDiagnostic(diagnostic));
+  if (disallowed.length > 0) throw new DepositAdmissionRefused("Fubon deposit", disallowed);
+  return {
+    sourceOnly: createFubonDomesticDepositSourceEvidence(input.capture, input.sourceCaptureId, {
+      sourceConnectionScope: input.sourceConnectionScope,
+      sourceConnectionKey: input.sourceConnectionKey,
+    }),
+  };
 }
