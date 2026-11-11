@@ -12,7 +12,6 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../../../ledger/canonical/current-deposit-route-contracts.ts";
 import { taskById } from "./tasks.ts";
 import {
-  executeRoundForCheck,
   inProcessCheckHost,
   runForCheck,
   runtimeForCheck,
@@ -203,20 +202,6 @@ function fakePostPage(options: {
   return result;
 }
 
-async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
-  const task = taskById("post-statements");
-  assert.ok(task);
-  const created = await provider.automation.createTaskRun({
-    taskId: task.id,
-    kind: task.kind,
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  return created.taskRunId;
-}
-
 function financialCommitPort(committed: unknown[][], hasSource: () => boolean): WorkflowFinancialCommitPort {
   return {
     async execute(items) {
@@ -256,11 +241,10 @@ test("Post App task dispatches the typed provider with human assistance, complet
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit: commitPort,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -275,11 +259,11 @@ test("Post App task dispatches the typed provider with human assistance, complet
         page.setSignedIn(true);
         await completeAppWorkflowHumanAssistance(request);
       },
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-    });
+    }), task.id);
 
-    const run = await provider.automation.taskRunById(taskRunId);
+    const run = await provider.automation.taskRunById(result.taskRunId);
     assert.equal(result.status, "completed", JSON.stringify({
       events: run?.events.map(({ stage, code }) => [stage, code]),
       errorCode: run?.appWorkflowOutcome?.errorCode,
@@ -352,20 +336,19 @@ test("Post App dispatch cancellation during human assistance does not collect or
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const page = fakePostPage();
-    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
       assistanceRoute: (request) => {
         void request.run.requestStop("cancelled");
       },
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-    });
+    }), task.id);
     assert.equal(result.status, "cancelled");
     assert.equal(committed.length, 0);
     assert.equal(page.sourceResponseReads, 0);
-    const run = await provider.automation.taskRunById(taskRunId);
+    const run = await provider.automation.taskRunById(result.taskRunId);
     assert.equal(run?.status, "cancelled");
     assert.deepEqual(await readdir(root), []);
   } finally {
@@ -385,11 +368,12 @@ test("Post App dispatch without a verification route fails with a configuration 
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
     const page = fakePostPage();
-    const { run } = await executeRoundForCheck(task, provider.automation, await createRun(provider), {
+    const { run } = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      assistanceRoute: null,
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
-    });
+    }), task.id);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "verification-configuration-failed");
     assert.ok(run?.events.some((event) => event.signal === "solver-route-unavailable"));
   } finally {

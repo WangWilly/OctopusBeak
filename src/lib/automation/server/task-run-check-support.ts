@@ -90,6 +90,12 @@ export async function startForCheck(runtime: Pick<AutomationRuntime, "start">, t
  * source enabled, the settings `environment` names in settings.json and the
  * rest of it in credentials.json, in a directory of their own. User data is
  * in `userDataDirectory`, the check's directory by default.
+ *
+ * The CAPTCHA Retry Campaign routes a Verified source's requests to the App's
+ * solver, which reads a hosted page `inProcessCheckHost` does not open. A
+ * given `assistanceRoute` answers every round's requests in its place; `null`
+ * leaves a round with no route, so its requests fail closed. `executions`
+ * receives each Workflow execution a round begins.
  */
 export function runtimeForCheck(
   provider: Omit<AutomationPersistenceProvider, "pgliteWorkflow">,
@@ -97,8 +103,12 @@ export function runtimeForCheck(
     executionHost: ExecutionHost;
     environment?: NodeJS.ProcessEnv;
     userDataDirectory?: string;
+    assistanceRoute?: HumanAssistanceRoute | null;
+    executions?: WorkflowExecution[];
   }>,
 ): AutomationRuntime {
+  const { executionHost, assistanceRoute, executions } = options;
+  const execute = createTaskRunExecution(executionHost);
   const directory = mkdtempSync(join(tmpdir(), "task-run-check-"));
   process.once("exit", () => rmSync(directory, { recursive: true, force: true }));
   const host = runnerHostForCheck(directory);
@@ -114,7 +124,11 @@ export function runtimeForCheck(
   return createAutomationRuntime({ ...provider, pgliteWorkflow: CHECK_PGLITE_RPC }, {
     ...host,
     userDataDirectory: resolve(options.userDataDirectory ?? "."),
-    executionHost: options.executionHost,
+    runExecution: (plan, run, round) => execute(
+      plan,
+      executions ? observingExecutions(run, executions) : run,
+      assistanceRoute === undefined ? round : { ...round, assistanceRoute: assistanceRoute ?? undefined },
+    ),
   });
 }
 
@@ -297,39 +311,4 @@ export async function requestAssistanceForCheck(
   } finally {
     execution.end();
   }
-}
-
-/**
- * One Workflow execution of an existing run, finished by its run owner, for
- * a check whose round carries its own assistance route or none. The runner's
- * CAPTCHA Retry Campaign routes a Verified source's requests to the App's
- * solver, which reads a hosted page; a check that needs neither starts its
- * task through `runtimeForCheck`.
- */
-export async function executeRoundForCheck(
-  task: AutomationTask,
-  persistence: AutomationPersistencePort,
-  taskRunId: string,
-  options: Readonly<{
-    executionHost: ExecutionHost;
-    assistanceRoute?: HumanAssistanceRoute;
-    launchEnv?: NodeJS.ProcessEnv;
-    userDataDirectory?: string;
-    onRunOpened?: (run: ActiveAutomationTaskRun) => void;
-    /** Receives each Workflow execution the round begins. */
-    executions?: WorkflowExecution[];
-  }>,
-) {
-  const { executionHost, assistanceRoute, launchEnv, userDataDirectory, onRunOpened, executions } = options;
-  const plan = planForCheck(task, { launchEnv, ...(userDataDirectory ? { userDataDirectory } : {}) });
-  const opened = await openTaskRunForCheck(persistence, taskRunId);
-  const active = executions ? observingExecutions(opened, executions) : opened;
-  onRunOpened?.(active);
-  const report = await createTaskRunExecution(executionHost)(plan, active, firstRoundForCheck({ assistanceRoute }));
-  const run = await active.finish(report);
-  return {
-    status: run.status,
-    run,
-    outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } satisfies TypedWorkflowOutcome,
-  };
 }

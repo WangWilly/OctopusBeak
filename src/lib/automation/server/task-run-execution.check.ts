@@ -11,10 +11,9 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
+import type { WorkflowExecution } from "./active-task-run.ts";
 import {
   CHECK_PGLITE_RPC,
-  executeRoundForCheck,
   firstRoundForCheck,
   inProcessCheckHost,
   observingExecutions,
@@ -22,6 +21,7 @@ import {
   planForCheck,
   runForCheck,
   runtimeForCheck,
+  startForCheck,
 } from "./task-run-check-support.ts";
 import { createTaskRunExecution } from "./task-run-execution.ts";
 import {
@@ -427,21 +427,16 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       scenario: WorkerScenario,
       options: { forceTerminated?: boolean } = {},
     ) => {
-      const taskRunId = await createRun(provider, task);
       let startData: AppWorkflowWorkerStart | undefined;
       let worker: TaskExecutionFakeWorker | undefined;
-      let active: ActiveAutomationTaskRun | undefined;
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
       let assistanceRequest: AppWorkflowHumanAssistanceRequest | undefined;
-      const execution = executeRoundForCheck(task, provider.automation, taskRunId, {
+      const runtime = runtimeForCheck(provider, {
         // The scenario resumes the stage itself; the route only keeps it
         // from failing closed as unrouted.
         assistanceRoute: (request) => { assistanceRequest = request; },
-        launchEnv,
-        onRunOpened: (run) => {
-          active = run;
-        },
+        environment: launchEnv,
         executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
           startData = start;
           resolveWorkerCreated();
@@ -453,11 +448,13 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
           // Race force termination with a worker's interrupted commit, after
           // startup. A pre-start cancellation would never create the worker.
           worker.once("exit", () => {
-            if (options.forceTerminated) void active?.requestStop("forced");
+            if (options.forceTerminated) void runtime.activeRun(start.taskRunId)?.requestStop("forced");
           });
           return worker;
         } }),
       });
+      const { runId: taskRunId, settled } = await startForCheck(runtime, task.id);
+      const active = () => runtime.activeRun(taskRunId);
 
       if (!startData) {
         let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -469,8 +466,8 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
             }),
           ]);
         } catch (error) {
-          void active?.requestStop("cancelled");
-          await execution;
+          void active()?.requestStop("cancelled");
+          await settled;
           throw error;
         } finally {
           if (timeout) clearTimeout(timeout);
@@ -498,10 +495,11 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         assert.equal((await provider.automation.commitAttempts(taskRunId)).length, 1);
-        void active?.requestStop("cancelled");
+        void active()?.requestStop("cancelled");
       }
 
-      const result = await execution;
+      const result = await settled;
+      assert.ok(result, `${task.id} run ${taskRunId} was not finalized`);
       assert.equal(worker?.eventAckAfterPersistence, true);
       return { result, taskRunId, run: await provider.automation.taskRunById(taskRunId) };
     };
@@ -754,25 +752,31 @@ test("an execution logs each worker and host event once, unmoved by the store ca
   const store = new PGliteStore(await createTestPGlite("operational"));
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
+    const createTaskRun = provider.automation.createTaskRun.bind(provider.automation);
     // An earlier execution left the store at its 200-event cap, so the stored
     // tail after this execution's appends holds nothing past the count a
     // slice would start at, and the host signal would be lost to it.
-    for (let index = 0; index < 200; index += 1) {
-      await provider.automation.appendRunEvent({
-        runId: taskRunId, stage: "collection", outcome: "advanced", code: `earlier-${index}`,
-        occurredAt: new Date().toISOString(),
-      });
-    }
+    provider.automation.createTaskRun = async (input) => {
+      const created = await createTaskRun(input);
+      for (let index = 0; index < 200; index += 1) {
+        await provider.automation.appendRunEvent({
+          runId: created.taskRunId, stage: "collection", outcome: "advanced", code: `earlier-${index}`,
+          occurredAt: new Date().toISOString(),
+        });
+      }
+      return created;
+    };
     const executions: WorkflowExecution[] = [];
     // No route is registered: the host writes solver-route-unavailable and the
     // worker only sees its rejected request.
-    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
+    const result = await runForCheck(runtimeForCheck(provider, {
+      assistanceRoute: null,
       executions,
-      launchEnv: ctbcLaunchEnv,
+      environment: ctbcLaunchEnv,
       executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
         new TaskExecutionFakeWorker(start, "assistance-completion", () => true) }),
-    });
+    }), task.id);
+    const { taskRunId } = result;
     assert.equal(result.outcome.errorCode, "verification-configuration-failed");
     assert.equal(executions.length, 1);
     assert.deepEqual(
