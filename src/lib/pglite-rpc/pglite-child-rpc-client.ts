@@ -5,16 +5,16 @@ import {
   isPGliteOperationalOperation,
   type PGliteOperationalOperation,
   type PGliteOperationalRpcClient,
-} from "../../../../electron/pglite-operational-rpc.ts";
+} from "./pglite-operational-rpc.ts";
 import type {
   PGliteFinancialOperation,
   PGliteFinancialRequestOptions,
   PGliteFinancialPort,
-} from "../../../../electron/pglite-financial-contracts.ts";
+} from "./pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
   type PGliteFinancialRpcClient,
-} from "../../../../electron/pglite-financial-rpc-client.ts";
+} from "./pglite-financial-rpc-client.ts";
 import {
   createPGliteWorkflowClient,
   type PGliteWorkflowClient,
@@ -22,9 +22,9 @@ import {
   type PGliteWorkflowCommandResult,
   type PGliteWorkflowRequestOptions,
   type PGliteWorkflowTransport,
-} from "../../../ledger/pglite/workflow-client.ts";
-import type { WorkflowFailureCorrelation } from "./workflow-failure-diagnostics.ts";
-import { plainRecord } from "../../../../electron/pglite-worker-call.ts";
+} from "../../ledger/pglite/workflow-client.ts";
+import type { WorkflowFailureCorrelation } from "../automation/server/workflow-failure-diagnostics.ts";
+import { plainRecord } from "./pglite-worker-call.ts";
 
 export const PGLITE_CHILD_RPC_ENDPOINT_ENV =
   "OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT" as const;

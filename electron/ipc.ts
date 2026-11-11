@@ -31,7 +31,7 @@ import {
 import { dataVersionStore } from "../src/lib/shared-shell/data-version.ts";
 import { trustedIpcMain } from "./ipc-sender.ts";
 import type { PGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
+import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 
 export function registerOctopusBeakIpc({
   automation,

@@ -3,11 +3,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
+import type { PGliteFinancialRegistry } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
   PGliteFinancialError,
-} from "./pglite-financial-rpc-client.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
 import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";
 import { PGliteCanonicalSourceAdmissionError } from "../src/ledger/pglite/source-admission-validation.ts";
@@ -16,7 +16,7 @@ import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
   type PGliteOperationalDomains,
-} from "./pglite-operational-rpc.ts";
+} from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import {
   captureSafeWorkflowFailureError,
   workflowFailureDiagnosticRepoRoot,

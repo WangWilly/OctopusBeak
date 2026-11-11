@@ -1,17 +1,17 @@
 import type {
   AutomationPersistencePort,
   AutomationPersistenceProvider,
-} from "../src/lib/automation/server/store.ts";
-import type { ExchangeRatePersistencePort } from "../src/ledger/exchange-rates.ts";
-import { isCommitAttemptReport } from "../src/lib/automation/commit-attempt.ts";
-import type { PGliteMaicoinPersistencePort } from "../src/ledger/pglite/maicoin-operational.ts";
-import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../src/ledger/pglite/preview-financial-data.ts";
+} from "../automation/server/store.ts";
+import type { ExchangeRatePersistencePort } from "../../ledger/exchange-rates.ts";
+import { isCommitAttemptReport } from "../automation/commit-attempt.ts";
+import type { PGliteMaicoinPersistencePort } from "../../ledger/pglite/maicoin-operational.ts";
+import { isPreviewProduct, type PGlitePreviewFinancialDataPort } from "../../ledger/pglite/preview-financial-data.ts";
 import {
   appendWorkflowFailureDiagnostic,
   workflowFailureDiagnosticRepoRoot,
   WORKFLOW_FAILURE_DIAGNOSTICS_FILE_ENV,
   type WorkflowFailureCorrelation,
-} from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
+} from "../automation/server/workflow-failure-diagnostics.ts";
 import {
   createWorkerCallClient,
   createWorkerCallServer,

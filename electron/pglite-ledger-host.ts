@@ -4,7 +4,7 @@ import type { PreviewVisibility } from "../src/ledger/pglite/preview-financial-d
 import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
 import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
-import type { PGliteFinancialExpectedSources } from "./pglite-financial-contracts.ts";
+import type { PGliteFinancialExpectedSources } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import { createPGliteLiveViewDependencies, type LocalDateClock } from "./pglite-financial-live-dependencies.ts";
 import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry, type PGliteLedgerRegistry } from "./pglite-financial-registry.ts";

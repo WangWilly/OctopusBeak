@@ -9,7 +9,7 @@ import {
   createPGliteOperationalRpcServer,
   PGliteOperationalError,
   type PGliteOperationalOperation,
-} from "./pglite-operational-rpc.ts";
+} from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import { createPGliteOperationalRuntime } from "./pglite-runtime.ts";
 import { createPGliteViewWorkerClient } from "./pglite-view-worker-client.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "../src/lib/automation/server/task-run-check-support.ts";

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PGliteFinancialRegistry } from "./pglite-financial-contracts.ts";
+import type { PGliteFinancialRegistry } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import {
   createPGliteFinancialRpcClient,
   PGliteFinancialError,
-} from "./pglite-financial-rpc-client.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import { createPGliteFinancialRpcServer } from "./pglite-financial-rpc-server.ts";
 import { createPGliteFinancialLocalPort } from "./pglite-financial-registry.ts";
 

@@ -7,12 +7,12 @@ import {
   createPGliteOperationalRpcClient,
   PGliteOperationalError,
   type PGliteOperationalRpcClient,
-} from "./pglite-operational-rpc.ts";
+} from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
 import {
   createPGliteFinancialRpcClient,
   PGliteFinancialError,
   type PGliteFinancialRpcClient,
-} from "./pglite-financial-rpc-client.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 
 type WorkerPort = Pick<Worker, "on" | "off" | "postMessage" | "terminate">;
 

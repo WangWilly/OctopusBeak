@@ -1,4 +1,4 @@
-import type { PGliteWorkflowRpc } from "./pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 import type { WorkflowDefinition } from "../workflow-executor.ts";
 import { appWorkflowRegistration, type AppWorkflowRuntime } from "./app-workflow-registry.ts";
 import {

@@ -7,13 +7,13 @@ import {
   type AutomationSettingsStore,
 } from "../src/lib/automation/server/config-files.ts";
 import type { ActiveAutomationTaskRun } from "../src/lib/automation/server/active-task-run.ts";
-import type { PGliteOperationalDomains } from "./pglite-operational-rpc.ts";
-import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
+import type { PGliteOperationalDomains } from "../src/lib/pglite-rpc/pglite-operational-rpc.ts";
+import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import {
   createPGliteChildRpcServer,
   type PGliteChildRpcServer,
 } from "./pglite-child-rpc.ts";
-import type { PGliteWorkflowRpc } from "../src/lib/automation/server/pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../src/lib/pglite-rpc/pglite-child-rpc-client.ts";
 import {
   createPGliteViewWorkerClient,
   type PGliteViewWorkerClient,

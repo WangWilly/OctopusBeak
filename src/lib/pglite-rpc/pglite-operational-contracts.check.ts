@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { MessageChannel } from "node:worker_threads";
 import test from "node:test";
-import { PREVIEW_PRODUCTS } from "../src/ledger/pglite/preview-financial-data.ts";
+import { PREVIEW_PRODUCTS } from "../../ledger/pglite/preview-financial-data.ts";
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,

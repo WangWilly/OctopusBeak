@@ -5,7 +5,7 @@ import { PGlite } from "@electric-sql/pglite";
 import {
   createPGliteOperationalRpcClient,
   createPGliteOperationalRpcServer,
-} from "../../../electron/pglite-operational-rpc.ts";
+} from "../../lib/pglite-rpc/pglite-operational-rpc.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";

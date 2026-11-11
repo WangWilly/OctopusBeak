@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { join, resolve } from "node:path";
 import { MessageChannel } from "node:worker_threads";
-import type { PGliteWorkflowRpc } from "./pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import { openActiveTaskRun, type ActiveAutomationTaskRun, type WorkflowExecution } from "./active-task-run.ts";
 import {

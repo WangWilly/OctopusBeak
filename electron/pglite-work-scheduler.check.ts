@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { PGliteFinancialPort } from "./pglite-financial-contracts.ts";
-import { createPGliteFinancialRpcClient, PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+import type { PGliteFinancialPort } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import { createPGliteFinancialRpcClient, PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import {
   createPGliteFinancialRpcServer,
   createPGliteWorkScheduler,

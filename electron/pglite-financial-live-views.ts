@@ -3,7 +3,7 @@ import type {
   PGliteFinancialOperation,
   PGliteFinancialRegistry,
   PGliteFinancialResult,
-} from "./pglite-financial-contracts.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import type { PGliteWorkScheduler } from "./pglite-financial-rpc-server.ts";
 import type { PGliteFinancialPreviewEvents, PGliteFinancialRegistryPageActions } from "./pglite-financial-registry.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";

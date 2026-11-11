@@ -1,5 +1,5 @@
-import { retainSafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../src/lib/automation/server/workflow-failure-diagnostics.ts";
-import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../src/ledger/pglite/workflow-client.ts";
+import { retainSafeWorkflowFailureError, type WorkflowFailureCorrelation } from "../automation/server/workflow-failure-diagnostics.ts";
+import { pgliteWorkflowAdmissionReason, type PGliteWorkflowAdmissionReason } from "../../ledger/pglite/workflow-client.ts";
 import type {
   PGliteFinancialCancelRequest,
   PGliteFinancialFailureCategory,

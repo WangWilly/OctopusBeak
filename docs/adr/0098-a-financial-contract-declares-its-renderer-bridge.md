@@ -26,4 +26,4 @@ Ten financial operations are open to the renderer: nine Spending operations and 
 ## Consequences
 
 - A new renderer financial operation is a marked contract, its registry handler, and one preload line. `api.ts` and the forwarding handlers follow from the contract.
-- Renderer code reads its financial bridge types from `electron/pglite-financial-contracts.ts`, type-only, as the Financial page already did from the live views.
+- Renderer code reads its financial bridge types from `src/lib/pglite-rpc/pglite-financial-contracts.ts`, type-only, as the Financial page already did from the live views.

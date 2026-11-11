@@ -13,8 +13,8 @@ import {
   PGLITE_FINANCIAL_OPERATIONS,
   type PGliteFinancialPort,
   type PGliteFinancialOperation,
-} from "./pglite-financial-contracts.ts";
-import { PGliteFinancialError } from "./pglite-financial-rpc-client.ts";
+} from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
+import { PGliteFinancialError } from "../src/lib/pglite-rpc/pglite-financial-rpc-client.ts";
 import {
   createPGliteFinancialRegistry,
   prewarmPGlitePairingCandidates,

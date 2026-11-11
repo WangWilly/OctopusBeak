@@ -1,5 +1,5 @@
 import type { SpendingCandidatePageRequest, SpendingPairingPrewarmInput } from "../model.ts";
-import type { PGliteFinancialPort } from "../../../../electron/pglite-financial-contracts.ts";
+import type { PGliteFinancialPort } from "../../pglite-rpc/pglite-financial-contracts.ts";
 import { prewarmPGlitePairingCandidates } from "../../../../electron/pglite-financial-registry.ts";
 
 /** Everything the spending desktop service reaches outside itself. */
