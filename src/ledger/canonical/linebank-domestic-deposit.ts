@@ -1135,7 +1135,7 @@ function exactDomesticAmount(
   return { coefficient, scale: fraction.length };
 }
 
-function canonicalOpaqueAccountKey(account: LineBankAccount): string {
+export function canonicalOpaqueAccountKey(account: LineBankAccount): string {
   const composite = candidateAccountKey(account);
   return composite
     ? `sha256:${opaqueFingerprint([LINEBANK_INTEGRATION_NAMESPACE, "account", composite])}`

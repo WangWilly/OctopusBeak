@@ -6,7 +6,6 @@ import {
   LINEBANK_CURRENT_DEPOSIT_RESPONSE,
   linebankCurrentBalanceSnapshot,
   parseLinebankCurrentDepositBalanceSnapshot,
-  linebankCurrentSourceAccountKey,
   type ExistingLineBankFinancialCapture,
 } from "./linebank-current-deposit-balances.ts";
 import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
@@ -14,6 +13,7 @@ import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snap
 import { canonicalSourceRouteRegistration } from "../ledger/canonical/canonical-source-route-registry.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
 import {
+  canonicalOpaqueAccountKey,
   LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
   linebankEpochMillisecondsFromSourceDateTime,
@@ -81,7 +81,7 @@ const rows = parseLinebankCurrentDepositBalanceSnapshot({
 });
 assert.equal(rows.length, 1);
 assert.equal(rows[0]?.accountNumber, mainAccountNumber);
-assert.equal(rows[0]?.sourceAccountKey, linebankCurrentSourceAccountKey(mainAccountNumber, "arr-main"));
+assert.equal(rows[0]?.sourceAccountKey, canonicalOpaqueAccountKey({ acctNbr: mainAccountNumber, arrId: "arr-main" }));
 assert.equal(rows[0]?.currency, "TWD");
 assert.deepEqual(rows[0]?.available, {
   coefficient: "900719925474099325",
@@ -199,33 +199,37 @@ const domesticTransaction = {
   txAmt: "100.50",
   afTxBal: "1000.50",
 };
-const domesticValidation = validateLineBankHumanAttestedV13Capture({
-  account: selectedAccount,
-  scope: { startDate: "20260701", endDate: "20260731" },
-  captureId: "synthetic-linebank-admission",
-  sourceConnection: "accessibility.linebank.com.tw",
-  identityEpoch: 1700000000000,
-  observedAt: "2026-09-09T10:05:00.000Z",
-  sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
-  humanAttestation: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
-  authority: { kind: "personal-main", membershipEffectiveDate: null },
-  pages: [{
-    pageNbr: 1,
-    pageCnt: 1000,
-    totTxCnt: 1,
-    txCnt: 1,
-    responseCode: "200",
-    source: {
-      ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source!,
-      acctNbr: selectedAccount.acctNbr,
-      arrId: selectedAccount.arrId,
-      jntAcctMbrTpCd: "personal-main-account",
-    },
-    rows: [domesticTransaction],
-  }],
-});
-assert.equal(domesticValidation.status, "admissible");
-const domesticCapture = domesticValidation.capture!;
+/** Admit one domestic transaction page for the account, as the transaction stage does before the balance stage. */
+function admitDomestic(account: LineBankAccount) {
+  const validation = validateLineBankHumanAttestedV13Capture({
+    account,
+    scope: { startDate: "20260701", endDate: "20260731" },
+    captureId: "synthetic-linebank-admission",
+    sourceConnection: "accessibility.linebank.com.tw",
+    identityEpoch: 1700000000000,
+    observedAt: "2026-09-09T10:05:00.000Z",
+    sourceScopeEvidence: LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+    humanAttestation: LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
+    authority: { kind: "personal-main", membershipEffectiveDate: null },
+    pages: [{
+      pageNbr: 1,
+      pageCnt: 1000,
+      totTxCnt: 1,
+      txCnt: 1,
+      responseCode: "200",
+      source: {
+        ...LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE.pages[0]!.source!,
+        acctNbr: account.acctNbr,
+        arrId: account.arrId,
+        jntAcctMbrTpCd: "personal-main-account",
+      },
+      rows: [domesticTransaction],
+    }],
+  });
+  assert.equal(validation.status, "admissible");
+  return validation.capture!;
+}
+const domesticCapture = admitDomestic(selectedAccount);
 const financialCapture: ExistingLineBankFinancialCapture = {
   accountKey: domesticCapture.accountKey,
   sourceConnection: domesticCapture.sourceConnection,
@@ -238,11 +242,12 @@ const payablesBody = `{"code":"200","message":"success","content":{"dpstAcctList
 function snapshot(
   captures: readonly ExistingLineBankFinancialCapture[],
   accounts: readonly LineBankAccount[] = [selectedAccount],
+  { admitted = domesticCapture, reply = payablesBody } = {},
 ) {
-  return captureCurrentStateSnapshots(linebankCurrentBalanceSnapshot(accounts, [domesticCapture]), {
+  return captureCurrentStateSnapshots(linebankCurrentBalanceSnapshot(accounts, [admitted]), {
     captures,
     acquire: async () => ({
-      evidence: { kind: "json", bytes: new TextEncoder().encode(payablesBody) },
+      evidence: { kind: "json", bytes: new TextEncoder().encode(reply) },
       response: {
         url: endpoint,
         status: 200,
@@ -270,7 +275,7 @@ function snapshot(
   assert.equal(capture.integrationNamespace, "linebank");
   assert.equal(capture.stream, "domestic-deposit");
   assert.equal(capture.subjectDigest, domesticCapture.accountKey);
-  assert.equal(account.sourceAccountKey, linebankCurrentSourceAccountKey(mainAccountNumber, "arr-main"));
+  assert.equal(account.sourceAccountKey, canonicalOpaqueAccountKey({ acctNbr: mainAccountNumber, arrId: "arr-main" }));
   assert.equal(account.currency, "TWD");
   assert.deepEqual([capture.scope.startDate, capture.scope.endDate], ["2026-09-09", "2026-09-09"]);
   assert.equal(observations.length, 1);
@@ -315,5 +320,22 @@ await assert.rejects(
   /^Error: LINE Bank current balance source does not cover every selected domestic account\.$/u,
   "a selected TWD account the payables list omits fails coverage",
 );
+
+for (const [name, space] of [["no-break space", "\u00a0"], ["ideographic space", "\u3000"]] as const) {
+  const account = { acctNbr: mainAccountNumber, arrId: `arr${space}main`, currCd: "TWD" };
+  const admitted = admitDomestic(account);
+  const staged = await snapshot([{
+    accountKey: admitted.accountKey,
+    sourceConnection: admitted.sourceConnection,
+    identityEpoch: admitted.identityEpoch,
+    observedAt: admitted.observedAt,
+  }], [account], {
+    admitted,
+    reply: payablesBody.replace('"arr-main"', JSON.stringify(account.arrId)),
+  });
+  const { capture, account: stagedAccount } = stagedBalanceRequest(staged.items[0]);
+  assert.equal(capture.subjectDigest, admitted.accountKey, `an arrId with a ${name} keys the balance by the admitted account`);
+  assert.equal(stagedAccount.sourceAccountKey, admitted.accountKey, `an arrId with a ${name} keys the balance by the admitted account`);
+}
 
 console.log("linebank-current-deposit-balances.check passed");
