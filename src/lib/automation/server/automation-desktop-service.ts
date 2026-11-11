@@ -285,9 +285,16 @@ export function createAutomationDesktopService<Owner>(deps: AutomationDesktopSer
     // The details block reports a retryable, user-facing error if this fails.
   });
   const unsubscribeFromRuntime = runtime.subscribe((snapshot) => deps.publishRuntimeChanged(snapshot));
-  const runManual = (taskIds: readonly string[]) => {
+  const runManual = async (taskIds: readonly string[]) => {
     const onFinished = deps.onManualCollectionFinished;
-    return runtime.start(taskIds, onFinished ? { onSettled: reportCollection(onFinished) } : {});
+    if (!onFinished) return await runtime.start(taskIds);
+    const report = reportCollection(onFinished);
+    try {
+      return await runtime.start(taskIds, { onSettled: report });
+    } catch (error) {
+      report(taskIds.map((taskId) => ({ taskId, status: "error" as const, error: error instanceof Error ? error : new Error(String(error)) })));
+      throw error;
+    }
   };
   const knownTaskIds = new Set(AUTOMATION_TASKS.map((task) => task.id));
 

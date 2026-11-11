@@ -323,6 +323,23 @@ test("a sync the person starts reports its sources once its batch settles, and e
   ]);
 });
 
+test("a sync whose admission cannot read the desktop model reports its sources as not synced", async () => {
+  const state = createAutomationRuntimeState("session-check");
+  const runtime = {
+    snapshot: () => state.snapshot(),
+    subscribe: state.subscribe,
+    start: async () => { throw new Error("model unreadable"); },
+  } as unknown as AutomationRuntime;
+  const reports: unknown[] = [];
+  const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });
+  await assert.rejects(service.run("sync-tdcc"), /model unreadable/);
+  await assert.rejects(service.runMany(["sync-tdcc", "exchange-rates"]), /model unreadable/);
+  assert.deepEqual(reports, [
+    [{ taskId: "sync-tdcc", run: null }],
+    [{ taskId: "sync-tdcc", run: null }],
+  ]);
+});
+
 test("a single source the person could not start is reported as not synced", async () => {
   const state = createAutomationRuntimeState("session-check");
   const runtime = {
