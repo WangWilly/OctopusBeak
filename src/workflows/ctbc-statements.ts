@@ -6,7 +6,6 @@ import { z } from "zod";
 import {
   admitCtbcDomesticDepositCaptureEvidence,
   admitCtbcDomesticDepositFinancialCapture,
-  createCtbcDomesticDepositSourceEvidence,
   CTBC_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   deriveCtbcDomesticDepositAccountNumberEvidence,
   type CtbcDomesticDepositCaptureEvidence,
@@ -1051,20 +1050,15 @@ export async function stageCtbcDeposit(
     context.signal.throwIfAborted();
     const captureId = `ctbc-${randomUUID()}`;
     admissions.push(await admitDeposit<ExistingCtbcFinancialCapture>(product, () => {
-      if (capture.responses.every((response) => response.rows.length === 0))
-        return { product: "domestic-deposit", sourceOnly: createCtbcDomesticDepositSourceEvidence(capture, captureId) };
-      const admission = admitCtbcDomesticDepositFinancialCapture({
+      const verdict = admitCtbcDomesticDepositFinancialCapture({
         capture,
         captureId: `ctbc-financial-${captureId}`,
+        sourceCaptureId: captureId,
         humanAttestation: CTBC_HUMAN_ATTESTED_V1_MANIFEST,
       });
-      if (admission.status !== "admitted" || !admission.capture) {
-        throw new Error(
-          `CTBC domestic deposit financial admission failed: ${admission.diagnostics.join(", ")}`,
-        );
-      }
-      const admitted = admission.capture;
-      return { product: "domestic-deposit", capture: admitted, balance: admitted };
+      return verdict.sourceOnly
+        ? { ...verdict, product: "domestic-deposit" }
+        : { ...verdict, product: "domestic-deposit", balance: verdict.capture };
     }));
   }
   await product.event("validation", "completed", "canonical-admission-completed", {

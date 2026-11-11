@@ -7,6 +7,7 @@ import {
   type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
 import type { CanonicalSourceEvidence } from "./canonical-source-evidence.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "./deposit-verdict.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import {
   requireSourceConnectionIdentity,
@@ -735,6 +736,8 @@ export type YuantaDomesticDepositFinancialAdmissionDiagnostic = string;
 export type YuantaDomesticDepositFinancialAdmissionInput = {
   capture: YuantaDomesticDepositValidatedEvidence;
   captureId: string;
+  /** The capture id of the source evidence committed when the capture is source-only. */
+  sourceCaptureId: string;
   humanAttestation?: YuantaHumanAttestedV2Manifest;
   semantics?: YuantaDomesticDepositFinancialSemantics;
   /**
@@ -745,18 +748,6 @@ export type YuantaDomesticDepositFinancialAdmissionInput = {
   sourceConnectionScope?: string;
   sourceConnectionKey?: string;
 };
-export type YuantaDomesticDepositFinancialAdmissionResult = {
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
-  diagnostics: YuantaDomesticDepositFinancialAdmissionDiagnostic[];
-};
-
-export class YuantaDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "YuantaDomesticDepositFinancialAdmissionError";
-  }
-}
 
 function normalizedFinancialCell(value: unknown): string {
   return normalizedCell(value).replace(/,/g, "");
@@ -1278,20 +1269,26 @@ function financialDiagnosticsFor(
   return { diagnostics, semantics, capture };
 }
 
+/**
+ * Admit the capture as financial data. A capture blocked only by unproven
+ * authority, semantics or attestation commits its source evidence alone.
+ */
 export function admitYuantaDomesticDepositFinancialCapture(
   input: YuantaDomesticDepositFinancialAdmissionInput,
-): YuantaDomesticDepositFinancialAdmissionResult {
+): DepositVerdict {
   const result = financialDiagnosticsFor(input);
-  if (result.diagnostics.length > 0 || !result.capture)
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: result.diagnostics,
-    };
-  return { status: "admitted", capture: result.capture, diagnostics: [] };
+  if (result.diagnostics.length === 0 && result.capture) return { capture: result.capture };
+  const disallowed = result.diagnostics.filter((diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic));
+  if (disallowed.length > 0) throw new DepositAdmissionRefused("Yuanta domestic deposit", disallowed);
+  return {
+    sourceOnly: createYuantaDomesticDepositSourceEvidence(input.capture, input.sourceCaptureId, {
+      sourceConnectionScope: input.sourceConnectionScope,
+      sourceConnectionKey: input.sourceConnectionKey,
+    }),
+  };
 }
 
-export function isYuantaSourceOnlyFinancialDiagnostic(
+function isYuantaSourceOnlyFinancialDiagnostic(
   diagnostic: YuantaDomesticDepositFinancialAdmissionDiagnostic,
 ): boolean {
   return new Set([

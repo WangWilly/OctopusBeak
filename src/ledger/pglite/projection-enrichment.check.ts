@@ -53,6 +53,7 @@ function fubonCapture(captureId = "pglite-projection-fubon") {
   const financial = admitFubonDomesticDepositFinancialCapture({
     capture: structural.capture,
     captureId,
+    sourceCaptureId: `${captureId}-source`,
     sourceConnectionScope,
     sourceConnectionKey,
     humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
@@ -68,7 +69,7 @@ function fubonCapture(captureId = "pglite-projection-fubon") {
       occurrence: { ruleVersion: FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
     },
   });
-  if (financial.status !== "admitted" || !financial.capture) throw new Error("Fubon financial fixture is not admitted.");
+  if (!financial.capture) throw new Error("Fubon financial fixture is not admitted.");
   return financial.capture;
 }
 

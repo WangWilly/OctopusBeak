@@ -9,7 +9,11 @@ import type {
   SinopacSourceRow,
   SinopacStatementValidatedCapture,
 } from "./sinopac-provider-admission.ts";
-import { isAdmittedSinopacStatementCaptureEvidence } from "./sinopac-provider-admission.ts";
+import {
+  createSinopacDomesticDepositSourceEvidence,
+  isAdmittedSinopacStatementCaptureEvidence,
+} from "./sinopac-provider-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "../canonical/deposit-verdict.ts";
 
 const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY =
   "sinopac/domestic-deposit/human-attested-v1";
@@ -19,12 +23,8 @@ const SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION =
 export type SinopacPGliteFinancialCaptureInput = Readonly<{
   capture: SinopacStatementValidatedCapture;
   captureId: string;
-}>;
-
-export type SinopacPGliteFinancialCaptureResult = Readonly<{
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
-  diagnostics: string[];
+  /** The capture id of the source evidence committed when every download has no rows. */
+  sourceCaptureId: string;
 }>;
 
 type SinopacIdentity = {
@@ -256,10 +256,17 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-/** Build financial facts for the PGlite worker from provider-admitted evidence. */
+/**
+ * Build financial facts for the PGlite worker from provider-admitted evidence.
+ * A capture whose downloads all have no rows commits its source evidence alone.
+ */
 export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   input: SinopacPGliteFinancialCaptureInput,
-): SinopacPGliteFinancialCaptureResult {
+): DepositVerdict {
+  if (input.capture.downloads.every((download) => download.rows.length === 0))
+    return { sourceOnly: createSinopacDomesticDepositSourceEvidence(input.capture, input.sourceCaptureId) };
+  const refused = (diagnostics: readonly string[], options?: ErrorOptions) =>
+    new DepositAdmissionRefused(`SinoPac ${input.capture.product}`, diagnostics, options);
   const diagnostics: string[] = [];
   if (!isAdmittedSinopacStatementCaptureEvidence(input.capture))
     diagnostics.push("capture-not-runtime-admitted");
@@ -275,11 +282,6 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
   if (!input.captureId.trim()) diagnostics.push("capture-id-missing");
   if (input.capture.downloads.some((download) => !download.terminal))
     diagnostics.push("terminal-evidence-missing");
-  if (
-    input.capture.downloads.every((download) => download.rows.length === 0) &&
-    input.capture.zeroResultAuthority !== "provider-explicit-no-data"
-  )
-    diagnostics.push("zero-result-authority-unproven");
   const records: CanonicalFinancialDepositRecord[] = [];
   const groupRows: Array<{
     record: CanonicalFinancialDepositRecord;
@@ -297,14 +299,12 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
       }
     }
   }
-  if (diagnostics.length > 0)
-    return { status: "blocked", capture: null, diagnostics: [...new Set(diagnostics)] };
+  if (diagnostics.length > 0) throw refused([...new Set(diagnostics)]);
 
   const identity = deriveSinopacIdentity(input.capture);
   const queryStart = canonicalSinopacDate(input.capture.queryRange.startDate);
   const queryEnd = canonicalSinopacDate(input.capture.queryRange.endDate);
-  if (!queryStart || !queryEnd)
-    return { status: "blocked", capture: null, diagnostics: ["query-range-invalid"] };
+  if (!queryStart || !queryEnd) throw refused(["query-range-invalid"]);
   const contractFingerprint = canonicalDigest(
     "sinopac-contract-v1",
     SINOPAC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -334,13 +334,10 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
         input.capture.downloads.every((download) => download.terminal),
     });
   } catch (error) {
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: [
-        error instanceof Error ? error.message : "occurrence-group-assignment-failed",
-      ],
-    };
+    throw refused(
+      [error instanceof Error ? error.message : "occurrence-group-assignment-failed"],
+      { cause: error },
+    );
   }
   const capture: CanonicalFinancialDepositCapture = {
     captureId: input.captureId.trim(),
@@ -411,5 +408,5 @@ export function buildSinopacDomesticDepositFinancialCaptureForPGlite(
     occurrenceGroupCoverage: occurrenceGroups.coverage,
   };
   const frozenCapture = deepFreeze(capture) as CanonicalFinancialDepositValidatedCapture;
-  return { status: "admitted", capture: frozenCapture, diagnostics: [] };
+  return { capture: frozenCapture };
 }

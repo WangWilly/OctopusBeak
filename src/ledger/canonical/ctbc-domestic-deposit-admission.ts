@@ -5,8 +5,8 @@ import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
-  type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "./deposit-verdict.ts";
 import {
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
   CTBC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_VERSION,
@@ -455,20 +455,12 @@ export function createCtbcDomesticDepositSourceEvidence(
 export type CtbcDomesticDepositFinancialAdmissionInput = {
   capture: CtbcDomesticDepositValidatedEvidence;
   captureId: string;
+  /** The capture id of the source evidence committed when every response has no rows. */
+  sourceCaptureId: string;
   humanAttestation?: CtbcHumanAttestedV1Manifest;
 };
-export type CtbcDomesticDepositFinancialAdmissionResult = {
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
-  diagnostics: string[];
-};
-export class CtbcDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CtbcDomesticDepositFinancialAdmissionError";
-  }
-}
 
+const CTBC_DEPOSIT = "CTBC domestic deposit";
 function financialAmount(
   value: string,
   allowZero = false,
@@ -586,14 +578,12 @@ function financialRecord(
 
 export function admitCtbcDomesticDepositFinancialCapture(
   input: CtbcDomesticDepositFinancialAdmissionInput,
-): CtbcDomesticDepositFinancialAdmissionResult {
+): DepositVerdict {
   const diagnostics: string[] = [];
   if (!input || typeof input !== "object")
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["capture-missing"],
-    };
+    throw new DepositAdmissionRefused(CTBC_DEPOSIT, ["capture-missing"]);
+  if (input.capture.responses.every((response) => response.rows.length === 0))
+    return { sourceOnly: createCtbcDomesticDepositSourceEvidence(input.capture, input.sourceCaptureId) };
   if (!isAdmittedCtbcDomesticDepositCaptureEvidence(input.capture))
     diagnostics.push("runtime-evidence-brand-missing");
   if (!input.captureId?.trim()) diagnostics.push("scope-invalid");
@@ -601,11 +591,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
   else if (!isCtbcHumanAttestedV1Manifest(input.humanAttestation))
     diagnostics.push("human-attestation-mismatch");
   if (!isAdmittedCtbcDomesticDepositCaptureEvidence(input.capture))
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: [...new Set(diagnostics)],
-    };
+    throw new DepositAdmissionRefused(CTBC_DEPOSIT, [...new Set(diagnostics)]);
   const complete = input.capture.responses.every(
     (response) => response.terminal && response.nextKey === null,
   );
@@ -637,8 +623,7 @@ export function admitCtbcDomesticDepositFinancialCapture(
   if (!allNoData && records.length === 0)
     diagnostics.push("nonempty-financial-record-required");
   const unique = [...new Set(diagnostics)];
-  if (unique.length)
-    return { status: "blocked", capture: null, diagnostics: unique };
+  if (unique.length) throw new DepositAdmissionRefused(CTBC_DEPOSIT, unique);
   const startDate = input.capture.queryRange.startDate.replaceAll("/", "-");
   const endDate = input.capture.queryRange.endDate.replaceAll("/", "-");
   const contractFingerprint = canonicalDigest(
@@ -662,17 +647,13 @@ export function admitCtbcDomesticDepositFinancialCapture(
       complete,
     });
   } catch (error) {
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: [
-        error instanceof Error ? error.message : "occurrence-group-assignment-failed",
-      ],
-    };
+    throw new DepositAdmissionRefused(
+      CTBC_DEPOSIT,
+      [error instanceof Error ? error.message : "occurrence-group-assignment-failed"],
+      { cause: error },
+    );
   }
   return {
-    status: "admitted",
-    diagnostics: [],
     capture: admitCanonicalFinancialDepositCapture({
       captureId: input.captureId.trim(),
       authorityRoute: CTBC_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,

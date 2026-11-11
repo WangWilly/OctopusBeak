@@ -166,9 +166,9 @@ assert.equal(duplicateHncbEvidence.status, "admissible");
 const duplicateHncbFinancial = admitHncbDomesticDepositFinancialCapture({
   capture: duplicateHncbEvidence.capture!,
   captureId: "hncb-duplicate-occurrence-check",
+  sourceCaptureId: "hncb-duplicate-occurrence-source",
   humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST,
 });
-assert.equal(duplicateHncbFinancial.status, "admitted");
 assert.deepEqual(
   duplicateHncbFinancial.capture!.records.map(
     (record) => record.occurrenceGroup?.ordinal,

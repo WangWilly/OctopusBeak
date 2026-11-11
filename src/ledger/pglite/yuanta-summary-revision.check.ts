@@ -55,12 +55,13 @@ function yuantaCapture(observedOn: string, rows: readonly string[][]) {
   const financial = admitYuantaDomesticDepositFinancialCapture({
     capture: evidence.capture!,
     captureId: `yuanta-summary-revision-${observedOn}-${rows.map((row) => row[5]).join("-")}`,
+    sourceCaptureId: `yuanta-summary-revision-source-${observedOn}`,
     humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
     sourceConnectionScope,
     sourceConnectionKey,
   });
-  assert.equal(financial.status, "admitted", financial.diagnostics.join(","));
-  return financial.capture!;
+  assert.ok(financial.capture);
+  return financial.capture;
 }
 
 async function dividendDescriptions(store: PGliteStore): Promise<string[]> {

@@ -8,10 +8,8 @@ import {
   deriveHncbDomesticDepositAccountNumberEvidence,
   admitHncbDomesticDepositCaptureEvidence,
   admitHncbDomesticDepositFinancialCapture,
-  createHncbDomesticDepositSourceEvidence,
   HNCB_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   HNCB_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
-  isHncbSourceOnlyFinancialDiagnostic,
   type HncbDomesticDepositCaptureEvidence,
   type HncbDomesticDepositValidatedEvidence,
 } from "../ledger/canonical/hncb-domestic-deposit-admission.ts";
@@ -1079,24 +1077,15 @@ export async function stageHncbDeposit(
   const admissions: DepositAdmission<ExistingHncbFinancialCapture>[] = [];
   for (const [index, capture] of captures.entries()) {
     admissions.push(await admitDeposit<ExistingHncbFinancialCapture>(product, () => {
-      const admitted = admitHncbDomesticDepositFinancialCapture({
+      const verdict = admitHncbDomesticDepositFinancialCapture({
         capture,
         captureId: `hncb-financial-${captureId}-${index}`,
+        sourceCaptureId: `hncb-source-${captureId}-${index}`,
         humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST,
       });
-      if (admitted.status === "admitted") {
-        if (!admitted.capture)
-          throw new Error("HNCB domestic deposit admission lost its canonical capture.");
-        return { product: "domestic-deposit", capture: admitted.capture, balance: admitted.capture };
-      }
-      if (!admitted.diagnostics.every(isHncbSourceOnlyFinancialDiagnostic))
-        throw new Error(
-          `HNCB domestic deposit financial admission failed: ${admitted.diagnostics.join(", ")}`,
-        );
-      return {
-        product: "domestic-deposit",
-        sourceOnly: createHncbDomesticDepositSourceEvidence(capture, `hncb-source-${captureId}-${index}`),
-      };
+      return verdict.sourceOnly
+        ? { ...verdict, product: "domestic-deposit" }
+        : { ...verdict, product: "domestic-deposit", balance: verdict.capture };
     }));
   }
   await stageCanonicalDeposits(product, admissions, {

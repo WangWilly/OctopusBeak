@@ -14,7 +14,7 @@ import { admitFubonDomesticDepositCaptureEvidence, admitFubonDomesticDepositFina
 import { FUBON_HUMAN_ATTESTED_V1_MANIFEST } from "../canonical/fubon-human-attestation.ts";
 import * as fubon from "../canonical/fubon-domestic-deposit-admission.ts";
 
-const account = "12345678901234";
+const account = "123456789";
 const observedAt = "2026-01-31T12:00:00+08:00";
 const queryRange = { startDate: "2026/01/01", endDate: "2026/01/31" };
 const digest = `sha256:${createHash("sha256").update("synthetic statement").digest("hex")}` as const;
@@ -47,6 +47,7 @@ test("Fubon transaction content remains stable when a new row precedes it", () =
     const sourceConnectionKey = deriveSourceConnectionIdentityKey("fubon", scope);
     const identity = fubon.deriveFubonDomesticDepositAccountIdentity(structural.capture.account, FUBON_HUMAN_ATTESTED_V1_MANIFEST, sourceConnectionKey);
     const result = admitFubonDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `fubon-position-${shifted}`,
+      sourceCaptureId: `fubon-position-source-${shifted}`,
       sourceConnectionScope: scope, sourceConnectionKey, humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
       semantics: {
         evidenceVersion: fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_EVIDENCE_VERSION,
@@ -59,7 +60,7 @@ test("Fubon transaction content remains stable when a new row precedes it", () =
         completeness: { basis: fubon.FUBON_DOMESTIC_DEPOSIT_COMPLETENESS_BASIS, ruleVersion: fubon.FUBON_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY, absenceAuthority: fubon.FUBON_DOMESTIC_DEPOSIT_ABSENCE_AUTHORITY },
         occurrence: { ruleVersion: fubon.FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
       } });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    assert.ok(result.capture);
     return result.capture;
   });
 });
@@ -77,8 +78,9 @@ test("HNCB transaction content remains stable when a new row precedes it", () =>
         accountSelector: "select#acct1", queryFormSelector: 'form[name="form1"]', downloadSelector: 'input[name="excel_download"]' },
     });
     assert.ok(structural.capture, structural.diagnostics.join(","));
-    const result = admitHncbDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `hncb-position-${shifted}`, humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    const result = admitHncbDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `hncb-position-${shifted}`,
+      sourceCaptureId: `hncb-position-source-${shifted}`, humanAttestation: HNCB_HUMAN_ATTESTED_V1_MANIFEST });
+    assert.ok(result.capture);
     return result.capture;
   });
 });
@@ -98,8 +100,9 @@ test("Yuanta transaction content remains stable when a new row precedes it", () 
     assert.ok(structural.capture, structural.diagnostics.join(","));
     const scope = "synthetic-user\0synthetic-account";
     const result = admitYuantaDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `yuanta-position-${shifted}`,
+      sourceCaptureId: `yuanta-position-source-${shifted}`,
       sourceConnectionScope: scope, sourceConnectionKey: deriveSourceConnectionIdentityKey("yuanta", scope), humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    assert.ok(result.capture);
     return result.capture;
   });
 });
@@ -116,7 +119,6 @@ test("Post transaction content remains stable when a new row precedes it", () =>
     });
     assert.ok(structural.capture, structural.diagnostics.join(","));
     const result = admitPostDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `post-position-${shifted}`, humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
     return result.capture;
   });
 });

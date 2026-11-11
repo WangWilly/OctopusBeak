@@ -20,8 +20,6 @@ import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./c
 import {
   admitYuantaDomesticDepositFinancialCapture,
   admitYuantaDomesticDepositCaptureEvidence,
-  createYuantaDomesticDepositSourceEvidence,
-  isYuantaSourceOnlyFinancialDiagnostic,
   YUANTA_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   YUANTA_DOMESTIC_DEPOSIT_EVIDENCE_VERSION,
   YUANTA_DOMESTIC_DEPOSIT_ACCOUNT_NUMBER_EVIDENCE_VERSION,
@@ -789,10 +787,6 @@ export async function stageYuantaDeposit(
 ): Promise<ProductCollectionSummary> {
   const { sourceConnectionScope, sourceConnectionKey } =
     requireSourceConnectionIdentity("yuanta", "Yuanta deposit", input);
-  const stableSourceIdentity = {
-    sourceConnectionScope,
-    sourceConnectionKey,
-  } as const;
   const nextTimestamp = createTimestampGenerator();
   const { observedAt, queryRange } = snapshot;
   let rowCount = 0;
@@ -819,9 +813,10 @@ export async function stageYuantaDeposit(
         );
       const capture = structural.capture;
       const captureIdSuffix = digestAccountValue(account.value).slice(7, 19);
-      const financialAdmission = admitYuantaDomesticDepositFinancialCapture({
+      const verdict = admitYuantaDomesticDepositFinancialCapture({
         capture,
         captureId: `yuanta-financial-${nextTimestamp()}-${captureIdSuffix}`,
+        sourceCaptureId: `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`,
         humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
         // Financial Source Connection identity comes only from the stable
         // login pair. The attestation manifest remains provenance for the
@@ -829,26 +824,8 @@ export async function stageYuantaDeposit(
         sourceConnectionScope,
         sourceConnectionKey,
       });
-      const sourceCaptureId = `yuanta-source-${nextTimestamp()}-${captureIdSuffix}`;
-
-      if (financialAdmission.status !== "admitted") {
-        const disallowed = financialAdmission.diagnostics.filter(
-          (diagnostic) => !isYuantaSourceOnlyFinancialDiagnostic(diagnostic),
-        );
-        if (disallowed.length > 0)
-          throw new Error(
-            `Yuanta domestic deposit financial admission failed: ${disallowed.join(", ")}`,
-          );
-        return {
-          product: "domestic-deposit",
-          sourceOnly: createYuantaDomesticDepositSourceEvidence(capture, sourceCaptureId, stableSourceIdentity),
-        };
-      }
-      const financialCapture = financialAdmission.capture;
-      if (!financialCapture)
-        throw new Error(
-          "Yuanta domestic deposit admission lost its canonical capture.",
-        );
+      if (verdict.sourceOnly) return { ...verdict, product: "domestic-deposit" };
+      const financialCapture = verdict.capture;
       const counterpartyEvidence = (downloaded.counterpartyAccountEvidence ?? []).map((evidence) => {
         const materialized = materializeYuantaCounterpartyEvidence(financialCapture, evidence);
         admitCounterpartyAccountEvidence(materialized, "yuanta");

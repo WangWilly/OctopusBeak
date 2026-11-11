@@ -657,23 +657,12 @@ export async function stagePostDeposit(
   const admissions: DepositAdmission<ExistingPostCurrentDepositFinancialCapture>[] = [];
   for (const [index, capture] of captures.entries()) {
     admissions.push(await admitDeposit<ExistingPostCurrentDepositFinancialCapture>(product, () => {
-      const admission = admitPostDomesticDepositFinancialCapture({
+      const verdict = admitPostDomesticDepositFinancialCapture({
         capture,
         captureId: `post-financial-${postCaptureId(observedAt, index)}`,
         humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
       });
-      if (admission.status !== "admitted" || !admission.capture)
-        throw new Error(
-          `Post domestic deposit financial admission failed: ${[
-            ...new Set(admission.diagnostics),
-          ].join(", ")}`,
-        );
-      const financialCapture = admission.capture;
-      return {
-        product: "domestic-deposit",
-        capture: financialCapture,
-        balance: { identity: financialCapture.identity },
-      };
+      return { ...verdict, product: "domestic-deposit", balance: { identity: verdict.capture.identity } };
     }));
   }
   // The overview response is staged before opening the execution run. Each

@@ -3,8 +3,8 @@ import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
   type CanonicalFinancialDepositRecord,
-  type CanonicalFinancialDepositValidatedCapture,
 } from "./canonical-financial-deposit-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "./deposit-verdict.ts";
 import { combineDomesticDepositDescription } from "./domestic-deposit-description.ts";
 import {
   POST_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE,
@@ -278,18 +278,7 @@ export type PostDomesticDepositFinancialAdmissionInput = {
   humanAttestation?: PostHumanAttestedV1Manifest;
 };
 
-export type PostDomesticDepositFinancialAdmissionResult = {
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositValidatedCapture | null;
-  diagnostics: string[];
-};
-
-export class PostDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PostDomesticDepositFinancialAdmissionError";
-  }
-}
+const POST_DEPOSIT = "Post domestic deposit";
 
 function postFinancialAmount(
   value: string,
@@ -411,16 +400,13 @@ function postFinancialRecord(
   };
 }
 
+/** Admit the capture as financial data. Post has no source-only capture. */
 export function admitPostDomesticDepositFinancialCapture(
   input: PostDomesticDepositFinancialAdmissionInput,
-): PostDomesticDepositFinancialAdmissionResult {
+): Extract<DepositVerdict, { capture: unknown }> {
   const diagnostics: string[] = [];
   if (!input || typeof input !== "object")
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["capture-missing"],
-    };
+    throw new DepositAdmissionRefused(POST_DEPOSIT, ["capture-missing"]);
   if (!isAdmittedPostDomesticDepositCaptureEvidence(input.capture))
     diagnostics.push("runtime-evidence-brand-missing");
   if (!input.captureId?.trim()) diagnostics.push("scope-invalid");
@@ -429,7 +415,7 @@ export function admitPostDomesticDepositFinancialCapture(
   else if (!isPostHumanAttestedV1Manifest(manifest))
     diagnostics.push("human-attestation-mismatch");
   if (!isAdmittedPostDomesticDepositCaptureEvidence(input.capture))
-    return { status: "blocked", capture: null, diagnostics };
+    throw new DepositAdmissionRefused(POST_DEPOSIT, [...new Set(diagnostics)]);
   if (
     input.capture.response.httpStatus !== 200 ||
     input.capture.response.terminal !== true ||
@@ -471,7 +457,7 @@ export function admitPostDomesticDepositFinancialCapture(
   if (rangeRowCount === 0) diagnostics.push("terminal-completeness-unproven");
   const uniqueDiagnostics = [...new Set(diagnostics)];
   if (uniqueDiagnostics.length > 0)
-    return { status: "blocked", capture: null, diagnostics: uniqueDiagnostics };
+    throw new DepositAdmissionRefused(POST_DEPOSIT, uniqueDiagnostics);
   const contractFingerprint = canonicalDigest(
     "post-contract-v1",
     POST_DOMESTIC_DEPOSIT_FINANCIAL_AUTHORITY,
@@ -579,7 +565,7 @@ export function admitPostDomesticDepositFinancialCapture(
     records: occurrenceGroups.records,
     occurrenceGroupCoverage: occurrenceGroups.coverage,
   });
-  return { status: "admitted", capture, diagnostics: [] };
+  return { capture };
 }
 
 export function isPostSha256Token(value: string): boolean {

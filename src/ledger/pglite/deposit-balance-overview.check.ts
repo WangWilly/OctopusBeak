@@ -615,6 +615,7 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
   const financial = admitFubonDomesticDepositFinancialCapture({
     capture: structural.capture,
     captureId: "pglite-fubon-provider-built",
+    sourceCaptureId: "pglite-fubon-provider-built-source",
     sourceConnectionScope,
     sourceConnectionKey,
     humanAttestation: FUBON_HUMAN_ATTESTED_V1_MANIFEST,
@@ -630,7 +631,6 @@ test("PGlite deposit command accepts a provider-built Fubon financial capture", 
       occurrence: { ruleVersion: FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
     },
   });
-  assert.equal(financial.status, "admitted");
   assert.ok(financial.capture);
 
   const database = await createTestPGlite("ledger");
@@ -693,6 +693,7 @@ test("a Fubon option Fubon rewrote continues its account by evidenced account nu
     const financial = admitFubonDomesticDepositFinancialCapture({
       capture: structural.capture,
       captureId,
+      sourceCaptureId: `${captureId}-source`,
       sourceConnectionScope,
       sourceConnectionKey,
       ...(continuedSourceAccountKey === undefined ? {} : { continuedSourceAccountKey }),
@@ -709,7 +710,7 @@ test("a Fubon option Fubon rewrote continues its account by evidenced account nu
         occurrence: { ruleVersion: FUBON_DOMESTIC_DEPOSIT_OCCURRENCE_RULE_VERSION, providerGuaranteed: false },
       },
     });
-    assert.ok(financial.capture, financial.diagnostics.join(","));
+    assert.ok(financial.capture);
     return { identity, derived, capture: financial.capture };
   };
   const fubonBalance = (
