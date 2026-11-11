@@ -48,8 +48,8 @@ test("SinoPac human-attested deposit facts commit in PGlite", async () => {
   const financial = buildSinopacDomesticDepositFinancialCaptureForPGlite({
     capture,
     captureId: "sinopac-financial-synthetic",
+    sourceCaptureId: "sinopac-source-synthetic",
   });
-  assert.equal(financial.status, "admitted", financial.diagnostics.join(", "));
   assert.equal(financial.capture?.records.length, 2);
   assert.deepEqual(
     financial.capture?.records.map((record) => record.occurrenceGroup?.ordinal),
@@ -89,8 +89,8 @@ test("SinoPac human-attested deposit facts commit in PGlite", async () => {
     const nextFinancial = buildSinopacDomesticDepositFinancialCaptureForPGlite({
       capture: nextAdmitted.capture!,
       captureId: "sinopac-financial-synthetic-growth",
+      sourceCaptureId: "sinopac-source-synthetic-growth",
     });
-    assert.equal(nextFinancial.status, "admitted", nextFinancial.diagnostics.join(", "));
     assert.deepEqual(
       nextFinancial.capture?.records.slice(0, 2).map((record) => record.occurrenceKey),
       financial.capture?.records.map((record) => record.occurrenceKey),
@@ -145,11 +145,52 @@ test("SinoPac foreign duplicate deposits receive separate semantic occurrence sl
   const financial = buildSinopacForeignCurrencyFinancialCaptureForPGlite(
     admitted.capture!,
     "sinopac-foreign-duplicate-occurrence-check",
+    "sinopac-foreign-duplicate-occurrence-source",
   );
-  assert.equal(financial.status, "admitted", financial.diagnostics.join(", "));
   assert.deepEqual(
     financial.capture?.records.map((record) => record.occurrenceGroup?.ordinal),
     [1, 2],
   );
   assert.equal(financial.capture?.occurrenceGroupCoverage?.length, 1);
+});
+
+test("a SinoPac capture whose downloads all have no rows is source-only", () => {
+  for (const [product, currency] of [["domestic-deposit", "TWD"], ["foreign-currency", "USD"]] as const) {
+    const admitted = admitSinopacStatementCaptureEvidence({
+      evidenceVersion: "capture-evidence-v1",
+      source: "sinopac",
+      product,
+      providerGuaranteed: false,
+      observedAt: "2026-08-23T12:00:00.000Z",
+      account: { value: "SYNTHETIC-SINOPAC-ACCOUNT", label: "SYNTHETIC PERSONAL ACCOUNT", currency },
+      queryRange: { startDate: "20260801", endDate: "20260823" },
+      zeroResultAuthority: "provider-explicit-no-data",
+      downloads: [{
+        filename: "synthetic-sinopac.csv",
+        byteLength: 0,
+        contentDigest: `sha256:${"d".repeat(64)}`,
+        columnNames: SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
+        rows: [],
+        queryPeriods: ["2026/08/01 ~ 2026/08/23"],
+        terminal: true,
+      }],
+      provenance: {
+        source: "sinopac-mma-json-statement-query",
+        responseBodyRetained: false,
+        semantics: "unresolved",
+        accountEndpoint: "ws_debitacct.ashx",
+        transactionEndpoint: "ws_transdetailMerge.ashx",
+      },
+    } satisfies SinopacStatementCaptureEvidence);
+    assert.equal(admitted.status, "admissible", admitted.diagnostics.join(", "));
+    const verdict = product === "domestic-deposit"
+      ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
+          capture: admitted.capture!,
+          captureId: "sinopac-financial-empty",
+          sourceCaptureId: "sinopac-source-empty",
+        })
+      : buildSinopacForeignCurrencyFinancialCaptureForPGlite(admitted.capture!, "sinopac-foreign-empty", "sinopac-source-empty");
+    assert.equal(verdict.capture, undefined, product);
+    assert.equal(verdict.sourceOnly?.captureId, "sinopac-source-empty", product);
+  }
 });

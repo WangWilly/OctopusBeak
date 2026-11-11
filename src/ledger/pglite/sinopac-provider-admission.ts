@@ -7,6 +7,7 @@ import type {
   CanonicalFinancialDepositRecord,
 } from "../canonical/canonical-financial-deposit-admission.ts";
 import { assignCanonicalFinancialDepositOccurrenceGroups } from "../canonical/canonical-financial-deposit-admission.ts";
+import { DepositAdmissionRefused, type DepositVerdict } from "../canonical/deposit-verdict.ts";
 
 export const SINOPAC_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V1_ROUTE =
   "sinopac/domestic-deposit/human-attested-v1" as const;
@@ -682,12 +683,6 @@ export const SINOPAC_FOREIGN_CURRENCY_HUMAN_ATTESTED_V1 = Object.freeze({
   collisionPolicy: "reject-colliding-tuples",
 } as const);
 
-export type SinopacPGliteForeignFinancialCaptureResult = Readonly<{
-  status: "admitted" | "blocked";
-  capture: CanonicalFinancialDepositCapture | null;
-  diagnostics: string[];
-}>;
-
 type ExactAmount = Readonly<{ coefficient: string; scale: number }>;
 
 const FOREIGN_CURRENCY_CODES = new Set(
@@ -869,35 +864,26 @@ function sinopacForeignRecord(
   };
 }
 
+const SINOPAC_FOREIGN_CURRENCY = "SinoPac foreign-currency";
+
+/**
+ * Admit a foreign-currency capture as financial data. A capture whose
+ * downloads all have no rows commits its source evidence alone.
+ */
 export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
   capture: SinopacStatementValidatedCapture,
   captureOccurrenceId: string,
-): SinopacPGliteForeignFinancialCaptureResult {
-  const diagnostics: string[] = [];
+  sourceCaptureId: string,
+): DepositVerdict<CanonicalFinancialDepositCapture> {
+  if (capture.downloads.every((download) => download.rows.length === 0))
+    return { sourceOnly: createSinopacForeignCurrencySourceEvidence(capture, sourceCaptureId) };
   if (
     !isAdmittedSinopacStatementCaptureEvidence(capture) ||
     capture.product !== "foreign-currency"
   )
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["capture-invalid"],
-    };
+    throw new DepositAdmissionRefused(SINOPAC_FOREIGN_CURRENCY, ["capture-invalid"]);
   if (!captureOccurrenceId.trim())
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["capture-occurrence-id-missing"],
-    };
-  if (
-    capture.downloads.every((download) => download.rows.length === 0) &&
-    capture.zeroResultAuthority !== "provider-explicit-no-data"
-  )
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: ["zero-result-authority-unproven"],
-    };
+    throw new DepositAdmissionRefused(SINOPAC_FOREIGN_CURRENCY, ["capture-occurrence-id-missing"]);
   try {
     const accountNo = normalizedCell(capture.account.value);
     const currency = normalizedCell(capture.account.currency).toUpperCase();
@@ -972,8 +958,6 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
     };
     const preflightFingerprint = canonicalDigest(`${scopeFingerprint}:preflight`);
     return {
-      status: "admitted",
-      diagnostics,
       capture: {
         captureId,
         authorityRoute,
@@ -1050,12 +1034,10 @@ export function buildSinopacForeignCurrencyFinancialCaptureForPGlite(
       },
     };
   } catch (error) {
-    return {
-      status: "blocked",
-      capture: null,
-      diagnostics: [
-        error instanceof Error ? error.message : "foreign-capture-invalid",
-      ],
-    };
+    throw new DepositAdmissionRefused(
+      SINOPAC_FOREIGN_CURRENCY,
+      [error instanceof Error ? error.message : "foreign-capture-invalid"],
+      { cause: error },
+    );
   }
 }

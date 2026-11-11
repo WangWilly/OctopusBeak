@@ -31,8 +31,6 @@ import {
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   admitSinopacStatementCaptureEvidence,
-  createSinopacDomesticDepositSourceEvidence,
-  createSinopacForeignCurrencySourceEvidence,
   deriveSinopacStatementAccountNumberEvidence,
   SINOPAC_DOMESTIC_DEPOSIT_COLUMN_NAMES,
   type SinopacStatementCaptureEvidence,
@@ -1030,29 +1028,24 @@ export async function stageSinopacDeposit(
   const admissions: DepositAdmission<ExistingSinopacFinancialCapture>[] = [];
   for (const [index, { capture }] of snapshot.accounts.entries()) {
     admissions.push(await admitDeposit<ExistingSinopacFinancialCapture>(product, () => {
-      if (capture.downloads.every((download) => download.rows.length === 0))
-        return {
-          product: capture.product,
-          sourceOnly: capture.product === "domestic-deposit"
-            ? createSinopacDomesticDepositSourceEvidence(capture, `${captureOccurrenceId}:source:${index}`)
-            : createSinopacForeignCurrencySourceEvidence(capture, `${captureOccurrenceId}:source:${index}`),
-        };
-      const financial = capture.product === "domestic-deposit"
+      const sourceCaptureId = `${captureOccurrenceId}:source:${index}`;
+      const verdict = capture.product === "domestic-deposit"
         ? buildSinopacDomesticDepositFinancialCaptureForPGlite({
             capture,
             captureId: `sinopac-financial-${sinopacCaptureId(observedAt)}-${index}`,
+            sourceCaptureId,
           })
         : buildSinopacForeignCurrencyFinancialCaptureForPGlite(
             capture,
             `${captureOccurrenceId}:foreign:${index}`,
+            sourceCaptureId,
           );
-      if (financial.status !== "admitted" || !financial.capture)
-        throw new Error(`SinoPac ${capture.product} financial admission failed: ${financial.diagnostics.join(", ")}`);
+      if (verdict.sourceOnly) return { ...verdict, product: capture.product };
       return {
+        ...verdict,
         product: capture.product,
-        capture: financial.capture,
         balance: {
-          identity: financial.capture.identity,
+          identity: verdict.capture.identity,
           sourceCurrency: capture.product === "domestic-deposit" ? "TWD" : capture.account.currency,
         },
       };
