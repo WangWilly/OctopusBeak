@@ -117,7 +117,6 @@ test("Post transaction content remains stable when a new row precedes it", () =>
     });
     assert.ok(structural.capture, structural.diagnostics.join(","));
     const result = admitPostDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `post-position-${shifted}`, humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
     return result.capture;
   });
 });

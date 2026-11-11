@@ -24,6 +24,7 @@ import {
   admitPostDomesticDepositFinancialCapture,
 } from "../ledger/canonical/post-domestic-deposit-admission.ts";
 import { POST_HUMAN_ATTESTED_V1_MANIFEST } from "../ledger/canonical/post-human-attestation-contract.ts";
+import { DepositAdmissionRefused } from "../ledger/canonical/deposit-verdict.ts";
 
 const syntheticPostAccountNumber = ["0311", "5240", "5293", "95"].join("");
 
@@ -381,15 +382,14 @@ const repeatedPostFinancialCapture = admitPostDomesticDepositFinancialCapture({
   captureId: "post-duplicate-occurrence-check",
   humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
 });
-assert.equal(repeatedPostFinancialCapture.status, "admitted");
 assert.deepEqual(
-  repeatedPostFinancialCapture.capture!.records.map(
+  repeatedPostFinancialCapture.capture.records.map(
     (record) => record.occurrenceGroup?.ordinal,
   ),
   [1, 2],
   "identical Post rows retain two semantic occurrence slots",
 );
-assert.equal(repeatedPostFinancialCapture.capture!.occurrenceGroupCoverage?.length, 1);
+assert.equal(repeatedPostFinancialCapture.capture.occurrenceGroupCoverage?.length, 1);
 
 function admitPostRangeRows(postingDates: string[], startDate = "2026/04/21") {
   const evidence = admitPostDomesticDepositCaptureEvidence(
@@ -422,33 +422,41 @@ function admitPostRangeRows(postingDates: string[], startDate = "2026/04/21") {
     humanAttestation: POST_HUMAN_ATTESTED_V1_MANIFEST,
   });
 }
+function refusedPostRangeDiagnostics(postingDates: string[]): readonly string[] {
+  try {
+    admitPostRangeRows(postingDates);
+  } catch (error) {
+    assert.ok(error instanceof DepositAdmissionRefused);
+    return error.diagnostics;
+  }
+  assert.fail(`Post admitted rows posted on ${postingDates.join(", ")}`);
+}
 const earlyPostedRange = admitPostRangeRows(["1150420", "1150621"]);
-assert.deepEqual(earlyPostedRange.diagnostics, [], "iPost's extra day before the requested start does not block admission");
 assert.deepEqual(
-  earlyPostedRange.capture?.records.map((record) => record.sourceTime.localDate),
+  earlyPostedRange.capture.records.map((record) => record.sourceTime.localDate),
   ["2026-06-21"],
   "a row posted before the requested start stays out of the complete-range capture",
 );
 assert.deepEqual(
-  [earlyPostedRange.capture?.scope.startDate, earlyPostedRange.capture?.occurrenceGroupCoverage?.[0]?.startDate],
+  [earlyPostedRange.capture.scope.startDate, earlyPostedRange.capture.occurrenceGroupCoverage?.[0]?.startDate],
   ["2026-04-21", "2026-04-21"],
   "the extra day does not widen the complete range",
 );
 assert.deepEqual(
-  admitPostRangeRows(["1141231", "1150621"], "2026/01/01").capture?.records.map((record) => record.sourceTime.localDate),
+  admitPostRangeRows(["1141231", "1150621"], "2026/01/01").capture.records.map((record) => record.sourceTime.localDate),
   ["2026-06-21"],
   "the extra day before a January 1 start is the prior December 31",
 );
 assert.ok(
-  admitPostRangeRows(["1150420"]).diagnostics.includes("terminal-completeness-unproven"),
+  refusedPostRangeDiagnostics(["1150420"]).includes("terminal-completeness-unproven"),
   "a response holding only the extra day proves nothing about the range",
 );
 assert.ok(
-  admitPostRangeRows(["1150419", "1150621"]).diagnostics.includes("row-outside-query-range"),
+  refusedPostRangeDiagnostics(["1150419", "1150621"]).includes("row-outside-query-range"),
   "a row posted two days before the requested start still blocks admission",
 );
 assert.ok(
-  admitPostRangeRows(["1150621", "1151022"]).diagnostics.includes("row-outside-query-range"),
+  refusedPostRangeDiagnostics(["1150621", "1151022"]).includes("row-outside-query-range"),
   "a row posted after the requested end still blocks admission",
 );
 
