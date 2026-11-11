@@ -507,6 +507,12 @@ test("LINE Bank names arrId when it is neither a string nor a safe integer", asy
   );
 });
 
+test("LINE Bank names a listed acctNbr or entry it cannot read", async () => {
+  assert.equal(await balanceFailure([listedAccount({ acctNbr: 123456789012 })]), "LINE Bank acctNbr must be a string.");
+  for (const entry of [null, 5, []])
+    assert.equal(await balanceFailure([listedAccount(), entry as never]), "LINE Bank account list entry is not an object.");
+});
+
 test("LINE Bank names the field a current balance fails to decode", async () => {
   assert.equal(
     await balanceFailure([listedAccount({ wdrwAvblAmt: "9OO.00" })]),

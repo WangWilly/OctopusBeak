@@ -828,8 +828,14 @@ export class LineBankApiClient {
     const accounts = await this.validate(() => {
       if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
         throw new Error("LINE Bank account list is incomplete.");
-      // The current-balance parse reads every listed arrId the same way.
-      for (const account of payload.content.dpstAcctList) linebankArrangementId(account.arrId);
+      // Read each listed identity's type before filtering keys on it.
+      for (const account of payload.content.dpstAcctList) {
+        if (account === null || typeof account !== "object" || Array.isArray(account))
+          throw new Error("LINE Bank account list entry is not an object.");
+        if (account.acctNbr != null && typeof account.acctNbr !== "string")
+          throw new Error("LINE Bank acctNbr must be a string.");
+        linebankArrangementId(account.arrId);
+      }
       return payload.content.dpstAcctList;
     });
     return {
