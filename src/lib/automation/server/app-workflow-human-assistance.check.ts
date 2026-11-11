@@ -220,3 +220,58 @@ test("each execution of a run has its own route and cannot see an earlier execut
     assert.equal(await secondWaiting, "entered");
     second.end();
   }));
+
+test("an execution refuses a second assistance request while its first is waiting", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    const assistance = createAppWorkflowHumanAssistancePort({ run, execution });
+    const firstWaiting = assistance.request(contract, new AbortController().signal);
+    const firstRequest = await routes.next(1);
+    const firstWaiter = execution.pendingAssistance();
+
+    await assert.rejects(
+      assistance.request({ ...contract, stageId: "second-stage" }, new AbortController().signal),
+      /already has a pending human assistance request/u,
+    );
+    assert.equal(routes.requests.length, 1, "the refused request never reaches the route");
+    assert.equal(execution.pendingAssistance(), firstWaiter, "the first request still holds the execution's waiter");
+    assert.equal(run.current().status, "waiting_for_human");
+    assert.equal(run.current().humanAssistanceContract?.stageId, "sinopac-login-captcha");
+
+    await completeAppWorkflowHumanAssistance(firstRequest);
+    assert.equal(await firstWaiting, "entered");
+    assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
+  }));
+
+test("completing the same assistance request twice changes nothing after the first", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    const waiting = createAppWorkflowHumanAssistancePort({ run, execution })
+      .request(contract, new AbortController().signal);
+    const request = await routes.next(1);
+    const completionWrites: string[] = [];
+    const observed: AppWorkflowHumanAssistanceRequest = {
+      ...request,
+      run: {
+        ...request.run,
+        updateHumanAssistanceCompletion(status) {
+          completionWrites.push(status);
+          return request.run.updateHumanAssistanceCompletion(status);
+        },
+      },
+    };
+
+    await completeAppWorkflowHumanAssistance(observed);
+    assert.equal(await waiting, "entered");
+    const afterFirst = await provider.automation.taskRunById(taskRunId);
+
+    await assert.rejects(completeAppWorkflowHumanAssistance(observed), /no longer current/u);
+    assert.deepEqual(completionWrites, ["entered"], "the second completion writes nothing");
+    assert.equal(execution.pendingAssistance(), null);
+    const afterSecond = await provider.automation.taskRunById(taskRunId);
+    assert.equal(afterSecond?.status, "running");
+    assert.deepEqual(afterSecond?.humanAssistanceContract, afterFirst?.humanAssistanceContract);
+    assert.equal(afterSecond?.events.length, afterFirst?.events.length);
+  }));

@@ -61,6 +61,8 @@ function transactionResponse(options: {
   pageNbr: number;
   incomplete?: boolean;
   empty?: boolean;
+  /** The account the query named, which the envelope echoes. */
+  requested?: Readonly<{ acctNbr?: unknown; arrId?: unknown }>;
 }): LineBankTransactionsResponse {
   const rows = options.pageNbr === 1 && !options.empty
     ? [{
@@ -81,6 +83,8 @@ function transactionResponse(options: {
     code: "200",
     content: {
       ...source,
+      ...(typeof options.requested?.acctNbr === "string" ? { acctNbr: options.requested.acctNbr } : {}),
+      ...(typeof options.requested?.arrId === "string" ? { arrId: options.requested.arrId } : {}),
       pageNbr: options.pageNbr,
       pageCnt: 1000,
       totTxCnt: options.empty ? 0 : options.incomplete ? 2 : 1,
@@ -102,6 +106,8 @@ function createPage(options: {
   signInAfterPolls?: number;
   onPoll?: () => void;
   notice?: boolean;
+  /** The account list, which is also the current-balance source; one entry for `account` by default. */
+  listedAccounts?: readonly Readonly<Record<string, unknown>>[];
 } = {}): Page & { setSignedIn(value: boolean): void; noticeOpen(): boolean } {
   let signedIn = options.signedIn ?? true;
   let polls = 0;
@@ -113,7 +119,7 @@ function createPage(options: {
     code: "200",
     message: "success",
     content: {
-      dpstAcctList: [{ ...account, wdrwAvblAmt: "900.00" }],
+      dpstAcctList: options.listedAccounts ?? [{ ...account, wdrwAvblAmt: "900.00" }],
     },
   });
   const headers = {
@@ -180,7 +186,7 @@ function createPage(options: {
     async waitForURL() { return undefined; },
     async evaluate(
       _expression: unknown,
-      argument: { path: string; body?: { pageNbr?: number } },
+      argument: { path: string; body?: { pageNbr?: number; acctNbr?: unknown; arrId?: unknown } },
     ) {
       options.onSourceRead?.();
       const isAccount = argument.path.includes("/v1/account/common/payables");
@@ -193,6 +199,7 @@ function createPage(options: {
             pageNbr: argument.body?.pageNbr ?? 1,
             incomplete: options.incompleteTransactions,
             empty: options.noTransactions,
+            requested: argument.body,
           }));
       const bytes = isAccount || !(options.malformedTransactions || options.invalidJsonTransactions)
         ? [...new TextEncoder().encode(body)]
@@ -452,4 +459,46 @@ test("LINE Bank ends an unfinished login at its deadline without requesting huma
   assert.equal(elapsed, 120_000);
   assert.deepEqual(pending.assistance, []);
   assert.equal(pending.commits.length, 0);
+});
+
+const listedAccount = (fields: Readonly<Record<string, unknown>> = {}) => ({ ...account, wdrwAvblAmt: "900.00", ...fields });
+
+/** Run LINE Bank over this account list, which must fail validation before any commit, and return the failure's reason. */
+async function balanceFailure(listedAccounts: readonly Readonly<Record<string, unknown>>[]) {
+  const harness = createContext({ page: createPage({ listedAccounts }) });
+  let reason: string | undefined;
+  await assert.rejects(runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input), (error: unknown) => {
+    assert.ok(error instanceof ProductCollectionInterruptedError);
+    assert.equal(error.errorCode, "source-validation-failed");
+    assert.ok(error.cause instanceof Error);
+    reason = error.cause.message;
+    return true;
+  });
+  assert.equal(harness.commits.length, 0);
+  assert.ok(reason !== undefined, "the rejection carried a cause message");
+  return reason;
+}
+
+test("LINE Bank reports a current balance it parsed but cannot admit as a rejected balance source", async () => {
+  // The balance row keys the arrangement with the NBSP folded to a space; the
+  // admitted capture keeps it, so the parsed row matches no admitted capture.
+  assert.equal(
+    await balanceFailure([listedAccount({ arrId: "arr\u00a0main" })]),
+    "LINE Bank current balance source admission was rejected.",
+  );
+});
+
+test("LINE Bank keeps its own message for a current-balance failure outside admission", async () => {
+  assert.equal(
+    await balanceFailure([listedAccount({ wdrwAvblAmt: "9OO.00" })]),
+    "LINE Bank current deposit account 0 wdrwAvblAmt is not an exact decimal.",
+    "a balance that does not parse names its decoding failure",
+  );
+  // Two arrangements that differ only in whitespace are one selected account
+  // but two admitted captures, so the matched snapshot fails its coverage check.
+  assert.equal(
+    await balanceFailure([listedAccount({ arrId: "x  y" }), listedAccount({ arrId: "x y" })]),
+    "LINE Bank current balance source does not cover every selected domestic account.",
+    "a snapshot that fails its coverage check names that failure",
+  );
 });
