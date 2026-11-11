@@ -630,8 +630,6 @@ function filterAccounts(
   return accounts.filter((account) => {
     const currency = linebankAccountCurrency(account);
     return (
-      accountId(account) &&
-      linebankArrangementId(account.arrId) &&
       matchesFilters(account, accountFilters) &&
       (currencies.size === 0 || currencies.has(currency))
     );
