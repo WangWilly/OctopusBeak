@@ -1,4 +1,6 @@
+import { collapseSourceWhitespace } from "../../lib/automation/source-text.ts";
 import { canonicalDigest } from "./canonical-digest.ts";
+import type { TransactionCounterpartyAccountEvidenceInput } from "./counterparty-account-evidence.ts";
 import {
   assignCanonicalFinancialDepositOccurrenceGroups,
   admitCanonicalFinancialDepositCapture,
@@ -2151,4 +2153,83 @@ export function admitFubonDomesticDepositFinancialCapture(
       sourceConnectionKey: input.sourceConnectionKey,
     }),
   };
+}
+
+export const FUBON_LOAN_PAYMENT_ACCOUNT_EVIDENCE_CONTRACT_VERSION =
+  "fubon/deposit-loan-payment-account/v1" as const;
+
+type FubonFinancialCaptureForCounterpartyEvidence = {
+  captureId: string;
+  identity: {
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+  };
+  records: readonly {
+    occurrenceKey: string;
+    sequenceLexeme: string;
+  }[];
+};
+
+function fullUnmaskedFubonLoanAccountFromPaymentNote(
+  value: string,
+): string | null {
+  const source = collapseSourceWhitespace(value);
+  if (!source || /[*xX•]/u.test(source)) return null;
+  const normalized = source.replace(/[\s-]/gu, "");
+  // Live Fubon observations expose a 14-digit loan account at the start of
+  // 附註, followed either by a branch label or by a six-digit provider suffix.
+  // Both shapes retain the complete loan account; no masked or arbitrary
+  // substring is admitted as exact evidence.
+  const match = normalized.match(/^(\d{14})(?:\d{6}|[\p{Script=Han}]{2,12})$/u);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Versioned live rule confirmed against Fubon's domestic-deposit page:
+ * provider summary "放款繳款" plus an unmasked full account in 附註 is an
+ * exact repayment-destination assertion.  Date/amount are corroboration for
+ * allocation, never a substitute for this account evidence.
+ */
+export function buildFubonLoanPaymentAccountEvidence(
+  capture: FubonDepositStatementEvidence,
+  financialCapture: FubonFinancialCaptureForCounterpartyEvidence,
+): TransactionCounterpartyAccountEvidenceInput[] {
+  const records = new Map<string, string>();
+  for (const record of financialCapture.records) {
+    if (/^\d+:\d+$/u.test(record.sequenceLexeme))
+      records.set(record.sequenceLexeme, record.occurrenceKey);
+  }
+
+  const evidence: TransactionCounterpartyAccountEvidenceInput[] = [];
+  for (const page of capture.pages) {
+    for (const row of page.rows) {
+      if (collapseSourceWhitespace(row.cells[2]) !== "放款繳款") continue;
+      const accountValue = fullUnmaskedFubonLoanAccountFromPaymentNote(
+        row.cells[6],
+      );
+      if (!accountValue) continue;
+      const sourceRecordKey = records.get(`${page.pageOrdinal}:${row.rowOrdinal}`);
+      if (!sourceRecordKey)
+        throw new Error(
+          "Fubon loan-payment evidence row has no unique canonical source record.",
+        );
+      evidence.push({
+        captureId: financialCapture.captureId,
+        sourceRecordKey,
+        sourceConnectionKey: financialCapture.identity.sourceConnectionKey,
+        identityEpochKey: financialCapture.identity.identityEpochKey,
+        accountKey: financialCapture.identity.sourceAccountKey ?? financialCapture.identity.accountNo,
+        accountValue,
+        role: "beneficiary",
+        purpose: "loan_repayment",
+        scope: "loan_contract",
+        evidenceKind: "transaction-counterparty-account",
+        sourceField: "附註",
+        contractVersion: FUBON_LOAN_PAYMENT_ACCOUNT_EVIDENCE_CONTRACT_VERSION,
+      });
+    }
+  }
+  return evidence;
 }

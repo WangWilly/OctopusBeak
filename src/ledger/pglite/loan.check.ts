@@ -22,7 +22,7 @@ import {
 } from "./relations.ts";
 import { canonicalOccurrenceGroupKey } from "../canonical/occurrence-groups.ts";
 import { canonicalLoanOccurrenceScopeKey } from "../canonical/loan-admission.ts";
-import { buildFubonLoanPaymentAccountEvidence } from "../../workflows/fubon-statements.ts";
+import { buildFubonLoanPaymentAccountEvidence } from "../canonical/fubon-domestic-deposit-admission.ts";
 import type { FubonDepositStatementEvidence } from "../canonical/fubon-domestic-deposit-admission.ts";
 import { buildFubonLoanCapture } from "../canonical/fubon-loan-admission.ts";
 

@@ -4,8 +4,8 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts";
 import { FUBON_DOMESTIC_DEPOSIT_CAPTURE_FIXTURE_V2 } from "../ledger/canonical/fubon-domestic-deposit.ts";
+import { buildFubonLoanPaymentAccountEvidence } from "../ledger/canonical/fubon-domestic-deposit-admission.ts";
 import {
-  buildFubonLoanPaymentAccountEvidence,
   buildFubonCurrentDepositBalanceCapture,
   deriveFubonDomesticDepositAccountNumberEvidence,
   fubonCurrentBalanceCaptureMatching,
