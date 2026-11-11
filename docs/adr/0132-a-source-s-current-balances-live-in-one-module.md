@@ -14,7 +14,7 @@ A deposit source declares its current balances with one `CurrentStateSnapshotDec
 
 To learn what one source's current balance is, a reader opened up to three files. Checks called the builder directly and matched rows with `indexCurrentBalanceCaptures`, so they tested pieces the run never calls alone, and the module exported those pieces only for the checks.
 
-Yuanta's domestic and foreign builders were two copies of one function. They differed only in stream, route, product label, digest namespaces, one compact key and the unmatched message.
+Yuanta's domestic and foreign builders were two copies of one function. They differed only in stream, route, product label, digest namespaces, one compact key, and the wording of their unmatched, wrong-stream, mismatch and ambiguous messages.
 
 ## Decision
 
@@ -34,7 +34,7 @@ Yuanta's domestic and foreign builders were two copies of one function. They dif
   - CTBC takes the scope day from `providerDataTime`, rewriting its slashes with `replaceAll`.
   - HNCB lets `sourceEvidence.url` override the contract endpoint.
   - Cathay stamps the capture with the row's `observedAt`.
-  - LINE Bank's endpoint has no host.
+  - LINE Bank ignores the row's evidence endpoint and builds its own from the contract with a fixed `featureTypeCode` query.
 
   A helper would need a flag or callback for each difference, so every builder would still name its differences, through one more layer.
 - **Keep the builders in the statements modules and export them for checks.** Rejected. The run never calls a builder alone, so checks on it pass while the declaration that wires it can be wrong.
