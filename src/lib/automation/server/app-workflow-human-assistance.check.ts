@@ -243,3 +243,35 @@ test("an execution refuses a second assistance request while its first is waitin
     assert.equal(await firstWaiting, "entered");
     assert.equal((await provider.automation.taskRunById(taskRunId))?.status, "running");
   }));
+
+test("completing the same assistance request twice changes nothing after the first", () =>
+  withRunningRun("sinopac-statements", async (provider, taskRunId) => {
+    const routes = capturingRoute();
+    const { run, execution } = await openExecutionForCheck(provider.automation, taskRunId, routes.route);
+    const waiting = createAppWorkflowHumanAssistancePort({ run, execution })
+      .request(contract, new AbortController().signal);
+    const request = await routes.next(1);
+    const completionWrites: string[] = [];
+    const observed: AppWorkflowHumanAssistanceRequest = {
+      ...request,
+      run: {
+        ...request.run,
+        updateHumanAssistanceCompletion(status) {
+          completionWrites.push(status);
+          return request.run.updateHumanAssistanceCompletion(status);
+        },
+      },
+    };
+
+    await completeAppWorkflowHumanAssistance(observed);
+    assert.equal(await waiting, "entered");
+    const afterFirst = await provider.automation.taskRunById(taskRunId);
+
+    await assert.rejects(completeAppWorkflowHumanAssistance(observed), /no longer current/u);
+    assert.deepEqual(completionWrites, ["entered"], "the second completion writes nothing");
+    assert.equal(execution.pendingAssistance(), null);
+    const afterSecond = await provider.automation.taskRunById(taskRunId);
+    assert.equal(afterSecond?.status, "running");
+    assert.deepEqual(afterSecond?.humanAssistanceContract, afterFirst?.humanAssistanceContract);
+    assert.equal(afterSecond?.events.length, afterFirst?.events.length);
+  }));
