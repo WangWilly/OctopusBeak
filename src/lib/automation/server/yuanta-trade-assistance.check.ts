@@ -403,3 +403,35 @@ test("Yuanta Trade assistance cancellation prevents delayed solver output from r
     await store.close();
   }
 });
+
+test("Yuanta Trade fails a stage its route reports resumed without resuming it", async () => {
+  const { store, provider, run } = await createRun();
+  const routedStages: string[] = [];
+  try {
+    const assistance = await yuantaTradeAssistance(provider, run.taskRunId, {
+      task: YUANTA_TRADE_TASK,
+      settings: solverSettings,
+      pageForRun: noHostedPage,
+      route: async (input) => {
+        routedStages.push(input.run.current().humanAssistanceContract?.stageId ?? "");
+        return { kind: "resumed" };
+      },
+    });
+    await assert.rejects(
+      Promise.race([
+        assistance.request(audioContract(), new AbortController().signal),
+        new Promise<never>((_resolve, reject) => setTimeout(
+          () => reject(new Error("Yuanta Trade stage was neither resumed nor failed")),
+          1_000,
+        )),
+      ]),
+      /did not complete the current stage/u,
+    );
+    assert.deepEqual(routedStages, ["yuanta-trade-audio-verification"]);
+    const stored = await provider.automation.taskRunById(run.taskRunId);
+    assert.equal(stored?.status, "waiting_for_human", "the run never returns to running");
+    assert.equal(stored?.humanAssistanceContract?.completion.status, "pending");
+  } finally {
+    await store.close();
+  }
+});
