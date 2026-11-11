@@ -690,11 +690,6 @@ function buildHncbCurrentDepositBalanceCapture(
   financialCapture: ExistingHncbFinancialCapture,
 ): CurrentDepositBalanceCaptureInput {
   const identity = financialCapture.identity;
-  const accountEvidence = identity.accountNumber?.value;
-  if (accountEvidence !== row.accountNumber)
-    throw new Error(
-      "HNCB current deposit account does not match the existing full account-number evidence.",
-    );
   const isOverview =
     String(row.sourceEvidence.transaction) === HNCB_CURRENT_DEPOSIT_OVERVIEW_TRANSACTION ||
     String(row.sourceEvidence.contractVersion) ===

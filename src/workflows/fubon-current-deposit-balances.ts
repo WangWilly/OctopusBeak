@@ -366,10 +366,6 @@ function buildFubonCurrentDepositBalanceCapture(
   financialCapture: ExistingFubonFinancialCapture,
 ): CurrentDepositBalanceCaptureInput {
   const identity = financialCapture.identity;
-  if (identity.accountNumber?.value !== row.accountNumber)
-    throw new Error(
-      "Fubon current deposit account does not match the existing full account-number evidence.",
-    );
   const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
   const route = "fubon/domestic-deposit/current-balance-v1" as const;
   const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
