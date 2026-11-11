@@ -24,7 +24,8 @@ const LINEBANK_DOMESTIC_DEPOSIT_TIME_ZONE = "Asia/Taipei";
 
 export type LineBankAccount = {
   acctNbr?: string;
-  arrId?: string;
+  /** The provider may send it unquoted. */
+  arrId?: string | number;
   acctNick?: string;
   pdNm?: string;
   currCd?: string;
@@ -58,7 +59,8 @@ export type LineBankTransactionRow = {
 /** Scalar account/product/status fields observed in the transaction response. */
 export type LineBankTransactionSourceEnvelope = {
   acctNbr?: string;
-  arrId?: string;
+  /** The provider may send it unquoted. */
+  arrId?: string | number;
   acctNick?: string;
   acctBal?: number | string;
   wdrwAvblAmt?: number | string;
