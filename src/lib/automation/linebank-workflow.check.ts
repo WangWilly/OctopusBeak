@@ -84,7 +84,9 @@ function transactionResponse(options: {
     content: {
       ...source,
       ...(typeof options.requested?.acctNbr === "string" ? { acctNbr: options.requested.acctNbr } : {}),
-      ...(typeof options.requested?.arrId === "string" ? { arrId: options.requested.arrId } : {}),
+      ...(typeof options.requested?.arrId === "string" || typeof options.requested?.arrId === "number"
+        ? { arrId: options.requested.arrId }
+        : {}),
       pageNbr: options.pageNbr,
       pageCnt: 1000,
       totTxCnt: options.empty ? 0 : options.incomplete ? 2 : 1,
@@ -487,6 +489,22 @@ test("LINE Bank tells apart current balances of arrangements that differ only in
     assert.equal(result.status, "financial-admitted");
     assert.equal(result.counts.itemCount, itemCount, `${accountFilters.length === 0 ? "both" : "one"} selected stage a deposit and a balance each`);
   }
+});
+
+test("LINE Bank reads an unquoted integer arrId the way its current balance and ledger do", async () => {
+  for (const arrId of [123, 0]) {
+    const harness = createContext({ page: createPage({ listedAccounts: [listedAccount({ arrId })] }) });
+    const result = await runVerifiedEntry(LINEBANK_SOURCE, lineBankWorkflow, harness.context, input);
+    assert.equal(result.status, "financial-admitted", `arrId ${arrId}`);
+    assert.equal(result.counts.itemCount, 2, `arrId ${arrId} stages its deposit and its current balance`);
+  }
+});
+
+test("LINE Bank names arrId when it is neither a string nor a safe integer", async () => {
+  assert.equal(
+    await balanceFailure([listedAccount({ arrId: 1.5 })]),
+    "LINE Bank arrId must be a string or a safe integer.",
+  );
 });
 
 test("LINE Bank names the field a current balance fails to decode", async () => {

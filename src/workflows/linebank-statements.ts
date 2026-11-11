@@ -400,12 +400,21 @@ export function linebankApiRowsToStatementRows(
     });
 }
 
+/** LINE Bank may send `arrId` unquoted. Read it the way the current-balance
+ * source and the ledger do: a string, or a safe integer as its digits. */
+function linebankArrangementId(value: unknown): string {
+  if (value === undefined || value === null || typeof value === "string")
+    return collapseSourceWhitespace(value);
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  throw new Error("LINE Bank arrId must be a string or a safe integer.");
+}
+
 /** The provider's account identity is a composite of the two source fields.
  * Keep the delimiter explicit so two different pairs cannot concatenate to the
  * same opaque key (for example, `12` + `3` versus `1` + `23`). */
 export function linebankAccountKey(account: LineBankAccount): string {
   const accountNumber = collapseSourceWhitespace(account.acctNbr);
-  const arrangementId = collapseSourceWhitespace(account.arrId);
+  const arrangementId = linebankArrangementId(account.arrId);
   return accountNumber && arrangementId
     ? `${accountNumber}:${arrangementId}`
     : "";
@@ -454,7 +463,7 @@ export function linebankValidateTransactionPageSequence(
     }
     if (page.source !== undefined) {
       const acctNbr = collapseSourceWhitespace(page.source.acctNbr);
-      const arrId = collapseSourceWhitespace(page.source.arrId);
+      const arrId = linebankArrangementId(page.source.arrId);
       if (!acctNbr || !arrId) {
         throw new Error(
           "LINE Bank source account identity metadata is incomplete.",
@@ -622,7 +631,7 @@ function filterAccounts(
     const currency = linebankAccountCurrency(account);
     return (
       accountId(account) &&
-      account.arrId &&
+      linebankArrangementId(account.arrId) &&
       matchesFilters(account, accountFilters) &&
       (currencies.size === 0 || currencies.has(currency))
     );
@@ -819,6 +828,8 @@ export class LineBankApiClient {
     const accounts = await this.validate(() => {
       if (!payload.content || !Array.isArray(payload.content.dpstAcctList))
         throw new Error("LINE Bank account list is incomplete.");
+      // The current-balance parse reads every listed arrId the same way.
+      for (const account of payload.content.dpstAcctList) linebankArrangementId(account.arrId);
       return payload.content.dpstAcctList;
     });
     return {
