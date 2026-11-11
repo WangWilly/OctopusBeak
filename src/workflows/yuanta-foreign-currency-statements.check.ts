@@ -1596,7 +1596,7 @@ try {
     deferred.map((item) => [item.product, item.itemKey]),
     [
       ["foreign-currency-deposit", stagedDeposit?.capture.captureId],
-      ["current-deposit-balance", `current-balance:foreign-currency-deposit:${typedForeignAccount.value}:USD`],
+      ["current-balance", `current-balance:foreign-currency-deposit:${typedForeignAccount.value}:USD`],
     ],
   );
 
