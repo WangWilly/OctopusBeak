@@ -1,8 +1,8 @@
-import type { DashboardBlockKey } from "../src/lib/shared-shell/block-load-state.ts";
+import type { DashboardBlockKey } from "../../shared-shell/block-load-state.ts";
 import {
   wrapDashboardBlock,
   type DashboardBlockPayload,
-} from "../src/lib/shared-shell/dashboard-blocks.ts";
+} from "../../shared-shell/dashboard-blocks.ts";
 
 const AUTOMATION_SUMMARY_FIELDS = ["automation", "runtimeSessionId", "runtimeRevision"] as const;
 const AUTOMATION_BLOCK_FIELDS = ["automation", "credentialGroups", "runtimeSessionId", "runtimeRevision"] as const;

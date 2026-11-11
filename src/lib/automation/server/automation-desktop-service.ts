@@ -57,8 +57,8 @@ import {
   type DataReadOptions,
   type DataVersionStore,
 } from "../../shared-shell/data-version.ts";
-import { projectAutomationBlock } from "../../../../electron/automation-block.ts";
-import { createAutomationCredentialStateCache } from "../../../../electron/automation-credential-state.ts";
+import { projectAutomationBlock } from "./automation-block.ts";
+import { createAutomationCredentialStateCache } from "./automation-credential-state.ts";
 
 const REGISTRATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const ONE_TIME_CODE = /^[0-9]{4,8}$/u;

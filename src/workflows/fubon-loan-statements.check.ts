@@ -11,7 +11,7 @@ import {
   createPGliteChildRpcServer,
   type PGliteChildProvider,
 } from "../../electron/pglite-child-rpc.ts";
-import { requirePGliteChildRpcClientFromEnv } from "../../electron/pglite-child-rpc-client.ts";
+import { requirePGliteChildRpcClientFromEnv } from "../lib/automation/server/pglite-child-rpc-client.ts";
 import { createPGliteViewWorkerClient } from "../../electron/pglite-view-worker-client.ts";
 import {
   PGLITE_CANONICAL_LOAN_COMMIT_COMMAND,

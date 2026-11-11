@@ -13,7 +13,7 @@ import {
   createPGliteChildRpcServer,
   type PGliteChildRpcServer,
 } from "./pglite-child-rpc.ts";
-import type { PGliteWorkflowRpc } from "./pglite-child-rpc-client.ts";
+import type { PGliteWorkflowRpc } from "../src/lib/automation/server/pglite-child-rpc-client.ts";
 import {
   createPGliteViewWorkerClient,
   type PGliteViewWorkerClient,

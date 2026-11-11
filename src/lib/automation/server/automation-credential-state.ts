@@ -1,7 +1,7 @@
 import type {
   AutomationCredentialStateDto,
   CertificateFileValidationReason,
-} from "../src/lib/desktop/api.ts";
+} from "../../desktop/api.ts";
 
 export type AutomationCredentialStateSource = {
   status: Readonly<Record<string, boolean>>;
