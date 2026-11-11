@@ -99,8 +99,9 @@ test("Yuanta transaction content remains stable when a new row precedes it", () 
     assert.ok(structural.capture, structural.diagnostics.join(","));
     const scope = "synthetic-user\0synthetic-account";
     const result = admitYuantaDomesticDepositFinancialCapture({ capture: structural.capture, captureId: `yuanta-position-${shifted}`,
+      sourceCaptureId: `yuanta-position-source-${shifted}`,
       sourceConnectionScope: scope, sourceConnectionKey: deriveSourceConnectionIdentityKey("yuanta", scope), humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST });
-    assert.ok(result.capture, result.diagnostics.join(","));
+    assert.ok(result.capture);
     return result.capture;
   });
 });

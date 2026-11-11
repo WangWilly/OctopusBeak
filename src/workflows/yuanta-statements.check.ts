@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { registerHooks } from "node:module";
 
 import { deriveSourceConnectionIdentityKey } from "../ledger/canonical/source-connection-identity.ts";
+import { DepositAdmissionRefused } from "../ledger/canonical/deposit-verdict.ts";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import { dismissYuantaBankNotice } from "./yuanta-auth.ts";
 import { frameScope } from "./frame-scope.ts";
@@ -143,11 +144,11 @@ assert.equal(yuantaDuplicateEvidence.status, "admissible");
 const yuantaDuplicateFinancial = admitYuantaDomesticDepositFinancialCapture({
   capture: yuantaDuplicateEvidence.capture!,
   captureId: "yuanta-domestic-duplicate-occurrence-check",
+  sourceCaptureId: "yuanta-domestic-duplicate-occurrence-source",
   humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
   sourceConnectionScope: stableConnectionScope,
   sourceConnectionKey: stableConnectionKey,
 });
-assert.equal(yuantaDuplicateFinancial.status, "admitted");
 assert.deepEqual(
   yuantaDuplicateFinancial.capture!.records.map(
     (record) => record.occurrenceGroup?.ordinal,
@@ -181,6 +182,7 @@ function admitYuantaRows(observedAt: string, rows: readonly string[][]) {
   return admitYuantaDomesticDepositFinancialCapture({
     capture: evidence.capture!,
     captureId: `yuanta-domestic-next-business-day-${observedAt}-${rows.length}`,
+    sourceCaptureId: `yuanta-domestic-next-business-day-source-${observedAt}-${rows.length}`,
     humanAttestation: YUANTA_HUMAN_ATTESTED_V2_MANIFEST,
     sourceConnectionScope: stableConnectionScope,
     sourceConnectionKey: stableConnectionKey,
@@ -196,22 +198,29 @@ function sundayRow(accountingDate: string, rowOrdinal: number): string[] {
 function admitSundayQueryRows(...accountingDates: string[]) {
   return admitYuantaRows("2026-10-11T16:00:00+08:00", accountingDates.map(sundayRow));
 }
-assert.deepEqual(
-  admitSundayQueryRows("20261012").diagnostics,
-  [],
+function refusedSundayQueryDiagnostics(...accountingDates: string[]): readonly string[] {
+  try {
+    admitSundayQueryRows(...accountingDates);
+  } catch (error) {
+    assert.ok(error instanceof DepositAdmissionRefused);
+    return error.diagnostics;
+  }
+  assert.fail(`Yuanta admitted rows booked on ${accountingDates.join(", ")}`);
+}
+assert.ok(
+  admitSundayQueryRows("20261012").capture,
   "a row booked on the next business day after the query range is admitted",
 );
-assert.deepEqual(
-  admitSundayQueryRows("20261020", "20261020").diagnostics,
-  [],
+assert.ok(
+  admitSundayQueryRows("20261020", "20261020").capture,
   "rows booked after a weekday holiday stretch are admitted",
 );
 assert.ok(
-  admitSundayQueryRows("20261012", "20261013").diagnostics.includes("row-outside-query-range"),
+  refusedSundayQueryDiagnostics("20261012", "20261013").includes("row-outside-query-range"),
   "rows booked on two different later days cannot share one next business day",
 );
 assert.ok(
-  admitSundayQueryRows("20261026").diagnostics.includes("row-outside-query-range"),
+  refusedSundayQueryDiagnostics("20261026").includes("row-outside-query-range"),
   "a row booked beyond any holiday stretch stays outside the query range",
 );
 
