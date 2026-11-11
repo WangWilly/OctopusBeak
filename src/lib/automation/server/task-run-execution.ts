@@ -19,7 +19,7 @@ import {
 } from "./workflow-failure-diagnostics.ts";
 import { rememberFailureDiagnostic } from "./error-report.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import { chromiumThreadHost, type ExecutionHost } from "./execution-host.ts";
+import type { ExecutionHost } from "./execution-host.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 import {
   createAppWorkflowHumanAssistancePort,
@@ -36,7 +36,7 @@ type ExecutionContext = Readonly<{
   run: ActiveAutomationTaskRun;
   execution: WorkflowExecution;
   round: WorkflowExecutionRound;
-  seams: AutomationTaskExecutionSeams;
+  host: ExecutionHost;
 }>;
 
 /** What the CAPTCHA Retry Campaign tells one Workflow execution about its round. */
@@ -51,11 +51,12 @@ export type WorkflowExecutionRound = Readonly<{
   assistanceRoute?: HumanAssistanceRoute;
 }>;
 
-/** Test seams of a Workflow execution; production leaves each at its default. */
-export type AutomationTaskExecutionSeams = Readonly<{
-  /** Where the round's page and worker come from. Production uses the Chromium thread host. */
-  executionHost?: ExecutionHost;
-}>;
+/** Execute one workflow round of an Active Automation Task Run and report its outcome. */
+export type TaskRunExecution = (
+  plan: TaskRunPlan,
+  run: ActiveAutomationTaskRun,
+  round: WorkflowExecutionRound,
+) => Promise<TaskRunReport>;
 
 function createWorkflowProgressReporter(context: ExecutionContext, input: unknown) {
   let progress = context.run.current().progress ?? indeterminateProgress(context.run.current().attempt);
@@ -149,8 +150,7 @@ function createBrowserRuntimeIdentityRecorder(
 }
 
 async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<TaskRunReport> {
-  const { plan } = context;
-  const host = context.seams.executionHost ?? chromiumThreadHost;
+  const { plan, host } = context;
   const { task, workflowId, launchEnv } = plan;
   const { definition, runtime } = plan.registration;
 
@@ -280,29 +280,26 @@ function indeterminateProgress(attempt: number): AutomationTaskProgress {
 
 const CANCELLED: TaskRunReport = { summary: null, failure: { code: "cancelled", proven: true } };
 
-/** Execute one workflow round of an Active Automation Task Run and report its outcome. */
-export async function runAutomationTaskExecution(
-  plan: TaskRunPlan,
-  run: ActiveAutomationTaskRun,
-  round: WorkflowExecutionRound,
-  seams: AutomationTaskExecutionSeams = {},
-): Promise<TaskRunReport> {
-  if (run.signal.aborted) return CANCELLED;
-  const { attempt } = round;
-  const current = run.current();
-  const started = await run.transition("running", {
-    attempt,
-    maxAttempts: round.maxAttempts,
-    progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
-  });
-  if (!started) return CANCELLED;
-  const execution = run.beginExecution(round.executionId, {
-    assistanceRoute: round.assistanceRoute,
-    collectionScope: launchedCollectionScope(plan.task, plan.launchEnv),
-  });
-  try {
-    return await executeSupervisedAppWorkflow({ plan, run, execution, round, seams });
-  } finally {
-    execution.end();
-  }
+/** The Workflow execution whose rounds get their page and worker from `host`. */
+export function createTaskRunExecution(host: ExecutionHost): TaskRunExecution {
+  return async (plan, run, round) => {
+    if (run.signal.aborted) return CANCELLED;
+    const { attempt } = round;
+    const current = run.current();
+    const started = await run.transition("running", {
+      attempt,
+      maxAttempts: round.maxAttempts,
+      progress: current.progress ? { ...current.progress, attempt } : indeterminateProgress(attempt),
+    });
+    if (!started) return CANCELLED;
+    const execution = run.beginExecution(round.executionId, {
+      assistanceRoute: round.assistanceRoute,
+      collectionScope: launchedCollectionScope(plan.task, plan.launchEnv),
+    });
+    try {
+      return await executeSupervisedAppWorkflow({ plan, run, execution, round, host });
+    } finally {
+      execution.end();
+    }
+  };
 }

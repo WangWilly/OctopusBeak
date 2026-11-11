@@ -15,7 +15,7 @@ import type {
 } from "./app-workflow-worker-protocol.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, inProcessCheckHost, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { createTaskRunExecution } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
 type ProgressSnapshot = Readonly<{
@@ -253,18 +253,12 @@ test("runner progress spans selected product stages, survives a same-run retry, 
     }) => {
       const taskRunId = input.run.taskRunId;
       startingProgress.delete(taskRunId);
-      const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), input.run, firstRoundForCheck({
+      const execution = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) =>
+        new SequencedWorkflowWorker(start, input.steps, input.terminal, onEventAcknowledged) }));
+      const outcome = await execution(planForCheck(task, { launchEnv }), input.run, firstRoundForCheck({
         attempt: input.attempt,
         maxAttempts: 3,
-      }), {
-        executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
-          new SequencedWorkflowWorker(
-            start,
-            input.steps,
-            input.terminal,
-            onEventAcknowledged,
-          ) }),
-      });
+      }));
       return { taskRunId, outcome, initialProgress: startingProgress.get(taskRunId) ?? null };
     };
 

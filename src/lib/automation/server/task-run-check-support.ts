@@ -20,11 +20,7 @@ import type { AppWorkflowWorkerHandle, ExecutionHost } from "./execution-host.ts
 import type { AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationTaskRun } from "./store.ts";
-import {
-  runAutomationTaskExecution,
-  type AutomationTaskExecutionSeams,
-  type WorkflowExecutionRound,
-} from "./task-run-execution.ts";
+import { createTaskRunExecution, type WorkflowExecutionRound } from "./task-run-execution.ts";
 import {
   resolveTaskRunPlan,
   type TaskRunPlan,
@@ -260,9 +256,9 @@ export async function executeTaskRunForCheck(
   persistence: AutomationPersistencePort,
   options: Partial<TaskRunPlanDependencies>
     & Partial<WorkflowExecutionRound>
-    & AutomationTaskExecutionSeams
     & Readonly<{
       taskRunId: string;
+      executionHost: ExecutionHost;
       onRunOpened?: (run: ActiveAutomationTaskRun) => void;
       /** Receives each Workflow execution the round begins. */
       executions?: WorkflowExecution[];
@@ -276,8 +272,7 @@ export async function executeTaskRunForCheck(
   const {
     taskRunId, onRunOpened, executions,
     pgliteRpc, credentials, settings, userDataDirectory, launchEnv, launchVerificationSettings,
-    attempt, maxAttempts, retrying, executionId, assistanceRoute,
-    ...seams
+    attempt, maxAttempts, retrying, executionId, assistanceRoute, executionHost,
   } = options;
   const plan = planForCheck(task, {
     ...(pgliteRpc ? { pgliteRpc } : {}),
@@ -297,7 +292,7 @@ export async function executeTaskRunForCheck(
   const opened = await openTaskRunForCheck(persistence, taskRunId);
   const active = executions ? observingExecutions(opened, executions) : opened;
   onRunOpened?.(active);
-  const report = await runAutomationTaskExecution(plan, active, round, seams);
+  const report = await createTaskRunExecution(executionHost)(plan, active, round);
   const run = await active.finish(report);
   return { status: run.status, taskRunId, run, outcome: run.appWorkflowOutcome ?? { errorCode: null, summary: null } };
 }

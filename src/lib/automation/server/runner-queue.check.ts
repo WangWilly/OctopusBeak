@@ -6,7 +6,7 @@ import test, { beforeEach, afterEach } from "node:test";
 import { createAutomationRunner } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
-import type { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { TaskRunExecution } from "./task-run-execution.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { runnerHostForCheck } from "./task-run-check-support.ts";
 
@@ -50,7 +50,7 @@ function harness() {
       },
     },
   } as unknown as AutomationPersistenceProvider;
-  const execute: typeof runAutomationTaskExecution = async (plan, run) => {
+  const execute: TaskRunExecution = async (plan, run) => {
     active += 1;
     peak = Math.max(peak, active);
     // A waiting verification continues to own its execution slot.

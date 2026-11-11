@@ -12,7 +12,7 @@ import type {
   AutomationPersistenceProvider,
   AutomationTaskRun,
 } from "./store.ts";
-import type { runAutomationTaskExecution } from "./task-run-execution.ts";
+import type { TaskRunExecution } from "./task-run-execution.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { writeAutomationSettingsFile } from "./config-files.ts";
 import { SourceDeviceBusyError, sourceDeviceLocks } from "./source-device-lock.ts";
@@ -87,7 +87,7 @@ function aborted(signal: AbortSignal) {
 
 const freshRunner = (
   provider: AutomationPersistenceProvider = providerStub(),
-  options: { directory?: string; runExecution?: typeof runAutomationTaskExecution } = {},
+  options: { directory?: string; runExecution?: TaskRunExecution } = {},
 ) => createAutomationRunner({
   runtime: createAutomationRuntimeState(),
   provider,
@@ -132,7 +132,7 @@ test("typed workflow runtime fails closed when its PGlite capability is absent",
 test("the runner hands the PGlite capability to the execution as a typed value, not process environment", async () => {
   const provider = providerStub();
   let plan: TaskRunPlan | undefined;
-  const runExecution: typeof runAutomationTaskExecution = async (executionPlan) => {
+  const runExecution: TaskRunExecution = async (executionPlan) => {
     plan = executionPlan;
     return { summary: null, failure: null };
   };
@@ -190,7 +190,7 @@ test("the task catalog contains only typed workflows and the two typed nonbrowse
 
 test("an execution that throws after starting a commit still ends commit outcome unknown", async () => {
   const { automation } = memoryAutomation();
-  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+  const runExecution: TaskRunExecution = async (_plan, run) => {
     await run.transition("running");
     await run.recordCommitAttempt({ phase: "started", attemptId: "lost-attempt", product: null, total: 1 });
     throw new Error("worker host crashed mid-commit");
@@ -203,7 +203,7 @@ test("an execution that throws after starting a commit still ends commit outcome
 test("cancellation reaches the typed execution through the run's signal and ends the run cancelled", async () => {
   const { runs, automation } = memoryAutomation();
   const started = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+  const runExecution: TaskRunExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.signal);
     throw new Error("typed workflow observed cancellation");
@@ -231,7 +231,7 @@ test("work held for a data deletion runs only after every active run is cancelle
   const { runs, automation } = memoryAutomation();
   const started = deferred();
   let stopsOnCancel = true;
-  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+  const runExecution: TaskRunExecution = async (_plan, run) => {
     if (!stopsOnCancel) return { summary: null, failure: null };
     started.resolve();
     await aborted(run.signal);
@@ -256,7 +256,7 @@ test("force-quit aborts the run's force signal and settles only after the execut
   const started = deferred();
   const forced = deferred();
   const releaseExecution = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+  const runExecution: TaskRunExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.forceSignal);
     forced.resolve();
@@ -302,7 +302,7 @@ test("a cancellation still persisting for a finished run never reaches the task'
   const provider = providerStub(automation);
   const executions: ActiveAutomationTaskRun[] = [];
   const releaseNext = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+  const runExecution: TaskRunExecution = async (_plan, run) => {
     executions.push(run);
     if (executions.length === 1) await aborted(run.signal);
     else await releaseNext.promise;
@@ -347,7 +347,7 @@ test("a run whose record cannot be finalized still settles, and a second claim o
     async transitionTaskRunToTerminal() { throw new Error("disk full"); },
   }).automation);
   const release = deferred();
-  const runExecution: typeof runAutomationTaskExecution = async () => {
+  const runExecution: TaskRunExecution = async () => {
     await release.promise;
     return { summary: null, failure: null };
   };

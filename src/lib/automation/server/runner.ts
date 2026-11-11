@@ -1,5 +1,6 @@
 import { APP_WORKFLOW_CONCURRENCY, createWorkflowRunQueue } from "./workflow-run-queue.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
+import { createTaskRunExecution, type TaskRunExecution } from "./task-run-execution.ts";
+import { chromiumThreadHost, type ExecutionHost } from "./execution-host.ts";
 import { resolveTaskRunPlan } from "./task-run-plan.ts";
 import type {
   AutomationPersistenceProvider,
@@ -72,15 +73,18 @@ type ClaimedTask = {
 export function createAutomationRunner(options: Readonly<{
   runtime: AutomationRuntimeState;
   provider: AutomationPersistenceProvider;
-  /** Test seam for the Workflow execution. */
-  runExecution?: typeof runAutomationTaskExecution;
+  /** Where each round's page and worker come from; the App's Chromium thread host by default. */
+  executionHost?: ExecutionHost;
+  /** Replaces whole rounds, for checks of the run lifecycle without a workflow. */
+  runExecution?: TaskRunExecution;
   credentials: AutomationCredentialStore;
   settings: AutomationSettingsStore;
   userDataDirectory: string;
   forceQuitAvailableAfterMs?: number;
 }>) {
   const { runtime, provider } = options;
-  const runExecution = options.runExecution ?? runAutomationTaskExecution;
+  const runExecution = options.runExecution
+    ?? createTaskRunExecution(options.executionHost ?? chromiumThreadHost);
   const queue = createWorkflowRunQueue(APP_WORKFLOW_CONCURRENCY);
   const claimed = new Map<string, ClaimedTask>();
   let shuttingDown = false;

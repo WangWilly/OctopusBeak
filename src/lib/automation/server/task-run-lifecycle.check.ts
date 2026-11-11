@@ -9,8 +9,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { AutomationRuntimeTaskSnapshot } from "$lib/desktop/api.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
 import type { AutomationPersistenceProvider } from "./store.ts";
-import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { AppWorkflowWorkerHandle, ExecutionHost } from "./execution-host.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { inProcessCheckHost, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
@@ -18,8 +17,8 @@ import { inProcessCheckHost, runnerHostForCheck, startForCheck } from "./task-ru
 const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
 after(() => database.close());
-const runtimeFor = (provider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
-  createAutomationRuntime(provider, { ...runnerHostForCheck(), runExecution });
+const runtimeFor = (provider: AutomationPersistenceProvider, executionHost: ExecutionHost) =>
+  createAutomationRuntime(provider, { ...runnerHostForCheck(), executionHost });
 
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {
@@ -95,15 +94,12 @@ class ScriptedWorker extends EventEmitter implements AppWorkflowWorkerHandle {
 }
 
 /** Run the production execution path with a scripted supervised worker. */
-function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): typeof runAutomationTaskExecution {
-  return (plan, run, round, seams) => runAutomationTaskExecution(plan, run, round, {
-    ...seams,
-    executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
-      const worker = new ScriptedWorker(start, mode);
-      workers.push(worker);
-      return worker;
-    } }),
-  });
+function workerHost(mode: WorkerMode, workers: ScriptedWorker[] = []): ExecutionHost {
+  return inProcessCheckHost({ scriptedWorker: (start) => {
+    const worker = new ScriptedWorker(start, mode);
+    workers.push(worker);
+    return worker;
+  } });
 }
 
 test(
@@ -127,7 +123,7 @@ test(
           return target.createTaskRun(input);
         };
       },
-    })), workerExecution("completes"));
+    })), workerHost("completes"));
     const first = await startForCheck(runtime, "exchange-rates");
     assert.equal((await first.settled)?.status, "completed");
 
@@ -165,7 +161,7 @@ test(
   "force-quit ends the workflow worker immediately and records a forced cancellation",
   async () => {
     const workers: ScriptedWorker[] = [];
-    const runtime = runtimeFor(providerWith(), workerExecution("ignores-cancel", workers));
+    const runtime = runtimeFor(providerWith(), workerHost("ignores-cancel", workers));
     const started = await startForCheck(runtime, "exchange-rates");
     try {
       await until(() => workers.length === 1, "the workflow worker never started");
@@ -189,7 +185,7 @@ test(
   "a run whose runner fails before execution still reports a terminal finish",
   async () => {
     const provider = { automation: createPgliteOperationalProvider(store).automation } as AutomationPersistenceProvider;
-    const runtime = runtimeFor(provider, workerExecution("completes"));
+    const runtime = runtimeFor(provider, workerHost("completes"));
     const started = await startForCheck(runtime, "exchange-rates");
     try {
       const run = await Promise.race([

@@ -21,7 +21,7 @@ import {
   openTaskRunForCheck,
   planForCheck,
 } from "./task-run-check-support.ts";
-import { runAutomationTaskExecution, type AutomationTaskExecutionSeams } from "./task-run-execution.ts";
+import { createTaskRunExecution } from "./task-run-execution.ts";
 import {
   completeAppWorkflowHumanAssistance,
   type AppWorkflowHumanAssistanceRequest,
@@ -561,19 +561,17 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     let workerStart: AppWorkflowWorkerStart | undefined;
     let hostInput: AppWorkflowBrowserHostInput | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
-    const outcome = await runAutomationTaskExecution(planForCheck(task, { launchEnv }), active, firstRoundForCheck(), {
-      executionHost: {
-        ...inProcessCheckHost({ scriptedWorker: (start) => {
-          workerStart = start;
-          return new NonBrowserFakeWorker(start);
-        } }),
-        async withPage(page, use) {
-          hostInput = page;
-          page.onRuntimeIdentity?.(runtimeIdentity);
-          return await use();
-        },
+    const outcome = await createTaskRunExecution({
+      ...inProcessCheckHost({ scriptedWorker: (start) => {
+        workerStart = start;
+        return new NonBrowserFakeWorker(start);
+      } }),
+      async withPage(page, use) {
+        hostInput = page;
+        page.onRuntimeIdentity?.(runtimeIdentity);
+        return await use();
       },
-    });
+    })(planForCheck(task, { launchEnv }), active, firstRoundForCheck());
 
     assert.equal(outcome.failure, null);
     assert.ok(workerStart, "E-Invoice creates the supervised worker");
@@ -807,14 +805,13 @@ test("two executions of one run each log only their own events, and only the ret
     const executions: WorkflowExecution[] = [];
     const run = observingExecutions(await openTaskRunForCheck(provider.automation, taskRunId), executions);
     const plan = planForCheck(task, { launchEnv: ctbcLaunchEnv });
-    const execute = (attempt: number) => runAutomationTaskExecution(plan, run, {
+    const execution = createTaskRunExecution(inProcessCheckHost({ scriptedWorker: (start) =>
+      new TaskExecutionFakeWorker(start, "validation-failure", () => true) }));
+    const execute = (attempt: number) => execution(plan, run, {
       attempt,
       maxAttempts: 2,
       executionId: `round-${attempt}`,
       retrying: attempt > 1,
-    }, {
-      executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
-        new TaskExecutionFakeWorker(start, "validation-failure", () => true) }),
     });
     assert.equal((await execute(1)).failure?.code, "source-validation-failed");
     assert.equal(run.currentExecution(), null, "the execution ends with its workflow start");
