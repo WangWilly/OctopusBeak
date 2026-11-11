@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
 import { withAbort } from "./abort.ts";
@@ -39,32 +38,17 @@ import {
 import { buildSinopacDomesticDepositFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-domestic-adapter.ts";
 import { buildSinopacForeignCurrencyFinancialCaptureForPGlite } from "../ledger/pglite/sinopac-provider-admission.ts";
 import {
-  parseSinopacCurrentDepositBalanceSnapshot,
-  SINOPAC_CURRENT_DEPOSIT_RESPONSE,
   readSinopacCurrentDepositBalanceResponse,
-  type SinopacCurrentDepositBalanceRow,
+  sinopacCurrentBalanceSnapshot,
+  type ExistingSinopacFinancialCapture,
   type SinopacCurrentDepositResponse,
 } from "./sinopac-current-deposit-balances.ts";
-import {
-  type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositExactAmount,
-} from "../ledger/pglite/current-deposit-admission.ts";
-import {
-  CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS,
-  type CurrentDepositAuthorityRoute,
-} from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
   SINOPAC_CAPTCHA_IMAGE_SELECTOR,
   SINOPAC_CAPTCHA_IMAGE_SEMANTIC_ID,
   SINOPAC_CAPTCHA_INPUT_SELECTOR,
   SINOPAC_CAPTCHA_INPUT_SEMANTIC_ID,
 } from "../lib/automation/sinopac-captcha.ts";
-import {
-  assembleCurrentDepositCapture,
-  type CurrentBalanceCaptureMatching,
-  type CurrentStateSnapshotDeclaration,
-  CURRENT_DEPOSIT_BALANCE_STAGING,
-} from "./current-state-snapshot-capture.ts";
 import {
   collectSinopacCreditCards,
   sinopacCardTransport,
@@ -157,195 +141,6 @@ export type SinopacStatementRow = {
 };
 
 export type SinopacWorkflowInput = SinopacVerifiedInput & z.infer<typeof sinopacInputSchema>;
-
-type ExistingSinopacFinancialCapture = Readonly<{
-  identity: Readonly<{
-    integrationNamespace: string;
-    sourceConnectionKey: string;
-    identityEpochKey: string;
-    subjectDigest: string;
-    accountNo: string;
-    sourceAccountKey?: string;
-    stream: string;
-  }>;
-  /** The statement's typed currency scope is needed for FX identity joining. */
-  sourceCurrency: string;
-}>;
-
-/**
- * Build a point-in-time current-balance capture from a row and an identity
- * that has already crossed the ordinary SinoPac financial admission.  The
- * provider's AvailBalance is the only observation; MaxAvail and FixBalance
- * remain source evidence and never become available or ledger amounts.
- */
-export function buildSinopacCurrentDepositBalanceCapture(
-  row: SinopacCurrentDepositBalanceRow,
-  financialCapture: ExistingSinopacFinancialCapture,
-): CurrentDepositBalanceCaptureInput {
-  const identity = financialCapture.identity;
-  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-  if (identity.integrationNamespace !== "sinopac")
-    throw new Error("SinoPac current deposit identity has the wrong source.");
-  if (identity.stream !== row.stream)
-    throw new Error("SinoPac current deposit row has the wrong stream.");
-  if (sourceAccountKey !== row.sourceAccountKey || identity.accountNo !== row.accountNumber)
-    throw new Error(
-      "SinoPac current deposit account does not match an existing DataValue identity.",
-    );
-  if (
-    (row.stream === "domestic-deposit" && financialCapture.sourceCurrency !== "TWD") ||
-    (row.stream === "foreign-currency-deposit" &&
-      financialCapture.sourceCurrency !== row.currency)
-  ) {
-    throw new Error(
-      "SinoPac current deposit currency does not match the existing statement scope.",
-    );
-  }
-
-  const route: CurrentDepositAuthorityRoute =
-    row.stream === "domestic-deposit"
-      ? "sinopac/domestic-deposit/current-balance-v1"
-      : "sinopac/foreign-currency/current-balance-v1";
-  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
-  const contractVersion = contract.contractVersion;
-  const balance: CurrentDepositExactAmount = {
-    coefficient: row.ledger.coefficient,
-    scale: row.ledger.scale,
-  };
-  const sourceField = "AvailBalance";
-  const time = {
-    effectiveAt: row.effectiveAt,
-    effectiveTimeBasis: "provider-http-date" as const,
-    effectiveTimeRuleVersion: contractVersion,
-    sourceField: "HTTP Date",
-    sourceValue: row.providerHttpDate,
-    contractVersion,
-  };
-  const scopeDate = row.effectiveAt.slice(0, 10);
-  return assembleCurrentDepositCapture({
-    captureId: `sinopac-current-${canonicalDigest(
-      "sinopac-current-deposit-capture-v1",
-      row.stream,
-      sourceAccountKey,
-      row.currency,
-      row.effectiveAt,
-    ).slice("sha256:".length)}-${Date.now()}`,
-    authorityRoute: route,
-    contractVersion,
-    subjectDigest: identity.subjectDigest,
-    identity: {
-      integrationNamespace: "sinopac",
-      sourceConnectionKey: identity.sourceConnectionKey,
-      identityEpochKey: identity.identityEpochKey,
-      stream: row.stream,
-      sourceAccountKey,
-    },
-    observedAt: row.observedAt,
-    scope: { startDate: scopeDate, endDate: scopeDate },
-    providerResponse: {
-      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
-      status: 200,
-      cacheControl: row.sourceEvidence.cacheControl,
-    },
-    page: {
-      metadata: {
-        source: "sinopac-current-deposit-summary",
-        sourceRowCount: 1,
-        balanceField: sourceField,
-        contentType: row.sourceEvidence.contentType,
-        providerHttpDate: row.providerHttpDate,
-      },
-    },
-  }, [{
-    sourceRecordKey: canonicalDigest(
-      "sinopac-current-deposit-source-record-v1",
-      row.stream,
-      sourceAccountKey,
-      row.currency,
-      row.effectiveAt,
-      balance.coefficient,
-      String(balance.scale),
-    ),
-    providerKey: canonicalDigest(
-      "sinopac-current-deposit-provider-record-v1",
-      row.stream,
-      row.accountNumber,
-      row.currency,
-      row.effectiveAt,
-    ),
-    observationKey: canonicalDigest(
-      "sinopac-current-deposit-observation-v1",
-      row.stream,
-      sourceAccountKey,
-      row.currency,
-    ),
-    balanceKind: "ledger",
-    sourceField,
-    currency: row.currency,
-    value: balance,
-    time,
-    timeInRecord: true,
-    compact: {
-      source: "sinopac",
-      accountNumber: row.accountNumber,
-      sourceAccountKey,
-      accountText: row.accountText,
-      accountValueFormat: row.accountValueFormat,
-      currencyText: row.currencyText,
-      effectiveAt: row.effectiveAt,
-      effectiveTimeSourceField: "HTTP Date",
-      effectiveTimeSourceValue: row.providerHttpDate,
-      sourceEvidence: { ...row.sourceEvidence },
-      providerFields: { ...row.providerFields },
-    },
-  }]);
-}
-
-function sinopacCaptureAccount(capture: ExistingSinopacFinancialCapture): string {
-  const sourceAccountKey = capture.identity.sourceAccountKey ?? capture.identity.accountNo;
-  return `${capture.identity.stream}\u0000${sourceAccountKey}`;
-}
-
-/**
- * SinoPac keys a balance by stream, source account and currency. A row for an
- * account the run never admitted is skipped, but a row for an admitted account
- * in another currency is a currency mismatch. The first capture under a key wins.
- */
-export const sinopacCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
-  SinopacCurrentDepositBalanceRow,
-  ExistingSinopacFinancialCapture
-> = {
-  captureKey: (capture) => `${sinopacCaptureAccount(capture)}\u0000${capture.sourceCurrency}`,
-  rowKey: (row) => `${row.stream}\u0000${row.sourceAccountKey}\u0000${row.currency}`,
-  duplicates: "first-wins",
-  sameIdentity: (kept, candidate) =>
-    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
-    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
-    kept.identity.subjectDigest === candidate.identity.subjectDigest,
-  ambiguousMessage: "SinoPac current deposit identities are ambiguous across financial captures.",
-  unmatched: {
-    kind: "skip",
-    throwWhenAccountAdmitted: {
-      rowAccount: (row) => `${row.stream}\u0000${row.sourceAccountKey}`,
-      captureAccount: sinopacCaptureAccount,
-      message: "SinoPac current deposit currency does not match the existing statement scope.",
-    },
-  },
-};
-
-
-const sinopacCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  SinopacCurrentDepositResponse,
-  SinopacCurrentDepositBalanceRow,
-  ExistingSinopacFinancialCapture
-> = {
-  product: "current-balance",
-  response: SINOPAC_CURRENT_DEPOSIT_RESPONSE,
-  parse: (decoded, response) => parseSinopacCurrentDepositBalanceSnapshot({ payload: decoded.value, response }),
-  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-  matching: sinopacCurrentBalanceCaptureMatching,
-  build: buildSinopacCurrentDepositBalanceCapture,
-};
 
 export const SINOPAC_LOGIN_URL = LOGIN_URL;
 

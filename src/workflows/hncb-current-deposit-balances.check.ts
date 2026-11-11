@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
+  hncbCurrentBalanceSnapshot,
   HNCB_CURRENT_DEPOSIT_BALANCE_TRANSACTION,
   HNCB_CURRENT_DEPOSIT_HEADERS,
   HNCB_CURRENT_DEPOSIT_OVERVIEW_HEADERS,
@@ -10,7 +11,15 @@ import {
   parseHncbCurrentDepositOverviewSnapshot,
   readHncbCurrentDepositDetailCells,
   readHncbCurrentDepositOverviewCells,
+  type ExistingHncbFinancialCapture,
+  type HncbCurrentDepositTable,
 } from "./hncb-current-deposit-balances.ts";
+import {
+  hncbCurrentDepositDetailRow,
+  hncbCurrentDepositDetailTable,
+} from "./hncb-current-deposit-balances.fixtures.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
 import { HNCB_TRX_DISPATCHER_PATH } from "./hncb-netbank-site.ts";
 import { verifyProviderResponse, type ProviderResponse } from "./provider-response.ts";
 
@@ -158,9 +167,13 @@ const verify = (raw: ProviderResponse) =>
 const response = (overrides: Partial<ProviderResponse> = {}) => verify(rawResponse(overrides));
 const overviewResponse = (overrides: Partial<ProviderResponse> = {}) =>
   verify(rawOverviewResponse(overrides));
+const rowAAccountNumber = ["0012", "3456", "7890", "12"].join("");
+const formattedAccountNumber = ["0012", "3456", "7890"].join("");
+const overviewTwdAccountNumber = ["1662", "1234", "5684"].join("");
+const overviewBlankCurrencyAccountNumber = ["1669", "1234", "5670"].join("");
 const rowA = [
   "PII-SHOULD-NOT-ESCAPE",
-  "00123456789012",
+  rowAAccountNumber,
   "臺幣",
   "1,000.25",
   "HOLD-1",
@@ -209,7 +222,7 @@ const parsed = parseHncbCurrentDepositBalanceSnapshot({
   response: response(),
 });
 assert.equal(parsed.length, 2);
-assert.equal(parsed[0]?.accountNumber, "00123456789012");
+assert.equal(parsed[0]?.accountNumber, rowAAccountNumber);
 assert.equal(parsed[0]?.currency, "TWD");
 assert.deepEqual(parsed[0]?.available, {
   coefficient: "100025",
@@ -233,7 +246,7 @@ const parsedFormattedAndUnavailable = parseHncbCurrentDepositBalanceSnapshot({
   response: response(),
 });
 assert.equal(parsedFormattedAndUnavailable.length, 1);
-assert.equal(parsedFormattedAndUnavailable[0]?.accountNumber, "001234567890");
+assert.equal(parsedFormattedAndUnavailable[0]?.accountNumber, formattedAccountNumber);
 assert.equal(parsedFormattedAndUnavailable[0]?.currency, "TWD");
 
 const partiallyUnavailable = unavailableBalanceRow.map((value, index) =>
@@ -313,7 +326,7 @@ function overviewData(values: readonly string[]): Row {
 
 const overviewRows = [
   overviewData([
-    "166212345684",
+    overviewTwdAccountNumber,
     "活儲",
     "新台幣",
     "11,389.00",
@@ -326,7 +339,7 @@ const overviewRows = [
     "其他",
   ]),
   overviewData([
-    "166912345670",
+    overviewBlankCurrencyAccountNumber,
     "活存",
     "",
     "0.00",
@@ -355,7 +368,7 @@ const parsedOverview = parseHncbCurrentDepositOverviewSnapshot({
 assert.equal(parsedOverview.length, 2);
 assert.equal(parsedOverview[0]?.currency, "TWD");
 assert.equal(parsedOverview[0]?.ledger.coefficient, "1138900");
-assert.equal(parsedOverview[1]?.accountNumber, "166912345670");
+assert.equal(parsedOverview[1]?.accountNumber, overviewBlankCurrencyAccountNumber);
 assert.equal(parsedOverview[1]?.currency, "");
 assert.equal(parsedOverview[1]?.currencyResolution, "missing");
 assert.equal(parsedOverview[1]?.ledger.coefficient, "0");
@@ -502,6 +515,116 @@ assert.throws(
     HNCB_CURRENT_DEPOSIT_RESPONSE.endpoints.map((endpoint) => endpoint.path),
     [overview.endpointPath, detail.endpointPath],
     "each HNCB endpoint is its route's contract path",
+  );
+}
+
+const detailAccountNumber = ["0001", "0002", "0003"].join("");
+/** An admitted HNCB statement identity carrying full account-number evidence. */
+function admittedIdentity(accountNumber: string, currency?: string): ExistingHncbFinancialCapture {
+  return {
+    identity: {
+      sourceConnectionKey: "sha256:hncb-current-connection",
+      identityEpochKey: "sha256:hncb-current-epoch",
+      subjectDigest: "sha256:hncb-current-subject",
+      accountNo: accountNumber,
+      accountNumber: { value: accountNumber },
+      ...(currency ? { currency } : {}),
+    },
+  };
+}
+
+/** Drive the declaration over one acquired HNCB table for the admitted captures. */
+function snapshot(
+  table: HncbCurrentDepositTable,
+  captures: readonly ExistingHncbFinancialCapture[],
+  now: string,
+) {
+  return captureCurrentStateSnapshots(hncbCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => table,
+    product: snapshotCheckProduct({ now }),
+  });
+}
+
+{
+  const detailIdentity = admittedIdentity(detailAccountNumber);
+  const staged = await snapshot(
+    hncbCurrentDepositDetailTable([hncbCurrentDepositDetailRow(detailAccountNumber, "1.00", "0.90")]),
+    [detailIdentity],
+    "2026-09-01T12:00:00+08:00",
+  );
+  assert.equal(staged.matched[0]?.capture, detailIdentity);
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", `current-balance:domestic-deposit:${detailAccountNumber}`],
+  ]);
+  const request = stagedBalanceRequest(staged.items[0]);
+  assert.equal(request.capture.routeKey, "hncb/domestic-deposit/current-balance-v1");
+  assert.equal(request.capture.sourceConnectionKey, "sha256:hncb-current-connection");
+  assert.equal(request.capture.identityEpoch, "sha256:hncb-current-epoch");
+  assert.equal(request.capture.subjectDigest, "sha256:hncb-current-subject");
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-01", "2026-09-01"]);
+  assert.equal(request.account.sourceAccountKey, detailAccountNumber);
+  assert.equal(request.account.currency, "TWD");
+  assert.deepEqual(
+    request.observations.map((observation) => [observation.balanceKind, observation.balance.coefficient, observation.balance.scale]),
+    [["ledger", "100", 2], ["available", "90", 2]],
+  );
+  for (const observation of request.observations) {
+    assert.equal(observation.effectiveAt, "2026-09-01T03:59:00.000Z");
+    assert.equal(observation.evidenceSourceField, "HTTP Date");
+    assert.equal(observation.evidenceSourceValue, "Tue, 01 Sep 2026 03:59:00 GMT");
+  }
+  assert.equal(request.capture.records.length, 2);
+  assert.deepEqual(request.capture.records.map((record) => record.compact.sourceField), ["帳上餘額", "可用餘額"]);
+  assert.equal(request.capture.records[0]?.compact.currencyResolution, "provider");
+}
+
+{
+  const acquiredOverview = {
+    view: "overview",
+    evidence: {
+      kind: "cells",
+      rows: await readHncbCurrentDepositOverviewCells(overviewTable as never),
+    },
+    response: rawOverviewResponse(),
+  } as const satisfies HncbCurrentDepositTable;
+  const now = "2026-09-09T13:57:10+08:00";
+  const blankCurrencyIdentity = admittedIdentity(overviewBlankCurrencyAccountNumber, "TWD");
+  const staged = await snapshot(
+    acquiredOverview,
+    [admittedIdentity(overviewTwdAccountNumber, "TWD"), blankCurrencyIdentity],
+    now,
+  );
+  assert.equal(staged.matched[1]?.capture, blankCurrencyIdentity);
+  assert.equal(staged.matched[1]?.capture.identity.currency, "TWD");
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", `current-balance:domestic-deposit:${overviewTwdAccountNumber}`],
+    ["current-balance", `current-balance:domestic-deposit:${overviewBlankCurrencyAccountNumber}`],
+  ]);
+  const request = stagedBalanceRequest(staged.items[1]);
+  assert.equal(request.capture.routeKey, "hncb/domestic-deposit/current-balance-overview-v1");
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-09", "2026-09-09"]);
+  assert.equal(request.account.sourceAccountKey, overviewBlankCurrencyAccountNumber);
+  assert.equal(request.account.currency, "TWD");
+  assert.deepEqual(request.capture.records.map((record) => record.compact.sourceField), ["帳上餘額", "原幣"]);
+  assert.equal(request.capture.records[0]?.compact.currencyResolution, "canonical-account");
+  assert.equal(request.capture.records[0]?.compact.canonicalCurrency, "TWD");
+  assert.equal(request.observations[0]?.evidenceEndpoint, rawOverviewResponse().url, "the overview keeps the URL it was read from");
+  assert.equal(request.observations[0]?.effectiveAt, "2026-09-09T05:57:04.000Z");
+
+  await assert.rejects(
+    snapshot(
+      acquiredOverview,
+      [admittedIdentity(overviewTwdAccountNumber, "TWD"), admittedIdentity(overviewBlankCurrencyAccountNumber)],
+      now,
+    ),
+    /cannot resolve blank currency/u,
+    "a blank overview currency without an admitted canonical currency is refused",
+  );
+  await assert.rejects(
+    snapshot(acquiredOverview, [admittedIdentity(overviewTwdAccountNumber, "TWD")], now),
+    /^Error: HNCB current deposit snapshot contains an account without existing full account-number evidence\.$/u,
+    "an overview row without an admitted capture rejects the snapshot",
   );
 }
 

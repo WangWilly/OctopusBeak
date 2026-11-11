@@ -15,7 +15,12 @@ import {
   parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
   readYuantaCurrentDepositTableCells,
+  yuantaForeignCurrentBalanceSnapshot,
+  type ExistingYuantaFinancialCapture,
 } from "./yuanta-current-deposit-balances.ts";
+import { yuantaCurrentDepositTable } from "./yuanta-current-deposit-balances.fixtures.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
 import { YUANTA_EBANK_ORIGIN, yuantaEbankSite } from "./yuanta-ebank-site.ts";
 
 const DOMESTIC_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
@@ -457,6 +462,96 @@ test("cancelling the run interrupts the balance response wait", async () => {
   );
   assert.ok(Date.now() - started < 4_000, "the reader does not wait out its 5 s response timeout");
 });
+
+const foreignAccount = foreignRows[0][3];
+const admittedForeignAccount: ExistingYuantaFinancialCapture = {
+  identity: {
+    sourceConnectionKey: "sha256:yuanta-fx-connection",
+    identityEpochKey: "sha256:yuanta-fx-epoch",
+    subjectDigest: "sha256:yuanta-fx-subject",
+    accountNo: foreignAccount,
+    sourceAccountKey: foreignAccount,
+  },
+};
+const foreignUsdRow = foreignRows[0];
+const foreignJpyRow = [foreignUsdRow[0], foreignUsdRow[1], "日幣", foreignAccount, "2,500", "2,450", "", ""] as const;
+
+/** Drive the foreign declaration over a summary table of `rows` for the admitted captures. */
+function foreignSnapshot(
+  captures: readonly ExistingYuantaFinancialCapture[],
+  rows: readonly (readonly string[])[],
+) {
+  return captureCurrentStateSnapshots(yuantaForeignCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => yuantaCurrentDepositTable(rows, "Tue, 08 Sep 2026 13:20:04 GMT"),
+    product: snapshotCheckProduct({ now: "2026-09-08T13:20:10.000Z" }),
+  });
+}
+
+{
+  const staged = await foreignSnapshot([admittedForeignAccount, admittedForeignAccount], [foreignUsdRow, foreignJpyRow]);
+  assert.deepEqual(
+    staged.matched.map(({ row, capture }) => [row.currency, capture]),
+    [["USD", admittedForeignAccount], ["JPY", admittedForeignAccount]],
+    "the key carries no currency, so one admitted account matches its row in every currency",
+  );
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-deposit-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:USD`],
+    ["current-deposit-balance", `current-balance:foreign-currency-deposit:${foreignAccount}:JPY`],
+  ]);
+  const request = stagedBalanceRequest(staged.items[0]);
+  assert.equal(request.capture.routeKey, "yuanta/foreign-currency/current-balance-v1");
+  assert.equal(request.capture.stream, "foreign-currency-deposit");
+  assert.equal(request.capture.sourceConnectionKey, "sha256:yuanta-fx-connection");
+  assert.equal(request.capture.identityEpoch, "sha256:yuanta-fx-epoch");
+  assert.equal(request.capture.subjectDigest, "sha256:yuanta-fx-subject");
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-08", "2026-09-08"]);
+  assert.equal(request.account.sourceAccountKey, foreignAccount);
+  assert.equal(request.capture.records.length, 2);
+  assert.deepEqual(
+    request.capture.records.map((record) => [record.compact.sourceField, record.compact.currency]),
+    [["帳面餘額", "USD"], ["可用餘額", "USD"]],
+  );
+  assert.deepEqual(
+    request.observations.map((observation) => [observation.balanceKind, observation.currency, observation.balance]),
+    [
+      ["ledger", "USD", { coefficient: "101075", scale: 2, sourceLexeme: "1,010.75" }],
+      ["available", "USD", { coefficient: "100025", scale: 2, sourceLexeme: "1,000.25" }],
+    ],
+  );
+  for (const observation of request.observations) {
+    assert.equal(observation.effectiveAt, "2026-09-08T13:20:04.000Z");
+    assert.equal(observation.evidenceSourceField, "HTTP Date");
+    assert.equal(observation.evidenceSourceValue, "Tue, 08 Sep 2026 13:20:04 GMT");
+  }
+  assert.deepEqual(
+    [
+      request.capture.records[0]?.occurrenceKey,
+      request.capture.records[0]?.providerKey,
+      request.capture.records[0]?.contentHash,
+      request.observations[0]?.observationKey,
+    ],
+    [
+      "sha256:ZoFddbdgSrtrgsWn2ODuMvGncsZL0IoTMstYG3Xn0ts",
+      "sha256:YrGIj_G_D0bms6rpy4PEazetQNfY39dHBpcrUjwPilM",
+      "sha256:sM4LF2rSvpIpeApvFUT_1Z1FpAajEyKSI0JcHEaMRrM",
+      "sha256:05-Vbeukdkmp6pzq5dusNdGtoBBsaEaFty7ehC1OM7U",
+    ],
+    "the foreign balance's source-record, provider, content and observation keys are pinned",
+  );
+}
+
+await assert.rejects(
+  foreignSnapshot([admittedForeignAccount], [foreignRows[1]]),
+  /^Error: Yuanta foreign current deposit snapshot contains an account without an existing financial identity\.$/u,
+);
+await assert.rejects(
+  foreignSnapshot(
+    [admittedForeignAccount, { identity: { ...admittedForeignAccount.identity, subjectDigest: "sha256:other-subject" } }],
+    [foreignUsdRow],
+  ),
+  /^Error: Yuanta foreign current deposit identities are ambiguous across financial captures\.$/u,
+);
 
 const source = await readFile(new URL("./yuanta-current-deposit-balances.ts", import.meta.url), "utf8");
 assert.doesNotMatch(source, /\bfetch\s*\(/u);

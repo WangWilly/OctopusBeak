@@ -6,19 +6,16 @@ import { launchCheckBrowser } from "../lib/automation/check-browser.fixtures.ts"
 import { resolveVerificationStage } from "../lib/automation/verification-stage.ts";
 import {
   buildHncbCapture,
-  buildHncbCurrentDepositBalanceCapture,
   hncbCaptchaAssistanceStage,
   ensureHncbStatementForm,
   isNoStatementDataText,
   normalizeHncbTransactionRows,
-  hncbCurrentBalanceCaptureMatching,
   parseStatementExport,
   prepareHncbStatementQueryForm,
   hncbCurrentDepositBalanceTable,
   stageHncbDeposit,
   type HncbReadCurrentDepositBalanceTable,
 } from "./hncb-statements.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { verifyProviderResponse } from "./provider-response.ts";
 import { FrameScopeTimeoutError } from "./frame-scope.ts";
 import { productCollectionHandle, type ProductCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
@@ -204,114 +201,6 @@ const opaqueWorkflowCapture = buildHncbCapture(
   },
 );
 assert.equal(opaqueWorkflowCapture.account.accountNumber, undefined);
-const hncbCurrentCapture = buildHncbCurrentDepositBalanceCapture(
-  {
-    source: "hncb",
-    accountNumber: accountA,
-    currency: "TWD",
-    currencySourceLexeme: "TWD",
-    available: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
-    ledger: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
-    effectiveAt: "2026-08-31T01:00:00.000Z",
-    providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
-    observedAt: "2026-08-31T09:00:00+08:00",
-    sourceEvidence: {
-      endpoint: "/netbank/servlet/TrxDispatcher",
-      transaction: "com.lb.wibc.trx.EAccDDSummary",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "hncb/current-deposit-balance-v1",
-    },
-  },
-  {
-    identity: {
-      sourceConnectionKey: "sha256:hncb-current-connection",
-      identityEpochKey: "sha256:hncb-current-epoch",
-      subjectDigest: "sha256:hncb-current-subject",
-      accountNo: accountA,
-      accountNumber: { value: accountA },
-    },
-  },
-);
-assert.equal(hncbCurrentCapture.identity.sourceAccountKey, accountA);
-assert.deepEqual(
-  hncbCurrentCapture.observations.map((observation) => observation.sourceField),
-  ["帳上餘額", "可用餘額"],
-);
-assert.equal(hncbCurrentCapture.records.length, 2);
-
-const overviewCurrentRow = {
-    source: "hncb",
-    accountNumber: overviewAccountB,
-    currency: "",
-    currencySourceLexeme: "",
-    currencyResolution: "missing",
-    available: { coefficient: "0", scale: 2, sourceLexeme: "0.00" },
-    ledger: { coefficient: "0", scale: 2, sourceLexeme: "0.00" },
-    effectiveAt: "2026-09-09T05:57:04.000Z",
-    providerHttpDate: "Wed, 09 Sep 2026 05:57:04 GMT",
-    observedAt: "2026-09-09T13:57:10+08:00",
-    sourceEvidence: {
-      endpoint: "/netbank/servlet/TrxDispatcher",
-      transaction: "com.lb.wibc.trx.AcctInfoInq",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "hncb/current-deposit-balance-overview-v1",
-      url: "https://netbank.hncb.com.tw/netbank/servlet/TrxDispatcher?trx=com.lb.wibc.trx.AcctInfoInq&state=prompt&time_str=20260909135527",
-    },
-  } as const;
-const overviewCurrentCapture = buildHncbCurrentDepositBalanceCapture(
-  overviewCurrentRow,
-  {
-    identity: {
-      sourceConnectionKey: "sha256:hncb-current-connection",
-      identityEpochKey: "sha256:hncb-current-epoch",
-      subjectDigest: "sha256:hncb-current-subject",
-      accountNo: overviewAccountB,
-      accountNumber: { value: overviewAccountB },
-      currency: "TWD",
-    },
-  },
-);
-assert.equal(
-  overviewCurrentCapture.authorityRoute,
-  "hncb/domestic-deposit/current-balance-overview-v1",
-);
-assert.deepEqual(
-  overviewCurrentCapture.observations.map((observation) => observation.sourceField),
-  ["帳上餘額", "原幣"],
-);
-assert.equal(overviewCurrentCapture.records[0]?.compact.currencyResolution, "canonical-account");
-assert.equal(overviewCurrentCapture.records[0]?.compact.canonicalCurrency, "TWD");
-assert.throws(
-  () =>
-    buildHncbCurrentDepositBalanceCapture(
-      overviewCurrentRow,
-      {
-        identity: {
-          sourceConnectionKey: "sha256:hncb-current-connection",
-          identityEpochKey: "sha256:hncb-current-epoch",
-          subjectDigest: "sha256:hncb-current-subject",
-          accountNo: overviewAccountB,
-          accountNumber: { value: overviewAccountB },
-        },
-      },
-    ),
-  /cannot resolve blank currency/u,
-);
-const indexed = indexCurrentBalanceCaptures([
-  {
-    identity: {
-      sourceConnectionKey: "same-connection",
-      identityEpochKey: "same-epoch",
-      subjectDigest: "same-subject",
-      accountNo: overviewAccountB,
-      accountNumber: { value: overviewAccountB },
-      currency: "TWD",
-    },
-  },
-], hncbCurrentBalanceCaptureMatching).match([{ accountNumber: overviewAccountB }]);
-assert.equal(indexed.matched[0]?.capture.identity.currency, "TWD");
 assert.throws(
   () => parseStatementExport("x".repeat(16 * 1024 * 1024 + 1), "fallback"),
   /16 MiB safety limit/,

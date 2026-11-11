@@ -1,4 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
+import type {
+  CurrentDepositBalanceCaptureInput,
+  CurrentDepositExactAmount,
+} from "../ledger/pglite/current-deposit-admission.ts";
 import type { Locator } from "playwright";
 
 import { parseProviderDecimal, type ProviderDecimalPolicy } from "../lib/shared-money/exact-money.ts";
@@ -13,15 +19,22 @@ import { fubonIsoCurrency } from "./fubon-currency.ts";
 import type { FubonEbankSite } from "./fubon-ebank-site.ts";
 import type { ProviderResponseReader } from "./provider-response-reader.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
+import {
+  assembleCurrentDepositCapture,
+  CURRENT_DEPOSIT_BALANCE_STAGING,
+  type CurrentBalanceCaptureMatching,
+  type CurrentDepositBalanceEntry,
+  type CurrentStateSnapshotDeclaration,
+} from "./current-state-snapshot-capture.ts";
 
 /**
  * Fubon current deposits are rendered by the authenticated 我的存款 page.
  * The query is a provider snapshot and does not represent transaction rows.
  */
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
-export const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID =
+const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_ID =
   "form1:resultGrid_DataGridBody" as const;
-export const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_SELECTOR =
+const FUBON_CURRENT_DEPOSIT_BALANCE_TABLE_SELECTOR =
   'table[id="form1:resultGrid_DataGridBody"]' as const;
 const FUBON_CURRENT_DEPOSIT_HEADER_READY_TIMEOUT_MS = 5_000;
 
@@ -38,7 +51,7 @@ export const FUBON_CURRENT_DEPOSIT_HEADERS = [
   "功能",
 ] as const;
 
-export type FubonCurrentDepositExactDecimal = Readonly<{
+type FubonCurrentDepositExactDecimal = Readonly<{
   coefficient: string;
   scale: number;
   /** The source cell after surrounding whitespace/NBSP cleanup. */
@@ -80,7 +93,7 @@ export type FubonCurrentDepositBalanceRow = Readonly<{
   }>;
 }>;
 
-export type FubonCurrentDepositSnapshotInput = Readonly<{
+type FubonCurrentDepositSnapshotInput = Readonly<{
   rows: readonly (readonly string[])[];
   response: VerifiedProviderResponse<"required">;
 }>;
@@ -333,3 +346,157 @@ export async function readFubonCurrentDepositBalanceTable(
     response,
   };
 }
+
+/** The admitted Fubon statement identity a current balance joins. */
+export type ExistingFubonFinancialCapture = Readonly<{
+  identity: Readonly<{
+    sourceConnectionKey: string;
+    identityEpochKey: string;
+    subjectDigest: string;
+    accountNo: string;
+    sourceAccountKey?: string;
+    accountNumber?: Readonly<{ value: string }> | null;
+  }>;
+}>;
+
+/** Preserve the provider's full account-number evidence while joining the
+ * current snapshot to the existing hashed canonical account identity. */
+function buildFubonCurrentDepositBalanceCapture(
+  row: FubonCurrentDepositBalanceRow,
+  financialCapture: ExistingFubonFinancialCapture,
+): CurrentDepositBalanceCaptureInput {
+  const identity = financialCapture.identity;
+  if (identity.accountNumber?.value !== row.accountNumber)
+    throw new Error(
+      "Fubon current deposit account does not match the existing full account-number evidence.",
+    );
+  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
+  const route = "fubon/domestic-deposit/current-balance-v1" as const;
+  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
+  const amountPairs: readonly [
+    "ledger" | "available",
+    string,
+    CurrentDepositExactAmount,
+  ][] = [
+    ["ledger", "即時餘額", row.instantBalance],
+    ["available", "可用餘額", row.availableBalance],
+  ];
+  const entries: CurrentDepositBalanceEntry[] = amountPairs.map(
+    ([balanceKind, sourceField, balance]) => ({
+      sourceRecordKey: canonicalDigest(
+        "fubon-current-deposit-source-record-v1",
+        sourceAccountKey,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+        balance.coefficient,
+        String(balance.scale),
+      ),
+      providerKey: canonicalDigest(
+        "fubon-current-deposit-provider-record-v1",
+        row.accountNumber,
+        row.currency,
+        balanceKind,
+        row.effectiveAt,
+      ),
+      observationKey: canonicalDigest(
+        "fubon-current-deposit-observation-v1",
+        sourceAccountKey,
+      ),
+      balanceKind,
+      sourceField,
+      currency: row.currency,
+      value: balance,
+      time: {
+        effectiveAt: row.effectiveAt,
+        effectiveTimeBasis: "provider-http-date",
+        effectiveTimeRuleVersion: contract.contractVersion,
+        sourceField: "HTTP Date",
+        sourceValue: row.providerHttpDate,
+        contractVersion: contract.contractVersion,
+      },
+      timeInRecord: false,
+      compact: {
+        accountNumber: row.accountNumber,
+        accountNickname: row.accountNickname,
+        depositType: row.depositType,
+        branchName: row.branchName,
+        currencySourceLexeme: row.currencySourceLexeme,
+        effectiveAt: row.effectiveAt,
+        effectiveTimeSourceField: "HTTP Date",
+        effectiveTimeSourceValue: row.providerHttpDate,
+        sourceEvidence: { ...row.sourceEvidence },
+      },
+    }),
+  );
+  return assembleCurrentDepositCapture({
+    captureId: randomUUID(),
+    authorityRoute: route,
+    contractVersion: contract.contractVersion,
+    subjectDigest: identity.subjectDigest,
+    identity: {
+      integrationNamespace: "fubon",
+      sourceConnectionKey: identity.sourceConnectionKey,
+      identityEpochKey: identity.identityEpochKey,
+      stream: "domestic-deposit",
+      sourceAccountKey,
+    },
+    observedAt: row.observedAt,
+    scope: {
+      startDate: row.effectiveAt.slice(0, 10),
+      endDate: row.effectiveAt.slice(0, 10),
+    },
+    providerResponse: {
+      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
+      status: 200,
+      cacheControl: row.sourceEvidence.cacheControl,
+    },
+    page: {
+      metadata: {
+        source: "fubon-current-deposit-summary",
+        sourceRowCount: 1,
+        balanceFieldCount: entries.length,
+      },
+    },
+  }, entries);
+}
+
+/**
+ * Fubon keys a balance by the full account number (ADR 0049). A capture
+ * without account number evidence is left out of the index, and a row with
+ * no admitted capture is excluded so the run reports
+ * `account-number-evidence-missing`. The first capture under a number wins.
+ */
+const fubonCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
+  Readonly<{ accountNumber: string }>,
+  ExistingFubonFinancialCapture
+> = {
+  captureKey: (capture) => capture.identity.accountNumber?.value || undefined,
+  rowKey: (row) => row.accountNumber,
+  duplicates: "first-wins",
+  sameIdentity: (kept, candidate) =>
+    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
+    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
+    (kept.identity.sourceAccountKey ?? kept.identity.accountNo) ===
+      (candidate.identity.sourceAccountKey ?? candidate.identity.accountNo) &&
+    kept.identity.subjectDigest === candidate.identity.subjectDigest,
+  ambiguousMessage: "Fubon current deposit identities are ambiguous across financial captures.",
+  unmatched: { kind: "exclude" },
+};
+
+/**
+ * Fubon reads every currency for the USD-coded reconciliation, then stages
+ * only TWD rows, so it calls the module's read and stage halves separately.
+ */
+export const fubonCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
+  FubonCurrentDepositTable,
+  FubonCurrentDepositBalanceRow,
+  ExistingFubonFinancialCapture
+> = {
+  product: "current-balance",
+  response: FUBON_CURRENT_DEPOSIT_RESPONSE,
+  parse: (decoded, response) => parseFubonCurrentDepositBalanceSnapshot({ rows: decoded.rows, response }),
+  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
+  matching: fubonCurrentBalanceCaptureMatching,
+  build: buildFubonCurrentDepositBalanceCapture,
+};

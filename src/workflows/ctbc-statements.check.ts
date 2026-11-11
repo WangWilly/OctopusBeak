@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
 import { readFileSync } from "node:fs";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
-import { currentDepositBalanceCommandRequest } from "../ledger/pglite/current-deposit-balance-command.ts";
 import { productCollectionHandle, type ProductStageRequest } from "../lib/automation/product-collection.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
 import type { WorkflowContext } from "../lib/automation/workflow-executor.ts";
 import {
-  buildCtbcCurrentDepositBalanceCapture,
   ctbcDetailRowsToStatementRows,
   ctbcResponseShape,
-  ctbcCurrentBalanceCaptureMatching,
   resolveCtbcAccountScope,
   stageCtbcDeposit,
   type CtbcDepositSourceSnapshot,
@@ -83,132 +78,9 @@ assert.deepEqual(
 const syntheticCtbcAccountNumber = ["0000", "3145", "4055", "4100"].join("");
 const conflictingCtbcAccountNumber = ["0000", "3145", "4055", "4101"].join("");
 
-const currentRow = {
-  source: "ctbc" as const,
-  stream: "domestic-deposit" as const,
-  accountNumber: syntheticCtbcAccountNumber,
-  sourceAccountKey: syntheticCtbcAccountNumber,
-  currency: "TWD" as const,
-  ledger: { coefficient: "13155", scale: 0, sourceLexeme: "13,155" },
-  providerFields: {
-    accountId: syntheticCtbcAccountNumber,
-    digiSvType: "",
-    acctType: "01",
-    accountNickName: "",
-    openDt: "20200101",
-    isRelaC: "N" as const,
-  },
-  effectiveAt: "2026-09-09T02:09:43.601Z",
-  providerServerTime: 1788919783601,
-  providerDataTime: "2026/09/09 10:09:43",
-  providerHttpDate: "Wed, 09 Sep 2026 02:09:43 GMT",
-  observedAt: "2026-09-09T10:10:00+08:00",
-  sourceEvidence: {
-    endpoint: "/IB/api/adapters/IB_Adapter/resource/ebmwResource" as const,
-    requestResource: "/twrbc-deposit/qu001/010" as const,
-    status: 200 as const,
-    cacheControl: "no-cache, no-store, must-revalidate",
-    contractVersion: "ctbc/current-deposit-balance-v1" as const,
-  },
-};
+const providerServerTime = 1788919783601;
 
-const existingIdentity = {
-  authorityRoute: "ctbc/domestic-deposit/human-attested-v1",
-  identity: {
-    integrationNamespace: "ctbc",
-    sourceConnectionKey: "sha256:ctbc-connection",
-    identityEpochKey: "sha256:ctbc-epoch",
-    stream: "domestic-deposit",
-    subjectDigest: "sha256:ctbc-subject",
-    accountNo: syntheticCtbcAccountNumber,
-    sourceAccountKey: syntheticCtbcAccountNumber,
-    accountNumber: { value: syntheticCtbcAccountNumber },
-    currency: "TWD",
-  },
-};
-const currentCapture = buildCtbcCurrentDepositBalanceCapture(
-  currentRow,
-  existingIdentity,
-);
-assert.equal(currentCapture.identity.sourceAccountKey, syntheticCtbcAccountNumber);
-assert.equal(currentCapture.observations.length, 1);
-assert.equal(currentCapture.observations[0]?.balanceKind, "ledger");
-assert.equal(currentCapture.observations[0]?.sourceField, "balance");
-assert.equal(currentCapture.observations[0]?.time.sourceField, "serverTime");
-assert.equal(currentCapture.observations[0]?.time.sourceValue, "1788919783601");
-assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(currentCapture));
-const pgliteBalanceRequest = currentDepositBalanceCommandRequest(admitCurrentDepositBalanceCapture(currentCapture));
-assert.equal(pgliteBalanceRequest.capture.routeKey, "ctbc/domestic-deposit/current-balance-v1");
-assert.equal(pgliteBalanceRequest.account.sourceAccountKey, syntheticCtbcAccountNumber);
-assert.deepEqual(pgliteBalanceRequest.observations[0]?.balance, { coefficient: "13155", scale: 0 });
-assert.equal(pgliteBalanceRequest.observations[0]?.evidenceSourceValue, "1788919783601");
-assert.deepEqual(currentCapture.observations[0]?.balance, {
-  coefficient: "13155",
-  scale: 0,
-});
-assert.equal(currentCapture.providerResponse.requestResource, "/twrbc-deposit/qu001/010");
-assert.doesNotMatch(
-  JSON.stringify(currentCapture),
-  /availableBalance|twdAcctSummaryTotalAmount|AUTH-TOKEN|deviceId/u,
-);
-
-const admittedCaptures = indexCurrentBalanceCaptures(
-  [existingIdentity],
-  ctbcCurrentBalanceCaptureMatching,
-);
-assert.equal(
-  admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: syntheticCtbcAccountNumber }])
-    .matched[0]?.capture,
-  existingIdentity,
-);
-assert.throws(
-  () => admittedCaptures.match([{ stream: "domestic-deposit", sourceAccountKey: conflictingCtbcAccountNumber }]),
-  /^Error: CTBC current deposit snapshot has no admitted account identity\.$/u,
-);
-for (const otherScope of [
-  { sourceConnectionKey: "sha256:other-ctbc-connection" },
-  { identityEpochKey: "sha256:other-ctbc-epoch" },
-])
-  assert.throws(
-    () => indexCurrentBalanceCaptures([
-      existingIdentity,
-      {
-        ...existingIdentity,
-        identity: {
-          ...existingIdentity.identity,
-          ...otherScope,
-          accountNo: conflictingCtbcAccountNumber,
-          sourceAccountKey: conflictingCtbcAccountNumber,
-          accountNumber: { value: conflictingCtbcAccountNumber },
-        },
-      },
-    ], ctbcCurrentBalanceCaptureMatching),
-    /^Error: CTBC current deposit captures span more than one source connection or identity epoch\.$/u,
-    "a capture outside the run's connection and epoch fails closed",
-  );
-assert.throws(
-  () =>
-    buildCtbcCurrentDepositBalanceCapture(currentRow, {
-      ...existingIdentity,
-      identity: {
-        ...existingIdentity.identity,
-        accountNo: conflictingCtbcAccountNumber,
-        sourceAccountKey: conflictingCtbcAccountNumber,
-        accountNumber: { value: conflictingCtbcAccountNumber },
-      },
-    }),
-  /exactly match existing account evidence/u,
-);
-assert.throws(
-  () =>
-    buildCtbcCurrentDepositBalanceCapture(currentRow, {
-      ...existingIdentity,
-      authorityRoute: "ctbc/domestic-deposit/preflight-v1",
-    }),
-  /not an admitted TWD CTBC account/u,
-);
-
-const currentBalance = { accountId: syntheticCtbcAccountNumber, balance: currentRow.ledger.sourceLexeme };
+const currentBalance = { accountId: syntheticCtbcAccountNumber, balance: "13,155" };
 
 function stagingHarness(signal = new AbortController().signal) {
   const events: string[] = [];
@@ -243,7 +115,7 @@ function stagingHarness(signal = new AbortController().signal) {
       }, statementTypes: ["deposit"], attachedPreviewProducts: [] }, context, product, async () => {
         balanceReads += 1;
         if (accounts instanceof Error) throw accounts;
-        return ctbcCurrentDepositResponse(accounts, currentRow.providerServerTime);
+        return ctbcCurrentDepositResponse(accounts, providerServerTime);
       });
     },
   };

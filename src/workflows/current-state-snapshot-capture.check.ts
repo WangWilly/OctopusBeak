@@ -12,7 +12,7 @@ import {
   type CurrentDepositBalanceCaptureInput,
 } from "../ledger/pglite/current-deposit-admission.ts";
 import { PGLITE_CANONICAL_BALANCE_CAPTURE_COMMAND } from "../ledger/pglite/workflow-commands.ts";
-import { SourceTextIntegrityError, strictSourceText } from "../lib/automation/source-text.ts";
+import { SourceTextIntegrityError } from "../lib/automation/source-text.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { captureSafeWorkflowFailureError } from "../lib/automation/server/workflow-failure-diagnostics.ts";
 import {
@@ -33,19 +33,12 @@ import type {
   ProviderResponse,
   ProviderResponseDeclaration,
 } from "./provider-response.ts";
-import { productCollectionHandle, type ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
+import type { ProductCollectionStageEvent } from "../lib/automation/product-collection.ts";
+import { snapshotCheckProduct } from "./current-state-snapshot-capture.fixtures.ts";
 
 /** A product handle on the run clock and strict text, reporting through `event`. */
-const handle = (event: ProductCollectionStageEvent, signal = new AbortController().signal) =>
-  productCollectionHandle({
-    now: () => RUN_CLOCK,
-    text: strictSourceText,
-    signal,
-    event,
-    stage: () => assert.fail("a snapshot returns its items and never stages them"),
-    reportActivity: async () => undefined,
-    collectionPeriod: () => assert.fail("a snapshot takes no collection period"),
-  });
+const handle = (event: ProductCollectionStageEvent, signal?: AbortSignal) =>
+  snapshotCheckProduct({ now: RUN_CLOCK, event, ...(signal ? { signal } : {}) });
 
 type Capture = Readonly<{
   id: string;

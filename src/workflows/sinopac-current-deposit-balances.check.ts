@@ -10,8 +10,13 @@ import {
   SINOPAC_CURRENT_DEPOSIT_BALANCE_PAGE_URL,
   SINOPAC_CURRENT_DEPOSIT_BALANCE_ROUTE,
   SINOPAC_CURRENT_DEPOSIT_RESPONSE,
+  sinopacCurrentBalanceSnapshot,
+  type ExistingSinopacFinancialCapture,
 } from "./sinopac-current-deposit-balances.ts";
 import type { SinopacMmaSite } from "./sinopac-mma-site.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
+import { sinopacCurrentDepositPayloadResponse, sinopacCurrentDepositRow } from "./sinopac-current-deposit-balances.fixtures.ts";
 
 const response: ProviderResponse = {
   // Keep the proof URL independent from the implementation constant so a
@@ -34,9 +39,12 @@ assert.equal(DOMESTIC_CONTRACT.endpointPath, "/ws/bank/bankbal/ws_bankbal.ashx")
 const verified = (candidate: ProviderResponse = response) =>
   verifyProviderResponse(SINOPAC_CURRENT_DEPOSIT_RESPONSE, candidate, "2026-09-09T10:01:02+08:00");
 
+const rowAccountNumber = ["1410", "1812", "3456", "21"].join("");
+const secondRowAccountNumber = ["1410", "1812", "3456", "22"].join("");
+
 const row = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   AcctText: "新店分行活期儲蓄存款",
-  AcctValue: "14101812345621",
+  AcctValue: rowAccountNumber,
   AcctValueFormat: "###-###-#######-#",
   Curr: "TWD",
   CurText: "新台幣",
@@ -56,7 +64,7 @@ const payload = [
     SubInfo: [
       row(),
       row({
-        AcctValue: "14101812345622",
+        AcctValue: secondRowAccountNumber,
         AvailBalance: "100.00",
         FixBalance: "20.00",
       }),
@@ -116,7 +124,7 @@ test("SinoPac balance parser preserves AvailBalance and provider evidence exactl
     payload: [{ ...payload[0], SubInfo: [row({ AcctValueFormat: "141-018-1234562-1" })] }],
     response: verified(),
   });
-  assert.equal(formattedAccountRows[0]?.accountNumber, "14101812345621");
+  assert.equal(formattedAccountRows[0]?.accountNumber, rowAccountNumber);
   assert.equal(formattedAccountRows[0]?.accountValueFormat, "141-018-1234562-1");
   assert.throws(
     () =>
@@ -270,4 +278,101 @@ test("SinoPac's two current-balance routes share the one declared POST", () => {
     );
     assert.deepEqual(contract.requiredCacheTokens, SINOPAC_CURRENT_DEPOSIT_RESPONSE.cacheControl);
   }
+});
+
+const syntheticSinopacTwdAccount = ["1410", "1800", "0822", "21"].join("");
+const conflictingSinopacTwdAccount = ["1410", "1800", "0822", "22"].join("");
+const syntheticSinopacForeignAccount = ["1990", "1800", "5959", "24"].join("");
+const twdIdentity: ExistingSinopacFinancialCapture = {
+  identity: {
+    integrationNamespace: "sinopac",
+    sourceConnectionKey: "sha256:sinopac-connection",
+    identityEpochKey: "sha256:sinopac-epoch",
+    subjectDigest: "sha256:sinopac-subject",
+    accountNo: syntheticSinopacTwdAccount,
+    sourceAccountKey: syntheticSinopacTwdAccount,
+    stream: "domestic-deposit",
+  },
+  sourceCurrency: "TWD",
+};
+const usdIdentity: ExistingSinopacFinancialCapture = {
+  identity: {
+    ...twdIdentity.identity,
+    accountNo: syntheticSinopacForeignAccount,
+    sourceAccountKey: syntheticSinopacForeignAccount,
+    stream: "foreign-currency-deposit",
+  },
+  sourceCurrency: "USD",
+};
+
+/** Drive the declaration over a TWD row with a fixed balance and a USD row. */
+function snapshot(captures: readonly ExistingSinopacFinancialCapture[]) {
+  return captureCurrentStateSnapshots(sinopacCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => sinopacCurrentDepositPayloadResponse([{
+      SubInfo: [
+        { ...sinopacCurrentDepositRow({ account: syntheticSinopacTwdAccount, balance: "0" }), MaxAvail: "1000", FixBalance: "50" },
+        sinopacCurrentDepositRow({
+          account: syntheticSinopacForeignAccount,
+          currency: "USD",
+          currencyText: "美元",
+          balance: "123.450",
+        }),
+      ],
+      Header: "SUCCESS",
+      Message: "",
+    }], "Wed, 09 Sep 2026 02:00:45 GMT"),
+    product: snapshotCheckProduct({ now: "2026-09-09T10:01:02+08:00" }),
+  });
+}
+
+test("SinoPac stages AvailBalance alone against each admitted stream, account and currency", async () => {
+  const staged = await snapshot([twdIdentity, usdIdentity]);
+  assert.deepEqual(staged.matched.map(({ capture }) => capture), [twdIdentity, usdIdentity]);
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", `current-balance:domestic-deposit:${syntheticSinopacTwdAccount}`],
+    ["current-balance", `current-balance:foreign-currency-deposit:${syntheticSinopacForeignAccount}:USD`],
+  ]);
+  const twd = stagedBalanceRequest(staged.items[0]);
+  assert.equal(twd.capture.routeKey, "sinopac/domestic-deposit/current-balance-v1");
+  assert.equal(twd.capture.sourceConnectionKey, "sha256:sinopac-connection");
+  assert.equal(twd.capture.identityEpoch, "sha256:sinopac-epoch");
+  assert.equal(twd.capture.subjectDigest, "sha256:sinopac-subject");
+  assert.deepEqual([twd.capture.scope.startDate, twd.capture.scope.endDate], ["2026-09-09", "2026-09-09"]);
+  assert.equal(twd.account.sourceAccountKey, syntheticSinopacTwdAccount);
+  assert.equal(twd.account.currency, "TWD");
+  assert.deepEqual(twd.observations.map((observation) => observation.balanceKind), ["ledger"]);
+  assert.deepEqual(twd.observations[0]?.balance, { coefficient: "0", scale: 0 });
+  assert.equal(twd.observations[0]?.effectiveAt, "2026-09-09T02:00:45.000Z");
+  assert.equal(twd.observations[0]?.evidenceSourceField, "HTTP Date");
+  assert.equal(twd.observations[0]?.evidenceSourceValue, "Wed, 09 Sep 2026 02:00:45 GMT");
+  assert.equal(twd.capture.records[0]?.compact.sourceField, "AvailBalance");
+  assert.equal(
+    (twd.capture.records[0]?.compact.providerFields as { fixBalance?: string }).fixBalance,
+    "50",
+  );
+  const usd = stagedBalanceRequest(staged.items[1]);
+  assert.equal(usd.capture.routeKey, "sinopac/foreign-currency/current-balance-v1");
+  assert.equal(usd.account.sourceAccountKey, syntheticSinopacForeignAccount);
+  assert.equal(usd.observations[0]?.currency, "USD");
+  assert.deepEqual(usd.observations[0]?.balance, { coefficient: "123450", scale: 3 });
+  assert.deepEqual(usd.observations.map((observation) => observation.balanceKind), ["ledger"]);
+  assert.equal(usd.capture.records[0]?.compact.sourceField, "AvailBalance");
+});
+
+test("SinoPac skips an unadmitted account and refuses a mismatched admitted one", async () => {
+  const twdOnly = await snapshot([twdIdentity]);
+  assert.deepEqual(twdOnly.items.map((item) => item.itemKey), [
+    `current-balance:domestic-deposit:${syntheticSinopacTwdAccount}`,
+  ], "a row for an account the run never admitted is left out");
+  await assert.rejects(
+    snapshot([{ ...twdIdentity, identity: { ...twdIdentity.identity, accountNo: conflictingSinopacTwdAccount } }]),
+    /^Error: SinoPac current deposit account does not match an existing DataValue identity\.$/u,
+    "a capture keyed to the row whose DataValue differs is refused",
+  );
+  await assert.rejects(
+    snapshot([twdIdentity, { ...usdIdentity, sourceCurrency: "EUR" }]),
+    /^Error: SinoPac current deposit currency does not match the existing statement scope\.$/u,
+    "a row for an admitted account in another currency is refused",
+  );
 });

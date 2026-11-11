@@ -26,17 +26,9 @@ import { frameScope, type FrameScope } from "./frame-scope.ts";
 import { signIn, type FormPlan } from "./sign-in.ts";
 import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
-  type CurrentStateSnapshotDeclaration,
-  CURRENT_DEPOSIT_BALANCE_STAGING,
-} from "./current-state-snapshot-capture.ts";
-import {
-  buildPostCurrentDepositBalanceCapture,
-  postCurrentBalanceCaptureMatching,
-  parsePostCurrentDepositBalanceSnapshot,
-  POST_CURRENT_DEPOSIT_RESPONSE,
+  postCurrentBalanceSnapshot,
   readPostCurrentDepositBalanceResponse,
   type ExistingPostCurrentDepositFinancialCapture,
-  type PostCurrentDepositBalanceRow,
   type PostCurrentDepositResponse,
 } from "./post-current-deposit-balances.ts";
 import type { ProviderResponseDeclaration } from "./provider-response.ts";
@@ -108,24 +100,6 @@ export type PostDepositSourceSnapshot = Readonly<{
 
 /** Observe the asset-overview response; the snapshot module decodes and parses it. */
 export type PostReadCurrentDepositBalanceResponse = () => Promise<PostCurrentDepositResponse>;
-
-const postCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  PostCurrentDepositResponse,
-  PostCurrentDepositBalanceRow,
-  ExistingPostCurrentDepositFinancialCapture,
-  "optional"
-> = {
-  product: "current-balance",
-  response: POST_CURRENT_DEPOSIT_RESPONSE,
-  parse: (decoded, response, acquired) => parsePostCurrentDepositBalanceSnapshot({
-    payload: decoded.value,
-    response,
-    requestPostData: acquired.requestPostData,
-  }),
-  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-  matching: postCurrentBalanceCaptureMatching,
-  build: buildPostCurrentDepositBalanceCapture,
-};
 
 type PostProductRunner = (
   page: Page,

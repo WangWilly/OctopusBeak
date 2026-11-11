@@ -1,5 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
-import { canonicalDigest } from "../ledger/canonical/canonical-digest.ts";
+import { createHash } from "node:crypto";
 import { taipeiInstant } from "../lib/time/timezone.ts";
 import type { Page } from "playwright";
 import { z } from "zod";
@@ -40,24 +39,11 @@ import {
 } from "../ledger/canonical/counterparty-account-evidence.ts";
 import type { TransactionCounterpartyAccountEvidenceInput } from "../ledger/canonical/counterparty-account-evidence.ts";
 import {
-  parseYuantaCurrentDepositBalanceSnapshot,
   readYuantaCurrentDepositBalanceTable,
-  YUANTA_CURRENT_DEPOSIT_RESPONSE,
-  type YuantaCurrentDepositBalanceRow,
+  yuantaCurrentBalanceSnapshot,
+  type ExistingYuantaFinancialCapture,
   type YuantaCurrentDepositTable,
 } from "./yuanta-current-deposit-balances.ts";
-import {
-  assembleCurrentDepositCapture,
-  type CurrentBalanceCaptureMatching,
-  type CurrentDepositBalanceEntry,
-  type CurrentStateSnapshotDeclaration,
-  CURRENT_DEPOSIT_BALANCE_STAGING,
-} from "./current-state-snapshot-capture.ts";
-import {
-  type CurrentDepositBalanceCaptureInput,
-  type CurrentDepositExactAmount,
-} from "../ledger/pglite/current-deposit-admission.ts";
-import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import { collapseSourceWhitespace } from "../lib/automation/source-text.ts";
 /** Yuanta's quick date-range links: the link text and the span it covers, both ends inclusive. */
 export const YUANTA_QUICK_RANGES = [
@@ -137,143 +123,6 @@ export type YuantaStatementsCollectionInput = YuantaStatementsInput & Readonly<{
   /** Stable source key derived from the provider-login scope. */
   sourceConnectionKey: string;
 }>;
-
-type ExistingYuantaFinancialCapture = Readonly<{
-  identity: Readonly<{
-    sourceConnectionKey: string;
-    identityEpochKey: string;
-    subjectDigest: string;
-    accountNo: string;
-    sourceAccountKey?: string;
-  }>;
-}>;
-
-/**
- * Build the current-balance capture only after the ordinary financial
- * admission has supplied the existing identity.  The provider's HTTP Date
- * is the only effective-time authority here; observedAt is retained solely
- * as the local knowledge time.
- */
-export function buildYuantaCurrentDepositBalanceCapture(
-  row: YuantaCurrentDepositBalanceRow,
-  financialCapture: ExistingYuantaFinancialCapture,
-): CurrentDepositBalanceCaptureInput {
-  if (row.kind !== "domestic" || row.stream !== "domestic-deposit")
-    throw new Error("Yuanta domestic current-balance row has the wrong stream.");
-  const identity = financialCapture.identity;
-  const sourceAccountKey = identity.sourceAccountKey ?? identity.accountNo;
-  if (sourceAccountKey !== row.sourceAccountKey)
-    throw new Error("Yuanta current-balance row does not match an existing account.");
-  const route = "yuanta/domestic-deposit/current-balance-v1" as const;
-  const contract = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS[route];
-  const amountPairs: readonly [
-    "ledger" | "available",
-    string,
-    CurrentDepositExactAmount,
-  ][] = [
-    ["ledger", "帳面餘額", row.ledger],
-    ["available", "可用餘額", row.available],
-  ];
-  const entries: CurrentDepositBalanceEntry[] = amountPairs.map(
-    ([balanceKind, sourceField, balance]) => ({
-      sourceRecordKey: canonicalDigest(
-        "yuanta-current-deposit-source-record-v1",
-        sourceAccountKey,
-        row.currency,
-        balanceKind,
-        row.effectiveAt,
-        balance.coefficient,
-        String(balance.scale),
-      ),
-      providerKey: canonicalDigest(
-        "yuanta-current-deposit-provider-record-v1",
-        row.accountNumber,
-        row.currency,
-        balanceKind,
-        row.effectiveAt,
-      ),
-      observationKey: canonicalDigest(
-        "yuanta-current-deposit-observation-v1",
-        sourceAccountKey,
-      ),
-      balanceKind,
-      sourceField,
-      currency: row.currency,
-      value: balance,
-      time: {
-        effectiveAt: row.effectiveAt,
-        effectiveTimeBasis: "provider-http-date",
-        effectiveTimeRuleVersion: contract.contractVersion,
-        sourceField: "HTTP Date",
-        sourceValue: row.providerHttpDate,
-        contractVersion: contract.contractVersion,
-      },
-      timeInRecord: false,
-      compact: {
-        accountNumber: row.accountNumber,
-        sourceAccountKey,
-        currencySourceLexeme: row.currency,
-        effectiveAt: row.effectiveAt,
-        effectiveTimeSourceField: "HTTP Date",
-        effectiveTimeSourceValue: row.providerHttpDate,
-        sourceEvidence: { ...row.sourceEvidence },
-      },
-    }),
-  );
-  return assembleCurrentDepositCapture({
-    captureId: randomUUID(),
-    authorityRoute: route,
-    contractVersion: contract.contractVersion,
-    subjectDigest: identity.subjectDigest,
-    identity: {
-      integrationNamespace: "yuanta",
-      sourceConnectionKey: identity.sourceConnectionKey,
-      identityEpochKey: identity.identityEpochKey,
-      stream: "domestic-deposit",
-      sourceAccountKey,
-    },
-    observedAt: row.observedAt,
-    scope: {
-      startDate: row.effectiveAt.slice(0, 10),
-      endDate: row.effectiveAt.slice(0, 10),
-    },
-    providerResponse: {
-      endpoint: `https://${contract.endpointHost}${row.sourceEvidence.endpoint}`,
-      status: 200,
-      cacheControl: row.sourceEvidence.cacheControl,
-    },
-    page: {
-      metadata: {
-        source: "yuanta-current-deposit-summary",
-        sourceRowCount: 1,
-        balanceFieldCount: entries.length,
-      },
-    },
-  }, entries);
-}
-
-/**
- * Yuanta keys a domestic balance by the source account key. A row with no
- * admitted capture fails the run. The first capture under a key wins.
- */
-export const yuantaCurrentBalanceCaptureMatching: CurrentBalanceCaptureMatching<
-  Readonly<{ sourceAccountKey: string }>,
-  ExistingYuantaFinancialCapture
-> = {
-  captureKey: ({ identity }) => identity.sourceAccountKey ?? identity.accountNo,
-  rowKey: (row) => row.sourceAccountKey,
-  duplicates: "first-wins",
-  sameIdentity: (kept, candidate) =>
-    kept.identity.sourceConnectionKey === candidate.identity.sourceConnectionKey &&
-    kept.identity.identityEpochKey === candidate.identity.identityEpochKey &&
-    kept.identity.subjectDigest === candidate.identity.subjectDigest,
-  ambiguousMessage: "Yuanta current deposit identities are ambiguous across financial captures.",
-  unmatched: {
-    kind: "throw",
-    message:
-      "Yuanta current deposit snapshot contains an account without exactly one existing financial identity.",
-  },
-};
 
 const downloadedBankHeaders = [
   "帳號",
@@ -730,19 +579,6 @@ export type YuantaDepositSourceSnapshot = Readonly<{
 
 /** Open the domestic current-state table; the snapshot module decodes and parses it. */
 export type YuantaReadCurrentDepositBalanceTable = () => Promise<YuantaCurrentDepositTable>;
-
-const yuantaCurrentBalanceSnapshot: CurrentStateSnapshotDeclaration<
-  YuantaCurrentDepositTable,
-  YuantaCurrentDepositBalanceRow,
-  ExistingYuantaFinancialCapture
-> = {
-  product: "current-balance",
-  response: YUANTA_CURRENT_DEPOSIT_RESPONSE,
-  parse: (decoded, response) => parseYuantaCurrentDepositBalanceSnapshot({ kind: "domestic", rows: decoded.rows, response }),
-  kind: CURRENT_DEPOSIT_BALANCE_STAGING,
-  matching: yuantaCurrentBalanceCaptureMatching,
-  build: buildYuantaCurrentDepositBalanceCapture,
-};
 
 /** Read every visible account's query result from the transaction-details page (ADR 0065). */
 export async function readYuantaDepositSource(

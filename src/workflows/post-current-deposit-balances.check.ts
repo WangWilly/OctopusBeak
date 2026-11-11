@@ -4,21 +4,21 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import { CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS } from "../ledger/canonical/current-deposit-route-contracts.ts";
 import {
-  buildPostCurrentDepositBalanceCapture,
   parsePostCurrentDepositBalanceSnapshot,
-  postCurrentBalanceCaptureMatching,
+  postCurrentBalanceSnapshot,
   POST_CURRENT_DEPOSIT_RESPONSE,
   readPostCurrentDepositBalanceResponse,
+  type ExistingPostCurrentDepositFinancialCapture,
   type PostCurrentDepositBalanceRow,
 } from "./post-current-deposit-balances.ts";
-import { indexCurrentBalanceCaptures } from "./current-state-snapshot-capture.ts";
+import { captureCurrentStateSnapshots } from "./current-state-snapshot-capture.ts";
+import { snapshotCheckProduct, stagedBalanceRequest } from "./current-state-snapshot-capture.fixtures.ts";
 import type { Response } from "playwright";
 import { type ProviderResponse, verifyProviderResponse } from "./provider-response.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { fakeProviderReply } from "./provider-response-reader.fixtures.ts";
 import { ProviderResponseCheckError } from "../lib/automation/provider-response-check.ts";
 import { strictSourceText } from "../lib/automation/source-text.ts";
-import { admitCurrentDepositBalanceCapture } from "../ledger/pglite/current-deposit-admission.ts";
 
 const CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["post/domestic-deposit/current-balance-v1"];
 
@@ -367,83 +367,114 @@ test("Post parser rejects unsupported or disagreeing provider timestamps", () =>
   assert.throws(() => parse(invalidServerTime), /SERVER_TIMESTAMP.*epoch/i);
 });
 
-test("Post capture admission uses only BAL and the existing financial identity", () => {
-  const row = parse()[0]!;
-  const capture = buildPostCurrentDepositBalanceCapture(row, financialCapture);
-  assert.equal(capture.providerResponse.requestDiscriminant?.txnCode, "EB100103");
-  assert.equal(capture.providerResponse.requestDiscriminant?.bizCode, "getOverViewById");
-  assert.equal(capture.observations[0]?.sourceField, "BAL");
-  assert.deepEqual(capture.observations[0]?.balance, {
-    coefficient: "12345",
-    scale: 0,
+/** Drive the declaration over this check's overview reply for the admitted captures. */
+function snapshot(
+  captures: readonly ExistingPostCurrentDepositFinancialCapture[],
+  candidate = payload,
+  responseHeaders: Record<string, string> = {},
+) {
+  return captureCurrentStateSnapshots(postCurrentBalanceSnapshot, {
+    captures,
+    acquire: async () => ({
+      evidence: { kind: "json", bytes: new TextEncoder().encode(JSON.stringify(candidate)) },
+      response: { ...response, headers: { ...response.headers, ...responseHeaders } },
+      requestPostData,
+    }),
+    product: snapshotCheckProduct({ now: "2026-09-09T02:14:00.000Z" }),
   });
-  assert.equal(capture.records[0]?.compact.balanceSourceLexeme, "0000012345");
-  assert.equal("PBA_CUT_BAL" in (capture.records[0]?.compact ?? {}), false);
-  assert.equal("VISA_BAL" in (capture.records[0]?.compact ?? {}), false);
-  assert.doesNotThrow(() => admitCurrentDepositBalanceCapture(capture));
-  const serverTimestampRow = parse(payload, { headers: { date: "" } })[0]!;
-  assert.equal(serverTimestampRow.effectiveTimeBasis, "provider-system-time");
-  assert.doesNotThrow(() =>
-    admitCurrentDepositBalanceCapture(
-      buildPostCurrentDepositBalanceCapture(serverTimestampRow, financialCapture),
-    ),
+}
+
+test("Post capture admission uses only BAL and the existing financial identity", async () => {
+  const staged = await snapshot([financialCapture]);
+  assert.equal(staged.matched[0]?.capture, financialCapture);
+  assert.deepEqual(staged.items.map((item) => [item.product, item.itemKey]), [
+    ["current-balance", `current-balance:domestic-deposit:${syntheticPostAccountNumber}`],
+  ]);
+  const request = stagedBalanceRequest(staged.items[0]);
+  assert.equal(request.capture.routeKey, "post/domestic-deposit/current-balance-v1");
+  assert.equal(request.capture.sourceConnectionKey, "post-user-existing-connection");
+  assert.equal(request.capture.identityEpoch, "post-user-existing-epoch");
+  assert.equal(request.capture.subjectDigest, token("post-subject"));
+  assert.deepEqual([request.capture.scope.startDate, request.capture.scope.endDate], ["2026-09-09", "2026-09-09"]);
+  assert.equal(request.account.sourceAccountKey, syntheticPostAccountNumber);
+  assert.equal(request.account.currency, "TWD");
+  assert.equal(request.observations.length, 1);
+  assert.equal(request.observations[0]?.balanceKind, "ledger");
+  assert.deepEqual(request.observations[0]?.balance, { coefficient: "12345", scale: 0 });
+  assert.equal(request.observations[0]?.effectiveAt, "2026-09-09T02:13:03.000Z");
+  assert.equal(request.observations[0]?.evidenceSourceField, "HTTP Date");
+  assert.equal(request.observations[0]?.evidenceSourceValue, "Wed, 09 Sep 2026 02:13:03 GMT");
+  assert.equal(request.capture.records[0]?.compact.sourceField, "BAL");
+  assert.equal(request.capture.records[0]?.compact.balanceSourceLexeme, "0000012345");
+  assert.deepEqual(
+    [request.capture.pages[0]?.metadata.txnCode, request.capture.pages[0]?.metadata.bizCode],
+    ["EB100103", "getOverViewById"],
   );
-  assert.throws(
-    () =>
-      buildPostCurrentDepositBalanceCapture(row, {
-        identity: {
-          ...financialCapture.identity,
-          accountNo: conflictingPostAccountNumber,
-          accountNumber: { value: conflictingPostAccountNumber },
-        },
-      }),
+  assert.doesNotMatch(
+    JSON.stringify(staged.items),
+    /PBA_CUT_BAL|VISA_BAL|999999999999|777777|must-not-be-retained/u,
+  );
+
+  const serverTimestamp = stagedBalanceRequest((await snapshot([financialCapture], payload, { date: "" })).items[0]);
+  assert.equal(serverTimestamp.observations[0]?.effectiveTimeBasis, "provider-system-time");
+  assert.equal(serverTimestamp.observations[0]?.evidenceSourceField, "SERVER_TIMESTAMP");
+  assert.equal(serverTimestamp.observations[0]?.evidenceSourceValue, "1788919984");
+
+  await assert.rejects(
+    snapshot([{
+      identity: {
+        ...financialCapture.identity,
+        accountNo: conflictingPostAccountNumber,
+        accountNumber: { value: conflictingPostAccountNumber },
+      },
+    }]),
     /does not exactly match/i,
+    "a capture keyed to the row whose account evidence differs is refused",
+  );
+  await assert.rejects(
+    snapshot([{ identity: { ...financialCapture.identity, currency: "USD" } }]),
+    /not an admitted TWD domestic account/u,
   );
 });
 
-test("Post replay keys are stable while a changed BAL creates a new source record", () => {
-  const row = parse()[0]!;
-  const first = buildPostCurrentDepositBalanceCapture(row, financialCapture);
-  const replay = buildPostCurrentDepositBalanceCapture(row, financialCapture);
-  assert.notEqual(first.captureId, replay.captureId);
-  assert.equal(first.records[0]?.sourceRecordKey, replay.records[0]?.sourceRecordKey);
-  assert.equal(first.records[0]?.contentHash, replay.records[0]?.contentHash);
+test("Post replay keys are stable while a changed BAL creates a new source record", async () => {
+  const first = stagedBalanceRequest((await snapshot([financialCapture])).items[0]);
+  const replay = stagedBalanceRequest((await snapshot([financialCapture])).items[0]);
+  assert.notEqual(first.capture.captureId, replay.capture.captureId);
+  assert.equal(first.observations[0]?.evidenceSourceRecordKey, replay.observations[0]?.evidenceSourceRecordKey);
+  assert.equal(first.capture.records[0]?.contentHash, replay.capture.records[0]?.contentHash);
   assert.equal(first.observations[0]?.observationKey, replay.observations[0]?.observationKey);
-  const changed = buildPostCurrentDepositBalanceCapture(
-    parse([
-      {
-        ...payload[0],
-        body: { itemList: [{ ...psRow, BAL: "0000012346" }] },
-      },
-      payload[1],
-    ])[0]!,
-    financialCapture,
-  );
-  assert.notEqual(first.records[0]?.sourceRecordKey, changed.records[0]?.sourceRecordKey);
+  const changed = stagedBalanceRequest((await snapshot([financialCapture], [
+    {
+      ...payload[0],
+      body: { itemList: [{ ...psRow, BAL: "0000012346" }] },
+    },
+    payload[1],
+  ])).items[0]);
+  assert.notEqual(first.observations[0]?.evidenceSourceRecordKey, changed.observations[0]?.evidenceSourceRecordKey);
   assert.equal(first.observations[0]?.observationKey, changed.observations[0]?.observationKey);
 });
 
-test("Post current balances fail closed when captures span more than one connection or epoch", () => {
+test("Post current balances fail closed when captures span more than one connection or epoch", async () => {
   const otherAccount = { accountNo: "post-other-account", sourceAccountKey: "post-other-account", accountNumber: { value: "post-other-account" } };
-  const row = { stream: "domestic-deposit", sourceAccountKey: "post-other-account" };
   for (const otherScope of [
     { sourceConnectionKey: "post-user-other-connection" },
     { identityEpochKey: "post-user-other-epoch" },
   ])
-    assert.throws(
-      () => indexCurrentBalanceCaptures(
-        [financialCapture, { identity: { ...financialCapture.identity, ...otherScope, ...otherAccount } }],
-        postCurrentBalanceCaptureMatching,
-      ).match([row]),
+    await assert.rejects(
+      snapshot([financialCapture, { identity: { ...financialCapture.identity, ...otherScope, ...otherAccount } }]),
       /^Error: Post current deposit captures span more than one source connection or identity epoch\.$/u,
     );
+  const otherCapture = { identity: { ...financialCapture.identity, ...otherAccount } };
   assert.deepEqual(
-    indexCurrentBalanceCaptures(
-      [financialCapture, { identity: { ...financialCapture.identity, ...otherAccount } }],
-      postCurrentBalanceCaptureMatching,
-    ).match([row]).matched.map(({ capture }) => capture.identity.sourceAccountKey),
-    ["post-other-account"],
+    (await snapshot([otherCapture, financialCapture])).matched.map(({ capture }) => capture),
+    [financialCapture],
     "captures in the run's one scope still match by their own key",
+  );
+  await assert.rejects(
+    snapshot([otherCapture]),
+    /^Error: Post current deposit snapshot contains an account without an existing admitted identity\.$/u,
+    "a PS row without an admitted identity rejects the snapshot",
   );
 });
 

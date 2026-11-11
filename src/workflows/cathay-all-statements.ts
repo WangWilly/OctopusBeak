@@ -1,9 +1,7 @@
 import { z } from "zod";
 import type { Page } from "playwright";
 import {
-  type CollectionProductOutcome,
   type ProductCollectionHandle,
-  ProductCollectionInterruptedError,
   type ProductCollectionSummary,
 } from "../lib/automation/product-collection.ts";
 import type { PreviewProductHandle } from "../lib/preview-sources/product-collection.ts";
@@ -24,13 +22,13 @@ import {
   type CathayForeignFinancialCollection,
   type CathayForeignQueryRange,
 } from "./cathay-foreign-statements.ts";
+import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
 import {
   cathayDomesticCurrentBalanceSnapshot,
   cathayForeignCurrentBalanceSnapshot,
+  readCathayCurrentDepositBalanceResponse,
   type CathayAdmittedDeposit,
-} from "./cathay-current-deposit-canonical.ts";
-import { admitDeposit, stageCanonicalDeposits, type DepositAdmission } from "./canonical-deposit-staging.ts";
-import { readCathayCurrentDepositBalanceResponse } from "./cathay-current-deposit-balances.ts";
+} from "./cathay-current-deposit-balances.ts";
 import { sourceReader } from "./provider-response-reader.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 import {

@@ -36,7 +36,6 @@ const {
   readYuantaForeignCurrencyOptions,
   readYuantaForeignCurrencySource,
   buildYuantaForeignCurrencyCaptureInput,
-  buildYuantaForeignCurrentDepositBalanceCapture,
   deriveYuantaForeignAccountNumberEvidence,
   classifyYuantaForeignCurrencyResultMarkup,
   classifyYuantaForeignCurrencyFrameRoute,
@@ -48,47 +47,10 @@ const {
   isYuantaForeignCurrencyCsvControl,
   stageYuantaForeignCurrency,
   yuantaForeignCurrencyStatementsInputSchema,
-  yuantaForeignCurrentBalanceCaptureMatching,
   yuantaForeignQueryRange,
 } = await import("./yuanta-foreign-currency-statements.ts");
-const { indexCurrentBalanceCaptures } = await import("./current-state-snapshot-capture.ts");
 const { yuantaCurrentDepositTable } = await import("./yuanta-current-deposit-balances.fixtures.ts");
 
-{
-  const admittedAccount = {
-    identity: {
-      sourceConnectionKey: "sha256:yuanta-fx-connection",
-      identityEpochKey: "sha256:yuanta-fx-epoch",
-      subjectDigest: "sha256:yuanta-fx-subject",
-      accountNo: "sha256:yuanta-fx-account",
-      sourceAccountKey: "sha256:yuanta-fx-account",
-    },
-  };
-  const rows = [
-    { sourceAccountKey: "sha256:yuanta-fx-account", currency: "USD" },
-    { sourceAccountKey: "sha256:yuanta-fx-account", currency: "JPY" },
-  ];
-  assert.deepEqual(
-    indexCurrentBalanceCaptures([admittedAccount, admittedAccount], yuantaForeignCurrentBalanceCaptureMatching).match(rows)
-      .matched.map(({ row, capture }) => [row.currency, capture]),
-    [["USD", admittedAccount], ["JPY", admittedAccount]],
-    "the key carries no currency, so one admitted account matches its row in every currency",
-  );
-  assert.throws(
-    () => indexCurrentBalanceCaptures(
-      [admittedAccount],
-      yuantaForeignCurrentBalanceCaptureMatching,
-    ).match([{ sourceAccountKey: "sha256:other-fx-account", currency: "USD" }]),
-    /^Error: Yuanta foreign current deposit snapshot contains an account without an existing financial identity\.$/u,
-  );
-  assert.throws(
-    () => indexCurrentBalanceCaptures(
-      [admittedAccount, { identity: { ...admittedAccount.identity, subjectDigest: "sha256:other-subject" } }],
-      yuantaForeignCurrentBalanceCaptureMatching,
-    ).match([]),
-    /^Error: Yuanta foreign current deposit identities are ambiguous across financial captures\.$/u,
-  );
-}
 const { StatementComponentAbsentError } =
   await import("../lib/automation/product-collection.ts");
 
@@ -129,47 +91,6 @@ assert.equal(
   "menu",
 );
 assert.equal(classifyYuantaForeignCurrencyFrameRoute("/"), "other");
-
-const yuantaForeignCurrentCapture = buildYuantaForeignCurrentDepositBalanceCapture(
-  {
-    source: "yuanta",
-    kind: "foreign",
-    stream: "foreign-currency-deposit",
-    accountNumber: syntheticYuantaForeignAccountNumber,
-    sourceAccountKey: syntheticYuantaForeignAccountNumber,
-    currency: "USD",
-    available: { coefficient: "90", scale: 2, sourceLexeme: "90.00" },
-    ledger: { coefficient: "100", scale: 2, sourceLexeme: "100.00" },
-    effectiveAt: "2026-08-31T01:00:00.000Z",
-    providerHttpDate: "Mon, 31 Aug 2026 01:00:00 GMT",
-    observedAt: "2026-08-31T09:00:00+08:00",
-    sourceEvidence: {
-      endpoint: "/nib/tx/finance_overview_for_summary",
-      method: "POST",
-      status: 200,
-      cacheControl: "no-store",
-      contractVersion: "yuanta/current-deposit-balance-v1",
-    },
-  },
-  {
-    identity: {
-      sourceConnectionKey: "sha256:yuanta-fx-current-connection",
-      identityEpochKey: "sha256:yuanta-fx-current-epoch",
-      subjectDigest: "sha256:yuanta-fx-current-subject",
-      accountNo: syntheticYuantaForeignAccountNumber,
-      sourceAccountKey: syntheticYuantaForeignAccountNumber,
-    },
-  },
-);
-assert.equal(
-  yuantaForeignCurrentCapture.identity.stream,
-  "foreign-currency-deposit",
-);
-assert.deepEqual(
-  yuantaForeignCurrentCapture.observations.map((observation) => observation.currency),
-  ["USD", "USD"],
-);
-assert.equal(yuantaForeignCurrentCapture.records.length, 2);
 
 function locatorForOptions(options: Array<{ value: string; label: string }>) {
   return {
