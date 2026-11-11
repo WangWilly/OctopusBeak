@@ -11,8 +11,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runForCheck, runtimeForCheck, startForCheck } from "./task-run-check-support.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
@@ -75,22 +74,6 @@ async function installEinvoiceAppMock(context: BrowserContext, loginDelayMs = 0)
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
   });
-}
-
-async function createRun(
-  provider: ReturnType<typeof createPgliteOperationalProvider>,
-) {
-  const created = await provider.automation.createTaskRun({
-    taskId: "einvoice-personal-invoices",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  const run = await provider.automation.taskRunById(created.taskRunId);
-  assert.ok(run);
-  return run;
 }
 
 function committedFinancialCommit(): WorkflowFinancialCommitPort {
@@ -158,21 +141,18 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       });
 
     // Successful empty collection commits.
-    const firstRun = await createRun(provider);
-    const firstResult = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: firstRun.taskRunId,
-      launchEnv: testCredentialEnvironment(),
+    const firstResult = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
-    });
+      environment: testCredentialEnvironment(),
+    }), task.id);
     assert.equal(firstResult.status, "completed");
-    const completedRun = await provider.automation.taskRunById(firstRun.taskRunId);
+    const completedRun = await provider.automation.taskRunById(firstResult.taskRunId);
     assert.equal(completedRun?.status, "completed");
     assert.ok(completedRun?.events.some((event) => event.code === "authentication-completed"));
     assert.ok(completedRun?.events.some((event) => event.code === "canonical-commit-completed"));
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
 
     // A commit rejection surfaces as canonical-commit-failed.
-    const rejectedRun = await createRun(provider);
     const rejectedCommit: WorkflowFinancialCommitPort = {
       async execute(items) {
         let itemKey: string | undefined;
@@ -205,34 +185,28 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
         };
       },
     };
-    const rejectedResult = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: rejectedRun.taskRunId,
-      launchEnv: testCredentialEnvironment(),
+    const rejectedResult = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit: rejectedCommit, browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
-    });
+      environment: testCredentialEnvironment(),
+    }), task.id);
     assert.equal(rejectedResult.status, "failed");
-    const rejectedRecord = await provider.automation.taskRunById(rejectedRun.taskRunId);
+    const rejectedRecord = await provider.automation.taskRunById(rejectedResult.taskRunId);
     assert.equal(rejectedRecord?.appWorkflowOutcome?.errorCode, "canonical-commit-failed");
     assert.ok(rejectedRecord?.events.some((event) => event.code === "canonical-commit-failed"));
 
     // Shutdown interrupts a run still parked in its (slow) login.
-    const shutdownRun = await createRun(provider);
-    let shutdownActive: ActiveAutomationTaskRun | undefined;
-    const shutdownPromise = executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: shutdownRun.taskRunId,
-      onRunOpened: (active) => {
-        shutdownActive = active;
-      },
-      launchEnv: testCredentialEnvironment(),
+    const shutdownRuntime = runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000) }),
+      environment: testCredentialEnvironment(),
     });
+    const shutdown = await startForCheck(shutdownRuntime, task.id);
     // Wait until the run is actively executing, then shut down.
     await new Promise((resolve) => setTimeout(resolve, 500));
+    const shutdownActive = shutdownRuntime.activeRun(shutdown.runId);
     assert.ok(shutdownActive);
     await shutdownActive.requestStop("shutdown");
-    const shutdownResult = await shutdownPromise;
-    assert.equal(shutdownResult.status, "interrupted");
-    assert.equal((await provider.automation.taskRunById(shutdownRun.taskRunId))?.status, "interrupted");
+    assert.equal((await shutdown.settled)?.status, "interrupted");
+    assert.equal((await provider.automation.taskRunById(shutdown.runId))?.status, "interrupted");
   } finally {
     for (const context of contexts.values()) await context.close().catch(() => {});
     try {

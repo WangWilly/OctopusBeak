@@ -11,7 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
-import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -117,20 +117,6 @@ function createPage(options: { fault?: SourceFault } = {}) {
   }) as unknown as Page & { credential(selector: string): string };
 }
 
-async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
-  const task = taskById("sinopac-statements");
-  assert.ok(task);
-  const created = await provider.automation.createTaskRun({
-    taskId: task.id,
-    kind: task.kind,
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  return created.taskRunId;
-}
-
 function commitPort(receivedItems: unknown[][]): WorkflowFinancialCommitPort {
   return {
     async execute(items) {
@@ -184,14 +170,10 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit, now: () => "2026-09-25T12:00:00.000Z",
         browser: ({ startUrl }) => {
@@ -199,7 +181,10 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
           return browser;
         },
       }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
@@ -219,17 +204,16 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
       ["transactionTimeout", "source-collection-failed"],
       ["accountListTimeout", "source-collection-failed"],
     ] as const) {
-      const rejectedRunId = await createRun(provider);
       const invalidPage = createPage({ fault });
       const invalidBrowser: WorkflowBrowserPort = {
         async withPage(runPage) { return runPage(invalidPage); },
       };
-      const rejected = await executeTaskRunForCheck(task, provider.automation, {
-        taskRunId: rejectedRunId,
-        launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-        userDataDirectory: root,
+      const rejected = await runForCheck(runtimeForCheck(provider, {
         executionHost: inProcessCheckHost({ financialCommit, now: () => "2026-09-25T12:00:00.000Z", browser: () => invalidBrowser }),
-      });
+        environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+        userDataDirectory: root,
+      }), task.id);
+      const rejectedRunId = rejected.taskRunId;
       assert.equal(rejected.status, "failed", fault);
       assert.equal(committed.length, 1, `${fault} is rejected before Canonical Financial Commit`);
       const rejectedRun = await provider.automation.taskRunById(rejectedRunId);

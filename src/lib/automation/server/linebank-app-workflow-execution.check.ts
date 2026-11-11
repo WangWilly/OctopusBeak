@@ -11,8 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { linebankEpochMillisecondsFromSourceDateTime } from "../../../workflows/linebank-statements.ts";
 import { taskById } from "./tasks.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -180,18 +179,6 @@ function createPage(options: {
   };
 }
 
-async function createRun(provider: ReturnType<typeof createPgliteOperationalProvider>) {
-  const created = await provider.automation.createTaskRun({
-    taskId: "linebank-statements",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  return created.taskRunId;
-}
-
 function commitPort(committed: unknown[][]): WorkflowFinancialCommitPort {
   return {
     async execute(items) {
@@ -255,14 +242,10 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
       async withPage(run) { return run(page); },
     };
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -271,7 +254,10 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
           return browser;
         },
       }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const taskRunId = result.taskRunId;
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
     assert.equal(observedStartUrl, LOGIN_URL);
@@ -295,13 +281,12 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.deepEqual(await readdir(root), [], "App dispatch writes no source, output, or log files");
 
     const malformedPage = createPage({ malformedTransactions: true });
-    const malformedRunId = await createRun(provider);
-    const malformed = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: malformedRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const malformed = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(malformedPage); } }) }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const malformedRunId = malformed.taskRunId;
     assert.equal(malformed.status, "failed");
     assert.equal(committed.length, 1, "malformed LINE Bank response is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
@@ -309,36 +294,30 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
 
     const incompletePage = createPage({ incompleteTransactions: true });
-    const incompleteRunId = await createRun(provider);
-    const incomplete = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: incompleteRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const incomplete = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(incompletePage); } }) }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const incompleteRunId = incomplete.taskRunId;
     assert.equal(incomplete.status, "failed");
     assert.equal(committed.length, 1, "incomplete LINE Bank pagination is rejected before commit");
     const incompleteRun = await provider.automation.taskRunById(incompleteRunId);
     assert.ok(incompleteRun?.events.some((event) => event.code === "source-validation-rejected"));
 
-    let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancellationPage = createPage({
       signedIn: false,
       async onPoll() {
-        void cancellationRun?.requestStop("cancelled");
+        void cancellationRuntime.cancel(task.id);
         await new Promise((resolve) => setTimeout(resolve, 75));
       },
     });
-    const cancellationRunId = await createRun(provider);
-    const cancelled = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: cancellationRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
-      onRunOpened: (active) => {
-        cancellationRun = active;
-      },
+    const cancellationRuntime = runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }) }),
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
     });
+    const cancelled = await runForCheck(cancellationRuntime, task.id);
     assert.equal(cancelled.status, "cancelled");
     assert.ok(
       !cancelled.run.events.some((event) => ["human-assistance-requested", "solver-route-unavailable", "solver-challenge-unsupported"].includes(event.code)),

@@ -14,7 +14,7 @@ import type {
   AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, firstRoundForCheck, inProcessCheckHost, openTaskRunForCheck, planForCheck } from "./task-run-check-support.ts";
+import { firstRoundForCheck, inProcessCheckHost, openTaskRunForCheck, planForCheck, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { createTaskRunExecution } from "./task-run-execution.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -386,12 +386,8 @@ test("runner progress spans selected product stages, survives a same-run retry, 
 
     const exchangeRateTask = taskById("exchange-rates");
     assert.ok(exchangeRateTask);
-    const exchangeRateResult = await executeTaskRunForCheck(exchangeRateTask, persistence, {
-      taskRunId: await createRun(exchangeRateTask),
-      attempt: 1,
-      maxAttempts: 1,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv,
+    const exchangeRateResult = await runForCheck(runtimeForCheck({ ...provider, automation: persistence }, {
+      environment: launchEnv,
       executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
         new SequencedWorkflowWorker(
           start,
@@ -405,7 +401,7 @@ test("runner progress spans selected product stages, survives a same-run retry, 
           { kind: "completed", summary: null },
           onEventAcknowledged,
         ) }),
-    });
+    }), exchangeRateTask.id);
     assert.equal(exchangeRateResult.status, "completed");
     const exchangeRunId = exchangeRateResult.taskRunId;
     assert.ok(exchangeRunId);

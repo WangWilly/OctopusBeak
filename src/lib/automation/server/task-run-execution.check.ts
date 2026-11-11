@@ -14,12 +14,14 @@ import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
 import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
 import {
   CHECK_PGLITE_RPC,
-  executeTaskRunForCheck,
+  executeRoundForCheck,
   firstRoundForCheck,
   inProcessCheckHost,
   observingExecutions,
   openTaskRunForCheck,
   planForCheck,
+  runForCheck,
+  runtimeForCheck,
 } from "./task-run-check-support.ts";
 import { createTaskRunExecution } from "./task-run-execution.ts";
 import {
@@ -238,25 +240,27 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
   const diagnosticPath = join(directory, "workflow-failures.jsonl");
   const database = await createTestPGlite("operational");
   const store = new PGliteStore(database);
+  const previousEnvironment = {
+    OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE,
+    OCTOPUSBEAK_APP_ROOT: process.env.OCTOPUSBEAK_APP_ROOT,
+  };
+  process.env.OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE = diagnosticPath;
+  process.env.OCTOPUSBEAK_APP_ROOT = process.cwd();
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        LIBRETTO_CLOUD_CTBC_USER_ID: "private-user-id",
-        LIBRETTO_CLOUD_CTBC_ACCOUNT: "private-account-id",
-        LIBRETTO_CLOUD_CTBC_PASSWORD: "private-password",
-        OCTOPUSBEAK_WORKFLOW_DIAGNOSTICS_FILE: diagnosticPath,
-        OCTOPUSBEAK_APP_ROOT: process.cwd(),
-      },
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TaskExecutionFakeWorker(
         start,
         "validation-failure",
         () => true,
       ) }),
-    });
+      environment: {
+        [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "private-user-id",
+        [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "private-account-id",
+        [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "private-password",
+      },
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -275,6 +279,10 @@ test("a supervised source-validation failure writes a correlated diagnostic reco
     });
     assert.doesNotMatch(diagnosticText, /private-user-id|private-account-id|private-password|private-provider-detail/u);
   } finally {
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
@@ -364,11 +372,7 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
     try {
       const provider = createPgliteOperationalProvider(store);
       let workerStart: AppWorkflowWorkerStart | undefined;
-      const taskRunId = await createRun(provider, task);
-      const result = await executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
-        pgliteRpc: { endpoint: "/tmp/worker-test.sock", token: "a".repeat(32) },
-        launchEnv: {},
+      const result = await runForCheck(runtimeForCheck(provider, {
         executionHost: {
           ...inProcessCheckHost({ scriptedWorker: (start) => {
             workerStart = start;
@@ -376,11 +380,13 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
           } }),
           withPage: () => { throw new Error("Nonbrowser task opened a browser."); },
         },
-      });
+        environment: taskId === "sync-maicoin" ? { [["MAX", "ACCESS", "KEY"].join("_")]: "synthetic-access", [["MAX", "SECRET", "KEY"].join("_")]: "synthetic-secret" } : {},
+      }), task.id);
+      const taskRunId = result.taskRunId;
       assert.equal(result.status, "completed");
       assert.ok(workerStart);
       assert.equal(workerStart.workflowId, taskId);
-      assert.equal(workerStart.pgliteRpc?.endpoint, "/tmp/worker-test.sock");
+      assert.deepEqual(workerStart.pgliteRpc, CHECK_PGLITE_RPC);
       const run = await provider.automation.taskRunById(taskRunId);
       assert.equal(run?.status, "completed");
       assert.ok(run?.events.some((event) => event.code === "run-started"));
@@ -428,12 +434,10 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
       let assistanceRequest: AppWorkflowHumanAssistanceRequest | undefined;
-      const execution = executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
+      const execution = executeRoundForCheck(task, provider.automation, taskRunId, {
         // The scenario resumes the stage itself; the route only keeps it
         // from failing closed as unrouted.
         assistanceRoute: (request) => { assistanceRequest = request; },
-        pgliteRpc: CHECK_PGLITE_RPC,
         launchEnv,
         onRunOpened: (run) => {
           active = run;
@@ -613,11 +617,7 @@ test("runtime identity remains on a failed run when browser launch fails before 
       LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
       [einvoicePasswordFixtureEnvKey]: "fixture-password",
     };
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv,
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: {
         async withPage(page) {
           page.onRuntimeIdentity?.(runtimeIdentity);
@@ -627,7 +627,9 @@ test("runtime identity remains on a failed run when browser launch fails before 
           throw new Error("Browser launch failure must happen before worker startup.");
         },
       },
-    });
+      environment: launchEnv,
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -647,14 +649,7 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
   const store = new PGliteStore(database);
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
-        [einvoicePasswordFixtureEnvKey]: "fixture-password",
-      },
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: {
         async withPage() {
           throw new BrowserRuntimeConfigurationError("unsupported-profile");
@@ -663,7 +658,12 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
           throw new Error("An unsupported profile must fail before worker startup.");
         },
       },
-    });
+      environment: {
+        LIBRETTO_CLOUD_EINVOICE_PHONE_NUMBER: "fixture-phone",
+        [einvoicePasswordFixtureEnvKey]: "fixture-password",
+      },
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     assert.equal(result.status, "failed");
     const run = await provider.automation.taskRunById(taskRunId);
@@ -726,18 +726,14 @@ test("supervised product invariant failures retain the worker code instead of gu
   const store = new PGliteStore(await createTestPGlite("operational"));
   try {
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider, task);
-    await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        LIBRETTO_CLOUD_CTBC_USER_ID: "synthetic-user",
-        LIBRETTO_CLOUD_CTBC_ACCOUNT: "synthetic-account",
-        LIBRETTO_CLOUD_CTBC_PASSWORD: "synthetic-password",
-      },
+    const { run } = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TaskExecutionFakeWorker(start, "product-invariant", () => true) }),
-    });
-    const run = await provider.automation.taskRunById(taskRunId);
+      environment: {
+        [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user",
+        [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+        [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
+      },
+    }), task.id);
     assert.equal(run?.appWorkflowOutcome?.errorCode, "workflow-failed");
     assert.equal(run?.appWorkflowOutcome?.summary?.counts.committedCount, 4);
     assert.equal(run?.status, "failed", "a fatal invariant remains a failure with retained receipts");
@@ -771,10 +767,8 @@ test("an execution logs each worker and host event once, unmoved by the store ca
     const executions: WorkflowExecution[] = [];
     // No route is registered: the host writes solver-route-unavailable and the
     // worker only sees its rejected request.
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
+    const result = await executeRoundForCheck(task, provider.automation, taskRunId, {
       executions,
-      pgliteRpc: CHECK_PGLITE_RPC,
       launchEnv: ctbcLaunchEnv,
       executionHost: inProcessCheckHost({ scriptedWorker: (start) =>
         new TaskExecutionFakeWorker(start, "assistance-completion", () => true) }),

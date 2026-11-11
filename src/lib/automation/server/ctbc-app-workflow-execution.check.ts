@@ -10,8 +10,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
-import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { executeTaskRunForCheck, inProcessCheckHost } from "./task-run-check-support.ts";
+import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -122,20 +121,6 @@ function createPage(options: {
   };
 }
 
-async function createRun(
-  provider: ReturnType<typeof createPgliteOperationalProvider>,
-) {
-  const created = await provider.automation.createTaskRun({
-    taskId: "ctbc-statements",
-    kind: "crawler",
-    status: "running",
-    attempt: 1,
-    maxAttempts: 1,
-    startedAt: new Date().toISOString(),
-  });
-  return created.taskRunId;
-}
-
 function createCommitPort(committed: unknown[][]): WorkflowFinancialCommitPort {
   return {
     async execute(items) {
@@ -194,16 +179,12 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const taskRunId = await createRun(provider);
     const browser: WorkflowBrowserPort = {
       async withPage(run) {
         return run(app.page);
       },
     };
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
@@ -213,7 +194,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
           return browser;
         },
       }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const taskRunId = result.taskRunId;
 
     const run = await provider.automation.taskRunById(taskRunId);
     assert.equal(result.status, "completed");
@@ -249,13 +233,12 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         return runPage(incompletePage.page);
       },
     };
-    const incompleteRunId = await createRun(provider);
-    const incomplete = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: incompleteRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const incomplete = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit, browser: () => incompleteBrowser }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const incompleteRunId = incomplete.taskRunId;
     assert.equal(incomplete.status, "failed");
     assert.equal(incomplete.outcome.errorCode, "source-validation-failed");
     assert.equal(committed.length, 1, "incomplete CTBC source is rejected before commit");
@@ -269,22 +252,20 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         return runPage(malformedPage.page);
       },
     };
-    const malformedRunId = await createRun(provider);
-    const malformed = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: malformedRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const malformed = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({ financialCommit, browser: () => malformedBrowser }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const malformedRunId = malformed.taskRunId;
     assert.equal(malformed.status, "failed");
     assert.equal(malformed.outcome.errorCode, "source-integrity-failed");
     assert.equal(committed.length, 1, "undecodable CTBC source is rejected before commit");
     const malformedRun = await provider.automation.taskRunById(malformedRunId);
     assert.equal(malformedRun?.appWorkflowOutcome?.errorCode, "source-integrity-failed");
 
-    let cancellationRun: ActiveAutomationTaskRun | undefined;
     const cancellationPage = createPage({ onPoll: async () => {
-      void cancellationRun?.requestStop("cancelled");
+      void cancellationRuntime.cancel(task.id);
       await new Promise((resolve) => setTimeout(resolve, 75));
     } });
     const cancellationBrowser: WorkflowBrowserPort = {
@@ -292,20 +273,17 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         return runPage(cancellationPage.page);
       },
     };
-    const cancellationRunId = await createRun(provider);
-    const cancelled = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: cancellationRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
-      onRunOpened: (active) => {
-        cancellationRun = active;
-      },
+    const cancellationRuntime = runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit,
         now: () => "2026-09-25T12:00:00.000Z",
         browser: () => cancellationBrowser,
       }),
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
     });
+    const cancelled = await runForCheck(cancellationRuntime, task.id);
+    const cancellationRunId = cancelled.taskRunId;
     assert.equal(cancelled.status, "cancelled");
     assert.equal(cancelled.outcome.errorCode, "cancelled");
     const cancelledRun = await provider.automation.taskRunById(cancellationRunId);
@@ -324,11 +302,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     let commitAttempts = 0;
-    const ambiguousRunId = await createRun(provider);
-    const ambiguous = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: ambiguousRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const ambiguous = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit: {
           async execute() {
@@ -338,7 +312,10 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
         },
         browser: () => ambiguousBrowser,
       }),
-    });
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const ambiguousRunId = ambiguous.taskRunId;
     assert.equal(ambiguous.status, "failed");
     assert.equal(ambiguous.outcome.errorCode, "commit-outcome-unknown");
     assert.equal(commitAttempts, 1, "an ambiguous commit is not replayed by task execution");

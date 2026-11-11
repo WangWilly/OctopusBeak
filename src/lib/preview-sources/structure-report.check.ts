@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { MessageChannel, type WorkerOptions } from "node:worker_threads";
+import { MessageChannel } from "node:worker_threads";
 import { PREVIEW_SOURCE_FIXTURE_ENV } from "./fixture-source.ts";
 
 process.env[PREVIEW_SOURCE_FIXTURE_ENV] = "1";
@@ -25,7 +25,7 @@ const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewWorkflowDefinition, takePreviewObservations } = await import("./workflow.ts");
 const { runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
-const { CHECK_PGLITE_RPC, executeTaskRunForCheck, inProcessCheckHost } = await import("../automation/server/task-run-check-support.ts");
+const { inProcessCheckHost, runForCheck, runtimeForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
 const { createPgliteOperationalProvider } = await import("../../ledger/pglite/operational.ts");
 const { createTestPGlite } = await import("../../ledger/pglite/baseline-test-template.ts");
@@ -222,21 +222,17 @@ test("only a failed preview run keeps a report, and it keeps nothing but the san
     const run = async (taskId: string, terminal: (taskRunId: string) => Record<string, unknown>) => {
       const task = taskById(taskId);
       assert.ok(task, `${taskId} is registered`);
-      const { taskRunId } = await provider.automation.createTaskRun({
-        taskId: task.id,
-        kind: task.kind,
-        status: "preparing",
-        attempt: 1,
-        maxAttempts: 1,
-        startedAt: new Date().toISOString(),
-      });
-      const result = await executeTaskRunForCheck(task, provider.automation, {
-        taskRunId,
-        pgliteRpc: CHECK_PGLITE_RPC,
-        launchEnv: {},
+      const result = await runForCheck(runtimeForCheck(provider, {
         executionHost: inProcessCheckHost({ scriptedWorker: (start) => new TerminalFakeWorker(start, terminal) }),
-      });
-      return { result, taskRunId };
+        environment: {
+          PREVIEW_FEATURES_ENABLED: "true",
+          PREVIEW_SYNTHETIC_USER_ID: "synthetic-user",
+          [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
+          [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+          [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
+        },
+      }), task.id);
+      return { result, taskRunId: result.taskRunId };
     };
     const failed = (taskRunId: string) => ({ kind: "failed", taskRunId, errorCode: "source-validation-failed", previewResponses: shapes });
 

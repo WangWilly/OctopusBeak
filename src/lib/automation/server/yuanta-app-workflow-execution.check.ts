@@ -24,7 +24,7 @@ registerHooks({
   },
 });
 
-const [{ taskById }, { executeTaskRunForCheck, inProcessCheckHost }, {
+const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
   appWorkflowRegistration,
   workflowStartUrlForWorkflow,
 }, { YUANTA_ENTRY_URL }] = await Promise.all([
@@ -90,18 +90,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
   try {
     process.chdir(root);
     const provider = createPgliteOperationalProvider(store);
-    const created = await provider.automation.createTaskRun({
-      taskId: task.id,
-      kind: task.kind,
-      status: "running",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    const result = await executeTaskRunForCheck(task, provider.automation, {
-      taskRunId: created.taskRunId,
-      launchEnv: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
-      userDataDirectory: root,
+    const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
         financialCommit,
         browser: ({ startUrl }) => {
@@ -109,8 +98,10 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
           return browser;
         },
       }),
-    });
-    const run = await provider.automation.taskRunById(created.taskRunId);
+      environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
+      userDataDirectory: root,
+    }), task.id);
+    const run = await provider.automation.taskRunById(result.taskRunId);
     assert.equal(result.status, "failed", "the sentinel stops before provider source collection");
     assert.equal(observedStartUrl, YUANTA_ENTRY_URL);
     assert.equal(browserDispatches, 1, "the App executor entered the typed browser port");

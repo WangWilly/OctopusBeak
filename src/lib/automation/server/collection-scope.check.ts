@@ -23,7 +23,7 @@ import {
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
 import { createAutomationRuntime } from "./automation-runtime.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck, inProcessCheckHost, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, credentialStoreForCheck, inProcessCheckHost, runForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../../../ledger/pglite/workflow-run.ts";
@@ -268,34 +268,21 @@ async function runWithMidRunEdit(edit: { settings?: Record<string, string>; cred
   try {
     process.chdir(root);
     await writeConfig(launchSettings, launchCredentials);
-    const provider = createPgliteOperationalProvider(store);
-    const { taskRunId } = await provider.automation.createTaskRun({
-      taskId: fubon.id,
-      kind: fubon.kind,
-      status: "preparing",
-      attempt: 1,
-      maxAttempts: 1,
-      startedAt: new Date().toISOString(),
-    });
-    let activeRun: ActiveAutomationTaskRun | undefined;
-    const result = await executeTaskRunForCheck(fubon, provider.automation, {
-      taskRunId,
-      onRunOpened: (run) => { activeRun = run; },
-      pgliteRpc: CHECK_PGLITE_RPC,
-      launchEnv: {
-        ...automationConfigEnv({ baseEnv: {}, settings: settingsStoreForCheck().read(), credentials: credentialStoreForCheck().read() }),
-      },
+    const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
+    const runtime = createAutomationRuntime(provider, {
+      ...runnerHostForCheck(),
       executionHost: inProcessCheckHost({ scriptedWorker: (start) => new CommittingFakeWorker(
         start,
         registry,
-        activeRun!,
+        runtime.activeRun(start.taskRunId)!,
         () => writeConfig(
           { ...launchSettings, ...edit.settings },
           { ...launchCredentials, ...edit.credentials },
         ),
       ) }),
     });
-    const run = await provider.automation.taskRunById(taskRunId);
+    const result = await runForCheck(runtime, fubon.id);
+    const { taskRunId, run } = result;
     const attempts = (await provider.automation.commitAttempts(taskRunId)).map((attempt) => attempt.outcome);
     return { result, run, commits, attempts };
   } finally {
