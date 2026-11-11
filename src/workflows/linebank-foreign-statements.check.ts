@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import {
-  buildLinebankForeignCurrencyCaptureInput,
-  linebankEpochMillisecondsFromSourceDateTime,
-} from "./linebank-statements.ts";
+import { linebankEpochMillisecondsFromSourceDateTime } from "../ledger/canonical/linebank-domestic-deposit.ts";
+import { buildLinebankForeignCurrencyCaptureInput } from "./linebank-statements.ts";
 import { admitForeignCurrencyDepositCapture } from "../ledger/canonical/foreign-currency-deposit-admission.ts";
 
 const account = {

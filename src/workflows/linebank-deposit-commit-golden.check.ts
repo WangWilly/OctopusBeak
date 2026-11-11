@@ -9,9 +9,11 @@ import { runVerifiedEntry } from "../lib/automation/server/verified-entry.ts";
 import { assertDepositCommitGolden, recordDepositCommit, withCountedUuids } from "./deposit-commit-golden.ts";
 import {
   linebankEpochMillisecondsFromSourceDateTime,
-  lineBankWorkflow,
   type LineBankAccount,
   type LineBankTransactionRow,
+} from "../ledger/canonical/linebank-domestic-deposit.ts";
+import {
+  lineBankWorkflow,
   type LineBankTransactionsResponse,
 } from "./linebank-statements.ts";
 

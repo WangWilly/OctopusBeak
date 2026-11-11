@@ -14,7 +14,6 @@ import {
   linebankAccountKey,
   linebankApiRowsToStatementRows,
   linebankEnsureTransactionPage,
-  linebankEpochMillisecondsFromSourceDateTime,
   linebankIsSignedIn,
   linebankHumanAttestedCapture,
   linebankTransactionPageFromResponse,
@@ -26,7 +25,10 @@ import {
 } from "./linebank-statements.ts";
 import { frameScope } from "./frame-scope.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE } from "../ledger/canonical/linebank-domestic-deposit.fixture.ts";
-import { normalizeLineBankFinancialCapture } from "../ledger/canonical/linebank-domestic-deposit.ts";
+import {
+  linebankEpochMillisecondsFromSourceDateTime,
+  normalizeLineBankFinancialCapture,
+} from "../ledger/canonical/linebank-domestic-deposit.ts";
 
 const readScope = (page: never) => frameScope(page, new AbortController().signal);
 

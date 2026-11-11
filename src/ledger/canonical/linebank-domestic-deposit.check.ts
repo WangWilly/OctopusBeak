@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { linebankEpochMillisecondsFromSourceDateTime } from "../../workflows/linebank-statements.ts";
-import type { LineBankTransactionRow } from "../../workflows/linebank-statements.ts";
 import { LINEBANK_DOMESTIC_DEPOSIT_LIVE_EVIDENCE_FIXTURE as FIXTURE } from "./linebank-domestic-deposit.fixture.ts";
 import {
   LINEBANK_DOMESTIC_DEPOSIT_HUMAN_ATTESTED_V13_EVIDENCE,
   LINEBANK_DOMESTIC_DEPOSIT_SUPPORTED_SCOPE,
+  linebankEpochMillisecondsFromSourceDateTime,
   normalizeLineBankFinancialCapture,
   validateLineBankHumanAttestedV13Capture,
   type LineBankHumanAttestedV13Input,
+  type LineBankTransactionRow,
 } from "./linebank-domestic-deposit.ts";
 
 function row(

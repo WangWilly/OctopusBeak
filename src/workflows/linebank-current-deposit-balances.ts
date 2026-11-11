@@ -8,7 +8,7 @@ import type {
   ProviderEvidence,
   VerifiedProviderResponse,
 } from "./provider-response.ts";
-import type { LineBankAccount } from "./linebank-statements.ts";
+import type { LineBankAccount } from "../ledger/canonical/linebank-domestic-deposit.ts";
 import { trimSourceLexeme } from "../lib/automation/source-text.ts";
 
 /**

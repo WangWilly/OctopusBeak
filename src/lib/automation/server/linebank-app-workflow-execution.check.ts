@@ -9,7 +9,7 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
-import { linebankEpochMillisecondsFromSourceDateTime } from "../../../workflows/linebank-statements.ts";
+import { linebankEpochMillisecondsFromSourceDateTime } from "../../../ledger/canonical/linebank-domestic-deposit.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
