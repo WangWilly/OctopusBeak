@@ -489,7 +489,7 @@ test("LINE Bank tells apart current balances of arrangements that differ only in
   }
 });
 
-test("LINE Bank keeps its own message for a current-balance failure outside admission", async () => {
+test("LINE Bank names the field a current balance fails to decode", async () => {
   assert.equal(
     await balanceFailure([listedAccount({ wdrwAvblAmt: "9OO.00" })]),
     "LINE Bank current deposit account 0 wdrwAvblAmt is not an exact decimal.",
