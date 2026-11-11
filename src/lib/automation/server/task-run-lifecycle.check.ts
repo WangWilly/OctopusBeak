@@ -8,20 +8,19 @@ import {
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { AutomationRuntimeTaskSnapshot } from "$lib/desktop/api.ts";
-import { createAutomationRunner } from "./runner.ts";
-import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+import { createAutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationPersistenceProvider } from "./store.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
-import { runnerHostForCheck } from "./task-run-check-support.ts";
+import { runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 
 const database = await createTestPGlite("operational");
 const store = new PGliteStore(database);
 after(() => database.close());
-const runtime = createAutomationRuntimeState();
-const runner = createAutomationRunner({ runtime, ...runnerHostForCheck() });
+const runtimeFor = (provider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
+  createAutomationRuntime(provider, { ...runnerHostForCheck(), runExecution });
 
 function providerWith(automation = createPgliteOperationalProvider(store).automation) {
   return {
@@ -113,51 +112,46 @@ function workerExecution(mode: WorkerMode, workers: ScriptedWorker[] = []): type
 test(
   "a cancellation that arrives while the run row is being created ends that run and leaves the previous run's state alone",
   async () => {
-    const provider = providerWith();
-    const firstFinished = deferred<AutomationTaskRun>();
-    const first = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("completes"),
-      onFinished: firstFinished.resolve,
-    });
-    assert.equal((await firstFinished.promise).status, "completed");
-
-    const published: AutomationRuntimeTaskSnapshot[] = [];
-    const unsubscribe = runtime.subscribe((snapshot) => {
-      const task = snapshot.tasks.find((candidate) => candidate.taskId === "exchange-rates");
-      if (task) published.push(task);
-    });
     const creating = deferred();
     const releaseCreate = deferred();
+    let holdCreate = false;
     const base = createPgliteOperationalProvider(store).automation;
-    const delayed = providerWith(new Proxy(base, {
+    const runtime = runtimeFor(providerWith(new Proxy(base, {
       get(target, property) {
         if (property !== "createTaskRun") {
           const value = Reflect.get(target, property);
           return typeof value === "function" ? value.bind(target) : value;
         }
         return async (input: Parameters<typeof base.createTaskRun>[0]) => {
-          creating.resolve();
-          await releaseCreate.promise;
+          if (holdCreate) {
+            creating.resolve();
+            await releaseCreate.promise;
+          }
           return target.createTaskRun(input);
         };
       },
-    }));
-    const finished: AutomationTaskRun[] = [];
+    })), workerExecution("completes"));
+    const first = await startForCheck(runtime, "exchange-rates");
+    assert.equal((await first.settled)?.status, "completed");
+
+    const published: AutomationRuntimeTaskSnapshot[] = [];
+    const unsubscribe = runtime.subscribe((snapshot) => {
+      const task = snapshot.tasks.find((candidate) => candidate.taskId === "exchange-rates");
+      if (task) published.push(task);
+    });
+    holdCreate = true;
     try {
-      const starting = runner.start("exchange-rates", delayed, {
-        runExecution: workerExecution("completes"),
-        onFinished: (run) => finished.push(run),
-      });
+      const starting = startForCheck(runtime, "exchange-rates");
       await creating.promise;
-      const cancelling = runner.cancel("exchange-rates");
+      const cancelling = runtime.cancel("exchange-rates");
       releaseCreate.resolve();
       await cancelling;
       const second = await starting;
-      await until(() => !runner.hasActive(), "the cancelled run never released its task");
-      await until(() => finished.length > 0, "the cancelled run never reported that it finished");
+      const finished = await second.settled;
+      await until(() => !runtime.hasActive(), "the cancelled run never released its task");
 
       assert.equal((await base.taskRunById(second.runId))?.status, "cancelled");
-      assert.deepEqual(finished.map((run) => [run.taskRunId, run.status]), [[second.runId, "cancelled"]]);
+      assert.deepEqual([finished?.taskRunId, finished?.status], [second.runId, "cancelled"]);
       assert.ok(
         !published.some((task) => task.runId === first.runId && task.status === "cancelling"),
         "the completed previous run was republished as cancelling",
@@ -165,7 +159,7 @@ test(
     } finally {
       releaseCreate.resolve();
       unsubscribe();
-      await until(() => !runner.hasActive(), "the run under test did not settle");
+      await until(() => !runtime.hasActive(), "the run under test did not settle");
     }
   },
 );
@@ -173,27 +167,23 @@ test(
 test(
   "force-quit ends the workflow worker immediately and records a forced cancellation",
   async () => {
-    const provider = providerWith();
     const workers: ScriptedWorker[] = [];
-    const finished = deferred<AutomationTaskRun>();
-    const started = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("ignores-cancel", workers),
-      onFinished: finished.resolve,
-    });
+    const runtime = runtimeFor(providerWith(), workerExecution("ignores-cancel", workers));
+    const started = await startForCheck(runtime, "exchange-rates");
     try {
       await until(() => workers.length === 1, "the workflow worker never started");
       await workers[0]!.started.promise;
       const forcedAt = Date.now();
-      await runner.forceTerminate("exchange-rates", started.runId);
+      await runtime.forceTerminate("exchange-rates", started.runId);
       const elapsed = Date.now() - forcedAt;
 
       assert.equal(workers[0]!.terminated, true);
       assert.ok(elapsed < 1_000, `force-quit waited ${elapsed}ms for the cancellation grace`);
-      const run = await finished.promise;
-      assert.equal(run.status, "cancelled");
-      assert.equal(run.terminationMode, "forced");
+      const run = await started.settled;
+      assert.equal(run?.status, "cancelled");
+      assert.equal(run?.terminationMode, "forced");
     } finally {
-      await until(() => !runner.hasActive(), "the forced run did not settle");
+      await until(() => !runtime.hasActive(), "the forced run did not settle");
     }
   },
 );
@@ -202,21 +192,18 @@ test(
   "a run whose runner fails before execution still reports a terminal finish",
   async () => {
     const provider = { automation: createPgliteOperationalProvider(store).automation } as AutomationPersistenceProvider;
-    const finished = deferred<AutomationTaskRun>();
-    const started = await runner.start("exchange-rates", provider, {
-      runExecution: workerExecution("completes"),
-      onFinished: finished.resolve,
-    });
+    const runtime = runtimeFor(provider, workerExecution("completes"));
+    const started = await startForCheck(runtime, "exchange-rates");
     try {
       const run = await Promise.race([
-        finished.promise,
+        started.settled,
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 2_000)),
       ]);
-      assert.ok(run, "onFinished was not called for a run the runner failed");
+      assert.ok(run, "onSettled did not report the finished record for a run the runner failed");
       assert.equal(run.taskRunId, started.runId);
       assert.equal(run.status, "failed");
     } finally {
-      await until(() => !runner.hasActive(), "the failed run did not settle");
+      await until(() => !runtime.hasActive(), "the failed run did not settle");
     }
   },
 );

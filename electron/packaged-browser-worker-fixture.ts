@@ -36,7 +36,7 @@ export type PackagedBrowserFixtureResult = Readonly<{
 }>;
 
 type FixtureDependencies = Readonly<{
-  startTask?: (taskId: string, provider: AutomationPersistenceProvider) => ReturnType<AutomationRuntime["startWithoutAdmission"]>;
+  startTask?: (taskId: string) => Promise<Readonly<{ runId: string }>>;
   cancelTask?: (taskId: string) => ReturnType<AutomationRuntime["cancel"]>;
   pageForRun?: PageForRun;
   pathExists?: typeof existsSync;
@@ -209,7 +209,7 @@ function summarizeFixtureRun(
 
 /** Run two synthetic workflows through the real App task runner and browser host. */
 export async function runPackagedBrowserWorkerFixture(
-  runtime: Pick<AutomationRuntime, "provider" | "startWithoutAdmission" | "cancel" | "activeRun">,
+  runtime: Pick<AutomationRuntime, "provider" | "start" | "cancel" | "activeRun">,
   userDataDirectory: string,
   environment: NodeJS.ProcessEnv = process.env,
   dependencies: FixtureDependencies = {},
@@ -217,7 +217,14 @@ export async function runPackagedBrowserWorkerFixture(
   const expectedVersion = packagedBrowserFixtureExpectedVersion(environment);
   const startUrl = packagedBrowserFixtureStartUrl(environment);
   const { provider } = runtime;
-  const startTask = dependencies.startTask ?? ((taskId) => runtime.startWithoutAdmission(taskId));
+  const startTask = dependencies.startTask ?? (async (taskId: string) => {
+    const [result] = await runtime.start([taskId]);
+    if (result?.status === "error") throw result.error;
+    if (result?.status !== "started") {
+      throw new Error(`Packaged browser fixture task ${taskId} did not start: ${result ? `already running as ${result.runId}` : "no start result"}.`);
+    }
+    return result;
+  });
   const cancelTask = dependencies.cancelTask ?? ((taskId) => runtime.cancel(taskId));
   const requiredDependencies = {
     pageForRun: dependencies.pageForRun ?? activeRunPageLookup(runtime.activeRun),
@@ -227,7 +234,7 @@ export async function runPackagedBrowserWorkerFixture(
   };
 
   const successTask = PACKAGED_BROWSER_FIXTURE_TASKS[0].taskId;
-  const successStarted = await startTask(successTask, provider);
+  const successStarted = await startTask(successTask);
   const { page: successPage, evidence: successEvidence } = await waitForFixturePage(
     provider,
     successStarted.runId,
@@ -247,7 +254,7 @@ export async function runPackagedBrowserWorkerFixture(
   );
 
   const cancelTaskId = PACKAGED_BROWSER_FIXTURE_TASKS[1].taskId;
-  const cancelStarted = await startTask(cancelTaskId, provider);
+  const cancelStarted = await startTask(cancelTaskId);
   const { page: cancelPage, evidence: cancelEvidence } = await waitForFixturePage(
     provider,
     cancelStarted.runId,

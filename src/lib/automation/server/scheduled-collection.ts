@@ -1,6 +1,6 @@
 import type { AutomationPageModel } from "../types.ts";
 import type { AutomationRuntime } from "./automation-runtime.ts";
-import { isSourceTask, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
+import { isSourceTask, reportCollection, type CollectionResult } from "./collection-summary.ts";
 
 /**
  * Sync all's selection, which leaves out a source that waits for a Canonical
@@ -27,5 +27,5 @@ export async function startScheduledCollection(
     ]);
     if (!attempted && !succeeded) due.push(taskId);
   }
-  return runAndSummarize(runtime, due, { scheduledAtUtc: occurrenceUtc }, onCollectionFinished);
+  return runtime.start(due, { scheduledAtUtc: occurrenceUtc, onSettled: reportCollection(onCollectionFinished) });
 }

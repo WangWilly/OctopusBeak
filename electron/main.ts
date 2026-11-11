@@ -447,9 +447,8 @@ async function start() {
     ),
     isTaskActive: () => runtime.activeTaskIds().includes("exchange-rates"),
     startTask: async (scheduledAtUtc) => {
-      const started = await runtime.runMany(["exchange-rates"], { scheduledAtUtc });
-      const result = started.results["exchange-rates"];
-      if (result?.status === "error") throw new Error(result.error);
+      const [result] = await runtime.start(["exchange-rates"], { scheduledAtUtc });
+      if (result?.status === "error") throw result.error;
     },
     reportError: (error) => console.error("exchange-rate-scheduler-error", error),
   });

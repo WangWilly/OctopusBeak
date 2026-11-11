@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createAutomationRunner } from "./runner.ts";
+import { createAutomationRunner, type ClaimedAutomationTask } from "./runner.ts";
 import { resolveTaskRunPlan, type TaskRunPlan } from "./task-run-plan.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { AUTOMATION_TASKS, taskById } from "./tasks.ts";
@@ -85,8 +85,19 @@ function aborted(signal: AbortSignal) {
   });
 }
 
-const freshRunner = (directory?: string) =>
-  createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck(directory) });
+const freshRunner = (
+  provider: AutomationPersistenceProvider = providerStub(),
+  options: { directory?: string; runExecution?: typeof runAutomationTaskExecution } = {},
+) => createAutomationRunner({
+  runtime: createAutomationRuntimeState(),
+  provider,
+  runExecution: options.runExecution,
+  ...runnerHostForCheck(options.directory),
+});
+
+async function opened(claim: ClaimedAutomationTask) {
+  return { runId: await claim.runId, finished: claim.settled.then((run) => { assert.ok(run, "the run was finalized"); return run; }) };
+}
 
 const exchangeRates = () => {
   const task = taskById("exchange-rates");
@@ -119,45 +130,18 @@ test("typed workflow runtime fails closed when its PGlite capability is absent",
 });
 
 test("the runner hands the PGlite capability to the execution as a typed value, not process environment", async () => {
-  const runner = freshRunner();
   const provider = providerStub();
-  const finished = deferred<AutomationTaskRun>();
   let plan: TaskRunPlan | undefined;
   const runExecution: typeof runAutomationTaskExecution = async (executionPlan) => {
     plan = executionPlan;
     return { summary: null, failure: null };
   };
-  await runner.start("exchange-rates", provider, { runExecution, onFinished: finished.resolve });
-  await finished.promise;
+  await (await opened(freshRunner(provider, { runExecution }).claim("exchange-rates"))).finished;
   assert.deepEqual(plan?.pgliteRpc, provider.pgliteWorkflow);
   assert.equal(
     Object.keys(plan?.launchEnv ?? {}).some((key) => key.startsWith("OCTOPUSBEAK_PGLITE_")),
     false,
   );
-});
-
-test("Fubon cannot start with missing or unknown statement selections", async () => {
-  const root = await mkdtemp(join(tmpdir(), "automation-runner-selection-"));
-  try {
-    writeAutomationSettingsFile(join(root, "settings.json"), {
-      LIBRETTO_CLOUD_FUBON_ENABLED: true,
-    });
-    await assert.rejects(
-      freshRunner(root).start("fubon-all-statements", providerStub()),
-      /Select at least one Fubon statement type/u,
-    );
-
-    writeAutomationSettingsFile(join(root, "settings.json"), {
-      LIBRETTO_CLOUD_FUBON_ENABLED: true,
-      LIBRETTO_CLOUD_FUBON_STATEMENT_TYPES: "deposit,unknown",
-    });
-    await assert.rejects(
-      freshRunner(root).start("fubon-all-statements", providerStub()),
-      /Unknown Fubon statement type: unknown/u,
-    );
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 });
 
 for (const { source, taskId, settings } of [
@@ -175,12 +159,12 @@ for (const { source, taskId, settings } of [
   test(`a ${source} sync cannot start while a Source device registration holds the device`, async () => {
     const root = await mkdtemp(join(tmpdir(), `automation-runner-${source}-lock-`));
     const lock = sourceDeviceLocks[source];
-    const runner = freshRunner(root);
+    const runner = freshRunner(providerStub(), { directory: root });
     try {
       writeAutomationSettingsFile(join(root, "settings.json"), settings);
       assert.equal(lock.claim("registration"), null);
-      await assert.rejects(
-        runner.start(taskId, providerStub()),
+      assert.throws(
+        () => runner.claim(taskId),
         (error: unknown) =>
           error instanceof SourceDeviceBusyError && error.source === source && error.holder === "registration",
       );
@@ -205,41 +189,30 @@ test("the task catalog contains only typed workflows and the two typed nonbrowse
 });
 
 test("an execution that throws after starting a commit still ends commit outcome unknown", async () => {
-  const runner = freshRunner();
   const { automation } = memoryAutomation();
-  const finished = deferred<AutomationTaskRun>();
   const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     await run.transition("running");
     await run.recordCommitAttempt({ phase: "started", attemptId: "lost-attempt", product: null, total: 1 });
     throw new Error("worker host crashed mid-commit");
   };
-  await runner.start("exchange-rates", providerStub(automation), {
-    runExecution,
-    onFinished: finished.resolve,
-  });
-  const run = await finished.promise;
+  const run = await (await opened(freshRunner(providerStub(automation), { runExecution }).claim("exchange-rates"))).finished;
   assert.equal(run.status, "failed");
   assert.equal(run.appWorkflowOutcome?.errorCode, "commit-outcome-unknown");
 });
 
 test("cancellation reaches the typed execution through the run's signal and ends the run cancelled", async () => {
-  const runner = freshRunner();
   const { runs, automation } = memoryAutomation();
-  const provider = providerStub(automation);
   const started = deferred();
-  const finished = deferred<AutomationTaskRun>();
   const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.signal);
     throw new Error("typed workflow observed cancellation");
   };
-  const { runId } = await runner.start("exchange-rates", provider, {
-    runExecution,
-    onFinished: finished.resolve,
-  });
+  const runner = freshRunner(providerStub(automation), { runExecution });
+  const { runId, finished } = await opened(runner.claim("exchange-rates"));
   await started.promise;
   assert.equal(runner.hasActive(), true);
-  assert.equal((await runner.current("exchange-rates"))?.runId, runId);
+  assert.equal(await runner.claimedRunId("exchange-rates"), runId);
   await assert.rejects(
     runner.cancel("exchange-rates", "a-different-run"),
     /run changed before cancellation/u,
@@ -247,7 +220,7 @@ test("cancellation reaches the typed execution through the run's signal and ends
   assert.notEqual(runs.get(runId)?.status, "cancelling", "a refused cancellation leaves the run alone");
   assert.deepEqual(await runner.cancel("exchange-rates", runId), { cancelled: "exchange-rates" });
 
-  const run = await finished.promise;
+  const run = await finished;
   assert.equal(run.status, "cancelled", "a workflow that throws after cancellation is still cancelled");
   assert.equal(run.appWorkflowOutcome?.errorCode, "cancelled");
   assert.equal(run.terminationMode, undefined);
@@ -255,35 +228,34 @@ test("cancellation reaches the typed execution through the run's signal and ends
 });
 
 test("work held for a data deletion runs only after every active run is cancelled and terminal", async () => {
-  const runner = freshRunner();
   const { runs, automation } = memoryAutomation();
-  const provider = providerStub(automation);
   const started = deferred();
+  let stopsOnCancel = true;
   const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
+    if (!stopsOnCancel) return { summary: null, failure: null };
     started.resolve();
     await aborted(run.signal);
     return { summary: null, failure: { code: "cancelled", proven: true } };
   };
-  const { runId } = await runner.start("exchange-rates", provider, { runExecution });
+  const runner = freshRunner(providerStub(automation), { runExecution });
+  const runId = await runner.claim("exchange-rates").runId;
   await started.promise;
 
   const statusWhenWorkRan = await runner.whileStopped(async () => {
-    await assert.rejects(runner.start("exchange-rates", provider, { runExecution }), /paused while local data is being deleted/u);
+    assert.throws(() => runner.claim("exchange-rates"), /paused while local data is being deleted/u);
     return { status: runs.get(runId)?.status, active: runner.hasActive() };
   });
   assert.deepEqual(statusWhenWorkRan, { status: "cancelled", active: false });
 
-  const next = await runner.start("exchange-rates", provider, { runExecution: async () => ({ summary: null, failure: null }) });
-  assert.notEqual(next.runId, runId, "runs start again once the work settles");
+  stopsOnCancel = false;
+  const next = await runner.claim("exchange-rates").runId;
+  assert.notEqual(next, runId, "runs start again once the work settles");
 });
 
 test("force-quit aborts the run's force signal and settles only after the execution does", async () => {
-  const runner = freshRunner();
-  const provider = providerStub();
   const started = deferred();
   const forced = deferred();
   const releaseExecution = deferred();
-  const finished = deferred<AutomationTaskRun>();
   const runExecution: typeof runAutomationTaskExecution = async (_plan, run) => {
     started.resolve();
     await aborted(run.forceSignal);
@@ -291,10 +263,8 @@ test("force-quit aborts the run's force signal and settles only after the execut
     await releaseExecution.promise;
     return { summary: null, failure: { code: "cancelled", proven: true } };
   };
-  const { runId } = await runner.start("exchange-rates", provider, {
-    runExecution,
-    onFinished: finished.resolve,
-  });
+  const runner = freshRunner(providerStub(), { runExecution });
+  const { runId, finished } = await opened(runner.claim("exchange-rates"));
   await started.promise;
   await assert.rejects(
     runner.forceTerminate("exchange-rates", "a-different-run"),
@@ -307,14 +277,13 @@ test("force-quit aborts the run's force signal and settles only after the execut
   assert.equal(forceSettled, false);
   releaseExecution.resolve();
   await force;
-  const run = await finished.promise;
+  const run = await finished;
   assert.equal(run.status, "cancelled");
   assert.equal(run.terminationMode, "forced");
   assert.equal(runner.hasActive(), false);
 });
 
 test("a cancellation still persisting for a finished run never reaches the task's next run", async () => {
-  const runner = freshRunner();
   const gate = deferred();
   const gateReached = deferred();
   const base = memoryAutomation();
@@ -339,16 +308,16 @@ test("a cancellation still persisting for a finished run never reaches the task'
     else await releaseNext.promise;
     return { summary: null, failure: null };
   };
-  const firstFinished = deferred<AutomationTaskRun>();
-  const first = await runner.start("exchange-rates", provider, { runExecution, onFinished: firstFinished.resolve });
+  const runner = freshRunner(provider, { runExecution });
+  const first = await opened(runner.claim("exchange-rates"));
   while (executions.length === 0) await new Promise<void>((resolve) => setImmediate(resolve));
   const cancellation = runner.cancel("exchange-rates", first.runId);
   await gateReached.promise;
   gate.resolve();
   await cancellation;
-  assert.equal((await firstFinished.promise).status, "cancelled");
+  assert.equal((await first.finished).status, "cancelled");
 
-  const second = await runner.start("exchange-rates", provider, { runExecution });
+  const second = { runId: await runner.claim("exchange-rates").runId };
   while (executions.length < 2) await new Promise<void>((resolve) => setImmediate(resolve));
   await assert.rejects(runner.cancel("exchange-rates", first.runId), /run changed before cancellation/u);
   await assert.rejects(runner.forceTerminate("exchange-rates", first.runId), /run changed before force termination/u);
@@ -361,7 +330,7 @@ test("a cancellation still persisting for a finished run never reaches the task'
 
 test("shutdown finalizes persisted runs after stopping active App workflows", async () => {
   const calls: string[] = [];
-  await freshRunner().shutdown(providerStub(), {
+  await freshRunner().shutdown({
     finalizePersistedRuns: async () => { calls.push("finalized"); },
   });
   assert.deepEqual(calls, ["finalized"]);
@@ -373,8 +342,7 @@ test("runner source has no Libretto command, patch, or session-resume path", asy
   assert.doesNotMatch(source, /runExchangeRateSyncCommand|exchange-rate-cli-worker|LEDGER_DIR|data\/ledger/u);
 });
 
-test("a run whose record cannot be finalized still settles, and a second start adopts the first", async () => {
-  const runner = freshRunner();
+test("a run whose record cannot be finalized still settles, and a second claim of a held task is refused", async () => {
   const provider = providerStub(memoryAutomation({
     async transitionTaskRunToTerminal() { throw new Error("disk full"); },
   }).automation);
@@ -383,18 +351,10 @@ test("a run whose record cannot be finalized still settles, and a second start a
     await release.promise;
     return { summary: null, failure: null };
   };
-  const settled = deferred<[string, AutomationTaskRun | null]>();
-  const finished: AutomationTaskRun[] = [];
-  const first = await runner.start("exchange-rates", provider, {
-    runExecution,
-    onFinished: (run) => finished.push(run),
-    onSettled: (taskId, run) => settled.resolve([taskId, run]),
-  });
-  assert.equal(first.adopted, undefined);
-  const second = await runner.start("exchange-rates", provider, { runExecution });
-  assert.equal(second.adopted, true);
-  assert.equal(second.runId, first.runId);
+  const runner = freshRunner(provider, { runExecution });
+  const first = runner.claim("exchange-rates");
+  assert.throws(() => runner.claim("exchange-rates"), /already running: exchange-rates/u);
+  assert.equal(await runner.claimedRunId("exchange-rates"), await first.runId);
   release.resolve();
-  assert.deepEqual(await settled.promise, ["exchange-rates", null]);
-  assert.deepEqual(finished, [], "onFinished still sees only finished runs");
+  assert.equal(await first.settled, null);
 });

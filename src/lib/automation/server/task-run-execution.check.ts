@@ -14,8 +14,6 @@ import type {
   AppWorkflowWorkerHandle,
 } from "./app-workflow-worker-supervisor.ts";
 import type { ActiveAutomationTaskRun, WorkflowExecution } from "./active-task-run.ts";
-import { createAutomationRunner } from "./runner.ts";
-import { createAutomationRuntimeState } from "./runtime-state.ts";
 import {
   CHECK_PGLITE_RPC,
   executeTaskRunForCheck,
@@ -23,7 +21,6 @@ import {
   observingExecutions,
   openTaskRunForCheck,
   planForCheck,
-  runnerHostForCheck,
 } from "./task-run-check-support.ts";
 import { runAutomationTaskExecution, type AutomationTaskExecutionSeams } from "./task-run-execution.ts";
 import {
@@ -307,26 +304,6 @@ test("command-only tasks are rejected before persistence or execution", async ()
     () => planForCheck({ ...task, workflowId: "legacy-command-workflow" }),
     /App workflow definition is unavailable/u,
   );
-});
-
-test("resuming a missing App run fails closed without invoking a workflow", async () => {
-  let workflowCalls = 0;
-  const persistence = {
-    async taskRunById() { return null; },
-  };
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
-  await assert.rejects(
-    () => runner.start("einvoice-personal-invoices", { automation: persistence } as never, {
-      taskRunId: "missing-app-run",
-      runExecution: async () => {
-        workflowCalls += 1;
-        return { summary: null, failure: null };
-      },
-    }),
-    /Missing automation task run: missing-app-run/u,
-  );
-  assert.equal(workflowCalls, 0);
-  assert.equal(runner.hasActive(), false);
 });
 
 class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {

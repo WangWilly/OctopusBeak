@@ -5,13 +5,12 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AutomationRuntimeSnapshot } from "../../desktop/api.ts";
 import { DataVersionMismatchError, type DataVersionSnapshot } from "../../shared-shell/data-version.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
+import type { AutomationRuntime, StartAutomationTasksOptions } from "./automation-runtime.ts";
 import {
   createAutomationDesktopService,
   type AutomationDesktopServiceDeps,
 } from "./automation-desktop-service.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
-import type { StartAutomationTaskOptions } from "./runner.ts";
 import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
 import type { AutomationCredentialStore } from "./config-files.ts";
 import { credentialStoreForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
@@ -282,22 +281,15 @@ test("clearing sign-in data cancels registrations, erases under the user data di
   assert.equal(credentialReads(), before + 1, "the credential cache is refreshed after erasing");
 });
 
-test("a sync the person starts reports its sources once they end, and exchange rates alone report nothing", async () => {
+test("a sync the person starts reports its sources once its batch settles, and exchange rates alone report nothing", async () => {
   const state = createAutomationRuntimeState("session-check");
-  const settled: Array<(taskId: string, run: AutomationTaskRun | null) => void> = [];
+  const batches: Array<{ taskIds: readonly string[]; onSettled: StartAutomationTasksOptions["onSettled"] }> = [];
   const runtime = {
     snapshot: () => state.snapshot(),
     subscribe: state.subscribe,
-    run: async (taskId: string, options: StartAutomationTaskOptions = {}) => {
-      if (options.onSettled) settled.push(options.onSettled);
-      return { started: taskId, runId: "run", runtime: state.snapshot() };
-    },
-    runMany: async (taskIds: string[], options: StartAutomationTaskOptions = {}) => {
-      if (options.onSettled) settled.push(options.onSettled);
-      return {
-        started: taskIds,
-        results: Object.fromEntries(taskIds.map((taskId) => [taskId, { status: "started" as const, runId: taskId }])),
-      };
+    start: async (taskIds: readonly string[], options: StartAutomationTasksOptions = {}) => {
+      batches.push({ taskIds, onSettled: options.onSettled });
+      return taskIds.map((taskId) => ({ taskId, status: "started" as const, runId: `${taskId}-run` }));
     },
   } as unknown as AutomationRuntime;
   const reports: string[][] = [];
@@ -305,21 +297,46 @@ test("a sync the person starts reports its sources once they end, and exchange r
     runtime,
     onManualCollectionFinished: (results) => reports.push(results.map(({ taskId, run }) => `${taskId}:${run?.status ?? null}`)),
   });
+  const settle = (runs: Record<string, AutomationTaskRun | null>) => {
+    const { taskIds, onSettled } = batches.shift()!;
+    onSettled!(taskIds.map((taskId) => ({ taskId, status: "started", runId: `${taskId}-run`, run: runs[taskId] ?? null })));
+  };
   const finished = (taskId: string) => ({ taskId, status: "completed" }) as AutomationTaskRun;
 
-  await service.run("sync-tdcc");
-  settled.shift()!("sync-tdcc", finished("sync-tdcc"));
+  assert.deepEqual(await service.run("sync-tdcc"), { started: "sync-tdcc", runId: "sync-tdcc-run", runtime: state.snapshot() });
+  settle({ "sync-tdcc": finished("sync-tdcc") });
   await service.run("exchange-rates");
-  assert.equal(settled.length, 0, "exchange rates are not a source");
+  settle({ "exchange-rates": finished("exchange-rates") });
+  assert.deepEqual(reports, [["sync-tdcc:completed"]], "exchange rates are not a source");
 
-  await service.runMany(["sync-tdcc", "fubon-all-statements"]);
-  const onSettled = settled.shift()!;
-  onSettled("sync-tdcc", finished("sync-tdcc"));
-  assert.equal(reports.length, 1, "waits for every source of the batch");
-  onSettled("fubon-all-statements", null);
+  assert.deepEqual(await service.runMany(["sync-tdcc", "fubon-all-statements"]), {
+    started: ["sync-tdcc", "fubon-all-statements"],
+    results: {
+      "sync-tdcc": { status: "started", runId: "sync-tdcc-run" },
+      "fubon-all-statements": { status: "started", runId: "fubon-all-statements-run" },
+    },
+  });
+  settle({ "sync-tdcc": finished("sync-tdcc"), "fubon-all-statements": null });
   assert.deepEqual(reports, [
     ["sync-tdcc:completed"],
     ["sync-tdcc:completed", "fubon-all-statements:null"],
+  ]);
+});
+
+test("a sync whose admission cannot read the desktop model reports its sources as not synced", async () => {
+  const state = createAutomationRuntimeState("session-check");
+  const runtime = {
+    snapshot: () => state.snapshot(),
+    subscribe: state.subscribe,
+    start: async () => { throw new Error("model unreadable"); },
+  } as unknown as AutomationRuntime;
+  const reports: unknown[] = [];
+  const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });
+  await assert.rejects(service.run("sync-tdcc"), /model unreadable/);
+  await assert.rejects(service.runMany(["sync-tdcc", "exchange-rates"]), /model unreadable/);
+  assert.deepEqual(reports, [
+    [{ taskId: "sync-tdcc", run: null }],
+    [{ taskId: "sync-tdcc", run: null }],
   ]);
 });
 
@@ -328,10 +345,19 @@ test("a single source the person could not start is reported as not synced", asy
   const runtime = {
     snapshot: () => state.snapshot(),
     subscribe: state.subscribe,
-    run: async () => { throw new Error("device busy"); },
+    start: async (taskIds: readonly string[], options: StartAutomationTasksOptions = {}) => {
+      const results = taskIds.map((taskId) => ({ taskId, status: "error" as const, error: new Error("device busy") }));
+      options.onSettled?.(results);
+      return results;
+    },
   } as unknown as AutomationRuntime;
   const reports: unknown[] = [];
   const { service } = harness({ runtime, onManualCollectionFinished: (results) => reports.push(results) });
   await assert.rejects(service.run("sync-tdcc"), /device busy/);
   assert.deepEqual(reports, [[{ taskId: "sync-tdcc", run: null }]]);
+  assert.deepEqual(await service.runMany(["sync-tdcc"]), {
+    started: [],
+    results: { "sync-tdcc": { status: "error", error: "device busy" } },
+    errors: { "sync-tdcc": "device busy" },
+  });
 });

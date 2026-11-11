@@ -22,10 +22,9 @@ import {
   launchedCollectionScope,
 } from "./collection-scope.ts";
 import type { ActiveAutomationTaskRun } from "./active-task-run.ts";
-import { createAutomationRunner } from "./runner.ts";
-import { createAutomationRuntimeState } from "./runtime-state.ts";
+import { createAutomationRuntime } from "./automation-runtime.ts";
 import { automationConfigEnv } from "./config-files.ts";
-import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck, runnerHostForCheck, settingsStoreForCheck } from "./task-run-check-support.ts";
+import { CHECK_PGLITE_RPC, executeTaskRunForCheck, credentialStoreForCheck, runnerHostForCheck, settingsStoreForCheck, startForCheck } from "./task-run-check-support.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { executePGliteWorkflowRun, type PGliteWorkflowRunItem } from "../../../ledger/pglite/workflow-run.ts";
@@ -63,41 +62,39 @@ test("the fingerprint ignores secrets, schedules, and presentation but tracks se
   assert.doesNotMatch(fingerprint, /synthetic/u);
 });
 
-test("commit admission goes through the runner's active run to its current execution's launched scope", async () => {
+test("commit admission goes through the runtime's active run to its current execution's launched scope", async () => {
   const store = new PGliteStore(await createTestPGlite("operational"));
   const provider = { ...createPgliteOperationalProvider(store), pgliteWorkflow: CHECK_PGLITE_RPC };
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
+  const runtime = createAutomationRuntime(provider, {
+    ...runnerHostForCheck(),
+    runExecution: async (_task, run) => {
+      await run.transition("running");
+      observed.beforeExecution = admits(run.taskRunId);
+      const first = run.beginExecution("round-1", { collectionScope: launchedCollectionScope(fubon, launch) });
+      observed.unchanged = admits(run.taskRunId);
+      current = changed;
+      observed.changed = admits(run.taskRunId);
+      current = launch;
+      observed.reverted = admits(run.taskRunId);
+      first.end();
+      observed.afterEnd = admits(run.taskRunId);
+      assert.equal(first.collectionScope(), null);
+      const second = run.beginExecution("round-2", { collectionScope: launchedCollectionScope(fubon, launch) });
+      observed.secondExecution = admits(run.taskRunId);
+      current = changed;
+      observed.secondChanged = admits(run.taskRunId);
+      second.end();
+      return { summary: null, failure: null };
+    },
+  });
   const launch: Record<string, string> = { ...launchSettings, ...launchCredentials };
   const changed = { ...launch, [key("STATEMENT_TYPES")]: "deposit" };
   let current = launch;
-  const admits = (taskRunId: string) => collectionScopeAdmitsCommit(runner.activeRun(taskRunId), () => current);
+  const admits = (taskRunId: string) => collectionScopeAdmitsCommit(runtime.activeRun(taskRunId), () => current);
   const observed: Record<string, boolean> = {};
-  let finished!: () => void;
-  const done = new Promise<void>((resolve) => { finished = resolve; });
   try {
-    const { runId } = await runner.start("exchange-rates", provider, {
-      onFinished: () => finished(),
-      runExecution: async (_task, run) => {
-        await run.transition("running");
-        observed.beforeExecution = admits(run.taskRunId);
-        const first = run.beginExecution("round-1", { collectionScope: launchedCollectionScope(fubon, launch) });
-        observed.unchanged = admits(run.taskRunId);
-        current = changed;
-        observed.changed = admits(run.taskRunId);
-        current = launch;
-        observed.reverted = admits(run.taskRunId);
-        first.end();
-        observed.afterEnd = admits(run.taskRunId);
-        assert.equal(first.collectionScope(), null);
-        const second = run.beginExecution("round-2", { collectionScope: launchedCollectionScope(fubon, launch) });
-        observed.secondExecution = admits(run.taskRunId);
-        current = changed;
-        observed.secondChanged = admits(run.taskRunId);
-        second.end();
-        return { summary: null, failure: null };
-      },
-    });
-    await done;
+    const { runId, settled } = await startForCheck(runtime, "exchange-rates");
+    await settled;
     assert.deepEqual(observed, {
       beforeExecution: true,
       unchanged: true,
@@ -107,9 +104,9 @@ test("commit admission goes through the runner's active run to its current execu
       secondExecution: true,
       secondChanged: false,
     });
-    assert.equal(runner.activeRun(runId), null, "a finished run is no longer active");
+    assert.equal(runtime.activeRun(runId), null, "a finished run is no longer active");
     assert.equal(admits(runId), true);
-    assert.equal(runner.activeRun("no-such-run"), null);
+    assert.equal(runtime.activeRun("no-such-run"), null);
     assert.equal(admits("no-such-run"), true);
   } finally {
     await store.close();

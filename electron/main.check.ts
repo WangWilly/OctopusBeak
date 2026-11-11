@@ -20,7 +20,7 @@ assert.match(source, /automationRuntime\?\.abortAll\(\)/u);
 assert.match(source, /if \(automationRuntime\?\.hasActive\(\)\) await automationRuntime\.shutdown\(\)/u);
 assert.match(
   source,
-  /runtime\.runMany\(\["exchange-rates"\], \{ scheduledAtUtc \}\)/,
+  /runtime\.start\(\["exchange-rates"\], \{ scheduledAtUtc \}\)/,
   "a scheduled exchange-rate run passes the same admission check as every other start",
 );
 // host-services.check.ts covers when the background services start, take settings, pause and stop;

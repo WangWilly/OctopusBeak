@@ -10,14 +10,14 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import {
   automationRunHistory,
 } from "./automation-desktop-service.ts";
+import { createAutomationRuntime } from "./automation-runtime.ts";
 import {
-  createAutomationRunner,
   hydrateAutomationRuntimeState,
 } from "./runner.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
 import { runAutomationTaskExecution } from "./task-run-execution.ts";
-import { openTaskRunForCheck, runnerHostForCheck } from "./task-run-check-support.ts";
+import { openTaskRunForCheck, runnerHostForCheck, startForCheck } from "./task-run-check-support.ts";
 import { exchangeRateRequestFromOverview } from "../../../ledger/exchange-rate-requirements.ts";
 import type { AppWorkflowWorkerHandle } from "./app-workflow-worker-supervisor.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
@@ -207,7 +207,19 @@ try {
   assert.equal((await provider.automation.taskRunById(closing.taskRunId))?.status, "interrupted");
 
   let exchangeWorkerStarts = 0;
-  const runner = createAutomationRunner({ runtime: createAutomationRuntimeState(), ...runnerHostForCheck() });
+  const deterministicExecution: typeof runAutomationTaskExecution = async (_task, activeRun) => {
+    await activeRun.transition("running");
+    return { summary: null, failure: null };
+  };
+  const runtimeFor = (runProvider: AutomationPersistenceProvider, runExecution: typeof runAutomationTaskExecution) =>
+    createAutomationRuntime(runProvider, { ...runnerHostForCheck(), runExecution });
+  const runToEnd = async (runProvider: AutomationPersistenceProvider, runtime = runtimeFor(runProvider, deterministicExecution)) => {
+    const { runId, settled } = await startForCheck(runtime, "exchange-rates");
+    await settled;
+    const finished = await runProvider.automation.taskRunById(runId);
+    assert.ok(finished, "the started run has a record");
+    return finished;
+  };
   const exchangeExecution: typeof runAutomationTaskExecution = (plan, activeRun, round, seams) => runAutomationTaskExecution(
     plan,
     activeRun,
@@ -224,9 +236,7 @@ try {
       },
     },
   );
-  const exchangeExecutionResult = await runner.run("exchange-rates", provider, {
-    runExecution: exchangeExecution,
-  });
+  const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, exchangeExecution));
   assert.equal(exchangeExecutionResult.status, "completed");
   assert.equal(exchangeWorkerStarts, 1, "the App runner must dispatch exchange sync through a supervised worker");
   assert.deepEqual(
@@ -234,21 +244,11 @@ try {
     ["run-started", "run-completed"],
   );
 
-  // Exercise the App runner boundary with a deterministic execution seam.
-  const deterministicExecution: typeof runAutomationTaskExecution = async (_task, activeRun) => {
-    await activeRun.transition("running");
-    return { summary: null, failure: null };
-  };
-  const executionResult = await runner.run("exchange-rates", provider, {
-    runExecution: deterministicExecution,
-  });
+  const executionResult = await runToEnd(provider);
   assert.equal(executionResult.status, "completed");
   assert.equal((await provider.automation.latestTaskRuns())["exchange-rates"]?.status, "completed");
 
-  const started = await runner.start("exchange-rates", provider, {
-    runExecution: deterministicExecution,
-  });
-  assert.equal(started.taskId, "exchange-rates");
+  const started = await startForCheck(runtimeFor(provider, deterministicExecution), "exchange-rates");
   await new Promise<void>((resolve) => setTimeout(resolve, 25));
   assert.equal((await provider.automation.taskRunById(started.runId))?.status, "completed");
 
@@ -265,9 +265,7 @@ try {
     },
   });
   const delayedProvider: AutomationPersistenceProvider = { ...provider, automation: delayedAutomation };
-  const delayedResult = await runner.run("exchange-rates", delayedProvider, {
-    runExecution: deterministicExecution,
-  });
+  const delayedResult = await runToEnd(delayedProvider);
   assert.equal(delayedResult.status, "completed");
 
   let rejectedLookups = 0;
@@ -289,12 +287,11 @@ try {
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    await runner.run("exchange-rates", rejectedProvider, {
-      runExecution: deterministicExecution,
-    });
+    const runtime = runtimeFor(rejectedProvider, deterministicExecution);
+    await runToEnd(rejectedProvider, runtime);
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
     assert.deepEqual(unhandled, []);
-    assert.equal(runner.hasActive(), false, "a failed finalization still releases the task");
+    assert.equal(runtime.hasActive(), false, "a failed finalization still releases the task");
   } finally {
     process.off("unhandledRejection", onUnhandled);
   }

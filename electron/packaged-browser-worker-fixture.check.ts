@@ -71,7 +71,7 @@ function fakePage(version = chromiumVersion, exposeBrowser = true): Page {
 /** The fixture's own startTask and cancelTask stand in for the runtime's. */
 function fixtureRuntime(provider: AutomationPersistenceProvider) {
   const unused = () => { throw new Error("The check supplies its own task controls."); };
-  return { provider, startWithoutAdmission: unused, cancel: unused, activeRun: unused };
+  return { provider, start: unused, cancel: unused, activeRun: unused };
 }
 
 test("packaged fixture runs real success and cancel contracts with allow-listed runtime proof", async () => {
@@ -91,11 +91,7 @@ test("packaged fixture runs real success and cancel contracts with allow-listed 
   const result = await runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
     async startTask(taskId) {
       started.push(taskId);
-      return {
-        taskId,
-        runId: `${taskId}-run`,
-        runtime: { sessionId: "fixture", revision: 1, tasks: [] },
-      };
+      return { runId: `${taskId}-run` };
     },
     async cancelTask(taskId) {
       cancelled.push(taskId);
@@ -156,8 +152,8 @@ test("packaged fixture fails closed if it cannot read the live host browser or v
   });
   const provider = fakeProvider(new Map([[run.taskRunId, run]]));
   await assert.rejects(runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
-    async startTask(id) {
-      return { taskId: id, runId: run.taskRunId, runtime: { sessionId: "fixture", revision: 1, tasks: [] } };
+    async startTask() {
+      return { runId: run.taskRunId };
     },
     async cancelTask(id) { return { cancelled: id }; },
     pageForRun: () => fakePage("150.0.1.2"),
@@ -166,8 +162,8 @@ test("packaged fixture fails closed if it cannot read the live host browser or v
     now: () => 0,
   }), /versions did not match/u);
   await assert.rejects(runPackagedBrowserWorkerFixture(fixtureRuntime(provider), "/tmp/fixture-user-data", environment, {
-    async startTask(id) {
-      return { taskId: id, runId: run.taskRunId, runtime: { sessionId: "fixture", revision: 1, tasks: [] } };
+    async startTask() {
+      return { runId: run.taskRunId };
     },
     async cancelTask(id) { return { cancelled: id }; },
     pageForRun: () => fakePage(chromiumVersion, false),

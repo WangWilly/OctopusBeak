@@ -7,8 +7,8 @@ import {
   type UserAction,
 } from "../workflow-failures.ts";
 import { buildAutomationPageModel } from "./page-model.ts";
-import type { AutomationRuntime } from "./automation-runtime.ts";
-import { collectionNotification, runAndSummarize, type CollectionResult } from "./collection-summary.ts";
+import type { AutomationRuntime, StartAutomationTasksOptions } from "./automation-runtime.ts";
+import { collectionNotification, collectionResults, reportCollection, type CollectionResult } from "./collection-summary.ts";
 import { scheduledCollectionTaskIds, startScheduledCollection } from "./scheduled-collection.ts";
 import type { AutomationTaskRun } from "./store.ts";
 import { AUTOMATION_CREDENTIAL_GROUPS, AUTOMATION_TASKS, enabledAutomationTasks } from "./tasks.ts";
@@ -159,9 +159,9 @@ test("a long list names three sources and counts the rest", () => {
   assert.equal(collectionNotification([], "scheduled", "en"), null, "an occurrence with nothing due sends nothing");
 });
 
-test("scheduled collection reports once, after every started source ends", async () => {
-  const settledLater: (() => void)[] = [];
+test("scheduled collection starts the occurrence's due sources as one batch and reports its sources once", async () => {
   const reports: CollectionResult[][] = [];
+  let onSettled: StartAutomationTasksOptions["onSettled"];
   const runtime = {
     provider: {
       automation: {
@@ -176,30 +176,22 @@ test("scheduled collection reports once, after every started source ends", async
         ],
       },
     }),
-    runMany: async (
-      taskIds: string[],
-      options: { scheduledAtUtc?: string; onSettled?: (taskId: string, run: AutomationTaskRun | null) => void },
-    ) => {
+    start: async (taskIds: string[], options: StartAutomationTasksOptions) => {
       assert.deepEqual(taskIds, ["sync-tdcc", "fubon-all-statements", "sinopac-statements", "linebank-statements"]);
       assert.equal(options.scheduledAtUtc, "2026-07-14T23:00:00.000Z");
-      // One source ends before runMany returns; another ends later.
-      options.onSettled!("sync-tdcc", run({ status: "completed", appWorkflowOutcome: null }));
-      settledLater.push(() => options.onSettled!("fubon-all-statements", null));
-      return {
-        started: ["sync-tdcc", "fubon-all-statements"],
-        results: {
-          "sync-tdcc": { status: "started" as const, runId: "a" },
-          "fubon-all-statements": { status: "started" as const, runId: "b" },
-          "sinopac-statements": { status: "already_running" as const, runId: "c" },
-          "linebank-statements": { status: "error" as const, error: "could not start" },
-        },
-      };
+      onSettled = options.onSettled;
+      return [];
     },
   } as unknown as AutomationRuntime;
 
   await startScheduledCollection(runtime, "2026-07-14T23:00:00.000Z", (results) => reports.push(results));
-  assert.equal(reports.length, 0, "waits for the source still running");
-  settledLater.forEach((settle) => settle());
+  assert.equal(reports.length, 0, "nothing is reported before the batch settles");
+  onSettled!([
+    { taskId: "sync-tdcc", status: "started", runId: "a", run: run({ status: "completed", appWorkflowOutcome: null }) },
+    { taskId: "fubon-all-statements", status: "started", runId: "b", run: null },
+    { taskId: "sinopac-statements", status: "already_running", runId: "c" },
+    { taskId: "linebank-statements", status: "error", error: new Error("could not start") },
+  ]);
   assert.deepEqual(reports.map((results) => results.map(({ taskId, run }) => [taskId, run?.status ?? null])), [[
     ["sync-tdcc", "completed"],
     ["fubon-all-statements", null],
@@ -245,31 +237,25 @@ test("runs the person cancelled or the App stopped are left out of the summary",
   );
 });
 
-test("a batch leaves out exchange rates and tasks it did not start", async () => {
-  const reports: CollectionResult[][] = [];
-  const runtime = {
-    runMany: async (
-      taskIds: string[],
-      options: { onSettled?: (taskId: string, run: AutomationTaskRun | null) => void },
-    ) => {
-      assert.deepEqual(taskIds, ["exchange-rates", "sync-tdcc"]);
-      options.onSettled!("exchange-rates", run({ taskId: "exchange-rates", status: "completed" }));
-      options.onSettled!("sync-tdcc", run({ status: "completed", appWorkflowOutcome: null }));
-      return {
-        started: ["exchange-rates", "sync-tdcc"],
-        results: {
-          "exchange-rates": { status: "started" as const, runId: "x" },
-          "sync-tdcc": { status: "started" as const, runId: "a" },
-        },
-      };
-    },
-  };
-  await runAndSummarize(runtime, ["exchange-rates", "sync-tdcc"], {}, (results) => reports.push(results));
-  assert.deepEqual(reports.map((results) => results.map(({ taskId }) => taskId)), [["sync-tdcc"]]);
+test("a batch reports its sources it started or could not start, and nothing without a source", () => {
+  const exchange = run({ taskId: "exchange-rates", status: "completed" });
+  const tdcc = run({ status: "completed", appWorkflowOutcome: null });
+  assert.deepEqual(collectionResults([
+    { taskId: "exchange-rates", status: "started", runId: "x", run: exchange },
+    { taskId: "sync-tdcc", status: "started", runId: "a", run: tdcc },
+    { taskId: "sinopac-statements", status: "already_running", runId: "c" },
+    { taskId: "fubon-all-statements", status: "error", error: new Error("device busy") },
+  ]), [
+    { taskId: "sync-tdcc", run: tdcc },
+    { taskId: "fubon-all-statements", run: null },
+  ]);
 
-  const none = { runMany: async () => ({ started: [], results: {} }) };
-  await runAndSummarize(none, ["exchange-rates"], {}, (results) => reports.push(results));
-  assert.equal(reports.length, 1, "a batch without a source reports nothing");
+  const reports: CollectionResult[][] = [];
+  const report = reportCollection((results) => reports.push(results));
+  report([{ taskId: "exchange-rates", status: "started", runId: "x", run: exchange }]);
+  report([{ taskId: "sync-tdcc", status: "already_running", runId: "a" }]);
+  report([]);
+  assert.deepEqual(reports, [], "a batch without a source of its own reports nothing");
 });
 
 test("scheduled collection takes enabled, ready, idle sources from the Sync all selection", () => {

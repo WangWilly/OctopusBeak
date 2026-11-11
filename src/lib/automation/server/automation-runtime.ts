@@ -1,4 +1,4 @@
-import type { AutomationRunManyResult, AutomationRunManyTaskResult } from "$lib/desktop/api.ts";
+import type { AutomationDesktopModel } from "$lib/desktop/api.ts";
 import {
   assertAutomationTaskCanStartInModel,
   loadAutomationDesktopModel,
@@ -7,18 +7,42 @@ import {
 import {
   createAutomationRunner,
   hydrateAutomationRuntimeState,
-  type StartAutomationTaskOptions,
+  type ClaimedAutomationTask,
 } from "./runner.ts";
 import { finalizeOrphanedRuns } from "./active-task-run.ts";
+import type { runAutomationTaskExecution } from "./task-run-execution.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationCredentialStore, AutomationSettingsStore } from "./config-files.ts";
-import type { AutomationPersistenceProvider } from "./store.ts";
 import { AUTOMATION_TASKS } from "./tasks.ts";
+import type { AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
+
+export type AutomationStartResult = Readonly<
+  | { taskId: string; status: "started"; runId: string }
+  /** Another start holds the task; its run belongs to that start. */
+  | { taskId: string; status: "already_running"; runId: string }
+  | { taskId: string; status: "error"; error: Error }
+>;
+
+/** A start's result once its run ended; `run` is `null` when the record could not be finalized. */
+export type SettledAutomationStart = Readonly<
+  | (Extract<AutomationStartResult, { status: "started" }> & { run: AutomationTaskRun | null })
+  | Exclude<AutomationStartResult, { status: "started" }>
+>;
+
+export type StartAutomationTasksOptions = Readonly<{
+  scheduledAtUtc?: string;
+  /** Called once, after every task this start started has ended. */
+  onSettled?: (results: readonly SettledAutomationStart[]) => void;
+}>;
+
+type Admission = Readonly<{ result: AutomationStartResult; settled: Promise<SettledAutomationStart> }>;
+
+const asError = (error: unknown) => (error instanceof Error ? error : new Error(String(error)));
 
 /**
- * The App process's one owner of Automation Task Runs: the runner, its
- * runtime snapshot, and every start path's admission check. The Electron
- * main process creates it once and hands it to IPC and the schedulers.
+ * The App process's one owner of Automation Task Runs: their admission,
+ * lifecycle and runtime snapshot. The Electron main process creates it once
+ * and hands it to IPC and the schedulers.
  */
 export function createAutomationRuntime(
   provider: AutomationPersistenceProvider,
@@ -27,19 +51,48 @@ export function createAutomationRuntime(
     settings: AutomationSettingsStore;
     userDataDirectory: string;
     forceQuitAvailableAfterMs?: number;
+    /** Test seam for the Workflow execution. */
+    runExecution?: typeof runAutomationTaskExecution;
   }>,
 ) {
   const state = createAutomationRuntimeState(undefined, {
     knownTaskIds: new Set(AUTOMATION_TASKS.map((task) => task.id)),
   });
-  const runner = createAutomationRunner({ runtime: state, ...options });
+  const { claim, claimedRunId, ...runs } = createAutomationRunner({ runtime: state, provider, ...options });
   const live = (): AutomationLiveRuns => ({
     snapshot: state.snapshot(),
-    activeTaskIds: runner.activeTaskIds(),
+    activeTaskIds: runs.activeTaskIds(),
   });
   const desktopModel = () => loadAutomationDesktopModel(provider, live(), options.credentials, options.settings.read());
 
+  const unstarted = (result: Exclude<AutomationStartResult, { status: "started" }>): Admission => ({ result, settled: Promise.resolve(result) });
+
+  function admit(taskId: string, model: AutomationDesktopModel, scheduledAtUtc: string | undefined): Promise<Admission> {
+    const existing = claimedRunId(taskId);
+    if (existing) {
+      return existing.then(
+        (runId) => unstarted({ taskId, status: "already_running", runId }),
+        (error: unknown) => unstarted({ taskId, status: "error", error: asError(error) }),
+      );
+    }
+    let claimed: ClaimedAutomationTask;
+    try {
+      const task = assertAutomationTaskCanStartInModel(taskId, model, options.settings);
+      claimed = claim(task.id, { scheduledAtUtc });
+    } catch (error) {
+      return Promise.resolve(unstarted({ taskId, status: "error", error: asError(error) }));
+    }
+    return claimed.runId.then(
+      (runId) => {
+        const result = { taskId, status: "started", runId } as const;
+        return { result, settled: claimed.settled.then((run) => ({ ...result, run })) };
+      },
+      (error: unknown) => unstarted({ taskId, status: "error", error: asError(error) }),
+    );
+  }
+
   return Object.freeze({
+    ...runs,
     provider,
     snapshot: () => state.snapshot(),
     subscribe: state.subscribe,
@@ -53,62 +106,36 @@ export function createAutomationRuntime(
       await hydrateAutomationRuntimeState(provider, state);
     },
     rehydrate: () => hydrateAutomationRuntimeState(provider, state),
-    activeTaskIds: () => runner.activeTaskIds(),
-    activeRun: (taskRunId: string) => runner.activeRun(taskRunId),
-    hasActive: () => runner.hasActive(),
 
-    async run(taskId: string, runOptions: StartAutomationTaskOptions = {}) {
-      const current = await runner.current(taskId);
-      if (current) return { started: taskId, runId: current.runId, runtime: current.runtime };
-      const task = assertAutomationTaskCanStartInModel(taskId, await desktopModel(), options.settings);
-      const started = await runner.start(task.id, provider, runOptions);
-      return { started: task.id, runId: started.runId, runtime: started.runtime };
-    },
-
-    async runMany(
-      taskIds: string[],
-      runOptions: StartAutomationTaskOptions = {},
-    ): Promise<AutomationRunManyResult> {
+    /**
+     * Start each task through one admission: the desktop model is read once,
+     * then every task is checked and claimed with nothing awaited between, so
+     * a task another start holds is `already_running`, never a second run.
+     * `onSettled` sees every result, after every task this start started ended.
+     */
+    async start(taskIds: readonly string[], startOptions: StartAutomationTasksOptions = {}): Promise<AutomationStartResult[]> {
       if (!Array.isArray(taskIds) || taskIds.some((taskId) => typeof taskId !== "string")) {
         throw new TypeError("Task IDs must be an array of strings.");
       }
-      if (taskIds.length === 0) return { started: [] as string[], results: {} };
-      const model = await desktopModel();
-      const started: string[] = [];
-      const errors: Record<string, string> = {};
-      const results: Record<string, AutomationRunManyTaskResult> = {};
-      for (const taskId of [...new Set(taskIds)]) {
-        try {
-          const existing = await runner.current(taskId);
-          if (existing) {
-            results[taskId] = { status: "already_running", runId: existing.runId };
-            continue;
-          }
-          const task = assertAutomationTaskCanStartInModel(taskId, model, options.settings);
-          const run = await runner.start(task.id, provider, runOptions);
-          if (run.adopted) {
-            results[task.id] = { status: "already_running", runId: run.runId };
-            continue;
-          }
-          started.push(task.id);
-          results[task.id] = { status: "started", runId: run.runId };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          errors[taskId] = message;
-          results[taskId] = { status: "error", error: message };
-        }
+      const unique = [...new Set(taskIds)];
+      const admissions: Promise<Admission>[] = [];
+      if (unique.length) {
+        const model = await desktopModel();
+        for (const taskId of unique) admissions.push(admit(taskId, model, startOptions.scheduledAtUtc));
       }
-      return { started, results, ...(Object.keys(errors).length ? { errors } : {}) };
+      const admitted = await Promise.all(admissions);
+      const { onSettled } = startOptions;
+      if (onSettled) {
+        void Promise.all(admitted.map(({ settled }) => settled)).then((settled) => {
+          try {
+            onSettled(settled);
+          } catch {
+            console.error("automation-task-run-settled-observer-failed");
+          }
+        });
+      }
+      return admitted.map(({ result }) => result);
     },
-
-    /** Skips the admission check; only the packaged browser fixture's synthetic tasks start this way. */
-    startWithoutAdmission: (taskId: string) => runner.start(taskId, provider),
-    cancel: (taskId: string, expectedRunId?: string) => runner.cancel(taskId, expectedRunId),
-    forceTerminate: (taskId: string, expectedRunId?: string) => runner.forceTerminate(taskId, expectedRunId),
-    whileStopped: <T>(work: () => Promise<T>) => runner.whileStopped(work),
-    /** Stop every run without waiting, for a fatal exit. */
-    abortAll: () => runner.abortAll(),
-    shutdown: () => runner.shutdown(provider),
   });
 }
 
