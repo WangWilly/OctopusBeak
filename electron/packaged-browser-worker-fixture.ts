@@ -220,7 +220,9 @@ export async function runPackagedBrowserWorkerFixture(
   const startTask = dependencies.startTask ?? (async (taskId: string) => {
     const [result] = await runtime.start([taskId]);
     if (result?.status === "error") throw result.error;
-    if (result?.status !== "started") throw new Error("Packaged browser fixture task was already running.");
+    if (result?.status !== "started") {
+      throw new Error(`Packaged browser fixture task ${taskId} did not start: ${result ? `already running as ${result.runId}` : "no start result"}.`);
+    }
     return result;
   });
   const cancelTask = dependencies.cancelTask ?? ((taskId) => runtime.cancel(taskId));
