@@ -856,15 +856,6 @@ export type HncbDomesticDepositFinancialAdmissionResult = {
 
 
 
-export class HncbDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "HncbDomesticDepositFinancialAdmissionError";
-  }
-}
-
-
-
 function normalizedFinancialCell(value: unknown): string {
   return normalizedCell(value).replace(/,/g, "");
 }

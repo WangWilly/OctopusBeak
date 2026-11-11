@@ -462,13 +462,6 @@ export type CtbcDomesticDepositFinancialAdmissionResult = {
   capture: CanonicalFinancialDepositValidatedCapture | null;
   diagnostics: string[];
 };
-export class CtbcDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CtbcDomesticDepositFinancialAdmissionError";
-  }
-}
-
 function financialAmount(
   value: string,
   allowZero = false,

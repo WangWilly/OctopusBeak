@@ -7,7 +7,7 @@
  * single stage call.
  */
 import type { CanonicalFinancialDepositCapture } from "../ledger/canonical/canonical-financial-deposit-admission.ts";
-import type { CanonicalSourceEvidence } from "../ledger/canonical/canonical-source-evidence.ts";
+import type { DepositVerdict } from "../ledger/canonical/deposit-verdict.ts";
 import {
   PGLITE_CANONICAL_DEPOSIT_COMMIT_COMMAND,
   PGLITE_CANONICAL_SOURCE_ADMIT_COMMAND,
@@ -22,25 +22,19 @@ import {
   type SnapshotProduct,
 } from "./current-state-snapshot-capture.ts";
 
-/** What one capture's admission decided, before the step keys and orders it. */
+/** A capture's deposit verdict with what the step stages beside it. */
 export type DepositDecision<Balance> =
-  | Readonly<{
-      /** Commit only the source evidence, keyed by its capture id. */
+  | (Extract<DepositVerdict<CanonicalFinancialDepositCapture>, { sourceOnly: unknown }> & Readonly<{
       product: string;
-      sourceOnly: CanonicalSourceEvidence;
-      capture?: never;
       balance?: never;
       relationCommands?: never;
-    }>
-  | Readonly<{
-      /** Commit the deposit capture, keyed by its capture id. */
+    }>)
+  | (Extract<DepositVerdict<CanonicalFinancialDepositCapture>, { capture: unknown }> & Readonly<{
       product: string;
-      capture: CanonicalFinancialDepositCapture;
-      sourceOnly?: never;
       /** The capture the current-balance snapshot matches rows against; absent for a capture the snapshot does not cover. */
       balance?: Balance;
       relationCommands?: ProductStageRequest["relationCommands"];
-    }>;
+    }>);
 
 declare const admittedThroughValidate: unique symbol;
 

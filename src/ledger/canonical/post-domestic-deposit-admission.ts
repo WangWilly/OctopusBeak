@@ -284,13 +284,6 @@ export type PostDomesticDepositFinancialAdmissionResult = {
   diagnostics: string[];
 };
 
-export class PostDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PostDomesticDepositFinancialAdmissionError";
-  }
-}
-
 function postFinancialAmount(
   value: string,
   allowZero = false,

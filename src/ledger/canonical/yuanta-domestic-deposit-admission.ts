@@ -751,13 +751,6 @@ export type YuantaDomesticDepositFinancialAdmissionResult = {
   diagnostics: YuantaDomesticDepositFinancialAdmissionDiagnostic[];
 };
 
-export class YuantaDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "YuantaDomesticDepositFinancialAdmissionError";
-  }
-}
-
 function normalizedFinancialCell(value: unknown): string {
   return normalizedCell(value).replace(/,/g, "");
 }

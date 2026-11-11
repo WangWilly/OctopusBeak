@@ -1276,13 +1276,6 @@ export function isFubonSourceOnlyFinancialDiagnostic(
   ]).has(diagnostic);
 }
 
-export class FubonDomesticDepositFinancialAdmissionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "FubonDomesticDepositFinancialAdmissionError";
-  }
-}
-
 function validOpaque(value: string): value is `sha256:${string}` {
   return /^sha256:[A-Za-z0-9_-]+$/.test(value);
 }
