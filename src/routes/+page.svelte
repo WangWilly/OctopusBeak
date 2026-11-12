@@ -46,8 +46,11 @@
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import SettingsPage from "$lib/settings/SettingsPage.svelte";
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
-  import { applySystemSettings, usageStatisticsEnabled } from "$lib/settings/system-timezone-store.ts";
+  import { applySystemSettings, taipeiDate, usageStatisticsEnabled } from "$lib/settings/system-timezone-store.ts";
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
+  import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
+  import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
+  import { quickRange } from "$lib/cash-flow/period.ts";
   import {
     createFinancialPage,
     FinancialPageSuperseded,
@@ -91,12 +94,14 @@
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
-  const financialPage = createFinancialPage({ dataViews: window.octopusBeak?.dataViews });
+  let cashFlowRequest: CashFlowPageRequest = quickRange("month", get(taipeiDate));
+  const financialPage = createFinancialPage({ dataViews: window.octopusBeak?.dataViews, params: { "cash-flow": cashFlowRequest } });
   const financialState = financialPage.state;
   $: overview = $financialState.routes.overview.load;
   $: assets = $financialState.routes.assets.load;
   $: liabilities = $financialState.routes.liabilities.load;
   $: spending = $financialState.routes.spending.load;
+  $: cashFlow = $financialState.routes["cash-flow"].load;
   // Only the current route's live failure is announced.
   $: financialLiveError = isFinancialRoute(route) && $financialState.routes[route].liveError;
   const automationRoute = createAutomationRouteLoader({
@@ -203,6 +208,7 @@
   $: assetsValue = viewData(assets);
   $: liabilitiesValue = viewData(liabilities);
   $: spendingValue = viewData(spending);
+  $: cashFlowValue = viewData(cashFlow);
   $: automationValue = viewData(automation);
   /** ADR 0078: the one-time usage statistics question waits for the welcome and onboarding to finish. */
   let usageStatisticsAsk = false;
@@ -246,7 +252,7 @@
     if (!$financialState.capabilityResolved) return;
     const previousRoute = route;
     const [next, encodedId, ...extraSegments] = location.hash.replace(/^#\/?/, "").split("/");
-    const requestedRoute = ["overview", "assets", "liabilities", "spending", "automation", "settings"].includes(next)
+    const requestedRoute = ["overview", "assets", "liabilities", "spending", "cash-flow", "automation", "settings"].includes(next)
       ? next as RouteId
       : "overview";
     const requiredRoute = requiredOnboardingRoute(onboardingState);
@@ -286,6 +292,11 @@
     );
   }
 
+  function changeCashFlowRequest(next: CashFlowPageRequest) {
+    cashFlowRequest = next;
+    financialPage.setParams("cash-flow", next);
+  }
+
   function message(error: unknown) {
     return error instanceof Error ? error.message : String(error);
   }
@@ -301,6 +312,7 @@
     if (nextRoute === "spending") {
       return { eyebrow: $t.spending.eyebrow, title: $t.spending.title };
     }
+    if (nextRoute === "cash-flow") return { eyebrow: $t.cashFlow.eyebrow, title: $t.cashFlow.title };
     if (nextRoute === "automation") return { eyebrow: $t.automation.eyebrow, title: $t.automation.title };
     return { eyebrow: $t.settings.eyebrow, title: $t.settings.title };
   }
@@ -338,6 +350,7 @@
       assets: (snapshot) => loadRoute("assets", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       liabilities: (snapshot) => loadRoute("liabilities", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       spending: (snapshot) => loadRoute("spending", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
+      "cash-flow": (snapshot) => loadRoute("cash-flow", { force: true, rethrow: true, awaitBlocks: true, snapshot }),
       automation: (snapshot) => loadRoute("automation", {
         force: true,
         rethrow: true,
@@ -748,6 +761,21 @@
   {:else}
     <DashboardShell active="spending" eyebrow={routeLabel("spending").eyebrow} title={routeLabel("spending").title} sideLabel={$t.overview.sideLabel}>
       <RouteLoadFallback state={spending} retry={() => void loadRoute("spending", { force: true })} />
+    </DashboardShell>
+  {/if}
+{:else if route === "cash-flow"}
+  {#if cashFlowValue}
+    <CashFlowDashboard
+      page={cashFlowValue}
+      request={cashFlowRequest}
+      today={$taipeiDate}
+      loading={cashFlow.status === "loading"}
+      changeRequest={changeCashFlowRequest}
+    />
+    <RouteLoadNotice state={cashFlow} retry={() => void loadRoute("cash-flow", { force: true })} />
+  {:else}
+    <DashboardShell active="cash-flow" eyebrow={routeLabel("cash-flow").eyebrow} title={routeLabel("cash-flow").title} sideLabel={$t.cashFlow.sideLabel}>
+      <RouteLoadFallback state={cashFlow} retry={() => void loadRoute("cash-flow", { force: true })} />
     </DashboardShell>
   {/if}
 {:else if route === "automation"}

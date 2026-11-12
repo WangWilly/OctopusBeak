@@ -14,6 +14,7 @@ const ROUTE_VIEWS = {
   assets: "financial.assets.current",
   liabilities: "financial.liabilities.current",
   spending: "financial.spending.current",
+  "cash-flow": "financial.cashFlow.current",
 } as const satisfies Record<string, PGliteFinancialLiveView>;
 
 export type FinancialRoute = keyof typeof ROUTE_VIEWS;
@@ -57,6 +58,11 @@ export interface FinancialPage {
   show(route: FinancialRoute | null): void;
   /** Show the route and re-read it; settles on its next delivered page. */
   reload(route: FinancialRoute): Promise<void>;
+  /**
+   * Change the parameters a route's view is read with. A shown route
+   * subscribes the new key and keeps showing its last page while it loads.
+   */
+  setParams(route: FinancialRoute, params: object): void;
   overviewStore(): Readable<ViewState<FinancialPageValues["overview"]>> | null;
   dispose(): void;
 }
@@ -73,13 +79,19 @@ export function isFinancialRoute(route: string): route is FinancialRoute {
  * subscribed, each route's load state and live error, and reloads that wait
  * for a fresh read.
  */
-export function createFinancialPage(options: { dataViews: FinancialDataViews | undefined }): FinancialPage {
+export function createFinancialPage(options: {
+  dataViews: FinancialDataViews | undefined;
+  params?: Partial<Record<FinancialRoute, object>>;
+}): FinancialPage {
   const loading = { load: { status: "loading" }, liveError: false } as const;
   let value: FinancialPageState = {
     capabilityResolved: false,
     enabled: false,
     shown: null,
-    routes: { overview: loading, assets: loading, liabilities: loading, spending: loading },
+    routes: { overview: loading, assets: loading, liabilities: loading, spending: loading, "cash-flow": loading },
+  };
+  const params: Record<FinancialRoute, object> = {
+    overview: {}, assets: {}, liabilities: {}, spending: {}, "cash-flow": {}, ...options.params,
   };
   const store = writable(value);
   let stores: ViewStores | null = null;
@@ -142,7 +154,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
     live: ViewStores,
     route: Route,
   ): Readable<ViewState<FinancialPageValues[Route]>> {
-    return live.get<FinancialPageValues[Route]>(ROUTE_VIEWS[route], {});
+    return live.get<FinancialPageValues[Route]>(ROUTE_VIEWS[route], params[route]);
   }
 
   function stop() {
@@ -161,7 +173,7 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
 
   function restart(live: ViewStores, route: FinancialRoute) {
     beginLoad(route);
-    live.restart(ROUTE_VIEWS[route], {});
+    live.restart(ROUTE_VIEWS[route], params[route]);
   }
 
   const capability = Promise.resolve()
@@ -211,6 +223,14 @@ export function createFinancialPage(options: { dataViews: FinancialDataViews | u
       // another consumer keeps cached.
       restart(stores, route);
       return promise;
+    },
+
+    setParams(route, next) {
+      if (disposed || JSON.stringify(params[route]) === JSON.stringify(next)) return;
+      params[route] = next;
+      if (!stores || value.shown !== route) return;
+      if (waiter?.route === route) supersede();
+      subscribe(stores, route);
     },
 
     overviewStore() {

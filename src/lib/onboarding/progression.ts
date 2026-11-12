@@ -9,6 +9,7 @@ export type OnboardingRoute =
   | "assets"
   | "liabilities"
   | "spending"
+  | "cash-flow"
   | "automation"
   | "settings";
 
