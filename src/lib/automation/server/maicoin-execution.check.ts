@@ -103,7 +103,6 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
           subAccount: "main",
         },
       },
-      pgliteRpc,
     }, {
       port: channel.port1,
       capabilities: childRpcCapabilities(pgliteRpc),

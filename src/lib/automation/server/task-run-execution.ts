@@ -215,7 +215,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
           },
           ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
-        launchWorker: (start) => host.launchWorker(start, context.execution),
+        launchWorker: (launch) => host.launchWorker(launch, context.execution),
       });
     };
     const outcome = page

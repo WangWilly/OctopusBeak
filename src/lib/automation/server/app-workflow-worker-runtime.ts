@@ -32,6 +32,7 @@ import {
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowWorkerOutboundFrame,
   parseAppWorkflowBrowserConnection,
+  parseAppWorkflowPgliteRpc,
   parseAppWorkflowWorkerStart,
   isRecord,
   type AppWorkflowWorkerInboundFrame,
@@ -190,28 +191,35 @@ function refuseStart(port: MessagePort) {
 }
 
 /**
- * The worker thread's entry: a browser workflow's `workerData` carries the
- * loopback DevTools page it attaches to, which becomes the core's browser.
+ * The worker thread's entry: `workerData` is the core's start plus the
+ * descriptors the host hands the thread beside it. A browser workflow's
+ * loopback DevTools page becomes the core's browser, and the PGlite child RPC
+ * becomes its capability source (ADR 0134).
  */
 export async function runAppWorkflowWorkerThread(
   options: Readonly<{ port: MessagePort; workerData: unknown }>,
 ): Promise<void> {
   const { port, workerData } = options;
-  const capabilities = childRpcCapabilities(
-    isRecord(workerData) ? workerData.pgliteRpc as PGliteWorkflowRpc | undefined : undefined,
-  );
-  if (!isRecord(workerData) || !Object.hasOwn(workerData, "browserConnection")) {
-    return await runAppWorkflowWorker(workerData, { port, capabilities });
+  if (!isRecord(workerData)) {
+    return await runAppWorkflowWorker(workerData, { port, capabilities: childRpcCapabilities(undefined) });
   }
-  const { browserConnection, ...start } = workerData;
-  let connection: AppWorkflowBrowserConnection;
+  const { browserConnection, pgliteRpc, ...start } = workerData;
+  let browser: WorkflowBrowserPort | undefined;
+  let descriptor: PGliteWorkflowRpc | undefined;
   try {
-    connection = parseAppWorkflowBrowserConnection(browserConnection);
+    if (Object.hasOwn(workerData, "browserConnection")) {
+      browser = appBrowserPort(parseAppWorkflowBrowserConnection(browserConnection));
+    }
+    if (Object.hasOwn(workerData, "pgliteRpc")) descriptor = parseAppWorkflowPgliteRpc(pgliteRpc);
   } catch {
     refuseStart(port);
     return;
   }
-  await runAppWorkflowWorker(start, { port, browser: appBrowserPort(connection), capabilities });
+  await runAppWorkflowWorker(start, {
+    port,
+    ...(browser ? { browser } : {}),
+    capabilities: childRpcCapabilities(descriptor),
+  });
 }
 
 /** Execute one typed definition inside the App-managed Node worker. */

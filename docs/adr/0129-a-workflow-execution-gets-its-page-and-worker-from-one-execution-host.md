@@ -36,7 +36,7 @@ type ExecutionHost = Readonly<{
 
 **The thread entry turns the descriptor into a browser.** `runAppWorkflowWorkerThread` validates `browserConnection` with the same loopback rules as before: `http`, host `127.0.0.1`, an explicit port, no path, query or hash, and a safe target id. It converts the connection to a `WorkflowBrowserPort` and calls the core with it. An invalid descriptor gets the `protocol-invalid` start refusal. `withAppWorkflowBrowserPage` still asserts the loopback endpoint when it connects.
 
-**The worker core takes a browser, never a descriptor.** `runAppWorkflowWorker(start, { port, browser?, financialCommit?, accountIdentity?, previewWrite?, now?, resolveDefinition? })` parses a start frame that has no `browserConnection`. A browser workflow without `browser`, or a nonbrowser workflow with one, gets the same `protocol-invalid` start refusal as a malformed frame. `pgliteRpc` is unchanged.
+**The worker core takes a browser, never a descriptor.** `runAppWorkflowWorker(start, { port, browser?, financialCommit?, accountIdentity?, previewWrite?, now?, resolveDefinition? })` parses a start frame that has no `browserConnection`. A browser workflow without `browser`, or a nonbrowser workflow with one, gets the same `protocol-invalid` start refusal as a malformed frame. `pgliteRpc` is unchanged. (Refined by [ADR 0134](0134-the-worker-core-takes-capability-ports-never-a-pglite-descriptor.md): the start no longer carries `pgliteRpc`, and the core takes its capability ports from one `CapabilitySource`.)
 
 **The supervisor gets its worker from the host.** `runSupervisedAppWorkflow` takes `launchWorker` and keeps its cancel and terminal grace timing. `workerFactory`, `workerPath` and the `browserConnection` option are removed.
 

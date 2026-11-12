@@ -672,11 +672,11 @@ test("through the supervised worker frames, a rotated token is saved when the ru
         humanAssistance: async () => ({ status: "failed" }),
         ...tdccSessionHostCalls(createTdccSessionHost(secrets)),
       },
-      launchWorker: (start) => inProcessCheckHost({
+      launchWorker: (launch) => inProcessCheckHost({
         capabilities: childRpcCapabilities(pgliteRpc),
         resolveDefinition: () => tdccDefinition(fake.fetch),
       })
-        .launchWorker(start, { browserConnection: () => null }),
+        .launchWorker(launch, { browserConnection: () => null }),
     });
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");
