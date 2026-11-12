@@ -187,7 +187,7 @@ export type TransactionTaxonomyPackage = Readonly<{
   fixtures: readonly TaxonomyFixture[];
 }>;
 
-const KIND_CODES = [
+export const TRANSACTION_KIND_CODES = [
   "purchase",
   "transfer",
   "transfer.internal",
@@ -246,6 +246,8 @@ const KIND_CODES = [
   "investment.corporate_action.assignment",
   "investment.corporate_action.expiration",
 ] as const;
+
+export type TransactionKindCode = (typeof TRANSACTION_KIND_CODES)[number];
 
 const CATEGORY_CODES = PERSONAL_CATEGORY_CODES;
 
@@ -431,7 +433,7 @@ function definitions(
   });
 }
 
-const KINDS = definitions("kind", KIND_CODES);
+const KINDS = definitions("kind", TRANSACTION_KIND_CODES);
 const CATEGORIES = definitions("category", CATEGORY_CODES);
 const COUNTERPARTY_ROLE_DEFINITIONS = definitions(
   "counterparty_role",
