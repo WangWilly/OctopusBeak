@@ -37,7 +37,8 @@ import {
 } from "../src/workflows/yuanta-current-deposit-balances.ts";
 import { productCollectionHandle, type ProductCollectionHandle } from "../src/lib/automation/product-collection.ts";
 import { freshPage, removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
-import { createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
+import { applyPGliteFinancialPageAction, createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
+import { readPGliteCashFlow } from "../src/ledger/pglite/cash-flow.ts";
 
 const FUBON_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 const YUANTA_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
@@ -110,6 +111,12 @@ type DepositRow = readonly [date: string, time: string, summary: string, out: nu
 const FUBON_ACCOUNT = { value: "82111234567028", label: "82111234567028 (松江分行)", branchName: "松江分行" };
 const FUBON_LOGIN = { fubon_user_id: "DEMO-FUBON-USER", fubon_account: "DEMO-FUBON-LOGIN" };
 const FUBON_OPENING_BALANCE = 528_640;
+/** A second 台北富邦 account, the settlement account the 10/09 transfer lands in, so Cash flow pairs both sides. */
+const FUBON_SETTLEMENT_ACCOUNT = { value: "82111234567036", label: "82111234567036 (松江分行)", branchName: "松江分行" };
+const FUBON_SETTLEMENT_OPENING_BALANCE = 12_480;
+const FUBON_SETTLEMENT_ROWS: readonly DepositRow[] = [
+  ["2026-10-09", "14:20:52", "跨行轉入", 0, 30_000, "富邦松江 7028 轉入"],
+];
 
 /** The video's hero row: an everyday debit-card purchase. */
 export const HERO_TRANSACTION = { date: "2026-10-06", time: "18:42:13", summary: "金融卡消費", note: "全聯福利中心松江店", amount: 1_286 } as const;
@@ -148,11 +155,11 @@ function fubonRows(cardBills: readonly { dueDate: string; amount: number }[]): D
   return rows.sort((left, right) => `${left[0]}${left[1]}`.localeCompare(`${right[0]}${right[1]}`));
 }
 
-function fubonStatementThrough(rows: readonly DepositRow[], through: string) {
-  const accountNumber = deriveFubonDomesticDepositAccountNumberEvidence(FUBON_ACCOUNT);
+function fubonStatementThrough(rows: readonly DepositRow[], through: string, account = FUBON_ACCOUNT, opening = FUBON_OPENING_BALANCE) {
+  const accountNumber = deriveFubonDomesticDepositAccountNumberEvidence(account);
   if (!accountNumber) throw new Error("Demo Fubon account option has no account-number evidence.");
-  const accountOption = { ...FUBON_ACCOUNT, accountNumber };
-  let balance = FUBON_OPENING_BALANCE;
+  const accountOption = { ...account, accountNumber };
+  let balance = opening;
   // The 180-day range always reaches back past the first demo row.
   const queryRange = { startDate: slash(addDays(through, -179)), endDate: slash(through) };
   const statementRows = rows.filter(([date]) => date <= through).map(([date, time, summary, out, inn, note], rowOrdinal) => {
@@ -161,10 +168,10 @@ function fubonStatementThrough(rows: readonly DepositRow[], through: string) {
     return { rowOrdinal, cells };
   });
   const statement: FubonParsedDepositStatement = {
-    account: FUBON_ACCOUNT.label,
-    accountId: FUBON_ACCOUNT.value,
+    account: account.label,
+    accountId: account.value,
     queryPeriod: "180",
-    branchName: FUBON_ACCOUNT.branchName,
+    branchName: account.branchName,
     rows: statementRows.map((row) => [...row.cells]),
     pages: [{
       pageOrdinal: 0,
@@ -192,11 +199,15 @@ async function collectFubon(
 ): Promise<PGliteWorkflowRunItem[]> {
   const { statement, balance, rowCount } = fubonStatementThrough(rows, date);
   if (rowCount === 0) return [];
+  const settlement = fubonStatementThrough(FUBON_SETTLEMENT_ROWS, date, FUBON_SETTLEMENT_ACCOUNT, FUBON_SETTLEMENT_OPENING_BALANCE);
   const at = `${date}T01:20:00.000Z`;
   const currentTable: FubonCurrentDepositTable = {
     evidence: {
       kind: "cells",
-      rows: [[FUBON_ACCOUNT.value, "薪轉戶", "活期儲蓄存款", FUBON_ACCOUNT.branchName, "台幣", `${money(balance)}.00`, `${money(balance)}.00`, "", "", ""]],
+      rows: [
+        [FUBON_ACCOUNT.value, "薪轉戶", "活期儲蓄存款", FUBON_ACCOUNT.branchName, "台幣", `${money(balance)}.00`, `${money(balance)}.00`, "", "", ""],
+        ...settlement.rowCount === 0 ? [] : [[FUBON_SETTLEMENT_ACCOUNT.value, "交割戶", "活期存款", FUBON_SETTLEMENT_ACCOUNT.branchName, "台幣", `${money(settlement.balance)}.00`, `${money(settlement.balance)}.00`, "", "", ""]],
+      ],
     },
     response: {
       url: `https://${FUBON_BALANCE_CONTRACT.endpointHost}${FUBON_BALANCE_CONTRACT.endpointPath}`,
@@ -206,7 +217,10 @@ async function collectFubon(
     },
   };
   const items: PGliteWorkflowRunItem[] = [];
-  await stageFubonDeposit({ accounts: [{ account: FUBON_ACCOUNT, statements: [statement] }] }, {
+  await stageFubonDeposit({ accounts: [
+    { account: FUBON_ACCOUNT, statements: [statement] },
+    ...settlement.rowCount === 0 ? [] : [{ account: FUBON_SETTLEMENT_ACCOUNT, statements: [settlement.statement] }],
+  ] }, {
     downloadFormat: "EXCEL",
     sourceConnectionScope: fubonStableLoginScope(FUBON_LOGIN)!,
     sourceConnectionKey: deriveFubonSourceConnectionKey(FUBON_LOGIN)!,
@@ -512,6 +526,18 @@ export async function seedAppDemo(userData: string) {
     committed.categorizedBankPurchases = categorized;
     const pending = freshPage(await spendingQuery.pendingOverview({ knowledgeAt: await latestKnowledge() }));
     if (pending.pendingCount !== 3) throw new Error(`The bank data changed the pending merge pairs: ${pending.pendingCount}`);
+
+    // The person confirms the 10/09 transfer into the settlement account, as Cash flow proposes it.
+    const transfer = (await readPGliteCashFlow(store, { startDate: "2026-10-09", endDate: "2026-10-09" })).transfers.candidates;
+    if (transfer.length !== 1) throw new Error(`The demo expects one transfer candidate on 10/09: ${transfer.length}`);
+    await applyPGliteFinancialPageAction(store, {
+      action: "confirm",
+      kind: "transfer_confirm",
+      outflowTransactionId: transfer[0]!.outflowTransactionId,
+      inflowTransactionId: transfer[0]!.inflowTransactionId,
+      dataVersion: await latestKnowledge(),
+    });
+    committed.confirmedTransfers = 1;
 
     const fubonFinal = fubonStatementThrough(deposits, TODAY).balance;
     return {
