@@ -16,6 +16,7 @@ import {
   runForCheck,
   runtimeForCheck,
 } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import {
   completeAppWorkflowHumanAssistance,
 } from "./app-workflow-human-assistance.ts";
@@ -246,7 +247,7 @@ test("Post App task dispatches the typed provider with human assistance, complet
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit: commitPort,
+        capabilities: fixedCapabilities({ financialCommit: commitPort }),
         now: () => "2026-09-25T12:00:00.000Z",
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
@@ -308,7 +309,7 @@ test("Post App dispatch names each unread statement's failure before commit", as
     ] as const) {
       const page = fakePostPage({ signedIn: true, ...source });
       const result = await runForCheck(runtimeForCheck(provider, {
-        executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
+        executionHost: inProcessCheckHost({ browser: () => ({ async withPage(run) { return run(page); } }), capabilities: fixedCapabilities({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) }) }),
         environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
       }), task.id);
@@ -338,7 +339,7 @@ test("Post App dispatch cancellation during human assistance does not collect or
     const provider = createPgliteOperationalProvider(store);
     const page = fakePostPage();
     const result = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
+      executionHost: inProcessCheckHost({ browser: () => ({ async withPage(run) { return run(page); } }), capabilities: fixedCapabilities({ financialCommit: financialCommitPort(committed, () => page.sourceResponseReads === 2) }) }),
       assistanceRoute: (request) => {
         void request.run.requestStop("cancelled");
       },
@@ -369,7 +370,7 @@ test("Post App dispatch without a verification route fails with a configuration 
     const provider = createPgliteOperationalProvider(store);
     const page = fakePostPage();
     const { run } = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2), browser: () => ({ async withPage(run) { return run(page); } }) }),
+      executionHost: inProcessCheckHost({ browser: () => ({ async withPage(run) { return run(page); } }), capabilities: fixedCapabilities({ financialCommit: financialCommitPort([], () => page.sourceResponseReads === 2) }) }),
       assistanceRoute: null,
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,

@@ -24,7 +24,12 @@ import {
   type HostCallMethod,
   type HostCallRequest,
 } from "./app-workflow-host-calls.ts";
-import { runAppWorkflowWorker, runAppWorkflowWorkerThread } from "./app-workflow-worker-runtime.ts";
+import {
+  childRpcCapabilities,
+  fixedCapabilities,
+  runAppWorkflowWorker,
+  runAppWorkflowWorkerThread,
+} from "./app-workflow-worker-runtime.ts";
 import { chromiumThreadHost } from "./execution-host.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
@@ -239,9 +244,9 @@ const exchangeRateStart = { ...start, workflowId: "exchange-rates", input: null 
 const hostPage: WorkflowBrowserPort = { async withPage() { throw new Error("unused"); } };
 
 test("a browser workflow starts only with a browser and a nonbrowser workflow only without one", async () => {
-  assert.deepEqual(await startRefusal((port) => runAppWorkflowWorker(start, { port })), REFUSED_START);
+  assert.deepEqual(await startRefusal((port) => runAppWorkflowWorker(start, { port, capabilities: fixedCapabilities({}) })), REFUSED_START);
   assert.deepEqual(
-    await startRefusal((port) => runAppWorkflowWorker(exchangeRateStart, { port, browser: hostPage })),
+    await startRefusal((port) => runAppWorkflowWorker(exchangeRateStart, { port, browser: hostPage, capabilities: fixedCapabilities({}) })),
     REFUSED_START,
   );
 });
@@ -479,7 +484,7 @@ test("worker runs a definition through typed ports and the bounded host request 
           return await run({} as never);
         },
       },
-      financialCommit,
+      capabilities: fixedCapabilities({ financialCommit }),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal?.kind, "completed", observed.map((frame) => frame.kind === "failed" ? frame.errorCode : frame.kind).join(","));
@@ -553,16 +558,15 @@ test("a browser workflow that needs only account identity reaches it through the
   };
   try {
     await server.ready;
-    await runAppWorkflowWorker({
-      ...start,
-      pgliteRpc: {
-        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-      },
-    }, {
+    const pgliteRpc = {
+      endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+      token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+    };
+    await runAppWorkflowWorker({ ...start, pgliteRpc }, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
+      capabilities: childRpcCapabilities(pgliteRpc),
     });
     const frame = await terminal;
     assert.equal(frame.kind, "completed", JSON.stringify(frame));
@@ -598,6 +602,7 @@ test("a workflow output that is not exactly a run result fails the run without c
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
+      capabilities: fixedCapabilities({}),
     });
     const frame = await terminal;
     assert.equal(frame.kind, "failed");
@@ -649,17 +654,19 @@ test("a product failure inside a partial run appends one correlated diagnostic r
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
-      financialCommit: {
-        async execute() {
-          return {
-            ...successfulCommit(),
-            items: [{
-              provider: "fixture", product: "fixture", itemKey: "fixture-item",
-              status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
-            }],
-          };
+      capabilities: fixedCapabilities({
+        financialCommit: {
+          async execute() {
+            return {
+              ...successfulCommit(),
+              items: [{
+                provider: "fixture", product: "fixture", itemKey: "fixture-item",
+                status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
+              }],
+            };
+          },
         },
-      },
+      }),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "completed");
@@ -711,6 +718,7 @@ test("worker failures cross the boundary only as a stable error code", async () 
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -750,6 +758,7 @@ test("a Cathay run that needs device registration keeps that code across the wor
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -812,6 +821,7 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
         port: channel.port1,
         resolveDefinition: () => definition,
         browser: { async withPage() { throw new Error("unused"); } },
+        capabilities: fixedCapabilities({}),
       });
       const terminal = await terminalReceived;
       assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected, JSON.stringify(scenario.events));
@@ -847,6 +857,7 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -887,6 +898,7 @@ test("worker cancellation aborts a pending definition and emits no provider exce
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     await hasStarted;
     channel.port2.postMessage({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "cancel" });
@@ -946,7 +958,7 @@ test("a settlement that finishes after cancellation still reaches the host", asy
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
-      financialCommit,
+      capabilities: fixedCapabilities({ financialCommit }),
     });
     assert.equal((await terminal).kind, "cancelled");
     assert.deepEqual(

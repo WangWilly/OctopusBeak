@@ -14,6 +14,7 @@ import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -231,7 +232,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         now: () => now.toISOString(),
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
@@ -282,7 +283,7 @@ test("E.SUN App task dispatch maps credentials, hosted URL, events, and commit",
     });
     const cancellationRuntime = runtimeForCheck({ ...provider, automation: cancelOnCollectionStart }, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         now: () => now.toISOString(),
         browser: () => cancelBrowser,
       }),
@@ -316,7 +317,7 @@ test("E.SUN provider verification fails closed with a configuration outcome", as
     let commits = 0;
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } },
+        capabilities: fixedCapabilities({ financialCommit: { async execute() { commits += 1; throw new Error("unreachable"); } } }),
         now: () => now.toISOString(),
         browser: () => ({ async withPage(run) { return run(hostPage.page); } }),
       }),

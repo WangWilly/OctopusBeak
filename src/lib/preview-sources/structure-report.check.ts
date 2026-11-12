@@ -23,7 +23,7 @@ const {
 } = await import("./structure-report.ts");
 const { PREVIEW_FIXTURE_SOURCE } = await import("./fixture-source.ts");
 const { previewWorkflowDefinition, takePreviewObservations } = await import("./workflow.ts");
-const { runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
+const { fixedCapabilities, runAppWorkflowWorker } = await import("../automation/server/app-workflow-worker-runtime.ts");
 const { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } = await import("../automation/server/app-workflow-worker-protocol.ts");
 const { inProcessCheckHost, runForCheck, runtimeForCheck } = await import("../automation/server/task-run-check-support.ts");
 const { taskById } = await import("../automation/server/tasks.ts");
@@ -181,7 +181,7 @@ test("a failed preview run sanitizes its observations inside the worker and rele
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
-      previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 }) },
+      capabilities: fixedCapabilities({ previewWrite: { write: async () => ({ accounts: 0, balances: 0, transactions: 0, statements: 0, closedAccounts: 0 }) } }),
     });
     const frame = await terminal;
     assert.equal(frame.kind, "failed");

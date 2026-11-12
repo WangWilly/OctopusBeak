@@ -15,7 +15,7 @@ import { applyPgliteMaicoinOperationalSchema } from "../../../ledger/pglite/maic
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { planForCheck } from "./task-run-check-support.ts";
-import { runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
+import { childRpcCapabilities, runAppWorkflowWorker } from "./app-workflow-worker-runtime.ts";
 import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
@@ -88,6 +88,10 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
         } else if (frame.kind === "completed" || frame.kind === "failed" || frame.kind === "cancelled") resolve(frame);
       });
     });
+    const pgliteRpc = {
+      endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+      token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+    };
     await runAppWorkflowWorker({
       protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
       workflowId: "sync-maicoin",
@@ -99,12 +103,10 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
           subAccount: "main",
         },
       },
-      pgliteRpc: {
-        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-      },
+      pgliteRpc,
     }, {
       port: channel.port1,
+      capabilities: childRpcCapabilities(pgliteRpc),
     });
     const result = await terminal;
     assert.equal(result.kind, "completed", JSON.stringify(result));

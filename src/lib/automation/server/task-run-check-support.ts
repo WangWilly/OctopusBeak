@@ -14,6 +14,7 @@ import {
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import { parseAppWorkflowWorkerOutboundFrame, type AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
+  fixedCapabilities,
   runAppWorkflowWorker,
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
@@ -190,8 +191,12 @@ export function firstRoundForCheck(
   return { attempt: 1, maxAttempts: 1, retrying: false, executionId: randomUUID(), ...round };
 }
 
-/** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
-export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "browser">;
+/**
+ * Where a check's worker gets its capability ports, `fixedCapabilities({})`
+ * unless it names a source, and the definition and clock it runs with in
+ * place of the catalog's and the wall clock.
+ */
+export type CheckWorkerPorts = Partial<Pick<AppWorkflowWorkerRuntimeOptions, "capabilities" | "resolveDefinition" | "now">>;
 
 export type InProcessCheckHostOptions = CheckWorkerPorts & Readonly<{
   /** The browser a browser workflow's worker runs in, built from the page the round asked for. */
@@ -236,7 +241,7 @@ function inProcessWorker(
  * scripted worker.
  */
 export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): ExecutionHost {
-  const { browser, scriptedWorker, ...ports } = options;
+  const { browser, scriptedWorker, capabilities = fixedCapabilities({}), ...seams } = options;
   const pages = new Map<string, WorkflowBrowserPort>();
   return {
     async withPage(page, use) {
@@ -250,7 +255,7 @@ export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): Exe
     launchWorker(start) {
       if (scriptedWorker) return scriptedWorker(start);
       const page = pages.get(start.taskRunId);
-      return inProcessWorker(start, { ...ports, ...(page ? { browser: page } : {}) });
+      return inProcessWorker(start, { ...seams, capabilities, ...(page ? { browser: page } : {}) });
     },
   };
 }
