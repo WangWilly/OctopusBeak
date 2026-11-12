@@ -97,7 +97,10 @@ async function kindEvidence(reader: PGliteSpendingReader, transactionIds: readon
   const found = await byChunk<{ transaction_id: unknown; evidence_kind: unknown }>(reader, transactionIds, (placeholders) =>
     `SELECT enrichment.transaction_id, (output.provenance_json::jsonb)->>'evidenceKind' AS evidence_kind
        FROM current_transaction_enrichment enrichment
-       JOIN enrichment_run_outputs output ON output.assertion_id = enrichment.assertion_id
+       JOIN enrichment_run_outputs output
+         ON output.transaction_id = enrichment.transaction_id
+        AND output.field_name = 'kind'
+        AND output.assertion_id = enrichment.assertion_id
       WHERE enrichment.field_name = 'kind'
         AND enrichment.transaction_id IN (${placeholders})`);
   return new Map(found.filter((row) => typeof row.evidence_kind === "string")
