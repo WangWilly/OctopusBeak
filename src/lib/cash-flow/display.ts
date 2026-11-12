@@ -11,7 +11,7 @@ import {
   type ExactAmount,
   type ExactMoney,
 } from "../shared-money/exact-money.ts";
-import type { CashFlowAccount, CashFlowRow } from "./model.ts";
+import { cashFlowTransferRole, type CashFlowAccount, type CashFlowRow } from "./model.ts";
 
 /** An outflow group; null is the Unclassified bucket. */
 export type OutflowGroupKey = SpendingCategoryGroup | null;
@@ -61,7 +61,7 @@ export function rowCategoryText(t: Translation, row: CashFlowRow): string {
     case "inflow":
       return inflowGroupLabel(t, flow.group);
     case "not_counted":
-      return t.cashFlow.notCounted[flow.reason];
+      return cashFlowTransferRole(row) === "other" ? t.cashFlow.otherTransfer : t.cashFlow.notCounted[flow.reason];
     case "unresolved":
       return t.cashFlow.unresolvedTag;
     case "outflow":

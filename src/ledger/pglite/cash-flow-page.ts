@@ -1,9 +1,8 @@
 import type { CashFlowAmount, CashFlowCurrencyTotals } from "../canonical/cash-flow-inclusion.ts";
 import { CASH_FLOW_INCLUSION_POLICY } from "../canonical/cash-flow-inclusion.ts";
-import { isInstitutionKey, institutionNames } from "../../lib/institutions/institutions.ts";
-import { cashFlowCopy } from "../../lib/cash-flow/copy.ts";
 import {
   CASH_FLOW_SEARCH_FIELDS,
+  cashFlowTransferRole,
   type CashFlowAccountChange,
   type CashFlowCurrencySummary,
   type CashFlowPageDto,
@@ -12,18 +11,21 @@ import {
   type CashFlowPeriodTotals,
   type CashFlowSearchField,
   type CashFlowSearchResult,
+  type CashFlowTransferSummary,
 } from "../../lib/cash-flow/model.ts";
-import { spendingCopy } from "../../lib/spending/copy.ts";
 import {
   addExact,
   compareExact,
   exactToNumber,
   negateExact,
   normalizeExact,
+  normalizeCurrency,
   subtractExact,
   type ExactAmount,
 } from "../../lib/shared-money/exact-money.ts";
-import { readPGliteCashFlow, type CashFlowReportTransaction } from "./cash-flow.ts";
+import type { CashFlowTransferLink } from "../canonical/cash-flow-transfer.ts";
+import { readPGliteCashFlow, type CashFlowReport, type CashFlowReportTransaction, type CashFlowSearchRow } from "./cash-flow.ts";
+import { cashFlowMatches, readCashFlowSearchMatches } from "./cash-flow-search.ts";
 import { ISO_DATE, type PGliteSpendingReader } from "./spending-sql.ts";
 
 /**
@@ -34,9 +36,7 @@ import { ISO_DATE, type PGliteSpendingReader } from "./spending-sql.ts";
  */
 
 const ZERO: ExactAmount = { coefficient: "0", scale: 0 };
-const ALL_PERIODS = { startDate: "0001-01-01", endDate: "9999-12-31" } as const;
 const MAX_QUERY_LENGTH = 200;
-const LOCALES = ["zh-TW", "en"] as const;
 const DAY_MS = 86_400_000;
 
 const dayNumber = (date: string) => Date.parse(`${date}T00:00:00Z`) / DAY_MS;
@@ -66,70 +66,6 @@ function periodOf(startDate: string, endDate: string): CashFlowPeriod {
   return { startDate, endDate, days: dayNumber(endDate) - dayNumber(startDate) + 1 };
 }
 
-/** `2,370`, `NT$300` or `-300.5` as an exact amount; null when the query is not an amount. */
-export function amountQuery(query: string): ExactAmount | null {
-  const text = query.replace(/[\s,]/gu, "").replace(/^[+\-−]/u, "").replace(/^(?:NT\$|TWD|\$)/iu, "");
-  const match = /^(\d+)(?:\.(\d+))?$/u.exec(text);
-  if (!match) return null;
-  const fraction = match[2] ?? "";
-  return normalizeExact({ coefficient: BigInt(`${match[1]}${fraction}`).toString(), scale: fraction.length });
-}
-
-const institutionLabels = LOCALES.map((locale) => institutionNames(locale));
-
-function categoryLabels(transaction: CashFlowReportTransaction): string[] {
-  const flow = transaction.cashFlow;
-  return LOCALES.flatMap((locale) => {
-    const cash = cashFlowCopy[locale].cashFlow;
-    const spending = spendingCopy[locale].spending;
-    switch (flow.class) {
-      case "inflow":
-        return [cash.inflowGroups[flow.group]];
-      case "not_counted":
-        return [cash.notCounted[flow.reason]];
-      case "unresolved":
-        return [cash.unresolvedTag];
-      case "outflow":
-      case "refund":
-        return [
-          ...(flow.class === "refund" ? [cash.refund] : []),
-          ...flow.categories.flatMap((share) => share.category === null
-            ? [cash.unclassified]
-            : [spending.categoryGroups[share.group], spending.personalCategories[share.category]]),
-        ];
-    }
-  });
-}
-
-function accountLabels(transaction: CashFlowReportTransaction): string[] {
-  const account = transaction.details.account;
-  const key = account.institutionKey;
-  return [
-    ...(key !== null && isInstitutionKey(key) ? institutionLabels.map((names) => names[key]) : []),
-    account.mask,
-    account.name,
-  ].filter((value): value is string => typeof value === "string");
-}
-
-/**
- * The fields a transaction matches: a case-insensitive substring of its text
- * fields, and for an amount query, the exact amount.
- */
-export function cashFlowMatches(transaction: CashFlowReportTransaction, query: string): readonly CashFlowSearchField[] {
-  const needle = query.toLocaleLowerCase();
-  const has = (values: readonly (string | null)[]) => values.some((value) => value !== null && value.toLocaleLowerCase().includes(needle));
-  const amount = amountQuery(query);
-  const matched: Record<CashFlowSearchField, boolean> = {
-    description: has([transaction.details.description]),
-    counterparty: has([transaction.details.counterparty]),
-    category: has(categoryLabels(transaction)),
-    account: has(accountLabels(transaction)),
-    amount: amount !== null && compareExact(normalizeExact(transaction.amount), amount) === 0,
-    note: has([transaction.details.note]),
-  };
-  return CASH_FLOW_SEARCH_FIELDS.filter((field) => matched[field]);
-}
-
 function byAmountDescending<T extends CashFlowAmount>(left: T, right: T): number {
   return compareExact(right.amount, left.amount);
 }
@@ -148,7 +84,47 @@ function periodTotals(totals: CashFlowCurrencyTotals | undefined): CashFlowPerio
 
 const EMPTY_AMOUNT: CashFlowAmount = { amount: ZERO, count: 0 };
 
-function currencySummaries(current: readonly CashFlowCurrencyTotals[], previous: readonly CashFlowCurrencyTotals[]): CashFlowCurrencySummary[] {
+const emptyTransfers = (): { pairs: CashFlowTransferSummary["pairs"]; unpaired: CashFlowAmount; other: CashFlowAmount } => ({
+  pairs: { amount: ZERO, count: 0, origins: { evidence: 0, confirmed: 0, manual: 0 } },
+  unpaired: EMPTY_AMOUNT,
+  other: EMPTY_AMOUNT,
+});
+
+const plus = (total: CashFlowAmount, amount: ExactAmount): CashFlowAmount =>
+  ({ amount: normalizeExact(addExact(total.amount, amount)), count: total.count + 1 });
+
+/**
+ * Uncounted transfers per currency. A link counts once, at its outflow side's
+ * amount, whichever of its sides is in the period; the two sides' amounts are
+ * equal, so an inflow side alone stands in for it.
+ */
+function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transfers">): ReadonlyMap<string, CashFlowTransferSummary> {
+  const byCurrency = new Map<string, ReturnType<typeof emptyTransfers>>();
+  const linkOf = new Map<string, CashFlowTransferLink>(report.transfers.links.map((link) => [link.linkId, link]));
+  const counted = new Map<string, CashFlowReportTransaction>();
+  for (const row of report.transactions) {
+    const role = cashFlowTransferRole(row);
+    if (role === null) continue;
+    const currency = normalizeCurrency(row.amount.currency);
+    const entry = byCurrency.get(currency) ?? emptyTransfers();
+    byCurrency.set(currency, entry);
+    if (role === "other") entry.other = plus(entry.other, row.amount);
+    else if (role === "internal") entry.unpaired = plus(entry.unpaired, row.amount);
+    else if (row.direction === "outflow" || !counted.has(row.transferLinkId!)) counted.set(row.transferLinkId!, row);
+  }
+  for (const [linkId, row] of counted) {
+    const entry = byCurrency.get(normalizeCurrency(row.amount.currency))!;
+    const origin = linkOf.get(linkId)!.origin.kind;
+    entry.pairs = { ...plus(entry.pairs, row.amount), origins: { ...entry.pairs.origins, [origin]: entry.pairs.origins[origin] + 1 } };
+  }
+  return byCurrency;
+}
+
+function currencySummaries(
+  current: readonly CashFlowCurrencyTotals[],
+  previous: readonly CashFlowCurrencyTotals[],
+  transfers: ReadonlyMap<string, CashFlowTransferSummary>,
+): CashFlowCurrencySummary[] {
   const previousOf = new Map(previous.map((totals) => [totals.currency, totals]));
   return [...current]
     .sort((left, right) => Number(right.currency === "TWD") - Number(left.currency === "TWD") || left.currency.localeCompare(right.currency))
@@ -156,7 +132,6 @@ function currencySummaries(current: readonly CashFlowCurrencyTotals[], previous:
       const before = previousOf.get(totals.currency);
       const previousGroup = new Map(before?.outflow.groups.map((group) => [group.group, group.amount]) ?? []);
       const { kept, keptRatio } = periodTotals(totals);
-      const transfers = totals.notCounted.find((entry) => entry.reason === "transfer");
       return {
         currency: totals.currency,
         inflow: { ...totals.inflow, groups: [...totals.inflow.groups].sort(byAmountDescending) },
@@ -169,7 +144,7 @@ function currencySummaries(current: readonly CashFlowCurrencyTotals[], previous:
         kept,
         keptRatio,
         unresolved: totals.unresolved,
-        transfers: transfers ? { amount: transfers.amount, count: transfers.count } : EMPTY_AMOUNT,
+        transfers: transfers.get(normalizeCurrency(totals.currency)) ?? emptyTransfers(),
         previous: periodTotals(before),
       };
     });
@@ -209,11 +184,11 @@ function newestFirst(left: CashFlowReportTransaction, right: CashFlowReportTrans
 function searchResult(
   query: string,
   inPeriod: readonly (readonly CashFlowSearchField[])[],
-  allMatches: readonly CashFlowReportTransaction[],
+  allMatches: readonly CashFlowSearchRow[],
 ): CashFlowSearchResult {
   const fields = Object.fromEntries(CASH_FLOW_SEARCH_FIELDS.map((field) => [field, 0])) as Record<CashFlowSearchField, number>;
   for (const matched of inPeriod) for (const field of matched) fields[field] += 1;
-  const dates = allMatches.map((transaction) => transaction.date).sort();
+  const dates = allMatches.map((transaction) => transaction.periodDate).sort();
   return {
     query,
     fields,
@@ -235,8 +210,8 @@ export async function readCashFlowPage(reader: PGliteSpendingReader, input: Cash
     const matched = current.transactions
       .map((transaction) => ({ transaction, fields: cashFlowMatches(transaction, query) }))
       .filter((entry) => entry.fields.length > 0);
-    const all = await readPGliteCashFlow(reader, ALL_PERIODS);
-    search = searchResult(query, matched.map((entry) => entry.fields), all.transactions.filter((transaction) => cashFlowMatches(transaction, query).length > 0));
+    const all = await readCashFlowSearchMatches(reader, current.knowledgeAt, query);
+    search = searchResult(query, matched.map((entry) => entry.fields), all);
     transactions = matched.map((entry) => entry.transaction);
   }
   return {
@@ -244,7 +219,7 @@ export async function readCashFlowPage(reader: PGliteSpendingReader, input: Cash
     knowledgeAt: current.knowledgeAt,
     period,
     previousPeriod,
-    currencies: currencySummaries(current.totals, previous.totals),
+    currencies: currencySummaries(current.totals, previous.totals, transferSummaries(current)),
     accounts: accountChanges(current.transactions),
     transactions: [...transactions].sort(newestFirst),
     transactionCount: current.transactions.length,

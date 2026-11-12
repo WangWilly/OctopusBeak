@@ -46,6 +46,12 @@ export function presetOf(range: CashFlowRange, today: string): CashFlowPreset | 
   return "custom";
 }
 
+/** A preset range moved from `previousToday` to `today`; a custom range stays as it is. */
+export function rollRange(range: CashFlowRange, previousToday: string, today: string): CashFlowRange {
+  const preset = presetOf(range, previousToday);
+  return preset === "custom" ? range : quickRange(preset, today);
+}
+
 /** A range with its end clamped to today and its ends in order. */
 export function clampRange(range: CashFlowRange, today: string): CashFlowRange {
   const endDate = range.endDate > today ? today : range.endDate;

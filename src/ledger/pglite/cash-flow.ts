@@ -11,12 +11,14 @@ import {
 } from "../canonical/cash-flow-inclusion.ts";
 import {
   CASH_FLOW_TRANSFER_WINDOW_DAYS,
+  cashFlowTransferSuspension,
   linkedCashFlowClass,
   pairCashFlowTransfers,
   type CashFlowTransferPair,
   type CashFlowTransferPairHistory,
   type CashFlowTransferPairing,
   type StoredCashFlowTransferLink,
+  transferLinkId,
 } from "../canonical/cash-flow-transfer.ts";
 import type { CanonicalSpendingCategorization, CanonicalSpendingTransaction } from "../canonical/canonical-spending-contracts.ts";
 import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts";
@@ -187,7 +189,7 @@ export function reportedTime(local: string | null, precision: string | null, ori
   return /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/u.exec(local)?.[1] ?? null;
 }
 
-function lastFour(accountNumber: string | null): string | null {
+export function lastFour(accountNumber: string | null): string | null {
   const digits = (accountNumber ?? "").replace(/\D/gu, "");
   return digits.length >= 4 ? digits.slice(-4) : null;
 }
@@ -338,8 +340,16 @@ async function manualTransactions(reader: PGliteSpendingReader, request: CashFlo
   });
 }
 
-function shiftDate(date: string, days: number): string {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+const FIRST_DATE = "0001-01-01";
+const LAST_DATE = "9999-12-31";
+
+/** `date` moved by `days`, held within the four-digit years an ISO date can name. */
+export function shiftDate(date: string, days: number): string {
+  const shifted = new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000);
+  const year = shifted.getUTCFullYear();
+  if (year < 1) return FIRST_DATE;
+  if (year > 9999) return LAST_DATE;
+  return shifted.toISOString().slice(0, 10);
 }
 
 /** The current stored links with a side among `transactionIds`, whichever side it is, valid or not. */
@@ -431,6 +441,57 @@ export async function readPGliteCashFlowTransfers(
   for (const side of await canonicalTransactionsById(reader, knowledgeAt, farSides)) sides.set(side.transactionId, side);
   const history = await transferHistory(reader, [...sides.keys()]);
   return { sides, focus, pairing: pairCashFlowTransfers([...sides.values()], stored, history), history };
+}
+
+/** A row a search reads outside one period; `periodDate` is the date the period filter compares. */
+export type CashFlowSearchRow = Omit<CashFlowReportTransaction, "transferLinkId"> & Readonly<{
+  periodDate: string;
+  /**
+   * The row's stored link when it applies. Evidence links are not read: they
+   * join only internal-transfer Kinds and never change a row's class.
+   */
+  transferLinkId: string | null;
+}>;
+
+/**
+ * Classify the canonical rows `transactionIds` names, in every period, the way
+ * a period read classifies them, plus every Manual Account row. A stored link
+ * applies or not by its two sides alone, so only the counterparts of those
+ * links are read, never the rows around them.
+ */
+export async function readPGliteCashFlowSearchRows(
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  transactionIds: readonly string[],
+): Promise<CashFlowSearchRow[]> {
+  const stored = await readStoredCashFlowTransferLinks(reader, transactionIds);
+  const wanted = new Set(transactionIds);
+  const sideIds = [...new Set([...transactionIds, ...stored.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId])])];
+  const sides = new Map((await canonicalTransactionsById(reader, knowledgeAt, sideIds)).map((side) => [side.transactionId, side]));
+  const linkOf = new Map<string, { linkId: string; counterpart: string }>();
+  for (const link of stored) {
+    if (cashFlowTransferSuspension(link, sides) !== null) continue;
+    const linkId = transferLinkId(link);
+    linkOf.set(link.outflowTransactionId, { linkId, counterpart: link.inflowTransactionId });
+    linkOf.set(link.inflowTransactionId, { linkId, counterpart: link.outflowTransactionId });
+  }
+  const focus = [...sides.values()].filter((side) => wanted.has(side.transactionId));
+  const factsOf = await canonicalFacts(reader, focus.map((side) => side.spending));
+  const canonical = focus.map(({ effectiveOn, spending, ...side }): CashFlowSearchRow => {
+    const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
+    const link = linkOf.get(side.transactionId);
+    const counterpart = link ? sides.get(link.counterpart) : undefined;
+    return {
+      ...side,
+      details,
+      periodDate: effectiveOn,
+      cashFlow: counterpart ? linkedCashFlowClass(side, counterpart) : side.cashFlow,
+      transferLinkId: link?.linkId ?? null,
+    };
+  });
+  const manual = (await manualTransactions(reader, { startDate: FIRST_DATE, endDate: LAST_DATE }))
+    .map((row) => ({ ...row, periodDate: row.date, transferLinkId: null }));
+  return [...canonical, ...manual];
 }
 
 /** Classify every transaction dated from `startDate` through `endDate`, both inclusive. */

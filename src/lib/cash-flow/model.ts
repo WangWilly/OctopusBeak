@@ -3,6 +3,7 @@ import type {
   CashFlowAmount,
   CashFlowInflowGroup,
 } from "../../ledger/canonical/cash-flow-inclusion.ts";
+import type { CashFlowTransferLinkOrigin } from "../../ledger/canonical/cash-flow-transfer.ts";
 import type { CashFlowAccount, CashFlowReportTransaction } from "../../ledger/pglite/cash-flow.ts";
 import type { SpendingCategoryGroup } from "../spending/category-groups.ts";
 import type { ExactAmount } from "../shared-money/exact-money.ts";
@@ -36,10 +37,37 @@ export type CashFlowCurrencySummary = Readonly<{
   kept: ExactAmount;
   keptRatio: number | null;
   unresolved: CashFlowAmount;
-  /** Internal transfers, which are not counted. */
-  transfers: CashFlowAmount;
+  transfers: CashFlowTransferSummary;
   previous: CashFlowPeriodTotals;
 }>;
+
+/** The period's uncounted transfers in one currency. */
+export type CashFlowTransferSummary = Readonly<{
+  /** Each Cash-flow transfer link with a side in the period, once, at its outflow amount. */
+  pairs: CashFlowAmount & Readonly<{ origins: Readonly<Record<CashFlowTransferLinkOrigin["kind"], number>> }>;
+  /** Internal-transfer rows without a current link. */
+  unpaired: CashFlowAmount;
+  /** Transfers to someone else or with no stated purpose, which are not internal. */
+  other: CashFlowAmount;
+}>;
+
+/** How a not-counted transfer row reads: one side of a link, an unpaired internal transfer, or some other transfer. */
+export type CashFlowTransferRole = "paired" | "internal" | "other";
+
+const OTHER_TRANSFER_KINDS: ReadonlySet<string> = new Set(["transfer", "transfer.external"]);
+
+/**
+ * A canonical bare `transfer` or `transfer.external` is not known to stay
+ * within the person's accounts. A Manual Account transfer always names its
+ * counterpart account, so it is internal.
+ */
+export function cashFlowTransferRole(
+  row: Pick<CashFlowReportTransaction, "cashFlow" | "source" | "kind" | "transferLinkId">,
+): CashFlowTransferRole | null {
+  if (row.cashFlow.class !== "not_counted" || row.cashFlow.reason !== "transfer") return null;
+  if (row.transferLinkId !== null) return "paired";
+  return row.source === "canonical" && OTHER_TRANSFER_KINDS.has(row.kind?.code ?? "") ? "other" : "internal";
+}
 
 /** An account's signed change over the period, transfers included. */
 export type CashFlowAccountChange = Readonly<{
@@ -53,6 +81,7 @@ export type CashFlowSearchResult = Readonly<{
   query: string;
   /** In-period matches per field; one row may match several fields. */
   fields: Readonly<Record<CashFlowSearchField, number>>;
+  /** Every matching row in every period, future-dated ones included; the dates are the period filter's own dates. */
   allPeriods: Readonly<{ matches: number; firstDate: string | null; lastDate: string | null }>;
 }>;
 

@@ -50,7 +50,7 @@
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
   import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
-  import { quickRange } from "$lib/cash-flow/period.ts";
+  import { quickRange, rollRange } from "$lib/cash-flow/period.ts";
   import {
     createFinancialPage,
     FinancialPageSuperseded,
@@ -94,7 +94,8 @@
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
-  let cashFlowRequest: CashFlowPageRequest = quickRange("month", get(taipeiDate));
+  let cashFlowToday = get(taipeiDate);
+  let cashFlowRequest: CashFlowPageRequest = quickRange("month", cashFlowToday);
   const financialPage = createFinancialPage({ dataViews: window.octopusBeak?.dataViews, params: { "cash-flow": cashFlowRequest } });
   const financialState = financialPage.state;
   $: overview = $financialState.routes.overview.load;
@@ -295,6 +296,16 @@
   function changeCashFlowRequest(next: CashFlowPageRequest) {
     cashFlowRequest = next;
     financialPage.setParams("cash-flow", next);
+  }
+
+  // 本週, 本月 and 近 30 天 follow the Taipei date past midnight; a custom range stays put.
+  $: rollCashFlowPeriod($taipeiDate);
+  function rollCashFlowPeriod(today: string) {
+    if (today === cashFlowToday) return;
+    const next = rollRange(cashFlowRequest, cashFlowToday, today);
+    cashFlowToday = today;
+    if (next.startDate === cashFlowRequest.startDate && next.endDate === cashFlowRequest.endDate) return;
+    changeCashFlowRequest({ ...next, ...(cashFlowRequest.query ? { query: cashFlowRequest.query } : {}) });
   }
 
   function message(error: unknown) {

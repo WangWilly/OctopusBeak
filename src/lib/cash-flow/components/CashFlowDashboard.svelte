@@ -10,11 +10,12 @@
     isZeroExact,
     subtractExact,
     normalizeExact,
+    addExact,
     type ExactAmount,
   } from "$lib/shared-money/exact-money.ts";
   import type { CashFlowInflowGroup } from "../../../ledger/canonical/cash-flow-inclusion.ts";
-  import type { CashFlowPageDto, CashFlowPageRequest, CashFlowRow } from "../model.ts";
-  import { CASH_FLOW_SEARCH_FIELDS } from "../model.ts";
+  import type { CashFlowAccount, CashFlowPageDto, CashFlowPageRequest, CashFlowRow } from "../model.ts";
+  import { CASH_FLOW_SEARCH_FIELDS, cashFlowTransferRole } from "../model.ts";
   import {
     accountInitial,
     accountLabel,
@@ -32,7 +33,7 @@
     signedAmount,
     type OutflowGroupKey,
   } from "../display.ts";
-  import { clampRange, presetOf, quickRange, rangeText, type CashFlowPreset, type CashFlowRange } from "../period.ts";
+  import { presetOf, quickRange, rangeText, type CashFlowPreset, type CashFlowRange } from "../period.ts";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
 
   export let page: CashFlowPageDto;
@@ -47,7 +48,8 @@
   let pickerOpen = false;
   let drill: Drill | null = null;
   let listFilter: Drill | null = null;
-  let accountFilter: string | null = null;
+  /** The account itself, so the filter still names it in a period where it did not move. */
+  let accountFilter: CashFlowAccount | null = null;
   let searchText = request.query ?? "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -55,19 +57,20 @@
   $: if (!currencies.includes(selectedCurrency)) selectedCurrency = currencies[0] ?? "TWD";
   $: summary = page.currencies.find((entry) => entry.currency === selectedCurrency) ?? null;
   $: preset = presetOf(request, today);
-  $: periodName = $t.cashFlow.periodThis[preset];
+  // The figures on screen are the page's, which may still be the previous period while a new one loads.
+  $: periodName = $t.cashFlow.periodThis[presetOf(page.period, today)];
   $: range = { startDate: page.period.startDate, endDate: page.period.endDate };
   $: scale = summary ? Math.max(exactToNumber(summary.inflow.amount), exactToNumber(summary.outflow.amount), 0) : 0;
   $: keptPositive = summary !== null && compareExact(summary.kept, { coefficient: "0", scale: 0 }) > 0;
   $: accounts = page.accounts.filter((change) => change.currency === selectedCurrency);
   $: accountScale = Math.max(0, ...accounts.map((change) => Math.abs(exactToNumber(change.amount))));
   $: visibleRows = page.transactions.filter((row) =>
-    (accountFilter === null || row.accountId === accountFilter) && (listFilter === null || rowInGroup(row, listFilter)));
+    (accountFilter === null || row.accountId === accountFilter.id) && (listFilter === null || rowInGroup(row, listFilter)));
   $: days = groupByDay(visibleRows);
   $: searchNet = countedNet(page.transactions);
   $: fieldCounts = page.search?.fields ?? null;
-  $: filteredAccount = accountFilter === null ? null : page.accounts.find((change) => change.account.id === accountFilter)?.account ?? null;
   $: drillRows = drill === null ? [] : page.transactions.filter((row) => row.amount.currency === selectedCurrency && rowInGroup(row, drill!));
+  $: transfers = summary?.transfers ?? null;
 
   function amountText(amount: ExactAmount, currency = selectedCurrency, signed = false) {
     return moneyText({ ...amount, currency }, $locale, signed);
@@ -127,10 +130,16 @@
     changeRequest({ startDate: request.startDate, endDate: request.endDate });
   }
 
+  /** Through today, or through the last match when one is dated later, so the range holds every match the hint counted. */
   function searchAllPeriods() {
-    const first = page.search?.allPeriods.firstDate;
-    if (!first) return;
-    changeRequest({ ...clampRange({ startDate: first, endDate: today }, today), ...(request.query ? { query: request.query } : {}) });
+    const all = page.search?.allPeriods;
+    if (!all?.firstDate || !all.lastDate) return;
+    const endDate = all.lastDate > today ? all.lastDate : today;
+    changeRequest({ startDate: all.firstDate < endDate ? all.firstDate : endDate, endDate, ...(request.query ? { query: request.query } : {}) });
+  }
+
+  function transferOriginText(origins: Readonly<{ evidence: number; confirmed: number; manual: number }>): string {
+    return origins.confirmed === 0 && origins.manual === 0 ? $t.cashFlow.transfersAutoPaired : $t.cashFlow.transferOrigins(origins);
   }
 
   function onlyGroup(target: Drill) {
@@ -163,7 +172,12 @@
 
   function rowTag(row: CashFlowRow): string | null {
     if (row.cashFlow.class === "unresolved") return $t.cashFlow.unresolvedTag;
-    if (row.cashFlow.class === "not_counted") return row.cashFlow.reason === "transfer" ? $t.cashFlow.transferTag : $t.cashFlow.notCounted[row.cashFlow.reason];
+    if (row.cashFlow.class === "not_counted") {
+      const role = cashFlowTransferRole(row);
+      if (role === "paired") return $t.cashFlow.pairedTransferTag;
+      if (role === "other") return $t.cashFlow.otherTransferTag;
+      return role === "internal" ? $t.cashFlow.transferTag : $t.cashFlow.notCounted[row.cashFlow.reason];
+    }
     return null;
   }
 
@@ -184,12 +198,13 @@
   sideValue={summary ? amountText(summary.kept, selectedCurrency, true) : "—"}
   sideSub={$t.cashFlow.dailyMeta(page.period.days, page.transactionCount)}
 >
-  <div class="content cash-flow" data-cash-flow-page data-period={`${page.period.startDate}/${page.period.endDate}`} aria-busy={loading}>
+  <div class="content cash-flow" class:loading data-cash-flow-page data-period={`${page.period.startDate}/${page.period.endDate}`} aria-busy={loading}>
     <section class="card flow-summary" aria-labelledby="cash-flow-headline">
       <header class="summary-head">
         <div>
           <p class="period-line"><Calendar size={13} strokeWidth={2} aria-hidden="true" />{$t.cashFlow.periodHeading(rangeText(range, today), $t.cashFlow.periodDays(page.period.days))}</p>
           <h2 id="cash-flow-headline" data-cash-flow-headline>{headlineText}</h2>
+          {#if loading}<p class="loading-line" role="status" data-cash-flow-loading><span class="spinner" aria-hidden="true"></span>{$t.cashFlow.loading}</p>{/if}
         </div>
         <div class="period-controls">
           {#if currencies.length > 1}
@@ -233,11 +248,27 @@
             <span class="figure-sub">{keptText}</span>
           </div>
           <div class="aside-notes">
-            {#if summary.transfers.count > 0}
+            {#if transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0)}
               <div class="note transfer" data-transfers>
-                <span class="note-head"><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transfers(summary.transfers.count)}</span>
-                <strong class="money" data-sensitive>{amountText(summary.transfers.amount)}</strong>
-                <span>{$t.cashFlow.transfersNote}</span>
+                {#if transfers.pairs.count > 0}
+                  <span class="note-head" data-transfer-pairs><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPairs(transfers.pairs.count)}</span>
+                  <strong class="money" data-sensitive>{amountText(transfers.pairs.amount)}</strong>
+                  {#if transfers.unpaired.count > 0}
+                    <span class="note-extra" data-transfer-unpaired data-sensitive>{$t.cashFlow.transferUnpaired(transfers.unpaired.count, amountText(transfers.unpaired.amount))}</span>
+                  {/if}
+                  <span data-transfer-origins>{transferOriginText(transfers.pairs.origins)}</span>
+                {:else}
+                  <span class="note-head" data-transfer-unpaired><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferUnpairedOnly(transfers.unpaired.count)}</span>
+                  <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
+                  <span>{$t.cashFlow.transfersNote}</span>
+                {/if}
+              </div>
+            {/if}
+            {#if transfers && transfers.other.count > 0}
+              <div class="note other-transfer" data-other-transfers>
+                <span class="note-head"><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.otherTransfers(transfers.other.count)}</span>
+                <strong class="money" data-sensitive>{amountText(transfers.other.amount)}</strong>
+                <span>{$t.cashFlow.otherTransfersNote}</span>
               </div>
             {/if}
             {#if summary.unresolved.count > 0}
@@ -325,6 +356,10 @@
                       : $t.cashFlow.drillInflowShare(percent(share(total, summary.inflow.amount), $locale), inflowGroup?.count ?? 0)}</span>
                   </p>
                   <strong class="drill-amount money" data-sensitive>{digits(total)}</strong>
+                  {#if page.search}
+                    {@const matched = amounts.reduce((sum, entry) => normalizeExact(addExact(sum, entry.amount)), { coefficient: "0", scale: 0 })}
+                    <p class="drill-search" data-drill-search data-sensitive>{$t.cashFlow.drillSearchMatches(page.search.query, amounts.length, digits(matched))}</p>
+                  {/if}
                   {#if outflowGroup && !isZeroExact(outflowGroup.previous)}
                     {@const difference = normalizeExact(subtractExact(outflowGroup.amount, outflowGroup.previous))}
                     <p class="drill-compare" data-sensitive>{$t.cashFlow.drillVersusPrevious(digits(difference, true))}</p>
@@ -342,7 +377,7 @@
                   </li>
                 {/each}
               </ul>
-              {#if amounts.length > 1 && exactToNumber(total) > 0}
+              {#if !page.search && amounts.length > 1 && exactToNumber(total) > 0}
                 <p class="drill-fact">{$t.cashFlow.drillLargest(percent(largest / exactToNumber(total), $locale))}</p>
               {/if}
               <footer class="drill-foot">
@@ -396,9 +431,9 @@
           </div>
         {/if}
 
-        {#if filteredAccount || listFilter}
+        {#if accountFilter || listFilter}
           <div class="filter-band">
-            {#if filteredAccount}<span class="field-chip hit" data-account-filter>{$t.cashFlow.accountFilter(accountLabel($t, filteredAccount))}</span>{/if}
+            {#if accountFilter}<span class="field-chip hit" data-account-filter>{$t.cashFlow.accountFilter(accountLabel($t, accountFilter))}</span>{/if}
             {#if listFilter}<span class="field-chip hit" data-group-filter>{$t.cashFlow.categoryFilter(drillLabel(listFilter))}</span>{/if}
             <button type="button" class="text-link" onclick={() => { accountFilter = null; listFilter = null; }}>{$t.cashFlow.clearFilter}</button>
           </div>
@@ -463,7 +498,7 @@
             {#each accounts as change (`${change.account.id}:${change.currency}`)}
               {@const value = exactToNumber(change.amount)}
               <li>
-                <button type="button" class="account" aria-pressed={accountFilter === change.account.id} data-account={change.account.id} onclick={() => accountFilter = accountFilter === change.account.id ? null : change.account.id}>
+                <button type="button" class="account" aria-pressed={accountFilter?.id === change.account.id} data-account={change.account.id} onclick={() => accountFilter = accountFilter?.id === change.account.id ? null : change.account}>
                   <span class="mark" aria-hidden="true">{accountInitial($t, change.account)}</span>
                   <span class="account-name">{accountLabel($t, change.account)}{#if change.account.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}</span>
                   <strong class="money" class:positive={value > 0} class:negative={value < 0} data-sensitive>{digits(change.amount, true)}</strong>
@@ -587,6 +622,52 @@
   .note.transfer {
     background: var(--accent-soft);
     color: var(--accent);
+  }
+
+  .note.other-transfer {
+    background: color-mix(in oklch, var(--muted) 10%, white);
+    color: color-mix(in oklch, var(--muted) 70%, var(--fg));
+  }
+
+  .note-extra {
+    font-weight: 600;
+  }
+
+  .drill-search {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .loading-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .spinner {
+    width: 10px;
+    height: 10px;
+    border: 2px solid color-mix(in oklch, var(--muted) 30%, transparent);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    animation: cash-flow-spin 0.8s linear infinite;
+  }
+
+  @keyframes cash-flow-spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .cash-flow.loading :is(.figures, .flow-bars, .daily, .accounts) {
+    opacity: 0.45;
+    transition: opacity 120ms ease;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
   }
 
   .note.unresolved {
