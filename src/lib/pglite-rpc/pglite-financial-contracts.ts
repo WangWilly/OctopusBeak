@@ -22,6 +22,7 @@ import type {
   SpendingRecordPageRequest,
 } from "../spending/model.ts";
 import type { SpendingLoadInput } from "../spending/contracts.ts";
+import type { CashFlowPageDto, CashFlowPageRequest } from "../cash-flow/model.ts";
 import type { CanonicalOverviewExpectedSource } from "../../ledger/canonical/canonical-overview-query.ts";
 import type {
   PGliteCanonicalFinancialCommitRequest,
@@ -177,6 +178,10 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   "financial.spending.current": operation<[input?: SpendingLoadInput], SpendingPageDto>(
     (args) => args.length === 0 || (args.length === 1 && plainRecord(args[0])),
+    { lane: "background" },
+  ),
+  "financial.cashFlow.current": operation<[request: CashFlowPageRequest], CashFlowPageDto>(
+    (args) => args.length === 1 && stringField(args[0], "startDate") && stringField(args[0], "endDate"),
     { lane: "background" },
   ),
   "financial.spending.recordPage": rendered("spending", "loadRecordPage", operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(

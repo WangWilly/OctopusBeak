@@ -22,7 +22,12 @@ export const CASH_FLOW_INCLUSION_POLICY = Object.freeze({
 
 export type CashFlowInflowGroup =
   | Extract<TransactionKindCode, "income" | `income.${string}` | "interest.earned">
+  /** An external or unspecified transfer in: 其他轉入. */
+  | "transfers_in"
   | "other";
+
+/** A Spending category group, null for Unclassified, or `transfers_out` for an external or unspecified transfer: 轉帳支出. */
+export type CashFlowOutflowGroup = SpendingCategoryGroup | "transfers_out" | null;
 
 export type CashFlowNotCountedReason =
   | "transfer"
@@ -37,14 +42,15 @@ export type CashFlowNotCountedReason =
 /** What one Kind decides for one direction. A refund's categories are resolved later. */
 export type CashFlowRule =
   | Readonly<{ class: "inflow"; group: CashFlowInflowGroup }>
-  | Readonly<{ class: "outflow" }>
+  /** `by_category` groups by Spending category group; transfer Kinds take no Personal Category, so they have their own group. */
+  | Readonly<{ class: "outflow"; group: "by_category" | "transfers_out" }>
   | Readonly<{ class: "refund" }>
   | Readonly<{ class: "not_counted"; reason: CashFlowNotCountedReason }>
   | Readonly<{ class: "unresolved" }>;
 
 export type CashFlowKindInclusion = Readonly<{ inflow: CashFlowRule; outflow: CashFlowRule }>;
 
-const OUTFLOW: CashFlowRule = { class: "outflow" };
+const OUTFLOW: CashFlowRule = { class: "outflow", group: "by_category" };
 const REFUND: CashFlowRule = { class: "refund" };
 const UNRESOLVED: CashFlowRule = { class: "unresolved" };
 const both = (rule: CashFlowRule): CashFlowKindInclusion => ({ inflow: rule, outflow: rule });
@@ -53,6 +59,8 @@ const notCounted = (reason: CashFlowNotCountedReason) => both({ class: "not_coun
 const spending = { inflow: UNRESOLVED, outflow: OUTFLOW } as const;
 const refunding = { inflow: REFUND, outflow: UNRESOLVED } as const;
 const earning = (group: CashFlowInflowGroup): CashFlowKindInclusion => ({ inflow: { class: "inflow", group }, outflow: UNRESOLVED });
+// A transfer that is not proven internal counts until a Cash-flow transfer link shows it stayed within the person's accounts.
+const transferring: CashFlowKindInclusion = { inflow: { class: "inflow", group: "transfers_in" }, outflow: { class: "outflow", group: "transfers_out" } };
 
 /**
  * The one table that maps every registered Kind to its inclusion. Typing it
@@ -61,9 +69,9 @@ const earning = (group: CashFlowInflowGroup): CashFlowKindInclusion => ({ inflow
  */
 export const CASH_FLOW_KIND_INCLUSION: Readonly<Record<TransactionKindCode, CashFlowKindInclusion>> = Object.freeze({
   purchase: spending,
-  transfer: notCounted("transfer"),
+  transfer: transferring,
   "transfer.internal": notCounted("transfer"),
-  "transfer.external": notCounted("transfer"),
+  "transfer.external": transferring,
   "transfer.investment_contribution": notCounted("investment_move"),
   "transfer.investment_withdrawal": notCounted("investment_move"),
   "transfer.security_position": notCounted("investment_move"),
@@ -127,21 +135,33 @@ function isRegisteredKind(code: string): code is TransactionKindCode {
 }
 
 /**
- * `evidence` when the Kind was proven; `fallback` when nothing proves the
- * purpose: a card Kind read from direction alone, or the `purchase` or
- * `receipt` the bank rule ends on. A Cash-flow transfer link (ADR 0137) may
- * exclude only fallback sides.
+ * How much a Kind proves about where the money went (ADR 0137):
+ * - `evidence`: the Kind was proven, and it alone decides inclusion.
+ * - `weak`: a canonical `transfer.external` or bare `transfer`. Keywords such
+ *   as 跨行 or 匯款 assign it, and they also match a move between two of the
+ *   person's own accounts at different banks.
+ * - `fallback`: nothing proves the purpose: a card Kind read from direction
+ *   alone, or the `purchase` or `receipt` the bank rule ends on.
+ * A Cash-flow transfer link may exclude a `weak` or `fallback` side, never an
+ * `evidence` one.
  */
-export type CashFlowKindBasis = "evidence" | "fallback";
+export type CashFlowKindBasis = "evidence" | "weak" | "fallback";
 
 export type CashFlowKind = Readonly<{ code: string; basis: CashFlowKindBasis }>;
+
+const WEAK_TRANSFER_KINDS: ReadonlySet<string> = new Set(["transfer", "transfer.external"]);
 
 /** `evidenceKind` is what the Kind enrichment recorded, or null when it recorded none. */
 export function canonicalCashFlowKind(code: string | null, evidenceKind: string | null): CashFlowKind | null {
   if (code === null) return null;
-  const fallback = evidenceKind === "direction"
-    || (evidenceKind === "bank-rule" && (code === "purchase" || code === "receipt"));
-  return { code, basis: fallback ? "fallback" : "evidence" };
+  if (evidenceKind === "direction" || (evidenceKind === "bank-rule" && (code === "purchase" || code === "receipt")))
+    return { code, basis: "fallback" };
+  return { code, basis: WEAK_TRANSFER_KINDS.has(code) ? "weak" : "evidence" };
+}
+
+/** Whether a Cash-flow transfer link may decide this side's inclusion. */
+export function linkExcludable(kind: CashFlowKind | null): boolean {
+  return kind !== null && kind.basis !== "evidence";
 }
 
 /** An unregistered or absent Kind leaves inclusion undecided. */
@@ -150,10 +170,10 @@ export function cashFlowRule(kind: string | null, direction: "inflow" | "outflow
   return CASH_FLOW_KIND_INCLUSION[kind][direction];
 }
 
-/** One part of an outflow or refund; a null category is the Unclassified bucket. */
+/** One part of an outflow or refund; a null category is the Unclassified bucket, or the transfers-out group. */
 export type CashFlowCategoryShare = Readonly<
   | { category: PersonalCategoryCode; group: SpendingCategoryGroup; amount: ExactAmount }
-  | { category: null; group: null; amount: ExactAmount }
+  | { category: null; group: null | "transfers_out"; amount: ExactAmount }
 >;
 
 export function categoryShare(category: PersonalCategoryCode | null, value: ExactAmount): CashFlowCategoryShare {
@@ -171,8 +191,12 @@ export type CashFlowClass =
   | Readonly<{ class: "not_counted"; reason: CashFlowNotCountedReason }>
   | Readonly<{ class: "unresolved" }>;
 
-export function cashFlowClass(rule: CashFlowRule, categories: readonly CashFlowCategoryShare[], refundOf: string | null): CashFlowClass {
-  if (rule.class === "outflow") return { class: "outflow", categories };
+/** `categories` covers `amount`; a transfer out takes the whole amount into its own group. */
+export function cashFlowClass(rule: CashFlowRule, amount: ExactAmount, categories: readonly CashFlowCategoryShare[], refundOf: string | null): CashFlowClass {
+  if (rule.class === "outflow")
+    return rule.group === "transfers_out"
+      ? { class: "outflow", categories: [{ category: null, group: "transfers_out", amount: { coefficient: amount.coefficient, scale: amount.scale } }] }
+      : { class: "outflow", categories };
   if (rule.class === "refund") return { class: "refund", categories, refundOf };
   return rule;
 }
@@ -196,7 +220,7 @@ export type CashFlowCurrencyTotals = Readonly<{
   currency: string;
   inflow: CashFlowAmount & Readonly<{ groups: readonly (CashFlowAmount & Readonly<{ group: CashFlowInflowGroup }>)[] }>;
   /** Net of refunds, so a group can fall below zero. */
-  outflow: CashFlowAmount & Readonly<{ groups: readonly (CashFlowAmount & Readonly<{ group: SpendingCategoryGroup | null }>)[] }>;
+  outflow: CashFlowAmount & Readonly<{ groups: readonly (CashFlowAmount & Readonly<{ group: CashFlowOutflowGroup }>)[] }>;
   unresolved: CashFlowAmount;
   notCounted: readonly (CashFlowAmount & Readonly<{ reason: CashFlowNotCountedReason }>)[];
 }>;
@@ -226,7 +250,7 @@ function sum(entries: readonly CashFlowAmount[], count: number): CashFlowAmount 
 export function cashFlowTotals(transactions: readonly CashFlowTransaction[]): readonly CashFlowCurrencyTotals[] {
   type Accumulator = {
     inflow: Map<CashFlowInflowGroup, Bucket>; inflowCount: number;
-    outflow: Map<SpendingCategoryGroup | null, Bucket>; outflowCount: number;
+    outflow: Map<CashFlowOutflowGroup, Bucket>; outflowCount: number;
     unresolved: Map<"unresolved", Bucket>;
     notCounted: Map<CashFlowNotCountedReason, Bucket>;
   };
@@ -246,7 +270,7 @@ export function cashFlowTotals(transactions: readonly CashFlowTransaction[]): re
         break;
       case "outflow":
       case "refund": {
-        const touched = new Set<SpendingCategoryGroup | null>();
+        const touched = new Set<CashFlowOutflowGroup>();
         for (const share of flow.categories) {
           bump(totals.outflow, share.group, share.amount, flow.class === "outflow" ? 1 : -1, !touched.has(share.group));
           touched.add(share.group);

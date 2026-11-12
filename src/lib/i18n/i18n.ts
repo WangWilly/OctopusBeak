@@ -11,6 +11,7 @@ import { settingsCopy } from "../settings/copy.ts";
 import { accountsCopy } from "../shared-accounts/copy.ts";
 import { shellCopy } from "../shared-shell/copy.ts";
 import { spendingCopy } from "../spending/copy.ts";
+import { cashFlowCopy } from "../cash-flow/copy.ts";
 import { welcomeCopy } from "../welcome/copy.ts";
 import type { Locale } from "./locale.ts";
 import { sharedCopy } from "./shared-copy.ts";
@@ -34,6 +35,7 @@ function translationFor(locale: Locale) {
     purchaseSpending: spendingCopy[locale].purchaseSpending,
     spendingInsight: spendingCopy[locale].spendingInsight,
     spendingReview: spendingCopy[locale].spendingReview,
+    cashFlow: cashFlowCopy[locale].cashFlow,
     accounts: accountsCopy[locale].accounts,
     historyTable: accountsCopy[locale].historyTable,
     manualAssets: manualAssetsCopy[locale].manualAssets,

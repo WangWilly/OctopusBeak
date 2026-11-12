@@ -11,12 +11,14 @@ import {
 } from "../canonical/cash-flow-inclusion.ts";
 import {
   CASH_FLOW_TRANSFER_WINDOW_DAYS,
-  linkedCashFlowClass,
+  cashFlowTransferSuspension,
+  linkedCashFlow,
   pairCashFlowTransfers,
   type CashFlowTransferPair,
   type CashFlowTransferPairHistory,
   type CashFlowTransferPairing,
   type StoredCashFlowTransferLink,
+  transferLinkId,
 } from "../canonical/cash-flow-transfer.ts";
 import type { CanonicalSpendingCategorization, CanonicalSpendingTransaction } from "../canonical/canonical-spending-contracts.ts";
 import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts";
@@ -36,8 +38,33 @@ import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader
 
 export type CashFlowRequest = Readonly<{ startDate: string; endDate: string }>;
 
-/** `transferLinkId` names the row's current Cash-flow transfer link, if it has one. */
-export type CashFlowReportTransaction = CashFlowTransaction & Readonly<{ transferLinkId: string | null }>;
+/** The account a transaction belongs to, as a list row names it. */
+export type CashFlowAccount = Readonly<{
+  id: string;
+  source: "canonical" | "manual";
+  institutionKey: string | null;
+  stream: string | null;
+  /** The account number's last four digits, when it has them. */
+  mask: string | null;
+  /** A Manual Account's own name. */
+  name: string | null;
+}>;
+
+export type CashFlowTransactionDetails = Readonly<{
+  description: string | null;
+  counterparty: string | null;
+  note: string | null;
+  /** `HH:mm`, only when the source reported a minute or second on the transaction's own date. */
+  time: string | null;
+  account: CashFlowAccount;
+}>;
+
+/**
+ * `transferLinkId` names the row's current Cash-flow transfer link when that
+ * link is a pair: neither of its sides stays counted. A link that leaves a side
+ * counted changes nothing, so its rows carry none.
+ */
+export type CashFlowReportTransaction = CashFlowTransaction & Readonly<{ details: CashFlowTransactionDetails; transferLinkId: string | null }>;
 
 export type CashFlowReport = Readonly<{
   policy: typeof CASH_FLOW_INCLUSION_POLICY;
@@ -159,8 +186,72 @@ async function spendingRefunds(reader: PGliteSpendingReader, knowledgeAt: number
   return new Set(found.map((row) => idString(row.transaction_id, "Refund transaction")));
 }
 
-/** A canonical row and the effective date the period filter reads. */
-type DatedCashFlowTransaction = CashFlowTransaction & Readonly<{ effectiveOn: string }>;
+/** A defaulted midnight, a date-only time, or a time on another day than the row's date is never shown. */
+export function reportedTime(local: string | null, precision: string | null, origin: string | null, date: string): string | null {
+  if (local === null || origin !== "source_reported" || (precision !== "minute" && precision !== "second")) return null;
+  if (local.slice(0, 10) !== date) return null;
+  return /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2})/u.exec(local)?.[1] ?? null;
+}
+
+export function lastFour(accountNumber: string | null): string | null {
+  const digits = (accountNumber ?? "").replace(/\D/gu, "");
+  return digits.length >= 4 ? digits.slice(-4) : null;
+}
+
+type CanonicalFacts = Readonly<{ counterparty: string | null; note: string | null; time: Readonly<{ local: string; precision: string; origin: string }> | null }>;
+
+/** The counterparty display, note and source time of each current transaction revision. */
+async function canonicalFacts(
+  reader: PGliteSpendingReader,
+  transactions: readonly CanonicalSpendingTransaction[],
+): Promise<ReadonlyMap<string, CanonicalFacts>> {
+  const ids = transactions.map((transaction) => transaction.transactionId);
+  const counterparties = await byChunk<{ transaction_id: unknown; value_text: unknown }>(reader, ids, (placeholders) =>
+    `SELECT transaction_id, value_text FROM current_transaction_enrichment
+      WHERE field_name = 'counterparty_display' AND transaction_id IN (${placeholders})`);
+  const notes = await byChunk<{ transaction_id: unknown; value_text: unknown }>(reader, ids, (placeholders) =>
+    `SELECT transaction_id, value_text FROM current_transaction_fields
+      WHERE field_name = 'note' AND transaction_id IN (${placeholders})`);
+  const revisionOf = new Map(transactions.map((transaction) => [transaction.revisionId, transaction.transactionId]));
+  const times = new Map<string, { local: string; precision: string; origin: string }>();
+  const revisionIds = [...revisionOf.keys()];
+  for (let start = 0; start < revisionIds.length; start += 2_048) {
+    const chunk = revisionIds.slice(start, start + 2_048);
+    for (const row of rows(await pgliteQuery<{ revision_id: unknown; local: unknown; precision: unknown; origin: unknown }>(reader,
+      `SELECT revision_id, transaction_date_time_local AS local, time_precision AS precision, time_origin AS origin
+         FROM transaction_revisions WHERE revision_id IN (${chunk.map(() => "?").join(",")})`,
+      chunk.map((id) => bytes(id, "Transaction revision"))))) {
+      const transactionId = revisionOf.get(idString(row.revision_id, "Transaction revision"));
+      if (transactionId) times.set(transactionId, { local: String(row.local), precision: String(row.precision), origin: String(row.origin) });
+    }
+  }
+  const text = (found: readonly { transaction_id: unknown; value_text: unknown }[]) => new Map(found
+    .filter((row) => typeof row.value_text === "string" && row.value_text.trim() !== "")
+    .map((row) => [idString(row.transaction_id, "Transaction"), (row.value_text as string).trim()]));
+  const counterpartyOf = text(counterparties);
+  const noteOf = text(notes);
+  return new Map(ids.map((id) => [id, { counterparty: counterpartyOf.get(id) ?? null, note: noteOf.get(id) ?? null, time: times.get(id) ?? null }]));
+}
+
+function canonicalDetails(transaction: CanonicalSpendingTransaction, date: string, facts: CanonicalFacts | undefined): CashFlowTransactionDetails {
+  return {
+    description: transaction.description?.trim() || null,
+    counterparty: facts?.counterparty ?? null,
+    note: facts?.note ?? null,
+    time: facts?.time ? reportedTime(facts.time.local, facts.time.precision, facts.time.origin, date) : null,
+    account: {
+      id: transaction.accountId,
+      source: "canonical",
+      institutionKey: transaction.institutionKey,
+      stream: transaction.stream,
+      mask: lastFour(transaction.accountNumber),
+      name: null,
+    },
+  };
+}
+
+/** A canonical row, the effective date the period filter reads, and the fact row its list details come from. */
+type DatedCashFlowTransaction = CashFlowTransaction & Readonly<{ effectiveOn: string; spending: CanonicalSpendingTransaction }>;
 
 async function canonicalTransactions(
   reader: PGliteSpendingReader,
@@ -198,6 +289,7 @@ async function canonicalTransactions(
     const inherited = originalId === undefined ? null : inheritedShares(originals.get(originalId), amount);
     return {
       effectiveOn: transaction.effectiveOn,
+      spending: transaction,
       transactionId: transaction.transactionId,
       source: "canonical" as const,
       accountId: transaction.accountId,
@@ -207,7 +299,7 @@ async function canonicalTransactions(
       kind: canonicalCashFlowKind(transaction.kind, evidence),
       cashFlow: unproven.has(transaction.transactionId)
         ? { class: "unresolved" as const }
-        : cashFlowClass(rule, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
+        : cashFlowClass(rule, amount, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
     };
   });
 }
@@ -215,13 +307,18 @@ async function canonicalTransactions(
 type ManualRow = Readonly<{
   transaction_id: string; account_id: string; occurred_on: string; amount: string; currency: string;
   kind: "purchase" | "receipt" | "transfer"; personal_category: string | null; direction: "out" | "in" | null;
+  note: string | null; account_name: string;
 }>;
 
-/** A Manual Account's Kind is what the person entered, so it is never a producer fallback. */
-async function manualTransactions(reader: PGliteSpendingReader, request: CashFlowRequest): Promise<CashFlowTransaction[]> {
+/**
+ * A Manual Account's Kind is what the person entered, so it is never a
+ * producer fallback. A Manual Account transfer names its counterpart account,
+ * so it counts as `transfer.internal`.
+ */
+async function manualTransactions(reader: PGliteSpendingReader, request: CashFlowRequest): Promise<Omit<CashFlowReportTransaction, "transferLinkId">[]> {
   const result = await reader.query<ManualRow>(
     `SELECT tx.transaction_id, tx.account_id, tx.occurred_on, tx.amount, account.currency,
-            tx.kind, tx.personal_category, tx.direction
+            tx.kind, tx.personal_category, tx.direction, tx.note, account.name AS account_name
        FROM manual_transactions tx
        JOIN manual_assets account ON account.asset_id = tx.account_id
       WHERE tx.occurred_on BETWEEN $1 AND $2`,
@@ -239,13 +336,28 @@ async function manualTransactions(reader: PGliteSpendingReader, request: CashFlo
       amount,
       direction: flowDirection,
       kind: { code: row.kind, basis: "evidence" as const },
-      cashFlow: cashFlowClass(cashFlowRule(row.kind, flowDirection), [categoryShare(category, amount)], null),
+      cashFlow: cashFlowClass(cashFlowRule(row.kind === "transfer" ? "transfer.internal" : row.kind, flowDirection), amount, [categoryShare(category, amount)], null),
+      details: {
+        description: null,
+        counterparty: null,
+        note: row.note?.trim() || null,
+        time: null,
+        account: { id: row.account_id, source: "manual" as const, institutionKey: null, stream: null, mask: null, name: row.account_name },
+      },
     };
   });
 }
 
-function shiftDate(date: string, days: number): string {
-  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+const FIRST_DATE = "0001-01-01";
+const LAST_DATE = "9999-12-31";
+
+/** `date` moved by `days`, held within the four-digit years an ISO date can name. */
+export function shiftDate(date: string, days: number): string {
+  const shifted = new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000);
+  const year = shifted.getUTCFullYear();
+  if (year < 1) return FIRST_DATE;
+  if (year > 9999) return LAST_DATE;
+  return shifted.toISOString().slice(0, 10);
 }
 
 /** The current stored links with a side among `transactionIds`, whichever side it is, valid or not. */
@@ -339,6 +451,58 @@ export async function readPGliteCashFlowTransfers(
   return { sides, focus, pairing: pairCashFlowTransfers([...sides.values()], stored, history), history };
 }
 
+/** A row a search reads outside one period; `periodDate` is the date the period filter compares. */
+export type CashFlowSearchRow = Omit<CashFlowReportTransaction, "transferLinkId"> & Readonly<{
+  periodDate: string;
+  /**
+   * The row's stored link when it applies and is a pair. Evidence links are not read: they
+   * join only internal-transfer Kinds and never change a row's class.
+   */
+  transferLinkId: string | null;
+}>;
+
+/**
+ * Classify the canonical rows `transactionIds` names, in every period, the way
+ * a period read classifies them, plus every Manual Account row. A stored link
+ * applies or not by its two sides alone, so only the counterparts of those
+ * links are read, never the rows around them.
+ */
+export async function readPGliteCashFlowSearchRows(
+  reader: PGliteSpendingReader,
+  knowledgeAt: number,
+  transactionIds: readonly string[],
+): Promise<CashFlowSearchRow[]> {
+  const stored = await readStoredCashFlowTransferLinks(reader, transactionIds);
+  const wanted = new Set(transactionIds);
+  const sideIds = [...new Set([...transactionIds, ...stored.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId])])];
+  const sides = new Map((await canonicalTransactionsById(reader, knowledgeAt, sideIds)).map((side) => [side.transactionId, side]));
+  const linkOf = new Map<string, { linkId: string; counterpart: string }>();
+  for (const link of stored) {
+    if (cashFlowTransferSuspension(link, sides) !== null) continue;
+    const linkId = transferLinkId(link);
+    linkOf.set(link.outflowTransactionId, { linkId, counterpart: link.inflowTransactionId });
+    linkOf.set(link.inflowTransactionId, { linkId, counterpart: link.outflowTransactionId });
+  }
+  const focus = [...sides.values()].filter((side) => wanted.has(side.transactionId));
+  const factsOf = await canonicalFacts(reader, focus.map((side) => side.spending));
+  const canonical = focus.map(({ effectiveOn, spending, ...side }): CashFlowSearchRow => {
+    const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
+    const link = linkOf.get(side.transactionId);
+    const counterpart = link ? sides.get(link.counterpart) : undefined;
+    const linked = counterpart ? linkedCashFlow(side, counterpart) : null;
+    return {
+      ...side,
+      details,
+      periodDate: effectiveOn,
+      cashFlow: linked?.cashFlow ?? side.cashFlow,
+      transferLinkId: linked?.paired ? link!.linkId : null,
+    };
+  });
+  const manual = (await manualTransactions(reader, { startDate: FIRST_DATE, endDate: LAST_DATE }))
+    .map((row) => ({ ...row, periodDate: row.date, transferLinkId: null }));
+  return [...canonical, ...manual];
+}
+
 /** Classify every transaction dated from `startDate` through `endDate`, both inclusive. */
 export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: CashFlowRequest): Promise<CashFlowReport> {
   const { startDate, endDate } = request;
@@ -357,11 +521,15 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
     [link.outflowTransactionId, { linkId: link.linkId, counterpart: link.inflowTransactionId }],
     [link.inflowTransactionId, { linkId: link.linkId, counterpart: link.outflowTransactionId }],
   ] as const));
-  const canonical = focus.map(({ effectiveOn: _effectiveOn, ...side }): CashFlowReportTransaction => {
+  // Only the rows in the range are listed, so only they read their details.
+  const factsOf = await canonicalFacts(reader, focus.map((side) => side.spending));
+  const canonical = focus.map(({ effectiveOn: _effectiveOn, spending, ...side }): CashFlowReportTransaction => {
+    const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
     const link = linkOf.get(side.transactionId);
-    if (!link) return { ...side, transferLinkId: null };
+    if (!link) return { ...side, details, transferLinkId: null };
     const counterpart = sides.get(link.counterpart);
-    return { ...side, cashFlow: counterpart ? linkedCashFlowClass(side, counterpart) : side.cashFlow, transferLinkId: link.linkId };
+    const linked = counterpart ? linkedCashFlow(side, counterpart) : null;
+    return { ...side, details, cashFlow: linked?.cashFlow ?? side.cashFlow, transferLinkId: linked?.paired ? link.linkId : null };
   });
   const manual = (await manualTransactions(reader, request)).map((row) => ({ ...row, transferLinkId: null }));
   const transactions = [...canonical, ...manual]

@@ -239,6 +239,7 @@ test("each live view republishes on exactly the dependencies it reads", async ()
       "financial.assets.current": { preview: true, exchangeRates: true },
       "financial.liabilities.current": { preview: true, exchangeRates: true },
       "financial.spending.current": { preview: false, exchangeRates: false },
+      "financial.cashFlow.current": { preview: false, exchangeRates: false },
     } satisfies Record<PGliteFinancialLiveView, { preview: boolean; exchangeRates: boolean }>;
     const counts = new Map<string, number>();
     const stops: Array<() => Promise<void>> = [];
@@ -261,7 +262,8 @@ test("each live view republishes on exactly the dependencies it reads", async ()
     try {
       for (const view of Object.keys(expected)) {
         counts.set(view, 0);
-        stops.push(await views.subscribe(view, {}, () => counts.set(view, counts.get(view)! + 1)));
+        const params = view === "financial.cashFlow.current" ? { startDate: "2026-10-01", endDate: "2026-10-31" } : {};
+        stops.push(await views.subscribe(view, params, () => counts.set(view, counts.get(view)! + 1)));
       }
       await settle("preview", () => writePreview(twdSavings));
       await settle("preview", () => shown["financial.preview.visibilityChanged"]([]));

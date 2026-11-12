@@ -9,6 +9,7 @@ import {
 
 type Subscription = {
   view: string;
+  params: object;
   publish(value: unknown): void;
   fail(): void;
   stopped: boolean;
@@ -18,9 +19,10 @@ function fakeDataViews(options: { enabled?: boolean } = {}) {
   const subscriptions: Subscription[] = [];
   const dataViews: FinancialDataViews = {
     async enabled() { return options.enabled ?? true; },
-    async subscribe(view, _params, onValue, onError) {
+    async subscribe(view, params, onValue, onError) {
       const subscription: Subscription = {
         view,
+        params,
         publish: onValue,
         fail: () => onError?.({ requestId: "request", code: "subscription-failed", message: "failed" }),
         stopped: false,
@@ -245,4 +247,35 @@ test("a page disposed before its capability resolves never enables live views", 
   financial.dispose();
   assert.equal(await financial.capability, false);
   assert.equal(get(financial.state).enabled, false);
+});
+
+test("new route params subscribe the new key and keep the last page while it loads", async () => {
+  const fake = fakeDataViews();
+  const october = { startDate: "2026-10-01", endDate: "2026-10-31" };
+  const financial = createFinancialPage({ dataViews: fake.dataViews, params: { "cash-flow": october } });
+  await financial.capability;
+  const state = () => get(financial.state);
+  const cashFlow = () => fake.subscriptions.filter((entry) => entry.view === "financial.cashFlow.current" && !entry.stopped);
+  financial.show("cash-flow");
+  await settle();
+  assert.deepEqual(cashFlow().map((entry) => entry.params), [october]);
+  cashFlow()[0]!.publish(page("october"));
+
+  const searched = { ...october, query: "shopee" };
+  financial.setParams("cash-flow", searched);
+  await settle();
+  assert.deepEqual(cashFlow().map((entry) => entry.params), [searched], "the old key stops");
+  assert.deepEqual(state().routes["cash-flow"].load, { status: "loading", data: { id: "october" } });
+  cashFlow()[0]!.publish(page("searched"));
+  assert.deepEqual(state().routes["cash-flow"].load, { status: "ready", data: { id: "searched" } });
+
+  financial.setParams("cash-flow", { ...searched });
+  await settle();
+  assert.equal(fake.subscriptions.filter((entry) => entry.view === "financial.cashFlow.current").length, 2, "equal params do not resubscribe");
+
+  financial.show("overview");
+  financial.setParams("cash-flow", october);
+  await settle();
+  assert.equal(cashFlow().length, 0, "a hidden route only records its params");
+  financial.dispose();
 });
