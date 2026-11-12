@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, rmdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type BrowserContext, type Page } from "playwright";
-import type { WorkflowBrowserPort } from "../workflow-executor.ts";
 import type { WorkflowExecution } from "./active-task-run.ts";
 import type { AutomationCredentialCodec } from "./config-files.ts";
 import {
@@ -330,13 +329,22 @@ export async function withAppWorkflowBrowserPage<T>(
   }
 }
 
+/** The page the App hosts for one `withAppWorkflowHostPage` call, and the loopback target a worker attaches to. */
+export type AppWorkflowHostedPage = Readonly<{
+  page: Page;
+  /** Null when the launch exposes no loopback endpoint (a check's injected context). */
+  connection: AppWorkflowBrowserConnection | null;
+}>;
+
 /**
- * Opens one App-managed, headless Playwright page. Browser state is confined to
- * the existing 30-day cleanup root and is never exposed as a workflow file.
+ * Opens one App-managed, headless Playwright page and keeps it open while
+ * `use` runs. Browser state is confined to the existing 30-day cleanup root
+ * and is never exposed as a workflow file.
  */
-export function createAppWorkflowBrowserPort(
+export async function withAppWorkflowHostPage<T>(
   input: AppWorkflowBrowserHostInput,
-): WorkflowBrowserPort {
+  use: (hosted: AppWorkflowHostedPage) => Promise<T>,
+): Promise<T> {
   assertSafePathSegment(input.taskId);
   assertSafePathSegment(input.taskRunId);
   const browserStateDirectory = join(
@@ -355,89 +363,85 @@ export function createAppWorkflowBrowserPort(
   const launch = input.launchPersistentContext ?? defaultPersistentContext;
   const runtime = input.browserRuntime ?? browserRuntime;
 
-  return {
-    async withPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
-      let context: BrowserContext | null = null;
-      let releasePage = () => {};
-      const closeOnAbort = () => {
-        void context?.close().catch(() => {});
-      };
-      try {
-        input.signal.throwIfAborted();
-        const profileConfiguration = await runtime.resolve(input.browserProfile);
-        input.onRuntimeIdentity?.(profileConfiguration.identity);
-        await ensureDirectory(browserStateDirectory);
-        await removeDirectoryEntriesExcept(browserStateDirectory, "authentication");
-        await ensureDirectory(authenticationDirectory);
-        await removeDirectoryEntriesExcept(authenticationDirectory, "cookies.safeStorage.json");
-        const retainedCookies = await readRetainedCookies(cookieStatePath, credentialCodec);
-        await ensureDirectory(browserRuntimeRoot);
-        await ensureDirectory(browserRuntimeTaskDirectory);
-        await rm(browserRuntimeDirectory, { recursive: true, force: true });
-        await ensureDirectory(browserRuntimeDirectory);
-        try {
-          context = await launch(browserRuntimeDirectory, {
-            ...launchOptions,
-            args: [...launchOptions.args, ...profileConfiguration.args],
-            userAgent: profileConfiguration.userAgent,
-          });
-        } catch (error) {
-          if (input.signal.aborted) throw error;
-          throw new BrowserRuntimeConfigurationError("launch-failed", { cause: error });
-        }
-        input.signal.throwIfAborted();
-        const page = context.pages()[0] ?? await context.newPage();
-        const cookiesToRestore = cookiesForAppWorkflowBrowserProfile(retainedCookies, input.browserProfile);
-        if (cookiesToRestore.length > 0) {
-          try {
-            await context.addCookies(cookiesToRestore);
-          } catch {
-            // A rejected cookie jar is discarded for this run; the workflow may log in again.
-          }
-        }
-        let connection: AppWorkflowBrowserConnection | null = null;
-        const endpoint = await loopbackDevToolsEndpoint(
-          browserRuntimeDirectory,
-          input.signal,
-          !input.launchPersistentContext,
-        );
-        if (!endpoint && !input.launchPersistentContext) {
-          throw new Error("The App browser did not expose its required loopback worker endpoint.");
-        }
-        if (endpoint) {
-          connection = { endpoint, targetId: await targetIdForPage(context, page) };
-        }
-        if (connection && input.nativeDialogOwner === "worker") {
-          // Each CDP connection otherwise independently auto-dismisses dialogs.
-          // The worker/provider observer supplies classification and dismissal.
-          page.on("dialog", () => {});
-        }
-        if (input.execution) releasePage = input.execution.hostPage({ page, connection });
-        input.signal.addEventListener("abort", closeOnAbort, { once: true });
-        input.signal.throwIfAborted();
-        if (input.startUrl) {
-          await page.goto(input.startUrl, { waitUntil: "domcontentloaded" });
-          input.signal.throwIfAborted();
-        }
-        return await run(page);
-      } finally {
-        input.signal.removeEventListener("abort", closeOnAbort);
-        releasePage();
-        if (credentialCodec && context) {
-          try {
-            const cookies = await context.cookies();
-            await writeRetainedCookies(cookieStatePath, cookies, credentialCodec);
-          } catch {
-            // Never fall back to writing browser state in clear text.
-          }
-        }
-        await context?.close().catch(() => {});
-        const lastUsed = new Date();
-        if (context) await utimes(browserStateDirectory, lastUsed, lastUsed).catch(() => {});
-        await rm(browserRuntimeDirectory, { recursive: true, force: true }).catch(() => {});
-        await removeEmptyDirectory(browserRuntimeTaskDirectory);
-        await removeEmptyDirectory(browserRuntimeRoot);
-      }
-    },
+  let context: BrowserContext | null = null;
+  let releasePage = () => {};
+  const closeOnAbort = () => {
+    void context?.close().catch(() => {});
   };
+  try {
+    input.signal.throwIfAborted();
+    const profileConfiguration = await runtime.resolve(input.browserProfile);
+    input.onRuntimeIdentity?.(profileConfiguration.identity);
+    await ensureDirectory(browserStateDirectory);
+    await removeDirectoryEntriesExcept(browserStateDirectory, "authentication");
+    await ensureDirectory(authenticationDirectory);
+    await removeDirectoryEntriesExcept(authenticationDirectory, "cookies.safeStorage.json");
+    const retainedCookies = await readRetainedCookies(cookieStatePath, credentialCodec);
+    await ensureDirectory(browserRuntimeRoot);
+    await ensureDirectory(browserRuntimeTaskDirectory);
+    await rm(browserRuntimeDirectory, { recursive: true, force: true });
+    await ensureDirectory(browserRuntimeDirectory);
+    try {
+      context = await launch(browserRuntimeDirectory, {
+        ...launchOptions,
+        args: [...launchOptions.args, ...profileConfiguration.args],
+        userAgent: profileConfiguration.userAgent,
+      });
+    } catch (error) {
+      if (input.signal.aborted) throw error;
+      throw new BrowserRuntimeConfigurationError("launch-failed", { cause: error });
+    }
+    input.signal.throwIfAborted();
+    const page = context.pages()[0] ?? await context.newPage();
+    const cookiesToRestore = cookiesForAppWorkflowBrowserProfile(retainedCookies, input.browserProfile);
+    if (cookiesToRestore.length > 0) {
+      try {
+        await context.addCookies(cookiesToRestore);
+      } catch {
+        // A rejected cookie jar is discarded for this run; the workflow may log in again.
+      }
+    }
+    let connection: AppWorkflowBrowserConnection | null = null;
+    const endpoint = await loopbackDevToolsEndpoint(
+      browserRuntimeDirectory,
+      input.signal,
+      !input.launchPersistentContext,
+    );
+    if (!endpoint && !input.launchPersistentContext) {
+      throw new Error("The App browser did not expose its required loopback worker endpoint.");
+    }
+    if (endpoint) {
+      connection = { endpoint, targetId: await targetIdForPage(context, page) };
+    }
+    if (connection && input.nativeDialogOwner === "worker") {
+      // Each CDP connection otherwise independently auto-dismisses dialogs.
+      // The worker/provider observer supplies classification and dismissal.
+      page.on("dialog", () => {});
+    }
+    if (input.execution) releasePage = input.execution.hostPage({ page, connection });
+    input.signal.addEventListener("abort", closeOnAbort, { once: true });
+    input.signal.throwIfAborted();
+    if (input.startUrl) {
+      await page.goto(input.startUrl, { waitUntil: "domcontentloaded" });
+      input.signal.throwIfAborted();
+    }
+    return await use({ page, connection });
+  } finally {
+    input.signal.removeEventListener("abort", closeOnAbort);
+    releasePage();
+    if (credentialCodec && context) {
+      try {
+        const cookies = await context.cookies();
+        await writeRetainedCookies(cookieStatePath, cookies, credentialCodec);
+      } catch {
+        // Never fall back to writing browser state in clear text.
+      }
+    }
+    await context?.close().catch(() => {});
+    const lastUsed = new Date();
+    if (context) await utimes(browserStateDirectory, lastUsed, lastUsed).catch(() => {});
+    await rm(browserRuntimeDirectory, { recursive: true, force: true }).catch(() => {});
+    await removeEmptyDirectory(browserRuntimeTaskDirectory);
+    await removeEmptyDirectory(browserRuntimeRoot);
+  }
 }

@@ -19,7 +19,7 @@ import {
 } from "./workflow-failure-diagnostics.ts";
 import { rememberFailureDiagnostic } from "./error-report.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import type { ExecutionHost } from "./execution-host.ts";
+import type { ExecutionHost, StartWorker } from "./execution-host.ts";
 import type { BrowserRuntimeIdentity } from "./browser-runtime.ts";
 import {
   createAppWorkflowHumanAssistancePort,
@@ -194,7 +194,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
       execution: context.execution,
     });
 
-    const runWorker = async () => {
+    const runWorker = async (startWorker: StartWorker) => {
       signal.throwIfAborted();
       return await runSupervisedAppWorkflow({
         runId: context.run.taskRunId,
@@ -215,15 +215,13 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
           },
           ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
-        launchWorker: (launch) => host.launchWorker(launch, context.execution),
+        startWorker,
       });
     };
-    const outcome = page
-      ? await host.withPage(page, async () => {
-        await browserRuntimeIdentity.flush();
-        return await runWorker();
-      })
-      : await runWorker();
+    const outcome = await host.hostRound({ ...(page ? { page } : {}) }, async (startWorker) => {
+      if (page) await browserRuntimeIdentity.flush();
+      return await runWorker(startWorker);
+    });
     workerOutcome = outcome;
     await browserRuntimeIdentity.flush();
     ending = { kind: "worker", outcome };

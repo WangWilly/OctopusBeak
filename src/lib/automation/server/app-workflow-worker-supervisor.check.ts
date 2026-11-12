@@ -14,7 +14,7 @@ import { tdccSessionHostCalls } from "./tdcc-session-host.ts";
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
 const FIXTURE_WORKFLOW_ID = "ctbc-statements";
 
-const base: Omit<RunSupervisedAppWorkflowOptions, "launchWorker"> = {
+const base: Omit<RunSupervisedAppWorkflowOptions, "startWorker"> = {
   runId: "supervised-run-1",
   workflowId: FIXTURE_WORKFLOW_ID,
   input: { credential: "secret-test-value" },
@@ -57,7 +57,7 @@ function harness(overrides: Partial<typeof base> = {}) {
     ...base,
     ...overrides,
     hostCalls: { ...base.hostCalls, ...overrides.hostCalls },
-    launchWorker: () => {
+    startWorker: () => {
       worker = new FakeWorker();
       return worker;
     },
@@ -212,7 +212,7 @@ test("invalid outbound frames are rejected, cancelled, and force-terminated", as
 test("worker creation failure returns only its stable code", async () => {
   const outcome = await runSupervisedAppWorkflow({
     ...base,
-    launchWorker: () => { throw new Error("secret worker startup detail"); },
+    startWorker: () => { throw new Error("secret worker startup detail"); },
   });
   assert.deepEqual(outcome, {
     status: "failed",

@@ -660,7 +660,10 @@ test("a fund account TDCC no longer lists commits an empty holding snapshot", as
 test("through the supervised worker frames, a rotated token is saved when the run fails part way", async () => {
   await withHarness(async ({ secrets, pgliteRpc }) => {
     const fake = fakeTdcc({ acceptedToken: null, httpFailureAt: "tsp/TSP007" });
-    const outcome = await runSupervisedAppWorkflow({
+    const outcome = await inProcessCheckHost({
+      capabilities: childRpcCapabilities(pgliteRpc),
+      resolveDefinition: () => tdccDefinition(fake.fetch),
+    }).hostRound({}, async (startWorker) => await runSupervisedAppWorkflow({
       runId: "tdcc-worker-run",
       workflowId: "sync-tdcc",
       input: { statementTypes: ["settlement"] },
@@ -672,12 +675,8 @@ test("through the supervised worker frames, a rotated token is saved when the ru
         humanAssistance: async () => ({ status: "failed" }),
         ...tdccSessionHostCalls(createTdccSessionHost(secrets)),
       },
-      launchWorker: (launch) => inProcessCheckHost({
-        capabilities: childRpcCapabilities(pgliteRpc),
-        resolveDefinition: () => tdccDefinition(fake.fetch),
-      })
-        .launchWorker(launch, { browserConnection: () => null }),
-    });
+      startWorker,
+    }));
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");
     assert.equal(outcome.summary?.counts.excludedUnknownInstitutionCount, 1);

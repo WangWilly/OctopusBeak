@@ -20,7 +20,7 @@ import {
   admitYuantaDomesticDepositFinancialCapture,
 } from "../ledger/canonical/yuanta-domestic-deposit-admission.ts";
 import { YUANTA_HUMAN_ATTESTED_V2_MANIFEST } from "../ledger/canonical/yuanta-human-attestation-contract.ts";
-import { createAppWorkflowBrowserPort } from "../lib/automation/server/app-browser-host.ts";
+import { withAppWorkflowHostPage } from "../lib/automation/server/app-browser-host.ts";
 import { financialFactsFromCapture } from "../ledger/pglite/deposit.ts";
 import type { PGliteWorkflowRunItem } from "../ledger/pglite/workflow-run.ts";
 import { yuantaCollectionContext, yuantaStagingHandle } from "./yuanta-collection.fixtures.ts";
@@ -1049,7 +1049,7 @@ try {
       fixtureCookie = undefined;
       browserExportCookie = null;
       const signal = controller.signal;
-      const browserPort = createAppWorkflowBrowserPort({
+      const hostInput = {
         taskId: "yuanta-domestic-fixture",
         taskRunId: `yuanta-domestic-run-${runOrdinal}`,
         userDataDirectory: browserFixtureDirectory,
@@ -1061,9 +1061,9 @@ try {
           if (origin === "provider") await browserContext.route(`${YUANTA_EBANK_ORIGIN}/**`, forwardToFixtureServer);
           return browserContext;
         },
-      });
+      } satisfies Parameters<typeof withAppWorkflowHostPage>[0];
       const context = checkContext(signal);
-      const result = await browserPort.withPage(async (page) => {
+      const result = await withAppWorkflowHostPage(hostInput, async ({ page }) => {
         page.on("download", () => { observedBrowserDownload = true; });
         const download = await downloadYuantaStatementRows(
           yuantaEbankSite(page, { signal, text: context.text }),

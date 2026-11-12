@@ -2,7 +2,7 @@ import { CaptchaProviderRejectedError } from "../captcha-rejection.ts";
 import assert from "node:assert/strict";
 import { productRunResult } from "../workflow-run-result.ts";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
@@ -33,6 +33,7 @@ import {
   runAppWorkflowWorkerThread,
 } from "./app-workflow-worker-runtime.ts";
 import { chromiumThreadHost } from "./execution-host.ts";
+import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { ATTACHED_PREVIEW_PRODUCTS } from "../../preview-sources/attached-products.ts";
 import type { WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
@@ -550,46 +551,140 @@ test("bundled internal worker validates workerData and returns a sanitized frame
   assert.equal(JSON.stringify(terminal).includes("must-not-be-returned"), false);
 });
 
-test("the Chromium thread host hands a browser workflow's thread its DevTools and PGlite descriptors", async () => {
-  const browserConnection = () => ({ endpoint: "http://127.0.0.1:9", targetId: "fixture-target" });
-  assert.throws(
-    () => chromiumThreadHost.launchWorker({ start }, { browserConnection: () => null }),
-    /connection is unavailable/u,
-  );
-  const silent = await silentPgliteEndpoint();
-  const dialing = chromiumThreadHost.launchWorker({ start, pgliteRpc: silent.descriptor }, { browserConnection });
+/**
+ * A browser round's page from a stand-in context: with `devToolsPort` the
+ * page publishes that loopback endpoint and `targetId`, as Chromium does;
+ * without it the page exposes no worker connection.
+ */
+async function standInRound(devToolsPort?: number, targetId = "fixture-target") {
+  const userDataDirectory = await mkdtemp(join(tmpdir(), "chromium-thread-host-"));
+  const page = {} as never;
+  const round = {
+    page: {
+      taskId: "chromium-thread-host-check",
+      taskRunId: start.taskRunId,
+      signal: new AbortController().signal,
+      userDataDirectory,
+      credentialCodec: null,
+      launchPersistentContext: async (directory: string) => {
+        if (devToolsPort !== undefined) await writeFile(join(directory, "DevToolsActivePort"), `${devToolsPort}\n/devtools/browser/fixture\n`);
+        return {
+          pages: () => [page],
+          newCDPSession: async () => ({
+            send: async () => ({ targetInfo: { type: "page", targetId } }),
+            detach: async () => {},
+          }),
+          close: async () => {},
+        } as never;
+      },
+    },
+  } as const;
+  return { round, close: () => rm(userDataDirectory, { recursive: true, force: true }) };
+}
+
+/** A loopback socket standing in for a page's DevTools endpoint; it records each dial and hangs up. */
+async function devToolsEndpoint() {
+  let dialled!: () => void;
+  const firstDial = new Promise<void>((resolve) => { dialled = resolve; });
+  const server = createServer((socket) => {
+    dialled();
+    socket.destroy();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    port: address.port,
+    firstDial,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+function within<T>(promise: Promise<T>, message: string, ms = 10_000): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(message)), ms); }),
+  ]).finally(() => clearTimeout(timeout));
+}
+
+test("the Chromium thread host refuses a browser round's worker when its page exposes no connection", async () => {
+  const { round, close } = await standInRound();
   try {
-    await Promise.race([
-      silent.firstConnection,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error("The thread never dialled its PGlite descriptor.")), 10_000);
-      }),
-    ]);
+    let page: unknown;
+    await chromiumThreadHost.hostRound(round, async (startWorker) => {
+      assert.throws(() => startWorker({ start }), /connection is unavailable/u);
+      page = "hosted";
+    });
+    assert.equal(page, "hosted", "the round still ran with its page open");
   } finally {
-    clearTimeout(timeout);
-    await dialing.terminate();
+    await close();
+  }
+});
+
+test("the Chromium thread host hands a browser workflow's thread its own page's DevTools target and the PGlite descriptor", async () => {
+  const silent = await silentPgliteEndpoint();
+  const { round, close } = await standInRound(9);
+  try {
+    await chromiumThreadHost.hostRound(round, async (startWorker) => {
+      const dialing = startWorker({ start, pgliteRpc: silent.descriptor });
+      try {
+        await within(silent.firstConnection, "The thread never dialled its PGlite descriptor.");
+        assert.throws(() => startWorker({ start }), /already started its worker/u, "a round starts one worker");
+      } finally {
+        await dialing.terminate();
+      }
+    });
+  } finally {
+    await close();
     await silent.close();
   }
-  const worker = chromiumThreadHost.launchWorker({ start }, { browserConnection });
+
+  // A CTBC round whose PGlite child answers reaches the workflow's page, so
+  // the thread dials the DevTools endpoint the round's own page published.
+  const devTools = await devToolsEndpoint();
+  const other = await devToolsEndpoint();
+  const server = createPGliteChildRpcServer({ provider: { operational: {}, financial: { async request() { return null; } } } as never });
+  const ctbc = await standInRound(devTools.port);
+  const otherRound = await standInRound(other.port);
+  let otherDialled = false;
+  void other.firstDial.then(() => { otherDialled = true; });
   try {
-    const terminal = await new Promise<AppWorkflowWorkerOutboundFrame>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("The thread did not end its run.")), 10_000);
-      worker.on("error", (error) => { clearTimeout(timeout); reject(error); });
-      worker.on("message", (value: unknown) => {
-        const frame = parseAppWorkflowWorkerOutboundFrame(value);
-        if (frame.kind === "call") {
-          worker.postMessage(reply(frame.callId));
-        } else {
-          clearTimeout(timeout);
-          resolve(frame);
+    await server.ready;
+    const ctbcStart = {
+      ...start,
+      input: appWorkflowRegistration(FIXTURE_WORKFLOW_ID)?.inputFromEnvironment({
+        [["LIBRETTO", "CLOUD", "CTBC", "USER", "ID"].join("_")]: "synthetic-user-id",
+        [["LIBRETTO", "CLOUD", "CTBC", "ACCOUNT"].join("_")]: "synthetic-account",
+        [["LIBRETTO", "CLOUD", "CTBC", "PASSWORD"].join("_")]: "synthetic-password",
+      }),
+    };
+    const descriptor = {
+      endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+      token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+    };
+    // Another round's page is open at the same time; its endpoint is never dialled.
+    await chromiumThreadHost.hostRound(otherRound.round, async () => {
+      await chromiumThreadHost.hostRound(ctbc.round, async (startWorker) => {
+        const worker = startWorker({ start: ctbcStart, pgliteRpc: descriptor });
+        worker.on("message", (value: unknown) => {
+          const frame = parseAppWorkflowWorkerOutboundFrame(value);
+          if (frame.kind === "call") worker.postMessage(reply(frame.callId));
+        });
+        try {
+          await within(devTools.firstDial, "The thread never dialled its round's DevTools endpoint.");
+        } finally {
+          await worker.terminate();
         }
       });
     });
-    assert.equal(terminal.kind, "failed");
-    assert.equal(terminal.taskRunId, start.taskRunId, "the thread accepted its start");
+    assert.equal(otherDialled, false, "the thread dials only its own round's page");
   } finally {
-    await worker.terminate();
+    await ctbc.close();
+    await otherRound.close();
+    await devTools.close();
+    await other.close();
+    await server.close();
   }
 });
 

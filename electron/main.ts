@@ -100,7 +100,7 @@ import {
   createCathaySecretStore,
 } from "../src/lib/automation/server/cathay-registration-service.ts";
 import { createTdccSecretStore } from "../src/lib/automation/server/tdcc-secret-store.ts";
-import { createAppWorkflowBrowserPort } from "../src/lib/automation/server/app-browser-host.ts";
+import { withAppWorkflowHostPage } from "../src/lib/automation/server/app-browser-host.ts";
 import { DEVICE_REGISTRATION_TASK_IDS } from "../src/lib/automation/server/source-device-lock.ts";
 // @ts-expect-error runtime.cjs is bundled by Vite; keeping it CJS avoids changing the packaged entry.
 import runtime from "./runtime.cjs";
@@ -480,14 +480,14 @@ async function start() {
       }),
       cathay: createCathayRegistrationService({
         store: createCathaySecretStore(credentials),
-        withCathayTaskPage: (signal, run) => createAppWorkflowBrowserPort({
+        withCathayTaskPage: (signal, run) => withAppWorkflowHostPage({
           taskId: DEVICE_REGISTRATION_TASK_IDS.cathay,
           taskRunId: `device-registration-${randomUUID()}`,
           signal,
           userDataDirectory: userData,
           credentialCodec: credentials.codec,
           browserProfile: "cathay-login",
-        }).withPage(run),
+        }, ({ page }) => run(page)),
       }),
     }),
     structureReports: previewStructureReports,

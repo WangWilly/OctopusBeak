@@ -10,10 +10,10 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
+import { withAppWorkflowHostPage } from "./app-browser-host.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck, startForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
-import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
+import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -131,15 +131,16 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       await installEinvoiceAppMock(context, loginDelayMs);
       return context;
     };
-    const makeBrowserPort = (taskId: string, taskRunId: string, signal: AbortSignal, loginDelayMs = 0) =>
-      createAppWorkflowBrowserPort({
+    const makeBrowserPort = (taskId: string, taskRunId: string, signal: AbortSignal, loginDelayMs = 0): WorkflowBrowserPort => ({
+      withPage: (run) => withAppWorkflowHostPage({
         taskId,
         taskRunId,
         signal,
         userDataDirectory: root,
         credentialCodec: null,
         launchPersistentContext: async () => await launchContext(taskRunId, loginDelayMs),
-      });
+      }, async ({ page }) => await run(page)),
+    });
 
     // Successful empty collection commits.
     const firstResult = await runForCheck(runtimeForCheck(provider, {

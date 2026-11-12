@@ -8,7 +8,7 @@ import { cathaySignInPlan, signInCathayForApp } from "../../../workflows/cathay-
 import { recordedRun } from "../../../workflows/sign-in-check-harness.ts";
 import { launchCheckPersistentContext } from "../check-browser.fixtures.ts";
 import { FailureCodeError } from "../workflow-failures.ts";
-import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
+import { withAppWorkflowHostPage } from "./app-browser-host.ts";
 import {
   createCathayRegistrationService,
   createCathaySecretStore,
@@ -170,7 +170,7 @@ async function withFixture(
   const openPage = async <T>(signal: AbortSignal, run: (page: Page) => Promise<T>) => {
     const launched: BrowserContext[] = [];
     try {
-      return await createAppWorkflowBrowserPort({
+      return await withAppWorkflowHostPage({
         taskId: TASK_ID,
         taskRunId: `fixture-run-${fixtureRuns += 1}`,
         signal,
@@ -182,7 +182,7 @@ async function withFixture(
           launched.push(context);
           return context;
         },
-      }).withPage(async (page) => {
+      }, async ({ page }) => {
         await installCathayFixture(page.context(), options, log);
         return await run(page);
       });

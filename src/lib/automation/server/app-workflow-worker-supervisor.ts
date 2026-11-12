@@ -45,8 +45,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
    * is answered only after its handler resolves, so after it is persisted.
    */
   hostCalls: HostCallHandlers;
-  /** Starts this run's worker, as the execution host does. */
-  launchWorker: (launch: WorkerLaunch) => AppWorkflowWorkerHandle;
+  /** Starts this run's worker: the execution host's start for this round. */
+  startWorker: (launch: WorkerLaunch) => AppWorkflowWorkerHandle;
   /** Bounds how long a cancelled or unhealthy worker may ignore its cancel frame. */
   cancelGraceMs?: number;
   /** Bounds worker cleanup after a valid terminal frame. */
@@ -108,7 +108,7 @@ export async function runSupervisedAppWorkflow(
 
   let worker: AppWorkflowWorkerHandle;
   try {
-    worker = options.launchWorker({ start, ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}) });
+    worker = options.startWorker({ start, ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}) });
   } catch {
     return failed("worker-start-failed", "worker-start");
   }
