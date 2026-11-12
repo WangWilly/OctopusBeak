@@ -43,7 +43,12 @@ const settlementRow = (currency: string, txnDateTime: string, transferInAmount: 
 export async function commitTdccSettlement(
   store: PGliteStore,
   bankId: string,
-  { withBalance = true, currency = "TWD" }: Readonly<{ withBalance?: boolean; currency?: string }> = {},
+  { withBalance = true, currency = "TWD", rows }: Readonly<{
+    withBalance?: boolean;
+    currency?: string;
+    /** Replaces the default inflow and outflow, each as `[txnDateTime, transferIn, transferOut, balance, summary]`. */
+    rows?: readonly (readonly [string, string, string, string, string])[];
+  }> = {},
 ) {
   const snapshot = readTdccSettlementSnapshot({
     tspAccountInfos: [{
@@ -63,7 +68,7 @@ export async function commitTdccSettlement(
     account,
     pages: [{
       accountNo: SETTLEMENT_ACCOUNT, startDate: "20260710", endDate: "20261009", isComplete: true,
-      transactionDetails: [
+      transactionDetails: rows?.map((row) => settlementRow(currency, ...row)) ?? [
         settlementRow(currency, "20260801090000", "16700.0", "0.0", "16700.0", "薪資"),
         settlementRow(currency, "20260802101500", "0.0", "1500.0", "15200.0", "全家便利商店"),
       ],
