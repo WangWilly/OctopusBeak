@@ -84,10 +84,9 @@ function periodTotals(totals: CashFlowCurrencyTotals | undefined): CashFlowPerio
 
 const EMPTY_AMOUNT: CashFlowAmount = { amount: ZERO, count: 0 };
 
-const emptyTransfers = (): { pairs: CashFlowTransferSummary["pairs"]; unpaired: CashFlowAmount; other: CashFlowAmount } => ({
+const emptyTransfers = (): { pairs: CashFlowTransferSummary["pairs"]; unpaired: CashFlowAmount } => ({
   pairs: { amount: ZERO, count: 0, origins: { evidence: 0, confirmed: 0, manual: 0 } },
   unpaired: EMPTY_AMOUNT,
-  other: EMPTY_AMOUNT,
 });
 
 const plus = (total: CashFlowAmount, amount: ExactAmount): CashFlowAmount =>
@@ -108,8 +107,7 @@ function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transf
     const currency = normalizeCurrency(row.amount.currency);
     const entry = byCurrency.get(currency) ?? emptyTransfers();
     byCurrency.set(currency, entry);
-    if (role === "other") entry.other = plus(entry.other, row.amount);
-    else if (role === "internal") entry.unpaired = plus(entry.unpaired, row.amount);
+    if (role === "internal") entry.unpaired = plus(entry.unpaired, row.amount);
     else if (row.direction === "outflow" || !counted.has(row.transferLinkId!)) counted.set(row.transferLinkId!, row);
   }
   for (const [linkId, row] of counted) {

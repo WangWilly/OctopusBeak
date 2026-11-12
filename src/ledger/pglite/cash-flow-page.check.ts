@@ -228,22 +228,26 @@ async function addSides(fixture: SpendingCategoryFixture, entries: readonly (rea
   return ids;
 }
 
-test("a linked transfer counts once at its outflow amount, apart from unpaired and other transfers", async () => {
+test("a linked transfer counts once at its outflow amount, and an external transfer counts as flow", async () => {
   await withFixture(async (fixture) => {
-    const [out, into, unpaired, external, bare] = await addSides(fixture, [
+    const [out, into, unpaired, external, bare, externalIn] = await addSides(fixture, [
       ["purchase", { amount: "30000", date: "2026-10-03", account: "bank-a", description: "Move" }],
       ["receipt", { amount: "30000", date: "2026-10-04", account: "bank-b", direction: "inflow", description: "Move" }],
       ["transfer.internal", { amount: "1000", date: "2026-10-05", account: "bank-a" }],
-      ["transfer.external", { amount: "2000", date: "2026-10-06", account: "bank-a" }],
+      ["transfer.external", { amount: "2000", date: "2026-10-06", account: "bank-a", description: "Rent" }],
       ["transfer", { amount: "500", date: "2026-10-07", account: "bank-a" }],
+      ["transfer.external", { amount: "700", date: "2026-10-08", account: "bank-a", direction: "inflow", description: "From a friend" }],
     ]);
     await confirmTransfer(fixture.store, out!, into!);
     const page = await readCashFlowPage(fixture.store, OCTOBER);
     assert.deepEqual(page.currencies[0]?.transfers, {
       pairs: { amount: amount("30000"), count: 1, origins: { evidence: 0, confirmed: 1, manual: 0 } },
       unpaired: { amount: amount("1000"), count: 1 },
-      other: { amount: amount("2500"), count: 2 },
     }, "one 30,000 transfer is one pair of 30,000, not 60,000");
+    const twd = page.currencies[0]!;
+    assert.deepEqual(twd.outflow.groups, [{ group: "transfers_out", amount: amount("2500"), count: 2, previous: amount("0") }],
+      "an external or unspecified transfer out is 轉帳支出");
+    assert.deepEqual(twd.inflow.groups, [{ group: "transfers_in", amount: amount("700"), count: 1 }], "an external transfer in is 其他轉入");
 
     // Only the inflow side is in this period; the link still counts once.
     const inflowOnly = await readCashFlowPage(fixture.store, { startDate: "2026-10-04", endDate: "2026-10-04" });
@@ -252,8 +256,46 @@ test("a linked transfer counts once at its outflow amount, apart from unpaired a
     const ids = async (query: string) => (await readCashFlowPage(fixture.store, { ...OCTOBER, query })).transactions
       .map((row) => row.transactionId).sort();
     assert.deepEqual(await ids("內部轉帳"), [out, into, unpaired].sort(), "external transfers are never labelled internal");
-    assert.deepEqual(await ids("其他轉帳"), [external, bare].sort());
+    assert.deepEqual(await ids("轉帳支出"), [external, bare].sort());
+    assert.deepEqual(await ids("transfers out"), [external, bare].sort());
+    assert.deepEqual(await ids("其他轉入"), [externalIn]);
     assert.deepEqual(await ids("internal transfer"), [out, into, unpaired].sort());
+  });
+});
+
+test("two external transfers between the person's own accounts count until the person confirms the pair", async () => {
+  await withFixture(async (fixture) => {
+    const [out, into] = await addSides(fixture, [
+      ["transfer.external", { amount: "30000", date: "2026-10-03", account: "bank-a", description: "跨行轉帳" }],
+      ["transfer.external", { amount: "30000", date: "2026-10-03", account: "bank-b", direction: "inflow", description: "跨行轉入" }],
+    ]);
+    const before = await readCashFlowPage(fixture.store, OCTOBER);
+    assert.deepEqual([before.currencies[0]?.inflow.amount, before.currencies[0]?.outflow.amount], [amount("30000"), amount("30000")]);
+    assert.equal(before.currencies[0]?.transfers.pairs.count, 0, "keyword Kinds never pair by evidence");
+
+    await confirmTransfer(fixture.store, out!, into!);
+    const after = await readCashFlowPage(fixture.store, OCTOBER);
+    assert.deepEqual([after.currencies[0]?.inflow.amount, after.currencies[0]?.outflow.amount], [amount("0"), amount("0")]);
+    assert.deepEqual(after.currencies[0]?.transfers.pairs, { amount: amount("30000"), count: 1, origins: { evidence: 0, confirmed: 1, manual: 0 } });
+  });
+});
+
+test("a confirmed link changes nothing for an internal transfer or a card payment", async () => {
+  await withFixture(async (fixture) => {
+    const [internal, receipt, card, external] = await addSides(fixture, [
+      ["transfer.internal", { amount: "4000", date: "2026-10-03", account: "bank-a" }],
+      ["receipt", { amount: "4000", date: "2026-10-03", account: "bank-b", direction: "inflow" }],
+      ["payment.credit_card", { amount: "6000", date: "2026-10-05", account: "bank-a" }],
+      ["transfer.external", { amount: "6000", date: "2026-10-05", account: "bank-b", direction: "inflow" }],
+    ]);
+    await confirmTransfer(fixture.store, internal!, receipt!);
+    await confirmTransfer(fixture.store, card!, external!);
+    const page = await readCashFlowPage(fixture.store, OCTOBER);
+    const classOf = (id: string) => page.transactions.find((row) => row.transactionId === id)?.cashFlow;
+    assert.deepEqual(classOf(internal!), { class: "not_counted", reason: "transfer" });
+    assert.deepEqual(classOf(receipt!), { class: "inflow", group: "other" }, "an evidence-backed side keeps the link from deciding");
+    assert.deepEqual(classOf(card!), { class: "not_counted", reason: "card_payment" });
+    assert.deepEqual(classOf(external!), { class: "inflow", group: "transfers_in" });
   });
 });
 
@@ -307,7 +349,7 @@ test("the all-periods count reads the same matches as classifying every period",
 
     const everything = await readPGliteCashFlow(fixture.store, { startDate: "0001-01-01", endDate: "9999-12-31" });
     const knowledgeAt = await readKnowledgePoint(fixture.store);
-    for (const query of ["coffee", "300", "NT$300", "USD300", "內部轉帳", "其他轉帳", "餐飲", "類型未定", "富邦", "0001", "wallet", "薪資", "move", "a"]) {
+    for (const query of ["coffee", "300", "NT$300", "USD300", "內部轉帳", "轉帳支出", "餐飲", "類型未定", "富邦", "0001", "wallet", "薪資", "move", "a"]) {
       const expected = everything.transactions.filter((row) => cashFlowMatches(row, query).length > 0).map((row) => row.transactionId).sort();
       const actual = (await readCashFlowSearchMatches(fixture.store, knowledgeAt, query)).map((row) => row.transactionId).sort();
       assert.deepEqual(actual, expected, `query ${query}`);

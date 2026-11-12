@@ -2,10 +2,10 @@ import type {
   CASH_FLOW_INCLUSION_POLICY,
   CashFlowAmount,
   CashFlowInflowGroup,
+  CashFlowOutflowGroup,
 } from "../../ledger/canonical/cash-flow-inclusion.ts";
 import type { CashFlowTransferLinkOrigin } from "../../ledger/canonical/cash-flow-transfer.ts";
 import type { CashFlowAccount, CashFlowReportTransaction } from "../../ledger/pglite/cash-flow.ts";
-import type { SpendingCategoryGroup } from "../spending/category-groups.ts";
 import type { ExactAmount } from "../shared-money/exact-money.ts";
 
 export type { CashFlowAccount, CashFlowReportTransaction as CashFlowRow };
@@ -32,7 +32,7 @@ export type CashFlowCurrencySummary = Readonly<{
   inflow: CashFlowAmount & Readonly<{ groups: readonly (CashFlowAmount & Readonly<{ group: CashFlowInflowGroup }>)[] }>;
   /** Net of refunds; `previous` is the group's outflow in the previous period. */
   outflow: CashFlowAmount & Readonly<{
-    groups: readonly (CashFlowAmount & Readonly<{ group: SpendingCategoryGroup | null; previous: ExactAmount }>)[];
+    groups: readonly (CashFlowAmount & Readonly<{ group: CashFlowOutflowGroup; previous: ExactAmount }>)[];
   }>;
   kept: ExactAmount;
   keptRatio: number | null;
@@ -47,26 +47,14 @@ export type CashFlowTransferSummary = Readonly<{
   pairs: CashFlowAmount & Readonly<{ origins: Readonly<Record<CashFlowTransferLinkOrigin["kind"], number>> }>;
   /** Internal-transfer rows without a current link. */
   unpaired: CashFlowAmount;
-  /** Transfers to someone else or with no stated purpose, which are not internal. */
-  other: CashFlowAmount;
 }>;
 
-/** How a not-counted transfer row reads: one side of a link, an unpaired internal transfer, or some other transfer. */
-export type CashFlowTransferRole = "paired" | "internal" | "other";
+/** How a not-counted transfer row reads: one side of a link, or an unpaired internal transfer. */
+export type CashFlowTransferRole = "paired" | "internal";
 
-const OTHER_TRANSFER_KINDS: ReadonlySet<string> = new Set(["transfer", "transfer.external"]);
-
-/**
- * A canonical bare `transfer` or `transfer.external` is not known to stay
- * within the person's accounts. A Manual Account transfer always names its
- * counterpart account, so it is internal.
- */
-export function cashFlowTransferRole(
-  row: Pick<CashFlowReportTransaction, "cashFlow" | "source" | "kind" | "transferLinkId">,
-): CashFlowTransferRole | null {
+export function cashFlowTransferRole(row: Pick<CashFlowReportTransaction, "cashFlow" | "transferLinkId">): CashFlowTransferRole | null {
   if (row.cashFlow.class !== "not_counted" || row.cashFlow.reason !== "transfer") return null;
-  if (row.transferLinkId !== null) return "paired";
-  return row.source === "canonical" && OTHER_TRANSFER_KINDS.has(row.kind?.code ?? "") ? "other" : "internal";
+  return row.transferLinkId !== null ? "paired" : "internal";
 }
 
 /** An account's signed change over the period, transfers included. */

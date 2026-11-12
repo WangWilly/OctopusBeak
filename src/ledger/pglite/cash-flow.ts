@@ -295,7 +295,7 @@ async function canonicalTransactions(
       kind: canonicalCashFlowKind(transaction.kind, evidence),
       cashFlow: unproven.has(transaction.transactionId)
         ? { class: "unresolved" as const }
-        : cashFlowClass(rule, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
+        : cashFlowClass(rule, amount, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
     };
   });
 }
@@ -306,7 +306,11 @@ type ManualRow = Readonly<{
   note: string | null; account_name: string;
 }>;
 
-/** A Manual Account's Kind is what the person entered, so it is never a producer fallback. */
+/**
+ * A Manual Account's Kind is what the person entered, so it is never a
+ * producer fallback. A Manual Account transfer names its counterpart account,
+ * so it counts as `transfer.internal`.
+ */
 async function manualTransactions(reader: PGliteSpendingReader, request: CashFlowRequest): Promise<Omit<CashFlowReportTransaction, "transferLinkId">[]> {
   const result = await reader.query<ManualRow>(
     `SELECT tx.transaction_id, tx.account_id, tx.occurred_on, tx.amount, account.currency,
@@ -328,7 +332,7 @@ async function manualTransactions(reader: PGliteSpendingReader, request: CashFlo
       amount,
       direction: flowDirection,
       kind: { code: row.kind, basis: "evidence" as const },
-      cashFlow: cashFlowClass(cashFlowRule(row.kind, flowDirection), [categoryShare(category, amount)], null),
+      cashFlow: cashFlowClass(cashFlowRule(row.kind === "transfer" ? "transfer.internal" : row.kind, flowDirection), amount, [categoryShare(category, amount)], null),
       details: {
         description: null,
         counterparty: null,

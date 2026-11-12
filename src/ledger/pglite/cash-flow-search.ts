@@ -2,7 +2,7 @@ import { cashFlowRule, type CashFlowRule } from "../canonical/cash-flow-inclusio
 import { PERSONAL_CATEGORY_CODES } from "../canonical/personal-category-codes.ts";
 import { TRANSACTION_KIND_CODES } from "../canonical/transaction-taxonomy.ts";
 import { cashFlowCopy } from "../../lib/cash-flow/copy.ts";
-import { CASH_FLOW_SEARCH_FIELDS, cashFlowTransferRole, type CashFlowSearchField } from "../../lib/cash-flow/model.ts";
+import { CASH_FLOW_SEARCH_FIELDS, type CashFlowSearchField } from "../../lib/cash-flow/model.ts";
 import { isInstitutionKey, institutionNames } from "../../lib/institutions/institutions.ts";
 import { SPENDING_CATEGORY_GROUP_IDS } from "../../lib/spending/category-groups.ts";
 import { spendingCopy } from "../../lib/spending/copy.ts";
@@ -44,7 +44,7 @@ export function amountQuery(query: string): CashFlowAmountQuery | null {
   return { amount: normalizeExact({ coefficient: BigInt(`${match[1]}${fraction}`).toString(), scale: fraction.length }), currency };
 }
 
-type MatchableRow = Pick<CashFlowReportTransaction, "details" | "cashFlow" | "amount" | "source" | "kind" | "transferLinkId">;
+type MatchableRow = Pick<CashFlowReportTransaction, "details" | "cashFlow" | "amount">;
 
 function categoryLabels(transaction: MatchableRow): string[] {
   const flow = transaction.cashFlow;
@@ -55,16 +55,17 @@ function categoryLabels(transaction: MatchableRow): string[] {
       case "inflow":
         return [cash.inflowGroups[flow.group]];
       case "not_counted":
-        return [cashFlowTransferRole(transaction) === "other" ? cash.otherTransfer : cash.notCounted[flow.reason]];
+        return [cash.notCounted[flow.reason]];
       case "unresolved":
         return [cash.unresolvedTag];
       case "outflow":
       case "refund":
         return [
           ...(flow.class === "refund" ? [cash.refund] : []),
-          ...flow.categories.flatMap((share) => share.category === null
-            ? [cash.unclassified]
-            : [spending.categoryGroups[share.group], spending.personalCategories[share.category]]),
+          ...flow.categories.flatMap((share) => {
+            if (share.category !== null) return [spending.categoryGroups[share.group], spending.personalCategories[share.category]];
+            return [share.group === "transfers_out" ? cash.transfersOut : cash.unclassified];
+          }),
         ];
     }
   });
@@ -110,17 +111,17 @@ function ruleMatches(rule: CashFlowRule, has: (value: string) => boolean, outflo
       case "inflow":
         return [cash.inflowGroups[rule.group]];
       case "not_counted":
-        return rule.reason === "transfer" ? [cash.notCounted.transfer, cash.otherTransfer] : [cash.notCounted[rule.reason]];
+        return [cash.notCounted[rule.reason]];
       case "unresolved":
         return [cash.unresolvedTag];
       case "refund":
         // A refund nothing proves stays unresolved.
         return [cash.refund, cash.unresolvedTag];
       case "outflow":
-        return [];
+        return rule.group === "transfers_out" ? [cash.transfersOut] : [];
     }
   });
-  return labels.some(has) || ((rule.class === "outflow" || rule.class === "refund") && outflowLabels);
+  return labels.some(has) || (((rule.class === "outflow" && rule.group === "by_category") || rule.class === "refund") && outflowLabels);
 }
 
 /** Which Kinds could carry a category label that contains `needle`. */
@@ -212,7 +213,7 @@ export async function cashFlowSearchCandidates(reader: PGliteSpendingReader, que
            ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
         WHERE kind.taxonomy_code IS NULL OR kind.taxonomy_code NOT IN (${TRANSACTION_KIND_CODES.map(() => "?").join(",")})`,
       [...TRANSACTION_KIND_CODES])));
-  // A stored link turns two fallback sides into an internal transfer.
+  // A stored link turns two fallback or weak sides into an internal transfer.
   if (category.linked)
     add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,
       `SELECT outflow_transaction_id AS transaction_id FROM current_cash_flow_transfer_links

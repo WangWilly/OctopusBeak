@@ -1,4 +1,4 @@
-import type { CashFlowClass, CashFlowKind, CashFlowTransaction } from "./cash-flow-inclusion.ts";
+import { linkExcludable, type CashFlowClass, type CashFlowKind, type CashFlowTransaction } from "./cash-flow-inclusion.ts";
 import { compareExact, normalizeCurrency, normalizeExact, sameCurrency } from "../../lib/shared-money/exact-money.ts";
 
 /**
@@ -243,12 +243,12 @@ const LINKED_TRANSFER: CashFlowClass = Object.freeze({ class: "not_counted", rea
 
 /**
  * A linked side's cash-flow class. The link decides only where no evidence
- * does: both sides must carry nothing but a fallback Kind. An evidence-backed
+ * does: both sides must carry a fallback or weak Kind. An evidence-backed
  * Kind, or a missing one, keeps the side's own class.
  */
 export function linkedCashFlowClass(
   side: Pick<CashFlowTransaction, "kind" | "cashFlow">,
   counterpart: Pick<CashFlowTransaction, "kind">,
 ): CashFlowClass {
-  return side.kind?.basis === "fallback" && counterpart.kind?.basis === "fallback" ? LINKED_TRANSFER : side.cashFlow;
+  return linkExcludable(side.kind) && linkExcludable(counterpart.kind) ? LINKED_TRANSFER : side.cashFlow;
 }

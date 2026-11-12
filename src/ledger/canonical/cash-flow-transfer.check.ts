@@ -12,6 +12,7 @@ import {
 
 const evidence = (code: string): CashFlowKind => ({ code, basis: "evidence" });
 const fallback = (code: string): CashFlowKind => ({ code, basis: "fallback" });
+const weak = (code: string): CashFlowKind => ({ code, basis: "weak" });
 
 function side(transactionId: string, direction: "outflow" | "inflow", overrides: Partial<CashFlowTransferSide> = {}): CashFlowTransferSide {
   return {
@@ -132,8 +133,17 @@ test("a stored link takes both sides out of every candidate", () => {
   assert.deepEqual(pairing.candidates, []);
 });
 
-test("a link excludes a side only when both sides carry nothing but fallback Kinds", () => {
+test("a link excludes a side only when both sides carry nothing but fallback or weak Kinds", () => {
   const outflow = { class: "outflow" as const, categories: [] };
+  const linked = { class: "not_counted", reason: "transfer" };
+  assert.deepEqual(linkedCashFlowClass({ kind: weak("transfer.external"), cashFlow: outflow }, { kind: weak("transfer.external") }), linked);
+  assert.deepEqual(linkedCashFlowClass({ kind: weak("transfer"), cashFlow: outflow }, { kind: fallback("receipt") }), linked);
+  assert.deepEqual(linkedCashFlowClass({ kind: fallback("purchase"), cashFlow: outflow }, { kind: weak("transfer.external") }), linked);
+  // An evidence-backed transfer or card payment decides its own side, whatever the other side is.
+  const cardPayment = { class: "not_counted" as const, reason: "card_payment" as const };
+  assert.deepEqual(linkedCashFlowClass({ kind: evidence("payment.credit_card"), cashFlow: cardPayment }, { kind: weak("transfer.external") }), cardPayment);
+  assert.deepEqual(linkedCashFlowClass({ kind: weak("transfer.external"), cashFlow: outflow }, { kind: evidence("payment.credit_card") }), outflow);
+  assert.deepEqual(linkedCashFlowClass({ kind: weak("transfer.external"), cashFlow: outflow }, { kind: evidence("transfer.internal") }), outflow);
   assert.deepEqual(linkedCashFlowClass({ kind: fallback("purchase"), cashFlow: outflow }, { kind: fallback("receipt") }), { class: "not_counted", reason: "transfer" });
   assert.deepEqual(linkedCashFlowClass({ kind: evidence("purchase"), cashFlow: outflow }, { kind: fallback("receipt") }), outflow);
   assert.deepEqual(linkedCashFlowClass({ kind: fallback("purchase"), cashFlow: outflow }, { kind: evidence("income.employment.salary") }), outflow);

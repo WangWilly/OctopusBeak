@@ -175,7 +175,6 @@
     if (row.cashFlow.class === "not_counted") {
       const role = cashFlowTransferRole(row);
       if (role === "paired") return $t.cashFlow.pairedTransferTag;
-      if (role === "other") return $t.cashFlow.otherTransferTag;
       return role === "internal" ? $t.cashFlow.transferTag : $t.cashFlow.notCounted[row.cashFlow.reason];
     }
     return null;
@@ -262,13 +261,6 @@
                   <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
                   <span>{$t.cashFlow.transfersNote}</span>
                 {/if}
-              </div>
-            {/if}
-            {#if transfers && transfers.other.count > 0}
-              <div class="note other-transfer" data-other-transfers>
-                <span class="note-head"><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.otherTransfers(transfers.other.count)}</span>
-                <strong class="money" data-sensitive>{amountText(transfers.other.amount)}</strong>
-                <span>{$t.cashFlow.otherTransfersNote}</span>
               </div>
             {/if}
             {#if summary.unresolved.count > 0}
@@ -622,11 +614,6 @@
   .note.transfer {
     background: var(--accent-soft);
     color: var(--accent);
-  }
-
-  .note.other-transfer {
-    background: color-mix(in oklch, var(--muted) 10%, white);
-    color: color-mix(in oklch, var(--muted) 70%, var(--fg));
   }
 
   .note-extra {

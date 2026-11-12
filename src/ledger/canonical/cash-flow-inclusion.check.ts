@@ -19,13 +19,18 @@ test("the inclusion table places every Kind the published registry holds, and no
 
 test("the PRD's counting rules hold in the table", () => {
   const rule = (code: string, direction: "inflow" | "outflow") => cashFlowRule(code, direction);
-  for (const code of ["transfer.internal", "transfer.external", "payment.credit_card", "payment.loan", "loan.disbursement",
+  for (const code of ["transfer.internal", "payment.credit_card", "payment.loan", "loan.disbursement",
     "transfer.investment_contribution", "transfer.investment_withdrawal", "cash.withdrawal"]) {
     assert.equal(rule(code, "outflow").class, "not_counted", code);
     assert.equal(rule(code, "inflow").class, "not_counted", code);
   }
   for (const code of ["purchase", "payment.bill", "interest.charged", "fee.bank", "fee.card", "fee.loan", "fee.investment"])
-    assert.deepEqual(rule(code, "outflow"), { class: "outflow" }, code);
+    assert.deepEqual(rule(code, "outflow"), { class: "outflow", group: "by_category" }, code);
+  // An external or unspecified transfer counts in its own groups: transfer Kinds take no Personal Category.
+  for (const code of ["transfer.external", "transfer"]) {
+    assert.deepEqual(rule(code, "outflow"), { class: "outflow", group: "transfers_out" }, code);
+    assert.deepEqual(rule(code, "inflow"), { class: "inflow", group: "transfers_in" }, code);
+  }
   for (const code of ["income.employment.salary", "income.dividend", "income.investment_distribution", "interest.earned"])
     assert.deepEqual(rule(code, "inflow"), { class: "inflow", group: code }, code);
   assert.deepEqual(rule("receipt", "inflow"), { class: "inflow", group: "other" });
@@ -47,6 +52,9 @@ test("a Kind read from direction, or the bank rule's purchase or receipt, is a f
   assert.deepEqual(canonicalCashFlowKind("refund", "bank-rule"), { code: "refund", basis: "evidence" });
   assert.deepEqual(canonicalCashFlowKind("transfer.internal", "bank-rule"), { code: "transfer.internal", basis: "evidence" });
   assert.deepEqual(canonicalCashFlowKind("payment.credit_card", "credit-card-statement-relation"), { code: "payment.credit_card", basis: "evidence" });
+  // Keywords such as 跨行 assign these, and they also match a move between the person's own accounts.
+  assert.deepEqual(canonicalCashFlowKind("transfer.external", "bank-rule"), { code: "transfer.external", basis: "weak" });
+  assert.deepEqual(canonicalCashFlowKind("transfer", "bank-rule"), { code: "transfer", basis: "weak" });
   assert.equal(canonicalCashFlowKind(null, null), null);
 });
 

@@ -36,10 +36,6 @@ const en = {
       origins.confirmed > 0 ? `${origins.confirmed} confirmed` : null,
       origins.manual > 0 ? `${origins.manual} paired by you` : null,
     ].filter((part) => part !== null).join(" · ") + ". Moving money between your own accounts is not inflow or outflow.",
-    otherTransfers: (count: number) => `Other transfers · ${count} · not counted`,
-    otherTransfersNote: "Transfers to someone else or with no stated purpose are not counted.",
-    otherTransfer: "Other transfer",
-    otherTransferTag: "Other transfer · not counted",
     pairedTransferTag: "Internal transfer · paired",
     unresolved: (count: number) => `Kind undecided · ${count}`,
     unresolvedNote: "Not counted in inflow or outflow until its kind is known.",
@@ -96,6 +92,7 @@ const en = {
     weekdays: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
     unknownAccount: "Account",
     unclassified: "Unclassified",
+    transfersOut: "Transfers out",
     inflowGroups: {
       income: "Income",
       "income.employment": "Salary",
@@ -109,6 +106,7 @@ const en = {
       "income.dividend": "Dividends",
       "income.investment_distribution": "Distributions",
       "interest.earned": "Interest",
+      transfers_in: "Other transfers in",
       other: "Other inflow",
     } satisfies Record<CashFlowInflowGroup, string>,
     notCounted: {
@@ -160,10 +158,6 @@ const zh: typeof en = {
       origins.confirmed > 0 ? `已確認 ${origins.confirmed}` : null,
       origins.manual > 0 ? `手動配對 ${origins.manual}` : null,
     ].filter((part) => part !== null).join(" · ") + "，帳戶間搬錢不算收支。",
-    otherTransfers: (count: number) => `其他轉帳 ${count} 筆 · 不計入`,
-    otherTransfersNote: "轉給別人或沒有標明用途的轉帳，不計入收支。",
-    otherTransfer: "其他轉帳",
-    otherTransferTag: "其他轉帳 · 不計入",
     pairedTransferTag: "內部轉帳 · 已配對",
     unresolved: (count: number) => `類型未定 ${count} 筆`,
     unresolvedNote: "類型確定前，不計入流入或流出。",
@@ -220,6 +214,7 @@ const zh: typeof en = {
     weekdays: ["日", "一", "二", "三", "四", "五", "六"],
     unknownAccount: "帳戶",
     unclassified: "未分類",
+    transfersOut: "轉帳支出",
     inflowGroups: {
       income: "收入",
       "income.employment": "薪資",
@@ -233,6 +228,7 @@ const zh: typeof en = {
       "income.dividend": "股息",
       "income.investment_distribution": "配息",
       "interest.earned": "利息",
+      transfers_in: "其他轉入",
       other: "其他流入",
     },
     notCounted: {

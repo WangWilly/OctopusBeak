@@ -1,8 +1,7 @@
 import type { Translation } from "../i18n/i18n.ts";
 import { isInstitutionKey } from "../institutions/institutions.ts";
 import { SPENDING_GROUP_COLORS } from "../spending/spending-display.ts";
-import type { SpendingCategoryGroup } from "../spending/category-groups.ts";
-import type { CashFlowInflowGroup } from "../../ledger/canonical/cash-flow-inclusion.ts";
+import type { CashFlowInflowGroup, CashFlowOutflowGroup } from "../../ledger/canonical/cash-flow-inclusion.ts";
 import {
   addExact,
   isZeroExact,
@@ -11,10 +10,12 @@ import {
   type ExactAmount,
   type ExactMoney,
 } from "../shared-money/exact-money.ts";
-import { cashFlowTransferRole, type CashFlowAccount, type CashFlowRow } from "./model.ts";
+import type { CashFlowAccount, CashFlowRow } from "./model.ts";
 
 /** An outflow group; null is the Unclassified bucket. */
-export type OutflowGroupKey = SpendingCategoryGroup | null;
+export type OutflowGroupKey = CashFlowOutflowGroup;
+
+const TRANSFERS_OUT_COLOR = "oklch(45% 0.05 265)";
 
 /** Inflow hues sit in the Data Series band; salary takes Settled Green, the rest cycle the remaining series. */
 const INFLOW_COLORS = [
@@ -31,7 +32,7 @@ export function inflowColor(index: number): string {
 }
 
 export function outflowColor(group: OutflowGroupKey): string {
-  return SPENDING_GROUP_COLORS[group ?? "unclassified"];
+  return group === "transfers_out" ? TRANSFERS_OUT_COLOR : SPENDING_GROUP_COLORS[group ?? "unclassified"];
 }
 
 export function inflowGroupLabel(t: Translation, group: CashFlowInflowGroup): string {
@@ -39,7 +40,8 @@ export function inflowGroupLabel(t: Translation, group: CashFlowInflowGroup): st
 }
 
 export function outflowGroupLabel(t: Translation, group: OutflowGroupKey): string {
-  return group === null ? t.cashFlow.unclassified : t.spending.categoryGroups[group];
+  if (group === null) return t.cashFlow.unclassified;
+  return group === "transfers_out" ? t.cashFlow.transfersOut : t.spending.categoryGroups[group];
 }
 
 export function accountLabel(t: Translation, account: CashFlowAccount): string {
@@ -61,7 +63,7 @@ export function rowCategoryText(t: Translation, row: CashFlowRow): string {
     case "inflow":
       return inflowGroupLabel(t, flow.group);
     case "not_counted":
-      return cashFlowTransferRole(row) === "other" ? t.cashFlow.otherTransfer : t.cashFlow.notCounted[flow.reason];
+      return t.cashFlow.notCounted[flow.reason];
     case "unresolved":
       return t.cashFlow.unresolvedTag;
     case "outflow":
