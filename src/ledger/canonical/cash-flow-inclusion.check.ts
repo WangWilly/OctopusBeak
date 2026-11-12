@@ -39,11 +39,15 @@ test("an absent, unregistered, or direction-contradicting Kind is unresolved", (
   assert.deepEqual(cashFlowRule("purchase", "inflow"), { class: "unresolved" });
 });
 
-test("only the purchase and receipt fallbacks are marked as fallback", () => {
-  assert.deepEqual(canonicalCashFlowKind("purchase"), { code: "purchase", basis: "fallback" });
-  assert.deepEqual(canonicalCashFlowKind("receipt"), { code: "receipt", basis: "fallback" });
-  assert.deepEqual(canonicalCashFlowKind("transfer.internal"), { code: "transfer.internal", basis: "evidence" });
-  assert.equal(canonicalCashFlowKind(null), null);
+test("a Kind read from direction, or the bank rule's purchase or receipt, is a fallback", () => {
+  assert.deepEqual(canonicalCashFlowKind("purchase", "direction"), { code: "purchase", basis: "fallback" });
+  assert.deepEqual(canonicalCashFlowKind("refund", "direction"), { code: "refund", basis: "fallback" });
+  assert.deepEqual(canonicalCashFlowKind("purchase", "bank-rule"), { code: "purchase", basis: "fallback" });
+  assert.deepEqual(canonicalCashFlowKind("receipt", "bank-rule"), { code: "receipt", basis: "fallback" });
+  assert.deepEqual(canonicalCashFlowKind("refund", "bank-rule"), { code: "refund", basis: "evidence" });
+  assert.deepEqual(canonicalCashFlowKind("transfer.internal", "bank-rule"), { code: "transfer.internal", basis: "evidence" });
+  assert.deepEqual(canonicalCashFlowKind("payment.credit_card", "credit-card-statement-relation"), { code: "payment.credit_card", basis: "evidence" });
+  assert.equal(canonicalCashFlowKind(null, null), null);
 });
 
 test("totals stay per currency, and a refund reduces its category group's outflow", () => {

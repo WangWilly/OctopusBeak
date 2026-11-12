@@ -127,17 +127,21 @@ function isRegisteredKind(code: string): code is TransactionKindCode {
 }
 
 /**
- * `evidence` when the Kind was proven; `fallback` for the `purchase` or
- * `receipt` a producer falls back to when nothing proves the purpose. A
- * Cash-flow transfer link (ADR 0137) may exclude only fallback sides.
+ * `evidence` when the Kind was proven; `fallback` when nothing proves the
+ * purpose: a card Kind read from direction alone, or the `purchase` or
+ * `receipt` the bank rule ends on. A Cash-flow transfer link (ADR 0137) may
+ * exclude only fallback sides.
  */
 export type CashFlowKindBasis = "evidence" | "fallback";
 
 export type CashFlowKind = Readonly<{ code: string; basis: CashFlowKindBasis }>;
 
-export function canonicalCashFlowKind(code: string | null): CashFlowKind | null {
+/** `evidenceKind` is what the Kind enrichment recorded, or null when it recorded none. */
+export function canonicalCashFlowKind(code: string | null, evidenceKind: string | null): CashFlowKind | null {
   if (code === null) return null;
-  return { code, basis: code === "purchase" || code === "receipt" ? "fallback" : "evidence" };
+  const fallback = evidenceKind === "direction"
+    || (evidenceKind === "bank-rule" && (code === "purchase" || code === "receipt"));
+  return { code, basis: fallback ? "fallback" : "evidence" };
 }
 
 /** An unregistered or absent Kind leaves inclusion undecided. */

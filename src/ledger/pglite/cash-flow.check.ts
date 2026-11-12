@@ -8,7 +8,8 @@ import { applyManual, commitVerifiedDeposit, createManualAsset, twdSavings, writ
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { createPGlitePreviewFinancialData } from "./preview-financial-data.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
-import { createSpendingCategoryFixture, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { commitPGliteSpendingRefundRevision } from "./spending-command.ts";
+import { BANK_ROUTE, createSpendingCategoryFixture, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
 import type { CashFlowClass } from "../canonical/cash-flow-inclusion.ts";
 
@@ -27,8 +28,12 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
   }
 }
 
-/** Replace the projected Kind, or remove it when `code` is null. */
-async function setKind(store: PGliteStore, transactionId: string, code: string | null) {
+/**
+ * Replace the projected Kind and the evidence its enrichment recorded, or
+ * remove it when `code` is null. The fixture's card account projects a Kind
+ * from direction alone; a replaced Kind defaults to bank-rule evidence.
+ */
+async function setKind(store: PGliteStore, transactionId: string, code: string | null, evidenceKind = "bank-rule") {
   if (code === null) {
     await store.query("DELETE FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'", [idBytes(transactionId)]);
     return;
@@ -36,6 +41,14 @@ async function setKind(store: PGliteStore, transactionId: string, code: string |
   await store.query(
     "UPDATE current_transaction_enrichment SET taxonomy_code = $2, value_text = $2 WHERE transaction_id = $1 AND field_name = 'kind'",
     [idBytes(transactionId), code],
+  );
+  await store.query(
+    `UPDATE enrichment_run_outputs output
+        SET provenance_json = jsonb_set(output.provenance_json::jsonb, '{evidenceKind}', to_jsonb($2::text))::text
+       FROM current_transaction_enrichment enrichment
+      WHERE enrichment.transaction_id = $1 AND enrichment.field_name = 'kind'
+        AND output.assertion_id = enrichment.assertion_id`,
+    [idBytes(transactionId), evidenceKind],
   );
 }
 
@@ -45,21 +58,58 @@ async function addWithKind(fixture: SpendingCategoryFixture, code: string | null
   return id;
 }
 
-/** The source evidence a card refund carries when it names its original. */
-async function relateRefund(store: PGliteStore, refundId: string, originalId: string) {
+/** The source evidence a card refund or reversal carries when it names its original. */
+async function relateRefund(store: PGliteStore, refundId: string, originalId: string, relationKind: "refund_of" | "reversal_of" = "refund_of") {
   await store.query(
     `INSERT INTO canonical_credit_card_relations(
        relation_id, integration_namespace, account_id, relation_kind, from_transaction_id, to_transaction_id,
        capture_id, evidence_source_record_id
      )
-     SELECT $1, 'fubon', financial.account_id, 'refund_of', financial.transaction_id, $3, revision.capture_id, revision.source_record_id
+     SELECT $1, 'fubon', financial.account_id, $4, financial.transaction_id, $3, revision.capture_id, revision.source_record_id
        FROM financial_transactions financial
        JOIN current_transactions current_row ON current_row.transaction_id = financial.transaction_id
        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
       WHERE financial.transaction_id = $2`,
-    [idBytes(randomUUID()), idBytes(refundId), idBytes(originalId)],
+    [idBytes(randomUUID()), idBytes(refundId), idBytes(originalId), relationKind],
   );
 }
+
+/** Spending's refund recognition, as a card source's refund evidence records it. */
+async function recognizeRefund(store: PGliteStore, transactionId: string, coefficient: string) {
+  await store.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, {
+    stableRefundKey: `refund/${transactionId}`,
+    transactionId,
+    sourceRevisionKey: "refund-v1",
+    revisionNumber: 1,
+    revisionKind: "asserted",
+    amount: { coefficient: `-${coefficient}`, scale: 0, currency: "TWD" },
+    occurrence: { value: "2026-09-07", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
+    authorityRoute: BANK_ROUTE,
+    provenanceReference: `fixture/refund/${transactionId}`,
+    evidence: { sourceProvesRefund: true },
+  }));
+}
+
+/** A Derived Categorization on the transaction, as an automatic category producer projects it. */
+async function deriveCategory(store: PGliteStore, transactionId: string, categoryCode: string) {
+  await store.query(
+    `INSERT INTO current_transaction_enrichment(
+       transaction_id, field_name, assertion_id, value_text, origin, producer_id, producer_version, route_id,
+       taxonomy_id, taxonomy_version, taxonomy_dimension, taxonomy_code, projection_commit_id
+     )
+     SELECT transaction_id, 'category', $2, $3, 'derived', producer_id, producer_version, route_id,
+            taxonomy_id, taxonomy_version, 'category', $3, projection_commit_id
+       FROM current_transaction_enrichment
+      WHERE transaction_id = $1 AND field_name = 'kind'`,
+    [idBytes(transactionId), idBytes(randomUUID()), categoryCode],
+  );
+}
+
+async function categorize(fixture: SpendingCategoryFixture, transactionId: string, categoryCode: string) {
+  await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `transaction:${transactionId}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode });
+}
+
+const dining = (coefficient: string) => [{ category: "dining", group: "dining", amount: amount(coefficient) }];
 
 function classOf(report: CashFlowReport, transactionId: string): CashFlowClass | undefined {
   return report.transactions.find((transaction) => transaction.transactionId === transactionId)?.cashFlow;
@@ -137,28 +187,81 @@ test("a cash withdrawal followed by manual cash spending counts the spending onc
   });
 });
 
-test("a refund reduces its original's category only through refund_of, otherwise the Unclassified outflow", async () => {
+test("a card inflow is a refund only through a refund relation or Spending's refund recognition", async () => {
   await withFixture(async (fixture) => {
     const original = await fixture.addTransaction({ amount: "1000", date: "2026-08-28" });
-    await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `transaction:${original}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode: "dining" });
+    await categorize(fixture, original, "dining");
     const outflow = await fixture.addTransaction({ amount: "600", date: "2026-09-02" });
-    await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `transaction:${outflow}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode: "dining" });
+    await categorize(fixture, outflow, "dining");
     const related = await fixture.addTransaction({ amount: "200", date: "2026-09-05", direction: "inflow" });
     await relateRefund(fixture.store, related, original);
-    const loose = await fixture.addTransaction({ amount: "50", date: "2026-09-06", direction: "inflow" });
+    const billPayment = await fixture.addTransaction({ amount: "50", date: "2026-09-06", direction: "inflow" });
+    const recognized = await fixture.addTransaction({ amount: "30", date: "2026-09-07", direction: "inflow" });
+    await recognizeRefund(fixture.store, recognized, "30");
 
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
-    assert.deepEqual(classOf(report, related), {
-      class: "refund", categories: [{ category: "dining", group: "dining", amount: amount("200") }], refundOf: original,
-    }, "the original lies outside the range and still lends its category");
-    assert.deepEqual(classOf(report, loose), { class: "refund", categories: unclassified("50"), refundOf: null });
+    assert.deepEqual(classOf(report, related), { class: "refund", categories: dining("200"), refundOf: original },
+      "the original lies outside the range and still lends its category");
+    assert.deepEqual(classOf(report, billPayment), { class: "unresolved" }, "a card bill payment credit is no refund");
+    assert.deepEqual(classOf(report, recognized), { class: "refund", categories: unclassified("30"), refundOf: null });
     const [twd] = report.totals;
     assert.deepEqual(twd?.outflow.groups, [
-      { group: null, amount: { coefficient: "-50", scale: 0 }, count: 1 },
+      { group: null, amount: { coefficient: "-30", scale: 0 }, count: 1 },
       { group: "dining", amount: amount("400"), count: 2 },
     ]);
-    assert.deepEqual(twd?.outflow.amount, amount("350"));
+    assert.deepEqual(twd?.unresolved, { amount: amount("50"), count: 1 });
     assert.deepEqual(twd?.inflow, { amount: amount("0"), count: 0, groups: [] });
+  });
+});
+
+test("a reversal inherits its original's category through reversal_of", async () => {
+  await withFixture(async (fixture) => {
+    const original = await fixture.addTransaction({ amount: "800", date: "2026-09-01" });
+    await categorize(fixture, original, "dining");
+    const reversal = await fixture.addTransaction({ amount: "800", date: "2026-09-03", direction: "inflow" });
+    await relateRefund(fixture.store, reversal, original, "reversal_of");
+
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(classOf(report, reversal), { class: "refund", categories: dining("800"), refundOf: original });
+    assert.deepEqual(report.totals[0]?.outflow.groups, [{ group: "dining", amount: amount("0"), count: 2 }]);
+  });
+});
+
+test("only a refund's own User Categorization outranks the category it inherits", async () => {
+  await withFixture(async (fixture) => {
+    const original = await fixture.addTransaction({ amount: "1000", date: "2026-09-01" });
+    await categorize(fixture, original, "dining");
+    const derived = await fixture.addTransaction({ amount: "100", date: "2026-09-04", direction: "inflow" });
+    await relateRefund(fixture.store, derived, original);
+    const chosen = await fixture.addTransaction({ amount: "70", date: "2026-09-05", direction: "inflow" });
+    await relateRefund(fixture.store, chosen, original);
+    await categorize(fixture, chosen, "food_and_groceries");
+    await deriveCategory(fixture.store, derived, "food_and_groceries");
+
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(classOf(report, derived), { class: "refund", categories: dining("100"), refundOf: original },
+      "a Derived Categorization does not replace Relation-backed categorization");
+    assert.deepEqual(classOf(report, chosen), {
+      class: "refund", categories: [{ category: "food_and_groceries", group: "daily", amount: amount("70") }], refundOf: null,
+    });
+  });
+});
+
+test("a card Kind read from direction alone is a fallback Kind", async () => {
+  await withFixture(async (fixture) => {
+    const original = await fixture.addTransaction({ amount: "300", date: "2026-09-01" });
+    const refund = await fixture.addTransaction({ amount: "300", date: "2026-09-02", direction: "inflow" });
+    await relateRefund(fixture.store, refund, original);
+    const salary = await addWithKind(fixture, "income.employment.salary", { amount: "100", direction: "inflow", date: "2026-09-03" });
+    const directionSalary = await fixture.addTransaction({ amount: "100", direction: "inflow", date: "2026-09-04" });
+    await setKind(fixture.store, directionSalary, "income.employment.salary", "direction");
+
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    const kindOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id)?.kind;
+    assert.deepEqual(kindOf(original), { code: "purchase", basis: "fallback" });
+    assert.deepEqual(kindOf(refund), { code: "refund", basis: "fallback" });
+    assert.deepEqual(kindOf(salary), { code: "income.employment.salary", basis: "evidence" });
+    assert.deepEqual(kindOf(directionSalary), { code: "income.employment.salary", basis: "fallback" }, "the basis follows the evidence, not the code");
   });
 });
 
