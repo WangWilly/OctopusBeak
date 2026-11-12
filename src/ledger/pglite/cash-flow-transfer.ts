@@ -4,11 +4,13 @@ import {
   cashFlowTransferRefusal,
   dayGap,
   transferLinkId,
+  type CashFlowTransferLinkOrigin,
   type CashFlowTransferPair,
   type CashFlowTransferReach,
+  type CashFlowTransferSide,
 } from "../canonical/cash-flow-transfer.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
-import { readPGliteCashFlowTransfers } from "./cash-flow.ts";
+import { readPGliteCashFlowTransfers, readStoredCashFlowTransferLinks } from "./cash-flow.ts";
 import { applyOperationalMigrations } from "./operational-migrations.ts";
 import { bytes, pgliteQuery } from "./spending-sql.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
@@ -75,11 +77,15 @@ const REACH: Readonly<Record<Exclude<CashFlowTransferDecision, "revoke">, CashFl
 const LOCAL_USER_ID = "local-user";
 const newId = () => Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
 
+type DecisionEvent = Readonly<{ kind: "confirmed" | "denied" | "revoked"; origin: CashFlowTransferLinkOrigin["kind"] | null }>;
+type EventSide = Pick<CashFlowTransferSide, "accountId" | "date" | "amount" | "kind">;
+
 /**
  * Record one decision on a pair at `knowledgeAt`, after checking the pair
  * against the links and candidates the Cash flow page computes there. A side
  * outside Cash flow, such as a Preview, covered or pending transaction, is
- * refused because the page never reads it.
+ * refused because the page never reads it. Revoking needs only a current
+ * link: a suspended stored link can be revoked whatever became of its sides.
  */
 export async function decidePGliteCashFlowTransfer(
   transaction: PGliteTransaction,
@@ -87,50 +93,75 @@ export async function decidePGliteCashFlowTransfer(
   pair: CashFlowTransferPair,
   knowledgeAt: number,
 ): Promise<void> {
+  const linkId = transferLinkId(pair);
+  const storedTouching = await readStoredCashFlowTransferLinks(transaction, [pair.outflowTransactionId, pair.inflowTransactionId]);
+  const storedLink = storedTouching.find((link) => transferLinkId(link) === linkId);
   const { sides, pairing, history } = await readPGliteCashFlowTransfers(transaction, knowledgeAt, pair);
   const outflow = sides.get(pair.outflowTransactionId);
   const inflow = sides.get(pair.inflowTransactionId);
-  if (!outflow || !inflow) throw new Error("A Cash-flow transfer link joins two transactions that Cash flow counts.");
-  const linkId = transferLinkId(pair);
-  const current = pairing.links.find((link) => link.linkId === linkId);
-  let event: Readonly<{ kind: "confirmed" | "denied" | "revoked"; origin: "evidence" | "confirmed" | "manual" | null }>;
-  if (decision === "revoke") {
-    if (!current) throw new Error("Only a current Cash-flow transfer link can be revoked.");
-    event = { kind: "revoked", origin: current.origin.kind };
-  } else {
-    if (current) throw new Error("This Cash-flow transfer link is already current.");
-    const refusal = cashFlowTransferRefusal(outflow, inflow, REACH[decision], cashFlowTransferContext(pairing.links, history));
-    if (refusal !== null) throw new Error(`Cash-flow transfer ${decision} refused: ${refusal}.`);
-    event = decision === "deny"
-      ? { kind: "denied", origin: null }
-      : { kind: "confirmed", origin: decision === "pair" ? "manual" : "confirmed" };
-  }
-  const commit = await insertPGliteCanonicalCommit(transaction, {
+  const commitId = async () => (await insertPGliteCanonicalCommit(transaction, {
     kind: "relation_resolution",
     authorityRoute: "user/local",
     time: { kind: "wall-clock" },
-  });
+  })).id;
+  if (decision === "revoke") {
+    const origin = storedLink?.origin.kind ?? pairing.links.find((link) => link.linkId === linkId)?.origin.kind;
+    if (origin === undefined) throw new Error("Only a current Cash-flow transfer link can be revoked.");
+    await recordDecision(transaction, await commitId(), "revoke", pair, { kind: "revoked", origin }, knowledgeAt, outflow, inflow);
+    return;
+  }
+  if (!outflow || !inflow) throw new Error("A Cash-flow transfer link joins two transactions that Cash flow counts.");
+  if (pairing.links.some((link) => link.linkId === linkId)) throw new Error("This Cash-flow transfer link is already current.");
+  const refusal = cashFlowTransferRefusal(outflow, inflow, REACH[decision], cashFlowTransferContext(pairing.links, history));
+  if (refusal !== null) throw new Error(`Cash-flow transfer ${decision} refused: ${refusal}.`);
+  const commit = await commitId();
+  if (decision === "deny") {
+    await recordDecision(transaction, commit, decision, pair, { kind: "denied", origin: null }, knowledgeAt, outflow, inflow);
+    return;
+  }
+  // A side counted in a valid link was refused above, so every stored link
+  // touching this pair is suspended. The new decision replaces it.
+  for (const superseded of storedTouching)
+    await recordDecision(transaction, commit, "supersede", superseded, { kind: "revoked", origin: superseded.origin.kind }, knowledgeAt,
+      sides.get(superseded.outflowTransactionId), sides.get(superseded.inflowTransactionId));
+  const eventId = await recordDecision(transaction, commit, decision, pair,
+    { kind: "confirmed", origin: decision === "pair" ? "manual" : "confirmed" }, knowledgeAt, outflow, inflow);
+  await pgliteQuery(transaction,
+    "INSERT INTO current_cash_flow_transfer_links(outflow_transaction_id, inflow_transaction_id, confirmed_event_id) VALUES (?, ?, ?)",
+    [bytes(pair.outflowTransactionId, "Outflow transaction"), bytes(pair.inflowTransactionId, "Inflow transaction"), eventId]);
+}
+
+/** Append one decision event; a revocation also ends the pair's stored link, if it has one. */
+async function recordDecision(
+  transaction: PGliteTransaction,
+  commitId: Uint8Array,
+  decision: CashFlowTransferDecision | "supersede",
+  pair: CashFlowTransferPair,
+  event: DecisionEvent,
+  knowledgeAt: number,
+  outflow: EventSide | undefined,
+  inflow: EventSide | undefined,
+): Promise<Uint8Array> {
   const eventId = newId();
-  const side = (entry: typeof outflow) => ({ accountId: entry.accountId, date: entry.date, amount: entry.amount, kind: entry.kind });
+  const side = (entry: EventSide | undefined) => entry ? { accountId: entry.accountId, date: entry.date, amount: entry.amount, kind: entry.kind } : null;
   await pgliteQuery(transaction,
     `INSERT INTO cash_flow_transfer_decision_events(
        event_id, decision_key, outflow_transaction_id, inflow_transaction_id, event_kind, link_origin,
        user_id, evidence_json, evidence_knowledge_sequence, commit_id
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      eventId, `cash-flow/user/${decision}/${linkId}/${knowledgeAt}`,
+      eventId, `cash-flow/user/${decision}/${transferLinkId(pair)}/${knowledgeAt}`,
       bytes(pair.outflowTransactionId, "Outflow transaction"), bytes(pair.inflowTransactionId, "Inflow transaction"),
       event.kind, event.origin, LOCAL_USER_ID,
-      JSON.stringify({ decision, outflow: side(outflow), inflow: side(inflow), dayGap: dayGap(outflow.date, inflow.date) }),
-      knowledgeAt, commit.id,
+      JSON.stringify({
+        decision, outflow: side(outflow), inflow: side(inflow),
+        dayGap: outflow && inflow ? dayGap(outflow.date, inflow.date) : null,
+      }),
+      knowledgeAt, commitId,
     ]);
-  if (event.kind === "confirmed") {
-    await pgliteQuery(transaction,
-      "INSERT INTO current_cash_flow_transfer_links(outflow_transaction_id, inflow_transaction_id, confirmed_event_id) VALUES (?, ?, ?)",
-      [bytes(pair.outflowTransactionId, "Outflow transaction"), bytes(pair.inflowTransactionId, "Inflow transaction"), eventId]);
-  } else if (event.kind === "revoked" && event.origin !== "evidence") {
+  if (event.kind === "revoked" && event.origin !== "evidence")
     await pgliteQuery(transaction,
       "DELETE FROM current_cash_flow_transfer_links WHERE outflow_transaction_id = ? AND inflow_transaction_id = ?",
       [bytes(pair.outflowTransactionId, "Outflow transaction"), bytes(pair.inflowTransactionId, "Inflow transaction")]);
-  }
+  return eventId;
 }

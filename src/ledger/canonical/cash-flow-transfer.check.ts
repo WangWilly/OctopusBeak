@@ -46,14 +46,14 @@ test("sides 4 days apart are no candidate, but the person may pair them", () => 
   const far = side("in", "inflow", { date: "2026-09-14" });
   assert.equal(cashFlowTransferRefusal(out, far, "candidate", none), "too_far");
   assert.equal(cashFlowTransferRefusal(out, far, "manual", none), null);
-  assert.deepEqual(pairCashFlowTransfers([out, far], [], new Map()), { links: [], candidates: [] });
+  assert.deepEqual(pairCashFlowTransfers([out, far], [], new Map()), { links: [], suspended: [], candidates: [] });
 });
 
 test("a denied pair is never proposed or paired again", () => {
   const sides = [side("out", "outflow"), side("in", "inflow")];
   assert.equal(pairCashFlowTransfers(sides, [], new Map()).candidates.length, 1);
   const history = new Map<string, CashFlowTransferPairHistory>([["out/in", "denied"]]);
-  assert.deepEqual(pairCashFlowTransfers(sides, [], history), { links: [], candidates: [] });
+  assert.deepEqual(pairCashFlowTransfers(sides, [], history), { links: [], suspended: [], candidates: [] });
   assert.equal(cashFlowTransferRefusal(sides[0]!, sides[1]!, "manual", cashFlowTransferContext([], history)), "denied");
 });
 
@@ -61,7 +61,9 @@ test("evidence links a unique pair of internal transfers, and an ambiguous match
   const out = side("out", "outflow", { kind: evidence("transfer.internal") });
   const first = side("in-1", "inflow", { kind: evidence("transfer.internal"), date: "2026-09-11" });
   const unique = pairCashFlowTransfers([out, first], [], new Map());
-  assert.deepEqual(unique, { links: [{ linkId: "out/in-1", outflowTransactionId: "out", inflowTransactionId: "in-1", origin: { kind: "evidence" } }], candidates: [] });
+  assert.deepEqual(unique, {
+    links: [{ linkId: "out/in-1", outflowTransactionId: "out", inflowTransactionId: "in-1", origin: { kind: "evidence" } }], suspended: [], candidates: [],
+  });
 
   const second = side("in-2", "inflow", { kind: evidence("transfer.internal"), accountId: "bank-c", date: "2026-09-10" });
   const ambiguous = pairCashFlowTransfers([out, first, second], [], new Map());
@@ -79,6 +81,46 @@ test("evidence never links a fallback side, a decided pair, or a card bill payme
     "a revoked automatic link stays revoked");
   const billPayment = side("out", "outflow", { kind: evidence("payment.credit_card") });
   assert.deepEqual(pairCashFlowTransfers([billPayment, side("in", "inflow", { kind: fallback("refund") })], [], new Map()).links, []);
+});
+
+test("5000 and 5000.00 are one amount when pairing", () => {
+  const out = side("out", "outflow");
+  const into = side("in", "inflow", { amount: { coefficient: "500000", scale: 2, currency: "TWD" } });
+  assert.deepEqual(pairCashFlowTransfers([out, into], [], new Map()).candidates.map((candidate) => [candidate.outflowTransactionId, candidate.inflowTransactionId]),
+    [["out", "in"]]);
+  const stored = { outflowTransactionId: "out", inflowTransactionId: "in", origin: { kind: "confirmed" as const, eventId: "event", decidedAtKnowledge: 4 } };
+  assert.deepEqual(pairCashFlowTransfers([out, into], [stored], new Map()).suspended, [], "a stored link at another scale still applies");
+});
+
+const confirmed = (outflowTransactionId: string, inflowTransactionId: string) =>
+  ({ outflowTransactionId, inflowTransactionId, origin: { kind: "confirmed" as const, eventId: "event", decidedAtKnowledge: 4 } });
+
+test("a stored link whose side is no longer counted is suspended and blocks nothing", () => {
+  const into = side("in", "inflow");
+  const other = side("out-2", "outflow", { accountId: "bank-c" });
+  const pairing = pairCashFlowTransfers([into, other], [confirmed("out", "in")], new Map());
+  assert.deepEqual(pairing.links, []);
+  assert.deepEqual(pairing.suspended.map((link) => [link.linkId, link.suspension]), [["out/in", { reason: "not_counted", transactionIds: ["out"] }]]);
+  assert.deepEqual(pairing.candidates.map((candidate) => [candidate.outflowTransactionId, candidate.inflowTransactionId]), [["out-2", "in"]],
+    "the counted side may pair again");
+});
+
+test("a stored link suspends while its sides break a rule, and applies again once they do not", () => {
+  const out = side("out", "outflow");
+  const revised = side("in", "inflow", { amount: { coefficient: "4000", scale: 0, currency: "TWD" } });
+  const suspended = pairCashFlowTransfers([out, revised], [confirmed("out", "in")], new Map());
+  assert.deepEqual(suspended.links, []);
+  assert.deepEqual(suspended.suspended.map((link) => link.suspension), [{ reason: "amount" }]);
+  for (const [overrides, reason] of [
+    [{ amount: { coefficient: "5000", scale: 0, currency: "USD" } }, "currency"],
+    [{ direction: "outflow" }, "direction"],
+    [{ accountId: "bank-a" }, "same_account"],
+  ] as const)
+    assert.deepEqual(pairCashFlowTransfers([out, side("in", "inflow", overrides)], [confirmed("out", "in")], new Map()).suspended.map((link) => link.suspension),
+      [{ reason }]);
+  const restored = pairCashFlowTransfers([out, side("in", "inflow")], [confirmed("out", "in")], new Map());
+  assert.deepEqual(restored.links.map((link) => link.linkId), ["out/in"]);
+  assert.deepEqual(restored.suspended, []);
 });
 
 test("a stored link takes both sides out of every candidate", () => {

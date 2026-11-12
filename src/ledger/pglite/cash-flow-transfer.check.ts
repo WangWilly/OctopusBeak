@@ -4,10 +4,8 @@ import { createTestPGlite } from "./baseline-test-template.ts";
 import { readPGliteCashFlow, type CashFlowReport } from "./cash-flow.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { commitCathay, commitTdccSettlement } from "./direct-source-precedence-fixture.ts";
-import { commitVerifiedDeposit, writePreviewDeposits } from "./financial-pages.fixtures.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
-import { createPGlitePreviewFinancialData } from "./preview-financial-data.ts";
 import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import { createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
@@ -99,7 +97,7 @@ test("a denied pair is not proposed again and cannot be paired", async () => {
     const [out, into] = await addSides(fixture, [opaqueOut(), opaqueIn()]);
     await act(fixture.store, "transfer_deny", out!, into!);
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
-    assert.deepEqual(report.transfers, { links: [], candidates: [] });
+    assert.deepEqual(report.transfers, { links: [], suspended: [], candidates: [] });
     assert.deepEqual([classOf(report, out!), classOf(report, into!)], ["outflow", "inflow"]);
     await assert.rejects(act(fixture.store, "transfer_confirm", out!, into!), /denied/u);
     await assert.rejects(act(fixture.store, "transfer_pair", out!, into!), /denied/u);
@@ -167,20 +165,101 @@ test("a covered account is never a candidate and cannot be paired", async () => 
   }
 });
 
-test("a Preview account is never a candidate", async () => {
+test("a covered side suspends its link, and the other side is free again and the link revocable", async () => {
   const store = new PGliteStore(await createTestPGlite("full"));
   try {
-    await commitVerifiedDeposit(store);
-    const october = { startDate: "2026-10-01", endDate: "2026-10-31" };
-    const [canonical] = (await readPGliteCashFlow(store, october)).transactions;
-    assert.equal(canonical?.direction, "outflow");
-    const value = (Number(canonical!.amount.coefficient) / 10 ** canonical!.amount.scale).toFixed(canonical!.amount.scale);
-    await writePreviewDeposits(createPGlitePreviewFinancialData(store), {
-      sourceAccountKey: "savings", displayLabel: "Preview savings", currency: "TWD", type: "depository", balances: [],
-      transactions: [{ sourceRowKey: "in", amount: value, currency: "TWD", direction: "inflow", postedAt: { precision: "day", value: canonical!.date }, description: "transfer in" }],
-    });
-    assert.deepEqual((await readPGliteCashFlow(store, october)).transfers, { links: [], candidates: [] });
+    const august = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    await commitTdccSettlement(store, "013", { rows: [["20260803090000", "0.0", "5000.0", "10000.0", "轉出"]] });
+    await commitTdccSettlement(store, "822", { rows: [["20260804090000", "5000.0", "0.0", "15000.0", "轉入"]] });
+    await commitTdccSettlement(store, "012", { rows: [["20260805090000", "0.0", "5000.0", "10000.0", "轉出"]] });
+    const unlinked = await readPGliteCashFlow(store, august);
+    const into = unlinked.transactions.find((row) => row.direction === "inflow")!;
+    const [covered, other] = unlinked.transfers.candidates.map((candidate) => candidate.outflowTransactionId);
+    assert.equal(unlinked.transfers.candidates.length, 2);
+    await act(store, "transfer_confirm", covered!, into.transactionId);
+    assert.deepEqual(pairsOf((await readPGliteCashFlow(store, august)).transfers.candidates), [], "a linked inflow is no candidate");
+
+    await commitCathay(store);
+    const report = await readPGliteCashFlow(store, august);
+    assert.ok(!report.transactions.some((row) => row.transactionId === covered), "Direct source precedence covers the 013 account");
+    assert.deepEqual(report.transfers.links, []);
+    assert.deepEqual(report.transfers.suspended.map((link) => [link.linkId, link.suspension]),
+      [[`${covered}/${into.transactionId}`, { reason: "not_counted", transactionIds: [covered] }]]);
+    assert.deepEqual(pairsOf(report.transfers.candidates), [[other, into.transactionId]], "the counted side is a candidate again");
+    const row = report.transactions.find((entry) => entry.transactionId === into.transactionId)!;
+    assert.deepEqual([row.cashFlow, row.transferLinkId], [into.cashFlow, null]);
+
+    await act(store, "transfer_revoke", covered!, into.transactionId);
+    assert.deepEqual((await readPGliteCashFlow(store, august)).transfers.suspended, []);
+    assert.equal((await store.query("SELECT 1 FROM current_cash_flow_transfer_links")).rows.length, 0);
   } finally {
     await store.close();
   }
+});
+
+test("a revised amount suspends a link and counts both sides, and the link applies again once the amounts match", async () => {
+  await withFixture(async (fixture) => {
+    const [out, into] = await addSides(fixture, [opaqueOut(), opaqueIn()]);
+    await act(fixture.store, "transfer_confirm", out!, into!);
+    const revise = async (value: string) => {
+      await fixture.reviseTransaction(into!, { amount: value, date: "2026-09-11", direction: "inflow" });
+      for (const id of [out!, into!]) await setKind(fixture.store, id, id === out ? "purchase" : "receipt");
+      return readPGliteCashFlow(fixture.store, SEPTEMBER);
+    };
+
+    const suspended = await revise("4000");
+    assert.deepEqual(suspended.transfers.links, []);
+    assert.deepEqual(suspended.transfers.suspended.map((link) => [link.linkId, link.suspension]), [[`${out}/${into}`, { reason: "amount" }]]);
+    assert.deepEqual([classOf(suspended, out!), classOf(suspended, into!)], ["outflow", "inflow"]);
+    assert.ok(suspended.transactions.every((row) => row.transferLinkId === null));
+
+    const restored = await revise("5000");
+    assert.deepEqual(restored.transfers.links.map((link) => [link.linkId, link.origin.kind]), [[`${out}/${into}`, "confirmed"]]);
+    assert.deepEqual(restored.transfers.suspended, []);
+    assert.deepEqual([classOf(restored, out!), classOf(restored, into!)], ["not_counted", "not_counted"]);
+  });
+});
+
+test("a suspended link can be revoked, and a new link on one of its sides replaces it", async () => {
+  await withFixture(async (fixture) => {
+    const [out, into, other] = await addSides(fixture, [opaqueOut(), opaqueIn(), opaqueIn("2026-09-12", "5000", "bank-c")]);
+    const setKinds = async () => {
+      for (const [id, code] of [[out!, "purchase"], [into!, "receipt"], [other!, "receipt"]] as const) await setKind(fixture.store, id, code);
+    };
+    await act(fixture.store, "transfer_confirm", out!, into!);
+    await fixture.reviseTransaction(into!, { amount: "4000", date: "2026-09-11", direction: "inflow" });
+    await setKinds();
+    await act(fixture.store, "transfer_revoke", out!, into!);
+    const revoked = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual([revoked.transfers.links, revoked.transfers.suspended], [[], []]);
+
+    await fixture.reviseTransaction(into!, { amount: "5000", date: "2026-09-11", direction: "inflow" });
+    await setKinds();
+    await act(fixture.store, "transfer_confirm", out!, into!);
+    await fixture.reviseTransaction(into!, { amount: "4000", date: "2026-09-11", direction: "inflow" });
+    await setKinds();
+    assert.deepEqual(pairsOf((await readPGliteCashFlow(fixture.store, SEPTEMBER)).transfers.candidates), [[out, other]]);
+    await act(fixture.store, "transfer_confirm", out!, other!);
+    const replaced = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(pairsOf(replaced.transfers.links), [[out, other]]);
+    assert.deepEqual(replaced.transfers.suspended, []);
+  });
+});
+
+test("a counterpart dated by its consume date, with a far effective date, is seen by the page and by every decision", async () => {
+  await withFixture(async (fixture) => {
+    const internal = (direction: "outflow" | "inflow", date: string, account: string, consumeDate?: string) =>
+      ["transfer.internal", "bank-rule", { amount: "5000", date, direction, account, ...consumeDate ? { card: { consumeDate } } : {} }] as const;
+    const [out, into, consumed] = await addSides(fixture, [
+      internal("outflow", "2026-09-10", "bank-a"),
+      internal("inflow", "2026-09-11", "bank-b"),
+      // Effective 20 days later, beyond six days of either side's effective date.
+      internal("inflow", "2026-09-30", "bank-c", "2026-09-09"),
+    ]);
+    const report = await readPGliteCashFlow(fixture.store, { startDate: "2026-09-01", endDate: "2026-09-12" });
+    assert.deepEqual(report.transfers.links, [], "two counterparts make the evidence ambiguous");
+    assert.deepEqual(pairsOf(report.transfers.candidates), [[out, consumed], [out, into]]);
+    await act(fixture.store, "transfer_confirm", out!, into!);
+    assert.deepEqual(pairsOf((await readPGliteCashFlow(fixture.store, SEPTEMBER)).transfers.links), [[out, into]]);
+  });
 });

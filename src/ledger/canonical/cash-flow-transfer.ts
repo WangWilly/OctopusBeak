@@ -35,8 +35,21 @@ export type CashFlowTransferLink = CashFlowTransferPair & Readonly<{
 
 export type CashFlowTransferCandidate = CashFlowTransferPair & Readonly<{ dayGap: number }>;
 
+/**
+ * Why a stored link does not apply now. `not_counted` names the sides Cash
+ * flow no longer counts: covered, canceled, deleted, pending or gone.
+ */
+export type CashFlowTransferSuspension =
+  | Readonly<{ reason: "not_counted"; transactionIds: readonly string[] }>
+  | Readonly<{ reason: CashFlowTransferInvalidity }>;
+
+/** A stored link whose sides no longer meet its rules. It changes nothing until they do again. */
+export type CashFlowTransferSuspendedLink = CashFlowTransferLink & Readonly<{ suspension: CashFlowTransferSuspension }>;
+
 export type CashFlowTransferPairing = Readonly<{
+  /** The links that apply: every evidence link and every valid stored link. */
   links: readonly CashFlowTransferLink[];
+  suspended: readonly CashFlowTransferSuspendedLink[];
   /** Ranked: closest dates first, then by outflow date and the two ids. */
   candidates: readonly CashFlowTransferCandidate[];
 }>;
@@ -44,16 +57,16 @@ export type CashFlowTransferPairing = Readonly<{
 /** What the decision history says about one pair. */
 export type CashFlowTransferPairHistory = "denied" | "decided";
 
-export type CashFlowTransferRefusal =
+/** The rules every link must meet, whenever it is proposed, paired or applied. */
+export type CashFlowTransferInvalidity =
   | "same_transaction"
   | "manual_account"
   | "direction"
   | "same_account"
   | "currency"
-  | "amount"
-  | "too_far"
-  | "linked"
-  | "denied";
+  | "amount";
+
+export type CashFlowTransferRefusal = CashFlowTransferInvalidity | "too_far" | "linked" | "denied";
 
 /** `candidate` is what the page proposes; `manual` is what the person may pair, without the date window. */
 export type CashFlowTransferReach = "candidate" | "manual";
@@ -86,13 +99,12 @@ export function dayGap(left: string, right: string): number {
   return Math.abs(Date.parse(`${left}T00:00:00Z`) - Date.parse(`${right}T00:00:00Z`)) / 86_400_000;
 }
 
-/** Every rule a pair must meet before it may be proposed or paired, in one place. */
-export function cashFlowTransferRefusal(
-  outflow: CashFlowTransferSide,
-  inflow: CashFlowTransferSide,
-  reach: CashFlowTransferReach,
-  context: CashFlowTransferContext,
-): CashFlowTransferRefusal | null {
+/**
+ * What two counted sides must be to form any link: candidate, manual pair or
+ * stored link. Being counted already makes each side's account owned,
+ * non-Preview and not covered; the date window is not a validity rule.
+ */
+export function cashFlowTransferInvalidity(outflow: CashFlowTransferSide, inflow: CashFlowTransferSide): CashFlowTransferInvalidity | null {
   if (outflow.transactionId === inflow.transactionId) return "same_transaction";
   // A Manual Account transfer already records both of its sides.
   if (outflow.source !== "canonical" || inflow.source !== "canonical") return "manual_account";
@@ -100,6 +112,18 @@ export function cashFlowTransferRefusal(
   if (outflow.accountId === inflow.accountId) return "same_account";
   if (!sameCurrency(outflow.amount, inflow.amount)) return "currency";
   if (compareExact(outflow.amount, inflow.amount) !== 0) return "amount";
+  return null;
+}
+
+/** Every rule a pair must meet before it may be proposed or paired, in one place. */
+export function cashFlowTransferRefusal(
+  outflow: CashFlowTransferSide,
+  inflow: CashFlowTransferSide,
+  reach: CashFlowTransferReach,
+  context: CashFlowTransferContext,
+): CashFlowTransferRefusal | null {
+  const invalidity = cashFlowTransferInvalidity(outflow, inflow);
+  if (invalidity !== null) return invalidity;
   if (reach === "candidate" && dayGap(outflow.date, inflow.date) > CASH_FLOW_TRANSFER_WINDOW_DAYS) return "too_far";
   const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
   if (context.linkedElsewhere(outflow.transactionId, pair) || context.linkedElsewhere(inflow.transactionId, pair)) return "linked";
@@ -122,6 +146,9 @@ export type StoredCashFlowTransferLink = CashFlowTransferPair & Readonly<{
   origin: Extract<CashFlowTransferLinkOrigin, { kind: "confirmed" | "manual" }>;
 }>;
 
+const pairOf = (pair: CashFlowTransferPair): CashFlowTransferPair =>
+  ({ outflowTransactionId: pair.outflowTransactionId, inflowTransactionId: pair.inflowTransactionId });
+
 const amountKey = (side: CashFlowTransferSide) => {
   const amount = normalizeExact(side.amount);
   return `${normalizeCurrency(side.amount.currency)}|${amount.coefficient}|${amount.scale}`;
@@ -133,8 +160,25 @@ const ranked = (left: CashFlowTransferCandidate, right: CashFlowTransferCandidat
   || left.outflowTransactionId.localeCompare(right.outflowTransactionId)
   || left.inflowTransactionId.localeCompare(right.inflowTransactionId);
 
+/** Why a stored link does not apply among `sides`, or null when it does. */
+export function cashFlowTransferSuspension(
+  link: CashFlowTransferPair,
+  sideOf: ReadonlyMap<string, CashFlowTransferSide>,
+): CashFlowTransferSuspension | null {
+  const outflow = sideOf.get(link.outflowTransactionId);
+  const inflow = sideOf.get(link.inflowTransactionId);
+  if (!outflow || !inflow) {
+    const transactionIds = [link.outflowTransactionId, link.inflowTransactionId].filter((id) => !sideOf.has(id));
+    return { reason: "not_counted", transactionIds };
+  }
+  const invalidity = cashFlowTransferInvalidity(outflow, inflow);
+  return invalidity === null ? null : { reason: invalidity };
+}
+
 /**
- * The current links and candidates among `sides`. Stored links come first.
+ * The current links, suspended links and candidates among `sides`. A stored
+ * link applies only while both sides are among `sides` and still valid; a
+ * suspended one blocks nothing and applies again once its sides are valid.
  * Evidence links a pair only when both sides carry an evidence-backed
  * internal-transfer Kind, the pair is each side's only candidate, and the
  * person has never decided on it; anything ambiguous stays a candidate.
@@ -148,11 +192,17 @@ export function pairCashFlowTransfers(
   const links: CashFlowTransferLink[] = [];
   const link = (pair: CashFlowTransferPair, origin: CashFlowTransferLinkOrigin) => {
     linked.add(pair.outflowTransactionId).add(pair.inflowTransactionId);
-    links.push({ linkId: transferLinkId(pair), outflowTransactionId: pair.outflowTransactionId, inflowTransactionId: pair.inflowTransactionId, origin });
+    links.push({ linkId: transferLinkId(pair), ...pairOf(pair), origin });
   };
-  for (const entry of stored) link(entry, entry.origin);
+  const sideOf = new Map(sides.map((side) => [side.transactionId, side]));
+  const suspended: CashFlowTransferSuspendedLink[] = [];
+  for (const entry of stored) {
+    const suspension = cashFlowTransferSuspension(entry, sideOf);
+    if (suspension === null) link(entry, entry.origin);
+    else suspended.push({ ...pairOf(entry), linkId: transferLinkId(entry), origin: entry.origin, suspension });
+  }
 
-  const context = cashFlowTransferContext(stored, history);
+  const context = cashFlowTransferContext(links, history);
   const inflows = new Map<string, CashFlowTransferSide[]>();
   for (const side of sides) {
     if (side.direction !== "inflow") continue;
@@ -178,7 +228,6 @@ export function pairCashFlowTransfers(
       && context.history(pair) === undefined)
       link(pair, { kind: "evidence" });
   }
-  const dates = new Map(sides.map((side) => [side.transactionId, side.date]));
   const candidates = pairs
     .filter(({ outflow, inflow }) => !linked.has(outflow.transactionId) && !linked.has(inflow.transactionId))
     .map(({ outflow, inflow }) => ({
@@ -186,8 +235,8 @@ export function pairCashFlowTransfers(
       inflowTransactionId: inflow.transactionId,
       dayGap: dayGap(outflow.date, inflow.date),
     }))
-    .sort((left, right) => ranked(left, right, (id) => dates.get(id) ?? ""));
-  return { links, candidates };
+    .sort((left, right) => ranked(left, right, (id) => sideOf.get(id)?.date ?? ""));
+  return { links, suspended, candidates };
 }
 
 const LINKED_TRANSFER: CashFlowClass = Object.freeze({ class: "not_counted", reason: "transfer" });

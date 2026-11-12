@@ -211,7 +211,19 @@ export async function createSpendingCategoryFixture() {
   }
 
   async function addTransaction(input: FixtureTransactionInput): Promise<string> {
-    const transactionId = uuidBytes();
+    return capture(uuidBytes(), 1, input);
+  }
+
+  /** Capture a new current revision of an existing transaction; its account stays the same. */
+  async function reviseTransaction(transactionId: string, input: Omit<FixtureTransactionInput, "account">): Promise<string> {
+    const id = idBytes(transactionId);
+    const next = (await store.query<{ value: number | string }>(
+      "SELECT MAX(revision_number) + 1 AS value FROM transaction_revisions WHERE transaction_id = $1", [id])).rows[0]?.value;
+    if (next === undefined || next === null) throw new Error(`fixture transaction ${transactionId} has no revision`);
+    return capture(id, Number(next), input);
+  }
+
+  async function capture(transactionId: Uint8Array, revisionNumber: number, input: FixtureTransactionInput): Promise<string> {
     const revisionId = uuidBytes();
     const recordId = uuidBytes();
     const assertionId = uuidBytes();
@@ -232,10 +244,11 @@ export async function createSpendingCategoryFixture() {
          ) VALUES ($1, $2, NULL, $3, 'bank-transaction', $4, $4, $5, $4, $4, $6, '{}')`,
         [recordId, bankCapture, commitId, `bank-${ordinal}`, `bank-hash-${ordinal}`, input.description ?? `Fixture purchase ${ordinal}`],
       );
-      await transaction.query(
-        "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, $3, $4)",
-        [transactionId, accountId, `payment-${ordinal}`, commitId],
-      );
+      if (revisionNumber === 1)
+        await transaction.query(
+          "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, $3, $4)",
+          [transactionId, accountId, `payment-${ordinal}`, commitId],
+        );
       await transaction.query(
         `INSERT INTO transaction_revisions(
            revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number,
@@ -243,11 +256,11 @@ export async function createSpendingCategoryFixture() {
            posting_rule_version, description, economic_status, administrative_state, semantic_rule_version,
            effective_on, transaction_date_time_local, time_zone, time_precision, time_origin,
            effective_time_basis, effective_time_rule_version, utc_instant_utc_us
-         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, 'posted', 'human-attested', 'statement-posted-history',
+         ) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, 'posted', 'human-attested', 'statement-posted-history',
                    $10, $11, 'normal', 'active', $10, $12, $13, 'Asia/Taipei', 'second', 'source_reported',
                    'accounting', $10, $14)`,
         [revisionId, transactionId, recordId, bankCapture, commitId, input.amount, input.scale ?? 0, input.currency ?? "TWD",
-          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal],
+          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal, revisionNumber],
       );
       await transaction.query(
         `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
@@ -371,6 +384,7 @@ export async function createSpendingCategoryFixture() {
     store,
     knowledgeAt,
     addTransaction,
+    reviseTransaction,
     commitInvoice,
     link,
     close: () => store.close(),

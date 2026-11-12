@@ -23,7 +23,7 @@ import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts"
 import { exactFromManualAmount } from "../../lib/manual-assets/manual-assets.ts";
 import { absoluteExact, compareExact, sameCurrency, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
-import { querySpendingReport } from "./spending-facts.ts";
+import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
 import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
 
 /**
@@ -46,7 +46,7 @@ export type CashFlowReport = Readonly<{
   endDate: string;
   transactions: readonly CashFlowReportTransaction[];
   totals: readonly CashFlowCurrencyTotals[];
-  /** The links and candidates with at least one side among `transactions`. */
+  /** The links, suspended links and candidates with at least one side among `transactions`. */
   transfers: CashFlowTransferPairing;
 }>;
 
@@ -248,8 +248,8 @@ function shiftDate(date: string, days: number): string {
   return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
 
-/** The current stored links with a side among `transactionIds`, whichever side it is. */
-async function storedTransferLinks(reader: PGliteSpendingReader, transactionIds: readonly string[]): Promise<StoredCashFlowTransferLink[]> {
+/** The current stored links with a side among `transactionIds`, whichever side it is, valid or not. */
+export async function readStoredCashFlowTransferLinks(reader: PGliteSpendingReader, transactionIds: readonly string[]): Promise<StoredCashFlowTransferLink[]> {
   type LinkRow = { outflow_transaction_id: unknown; inflow_transaction_id: unknown; event_id: unknown; link_origin: unknown; commit_sequence: unknown };
   const sql = (column: string) => (placeholders: string) =>
     `SELECT link.outflow_transaction_id, link.inflow_transaction_id, event.event_id, event.link_origin, commit_row.commit_sequence
@@ -291,45 +291,52 @@ async function transferHistory(reader: PGliteSpendingReader, transactionIds: rea
 export type CashFlowTransferRead = Readonly<{
   /** Every canonical row the pairing read, by transaction id. */
   sides: ReadonlyMap<string, DatedCashFlowTransaction>;
-  /** The rows whose effective date lies in the requested range. */
-  inRange: readonly DatedCashFlowTransaction[];
+  /** The rows the read was asked about: those dated in the range, or the pair's sides that Cash flow counts. */
+  focus: readonly DatedCashFlowTransaction[];
   pairing: CashFlowTransferPairing;
   history: ReadonlyMap<string, CashFlowTransferPairHistory>;
 }>;
 
+/** Hydrate canonical rows by id, one bounded read per chunk. */
+async function canonicalTransactionsById(reader: PGliteSpendingReader, knowledgeAt: number, ids: readonly string[]): Promise<DatedCashFlowTransaction[]> {
+  const found: DatedCashFlowTransaction[] = [];
+  for (let start = 0; start < ids.length; start += 2_048)
+    found.push(...await canonicalTransactions(reader, knowledgeAt, { transactionIds: ids.slice(start, start + 2_048) }));
+  return found;
+}
+
 /**
- * Pair transfers around a date range, or around the two sides of one pair.
- * Whether a row is linked by evidence depends on its counterparts'
- * counterparts, so rows two windows beyond the range are read too, and so is
- * the far side of every stored link.
+ * Pair transfers around the rows dated in a range, or around the two sides of
+ * one pair. The Cash flow page and every transfer decision read through here,
+ * so both see the same counterparts. Pairing compares each row's financial
+ * date, `date`, so the counterparts load by that date too. Whether a row is
+ * linked by evidence depends on its counterparts' counterparts, so rows two
+ * windows beyond the focus are read, and so is the far side of every stored
+ * link.
  */
 export async function readPGliteCashFlowTransfers(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
   scope: CashFlowRequest | CashFlowTransferPair,
 ): Promise<CashFlowTransferRead> {
-  let range: CashFlowRequest;
-  if ("startDate" in scope) {
-    range = scope;
-  } else {
-    const pair = await canonicalTransactions(reader, knowledgeAt, { transactionIds: [scope.outflowTransactionId, scope.inflowTransactionId] });
-    if (pair.length !== 2) return { sides: new Map(pair.map((side) => [side.transactionId, side])), inRange: pair, pairing: { links: [], candidates: [] }, history: new Map() };
-    const dates = pair.map((side) => side.effectiveOn).sort();
-    range = { startDate: dates[0]!, endDate: dates[1]! };
+  const focus = "startDate" in scope
+    ? await canonicalTransactions(reader, knowledgeAt, scope)
+    : await canonicalTransactionsById(reader, knowledgeAt, [scope.outflowTransactionId, scope.inflowTransactionId]);
+  const sides = new Map(focus.map((side) => [side.transactionId, side]));
+  if (focus.length > 0) {
+    const dates = focus.map((side) => side.date).sort();
+    const reach = 2 * CASH_FLOW_TRANSFER_WINDOW_DAYS;
+    const from = shiftDate(dates[0]!, -reach);
+    const through = shiftDate(dates.at(-1)!, reach);
+    const nearby = (await currentTransactionIdsByFinancialDate(reader, from, through)).filter((id) => !sides.has(id));
+    for (const side of await canonicalTransactionsById(reader, knowledgeAt, nearby))
+      if (side.date >= from && side.date <= through) sides.set(side.transactionId, side);
   }
-  const reach = 2 * CASH_FLOW_TRANSFER_WINDOW_DAYS;
-  const loaded = await canonicalTransactions(reader, knowledgeAt, {
-    startDate: shiftDate(range.startDate, -reach),
-    endDate: shiftDate(range.endDate, reach),
-  });
-  const sides = new Map(loaded.map((side) => [side.transactionId, side]));
-  const stored = await storedTransferLinks(reader, [...sides.keys()]);
+  const stored = await readStoredCashFlowTransferLinks(reader, [...sides.keys()]);
   const farSides = [...new Set(stored.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId]))].filter((id) => !sides.has(id));
-  if (farSides.length > 0)
-    for (const side of await canonicalTransactions(reader, knowledgeAt, { transactionIds: farSides })) sides.set(side.transactionId, side);
+  for (const side of await canonicalTransactionsById(reader, knowledgeAt, farSides)) sides.set(side.transactionId, side);
   const history = await transferHistory(reader, [...sides.keys()]);
-  const inRange = loaded.filter((side) => side.effectiveOn >= range.startDate && side.effectiveOn <= range.endDate);
-  return { sides, inRange, pairing: pairCashFlowTransfers([...sides.values()], stored, history), history };
+  return { sides, focus, pairing: pairCashFlowTransfers([...sides.values()], stored, history), history };
 }
 
 /** Classify every transaction dated from `startDate` through `endDate`, both inclusive. */
@@ -338,15 +345,19 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
   if (!ISO_DATE.test(startDate) || !ISO_DATE.test(endDate) || startDate > endDate)
     throw new Error("Cash flow needs an ISO start date on or before its end date.");
   const knowledgeAt = await readKnowledgePoint(reader);
-  const { sides, inRange, pairing } = await readPGliteCashFlowTransfers(reader, knowledgeAt, request);
-  const shown = new Set(inRange.map((side) => side.transactionId));
+  const { sides, focus, pairing } = await readPGliteCashFlowTransfers(reader, knowledgeAt, request);
+  const shown = new Set(focus.map((side) => side.transactionId));
   const touches = (pair: CashFlowTransferPair) => shown.has(pair.outflowTransactionId) || shown.has(pair.inflowTransactionId);
-  const transfers = { links: pairing.links.filter(touches), candidates: pairing.candidates.filter(touches) };
+  const transfers = {
+    links: pairing.links.filter(touches),
+    suspended: pairing.suspended.filter(touches),
+    candidates: pairing.candidates.filter(touches),
+  };
   const linkOf = new Map(transfers.links.flatMap((link) => [
     [link.outflowTransactionId, { linkId: link.linkId, counterpart: link.inflowTransactionId }],
     [link.inflowTransactionId, { linkId: link.linkId, counterpart: link.outflowTransactionId }],
   ] as const));
-  const canonical = inRange.map(({ effectiveOn: _effectiveOn, ...side }): CashFlowReportTransaction => {
+  const canonical = focus.map(({ effectiveOn: _effectiveOn, ...side }): CashFlowReportTransaction => {
     const link = linkOf.get(side.transactionId);
     if (!link) return { ...side, transferLinkId: null };
     const counterpart = sides.get(link.counterpart);
