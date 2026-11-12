@@ -100,7 +100,7 @@ A person's assets minus liabilities in the Trusted Financial Overview. It is one
 _Avoid_: Net worth (in code and DTOs), asset value, balance total
 
 **Financial page**:
-One of the Overview, Assets, Liabilities and Spending pages of the Trusted financial overview. Each shows one complete page that a PGlite live view delivers and updates when committed data changes; Automation and Settings are not Financial pages.
+One of the Overview, Assets, Liabilities, Spending and Cash flow pages of the Trusted financial overview. Each shows one complete page that a PGlite live view delivers and updates when committed data changes; Automation and Settings are not Financial pages.
 _Avoid_: Dashboard route, live page
 
 **Financial account**:
@@ -562,6 +562,18 @@ _Avoid_: Report patch, targeted patch, summary-line rebuild
 **Financial report inclusion**:
 A versioned query policy that determines whether and how a Financial Transaction participates in a financial total from account type, direction, Transaction Kind, relations, posting status, Statement facts, and other admitted financial semantics before consulting Personal Category. Category, Tags, Counterparty display, alias, and notes may organize an included amount but never admit, exclude, or change it; if a report requires an absent optional Kind, the query returns an explicit eligibility coverage gap and affected amount rather than silently counting, dropping, or persisting an `unknown` status.
 _Avoid_: Category-controlled cash flow, tag exclusion, silent incomplete total, user financial override
+
+**Cash flow**:
+The Financial page, shown as 「收支流水」, that answers where a person's money went: every counted inflow and outflow of canonical Financial Transactions in a period, per currency and never converted, under its own Financial report inclusion version. It is distinct from purchase-basis Spending: a card purchase counts when charged, a credit-card or internal-transfer payment between owned accounts does not count, and inflows group by income Transaction Kind while outflows group by Spending category group. Moving money between a person's own holdings does not count: loan principal payments and disbursements, investment contributions and withdrawals, and cash withdrawals; interest charged and fees count as outflows. A refund reduces the outflow of its category rather than counting as an inflow. Manual Account transactions count with a manual marker, and Preview Financial Data never enters it.
+_Avoid_: Spending, income statement, net flow page
+
+**Unresolved cash-flow kind**:
+The Cash flow bucket for a transaction whose absent Transaction Kind leaves its inclusion undecided. It is shown with its count and amount beside inflow and outflow and joins neither, rather than being counted by direction or dropped.
+_Avoid_: Unknown kind, uncategorized, other outflow
+
+**Cash-flow transfer link**:
+A revocable, report-level association between an outflow and an inflow in two of a person's accounts, possibly from different sources, that Cash flow shows as one internal transfer, called 「轉帳配對」 in the UI. Reliable evidence such as internal-transfer Kinds on both sides with equal amount and currency on close dates establishes it automatically; similarity alone only proposes a candidate that the person confirms. A candidate needs equal amount and currency, opposite directions, and two owned non-preview accounts; the person may also pair two such transactions themselves. A confirmed link keeps both sides out of inflow and outflow only when neither side carries an evidence-backed Kind, only the `purchase` or `receipt` fallback; an evidence-backed Kind always decides inclusion. It never becomes a Transaction Relation or merges identities.
+_Avoid_: Transaction relation, cross-source deduplication, transfer match
 
 **Classification coverage**:
 A query result describing how much of a financially included result set has a Current Categorization and how much falls into the Unclassified Presentation Bucket at the requested Canonical Knowledge Point. It is computed from Assertions selected by the query rather than persisted as transaction status, so changing a knowledge cutoff, report scope, or successful enrichment result reproduces the corresponding coverage without rewriting financial facts.
