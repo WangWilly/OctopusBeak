@@ -132,13 +132,48 @@ async function activeGeneration(reader: PGliteSpendingReader): Promise<number | 
 
 type DateFact = Readonly<{ consumeDate: string | null; postingDate: string | null; basis: "consume-date" | "posting-date-fallback" | null }>;
 
+/** The installed tables that carry a revision's consume and posting dates. */
+async function dateFactTables(reader: PGliteSpendingReader): Promise<readonly { table_name: string }[]> {
+  return rows(await pgliteQuery<{ table_name: string }>(reader,
+    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('canonical_credit_card_transaction_details', 'fubon_credit_transaction_details')",
+  ));
+}
+
+/**
+ * Current transactions that may have a financial date, the consume date or
+ * else the effective date, from `startDate` through `endDate`. It reads no
+ * inclusion rule, so it can return more: the caller filters the rows it
+ * hydrates by their financial date.
+ */
+export async function currentTransactionIdsByFinancialDate(
+  reader: PGliteSpendingReader,
+  startDate: string,
+  endDate: string,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  const add = (found: readonly { transaction_id: unknown }[]) => {
+    for (const row of found) ids.add(idString(row.transaction_id, "Transaction identity"));
+  };
+  add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,
+    `SELECT current_row.transaction_id
+       FROM current_transactions current_row
+       JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      WHERE revision.effective_on BETWEEN ? AND ?`, [startDate, endDate])));
+  for (const table of await dateFactTables(reader)) {
+    add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,
+      `SELECT current_row.transaction_id
+         FROM current_transactions current_row
+         JOIN ${table.table_name} fact ON fact.revision_id = current_row.revision_id
+        WHERE fact.consume_date BETWEEN ? AND ?`, [startDate, endDate])));
+  }
+  return [...ids];
+}
+
 async function transactionDateFacts(
   reader: PGliteSpendingReader,
   revisionIds?: readonly string[],
 ): Promise<ReadonlyMap<string, DateFact>> {
-  const tableRows = rows(await pgliteQuery<{ table_name: string }>(reader,
-    "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name IN ('canonical_credit_card_transaction_details', 'fubon_credit_transaction_details')",
-  ));
+  const tableRows = await dateFactTables(reader);
   const result = new Map<string, DateFact>();
   if (revisionIds?.length === 0) return result;
   for (const table of tableRows) {

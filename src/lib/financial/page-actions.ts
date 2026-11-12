@@ -5,6 +5,15 @@ import type {
   SpendingSummaryDeltaLine,
 } from "../spending/model.ts";
 
+/** A decision on one Cash-flow transfer pair (ADR 0137); it never changes Spending. */
+type CashFlowTransferActionRequest<A extends string, K extends string> = Readonly<{
+  action: A;
+  kind: K;
+  outflowTransactionId: string;
+  inflowTransactionId: string;
+  dataVersion: number;
+}>;
+
 /** Worker-validated action from a compact, version-bound Financial page; each kind has one entry (ADR 0136). */
 export type FinancialPageActionRequest = Readonly<{
   action: "confirm" | "deny";
@@ -41,7 +50,12 @@ export type FinancialPageActionRequest = Readonly<{
   /** `YYYY-MM`: the strong set is recomputed inside this month only. Omitted means every month. */
   month?: string | null;
   pairs: readonly SpendingCandidatePairRef[];
-}>;
+}>
+  | CashFlowTransferActionRequest<"confirm", "transfer_confirm">
+  | CashFlowTransferActionRequest<"deny", "transfer_deny">
+  | CashFlowTransferActionRequest<"revoke", "transfer_revoke">
+  /** Pair two transactions the person chose, without the candidate date window. */
+  | CashFlowTransferActionRequest<"pair", "transfer_pair">;
 
 /** The page actions that always commit, or fail: every kind but the strong batch. */
 export type FinancialCommittingPageActionRequest = Exclude<FinancialPageActionRequest, Readonly<{ kind: "strong" }>>;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PGlite } from "@electric-sql/pglite";
+import { CASH_FLOW_TRANSFER_TABLES } from "./cash-flow-transfer.ts";
 import { MANUAL_ASSET_TABLES } from "./manual-assets.ts";
 import { PREVIEW_FINANCIAL_DATA_TABLES } from "./preview-financial-data.ts";
 import { installFinancialStore } from "./store-layout.ts";
@@ -10,12 +11,12 @@ const tablesOf = async (db: PGlite): Promise<string[]> =>
     "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name",
   )).rows.map((row) => row.table_name);
 
-test("a new store holds the preview and Manual Asset tables beside the ledger", async () => {
+test("a new store holds the preview, Manual Asset and Cash-flow transfer tables beside the ledger", async () => {
   const db = await PGlite.create();
   try {
     await installFinancialStore(db);
     const tables = new Set(await tablesOf(db));
-    for (const table of [...PREVIEW_FINANCIAL_DATA_TABLES, ...MANUAL_ASSET_TABLES]) {
+    for (const table of [...PREVIEW_FINANCIAL_DATA_TABLES, ...MANUAL_ASSET_TABLES, ...CASH_FLOW_TRANSFER_TABLES]) {
       assert.ok(tables.has(table), `missing ${table}`);
     }
   } finally {

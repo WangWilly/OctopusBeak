@@ -12,6 +12,7 @@ import { querySpendingRecognition, recordedAtIso, refundFromRow } from "./spendi
 import { decide } from "./purchase-report.ts";
 import { bytes, idString, pgliteQuery, type Row } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { decidePGliteCashFlowTransfer } from "./cash-flow-transfer.ts";
 import { createFinancialPageActions, type FinancialPageActions } from "./financial-page-actions.ts";
 import type {
   SpendingCandidateInput,
@@ -486,6 +487,10 @@ type PageActionAdmission = Readonly<{
   revoke: ExactAdmission;
   category: ExactAdmission;
   strong: StrongAdmission;
+  transfer_confirm: ExactAdmission;
+  transfer_deny: ExactAdmission;
+  transfer_revoke: ExactAdmission;
+  transfer_pair: ExactAdmission;
 }>;
 
 /**
@@ -550,7 +555,31 @@ const PAGE_ACTIONS: PageActionTable = Object.freeze({
     write: writeStrongBatch,
     postcondition: () => {},
   },
+  transfer_confirm: cashFlowTransferEntry(),
+  transfer_deny: cashFlowTransferEntry(),
+  transfer_revoke: cashFlowTransferEntry(),
+  transfer_pair: cashFlowTransferEntry(),
 });
+
+type CashFlowTransferRequest = Extract<FinancialPageActionRequest, Readonly<{ kind: `transfer_${string}` }>>;
+
+const NO_SPENDING_SUBJECT: FinancialPageActionSubject = Object.freeze({ invoiceIds: Object.freeze([]), transactionIds: Object.freeze([]) });
+
+/** A Cash-flow transfer decision reads no Purchase record, so Spending gets an empty delta. */
+function cashFlowTransferEntry<R extends CashFlowTransferRequest>(): PageActionEntry<R, ExactAdmission> {
+  return {
+    admit: admitExactVersion,
+    subject: () => NO_SPENDING_SUBJECT,
+    write: (tx, input, { current }) => decidePGliteCashFlowTransfer(tx, input.action, {
+      outflowTransactionId: idString(bytes(input.outflowTransactionId, "Outflow transaction")),
+      inflowTransactionId: idString(bytes(input.inflowTransactionId, "Inflow transaction")),
+    }, current),
+    postcondition: (_input, decision) => {
+      if (decision.summaryDelta.before.length > 0 || decision.summaryDelta.after.length > 0)
+        throw new Error("A Cash-flow transfer decision changed Spending.");
+    },
+  };
+}
 
 async function admitExactVersion(
   transaction: PGliteTransaction,

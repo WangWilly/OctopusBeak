@@ -9,7 +9,8 @@ import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { createPGlitePreviewFinancialData } from "./preview-financial-data.ts";
 import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { commitPGliteSpendingRefundRevision } from "./spending-command.ts";
-import { BANK_ROUTE, createSpendingCategoryFixture, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
+import { BANK_ROUTE, createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
 import type { CashFlowClass } from "../canonical/cash-flow-inclusion.ts";
 
@@ -22,35 +23,11 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
   const fixture = await createSpendingCategoryFixture();
   try {
     await applyPgliteManualAssetsSchema(fixture.store);
+    await applyPgliteCashFlowTransferSchema(fixture.store);
     await run(fixture);
   } finally {
     await fixture.close();
   }
-}
-
-/**
- * Replace the projected Kind and the evidence its enrichment recorded, or
- * remove it when `code` is null. The fixture's card account projects a Kind
- * from direction alone; a replaced Kind defaults to bank-rule evidence.
- * Every `addTransaction` re-projects all Kinds, so set Kinds after the last one.
- */
-async function setKind(store: PGliteStore, transactionId: string, code: string | null, evidenceKind = "bank-rule") {
-  if (code === null) {
-    await store.query("DELETE FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'", [idBytes(transactionId)]);
-    return;
-  }
-  await store.query(
-    "UPDATE current_transaction_enrichment SET taxonomy_code = $2, value_text = $2 WHERE transaction_id = $1 AND field_name = 'kind'",
-    [idBytes(transactionId), code],
-  );
-  await store.query(
-    `UPDATE enrichment_run_outputs output
-        SET provenance_json = jsonb_set(output.provenance_json::jsonb, '{evidenceKind}', to_jsonb($2::text))::text
-       FROM current_transaction_enrichment enrichment
-      WHERE enrichment.transaction_id = $1 AND enrichment.field_name = 'kind'
-        AND output.assertion_id = enrichment.assertion_id`,
-    [idBytes(transactionId), evidenceKind],
-  );
 }
 
 /** Add each transaction, then set its Kind once the projection no longer refreshes. */

@@ -32,6 +32,8 @@ export type FixtureTransactionInput = Readonly<{
   date?: string;
   description?: string;
   direction?: "outflow" | "inflow";
+  /** Another Financial Account of the same source, created on first use; omitted means the fixture's card account. */
+  account?: string;
   /** Credit-card facts: a consume date makes the transaction's date a purchase date. */
   card?: FixtureCardFacts;
 }>;
@@ -62,8 +64,35 @@ export type FixtureInvoiceInput = Readonly<{
   items: readonly FixtureInvoiceItem[];
 }>;
 
+const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
+
 function uuidBytes(): Uint8Array {
   return Uint8Array.from(Buffer.from(randomUUID().replaceAll("-", ""), "hex"));
+}
+
+/**
+ * Replace the projected Kind and the evidence its enrichment recorded, or
+ * remove it when `code` is null. The fixture's card account projects a Kind
+ * from direction alone; a replaced Kind defaults to bank-rule evidence.
+ * Every `addTransaction` re-projects all Kinds, so set Kinds after the last one.
+ */
+export async function setKind(store: PGliteStore, transactionId: string, code: string | null, evidenceKind = "bank-rule") {
+  if (code === null) {
+    await store.query("DELETE FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'", [idBytes(transactionId)]);
+    return;
+  }
+  await store.query(
+    "UPDATE current_transaction_enrichment SET taxonomy_code = $2, value_text = $2 WHERE transaction_id = $1 AND field_name = 'kind'",
+    [idBytes(transactionId), code],
+  );
+  await store.query(
+    `UPDATE enrichment_run_outputs output
+        SET provenance_json = jsonb_set(output.provenance_json::jsonb, '{evidenceKind}', to_jsonb($2::text))::text
+       FROM current_transaction_enrichment enrichment
+      WHERE enrichment.transaction_id = $1 AND enrichment.field_name = 'kind'
+        AND output.assertion_id = enrichment.assertion_id`,
+    [idBytes(transactionId), evidenceKind],
+  );
 }
 
 /** The page of a Spending page read that a check expects at the current knowledge point. */
@@ -160,12 +189,41 @@ export async function createSpendingCategoryFixture() {
     [account, sourceConnection, epoch, sourceCommit],
   );
 
+  const accounts = new Map<string, Uint8Array>();
+  async function accountFor(transaction: Pick<PGliteStore, "query">, key: string | undefined): Promise<Uint8Array> {
+    if (key === undefined) return account;
+    let id = accounts.get(key);
+    if (!id) {
+      id = uuidBytes();
+      accounts.set(key, id);
+      await transaction.query(
+        `INSERT INTO financial_accounts(
+           account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id
+         ) VALUES ($1, $2, $3, 'credit-card', $4, $4, 'credit', 'TWD', 'fubon', $5)`,
+        [id, sourceConnection, epoch, key, sourceCommit],
+      );
+    }
+    return id;
+  }
+
   async function knowledgeAt(): Promise<number> {
     return Number((await store.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) AS value FROM canonical_commits")).rows[0]?.value ?? 0);
   }
 
   async function addTransaction(input: FixtureTransactionInput): Promise<string> {
-    const transactionId = uuidBytes();
+    return capture(uuidBytes(), 1, input);
+  }
+
+  /** Capture a new current revision of an existing transaction; its account stays the same. */
+  async function reviseTransaction(transactionId: string, input: Omit<FixtureTransactionInput, "account">): Promise<string> {
+    const id = idBytes(transactionId);
+    const next = (await store.query<{ value: number | string }>(
+      "SELECT MAX(revision_number) + 1 AS value FROM transaction_revisions WHERE transaction_id = $1", [id])).rows[0]?.value;
+    if (next === undefined || next === null) throw new Error(`fixture transaction ${transactionId} has no revision`);
+    return capture(id, Number(next), input);
+  }
+
+  async function capture(transactionId: Uint8Array, revisionNumber: number, input: FixtureTransactionInput): Promise<string> {
     const revisionId = uuidBytes();
     const recordId = uuidBytes();
     const assertionId = uuidBytes();
@@ -173,6 +231,7 @@ export async function createSpendingCategoryFixture() {
     const ordinal = ++captureCount;
     const date = input.date ?? "2026-09-01";
     await store.transaction(async (transaction) => {
+      const accountId = await accountFor(transaction, input.account);
       const sequence = Number((await transaction.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits")).rows[0]?.value ?? 1);
       await transaction.query(
         "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, $2, $3, $4, 'source_capture')",
@@ -185,10 +244,11 @@ export async function createSpendingCategoryFixture() {
          ) VALUES ($1, $2, NULL, $3, 'bank-transaction', $4, $4, $5, $4, $4, $6, '{}')`,
         [recordId, bankCapture, commitId, `bank-${ordinal}`, `bank-hash-${ordinal}`, input.description ?? `Fixture purchase ${ordinal}`],
       );
-      await transaction.query(
-        "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, $3, $4)",
-        [transactionId, account, `payment-${ordinal}`, commitId],
-      );
+      if (revisionNumber === 1)
+        await transaction.query(
+          "INSERT INTO financial_transactions(transaction_id, account_id, source_sequence, created_commit_id) VALUES ($1, $2, $3, $4)",
+          [transactionId, accountId, `payment-${ordinal}`, commitId],
+        );
       await transaction.query(
         `INSERT INTO transaction_revisions(
            revision_id, transaction_id, source_record_id, capture_id, commit_id, revision_number,
@@ -196,11 +256,11 @@ export async function createSpendingCategoryFixture() {
            posting_rule_version, description, economic_status, administrative_state, semantic_rule_version,
            effective_on, transaction_date_time_local, time_zone, time_precision, time_origin,
            effective_time_basis, effective_time_rule_version, utc_instant_utc_us
-         ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, 'posted', 'human-attested', 'statement-posted-history',
+         ) VALUES ($1, $2, $3, $4, $5, $15, $6, $7, $8, $9, 'posted', 'human-attested', 'statement-posted-history',
                    $10, $11, 'normal', 'active', $10, $12, $13, 'Asia/Taipei', 'second', 'source_reported',
                    'accounting', $10, $14)`,
         [revisionId, transactionId, recordId, bankCapture, commitId, input.amount, input.scale ?? 0, input.currency ?? "TWD",
-          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal],
+          input.direction ?? "outflow", BANK_ROUTE, input.description ?? `Fixture purchase ${ordinal}`, date, `${date}T12:00:00`, ordinal, revisionNumber],
       );
       await transaction.query(
         `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
@@ -324,6 +384,7 @@ export async function createSpendingCategoryFixture() {
     store,
     knowledgeAt,
     addTransaction,
+    reviseTransaction,
     commitInvoice,
     link,
     close: () => store.close(),
