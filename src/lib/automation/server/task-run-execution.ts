@@ -174,7 +174,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
   try {
     const input = plan.registration.inputFromEnvironment(launchEnv);
     const progressReporter = createWorkflowProgressReporter(context, input);
-    const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime) ? plan.pgliteRpc : undefined;
+    const pgliteRpc = workflowNeedsPgliteRpc(definition) ? plan.pgliteRpc : undefined;
     const page = runtime.kind === "nonbrowser"
       ? undefined
       : {

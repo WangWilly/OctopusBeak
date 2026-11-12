@@ -243,11 +243,6 @@ export async function runAppWorkflowWorker(
     return childRpc;
   };
   try {
-    const runtime = appWorkflowRegistration(start.workflowId)?.runtime;
-    if (!runtime) throw new Error("worker-start-failed");
-    if (start.pgliteRpc && runtime.kind === "nonbrowser") {
-      await connectChildRpc(start.pgliteRpc);
-    }
     const definition = options.resolveDefinition
       ? options.resolveDefinition(start.workflowId)
       : appWorkflowRegistration(start.workflowId)?.definition;

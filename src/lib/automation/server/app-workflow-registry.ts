@@ -22,12 +22,9 @@ import { browser, NONBROWSER, type AppWorkflowRuntime, type VerifiedSource } fro
 
 export type { AppWorkflowRuntime } from "./sources/verified-source.ts";
 
-/** Every capability port is served from the PGlite RPC, which nonbrowser workflows also read through. */
-export function workflowNeedsPgliteRpc(
-  definition: WorkflowDefinition,
-  runtime: AppWorkflowRuntime,
-): boolean {
-  return runtime.kind === "nonbrowser" || requiredWorkflowCapabilities(definition).length > 0;
+/** Every capability port is served from the PGlite RPC, so a workflow reaches it exactly when it declares one. */
+export function workflowNeedsPgliteRpc(definition: WorkflowDefinition): boolean {
+  return requiredWorkflowCapabilities(definition).length > 0;
 }
 
 export type AppWorkflowRegistration = Readonly<{
