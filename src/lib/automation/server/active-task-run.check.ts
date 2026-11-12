@@ -693,30 +693,29 @@ test("the App page lookup reaches the page the current execution hosts, and noth
   const runs = new Map([[taskRunId, run], [other.taskRunId, other.run]]);
   const pageForRun = activeRunPageLookup((id) => runs.get(id) ?? null);
   const page = { name: "first" } as never;
-  const connection = { endpoint: "http://127.0.0.1:9222", targetId: "target-1" };
 
   const first = run.beginExecution("round-1");
   assert.equal(pageForRun(taskRunId), null, "no page before the host opens one");
-  const release = first.hostPage({ page, connection });
-  assert.throws(() => first.hostPage({ page, connection: null }), /already hosts a browser page/u);
+  const release = first.hostPage({ page });
+  assert.throws(() => first.hostPage({ page }), /already hosts a browser page/u);
   assert.equal(pageForRun(taskRunId), page);
-  assert.equal(first.browserConnection(), connection);
+  assert.equal(first.page(), page);
   assert.equal(pageForRun(other.taskRunId), null, "another run never sees this page");
   assert.equal(pageForRun("unknown-run"), null);
   release();
   assert.equal(pageForRun(taskRunId), null, "closing the page releases it");
-  assert.equal(first.browserConnection(), null);
+  assert.equal(first.page(), null);
 
-  first.hostPage({ page, connection });
+  first.hostPage({ page });
   first.end();
   assert.equal(pageForRun(taskRunId), null, "ending the execution releases its page");
   assert.equal(first.page(), null);
-  assert.throws(() => first.hostPage({ page, connection }), /round-1 has ended/u);
+  assert.throws(() => first.hostPage({ page }), /round-1 has ended/u);
 
   const second = run.beginExecution("round-2");
   assert.equal(pageForRun(taskRunId), null, "a later execution starts without the earlier page");
   const secondPage = { name: "second" } as never;
-  const releaseSecond = second.hostPage({ page: secondPage, connection: null });
+  const releaseSecond = second.hostPage({ page: secondPage });
   release();
   assert.equal(pageForRun(taskRunId), secondPage, "an earlier release leaves a later page alone");
   releaseSecond();

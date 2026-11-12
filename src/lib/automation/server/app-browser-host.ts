@@ -418,7 +418,7 @@ export async function withAppWorkflowHostPage<T>(
       // The worker/provider observer supplies classification and dismissal.
       page.on("dialog", () => {});
     }
-    if (input.execution) releasePage = input.execution.hostPage({ page, connection });
+    if (input.execution) releasePage = input.execution.hostPage({ page });
     input.signal.addEventListener("abort", closeOnAbort, { once: true });
     input.signal.throwIfAborted();
     if (input.startUrl) {

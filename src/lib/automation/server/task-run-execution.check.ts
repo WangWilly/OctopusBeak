@@ -30,7 +30,7 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForWorkflow } from "./app-workflow-registry.ts";
-import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
+import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, type AppWorkflowWorkerStart, type AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -313,6 +313,24 @@ function refusingPages(host: ExecutionHost): ExecutionHost {
     },
   };
 }
+
+test("a round of the in-process check host starts one worker", async () => {
+  const launch = {
+    start: { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, workflowId: "exchange-rates", taskRunId: "run-one-worker", input: null },
+  } as const satisfies WorkerLaunch;
+  const started: string[] = [];
+  const host = inProcessCheckHost({ scriptedWorker: (start) => {
+    started.push(start.taskRunId);
+    return new NonBrowserFakeWorker(start);
+  } });
+  await host.hostRound({}, async (startWorker) => {
+    startWorker(launch);
+    assert.throws(() => startWorker(launch), /already started its worker/u);
+  });
+  assert.deepEqual(started, ["run-one-worker"], "the second start never reached a worker");
+  await host.hostRound({}, async (startWorker) => { startWorker(launch); });
+  assert.equal(started.length, 2, "each round starts its own worker");
+});
 
 class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly start: AppWorkflowWorkerStart;
