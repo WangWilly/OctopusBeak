@@ -224,7 +224,7 @@
               <button type="button" class="filter-btn" aria-pressed={periodChoice === "custom" || pickerOpen} aria-expanded={pickerOpen} data-preset="custom" onclick={() => pickerOpen = !pickerOpen}>{$t.cashFlow.presets.custom}</button>
             </div>
             {#if pickerOpen}
-              <CashFlowRangePicker {range} {today} apply={applyRange} cancel={() => pickerOpen = false} />
+              <CashFlowRangePicker {range} choice={periodChoice} {today} apply={applyRange} cancel={() => pickerOpen = false} />
             {/if}
           </div>
         </div>

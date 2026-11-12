@@ -52,6 +52,16 @@ export function quickChoice(preset: CashFlowQuickPreset | null): CashFlowPeriodC
   return preset === "week" || preset === "month" ? preset : "custom";
 }
 
+/** The quick choice a picker opens with: the page's own rolling preset, if the picker lists it. */
+export function pickerQuick(choice: CashFlowPeriodChoice): CashFlowQuickPreset | null {
+  return choice === "week" || choice === "month" ? choice : null;
+}
+
+/** What a picker applies: the page's own choice when the person changed nothing, so 近 30 天 keeps rolling too. */
+export function pickerChoice(current: CashFlowPeriodChoice, picked: CashFlowQuickPreset | null, touched: boolean): CashFlowPeriodChoice {
+  return touched ? quickChoice(picked) : current;
+}
+
 /** The chosen preset's range on `today`; a custom range stays as it is. */
 export function rollRange(range: CashFlowRange, choice: CashFlowPeriodChoice, today: string): CashFlowRange {
   return choice === "custom" ? range : quickRange(choice, today);

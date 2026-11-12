@@ -4,7 +4,8 @@
   import {
     clampRange,
     monthGrid,
-    quickChoice,
+    pickerChoice,
+    pickerQuick,
     quickRange,
     rangeDays,
     shiftMonth,
@@ -14,6 +15,7 @@
   } from "../period.ts";
 
   export let range: CashFlowRange;
+  export let choice: CashFlowPeriodChoice;
   export let today: string;
   export let apply: (range: CashFlowRange, choice: CashFlowPeriodChoice) => void;
   export let cancel: () => void;
@@ -23,7 +25,8 @@
   let month = range.endDate.slice(0, 7);
   const quick: readonly CashFlowQuickPreset[] = ["week", "month", "lastMonth", "last90", "year"];
   /** The quick choice the person tapped, until they pick a day; two quick choices can give the same range. */
-  let picked: CashFlowQuickPreset | null = null;
+  let picked: CashFlowQuickPreset | null = pickerQuick(choice);
+  let touched = false;
 
   $: grid = monthGrid(month);
   $: canGoNext = shiftMonth(month, 1) <= today.slice(0, 7);
@@ -36,6 +39,7 @@
   function choose(date: string) {
     if (date > today) return;
     picked = null;
+    touched = true;
     if (end !== null) {
       start = date;
       end = null;
@@ -50,6 +54,7 @@
   function chooseQuick(preset: CashFlowQuickPreset) {
     const next = quickRange(preset, today);
     picked = preset;
+    touched = true;
     start = next.startDate;
     end = next.endDate;
     month = next.endDate.slice(0, 7);
@@ -129,7 +134,7 @@
     </div>
     <div class="picker-actions">
       <button type="button" class="button" onclick={cancel}>{$t.cashFlow.pickerCancel}</button>
-      <button type="button" class="button primary" disabled={chosen === null} onclick={() => chosen && apply(chosen, quickChoice(picked))}>{$t.cashFlow.pickerApply}</button>
+      <button type="button" class="button primary" disabled={chosen === null} onclick={() => chosen && apply(chosen, pickerChoice(choice, picked, touched))}>{$t.cashFlow.pickerApply}</button>
     </div>
   </footer>
 </div>

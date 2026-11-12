@@ -13,7 +13,7 @@ import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import { createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import type { PGliteStore } from "./transaction.ts";
 import type { FinancialPageActionRequest } from "../../lib/financial/page-actions.ts";
-import { quickChoice, quickRange, rollRange } from "../../lib/cash-flow/period.ts";
+import { pickerChoice, pickerQuick, quickChoice, quickRange, rollRange } from "../../lib/cash-flow/period.ts";
 
 const OCTOBER = { startDate: "2026-10-01", endDate: "2026-10-10" } as const;
 const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
@@ -439,4 +439,9 @@ test("a quick choice applied from the picker rolls as its preset; a fixed range 
   assert.equal(quickChoice(null), "custom", "days picked by hand");
   // 本月 picked on 06/07 gives 本週's range, and still rolls as 本月.
   assert.deepEqual(rollRange(quickRange("month", "2026-06-07"), quickChoice("month"), "2026-06-08"), { startDate: "2026-06-01", endDate: "2026-06-08" });
+  for (const current of ["week", "month", "last30", "custom"] as const) {
+    assert.equal(pickerChoice(current, pickerQuick(current), false), current, `applying ${current} untouched keeps it`);
+  }
+  assert.equal(pickerChoice("last30", null, true), "custom", "days picked by hand");
+  assert.equal(pickerChoice("custom", "month", true), "month", "本月 tapped in the picker");
 });
