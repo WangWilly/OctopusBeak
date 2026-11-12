@@ -42,7 +42,7 @@ import {
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
 import { readSpendingPage, readSpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
-import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
 import type { PGliteCanonicalCommitOptions } from "../src/ledger/pglite/canonical-source-store.ts";
@@ -58,9 +58,9 @@ export type PGliteFinancialPreviewEvents = Readonly<{
   onPreviewVisibilityChanged?(listener: () => void): () => void;
 }>;
 
-/** The Spending page actions a registry runs, which its live views watch (ADR 0105, ADR 0120). */
+/** The Financial page actions a registry runs, which its live views watch (ADR 0105, ADR 0120). */
 export type PGliteFinancialRegistryPageActions = Readonly<{
-  spendingPageActions: SpendingPageActions;
+  financialPageActions: FinancialPageActions;
 }>;
 
 export type PGliteLedgerRegistry = PGliteFinancialRegistry
@@ -76,7 +76,7 @@ export type PGliteFinancialRegistryOptions = Readonly<{
 
 export function createPGliteFinancialRegistry(
   store: PGliteStore,
-  spendingPageActions: SpendingPageActions,
+  financialPageActions: FinancialPageActions,
   options: PGliteFinancialRegistryOptions = {},
 ): PGliteLedgerRegistry {
   const previewVisibility = options.previewVisibility ?? (() => NO_PREVIEW_VISIBILITY);
@@ -117,8 +117,8 @@ export function createPGliteFinancialRegistry(
     async "financial.preview.visibilityChanged"() {
       for (const listener of previewVisibilityListeners) listener();
     },
-    spendingPageActions,
-    "financial.spending.pageAction": ([request]) => spendingPageActions.run(request),
+    financialPageActions,
+    "financial.pageAction": ([request]) => financialPageActions.run(request),
     "financial.source.admit": ([request], options) => source.admit(request, options),
     "financial.source.commit": ([request], options) => source.commit(request, options),
     "financial.deposit.commit": ([request], options) => commitPGliteCanonicalDepositCapture(store, request, options),

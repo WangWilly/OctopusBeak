@@ -1,6 +1,6 @@
 # Every Spending page write is a page action
 
-Status: accepted
+Status: accepted; its page actions are shared with Cash flow as Financial page actions since [ADR 0136](0136-spending-and-cash-flow-share-one-set-of-financial-page-actions.md)
 
 Extends [ADR 0105](0105-spending-page-actions-publish-through-the-ledger.md), which sent Pairing decisions through the Spending page actions. Keeps User Assertions for a purchase's category ([ADR 0038](0038-invoice-item-categories-and-purchase-category.md)).
 

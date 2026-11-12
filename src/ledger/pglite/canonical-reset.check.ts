@@ -7,7 +7,7 @@ import { resetPGliteCanonicalStore } from "./canonical-reset.ts";
 import { commitCathay } from "./direct-source-precedence-fixture.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
-import { createPGliteSpendingPageActions } from "./spending-command.ts";
+import { createPGliteFinancialPageActions } from "./spending-command.ts";
 
 async function withDesktopStore(run: (store: PGliteStore) => Promise<void>) {
   const store = new PGliteStore(await createTestPGlite("full"));
@@ -81,7 +81,7 @@ test("a Canonical Reset empties financial state, keeps rates and run history, an
     await assertPgliteBaseline(store);
     assert.equal((await provider.exchangeRates.readExchangeRates(["USD"])).length, 1);
     assert.equal((await provider.automation.latestTaskRuns())["cathay-all-statements"]?.status, "completed");
-    const overview = await createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))["financial.overview.current"]([]);
+    const overview = await createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))["financial.overview.current"]([]);
     assert.deepEqual(overview.accounts, [], "the overview reads the empty store");
 
     await commitCathay(store);

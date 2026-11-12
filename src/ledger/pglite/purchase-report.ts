@@ -23,11 +23,13 @@ import type {
   HistoricalSpendingQueryResult,
 } from "../../lib/shared-ledger/server/financial-query-contracts.ts";
 import {
+  inFinancialPageActionSubject,
+  type FinancialPageActionResult,
+  type FinancialPageActionSubject,
+} from "../../lib/financial/page-actions.ts";
+import {
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCategoryMonthTotal,
-  inSpendingPageActionSubject,
-  type SpendingPageActionResult,
-  type SpendingPageActionSubject,
   type SpendingPageDto,
   type SpendingPurchaseReportDto,
   type SpendingPurchaseReportSummaryDto,
@@ -737,7 +739,7 @@ export async function queryCurrentSpendingRecordPage(
  */
 export async function queryCurrentSpendingActionRecords(
   reader: PGliteSpendingReader,
-  request: Readonly<{ knowledgeAt: number; subject: SpendingPageActionSubject }>,
+  request: Readonly<{ knowledgeAt: number; subject: FinancialPageActionSubject }>,
 ): Promise<readonly PurchaseRecord[]> {
   const current = await readKnowledgePoint(reader);
   if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt !== current)
@@ -746,7 +748,7 @@ export async function queryCurrentSpendingActionRecords(
     invoiceIds: [...request.subject.invoiceIds],
     transactionIds: [...request.subject.transactionIds],
   });
-  return Object.freeze(composed.records.filter((record) => inSpendingPageActionSubject(request.subject, record)));
+  return Object.freeze(composed.records.filter((record) => inFinancialPageActionSubject(request.subject, record)));
 }
 
 /** A record's summary line: the day and month the summary buckets it under, its counted amount, and its category. */
@@ -774,7 +776,7 @@ function changedLines(
 }
 
 /**
- * Apply one Spending page action inside the caller's write transaction. Reads
+ * Apply one Financial page action inside the caller's write transaction. Reads
  * the subject's records under the Purchase report rules, runs `write`, reads
  * them again at the new version, and returns the records after and the
  * summary delta between the two reads. A record that both reads build with
@@ -782,14 +784,14 @@ function changedLines(
  */
 export async function decide(
   transaction: PGliteTransaction,
-  subject: SpendingPageActionSubject,
+  subject: FinancialPageActionSubject,
   write: (transaction: PGliteTransaction) => Promise<unknown>,
 ): Promise<Readonly<{
   baseKnowledgeAt: number;
   knowledgeAt: number;
   beforeRecords: readonly PurchaseRecord[];
-  affectedRecords: SpendingPageActionResult["affectedRecords"];
-  summaryDelta: SpendingPageActionResult["summaryDelta"];
+  affectedRecords: FinancialPageActionResult["affectedRecords"];
+  summaryDelta: FinancialPageActionResult["summaryDelta"];
 }>> {
   const baseKnowledgeAt = await readKnowledgePoint(transaction);
   const beforeRecords = await queryCurrentSpendingActionRecords(transaction, { knowledgeAt: baseKnowledgeAt, subject });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
-import { applyPGliteSpendingPageAction } from "./spending-command.ts";
+import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import { queryCurrentSpendingSummary } from "./purchase-report.ts";
 import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 
@@ -46,7 +46,7 @@ async function seed(): Promise<Seeded> {
   const page = freshPage(await query.candidatePage({ knowledgeAt, month: null, limit: 100 }));
   const denied = page.items.find((item) => item.candidate.invoiceId === deniedInvoice && item.candidate.transactionId === deniedPayment);
   assert.ok(denied, "the denied pair is pending before the denial");
-  await applyPGliteSpendingPageAction(fixture.store, {
+  await applyPGliteFinancialPageAction(fixture.store, {
     action: "deny", kind: "candidate", candidateId: denied.candidate.candidateId,
     invoiceIdentityId: deniedInvoice, transactionIdentityId: deniedPayment, dataVersion: knowledgeAt,
   });
@@ -111,7 +111,7 @@ test("a revoked link returns neither its pair nor anything else to the pending s
   try {
     const query = createPGliteSpendingQuery(seeded.fixture.store);
     const knowledgeAt = await seeded.fixture.knowledgeAt();
-    await applyPGliteSpendingPageAction(seeded.fixture.store, {
+    await applyPGliteFinancialPageAction(seeded.fixture.store, {
       action: "revoke", kind: "revoke", invoiceIdentityId: seeded.linkedInvoice, transactionIdentityId: seeded.linkedPayment, dataVersion: knowledgeAt,
     });
     const after = freshPage(await query.candidatePage({ knowledgeAt: await seeded.fixture.knowledgeAt(), month: null, limit: 100 }));
@@ -134,8 +134,8 @@ async function decisionState(fixture: SpendingCategoryFixture) {
 }
 
 /** The strong batch, as the page sends it. */
-function confirmStrong(store: Parameters<typeof applyPGliteSpendingPageAction>[0], request: Readonly<{ shownKnowledgeAt: number; month?: string | null; pairs: readonly { candidateId: string; invoiceIdentityId: string; transactionIdentityId: string }[] }>) {
-  return applyPGliteSpendingPageAction(store, { action: "confirm", kind: "strong", ...request });
+function confirmStrong(store: Parameters<typeof applyPGliteFinancialPageAction>[0], request: Readonly<{ shownKnowledgeAt: number; month?: string | null; pairs: readonly { candidateId: string; invoiceIdentityId: string; transactionIdentityId: string }[] }>) {
+  return applyPGliteFinancialPageAction(store, { action: "confirm", kind: "strong", ...request });
 }
 
 test("strong-match batch confirmation writes one commit with one evidence-bearing event per shown pair", async () => {
@@ -217,7 +217,7 @@ test("a shown pair that is no longer pending, or was only possible, rejects the 
     const possible = await confirmStrong(seeded.fixture.store, { shownKnowledgeAt, pairs: [ref(strongItem), ref(possibleItem)] });
     assert.equal(possible.status, "conflict");
     assert.deepEqual(await decisionState(seeded.fixture), before);
-    await applyPGliteSpendingPageAction(seeded.fixture.store, {
+    await applyPGliteFinancialPageAction(seeded.fixture.store, {
       action: "deny", kind: "candidate", candidateId: strongItem.candidate.candidateId,
       invoiceIdentityId: seeded.strongInvoice, transactionIdentityId: seeded.strongPayment, dataVersion: shownKnowledgeAt,
     });
@@ -246,7 +246,7 @@ test("links expose their decision time and the merge log pages decisions newest 
     assert.equal(linked?.link?.decidedAt, new Date(Math.floor(Number(recorded.recorded_at_utc_us) / 1000)).toISOString());
     assert.equal(linked?.link?.origin, "user");
 
-    await applyPGliteSpendingPageAction(seeded.fixture.store, {
+    await applyPGliteFinancialPageAction(seeded.fixture.store, {
       action: "revoke", kind: "revoke", invoiceIdentityId: seeded.linkedInvoice, transactionIdentityId: seeded.linkedPayment, dataVersion: linkedAt,
     });
     const knowledgeAt = await seeded.fixture.knowledgeAt();

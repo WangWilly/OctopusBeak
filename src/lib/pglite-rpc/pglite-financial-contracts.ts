@@ -2,6 +2,7 @@ import type { AssetsPageDto } from "../assets/types.ts";
 import type { LiabilitiesPageDto } from "../liabilities/types.ts";
 import type { ManualAssetCommand, ManualAssetCommandResult } from "../manual-assets/manual-assets.ts";
 import type { OverviewPageDto } from "../overview/types.ts";
+import type { FinancialPageActionRequest, FinancialPageActionReply } from "../financial/page-actions.ts";
 import type {
   SpendingPairingCandidatesInput,
   SpendingPairingCandidatesResult,
@@ -15,8 +16,6 @@ import type {
   SpendingMerchantStatsRequest,
   SpendingMonthInsightDto,
   SpendingMonthInsightRequest,
-  SpendingPageActionRequest,
-  SpendingPageActionReply,
   SpendingPendingOverviewDto,
   SpendingPendingOverviewRequest,
   SpendingRecordPageDto,
@@ -204,7 +203,7 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "latest-wins" },
   )),
-  "financial.spending.pageAction": rendered("spending", "applyPageAction", operation<[request: SpendingPageActionRequest], SpendingPageActionReply>(
+  "financial.pageAction": rendered("spending", "applyPageAction", operation<[request: FinancialPageActionRequest], FinancialPageActionReply>(
     (args) => args.length === 1 && plainRecord(args[0]),
     { lane: "interactive" },
   )),

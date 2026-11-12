@@ -1,6 +1,6 @@
 # One host assembles the ledger's shared parts
 
-Status: accepted
+Status: accepted; the Spending page actions it names are Financial page actions since [ADR 0136](0136-spending-and-cash-flow-share-one-set-of-financial-page-actions.md)
 
 Refines [ADR 0105](0105-spending-page-actions-publish-through-the-ledger.md) on how the registry and the live views come to hold the same Spending page actions. Builds on [ADR 0102](0102-one-ledger-module-installs-every-financial-store.md), which gave every caller one way to install a financial store.
 

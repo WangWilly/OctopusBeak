@@ -1,6 +1,6 @@
 # Spending and Cash flow share one set of Financial page actions
 
-Status: proposed
+Status: accepted
 
 Extends [ADR 0111](0111-every-spending-write-is-a-page-action.md), which made every Spending write a Spending page action. Keeps [ADR 0105](0105-spending-page-actions-publish-through-the-ledger.md)'s publication rule for the Spending page.
 

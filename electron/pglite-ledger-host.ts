@@ -1,8 +1,8 @@
 import type { PGliteWithLive } from "@electric-sql/pglite/live";
 import type { ViewSource } from "../src/lib/data-views/server/view-port.ts";
 import type { PreviewVisibility } from "../src/ledger/pglite/preview-financial-data.ts";
-import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
-import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import { createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
+import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import type { PGliteFinancialExpectedSources } from "../src/lib/pglite-rpc/pglite-financial-contracts.ts";
 import { createPGliteLiveViewDependencies, type LocalDateClock } from "./pglite-financial-live-dependencies.ts";
@@ -21,7 +21,7 @@ export type PGliteLedgerHostReaders = Readonly<{
 export type PGliteLedgerHost = Readonly<{
   registry: PGliteLedgerRegistry;
   /** The registry's own page actions, whose results the Spending view publishes. */
-  spendingPageActions: SpendingPageActions;
+  financialPageActions: FinancialPageActions;
   views: ViewSource;
   /** Orders financial calls and view recomputes on the one database. */
   scheduler: PGliteWorkScheduler;
@@ -33,7 +33,7 @@ export function createPGliteLedgerHost(
   store: PGliteStore,
   { clock, previewVisibility, expectedSources }: PGliteLedgerHostReaders,
 ): PGliteLedgerHost {
-  const registry = createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store), {
+  const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store), {
     previewVisibility,
     today: clock.today,
   });
@@ -45,5 +45,5 @@ export function createPGliteLedgerHost(
     expectedSources,
     scheduler,
   );
-  return Object.freeze({ registry, spendingPageActions: registry.spendingPageActions, views, scheduler });
+  return Object.freeze({ registry, financialPageActions: registry.financialPageActions, views, scheduler });
 }

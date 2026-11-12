@@ -127,7 +127,7 @@ const INVOKE_CHANNELS = {
     loadRecordPage: "financial.spending.recordPage",
     loadCandidatePage: "spending:candidate-page",
     cancelCandidatePage: "spending:candidate-page-cancel",
-    applyPageAction: "financial.spending.pageAction",
+    applyPageAction: "financial.pageAction",
     loadPendingOverview: "financial.spending.pendingOverview",
     loadMergeLog: "financial.spending.mergeLog",
     loadMonthInsight: "financial.spending.monthInsight",

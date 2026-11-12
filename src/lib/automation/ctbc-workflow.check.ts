@@ -33,7 +33,7 @@ import {
 } from "../../workflows/ctbc-statements.ts";
 import { ctbcCurrentDepositResponse } from "../../workflows/ctbc-current-deposit-balances.fixtures.ts";
 import { fakeProviderReply } from "../../workflows/provider-response-reader.fixtures.ts";
-import { createPGliteSpendingPageActions } from "../../ledger/pglite/spending-command.ts";
+import { createPGliteFinancialPageActions } from "../../ledger/pglite/spending-command.ts";
 
 /** The real deposit runner over the synthetic page, with current balances replaced. */
 function runCtbc(
@@ -248,7 +248,7 @@ test("CTBC preserves exact duplicate deposits as stable occurrence-group slots t
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({ provider: {
-    operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))),
+    operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))),
   } });
   const previous = { ...process.env };
   let child: ReturnType<typeof requirePGliteChildRpcClientFromEnv> | undefined;

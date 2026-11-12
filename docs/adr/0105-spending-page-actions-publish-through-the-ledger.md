@@ -10,13 +10,13 @@ A Spending page action, such as confirming a pairing, returns its exact summary 
 - **The Spending live view** held its recompute while an action ran. Once actions settled, it applied the delta to the published page, rebuilt the page's canonical view and purchase report by hand, and decided whether to read the page again. None of those branches had a check; the one related check faked the registry's two hooks.
 - **The Spending model** computed the delta.
 
-**`src/ledger/pglite/spending-page-actions.ts` owns the rule.**
+**One ledger module owns the rule.** Since [ADR 0136](0136-spending-and-cash-flow-share-one-set-of-financial-page-actions.md), the runner is shared by every Financial page and lives in `src/ledger/pglite/financial-page-actions.ts`. How Spending takes a settled action stays in `src/ledger/pglite/spending-page-actions.ts`.
 
-- `createSpendingPageActions(apply)` runs the actions against one store and answers `inFlight()` and `onSettled(listener)`. When the last running action settles, each listener hears once, with the newest result among the actions that overlapped, or `null` when none succeeded.
+- `createFinancialPageActions(apply)` runs the actions against one store and answers `inFlight()` and `onSettled(listener)`. When the last running action settles, each listener hears once, with the newest result among the actions that overlapped, or `null` when none succeeded.
 - `spendingPageAfterAction(page, result)` applies the delta to a published page and says whether the page now shows the action.
 - `spendingPageNeedsRecompute(page, version, settled)` decides whether the page is read again: the store moved past it, or the settled action never reached it.
 
-**The worker builds the actions once.** It hands them to the registry, whose `financial.spending.pageAction` runs them, and to the live views, which receive `{ registry, pageActions }`. A registry built without them, as the workflow checks build it, runs its own. The registry no longer offers page-action hooks; its remaining mix-in carries only the preview-visibility event.
+**The worker builds the actions once.** It hands them to the registry, whose `financial.pageAction` runs them, and to the live views, which receive `{ registry, pageActions }`. A registry built without them, as the workflow checks build it, runs its own. The registry no longer offers page-action hooks; its remaining mix-in carries only the preview-visibility event.
 
 ## Considered options
 

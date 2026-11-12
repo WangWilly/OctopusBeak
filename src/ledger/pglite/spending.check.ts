@@ -17,7 +17,7 @@ import { freshPage } from "./spending-test-fixture.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import {
   commitPGliteSpendingRefundRevision,
-  applyPGliteSpendingPageAction,
+  applyPGliteFinancialPageAction,
   recordPGliteSpendingMatchCandidate,
 } from "./spending-command.ts";
 import {
@@ -25,7 +25,8 @@ import {
   E_INVOICE_COMPLETENESS_RULE_VERSION,
   E_INVOICE_CURRENCY_AUTHORITY,
 } from "../canonical/einvoice-contract.ts";
-import { applySpendingSummaryDelta, type SpendingCommittingPageActionRequest } from "../../lib/spending/model.ts";
+import type { FinancialCommittingPageActionRequest } from "../../lib/financial/page-actions.ts";
+import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 
 const id = (value: number): Uint8Array => Uint8Array.from({ length: 16 }, () => value);
 const BANK_ROUTE = "fubon/credit-card/human-attested-v2";
@@ -37,10 +38,10 @@ function textId(value: Uint8Array): string {
 
 async function assertCompactActionSummaryParity(
   fixture: Fixture,
-  input: SpendingCommittingPageActionRequest,
+  input: FinancialCommittingPageActionRequest,
 ) {
   const before = await queryCurrentSpendingSummary(fixture.store);
-  const result = await applyPGliteSpendingPageAction(fixture.store, input);
+  const result = await applyPGliteFinancialPageAction(fixture.store, input);
   const after = await queryCurrentSpendingSummary(fixture.store);
   const patched = applySpendingSummaryDelta(
     before.purchaseReport,
@@ -476,7 +477,7 @@ test("PGlite Spending keeps current/historical snapshots and atomic recognition 
     });
     assert.equal(confirmed.result.knowledgeAt, 3);
     await assert.rejects(
-      applyPGliteSpendingPageAction(fixture.store, {
+      applyPGliteFinancialPageAction(fixture.store, {
         action: "confirm", kind: "candidate", candidateId: candidateTwo.candidateId,
         invoiceIdentityId: fixture.invoiceTwo, transactionIdentityId: fixture.transactionTwo,
         dataVersion: before.purchaseReport.knowledgeAt,
@@ -572,7 +573,7 @@ test("PGlite Spending summary uses linked payment money instead of the invoice a
     assert.equal(before.purchaseReport.totalsByCurrency[0]?.coefficient, "7058");
     await assertSummaryMatches(query, before.purchaseReport);
 
-    await applyPGliteSpendingPageAction(fixture.store, {
+    await applyPGliteFinancialPageAction(fixture.store, {
       action: "confirm",
       kind: "direct",
       invoiceIdentityId: fixture.invoiceOne,
@@ -618,7 +619,7 @@ test("PGlite month candidate pages include invoice-or-payment month and reject a
     }));
     assert.equal(modalPage.totalCandidateCount, 2, "the invoice modal keeps global transaction coverage across both months");
     assert.equal(modalPage.candidates[0]?.transactionId, fixture.transactionOne);
-    await applyPGliteSpendingPageAction(fixture.store, {
+    await applyPGliteFinancialPageAction(fixture.store, {
       action: "confirm", kind: "candidate", candidateId: crossMonthCandidate.candidateId,
       invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionOne,
       dataVersion: before.purchaseReport.knowledgeAt,
@@ -648,7 +649,7 @@ test("PGlite candidate resolution stays isolated across equal-version databases"
     assert.ok(secondCandidate);
     assert.equal(firstBefore.purchaseReport.knowledgeAt, secondBefore.purchaseReport.knowledgeAt);
     assert.equal(firstCandidate.candidateId, secondCandidate.candidateId);
-    await applyPGliteSpendingPageAction(first.store, {
+    await applyPGliteFinancialPageAction(first.store, {
       action: "confirm", kind: "candidate", candidateId: firstCandidate.candidateId,
       invoiceIdentityId: first.invoiceOne, transactionIdentityId: first.transactionOne,
       dataVersion: firstBefore.purchaseReport.knowledgeAt,
@@ -673,7 +674,7 @@ test("PGlite page actions from a cold writer keep the summary delta exact and re
       const coldWriter = new PGliteStore(fixture.database);
       if (action !== "direct") {
         await assert.rejects(
-          applyPGliteSpendingPageAction(coldWriter, {
+          applyPGliteFinancialPageAction(coldWriter, {
             action, kind: "candidate", candidateId: candidate.candidateId,
             invoiceIdentityId: fixture.invoiceOne, transactionIdentityId: fixture.transactionTwo,
             dataVersion: before.purchaseReport.knowledgeAt,
@@ -757,7 +758,7 @@ test("PGlite compact candidate confirmation delta matches exact summary across m
     assert.equal(linked.occurrence.value, "2026-09-30");
     assert.deepEqual(linked.amount, { coefficient: "1234", scale: 2, currency: "TWD" });
     assert.equal(result.summaryDelta.after[0]?.amount?.coefficient, "1234");
-    await assert.rejects(applyPGliteSpendingPageAction(fixture.store, input), /data version is stale/u);
+    await assert.rejects(applyPGliteFinancialPageAction(fixture.store, input), /data version is stale/u);
   } finally {
     await fixture.store.close();
   }

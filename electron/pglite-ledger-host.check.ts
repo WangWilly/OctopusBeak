@@ -19,13 +19,13 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
 test("a page action run through the host's registry is what its Spending view publishes", async () => {
   const db = await PGlite.create({ extensions: { live } }) as unknown as PGliteWithLive;
   const store = await installFinancialStore(db as unknown as PGlite);
-  const { registry, spendingPageActions, views } = createPGliteLedgerHost(db, store, {
+  const { registry, financialPageActions, views } = createPGliteLedgerHost(db, store, {
     clock: createLocalDateClock(() => "2026-10-01"),
   });
   const pages: SpendingPageDto[] = [];
   let stop: (() => Promise<void>) | null = null;
   try {
-    assert.equal(spendingPageActions, registry.spendingPageActions);
+    assert.equal(financialPageActions, registry.financialPageActions);
     stop = await views.subscribe("financial.spending.current", {}, (value) => pages.push(value as SpendingPageDto));
     await registry["financial.einvoice.commit"]([{
       captureId: "host-category-invoice",
@@ -53,7 +53,7 @@ test("a page action run through the host's registry is what its Spending view pu
     const purchase = read.records.find((record) => record.basis === "invoice");
     assert.ok(purchase);
 
-    const result = await registry["financial.spending.pageAction"]([{
+    const result = await registry["financial.pageAction"]([{
       action: "categorize",
       kind: "category",
       purchaseId: purchase.purchaseId,

@@ -6,7 +6,7 @@ import { createLocalDateClock } from "./pglite-financial-live-dependencies.ts";
 import type { PGliteFinancialLiveView } from "../src/lib/pglite-rpc/pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteLedgerHost, type PGliteLedgerHost } from "./pglite-ledger-host.ts";
-import { createSpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import { createFinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import { readOverview } from "../src/lib/overview/overview-model.ts";
 import type { LiabilitiesPageDto } from "../src/lib/liabilities/types.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
@@ -33,8 +33,8 @@ import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 process.env.OCTOPUSBEAK_PREVIEW_SOURCE_FIXTURE = "1";
 const { currentPreviewVisibility } = await import("../src/lib/automation/server/settings.ts");
 
-/** These checks run no Spending page action. */
-const REFUSING_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
+/** These checks run no Financial page action. */
+const REFUSING_PAGE_ACTIONS = createFinancialPageActions(() => Promise.reject(new Error("this check runs no Financial page action")));
 
 async function withLedger(run: (input: {
   store: PGliteStore;
