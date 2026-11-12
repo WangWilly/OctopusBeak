@@ -42,6 +42,7 @@ import {
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { applyManualAssetCommand } from "../src/ledger/pglite/manual-assets.ts";
 import { readSpendingPage, readSpendingPageVersion } from "../src/ledger/pglite/spending-page.ts";
+import { readCashFlowPage } from "../src/ledger/pglite/cash-flow-page.ts";
 import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import { dateInTimeZone } from "../src/lib/shared-ledger/twd-valuation.ts";
 import { DEFAULT_SYSTEM_TIMEZONE } from "../src/lib/time/timezone.ts";
@@ -96,6 +97,8 @@ export function createPGliteFinancialRegistry(
       store.transaction((transaction) => readLiabilitiesPage(transaction, pageScope(expectedSources))),
     "financial.spending.current": ([input = {}]) =>
       store.transaction((transaction) => readSpendingPage(transaction, input)),
+    "financial.cashFlow.current": ([request]) =>
+      store.transaction((transaction) => readCashFlowPage(transaction, request)),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
     "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),

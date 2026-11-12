@@ -10,6 +10,7 @@ export const FINANCIAL_LIVE_VIEW_NAMES = [
   "financial.assets.current",
   "financial.liabilities.current",
   "financial.spending.current",
+  "financial.cashFlow.current",
 ] as const satisfies readonly PGliteFinancialOperation[];
 
 export type PGliteFinancialLiveView = (typeof FINANCIAL_LIVE_VIEW_NAMES)[number];

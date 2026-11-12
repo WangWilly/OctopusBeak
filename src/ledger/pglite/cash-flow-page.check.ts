@@ -1,0 +1,204 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import test from "node:test";
+import { amountQuery, previousCashFlowPeriod, readCashFlowPage } from "./cash-flow-page.ts";
+import { applyManual, createManualAsset } from "./financial-pages.fixtures.ts";
+import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
+import { setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
+import { createSpendingCategoryFixture, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import type { PGliteStore } from "./transaction.ts";
+
+const OCTOBER = { startDate: "2026-10-01", endDate: "2026-10-10" } as const;
+const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
+const amount = (coefficient: string) => ({ coefficient, scale: 0 });
+
+async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<void>) {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    await applyPgliteManualAssetsSchema(fixture.store);
+    await run(fixture);
+  } finally {
+    await fixture.close();
+  }
+}
+
+/** Every `addTransaction` re-projects all Kinds, so Kinds are set after the last one. */
+async function addWithKinds(fixture: SpendingCategoryFixture, entries: readonly (readonly [string, FixtureTransactionInput])[]) {
+  const ids: string[] = [];
+  for (const [, input] of entries) ids.push(await fixture.addTransaction(input));
+  for (const [index, [code]] of entries.entries()) {
+    await fixture.store.query(
+      "UPDATE current_transaction_enrichment SET taxonomy_code = $2, value_text = $2 WHERE transaction_id = $1 AND field_name = 'kind'",
+      [idBytes(ids[index]!), code],
+    );
+  }
+  return ids;
+}
+
+async function relateRefund(store: PGliteStore, refundId: string, originalId: string) {
+  await store.query(
+    `INSERT INTO canonical_credit_card_relations(
+       relation_id, integration_namespace, account_id, relation_kind, from_transaction_id, to_transaction_id,
+       capture_id, evidence_source_record_id
+     )
+     SELECT $1, 'fubon', financial.account_id, 'refund_of', financial.transaction_id, $3, revision.capture_id, revision.source_record_id
+       FROM financial_transactions financial
+       JOIN current_transactions current_row ON current_row.transaction_id = financial.transaction_id
+       JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      WHERE financial.transaction_id = $2`,
+    [idBytes(randomUUID()), idBytes(refundId), idBytes(originalId)],
+  );
+}
+
+async function categorize(fixture: SpendingCategoryFixture, transactionId: string, categoryCode: string) {
+  await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `transaction:${transactionId}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode });
+}
+
+async function setCounterparty(store: PGliteStore, transactionId: string, value: string) {
+  await store.query(
+    `INSERT INTO current_transaction_enrichment(
+       transaction_id, field_name, assertion_id, value_text, origin, producer_id, producer_version, route_id,
+       taxonomy_id, taxonomy_version, taxonomy_dimension, taxonomy_code, projection_commit_id
+     )
+     SELECT transaction_id, 'counterparty_display', assertion_id, $2, origin, producer_id, producer_version, route_id,
+            taxonomy_id, taxonomy_version, 'counterparty_display', NULL, projection_commit_id
+       FROM current_transaction_enrichment
+      WHERE transaction_id = $1 AND field_name = 'kind'`,
+    [idBytes(transactionId), value],
+  );
+}
+
+async function setTime(store: PGliteStore, transactionId: string, local: string, precision: string, origin: string) {
+  await store.query(
+    `UPDATE transaction_revisions SET transaction_date_time_local = $2, time_precision = $3, time_origin = $4
+      WHERE revision_id = (SELECT revision_id FROM current_transactions WHERE transaction_id = $1)`,
+    [idBytes(transactionId), local, precision, origin],
+  );
+}
+
+test("the previous period has the same number of days and ends the day before", () => {
+  assert.deepEqual(previousCashFlowPeriod(OCTOBER), { startDate: "2026-09-21", endDate: "2026-09-30", days: 10 });
+  assert.deepEqual(previousCashFlowPeriod({ startDate: "2026-03-01", endDate: "2026-03-31" }), { startDate: "2026-01-29", endDate: "2026-02-28", days: 31 });
+});
+
+test("totals net refunds into their category, keep transfers out, and compare with the previous period", async () => {
+  await withFixture(async (fixture) => {
+    const [, previousPurchase, salary, purchase, refund, transfer] = await addWithKinds(fixture, [
+      ["income.employment.salary", { amount: "1000", direction: "inflow", date: "2026-09-25" }],
+      ["purchase", { amount: "500", date: "2026-09-26" }],
+      ["income.employment.salary", { amount: "1000", direction: "inflow", date: "2026-10-02" }],
+      ["purchase", { amount: "300", date: "2026-10-03" }],
+      ["refund", { amount: "100", direction: "inflow", date: "2026-10-04" }],
+      ["transfer.internal", { amount: "500", date: "2026-10-05" }],
+    ]);
+    await categorize(fixture, previousPurchase!, "dining");
+    await categorize(fixture, purchase!, "dining");
+    await relateRefund(fixture.store, refund!, purchase!);
+
+    const page = await readCashFlowPage(fixture.store, OCTOBER);
+    assert.equal(page.currencies.length, 1);
+    const twd = page.currencies[0]!;
+    assert.deepEqual(twd.inflow.amount, amount("1000"));
+    assert.deepEqual(twd.outflow.amount, amount("200"), "the refund nets its original's category");
+    assert.deepEqual(twd.outflow.groups, [{ group: "dining", amount: amount("200"), count: 2, previous: amount("500") }]);
+    assert.deepEqual(twd.kept, amount("800"));
+    assert.equal(twd.keptRatio, 0.8);
+    assert.deepEqual(twd.transfers, { amount: amount("500"), count: 1 });
+    assert.deepEqual(twd.previous, { inflow: amount("1000"), outflow: amount("500"), kept: amount("500"), keptRatio: 0.5 });
+    assert.deepEqual(page.transactions.map((row) => row.transactionId), [transfer, refund, purchase, salary], "newest first");
+    assert.equal(page.transactionCount, 4);
+    assert.equal(page.search, null);
+    // Transfers move the account even though they are not counted.
+    assert.deepEqual(page.accounts.map((change) => [change.account.mask, change.amount, change.count]), [["0001", amount("300"), 4]]);
+  });
+});
+
+test("search matches description, counterparty, category, account and note, and an amount only exactly", async () => {
+  await withFixture(async (fixture) => {
+    const [coffee, groceries, large, bonus] = await addWithKinds(fixture, [
+      ["purchase", { amount: "300", date: "2026-10-02", description: "Blue Bottle COFFEE" }],
+      ["purchase", { amount: "3000", date: "2026-10-03", description: "Market" }],
+      ["purchase", { amount: "1300", date: "2026-10-04", description: "Store 300" }],
+      ["income.employment.bonus", { amount: "1000", direction: "inflow", date: "2026-10-05", description: "Payroll" }],
+    ]);
+    await categorize(fixture, groceries!, "dining");
+    await setCounterparty(fixture.store, large!, "全聯福利中心");
+    const { assetId: wallet } = await applyManual(fixture.store, createManualAsset("cash", "Wallet", "TWD", "2026-10-01", "500", "counted"));
+    await applyManual(fixture.store, { kind: "addTransaction", accountId: wallet, transaction: { kind: "purchase", personalCategory: "transportation", occurredOn: "2026-10-06", amount: "80", note: "Taxi with team" } });
+
+    const ids = async (query: string) => (await readCashFlowPage(fixture.store, { ...OCTOBER, query })).transactions
+      .map((row) => row.transactionId);
+    assert.deepEqual(await ids("coffee"), [coffee], "description, case-insensitive");
+    assert.deepEqual(await ids("全聯"), [large], "counterparty display");
+    assert.deepEqual(await ids("餐飲"), [groceries], "category group label");
+    assert.deepEqual(await ids("dining"), [groceries], "category label in English");
+    assert.deepEqual(await ids("獎金"), [bonus], "income group label");
+    const team = await readCashFlowPage(fixture.store, { ...OCTOBER, query: "TEAM" });
+    assert.deepEqual(team.transactions.map((row) => row.details.note), ["Taxi with team"], "note");
+    assert.equal((await ids("wallet")).length, 1, "a Manual Account's name");
+    assert.equal((await ids("富邦")).length, 4, "the institution's name");
+    assert.equal((await ids("0001")).length, 4, "the account number's last digits");
+
+    const amountSearch = await readCashFlowPage(fixture.store, { ...OCTOBER, query: "300" });
+    assert.deepEqual(amountSearch.transactions.map((row) => row.transactionId).sort(), [coffee, large].sort(),
+      "300 matches the 300 purchase and the description 'Store 300', never 3,000 or 1,300 by amount");
+    assert.equal(amountSearch.search?.fields.amount, 1);
+    assert.equal(amountSearch.search?.fields.description, 1);
+    assert.deepEqual((await ids("1,000")), [bonus], "grouping commas parse as an amount");
+    assert.deepEqual(amountQuery("NT$1,234.50"), { coefficient: "12345", scale: 1 });
+    assert.equal(amountQuery("7-ELEVEN"), null);
+    // A search narrows the list, never the summary.
+    assert.deepEqual(amountSearch.currencies[0]?.outflow.amount, amount("4680"));
+    assert.equal(amountSearch.transactionCount, 5);
+  });
+});
+
+test("a period search counts its matches across all periods", async () => {
+  await withFixture(async (fixture) => {
+    const [, , october] = await addWithKinds(fixture, [
+      ["purchase", { amount: "120", date: "2026-08-14", description: "Shopee order" }],
+      ["purchase", { amount: "90", date: "2026-09-20", description: "shopee refund fee" }],
+      ["purchase", { amount: "399", date: "2026-10-03", description: "SHOPEE" }],
+      ["purchase", { amount: "50", date: "2026-10-04", description: "Bakery" }],
+    ]);
+    const page = await readCashFlowPage(fixture.store, { ...OCTOBER, query: " shopee " });
+    assert.deepEqual(page.transactions.map((row) => row.transactionId), [october]);
+    assert.deepEqual(page.search, {
+      query: "shopee",
+      fields: { description: 1, counterparty: 0, category: 0, account: 0, amount: 0, note: 0 },
+      allPeriods: { matches: 3, firstDate: "2026-08-14", lastDate: "2026-10-03" },
+    });
+  });
+});
+
+test("a row shows a time only when the source reported a minute or second on its own date", async () => {
+  await withFixture(async (fixture) => {
+    const [reported, minute, midnight, dateOnly, otherDay] = await addWithKinds(fixture, [
+      ["purchase", { amount: "1", date: "2026-10-02" }],
+      ["purchase", { amount: "2", date: "2026-10-02" }],
+      ["purchase", { amount: "3", date: "2026-10-02" }],
+      ["purchase", { amount: "4", date: "2026-10-02" }],
+      ["purchase", { amount: "5", date: "2026-10-02" }],
+    ]);
+    await setTime(fixture.store, reported!, "2026-10-02T16:05:42", "second", "source_reported");
+    await setTime(fixture.store, minute!, "2026-10-02T09:12", "minute", "source_reported");
+    await setTime(fixture.store, midnight!, "2026-10-02T00:00:00", "second", "defaulted_local_midnight");
+    await setTime(fixture.store, dateOnly!, "2026-10-02T00:00:00", "date", "source_reported");
+    await setTime(fixture.store, otherDay!, "2026-10-05T08:30:00", "second", "source_reported");
+    const page = await readCashFlowPage(fixture.store, OCTOBER);
+    const timeOf = (id: string) => page.transactions.find((row) => row.transactionId === id)?.details.time;
+    assert.equal(timeOf(reported!), "16:05");
+    assert.equal(timeOf(minute!), "09:12");
+    assert.equal(timeOf(midnight!), null, "a defaulted midnight is never shown");
+    assert.equal(timeOf(dateOnly!), null);
+    assert.equal(timeOf(otherDay!), null, "a time on another day than the row's date");
+    assert.deepEqual(page.transactions.slice(0, 2).map((row) => row.details.time), ["16:05", "09:12"]);
+  });
+});
+
+test("the request must be a valid, ordered date range", async () => {
+  await withFixture(async (fixture) => {
+    await assert.rejects(readCashFlowPage(fixture.store, { startDate: "2026-10-10", endDate: "2026-10-01" }));
+    await assert.rejects(readCashFlowPage(fixture.store, { startDate: "2026-02-30", endDate: "2026-03-01" }));
+  });
+});

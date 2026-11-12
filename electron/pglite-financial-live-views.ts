@@ -7,6 +7,7 @@ import type { PGliteWorkScheduler } from "./pglite-financial-rpc-server.ts";
 import type { PGliteFinancialPreviewEvents, PGliteFinancialRegistryPageActions } from "./pglite-financial-registry.ts";
 import type { LiveViewDependencies, LiveViewDependencyName } from "./pglite-financial-live-dependencies.ts";
 import { SPENDING_LIVE_VIEW } from "./pglite-financial-spending-live-view.ts";
+import type { CashFlowPageRequest } from "../src/lib/cash-flow/model.ts";
 
 /**
  * What a view reads its page and the store's events from. The Spending view
@@ -50,6 +51,10 @@ const FINANCIAL_LIVE_VIEWS = {
     dependsOn: ["exchangeRates", "preview", "manual", "today"],
   },
   "financial.spending.current": SPENDING_LIVE_VIEW,
+  "financial.cashFlow.current": {
+    load: (registry, params) => registry["financial.cashFlow.current"]([params as CashFlowPageRequest]),
+    dependsOn: ["manual"],
+  },
 } as const satisfies Record<PGliteFinancialLiveView, FinancialLiveViewDefinition>;
 
 function isFinancialLiveView(view: string): view is PGliteFinancialLiveView {
