@@ -93,22 +93,24 @@ const plus = (total: CashFlowAmount, amount: ExactAmount): CashFlowAmount =>
   ({ amount: normalizeExact(addExact(total.amount, amount)), count: total.count + 1 });
 
 /**
- * Uncounted transfers per currency. A link counts once, at its outflow side's
- * amount, whichever of its sides is in the period; the two sides' amounts are
- * equal, so an inflow side alone stands in for it.
+ * Uncounted transfers per currency. Only a link that is a pair reaches a row
+ * (neither side stays counted), so the note never repeats money a total holds.
+ * A pair counts once, at its outflow side's amount, whichever of its sides is
+ * in the period; the two sides' amounts are equal, so an inflow side alone
+ * stands in for it.
  */
 function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transfers">): ReadonlyMap<string, CashFlowTransferSummary> {
   const byCurrency = new Map<string, ReturnType<typeof emptyTransfers>>();
   const linkOf = new Map<string, CashFlowTransferLink>(report.transfers.links.map((link) => [link.linkId, link]));
   const counted = new Map<string, CashFlowReportTransaction>();
   for (const row of report.transactions) {
-    const role = cashFlowTransferRole(row);
-    if (role === null) continue;
+    const linkId = row.transferLinkId;
+    if (linkId === null && cashFlowTransferRole(row) !== "internal") continue;
     const currency = normalizeCurrency(row.amount.currency);
     const entry = byCurrency.get(currency) ?? emptyTransfers();
     byCurrency.set(currency, entry);
-    if (role === "internal") entry.unpaired = plus(entry.unpaired, row.amount);
-    else if (row.direction === "outflow" || !counted.has(row.transferLinkId!)) counted.set(row.transferLinkId!, row);
+    if (linkId === null) entry.unpaired = plus(entry.unpaired, row.amount);
+    else if (row.direction === "outflow" || !counted.has(linkId)) counted.set(linkId, row);
   }
   for (const [linkId, row] of counted) {
     const entry = byCurrency.get(normalizeCurrency(row.amount.currency))!;

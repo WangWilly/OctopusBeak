@@ -4,33 +4,38 @@
   import {
     clampRange,
     monthGrid,
+    quickChoice,
     quickRange,
     rangeDays,
     shiftMonth,
+    type CashFlowPeriodChoice,
     type CashFlowQuickPreset,
     type CashFlowRange,
   } from "../period.ts";
 
   export let range: CashFlowRange;
   export let today: string;
-  export let apply: (range: CashFlowRange) => void;
+  export let apply: (range: CashFlowRange, choice: CashFlowPeriodChoice) => void;
   export let cancel: () => void;
 
   let start = range.startDate;
   let end: string | null = range.endDate;
   let month = range.endDate.slice(0, 7);
   const quick: readonly CashFlowQuickPreset[] = ["week", "month", "lastMonth", "last90", "year"];
+  /** The quick choice the person tapped, until they pick a day; two quick choices can give the same range. */
+  let picked: CashFlowQuickPreset | null = null;
 
   $: grid = monthGrid(month);
   $: canGoNext = shiftMonth(month, 1) <= today.slice(0, 7);
   $: chosen = end === null ? null : clampRange({ startDate: start, endDate: end }, today);
-  $: activeQuick = chosen === null ? null : quick.find((preset) => {
+  $: activeQuick = picked ?? (chosen === null ? null : quick.find((preset) => {
     const candidate = quickRange(preset, today);
     return candidate.startDate === chosen.startDate && candidate.endDate === chosen.endDate;
-  }) ?? null;
+  }) ?? null);
 
   function choose(date: string) {
     if (date > today) return;
+    picked = null;
     if (end !== null) {
       start = date;
       end = null;
@@ -44,6 +49,7 @@
 
   function chooseQuick(preset: CashFlowQuickPreset) {
     const next = quickRange(preset, today);
+    picked = preset;
     start = next.startDate;
     end = next.endDate;
     month = next.endDate.slice(0, 7);
@@ -123,7 +129,7 @@
     </div>
     <div class="picker-actions">
       <button type="button" class="button" onclick={cancel}>{$t.cashFlow.pickerCancel}</button>
-      <button type="button" class="button primary" disabled={chosen === null} onclick={() => chosen && apply(chosen)}>{$t.cashFlow.pickerApply}</button>
+      <button type="button" class="button primary" disabled={chosen === null} onclick={() => chosen && apply(chosen, quickChoice(picked))}>{$t.cashFlow.pickerApply}</button>
     </div>
   </footer>
 </div>

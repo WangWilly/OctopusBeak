@@ -12,7 +12,7 @@ import {
 import {
   CASH_FLOW_TRANSFER_WINDOW_DAYS,
   cashFlowTransferSuspension,
-  linkedCashFlowClass,
+  linkedCashFlow,
   pairCashFlowTransfers,
   type CashFlowTransferPair,
   type CashFlowTransferPairHistory,
@@ -59,7 +59,11 @@ export type CashFlowTransactionDetails = Readonly<{
   account: CashFlowAccount;
 }>;
 
-/** `transferLinkId` names the row's current Cash-flow transfer link, if it has one. */
+/**
+ * `transferLinkId` names the row's current Cash-flow transfer link when that
+ * link is a pair: neither of its sides stays counted. A link that leaves a side
+ * counted changes nothing, so its rows carry none.
+ */
 export type CashFlowReportTransaction = CashFlowTransaction & Readonly<{ details: CashFlowTransactionDetails; transferLinkId: string | null }>;
 
 export type CashFlowReport = Readonly<{
@@ -451,7 +455,7 @@ export async function readPGliteCashFlowTransfers(
 export type CashFlowSearchRow = Omit<CashFlowReportTransaction, "transferLinkId"> & Readonly<{
   periodDate: string;
   /**
-   * The row's stored link when it applies. Evidence links are not read: they
+   * The row's stored link when it applies and is a pair. Evidence links are not read: they
    * join only internal-transfer Kinds and never change a row's class.
    */
   transferLinkId: string | null;
@@ -485,12 +489,13 @@ export async function readPGliteCashFlowSearchRows(
     const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
     const link = linkOf.get(side.transactionId);
     const counterpart = link ? sides.get(link.counterpart) : undefined;
+    const linked = counterpart ? linkedCashFlow(side, counterpart) : null;
     return {
       ...side,
       details,
       periodDate: effectiveOn,
-      cashFlow: counterpart ? linkedCashFlowClass(side, counterpart) : side.cashFlow,
-      transferLinkId: link?.linkId ?? null,
+      cashFlow: linked?.cashFlow ?? side.cashFlow,
+      transferLinkId: linked?.paired ? link!.linkId : null,
     };
   });
   const manual = (await manualTransactions(reader, { startDate: FIRST_DATE, endDate: LAST_DATE }))
@@ -523,7 +528,8 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
     const link = linkOf.get(side.transactionId);
     if (!link) return { ...side, details, transferLinkId: null };
     const counterpart = sides.get(link.counterpart);
-    return { ...side, details, cashFlow: counterpart ? linkedCashFlowClass(side, counterpart) : side.cashFlow, transferLinkId: link.linkId };
+    const linked = counterpart ? linkedCashFlow(side, counterpart) : null;
+    return { ...side, details, cashFlow: linked?.cashFlow ?? side.cashFlow, transferLinkId: linked?.paired ? link.linkId : null };
   });
   const manual = (await manualTransactions(reader, request)).map((row) => ({ ...row, transferLinkId: null }));
   const transactions = [...canonical, ...manual]

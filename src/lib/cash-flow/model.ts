@@ -43,9 +43,9 @@ export type CashFlowCurrencySummary = Readonly<{
 
 /** The period's uncounted transfers in one currency. */
 export type CashFlowTransferSummary = Readonly<{
-  /** Each Cash-flow transfer link with a side in the period, once, at its outflow amount. */
+  /** Each Cash-flow transfer link that is a pair, with a side in the period, once, at its outflow amount. */
   pairs: CashFlowAmount & Readonly<{ origins: Readonly<Record<CashFlowTransferLinkOrigin["kind"], number>> }>;
-  /** Internal-transfer rows without a current link. */
+  /** Internal-transfer rows not in a pair: no current link, or one that leaves its other side counted. */
   unpaired: CashFlowAmount;
 }>;
 

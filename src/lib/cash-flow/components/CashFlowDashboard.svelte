@@ -114,9 +114,9 @@
     changeRequest({ ...quickRange(next, today), ...(request.query ? { query: request.query } : {}) }, next);
   }
 
-  function applyRange(next: CashFlowRange) {
+  function applyRange(next: CashFlowRange, choice: CashFlowPeriodChoice) {
     pickerOpen = false;
-    changeRequest({ ...next, ...(request.query ? { query: request.query } : {}) }, "custom");
+    changeRequest({ ...next, ...(request.query ? { query: request.query } : {}) }, choice);
   }
 
   function search(text: string) {

@@ -43,6 +43,15 @@ export function quickRange(preset: CashFlowQuickPreset | CashFlowPreset, today: 
  */
 export type CashFlowPeriodChoice = CashFlowPreset | "custom";
 
+/**
+ * What a range applied from the picker is: the quick choice the person tapped
+ * when a preset rolls the same way, otherwise a custom range. A fixed range
+ * such as 上個月, or a quick choice with no matching preset, stays custom.
+ */
+export function quickChoice(preset: CashFlowQuickPreset | null): CashFlowPeriodChoice {
+  return preset === "week" || preset === "month" ? preset : "custom";
+}
+
 /** The chosen preset's range on `today`; a custom range stays as it is. */
 export function rollRange(range: CashFlowRange, choice: CashFlowPeriodChoice, today: string): CashFlowRange {
   return choice === "custom" ? range : quickRange(choice, today);

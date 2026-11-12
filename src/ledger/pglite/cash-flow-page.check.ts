@@ -13,7 +13,7 @@ import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import { createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import type { PGliteStore } from "./transaction.ts";
 import type { FinancialPageActionRequest } from "../../lib/financial/page-actions.ts";
-import { quickRange, rollRange } from "../../lib/cash-flow/period.ts";
+import { quickChoice, quickRange, rollRange } from "../../lib/cash-flow/period.ts";
 
 const OCTOBER = { startDate: "2026-10-01", endDate: "2026-10-10" } as const;
 const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
@@ -295,22 +295,42 @@ test("two external transfers between the person's own accounts count until the p
   });
 });
 
-test("a confirmed link changes nothing for an internal transfer or a card payment", async () => {
+test("a confirmed link pairs a weak or fallback side with an internal transfer, and no evidence-backed side of another Kind", async () => {
   await withFixture(async (fixture) => {
-    const [internal, receipt, card, external] = await addSides(fixture, [
-      ["transfer.internal", { amount: "4000", date: "2026-10-03", account: "bank-a" }],
-      ["receipt", { amount: "4000", date: "2026-10-03", account: "bank-b", direction: "inflow" }],
+    const [internal, external, internalToo, receipt, card, cardIn, purchase, salary, internalOut, salaryIn] = await addSides(fixture, [
+      ["transfer.internal", { amount: "4000", date: "2026-10-03", account: "bank-a", description: "本人轉帳" }],
+      ["transfer.external", { amount: "4000", date: "2026-10-03", account: "bank-b", direction: "inflow", description: "跨行轉入" }],
+      ["transfer.internal", { amount: "5000", date: "2026-10-04", account: "bank-a" }],
+      ["receipt", { amount: "5000", date: "2026-10-04", account: "bank-b", direction: "inflow" }],
       ["payment.credit_card", { amount: "6000", date: "2026-10-05", account: "bank-a" }],
       ["transfer.external", { amount: "6000", date: "2026-10-05", account: "bank-b", direction: "inflow" }],
+      ["purchase", { amount: "7000", date: "2026-10-06", account: "bank-a" }],
+      ["income.employment.salary", { amount: "7000", date: "2026-10-06", account: "bank-b", direction: "inflow" }],
+      ["transfer.internal", { amount: "8000", date: "2026-10-07", account: "bank-a" }],
+      ["income.employment.salary", { amount: "8000", date: "2026-10-07", account: "bank-b", direction: "inflow" }],
     ]);
-    await confirmTransfer(fixture.store, internal!, receipt!);
-    await confirmTransfer(fixture.store, card!, external!);
+    for (const [out, into] of [[internal, external], [internalToo, receipt], [card, cardIn], [purchase, salary], [internalOut, salaryIn]])
+      await confirmTransfer(fixture.store, out!, into!);
     const page = await readCashFlowPage(fixture.store, OCTOBER);
-    const classOf = (id: string) => page.transactions.find((row) => row.transactionId === id)?.cashFlow;
-    assert.deepEqual(classOf(internal!), { class: "not_counted", reason: "transfer" });
-    assert.deepEqual(classOf(receipt!), { class: "inflow", group: "other" }, "an evidence-backed side keeps the link from deciding");
-    assert.deepEqual(classOf(card!), { class: "not_counted", reason: "card_payment" });
-    assert.deepEqual(classOf(external!), { class: "inflow", group: "transfers_in" });
+    const rowOf = (id: string) => page.transactions.find((row) => row.transactionId === id)!;
+    const transfer = { class: "not_counted", reason: "transfer" };
+    for (const id of [internal!, external!, internalToo!, receipt!]) {
+      assert.deepEqual(rowOf(id).cashFlow, transfer, "an internal transfer proves the move for its weak or fallback counterpart");
+      assert.notEqual(rowOf(id).transferLinkId, null);
+    }
+    assert.deepEqual(rowOf(card!).cashFlow, { class: "not_counted", reason: "card_payment" });
+    assert.deepEqual(rowOf(cardIn!).cashFlow, { class: "inflow", group: "transfers_in" }, "a card payment keeps its weak counterpart counted");
+    assert.equal(rowOf(purchase!).cashFlow.class, "outflow", "an evidence-backed income keeps its fallback counterpart counted");
+    assert.deepEqual(rowOf(salary!).cashFlow, { class: "inflow", group: "income.employment.salary" });
+    assert.deepEqual(rowOf(internalOut!).cashFlow, transfer);
+    for (const id of [card!, cardIn!, purchase!, salary!, internalOut!, salaryIn!]) assert.equal(rowOf(id).transferLinkId, null, "a link that leaves a side counted is no pair");
+
+    const twd = page.currencies[0]!;
+    assert.deepEqual([twd.inflow.amount, twd.outflow.amount], [amount("21000"), amount("7000")]);
+    assert.deepEqual(twd.transfers, {
+      pairs: { amount: amount("9000"), count: 2, origins: { evidence: 0, confirmed: 2, manual: 0 } },
+      unpaired: { amount: amount("8000"), count: 1 },
+    }, "the note holds only links whose sides both stay out of the totals");
   });
 });
 
@@ -408,4 +428,15 @@ test("the chosen preset rolls, even when another preset gave the same range", ()
   const june = quickRange("month", "2026-06-07");
   assert.deepEqual(june, quickRange("week", "2026-06-07"));
   assert.deepEqual(rollRange(june, "month", "2026-06-08"), { startDate: "2026-06-01", endDate: "2026-06-08" });
+});
+
+test("a quick choice applied from the picker rolls as its preset; a fixed range stays custom", () => {
+  assert.equal(quickChoice("week"), "week");
+  assert.equal(quickChoice("month"), "month");
+  assert.equal(quickChoice("lastMonth"), "custom", "上個月 is a fixed range");
+  assert.equal(quickChoice("last90"), "custom", "no preset rolls 90 days");
+  assert.equal(quickChoice("year"), "custom", "no preset rolls the year");
+  assert.equal(quickChoice(null), "custom", "days picked by hand");
+  // 本月 picked on 06/07 gives 本週's range, and still rolls as 本月.
+  assert.deepEqual(rollRange(quickRange("month", "2026-06-07"), quickChoice("month"), "2026-06-08"), { startDate: "2026-06-01", endDate: "2026-06-08" });
 });

@@ -241,14 +241,26 @@ export function pairCashFlowTransfers(
 
 const LINKED_TRANSFER: CashFlowClass = Object.freeze({ class: "not_counted", reason: "transfer" });
 
+type LinkedSide = Pick<CashFlowTransaction, "kind" | "cashFlow">;
+
 /**
- * A linked side's cash-flow class. The link decides only where no evidence
- * does: both sides must carry a fallback or weak Kind. An evidence-backed
- * Kind, or a missing one, keeps the side's own class.
+ * Whether a link takes `side` out of the totals (ADR 0137). The link decides
+ * only where no evidence does: `side` must carry a weak or fallback Kind, and
+ * its counterpart a weak or fallback Kind or an evidence-backed internal
+ * transfer. Any other evidence-backed Kind, or a missing one, on either side
+ * keeps `side` in its own class.
  */
-export function linkedCashFlowClass(
-  side: Pick<CashFlowTransaction, "kind" | "cashFlow">,
-  counterpart: Pick<CashFlowTransaction, "kind">,
-): CashFlowClass {
-  return linkExcludable(side.kind) && linkExcludable(counterpart.kind) ? LINKED_TRANSFER : side.cashFlow;
+function linkExcludes(side: CashFlowKind | null, counterpart: CashFlowKind | null): boolean {
+  return linkExcludable(side) && (linkExcludable(counterpart) || evidencesTransfer(counterpart));
+}
+
+/**
+ * A linked side's cash-flow class, and whether the link is a pair: neither
+ * side stays in a total or the unresolved bucket. A link that leaves a side
+ * counted changes nothing, so it is no pair for the transfer note.
+ */
+export function linkedCashFlow(side: LinkedSide, counterpart: LinkedSide): Readonly<{ cashFlow: CashFlowClass; paired: boolean }> {
+  const cashFlow = linkExcludes(side.kind, counterpart.kind) ? LINKED_TRANSFER : side.cashFlow;
+  const other = linkExcludes(counterpart.kind, side.kind) ? LINKED_TRANSFER : counterpart.cashFlow;
+  return { cashFlow, paired: cashFlow.class === "not_counted" && other.class === "not_counted" };
 }
