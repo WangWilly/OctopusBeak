@@ -50,7 +50,7 @@
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
   import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
-  import { quickRange, rollRange } from "$lib/cash-flow/period.ts";
+  import { quickRange, rollRange, type CashFlowPeriodChoice } from "$lib/cash-flow/period.ts";
   import {
     createFinancialPage,
     FinancialPageSuperseded,
@@ -96,6 +96,7 @@
   let focusAccountId: string | null = null;
   let cashFlowToday = get(taipeiDate);
   let cashFlowRequest: CashFlowPageRequest = quickRange("month", cashFlowToday);
+  let cashFlowPeriodChoice: CashFlowPeriodChoice = "month";
   const financialPage = createFinancialPage({ dataViews: window.octopusBeak?.dataViews, params: { "cash-flow": cashFlowRequest } });
   const financialState = financialPage.state;
   $: overview = $financialState.routes.overview.load;
@@ -293,8 +294,9 @@
     );
   }
 
-  function changeCashFlowRequest(next: CashFlowPageRequest) {
+  function changeCashFlowRequest(next: CashFlowPageRequest, choice: CashFlowPeriodChoice = cashFlowPeriodChoice) {
     cashFlowRequest = next;
+    cashFlowPeriodChoice = choice;
     financialPage.setParams("cash-flow", next);
   }
 
@@ -302,7 +304,7 @@
   $: rollCashFlowPeriod($taipeiDate);
   function rollCashFlowPeriod(today: string) {
     if (today === cashFlowToday) return;
-    const next = rollRange(cashFlowRequest, cashFlowToday, today);
+    const next = rollRange(cashFlowRequest, cashFlowPeriodChoice, today);
     cashFlowToday = today;
     if (next.startDate === cashFlowRequest.startDate && next.endDate === cashFlowRequest.endDate) return;
     changeCashFlowRequest({ ...next, ...(cashFlowRequest.query ? { query: cashFlowRequest.query } : {}) });
@@ -779,6 +781,7 @@
     <CashFlowDashboard
       page={cashFlowValue}
       request={cashFlowRequest}
+      periodChoice={cashFlowPeriodChoice}
       today={$taipeiDate}
       loading={cashFlow.status === "loading"}
       changeRequest={changeCashFlowRequest}

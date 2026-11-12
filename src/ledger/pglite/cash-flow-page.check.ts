@@ -13,7 +13,7 @@ import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import { createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import type { PGliteStore } from "./transaction.ts";
 import type { FinancialPageActionRequest } from "../../lib/financial/page-actions.ts";
-import { rollRange } from "../../lib/cash-flow/period.ts";
+import { quickRange, rollRange } from "../../lib/cash-flow/period.ts";
 
 const OCTOBER = { startDate: "2026-10-01", endDate: "2026-10-10" } as const;
 const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
@@ -368,9 +368,20 @@ test("the pairing window stays within the years an ISO date can name", () => {
 
 test("a preset period follows the date past midnight; a custom one stays", () => {
   const november = { startDate: "2026-11-01", endDate: "2026-11-30" };
-  assert.deepEqual(rollRange(november, "2026-11-30", "2026-12-01"), { startDate: "2026-12-01", endDate: "2026-12-01" }, "本月");
-  assert.deepEqual(rollRange({ startDate: "2026-10-31", endDate: "2026-11-29" }, "2026-11-29", "2026-11-30"), { startDate: "2026-11-01", endDate: "2026-11-30" }, "近 30 天");
-  assert.deepEqual(rollRange({ startDate: "2026-11-23", endDate: "2026-11-29" }, "2026-11-29", "2026-11-30"), { startDate: "2026-11-30", endDate: "2026-11-30" }, "本週 starts again on Monday");
-  assert.deepEqual(rollRange({ startDate: "2026-11-03", endDate: "2026-11-10" }, "2026-11-29", "2026-11-30"), { startDate: "2026-11-03", endDate: "2026-11-10" }, "custom");
-  assert.deepEqual(rollRange(november, "2026-11-30", "2026-11-30"), november);
+  assert.deepEqual(rollRange(november, "month", "2026-12-01"), { startDate: "2026-12-01", endDate: "2026-12-01" }, "本月");
+  assert.deepEqual(rollRange({ startDate: "2026-10-31", endDate: "2026-11-29" }, "last30", "2026-11-30"), { startDate: "2026-11-01", endDate: "2026-11-30" }, "近 30 天");
+  assert.deepEqual(rollRange({ startDate: "2026-11-23", endDate: "2026-11-29" }, "week", "2026-11-30"), { startDate: "2026-11-30", endDate: "2026-11-30" }, "本週 starts again on Monday");
+  assert.deepEqual(rollRange({ startDate: "2026-11-03", endDate: "2026-11-10" }, "custom", "2026-11-30"), { startDate: "2026-11-03", endDate: "2026-11-10" }, "custom");
+  assert.deepEqual(rollRange(november, "month", "2026-11-30"), november);
+});
+
+test("the chosen preset rolls, even when another preset gave the same range", () => {
+  // On 11/30, 近 30 天 is 11/01–11/30, the same range as 本月.
+  const last30 = quickRange("last30", "2026-11-30");
+  assert.deepEqual(last30, quickRange("month", "2026-11-30"));
+  assert.deepEqual(rollRange(last30, "last30", "2026-12-01"), { startDate: "2026-11-02", endDate: "2026-12-01" });
+  // June 2026 starts on a Monday, so on 06/07 本月 is 06/01–06/07, the same range as 本週.
+  const june = quickRange("month", "2026-06-07");
+  assert.deepEqual(june, quickRange("week", "2026-06-07"));
+  assert.deepEqual(rollRange(june, "month", "2026-06-08"), { startDate: "2026-06-01", endDate: "2026-06-08" });
 });

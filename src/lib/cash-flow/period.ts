@@ -37,19 +37,15 @@ export function quickRange(preset: CashFlowQuickPreset | CashFlowPreset, today: 
   }
 }
 
-/** Which of the page's presets a range is, or `custom`. */
-export function presetOf(range: CashFlowRange, today: string): CashFlowPreset | "custom" {
-  for (const preset of ["week", "month", "last30"] as const) {
-    const candidate = quickRange(preset, today);
-    if (candidate.startDate === range.startDate && candidate.endDate === range.endDate) return preset;
-  }
-  return "custom";
-}
+/**
+ * The period the person chose. Two presets can give the same range, such as
+ * 本月 and 近 30 天 on the 30th, so the choice is kept, never read back from the range.
+ */
+export type CashFlowPeriodChoice = CashFlowPreset | "custom";
 
-/** A preset range moved from `previousToday` to `today`; a custom range stays as it is. */
-export function rollRange(range: CashFlowRange, previousToday: string, today: string): CashFlowRange {
-  const preset = presetOf(range, previousToday);
-  return preset === "custom" ? range : quickRange(preset, today);
+/** The chosen preset's range on `today`; a custom range stays as it is. */
+export function rollRange(range: CashFlowRange, choice: CashFlowPeriodChoice, today: string): CashFlowRange {
+  return choice === "custom" ? range : quickRange(choice, today);
 }
 
 /** A range with its end clamped to today and its ends in order. */

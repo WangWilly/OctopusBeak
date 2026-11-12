@@ -33,14 +33,16 @@
     signedAmount,
     type OutflowGroupKey,
   } from "../display.ts";
-  import { presetOf, quickRange, rangeText, type CashFlowPreset, type CashFlowRange } from "../period.ts";
+  import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
 
   export let page: CashFlowPageDto;
   export let request: CashFlowPageRequest;
+  /** The preset the person chose for `request`, kept apart from the range because two presets can give the same one. */
+  export let periodChoice: CashFlowPeriodChoice;
   export let today: string;
   export let loading = false;
-  export let changeRequest: (request: CashFlowPageRequest) => void;
+  export let changeRequest: (request: CashFlowPageRequest, choice?: CashFlowPeriodChoice) => void;
 
   type Drill = Readonly<{ kind: "outflow"; group: OutflowGroupKey }> | Readonly<{ kind: "inflow"; group: CashFlowInflowGroup }>;
 
@@ -56,9 +58,10 @@
   $: currencies = page.currencies.map((summary) => summary.currency);
   $: if (!currencies.includes(selectedCurrency)) selectedCurrency = currencies[0] ?? "TWD";
   $: summary = page.currencies.find((entry) => entry.currency === selectedCurrency) ?? null;
-  $: preset = presetOf(request, today);
   // The figures on screen are the page's, which may still be the previous period while a new one loads.
-  $: periodName = $t.cashFlow.periodThis[presetOf(page.period, today)];
+  let shownChoice = periodChoice;
+  $: if (!loading) shownChoice = periodChoice;
+  $: periodName = $t.cashFlow.periodThis[shownChoice];
   $: range = { startDate: page.period.startDate, endDate: page.period.endDate };
   $: scale = summary ? Math.max(exactToNumber(summary.inflow.amount), exactToNumber(summary.outflow.amount), 0) : 0;
   $: keptPositive = summary !== null && compareExact(summary.kept, { coefficient: "0", scale: 0 }) > 0;
@@ -108,12 +111,12 @@
 
   function choosePreset(next: CashFlowPreset) {
     pickerOpen = false;
-    changeRequest({ ...quickRange(next, today), ...(request.query ? { query: request.query } : {}) });
+    changeRequest({ ...quickRange(next, today), ...(request.query ? { query: request.query } : {}) }, next);
   }
 
   function applyRange(next: CashFlowRange) {
     pickerOpen = false;
-    changeRequest({ ...next, ...(request.query ? { query: request.query } : {}) });
+    changeRequest({ ...next, ...(request.query ? { query: request.query } : {}) }, "custom");
   }
 
   function search(text: string) {
@@ -135,7 +138,7 @@
     const all = page.search?.allPeriods;
     if (!all?.firstDate || !all.lastDate) return;
     const endDate = all.lastDate > today ? all.lastDate : today;
-    changeRequest({ startDate: all.firstDate < endDate ? all.firstDate : endDate, endDate, ...(request.query ? { query: request.query } : {}) });
+    changeRequest({ startDate: all.firstDate < endDate ? all.firstDate : endDate, endDate, ...(request.query ? { query: request.query } : {}) }, "custom");
   }
 
   function transferOriginText(origins: Readonly<{ evidence: number; confirmed: number; manual: number }>): string {
@@ -216,9 +219,9 @@
           <div class="preset-anchor">
             <div class="filters preset-switch" role="group" aria-label={$t.cashFlow.periodAria}>
               {#each ["week", "month", "last30"] as const as option (option)}
-                <button type="button" class="filter-btn" aria-pressed={!pickerOpen && preset === option} data-preset={option} onclick={() => choosePreset(option)}>{$t.cashFlow.presets[option]}</button>
+                <button type="button" class="filter-btn" aria-pressed={!pickerOpen && periodChoice === option} data-preset={option} onclick={() => choosePreset(option)}>{$t.cashFlow.presets[option]}</button>
               {/each}
-              <button type="button" class="filter-btn" aria-pressed={preset === "custom" || pickerOpen} aria-expanded={pickerOpen} data-preset="custom" onclick={() => pickerOpen = !pickerOpen}>{$t.cashFlow.presets.custom}</button>
+              <button type="button" class="filter-btn" aria-pressed={periodChoice === "custom" || pickerOpen} aria-expanded={pickerOpen} data-preset="custom" onclick={() => pickerOpen = !pickerOpen}>{$t.cashFlow.presets.custom}</button>
             </div>
             {#if pickerOpen}
               <CashFlowRangePicker {range} {today} apply={applyRange} cancel={() => pickerOpen = false} />
