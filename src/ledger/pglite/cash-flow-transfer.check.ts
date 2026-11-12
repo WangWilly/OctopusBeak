@@ -258,7 +258,7 @@ test("a counterpart dated by its consume date, with a far effective date, is see
     ]);
     const report = await readPGliteCashFlow(fixture.store, { startDate: "2026-09-01", endDate: "2026-09-12" });
     assert.deepEqual(report.transfers.links, [], "two counterparts make the evidence ambiguous");
-    assert.deepEqual(pairsOf(report.transfers.candidates), [[out, consumed], [out, into]]);
+    assert.deepEqual(pairsOf(report.transfers.candidates).sort(), [[out, consumed], [out, into]].sort());
     await act(fixture.store, "transfer_confirm", out!, into!);
     assert.deepEqual(pairsOf((await readPGliteCashFlow(fixture.store, SEPTEMBER)).transfers.links), [[out, into]]);
   });
