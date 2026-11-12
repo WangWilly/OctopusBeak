@@ -9,7 +9,7 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { AppWorkflowWorkerHandle, WorkerLaunch } from "./execution-host.ts";
+import type { AppWorkflowWorkerHandle, ExecutionHost, WorkerLaunch } from "./execution-host.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
 import type { WorkflowExecution } from "./active-task-run.ts";
 import {
@@ -30,7 +30,7 @@ import {
 } from "./app-workflow-human-assistance.ts";
 import { BrowserRuntimeConfigurationError } from "./browser-runtime.ts";
 import { workflowBrowserProfileForWorkflow } from "./app-workflow-registry.ts";
-import type { AppWorkflowWorkerStart, AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
+import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, type AppWorkflowWorkerStart, type AppWorkflowWorkerInboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 
@@ -304,6 +304,34 @@ test("command-only tasks are rejected before persistence or execution", async ()
   );
 });
 
+/** `host`, failing any round that asks for a page: a nonbrowser round must open none. */
+function refusingPages(host: ExecutionHost): ExecutionHost {
+  return {
+    async hostRound(round, supervise) {
+      if (round.page) throw new Error("Nonbrowser task opened a browser.");
+      return await host.hostRound(round, supervise);
+    },
+  };
+}
+
+test("a round of the in-process check host starts one worker", async () => {
+  const launch = {
+    start: { protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, workflowId: "exchange-rates", taskRunId: "run-one-worker", input: null },
+  } as const satisfies WorkerLaunch;
+  const started: string[] = [];
+  const host = inProcessCheckHost({ scriptedWorker: (start) => {
+    started.push(start.taskRunId);
+    return new NonBrowserFakeWorker(start);
+  } });
+  await host.hostRound({}, async (startWorker) => {
+    startWorker(launch);
+    assert.throws(() => startWorker(launch), /already started its worker/u);
+  });
+  assert.deepEqual(started, ["run-one-worker"], "the second start never reached a worker");
+  await host.hostRound({}, async (startWorker) => { startWorker(launch); });
+  assert.equal(started.length, 2, "each round starts its own worker");
+});
+
 class NonBrowserFakeWorker extends EventEmitter implements AppWorkflowWorkerHandle {
   readonly start: AppWorkflowWorkerStart;
   readonly exchange: boolean;
@@ -374,14 +402,11 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
       let workerStart: AppWorkflowWorkerStart | undefined;
       let workerLaunch: WorkerLaunch | undefined;
       const result = await runForCheck(runtimeForCheck(provider, {
-        executionHost: {
-          ...inProcessCheckHost({ scriptedWorker: (start, launch) => {
-            workerStart = start;
-            workerLaunch = launch;
-            return new NonBrowserFakeWorker(start);
-          } }),
-          withPage: () => { throw new Error("Nonbrowser task opened a browser."); },
-        },
+        executionHost: refusingPages(inProcessCheckHost({ scriptedWorker: (start, launch) => {
+          workerStart = start;
+          workerLaunch = launch;
+          return new NonBrowserFakeWorker(start);
+        } })),
         environment: taskId === "sync-maicoin" ? { [["MAX", "ACCESS", "KEY"].join("_")]: "synthetic-access", [["MAX", "SECRET", "KEY"].join("_")]: "synthetic-secret" } : {},
       }), task.id);
       const taskRunId = result.taskRunId;
@@ -569,15 +594,15 @@ test("E-Invoice uses the supervised Chromium worker and keeps runtime identity u
     let workerStart: AppWorkflowWorkerStart | undefined;
     let hostInput: AppWorkflowBrowserHostInput | undefined;
     const active = await openTaskRunForCheck(provider.automation, taskRunId);
+    const inner = inProcessCheckHost({ scriptedWorker: (start) => {
+      workerStart = start;
+      return new NonBrowserFakeWorker(start);
+    } });
     const outcome = await createTaskRunExecution({
-      ...inProcessCheckHost({ scriptedWorker: (start) => {
-        workerStart = start;
-        return new NonBrowserFakeWorker(start);
-      } }),
-      async withPage(page, use) {
-        hostInput = page;
-        page.onRuntimeIdentity?.(runtimeIdentity);
-        return await use();
+      async hostRound(round, supervise) {
+        hostInput = round.page;
+        round.page?.onRuntimeIdentity?.(runtimeIdentity);
+        return await inner.hostRound(round, supervise);
       },
     })(planForCheck(task, { launchEnv }), active, firstRoundForCheck());
 
@@ -623,12 +648,10 @@ test("runtime identity remains on a failed run when browser launch fails before 
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: {
-        async withPage(page) {
-          page.onRuntimeIdentity?.(runtimeIdentity);
+        // The page fails to open, so the round never reaches its worker.
+        async hostRound(round) {
+          round.page?.onRuntimeIdentity?.(runtimeIdentity);
           throw new Error("private browser launch detail");
-        },
-        launchWorker() {
-          throw new Error("Browser launch failure must happen before worker startup.");
         },
       },
       environment: launchEnv,
@@ -655,11 +678,9 @@ test("unsupported browser profiles produce a sanitized runtime configuration fai
     const provider = createPgliteOperationalProvider(store);
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: {
-        async withPage() {
+        // Profile resolution fails before the page opens, so the round never reaches its worker.
+        async hostRound() {
           throw new BrowserRuntimeConfigurationError("unsupported-profile");
-        },
-        launchWorker() {
-          throw new Error("An unsupported profile must fail before worker startup.");
         },
       },
       environment: {

@@ -11,7 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
 import { CREDIT_CARD_IDENTITY_FINGERPRINT_SECRET_KEY } from "./config-files.ts";
-import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
+import { withAppWorkflowHostPage } from "./app-browser-host.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
 import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
@@ -345,7 +345,7 @@ test("App browser host opens a catalog start URL before invoking the workflow", 
   const page = { goto: async (url: string) => { visited.push(url); } } as unknown as Page;
   const context = { pages: () => [page], close: async () => undefined };
   try {
-    const browser = createAppWorkflowBrowserPort({
+    const output = await withAppWorkflowHostPage({
       taskId: "esun-credit-card-statements",
       taskRunId: "run-esun-start-url-check",
       signal: new AbortController().signal,
@@ -353,8 +353,7 @@ test("App browser host opens a catalog start URL before invoking the workflow", 
       credentialCodec: null,
       startUrl: BANK_ENTRY_URL,
       launchPersistentContext: async () => context as never,
-    });
-    const output = await browser.withPage(async () => "workflow-dispatched");
+    }, async () => "workflow-dispatched");
     assert.equal(output, "workflow-dispatched");
     assert.deepEqual(visited, [BANK_ENTRY_URL]);
   } finally {

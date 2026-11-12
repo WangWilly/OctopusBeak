@@ -47,7 +47,7 @@ Both return the ports the definition requires, plus the preview write port when 
 type WorkerLaunch = Readonly<{ start: AppWorkflowWorkerStart; pgliteRpc?: PGliteWorkflowRpc }>;
 ```
 
-`runSupervisedAppWorkflow` builds the launch from the start it parsed and its `pgliteRpc` option. `chromiumThreadHost` puts `pgliteRpc` into `workerData` beside `browserConnection`. `inProcessCheckHost` ignores it.
+`runSupervisedAppWorkflow` builds the launch from the start it parsed and its `pgliteRpc` option. `chromiumThreadHost` puts `pgliteRpc` into `workerData` beside `browserConnection`. `inProcessCheckHost` ignores it. (Refined by [ADR 0135](0135-a-host-runs-a-round-s-page-and-worker-in-one-operation.md): the launch now goes to the round's `startWorker`, which `ExecutionHost.hostRound` hands the supervisor, and the execution argument is gone.)
 
 **The thread entry turns the descriptor into the source.** `runAppWorkflowWorkerThread` removes `browserConnection` and `pgliteRpc` from `workerData`. It validates each one that is present: the browser connection with `parseAppWorkflowBrowserConnection`, and the RPC with `parseAppWorkflowPgliteRpc` (an endpoint of at most 1,024 characters and a 32 to 128 character token). An invalid descriptor gets the `protocol-invalid` start refusal. The entry then calls the core with `childRpcCapabilities(pgliteRpc)`.
 
@@ -66,7 +66,7 @@ type WorkerLaunch = Readonly<{ start: AppWorkflowWorkerStart; pgliteRpc?: PGlite
 
 - The descriptor is now in the plan, the supervisor's options, the host's launch and the thread's `workerData`. The core's start type and parser never name it.
 - `resolveDefinition` stays as a check seam on the core. `now` also stays: the E.SUN check fails without it, because its fake page answers only the timeline dates of its fixed clock. The CTBC, LINE Bank, Post and SinoPac checks also fix the clock.
-- `CHECK_PGLITE_RPC` is now only a plan value. It travels from the plan to the host's launch and is never dialled. `task-run-execution.check.ts` and `pglite-persistence.check.ts` assert that the descriptor reaches `launchWorker` and that the start does not carry it.
+- `CHECK_PGLITE_RPC` is now only a plan value. It travels from the plan to the host's launch and is never dialled. `task-run-execution.check.ts` and `pglite-persistence.check.ts` assert that the descriptor reaches the host's worker start (`launchWorker`, `startWorker` since [ADR 0135](0135-a-host-runs-a-round-s-page-and-worker-in-one-operation.md)) and that the start does not carry it.
 - A check can no longer mix injected ports with RPC ports. It uses one source.
 - A declared capability without a descriptor, or an RPC that fails to authenticate, reports `workflow-failed`, as before: the thrown `worker-start-failed` is not mapped to its own code. Cancellation while the source opens still reports `cancelled`.
 - A malformed descriptor is now refused by the worker thread, not by the supervisor's start parser. A worker is started before the refusal, and the run still ends `protocol-invalid`. The plan checks only that the endpoint and token are non-empty.

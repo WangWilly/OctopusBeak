@@ -23,7 +23,6 @@ import type {
 import type { HumanAssistanceRoute } from "./app-workflow-human-assistance.ts";
 import type { LaunchedCollectionScope } from "./collection-scope.ts";
 import type { Page } from "playwright";
-import type { AppWorkflowBrowserConnection } from "./app-browser-host.ts";
 import type { PageForRun } from "./automation-viewer.ts";
 import {
   applyCommitAttemptReport,
@@ -87,8 +86,6 @@ export type HumanAssistanceWaiter = Readonly<{
 /** The browser page the App hosts for one Workflow execution. */
 export type HostedBrowserPage = Readonly<{
   page: Page;
-  /** The loopback CDP target the worker attaches to; null when the host exposes none. */
-  connection: AppWorkflowBrowserConnection | null;
 }>;
 
 /**
@@ -121,8 +118,6 @@ export type WorkflowExecution = Readonly<{
   hostPage(hosted: HostedBrowserPage): () => void;
   /** The hosted page, or null when none is held. */
   page(): Page | null;
-  /** The hosted page's worker connection, or null when no page or no connection is held. */
-  browserConnection(): AppWorkflowBrowserConnection | null;
   /** Every event this execution recorded, in the order it recorded them. */
   events(): readonly WorkflowRunEvent[];
   /**
@@ -408,7 +403,6 @@ export function openActiveTaskRun(input: Readonly<{
         };
       },
       page: () => hostedPage?.page ?? null,
-      browserConnection: () => hostedPage?.connection ?? null,
       events: () => [...log],
       appendEvent(event) {
         if (ended) return Promise.reject(new Error(`Workflow execution ${executionId} has ended.`));

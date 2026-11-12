@@ -19,7 +19,7 @@ import {
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import type { AppWorkflowWorkerHandle, ExecutionHost, WorkerLaunch } from "./execution-host.ts";
+import { oneWorkerPerRound, type AppWorkflowWorkerHandle, type ExecutionHost, type WorkerLaunch } from "./execution-host.ts";
 import { createAutomationRuntime, type AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
@@ -243,21 +243,14 @@ function inProcessWorker(
  */
 export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): ExecutionHost {
   const { browser, scriptedWorker, capabilities = fixedCapabilities({}), ...seams } = options;
-  const pages = new Map<string, WorkflowBrowserPort>();
   return {
-    async withPage(page, use) {
-      if (browser) pages.set(page.taskRunId, browser(page));
-      try {
-        return await use();
-      } finally {
-        pages.delete(page.taskRunId);
-      }
-    },
-    launchWorker(launch) {
-      const { start } = launch;
-      if (scriptedWorker) return scriptedWorker(start, launch);
-      const page = pages.get(start.taskRunId);
-      return inProcessWorker(start, { ...seams, capabilities, ...(page ? { browser: page } : {}) });
+    async hostRound(round, supervise) {
+      const page = round.page && browser ? browser(round.page) : undefined;
+      return await supervise(oneWorkerPerRound((launch) => {
+        const { start } = launch;
+        if (scriptedWorker) return scriptedWorker(start, launch);
+        return inProcessWorker(start, { ...seams, capabilities, ...(page ? { browser: page } : {}) });
+      }));
     },
   };
 }

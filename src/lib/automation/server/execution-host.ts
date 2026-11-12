@@ -1,12 +1,10 @@
 import { join } from "node:path";
 import { Worker } from "node:worker_threads";
-import type { WorkflowExecution } from "./active-task-run.ts";
 import {
-  createAppWorkflowBrowserPort,
+  withAppWorkflowHostPage,
   type AppWorkflowBrowserConnection,
   type AppWorkflowBrowserHostInput,
 } from "./app-browser-host.ts";
-import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import type { AppWorkflowWorkerInboundFrame, AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 
@@ -34,16 +32,31 @@ export type WorkerLaunch = Readonly<{
   pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
-/** Where a Workflow execution's page and worker come from (ADR 0129). */
+/** Starts a round's worker; a throw is a worker start failure. */
+export type StartWorker = (launch: WorkerLaunch) => AppWorkflowWorkerHandle;
+
+/** What one round asks its host for: a browser workflow's page; a nonbrowser round asks for none. */
+export type ExecutionHostRound = Readonly<{ page?: AppWorkflowBrowserHostInput }>;
+
+/** Where a Workflow execution's page and worker come from (ADR 0129, ADR 0135). */
 export type ExecutionHost = Readonly<{
-  /** Keep the round's page open while `use` runs; a nonbrowser workflow never asks for one. */
-  withPage<T>(run: AppWorkflowBrowserHostInput, use: () => Promise<T>): Promise<T>;
-  /** Start the round's worker; a throw is a worker start failure. */
-  launchWorker(
-    launch: WorkerLaunch,
-    execution: Pick<WorkflowExecution, "browserConnection">,
-  ): AppWorkflowWorkerHandle;
+  /**
+   * Host one round: open its page when it asks for one, keep it open while
+   * `supervise` runs, and hand `supervise` the round's one worker start.
+   * Starting a second worker in the same round throws.
+   */
+  hostRound<T>(round: ExecutionHostRound, supervise: (startWorker: StartWorker) => Promise<T>): Promise<T>;
 }>;
+
+/** Wrap a round's worker start so it runs at most once. */
+export function oneWorkerPerRound(start: StartWorker): StartWorker {
+  let started = false;
+  return (launch) => {
+    if (started) throw new Error("This round has already started its worker.");
+    started = true;
+    return start(launch);
+  };
+}
 
 function workerBundlePath() {
   return typeof __dirname === "string"
@@ -51,31 +64,37 @@ function workerBundlePath() {
     : join(process.cwd(), "build-electron", "app-workflow-worker.cjs");
 }
 
+type ThreadWorkerData = AppWorkflowWorkerStart & {
+  browserConnection?: AppWorkflowBrowserConnection;
+  pgliteRpc?: PGliteWorkflowRpc;
+};
+
+function startThread({ start, pgliteRpc }: WorkerLaunch, browserConnection?: AppWorkflowBrowserConnection) {
+  const workerData: ThreadWorkerData = {
+    ...start,
+    ...(pgliteRpc ? { pgliteRpc } : {}),
+    ...(browserConnection ? { browserConnection } : {}),
+  };
+  const worker = new Worker(workerBundlePath(), { workerData, stdout: true, stderr: true });
+  // Captured output is drained and discarded. It is never sent to a log.
+  worker.stdout.resume();
+  worker.stderr.resume();
+  return worker;
+}
+
 /**
- * The App's host: a browser workflow's page is a headless Chromium page the
- * worker thread attaches to through its loopback DevTools descriptor, and the
- * thread reaches PGlite through the launch's child RPC descriptor.
+ * The App's host: a browser round's page is a headless Chromium page the
+ * worker thread attaches to through that page's loopback DevTools
+ * descriptor, and the thread reaches PGlite through the launch's child RPC
+ * descriptor.
  */
 export const chromiumThreadHost: ExecutionHost = {
-  async withPage(run, use) {
-    return await createAppWorkflowBrowserPort(run).withPage(() => use());
-  },
-  launchWorker({ start, pgliteRpc }, execution) {
-    let workerData: AppWorkflowWorkerStart & {
-      browserConnection?: AppWorkflowBrowserConnection;
-      pgliteRpc?: PGliteWorkflowRpc;
-    } = pgliteRpc ? { ...start, pgliteRpc } : start;
-    if (appWorkflowRegistration(start.workflowId)?.runtime.kind !== "nonbrowser") {
-      const browserConnection = execution.browserConnection();
-      if (!browserConnection) {
-        throw new Error("The App browser worker connection is unavailable for this active run.");
-      }
-      workerData = { ...workerData, browserConnection };
-    }
-    const worker = new Worker(workerBundlePath(), { workerData, stdout: true, stderr: true });
-    // Captured output is drained and discarded. It is never sent to a log.
-    worker.stdout.resume();
-    worker.stderr.resume();
-    return worker;
+  async hostRound(round, supervise) {
+    if (!round.page) return await supervise(oneWorkerPerRound((launch) => startThread(launch)));
+    return await withAppWorkflowHostPage(round.page, async ({ connection }) =>
+      await supervise(oneWorkerPerRound((launch) => {
+        if (!connection) throw new Error("The App browser worker connection is unavailable for this active run.");
+        return startThread(launch, connection);
+      })));
   },
 };

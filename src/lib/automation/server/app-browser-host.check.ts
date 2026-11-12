@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
-import type { BrowserContext } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import { launchCheckPersistentContext } from "../check-browser.fixtures.ts";
 import { classifyFailure } from "../failure-classification.ts";
 import { createPgliteOperationalProvider } from "../../../ledger/pglite/operational.ts";
@@ -17,9 +17,9 @@ import {
   createBrowserRuntime,
 } from "./browser-runtime.ts";
 import {
-  createAppWorkflowBrowserPort,
   cookiesForAppWorkflowBrowserProfile,
   withAppWorkflowBrowserPage,
+  withAppWorkflowHostPage,
 } from "./app-browser-host.ts";
 
 const database = await createTestPGlite("operational");
@@ -83,7 +83,7 @@ test("CTBC headless profile adds only the verified browser compatibility flag", 
   });
   try {
     for (const browserProfile of [undefined, "ctbc-login"] as const) {
-      await createAppWorkflowBrowserPort({
+      await withAppWorkflowHostPage({
         taskId: "ctbc-statements",
         taskRunId: browserProfile ? "ctbc-profile" : "default-profile",
         signal: new AbortController().signal,
@@ -97,7 +97,7 @@ test("CTBC headless profile adds only the verified browser compatibility flag", 
           userAgents.push(options.userAgent ?? "");
           return { pages: () => [{}], close: async () => {} } as never;
         },
-      }).withPage(async () => undefined);
+      }, async () => undefined);
     }
     assert.equal(observed.length, 2);
     assert.equal(observed[0].includes("--disable-blink-features=AutomationControlled"), false);
@@ -119,7 +119,7 @@ test("App runtime identity is available before browser launch fails", async () =
   const identities: unknown[] = [];
   try {
     const launchFailure = new Error("browserType.launchPersistentContext: Executable doesn't exist");
-    const port = createAppWorkflowBrowserPort({
+    const openPage = () => withAppWorkflowHostPage({
       taskId: "browser-runtime-launch-fail",
       taskRunId: "run-browser-runtime-launch-fail",
       signal: new AbortController().signal,
@@ -131,9 +131,9 @@ test("App runtime identity is available before browser launch fails", async () =
       }),
       onRuntimeIdentity: (identity) => identities.push(identity),
       launchPersistentContext: async () => { throw launchFailure; },
-    });
+    }, async () => undefined);
 
-    await assert.rejects(port.withPage(async () => undefined), (error: unknown) => {
+    await assert.rejects(openPage(), (error: unknown) => {
       assert.ok(error instanceof BrowserRuntimeConfigurationError);
       assert.equal(error.code, "launch-failed");
       assert.equal(error.cause, launchFailure, "the launch error stays in the diagnostic chain");
@@ -157,7 +157,7 @@ test("unsupported App browser profiles fail before launch with a sanitized code"
   let launchCalls = 0;
   let identityCalls = 0;
   try {
-    const port = createAppWorkflowBrowserPort({
+    const openPage = () => withAppWorkflowHostPage({
       taskId: "browser-runtime-unsupported",
       taskRunId: "run-browser-runtime-unsupported",
       signal: new AbortController().signal,
@@ -169,9 +169,9 @@ test("unsupported App browser profiles fail before launch with a sanitized code"
         launchCalls += 1;
         throw new Error("launch should not run");
       },
-    });
+    }, async () => undefined);
 
-    await assert.rejects(port.withPage(async () => undefined), (error: unknown) => {
+    await assert.rejects(openPage(), (error: unknown) => {
       assert.ok(error instanceof BrowserRuntimeConfigurationError);
       assert.equal(error.code, "unsupported-profile");
       assert.equal(error.message, "browser-runtime/unsupported-profile");
@@ -188,19 +188,20 @@ test("the production App browser launches headlessly with a worker CDP target", 
   const root = await mkdtemp(join(tmpdir(), "app-browser-headless-"));
   const { execution, taskRunId } = await openHostedExecution("browser-headless-check");
   try {
-    await createAppWorkflowBrowserPort({
+    await withAppWorkflowHostPage({
       taskId: "browser-headless-check",
       taskRunId,
       signal: new AbortController().signal,
       userDataDirectory: root,
       credentialCodec: null,
       execution,
-    }).withPage(async (page) => {
+    }, async ({ page, connection }) => {
       await page.setContent("<title>headless-ready</title>");
       assert.equal(await page.title(), "headless-ready");
-      assert.ok(execution.browserConnection());
+      assert.ok(connection);
+      assert.equal(execution.page(), page);
     });
-    assert.equal(execution.browserConnection(), null);
+    assert.equal(execution.page(), null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -225,7 +226,7 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     launched.push(context);
     return context;
   };
-  const browserPort = createAppWorkflowBrowserPort({
+  const openPage = (use: Parameters<typeof withAppWorkflowHostPage>[1]) => withAppWorkflowHostPage({
     taskId: "browser-host-check",
     taskRunId: runId,
     signal: new AbortController().signal,
@@ -237,10 +238,10 @@ test("App worker attaches to its exact hosted page without creating workflow fil
       runtimeProfile = userDataDirectory;
       return await launchGuarded(userDataDirectory, options);
     },
-  });
+  }, use);
 
   try {
-    await browserPort.withPage(async (ownerPage) => {
+    await openPage(async ({ page: ownerPage, connection }) => {
       assert.equal(pageForRun(runId), ownerPage);
       await ownerPage.context().addCookies([{
         name: "session",
@@ -251,7 +252,6 @@ test("App worker attaches to its exact hosted page without creating workflow fil
       const siblingPage = await ownerPage.context().newPage();
       await siblingPage.setContent('<input id="shared" value="sibling">');
 
-      const connection = execution.browserConnection();
       assert.ok(connection);
       assert.match(connection.endpoint, /^http:\/\/127\.0\.0\.1:[1-9]\d*$/u);
       assert.ok(connection.targetId.length > 0);
@@ -279,7 +279,6 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     });
 
     assert.equal(pageForRun(runId), null);
-    assert.equal(execution.browserConnection(), null);
     assert.deepEqual(await readdir(join(root, "data", "automation")), ["browser-state"]);
     const stateFiles = await readdir(join(root, "data", "automation", "browser-state", "browser-host-check"), {
       recursive: true,
@@ -300,15 +299,14 @@ test("App worker attaches to its exact hosted page without creating workflow fil
     await assert.rejects(stat(runtimeProfile), { code: "ENOENT" });
 
     const secondRunId = "run-app-browser-host-cookie-restore";
-    const restorePort = createAppWorkflowBrowserPort({
+    await withAppWorkflowHostPage({
       taskId: "browser-host-check",
       taskRunId: secondRunId,
       signal: new AbortController().signal,
       userDataDirectory: root,
       credentialCodec,
       launchPersistentContext: launchGuarded,
-    });
-    await restorePort.withPage(async (restoredPage) => {
+    }, async ({ page: restoredPage }) => {
       const restored = await restoredPage.context().cookies("http://127.0.0.1/");
       assert.equal(restored.find((cookie) => cookie.name === "session")?.value, "cookie-secret-marker");
     });
@@ -330,23 +328,23 @@ test("an active page without loopback CDP metadata gives the worker no connectio
   const root = await mkdtemp(join(tmpdir(), "app-browser-host-unavailable-"));
   const { execution, taskRunId: runId, pageForRun } = await openHostedExecution("browser-host-check");
   const page = {} as never;
-  const browserPort = createAppWorkflowBrowserPort({
-    taskId: "browser-host-check",
-    taskRunId: runId,
-    signal: new AbortController().signal,
-    userDataDirectory: root,
-    credentialCodec: null,
-    execution,
-    launchPersistentContext: async () => ({
-      pages: () => [page],
-      close: async () => {},
-    }) as never,
-  });
 
   try {
-    await browserPort.withPage(async () => {
+    await withAppWorkflowHostPage({
+      taskId: "browser-host-check",
+      taskRunId: runId,
+      signal: new AbortController().signal,
+      userDataDirectory: root,
+      credentialCodec: null,
+      execution,
+      launchPersistentContext: async () => ({
+        pages: () => [page],
+        close: async () => {},
+      }) as never,
+    }, async (hosted) => {
       assert.equal(pageForRun(runId), page);
-      assert.equal(execution.browserConnection(), null);
+      assert.equal(hosted.page, page);
+      assert.equal(hosted.connection, null);
     });
     assert.equal(pageForRun(runId), null);
   } finally {
@@ -379,14 +377,14 @@ test("invalid retained cookies are ignored and cookie symlinks are never followe
     cookies: async () => [],
     close: async () => {},
   };
-  const createPort = (taskRunId: string) => createAppWorkflowBrowserPort({
+  const openPage = (taskRunId: string) => withAppWorkflowHostPage({
     taskId: "browser-host-check",
     taskRunId,
     signal: new AbortController().signal,
     userDataDirectory: root,
     credentialCodec: codec,
     launchPersistentContext: async () => context as never,
-  });
+  }, async () => undefined);
 
   try {
     await mkdir(join(cookieStatePath, ".."), { recursive: true });
@@ -394,13 +392,13 @@ test("invalid retained cookies are ignored and cookie symlinks are never followe
       format: "octopusbeak.browser-auth.cookies.safeStorage.v1",
       data: codec.encrypt(JSON.stringify({ cookies: [{ name: "partial", value: "invalid" }] })),
     }));
-    await createPort(runId).withPage(async () => undefined);
+    await openPage(runId);
     assert.equal(addCookiesCalls, 0, "incomplete cookie objects must be rejected as a whole");
 
     await writeFile(external, "external state must not be read");
     await rm(cookieStatePath, { force: true });
     await symlink(external, cookieStatePath);
-    await createPort("run-app-browser-host-cookie-symlink").withPage(async () => undefined);
+    await openPage("run-app-browser-host-cookie-symlink");
     assert.equal(addCookiesCalls, 0, "symlinked cookie state must be ignored");
     assert.equal(await readFile(external, "utf8"), "external state must not be read");
     assert.equal((await stat(cookieStatePath)).isFile(), true, "save replaces the symlink without following it");
@@ -413,12 +411,11 @@ test("App connection leaves native dialogs to the attached worker", async () => 
   const root = await mkdtemp(join(tmpdir(), "app-dialog-owner-"));
   const { execution, taskRunId: runId } = await openHostedExecution("sinopac-statements");
   try {
-    await createAppWorkflowBrowserPort({
+    await withAppWorkflowHostPage({
       taskId: "sinopac-statements", taskRunId: runId,
       signal: new AbortController().signal, userDataDirectory: root, credentialCodec: null,
       nativeDialogOwner: "worker", execution,
-    }).withPage(async () => {
-      const connection = execution.browserConnection();
+    }, async ({ connection }) => {
       assert.ok(connection);
       await withAppWorkflowBrowserPage(connection, async (page) => {
         let dismissal!: Promise<void>;
@@ -434,17 +431,17 @@ test("the App page lookup serves a page only to its own run while its execution 
   const root = await mkdtemp(join(tmpdir(), "app-browser-host-lookup-"));
   const { run, execution, taskRunId, pageForRun } = await openHostedExecution("browser-host-check");
   const other = await openHostedExecution("browser-host-check");
-  const portFor = (holder: typeof execution) => createAppWorkflowBrowserPort({
+  const hostPageFor = (holder: typeof execution, use: (page: Page) => Promise<void>) => withAppWorkflowHostPage({
     taskId: "browser-host-check",
     taskRunId,
     signal: new AbortController().signal,
     userDataDirectory: root,
     credentialCodec: null,
     execution: holder,
-  });
+  }, async ({ page }) => await use(page));
   try {
     assert.equal(pageForRun(taskRunId), null, "no page before the host opens one");
-    await portFor(execution).withPage(async (page) => {
+    await hostPageFor(execution, async (page) => {
       assert.equal(pageForRun(taskRunId), page);
       assert.equal(other.pageForRun(other.taskRunId), null, "another run's lookup never sees this page");
       assert.equal(pageForRun(other.taskRunId), null);
@@ -455,12 +452,12 @@ test("the App page lookup serves a page only to its own run while its execution 
     assert.equal(pageForRun(taskRunId), null);
 
     await assert.rejects(
-      portFor(execution).withPage(async () => assert.fail("an ended execution cannot host a page")),
+      hostPageFor(execution, async () => assert.fail("an ended execution cannot host a page")),
       /round-1 has ended/u,
     );
     const second = run.beginExecution("round-2");
     assert.equal(pageForRun(taskRunId), null, "a later execution starts without the earlier page");
-    await portFor(second).withPage(async (page) => {
+    await hostPageFor(second, async (page) => {
       assert.equal(pageForRun(taskRunId), page);
     });
     assert.equal(pageForRun(taskRunId), null, "closing the page releases it");
