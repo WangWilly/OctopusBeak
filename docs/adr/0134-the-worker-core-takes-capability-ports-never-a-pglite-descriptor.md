@@ -6,7 +6,7 @@ Refines [ADR 0129](0129-a-workflow-execution-gets-its-page-and-worker-from-one-e
 
 ## Context
 
-ADR 0129 took the DevTools descriptor out of the worker core. The core still got its capability ports from two sources:
+ADR 0129 took the DevTools descriptor out of the worker core. The PGlite descriptor stayed, and the core got its capability ports from two sources, a descriptor in the start frame and injected ports:
 
 - **A descriptor in the start frame.** `AppWorkflowWorkerStart` carried an optional `pgliteRpc`. The core parsed it and dialled the PGlite child RPC itself, and `parseAppWorkflowWorkerStart` refused a nonbrowser start without it.
 - **Injected ports.** `runAppWorkflowWorker` also took `financialCommit`, `accountIdentity` and `previewWrite` from its options. Checks used them in place of the RPC.
@@ -66,7 +66,8 @@ type WorkerLaunch = Readonly<{ start: AppWorkflowWorkerStart; pgliteRpc?: PGlite
 
 - The descriptor is now in the plan, the supervisor's options, the host's launch and the thread's `workerData`. The core's start type and parser never name it.
 - `resolveDefinition` stays as a check seam on the core. `now` also stays: the E.SUN check fails without it, because its fake page answers only the timeline dates of its fixed clock. The CTBC, LINE Bank, Post and SinoPac checks also fix the clock.
-- `CHECK_PGLITE_RPC` is now only a plan value. It travels from the plan to the host's launch and is never dialled. `task-run-execution.check.ts` and `pglite-persistence.check.ts` assert that it reaches `launchWorker`, and that the start does not carry it.
+- `CHECK_PGLITE_RPC` is now only a plan value. It travels from the plan to the host's launch and is never dialled. `task-run-execution.check.ts` and `pglite-persistence.check.ts` assert that the descriptor reaches `launchWorker` and that the start does not carry it.
 - A check can no longer mix injected ports with RPC ports. It uses one source.
-- When the core cannot open its source, it reports `workflow-failed`. The thrown `worker-start-failed` is not mapped to its own code, as before.
+- A declared capability without a descriptor, or an RPC that fails to authenticate, reports `workflow-failed`, as before: the thrown `worker-start-failed` is not mapped to its own code. Cancellation while the source opens still reports `cancelled`.
+- A malformed descriptor is now refused by the worker thread, not by the supervisor's start parser. A worker is started before the refusal, and the run still ends `protocol-invalid`. The plan checks only that the endpoint and token are non-empty.
 - `app-workflow-worker.check.ts` proves the decision: the core refuses a start with a descriptor, the thread refuses an invalid one, a declared capability without a descriptor fails in the source, the child RPC source dials only for a declared capability and hangs up when cancelled, and the Chromium thread host's thread dials the descriptor it was given.

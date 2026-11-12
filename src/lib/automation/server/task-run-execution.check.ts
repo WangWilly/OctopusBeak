@@ -482,6 +482,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.equal(startData.workflowId, task.workflowId);
       assert.equal(startData.input && typeof startData.input, "object");
       assert.deepEqual(launchData?.pgliteRpc, CHECK_PGLITE_RPC);
+      assert.equal(Object.hasOwn(startData, "pgliteRpc"), false, "the start never carries the PGlite descriptor");
       assert.equal(taskRunId, startData.taskRunId);
 
       if (scenario === "assistance-completion") {

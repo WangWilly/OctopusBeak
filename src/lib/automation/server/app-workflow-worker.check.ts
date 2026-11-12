@@ -33,6 +33,8 @@ import {
   runAppWorkflowWorkerThread,
 } from "./app-workflow-worker-runtime.ts";
 import { chromiumThreadHost } from "./execution-host.ts";
+import { ATTACHED_PREVIEW_PRODUCTS } from "../../preview-sources/attached-products.ts";
+import type { WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
@@ -339,6 +341,22 @@ test("the child RPC source dials only for a definition that declares a capabilit
   } finally {
     await silent.close();
   }
+});
+
+test("a source serves the required ports, and the preview write port only to a definition that may write previews", async () => {
+  const financialCommit = { commit: async () => { throw new Error("unused"); } } as unknown as WorkflowFinancialCommitPort;
+  const previewWrite = {} as WorkflowPreviewWritePort;
+  const accountIdentity = { continuity: async () => { throw new Error("unused"); } };
+  const source = fixedCapabilities({ financialCommit, previewWrite, accountIdentity });
+  const open = async (definition: WorkflowDefinition) => (await source.open({
+    definition, workflowId: FIXTURE_WORKFLOW_ID, taskRunId: start.taskRunId, tdccSession: unusedTdccSession, signal: new AbortController().signal,
+  })).ports;
+  const committing: WorkflowDefinition = { id: FIXTURE_WORKFLOW_ID, requiresFinancialCommit: true, async run() {} };
+  assert.deepEqual(await open(committing), { financialCommit });
+  assert.deepEqual(
+    await open({ ...committing, attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.esun }),
+    { financialCommit, previewWrite },
+  );
 });
 
 test("a definition that declares a capability fails its run without a PGlite descriptor", async () => {
