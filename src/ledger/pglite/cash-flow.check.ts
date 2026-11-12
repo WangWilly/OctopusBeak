@@ -32,6 +32,7 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
  * Replace the projected Kind and the evidence its enrichment recorded, or
  * remove it when `code` is null. The fixture's card account projects a Kind
  * from direction alone; a replaced Kind defaults to bank-rule evidence.
+ * Every `addTransaction` re-projects all Kinds, so set Kinds after the last one.
  */
 async function setKind(store: PGliteStore, transactionId: string, code: string | null, evidenceKind = "bank-rule") {
   if (code === null) {
@@ -52,10 +53,12 @@ async function setKind(store: PGliteStore, transactionId: string, code: string |
   );
 }
 
-async function addWithKind(fixture: SpendingCategoryFixture, code: string | null, input: FixtureTransactionInput) {
-  const id = await fixture.addTransaction(input);
-  await setKind(fixture.store, id, code);
-  return id;
+/** Add each transaction, then set its Kind once the projection no longer refreshes. */
+async function addWithKinds(fixture: SpendingCategoryFixture, entries: readonly (readonly [string | null, FixtureTransactionInput])[]) {
+  const ids: string[] = [];
+  for (const [, input] of entries) ids.push(await fixture.addTransaction(input));
+  for (const [index, [code]] of entries.entries()) await setKind(fixture.store, ids[index]!, code);
+  return ids;
 }
 
 /** The source evidence a card refund or reversal carries when it names its original. */
@@ -92,6 +95,14 @@ async function recognizeRefund(store: PGliteStore, transactionId: string, coeffi
 
 /** A Derived Categorization on the transaction, as an automatic category producer projects it. */
 async function deriveCategory(store: PGliteStore, transactionId: string, categoryCode: string) {
+  const assertionId = idBytes(randomUUID());
+  await store.query(
+    `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+     SELECT $2, transaction_id, 'category', target_kind, origin, producer_id, rule_lineage, NULL, $3, created_commit_id
+       FROM assertions
+      WHERE assertion_id = (SELECT assertion_id FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind')`,
+    [idBytes(transactionId), assertionId, categoryCode],
+  );
   await store.query(
     `INSERT INTO current_transaction_enrichment(
        transaction_id, field_name, assertion_id, value_text, origin, producer_id, producer_version, route_id,
@@ -101,7 +112,7 @@ async function deriveCategory(store: PGliteStore, transactionId: string, categor
             taxonomy_id, taxonomy_version, 'category', $3, projection_commit_id
        FROM current_transaction_enrichment
       WHERE transaction_id = $1 AND field_name = 'kind'`,
-    [idBytes(transactionId), idBytes(randomUUID()), categoryCode],
+    [idBytes(transactionId), assertionId, categoryCode],
   );
 }
 
@@ -134,8 +145,7 @@ test("each Kind class sorts its transaction into inflow, outflow, refund, not co
       ["cash.withdrawal", "outflow", { class: "not_counted", reason: "cash_withdrawal" }],
       [null, "outflow", { class: "unresolved" }],
     ];
-    const ids: string[] = [];
-    for (const [code, direction] of cases) ids.push(await addWithKind(fixture, code, { amount: "100", direction, date: "2026-09-10" }));
+    const ids = await addWithKinds(fixture, cases.map(([code, direction]) => [code, { amount: "100", direction, date: "2026-09-10" }] as const));
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
     assert.deepEqual(ids.map((id) => classOf(report, id)), cases.map(([, , expected]) => expected));
     const kindOf = (index: number) => report.transactions.find((transaction) => transaction.transactionId === ids[index])?.kind;
@@ -163,7 +173,7 @@ test("a card purchase counts on its consume date, and a pending authorization do
 
 test("a cash withdrawal followed by manual cash spending counts the spending once", async () => {
   await withFixture(async (fixture) => {
-    const withdrawal = await addWithKind(fixture, "cash.withdrawal", { amount: "3000", date: "2026-09-05" });
+    const [withdrawal] = await addWithKinds(fixture, [["cash.withdrawal", { amount: "3000", date: "2026-09-05" }]]);
     const { assetId: wallet } = await applyManual(fixture.store, createManualAsset("cash", "Wallet", "TWD", "2026-09-01", "500", "counted"));
     const { assetId: jar } = await applyManual(fixture.store, createManualAsset("cash", "Jar", "TWD", "2026-09-01", "100", "counted"));
     const add = (accountId: string, transaction: object) => applyManual(fixture.store, { kind: "addTransaction", accountId, transaction });
@@ -252,8 +262,9 @@ test("a card Kind read from direction alone is a fallback Kind", async () => {
     const original = await fixture.addTransaction({ amount: "300", date: "2026-09-01" });
     const refund = await fixture.addTransaction({ amount: "300", date: "2026-09-02", direction: "inflow" });
     await relateRefund(fixture.store, refund, original);
-    const salary = await addWithKind(fixture, "income.employment.salary", { amount: "100", direction: "inflow", date: "2026-09-03" });
+    const salary = await fixture.addTransaction({ amount: "100", direction: "inflow", date: "2026-09-03" });
     const directionSalary = await fixture.addTransaction({ amount: "100", direction: "inflow", date: "2026-09-04" });
+    await setKind(fixture.store, salary, "income.employment.salary");
     await setKind(fixture.store, directionSalary, "income.employment.salary", "direction");
 
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
