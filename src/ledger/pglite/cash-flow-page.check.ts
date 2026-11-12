@@ -76,6 +76,21 @@ async function setCounterparty(store: PGliteStore, transactionId: string, value:
   );
 }
 
+/** A user note on a canonical row, through the same assertion the projection reads. */
+async function setNote(store: PGliteStore, transactionId: string, value: string) {
+  const assertionId = idBytes(randomUUID());
+  await store.query(
+    `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, value_text, created_commit_id)
+     SELECT $1, transaction_id, 'note', 'transaction', 'user', 'check', 'check', $3, commit_id FROM current_transactions WHERE transaction_id = $2`,
+    [assertionId, idBytes(transactionId), value],
+  );
+  await store.query(
+    `INSERT INTO current_transaction_fields(transaction_id, field_name, value_text, origin, user_assertion_id, projection_commit_id)
+     SELECT transaction_id, 'note', $3, 'user', $1, projection_commit_id FROM current_transactions WHERE transaction_id = $2`,
+    [assertionId, idBytes(transactionId), value],
+  );
+}
+
 async function setTime(store: PGliteStore, transactionId: string, local: string, precision: string, origin: string) {
   await store.query(
     `UPDATE transaction_revisions SET transaction_date_time_local = $2, time_precision = $3, time_origin = $4
@@ -332,7 +347,7 @@ test("an amount search keeps to the currency the query names", async () => {
 
 test("the all-periods count reads the same matches as classifying every period", async () => {
   await withFixture(async (fixture) => {
-    const [dining, , out, into] = await addSides(fixture, [
+    const [dining, , out, into, , , salary, , refund, , cents] = await addSides(fixture, [
       ["purchase", { amount: "300", date: "2025-08-02", description: "Coffee" }],
       ["purchase", { amount: "300", currency: "USD", date: "2026-01-15", description: "Lunch" }],
       ["purchase", { amount: "7000", date: "2026-09-10", account: "bank-a", description: "Move" }],
@@ -341,15 +356,24 @@ test("the all-periods count reads the same matches as classifying every period",
       ["transfer.external", { amount: "800", date: "2026-10-03", account: "bank-a" }],
       ["income.employment.salary", { amount: "50000", date: "2026-10-05", account: "bank-b", direction: "inflow", description: "Payroll" }],
       ["purchase", { amount: "120", date: "2027-01-20", description: "Coffee preorder" }],
+      ["refund", { amount: "100", date: "2025-08-05", direction: "inflow", description: "Return" }],
+      ["transfer.external", { amount: "650", date: "2026-02-03", account: "bank-b", direction: "inflow" }],
+      ["purchase", { amount: "12345", scale: 2, date: "2026-03-04", description: "Cents" }],
     ]);
     await categorize(fixture, dining!, "dining");
+    await relateRefund(fixture.store, refund!, dining!);
+    await setCounterparty(fixture.store, dining!, "路易莎咖啡");
+    await setNote(fixture.store, salary!, "年終 bonus");
+    assert.deepEqual((await readPGliteCashFlow(fixture.store, { startDate: "2026-03-04", endDate: "2026-03-04" })).transactions
+      .find((row) => row.transactionId === cents)?.amount, { coefficient: "12345", scale: 2, currency: "TWD" }, "a scale-2 stored amount");
     await confirmTransfer(fixture.store, out!, into!);
     const { assetId: wallet } = await applyManual(fixture.store, createManualAsset("cash", "Wallet", "TWD", "2025-01-01", "500", "counted"));
     await applyManual(fixture.store, { kind: "addTransaction", accountId: wallet, transaction: { kind: "purchase", personalCategory: "dining", occurredOn: "2025-03-06", amount: "300", note: "Coffee beans" } });
 
     const everything = await readPGliteCashFlow(fixture.store, { startDate: "0001-01-01", endDate: "9999-12-31" });
     const knowledgeAt = await readKnowledgePoint(fixture.store);
-    for (const query of ["coffee", "300", "NT$300", "USD300", "內部轉帳", "轉帳支出", "餐飲", "類型未定", "富邦", "0001", "wallet", "薪資", "move", "a"]) {
+    for (const query of ["coffee", "300", "NT$300", "USD300", "內部轉帳", "轉帳支出", "其他轉入", "餐飲", "類型未定", "富邦", "0001", "wallet", "薪資", "move", "a",
+      "路易莎", "年終", "fubon", "台北富邦", "未分類", "退款", "refund", "123.45", "NT$123.45"]) {
       const expected = everything.transactions.filter((row) => cashFlowMatches(row, query).length > 0).map((row) => row.transactionId).sort();
       const actual = (await readCashFlowSearchMatches(fixture.store, knowledgeAt, query)).map((row) => row.transactionId).sort();
       assert.deepEqual(actual, expected, `query ${query}`);
