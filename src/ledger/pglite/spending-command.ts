@@ -12,7 +12,7 @@ import { querySpendingRecognition, recordedAtIso, refundFromRow } from "./spendi
 import { decide } from "./purchase-report.ts";
 import { bytes, idString, pgliteQuery, type Row } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
-import { createSpendingPageActions, type SpendingPageActions } from "./spending-page-actions.ts";
+import { createFinancialPageActions, type FinancialPageActions } from "./financial-page-actions.ts";
 import type {
   SpendingCandidateInput,
   SpendingDecisionInput,
@@ -23,14 +23,13 @@ import type {
   SpendingDedupLinkView,
 } from "../canonical/spending-recognition-contracts.ts";
 import type {
-  SpendingCommittingPageActionRequest,
-  SpendingPageActionReply,
-  SpendingPageActionRequest,
-  SpendingPageActionResult,
-  SpendingPageActionSubject,
-  SpendingCandidatePairRef,
-  SpendingStrongConflict,
-} from "../../lib/spending/model.ts";
+  FinancialCommittingPageActionRequest,
+  FinancialPageActionReply,
+  FinancialPageActionRequest,
+  FinancialPageActionResult,
+  FinancialPageActionSubject,
+} from "../../lib/financial/page-actions.ts";
+import type { SpendingCandidatePairRef, SpendingStrongConflict } from "../../lib/spending/model.ts";
 import {
   purchaseCategoryActionSubject,
   setPGliteSpendingPurchaseCategoryInTransaction,
@@ -410,19 +409,19 @@ export async function commitPGliteSpendingRefundRevision(
  * and returns the summary delta between them; the renderer then reloads only
  * its visible month records.
  */
-export function applyPGliteSpendingPageAction(
+export function applyPGliteFinancialPageAction(
   writer: PGliteSpendingWriter,
-  input: SpendingCommittingPageActionRequest,
-): Promise<SpendingPageActionResult>;
+  input: FinancialCommittingPageActionRequest,
+): Promise<FinancialPageActionResult>;
 /** Only a strong batch can answer with a conflict. */
-export function applyPGliteSpendingPageAction(
+export function applyPGliteFinancialPageAction(
   writer: PGliteSpendingWriter,
-  input: SpendingPageActionRequest,
-): Promise<SpendingPageActionReply>;
-export async function applyPGliteSpendingPageAction(
+  input: FinancialPageActionRequest,
+): Promise<FinancialPageActionReply>;
+export async function applyPGliteFinancialPageAction(
   writer: PGliteSpendingWriter,
-  input: SpendingPageActionRequest,
-): Promise<SpendingPageActionReply> {
+  input: FinancialPageActionRequest,
+): Promise<FinancialPageActionReply> {
   return writer.transaction((transaction) => runPageAction(transaction, input.kind, input));
 }
 
@@ -435,7 +434,7 @@ async function runPageAction<K extends PageActionKind>(
   transaction: PGliteTransaction,
   kind: K,
   input: PageActionOf<K>,
-): Promise<SpendingPageActionReply> {
+): Promise<FinancialPageActionReply> {
   const entry: PageActionTable[K] = PAGE_ACTIONS[kind];
   const admitted = await entry.admit(transaction, input);
   if (admitted.status === "conflict") return admitted;
@@ -446,10 +445,10 @@ async function runPageAction<K extends PageActionKind>(
 }
 
 function pageActionResult(
-  input: SpendingPageActionRequest,
-  subject: SpendingPageActionSubject,
+  input: FinancialPageActionRequest,
+  subject: FinancialPageActionSubject,
   decision: PageActionDecision,
-): SpendingPageActionResult {
+): FinancialPageActionResult {
   return Object.freeze({
     status: "committed" as const,
     action: input.action,
@@ -462,8 +461,8 @@ function pageActionResult(
   });
 }
 
-type PageActionKind = SpendingPageActionRequest["kind"];
-type PageActionOf<K extends PageActionKind> = Extract<SpendingPageActionRequest, Readonly<{ kind: K }>>;
+type PageActionKind = FinancialPageActionRequest["kind"];
+type PageActionOf<K extends PageActionKind> = Extract<FinancialPageActionRequest, Readonly<{ kind: K }>>;
 type PageActionDecision = Awaited<ReturnType<typeof decide>>;
 
 /** Every kind but strong must act on exactly the data version the page showed. */
@@ -493,9 +492,9 @@ type PageActionAdmission = Readonly<{
  * One kind's steps inside the write transaction. `admit` may answer with a
  * conflict instead of admitting; only then is nothing read or written.
  */
-type PageActionEntry<R extends SpendingPageActionRequest, A> = Readonly<{
+type PageActionEntry<R extends FinancialPageActionRequest, A> = Readonly<{
   admit(transaction: PGliteTransaction, input: R): Promise<A | SpendingStrongConflict>;
-  subject(transaction: PGliteTransaction, input: R, admitted: A): SpendingPageActionSubject | Promise<SpendingPageActionSubject>;
+  subject(transaction: PGliteTransaction, input: R, admitted: A): FinancialPageActionSubject | Promise<FinancialPageActionSubject>;
   write(transaction: PGliteTransaction, input: R, admitted: A): Promise<unknown>;
   /** Checks decide()'s before/after records; throwing rolls the write back. */
   postcondition(input: R, decision: PageActionDecision): void;
@@ -503,7 +502,7 @@ type PageActionEntry<R extends SpendingPageActionRequest, A> = Readonly<{
 
 type PageActionTable = { readonly [K in PageActionKind]: PageActionEntry<PageActionOf<K>, PageActionAdmission[K]> };
 
-/** A new page-action kind is one entry here. */
+/** A new Financial page-action kind is one entry here, whichever Financial page writes it (ADR 0136). */
 const PAGE_ACTIONS: PageActionTable = Object.freeze({
   candidate: {
     admit: admitExactVersion,
@@ -566,7 +565,7 @@ async function admitExactVersion(
 function pairSubject(
   _transaction: PGliteTransaction,
   input: Readonly<{ invoiceIdentityId: string; transactionIdentityId: string }>,
-): SpendingPageActionSubject {
+): FinancialPageActionSubject {
   return Object.freeze({
     invoiceIds: Object.freeze([input.invoiceIdentityId]),
     transactionIds: Object.freeze([input.transactionIdentityId]),
@@ -738,7 +737,7 @@ async function writeStrongBatch(
   }
 }
 
-/** The Spending page actions that run against this store (ADR 0105). */
-export function createPGliteSpendingPageActions(writer: PGliteSpendingWriter): SpendingPageActions {
-  return createSpendingPageActions((request) => applyPGliteSpendingPageAction(writer, request));
+/** The Financial page actions that run against this store (ADR 0105, ADR 0136). */
+export function createPGliteFinancialPageActions(writer: PGliteSpendingWriter): FinancialPageActions {
+  return createFinancialPageActions((request) => applyPGliteFinancialPageAction(writer, request));
 }

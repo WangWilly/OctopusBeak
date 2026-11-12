@@ -8,7 +8,7 @@ import {
   queryCurrentSpendingRecordPage,
   queryCurrentSpendingSummary,
 } from "./purchase-report.ts";
-import { applyPGliteSpendingPageAction, commitPGliteSpendingRefundRevision, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
+import { applyPGliteFinancialPageAction, commitPGliteSpendingRefundRevision, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
 import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
 import type { PGliteStore } from "./transaction.ts";
 
@@ -131,7 +131,7 @@ test("a category page action returns the summary delta that reproduces the recom
     });
     for (const [purchaseId, recordId] of [[`transaction:${bank}`, bank], [`invoice:${invoice}`, invoice]] as const) {
       const before = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
-      const result = await applyPGliteSpendingPageAction(fixture.store, {
+      const result = await applyPGliteFinancialPageAction(fixture.store, {
         action: "categorize",
         kind: "category",
         purchaseId,
@@ -150,7 +150,7 @@ test("a category page action returns the summary delta that reproduces the recom
       assert.deepEqual(patched.categoryTotalsByMonth, after.purchaseReport.categoryTotalsByMonth);
       assert.deepEqual(patched.totalsByCurrency, after.purchaseReport.totalsByCurrency);
 
-      const repeat = await applyPGliteSpendingPageAction(fixture.store, {
+      const repeat = await applyPGliteFinancialPageAction(fixture.store, {
         action: "categorize",
         kind: "category",
         purchaseId,
@@ -187,7 +187,7 @@ test("a category page action on a linked purchase moves the linked record's line
       .purchaseReport.records.find((record) => record.basis === "linked");
     assert.ok(linked, "the pair is one linked purchase");
     const before = await fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
-    const result = await applyPGliteSpendingPageAction(fixture.store, {
+    const result = await applyPGliteFinancialPageAction(fixture.store, {
       action: "categorize",
       kind: "category",
       purchaseId: linked.purchaseId,

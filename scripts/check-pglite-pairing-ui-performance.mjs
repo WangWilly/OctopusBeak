@@ -295,7 +295,7 @@ async function runSingle(runNumber) {
       dataVersion,
     };
     const warmConfirmStartedAt = performance.now();
-    const warmConfirmation = await preflight.client.financial.request("financial.spending.pageAction", [directConfirmInput]).catch((error) => {
+    const warmConfirmation = await preflight.client.financial.request("financial.pageAction", [directConfirmInput]).catch((error) => {
       progress(`warm confirmation RPC failed: ${String(error)}`);
       throw error;
     });
@@ -307,7 +307,7 @@ async function runSingle(runNumber) {
 
     coldConfirmWorker = await startWorker(coldConfirmDataDir);
     const coldConfirmStartedAt = performance.now();
-    const coldConfirmation = await coldConfirmWorker.client.financial.request("financial.spending.pageAction", [{
+    const coldConfirmation = await coldConfirmWorker.client.financial.request("financial.pageAction", [{
       ...directConfirmInput,
       dataVersion: coldConfirmWorker.dataVersion,
     }]).catch((error) => {
@@ -370,7 +370,7 @@ async function runSingle(runNumber) {
       confirmBridgeCallCount += 1;
       const startedAt = performance.now();
       try {
-        const value = await actual.client.financial.request("financial.spending.pageAction", [input]);
+        const value = await actual.client.financial.request("financial.pageAction", [input]);
         progress(`UI confirm RPC completed (${(performance.now() - startedAt).toFixed(1)}ms)`);
         return value;
       } finally {

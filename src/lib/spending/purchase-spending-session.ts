@@ -4,16 +4,18 @@ import type { SpendingPurchaseRecordView, SpendingPurchaseReportView } from "./p
 import { spendingCategoryCodesForGroup } from "./category-groups.ts";
 import type { CategoryBreakdownKey } from "./spending-insights.ts";
 import {
-  inSpendingPageActionSubject,
+  inFinancialPageActionSubject,
+  type FinancialPageActionReply,
+  type FinancialPageActionRequest,
+  type FinancialPageActionResult,
+} from "../financial/page-actions.ts";
+import {
   reconcileSpendingPageActionSummary,
   spendingCanonicalAt,
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCandidatePageDto,
   type SpendingCandidatePageItem,
   type SpendingCandidatePairRef,
-  type SpendingPageActionReply,
-  type SpendingPageActionRequest,
-  type SpendingPageActionResult,
   type SpendingPageDto,
   type SpendingPairingCandidateView,
   type SpendingPurchaseReportSummaryDto,
@@ -53,7 +55,7 @@ export type PurchaseSpendingFeedback = Readonly<{
 }>;
 
 /**
- * What the page asks a Spending page action to do. The session builds the
+ * What the page asks a Financial page action to do. The session builds the
  * request at the data version it shows, so callers never name a version or
  * an identity it can derive itself.
  */
@@ -78,7 +80,7 @@ export type SpendingPageIntent =
  * `failed` carries the error for a caller that shows its own.
  */
 export type SpendingPageActionOutcome =
-  | SpendingPageActionReply
+  | FinancialPageActionReply
   | Readonly<{ status: "refused" }>
   | Readonly<{ status: "failed"; message: string }>;
 
@@ -147,7 +149,7 @@ export interface PurchaseSpendingSession {
   openPairing(record: PurchaseRecord): void;
   closePairing(): void;
   /**
-   * Run one Spending page action (ADR 0105, ADR 0111) and take its result
+   * Run one Financial page action (ADR 0105, ADR 0111) and take its result
    * when it wrote a commit on a version the page has reached; otherwise the
    * live view brings the page forward. A pairing action's failure shows on
    * the page; a category or strong-batch failure is the caller's to show.
@@ -168,7 +170,7 @@ const REFUSED = Object.freeze({ status: "refused" as const });
 
 type PageActionPlan = Readonly<{
   busyAction: string;
-  request: SpendingPageActionRequest;
+  request: FinancialPageActionRequest;
   /** "page" shows a failure as the page's action error; "caller" leaves it to the caller. */
   errors: "page" | "caller";
   /** Runs once the action committed, before the page takes it. */
@@ -627,7 +629,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
     }
   }
 
-  private async acceptCompactPageAction(result: SpendingPageActionResult) {
+  private async acceptCompactPageAction(result: FinancialPageActionResult) {
     const report = this.value.report;
     const pendingReport = this.pendingReport;
     if ((pendingReport ?? report).knowledgeAt > result.knowledgeAt) return;
@@ -646,7 +648,7 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
       && (month === null || record.occurrence.value.startsWith(`${month}-`))
       && (day === null || record.occurrence.value.startsWith(day));
     const nextRecords = Object.freeze([
-      ...this.recordPageRecords.filter((record) => !inSpendingPageActionSubject(result.subject, record)),
+      ...this.recordPageRecords.filter((record) => !inFinancialPageActionSubject(result.subject, record)),
       ...result.affectedRecords.filter((record) => matchesView(record as PurchaseRecord)),
     ].sort((left, right) => right.occurrence.value.localeCompare(left.occurrence.value) || left.purchaseId.localeCompare(right.purchaseId)));
     const nextReport = Object.freeze({

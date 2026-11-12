@@ -23,7 +23,7 @@ import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { commitPGliteCanonicalInvestmentCapture } from "./investment.ts";
 import { createPgliteOperationalProvider } from "./operational.ts";
 import { PGliteStore } from "./transaction.ts";
-import { createPGliteSpendingPageActions } from "./spending-command.ts";
+import { createPGliteFinancialPageActions } from "./spending-command.ts";
 
 test("MaiCoin workflow commits through the injected canonical worker and operational ports", async () => {
   const root = await mkdtemp(join(tmpdir(), "maicoin-pglite-workflow-"));
@@ -32,7 +32,7 @@ test("MaiCoin workflow commits through the injected canonical worker and operati
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;

@@ -170,7 +170,7 @@ export function createSpendingReviewStore(options: Readonly<{
   /** Recovers a read that found its version stale; actions publish their own delta instead. */
   refreshSummary: () => Promise<void>;
   /**
-   * The page's Spending page actions, which the page takes (ADR 0111): a
+   * The page's Financial page actions, which the page takes (ADR 0111): a
    * purchase's category and the shown strong batch. The store shows their
    * failures and conflicts itself.
    */

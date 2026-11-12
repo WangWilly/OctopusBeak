@@ -15,13 +15,13 @@ The live-view checks composed those parts by hand. Most built a registry without
 **`createPGliteLedgerHost` in `electron/pglite-ledger-host.ts` assembles the shared parts.** Given a live-capable PGlite, the financial store installed on it, a local-date clock, and optional readers for Preview visibility and the Overview's expected sources, it returns:
 
 - the registry,
-- the Spending page actions the registry runs,
+- the Financial page actions the registry runs,
 - the live views, as the worker's view source,
 - the scheduler that financial calls and view recomputes share.
 
 The view worker opens the database, installs the store, and serves the host. A check that needs the composition the worker serves builds the host.
 
-**The registry requires its page actions and exposes them.** `createPGliteFinancialRegistry(store, spendingPageActions, options)` has no fallback, and the registry carries the actions as `spendingPageActions`. A caller with no live views passes `createPGliteSpendingPageActions(store)`.
+**The registry requires its page actions and exposes them.** `createPGliteFinancialRegistry(store, financialPageActions, options)` has no fallback, and the registry carries the actions as `financialPageActions`. A caller with no live views passes `createPGliteFinancialPageActions(store)`.
 
 **The live views read the page actions from the registry.** `createPGliteFinancialLiveViews(registry, dependencies, expectedSources, scheduler)` takes no separate page actions, so a view and its registry cannot be given different ones. A check that fakes the live dependencies still builds views directly. When it needs page actions that refuse or that it settles by hand, it builds the registry with them.
 
@@ -31,9 +31,9 @@ The view worker opens the database, installs the store, and serves the host. A c
 
 - **Keep page actions a separate live-view argument and check the pairing in review.** Rejected. The checks had already drifted, and nothing failed when they did.
 - **Let the host also install the store.** Rejected. The worker cleans up a database that fails to open or install before anything else holds it. The host starts from a store that is already installed.
-- **Reach the page actions only through the registry, with no host member.** Rejected. The worker check and the host check name the actions the views watch. `host.spendingPageActions` is the registry's own instance, so it adds no second source.
+- **Reach the page actions only through the registry, with no host member.** Rejected. The worker check and the host check name the actions the views watch. `host.financialPageActions` is the registry's own instance, so it adds no second source.
 
-ADR 0105 rejected one required `spendingPageActions` member on the registry, because the views would reach the actions through it. This ADR accepts that coupling. A view already reads its page from the registry, and taking the actions from the same place is what keeps the two from drifting.
+ADR 0105 rejected one required `financialPageActions` member on the registry, because the views would reach the actions through it. This ADR accepts that coupling. A view already reads its page from the registry, and taking the actions from the same place is what keeps the two from drifting.
 
 ## Consequences
 

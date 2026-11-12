@@ -13,11 +13,8 @@ import {
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_VERSION,
 } from "../canonical/transaction-taxonomy.ts";
-import type {
-  SpendingPageActionSubject,
-  SpendingPurchaseCategoryRequest,
-  SpendingPurchaseCategoryResult,
-} from "../../lib/spending/model.ts";
+import type { FinancialPageActionSubject } from "../../lib/financial/page-actions.ts";
+import type { SpendingPurchaseCategoryRequest, SpendingPurchaseCategoryResult } from "../../lib/spending/model.ts";
 import { idString } from "./spending-sql.ts";
 
 /**
@@ -136,7 +133,7 @@ async function resolveSubject(transaction: PGliteTransaction, identity: Purchase
 export async function purchaseCategoryActionSubject(
   transaction: PGliteTransaction,
   purchaseId: string,
-): Promise<SpendingPageActionSubject> {
+): Promise<FinancialPageActionSubject> {
   const identity = parsePurchaseIdentity(purchaseId);
   if (identity.basis === "linked") {
     // The category lands on the transaction, but the linked record is built

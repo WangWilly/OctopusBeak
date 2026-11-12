@@ -20,11 +20,11 @@ import { exchangeRateRequestFromOverview } from "../src/ledger/exchange-rate-req
 import { createTestPGlite } from "../src/ledger/pglite/baseline-test-template.ts";
 import { createPgliteOperationalProvider } from "../src/ledger/pglite/operational.ts";
 import { PGliteStore } from "../src/ledger/pglite/transaction.ts";
-import { createSpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
-import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
+import { createFinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
+import { createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
 
 /** The fake registries' page actions, which these view checks never run. */
-const REFUSING_PAGE_ACTIONS = createSpendingPageActions(() => Promise.reject(new Error("this check runs no Spending page action")));
+const REFUSING_PAGE_ACTIONS = createFinancialPageActions(() => Promise.reject(new Error("this check runs no Financial page action")));
 
 const token = (letter: string): string => `sha256:${letter.repeat(64)}`;
 
@@ -313,7 +313,7 @@ test("PGlite overview exposes observed daily balances to exchange-rate requireme
   const database = await createTestPGlite("full");
   const store = new PGliteStore(database);
   const operational = createPgliteOperationalProvider(store);
-  const registry = createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store));
+  const registry = createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store));
   try {
     await registry["financial.source.commit"]([sourceCommitRequest("overview-history-source", "123456")]);
     await registry["financial.balance.capture"]([balanceCaptureRequest(
@@ -435,7 +435,7 @@ test("worker RPC commits one typed canonical fact, publishes all financial pages
     assert.deepEqual(await client.financial.request("financial.spending.mergeLog", [{ knowledgeAt }]), { schemaVersion: 1, knowledgeAt, entries: [], nextCursor: null });
     assert.deepEqual(await client.financial.request("financial.spending.monthInsight", [{ knowledgeAt, month: "2026-01" }]), { schemaVersion: 1, knowledgeAt, month: "2026-01", largestByCurrency: [] });
     const unknownPair = { candidateId: "sha256:unknown", invoiceIdentityId: "00000000-0000-4000-8000-000000000001", transactionIdentityId: "00000000-0000-4000-8000-000000000002" };
-    const conflict = await client.financial.request("financial.spending.pageAction", [{ action: "confirm", kind: "strong", shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] }]);
+    const conflict = await client.financial.request("financial.pageAction", [{ action: "confirm", kind: "strong", shownKnowledgeAt: knowledgeAt, pairs: [unknownPair] }]);
     assert.deepEqual(conflict, { status: "conflict", action: "confirm", kind: "strong", knowledgeAt, conflicts: [unknownPair], strongPairs: [] }, "the worker's strong batch rejects a pair that is not pending");
 
     assert.ok(!("stale" in committedPage));
@@ -543,7 +543,7 @@ test("financial live views recover after a transient read failure and stop durin
       if (blocked) return blocked;
       return page;
     },
-    spendingPageActions: REFUSING_PAGE_ACTIONS,
+    financialPageActions: REFUSING_PAGE_ACTIONS,
   } as unknown as LiveViewRegistry;
   const views = createPGliteFinancialLiveViews(registry, dependencies);
   const values: unknown[] = [];
@@ -583,7 +583,7 @@ test("a dependency's own failure reaches every listener of the view, and a later
       readCount += 1;
       return EMPTY_OVERVIEW;
     },
-    spendingPageActions: REFUSING_PAGE_ACTIONS,
+    financialPageActions: REFUSING_PAGE_ACTIONS,
   } as unknown as LiveViewRegistry;
   const views = createPGliteFinancialLiveViews(registry, dependencies);
   const errors: unknown[][] = [[], []];
@@ -615,7 +615,7 @@ test("failed live subscription releases started dependencies and permits retry",
       if (failRead) throw new Error("initial read failed");
       return { availability: "empty" };
     },
-    spendingPageActions: REFUSING_PAGE_ACTIONS,
+    financialPageActions: REFUSING_PAGE_ACTIONS,
   } as unknown as LiveViewRegistry;
   const views = createPGliteFinancialLiveViews(registry, dependencies);
   await assert.rejects(views.subscribe("financial.overview.current", {}, () => {}), /dependency setup failed/u);
@@ -679,7 +679,7 @@ test("a purchase category page action publishes the Spending page a full read wo
     const records = await recordsAt(before.knowledgeAt);
     const purchase = records.find((record) => record.basis === "invoice");
     assert.ok(purchase, "the committed e-invoice is an invoice-only purchase");
-    const result = await client.financial.request("financial.spending.pageAction", [{
+    const result = await client.financial.request("financial.pageAction", [{
       action: "categorize",
       kind: "category",
       purchaseId: purchase.purchaseId,

@@ -11,7 +11,7 @@ import { createPGliteFinancialLiveViews } from "./pglite-financial-live-views.ts
 import type { PGliteFinancialLiveView } from "../src/lib/pglite-rpc/pglite-financial-live-views.ts";
 import { createPGliteFinancialRegistry } from "./pglite-financial-registry.ts";
 import { createPGliteLedgerHost } from "./pglite-ledger-host.ts";
-import type { SpendingPageActions } from "../src/ledger/pglite/spending-page-actions.ts";
+import type { FinancialPageActions } from "../src/ledger/pglite/financial-page-actions.ts";
 import type { OverviewPageDto } from "../src/lib/overview/types.ts";
 import type { SpendingPageDto } from "../src/lib/spending/model.ts";
 import { commitCathay } from "../src/ledger/pglite/direct-source-precedence-fixture.ts";
@@ -130,11 +130,11 @@ test("a live page republishes when the date moves past an asset's end date, with
   });
 });
 
-test("a manual write during a Spending page action is published once the action settles", async () => {
+test("a manual write during a Financial page action is published once the action settles", async () => {
   await withManualLedger(async ({ db, store, apply }) => {
     let inFlight = false;
     let settle: ((result: null) => void) | null = null;
-    const pageActions: SpendingPageActions = {
+    const pageActions: FinancialPageActions = {
       run: () => Promise.reject(new Error("this check settles the action by hand")),
       inFlight: () => inFlight,
       onSettled: (listener) => {

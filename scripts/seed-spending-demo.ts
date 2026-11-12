@@ -12,7 +12,7 @@ import { commitPGliteCanonicalCreditCardBalanceCapture } from "../src/ledger/pgl
 import { admitCreditCardCurrentBalanceCapture } from "../src/ledger/canonical/credit-card-current-balance-admission.ts";
 import { creditCardBalanceCommandRequest, creditCardCommandRequestFromCanonicalCapture } from "../src/ledger/pglite/credit-card-adapters.ts";
 import { setPGliteSpendingPurchaseCategory } from "../src/ledger/pglite/purchase-category-command.ts";
-import { applyPGliteSpendingPageAction } from "../src/ledger/pglite/spending-command.ts";
+import { applyPGliteFinancialPageAction } from "../src/ledger/pglite/spending-command.ts";
 import { createPGliteSpendingQuery } from "../src/ledger/pglite/spending-query.ts";
 import {
   esunCanonicalSpineCapture,
@@ -506,7 +506,7 @@ export async function seedSpendingDemo(userData: string) {
     const septemberPair = pending.items.find((item) =>
       item.invoiceRecord?.invoice?.revision.invoiceNumber === SEPTEMBER_MERGED_INVOICE.number);
     if (!septemberPair) throw new Error("The September demo pair was not offered as a candidate.");
-    await applyPGliteSpendingPageAction(store, {
+    await applyPGliteFinancialPageAction(store, {
       action: "confirm",
       kind: "candidate",
       candidateId: septemberPair.candidate.candidateId,

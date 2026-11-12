@@ -8,7 +8,7 @@ ADR 0105 covered only Pairing: confirming, denying, or revoking one pair. Two ot
 
 **Every write the Spending page makes is a page action.**
 
-- `SpendingPageActionRequest` has two more kinds. `category` sets or clears one purchase's category. `strong` confirms the shown strong pairs in one commit, or writes nothing.
+- `FinancialPageActionRequest` has two more kinds. `category` sets or clears one purchase's category. `strong` confirms the shown strong pairs in one commit, or writes nothing.
 - `decide()` reads a subject's records before and after the write. The subject is a set of invoice and transaction identities: one pair, a purchase's own identities (both members for a linked purchase), or every pair in a batch. `decide()` returns the summary delta for the subject.
 - A page action answers with its committed result, or, for a strong batch, with a conflict: a shown pair is no longer pending or no longer strong, nothing was written, and the reply names the strong set to offer instead. A conflict is not a settled result, so the live view does not publish anything for it.
 - `PurchaseSpendingSession` runs every action and takes its result. The review store keeps its own busy, conflict, and error state, and calls the session for the write.

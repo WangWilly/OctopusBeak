@@ -1,17 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { FinancialPageActionResult } from "../../lib/financial/page-actions.ts";
 import type {
   CanonicalSpendingView,
-  SpendingPageActionRequest,
-  SpendingPageActionResult,
   SpendingPageDto,
   SpendingPurchaseReportSummaryDto,
 } from "../../lib/spending/model.ts";
-import {
-  createSpendingPageActions,
-  spendingPageAfterAction,
-  spendingPageNeedsRecompute,
-} from "./spending-page-actions.ts";
+import { spendingPageAfterAction, spendingPageNeedsRecompute } from "./spending-page-actions.ts";
 
 const TWD = (coefficient: string) => ({ currency: "TWD", coefficient, scale: 0 });
 
@@ -36,7 +31,7 @@ const page = (knowledgeAt: number, summary: SpendingPurchaseReportSummaryDto | n
 });
 
 /** A pairing that removed the TWD 100 purchase: version 6 to 7. */
-const removal = (baseKnowledgeAt = 6, knowledgeAt = 7): SpendingPageActionResult => ({
+const removal = (baseKnowledgeAt = 6, knowledgeAt = 7): FinancialPageActionResult => ({
   status: "committed",
   action: "confirm",
   kind: "direct",
@@ -45,7 +40,7 @@ const removal = (baseKnowledgeAt = 6, knowledgeAt = 7): SpendingPageActionResult
   subject: { invoiceIds: ["invoice-1"], transactionIds: ["transaction-1"] },
   summaryDelta: { before: [{ date: "2026-01-01", amount: TWD("100"), category: { mode: "absent" } }], after: [] },
   affectedRecords: [],
-}) as SpendingPageActionResult;
+}) as FinancialPageActionResult;
 
 const at = (knowledgeAt: number, manualRevision = 2) => ({ knowledgeAt, manualRevision });
 
@@ -96,79 +91,4 @@ test("a commit or a manual write during the action is read again even after the 
   assert.equal(spendingPageNeedsRecompute(next!, at(7, 3), { result: removal(), published }), true, "a manual write");
   assert.equal(spendingPageNeedsRecompute(page(6), at(6), null), false, "no action succeeded and nothing moved");
   assert.equal(spendingPageNeedsRecompute(page(6), at(7), null), true, "no action succeeded but the store moved");
-});
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-const REQUEST = { action: "confirm", kind: "direct" } as unknown as SpendingPageActionRequest;
-
-test("overlapping actions settle once, with the newest result, after the last one ends", async () => {
-  const replies = [deferred<SpendingPageActionResult>(), deferred<SpendingPageActionResult>()];
-  let next = 0;
-  const actions = createSpendingPageActions(() => replies[next++]!.promise);
-  const heard: (SpendingPageActionResult | null)[] = [];
-  actions.onSettled((result) => heard.push(result));
-
-  const first = actions.run(REQUEST);
-  const second = actions.run(REQUEST);
-  assert.equal(actions.inFlight(), true);
-  replies[1]!.resolve(removal(7, 9));
-  await second;
-  assert.equal(heard.length, 0, "nothing settles while an action still runs");
-  assert.equal(actions.inFlight(), true);
-  replies[0]!.resolve(removal(6, 8));
-  await first;
-  assert.equal(actions.inFlight(), false);
-  assert.deepEqual(heard.map((result) => result?.knowledgeAt), [9], "the newer result wins though it finished first");
-});
-
-test("a burst where every action fails settles with no result, and the next burst starts clean", async () => {
-  let fail = true;
-  const actions = createSpendingPageActions(async () => {
-    if (fail) throw new Error("stale pairing");
-    return removal();
-  });
-  const heard: (SpendingPageActionResult | null)[] = [];
-  actions.onSettled((result) => heard.push(result));
-  await assert.rejects(actions.run(REQUEST), /stale pairing/u);
-  fail = false;
-  await actions.run(REQUEST);
-  assert.deepEqual(heard.map((result) => result?.knowledgeAt ?? null), [null, 7]);
-});
-
-test("a strong batch's conflict settles with no result, so the page reads nothing new from it", async () => {
-  const actions = createSpendingPageActions(async () => ({
-    status: "conflict",
-    action: "confirm",
-    kind: "strong",
-    knowledgeAt: 9,
-    conflicts: [],
-    strongPairs: [],
-  }));
-  const heard: (SpendingPageActionResult | null)[] = [];
-  actions.onSettled((result) => heard.push(result));
-  assert.equal((await actions.run(REQUEST)).status, "conflict", "the caller still hears the conflict");
-  assert.deepEqual(heard, [null]);
-});
-
-test("a listener that throws changes neither the action's result nor the other listeners", async () => {
-  const actions = createSpendingPageActions(async () => removal());
-  const heard: number[] = [];
-  actions.onSettled(() => {
-    throw new Error("broken listener");
-  });
-  const stop = actions.onSettled((result) => heard.push(result!.knowledgeAt));
-  assert.equal((await actions.run(REQUEST)).knowledgeAt, 7);
-  assert.deepEqual(heard, [7]);
-  stop();
-  await actions.run(REQUEST);
-  assert.deepEqual(heard, [7], "a stopped listener hears nothing more");
 });

@@ -19,7 +19,7 @@ import { childRpcCapabilities, runAppWorkflowWorker } from "./app-workflow-worke
 import { APP_WORKFLOW_WORKER_PROTOCOL_VERSION, parseAppWorkflowWorkerOutboundFrame } from "./app-workflow-worker-protocol.ts";
 import { taskById } from "./tasks.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
-import { createPGliteSpendingPageActions } from "../../../ledger/pglite/spending-command.ts";
+import { createPGliteFinancialPageActions } from "../../../ledger/pglite/spending-command.ts";
 
 function maxResponse(body: unknown, date = "Wed, 02 Sep 2026 04:05:06 GMT") {
   return new Response(JSON.stringify(body), {
@@ -36,7 +36,7 @@ test("MaiCoin worker uses injected financial commit and operational RPC without 
   await applyPgliteMaicoinOperationalSchema(store);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
   });
   const previousFetch = globalThis.fetch;
   const channel = new MessageChannel();

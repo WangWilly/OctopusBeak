@@ -37,7 +37,7 @@ import {
 } from "../src/workflows/yuanta-current-deposit-balances.ts";
 import { productCollectionHandle, type ProductCollectionHandle } from "../src/lib/automation/product-collection.ts";
 import { freshPage, removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
-import { createPGliteSpendingPageActions } from "../src/ledger/pglite/spending-command.ts";
+import { createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
 
 const FUBON_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 const YUANTA_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
@@ -429,7 +429,7 @@ export async function seedAppDemo(userData: string) {
   const store = await installFinancialStore(database);
   const operational = createPgliteOperationalProvider(store);
   const server = createPGliteChildRpcServer({
-    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteSpendingPageActions(store))) },
+    provider: { operational, financial: createPGliteFinancialLocalPort(createPGliteFinancialRegistry(store, createPGliteFinancialPageActions(store))) },
   });
   const previous = { ...process.env };
   const originalFetch = globalThis.fetch;
