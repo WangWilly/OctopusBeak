@@ -243,6 +243,18 @@ test("a suspended link can be revoked, and a new link on one of its sides replac
     const replaced = await readPGliteCashFlow(fixture.store, SEPTEMBER);
     assert.deepEqual(pairsOf(replaced.transfers.links), [[out, other]]);
     assert.deepEqual(replaced.transfers.suspended, []);
+    const hex = (id: string) => id.replaceAll("-", "");
+    const history = await fixture.store.query<{ event_kind: string; link_origin: string | null; inflow: string }>(
+      `SELECT event_kind, link_origin, encode(inflow_transaction_id, 'hex') AS inflow
+         FROM cash_flow_transfer_decision_events
+        ORDER BY evidence_knowledge_sequence, event_kind DESC`);
+    assert.deepEqual(history.rows.map((row) => [row.event_kind, row.link_origin, row.inflow]), [
+      ["confirmed", "confirmed", hex(into!)],
+      ["revoked", "confirmed", hex(into!)],
+      ["confirmed", "confirmed", hex(into!)],
+      ["revoked", "confirmed", hex(into!)],
+      ["confirmed", "confirmed", hex(other!)],
+    ], "replacing a suspended link records its revocation");
   });
 });
 
