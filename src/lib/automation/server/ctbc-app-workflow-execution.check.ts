@@ -11,6 +11,7 @@ import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import { workflowBrowserProfileForWorkflow, appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -186,7 +187,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         now: () => "2026-09-25T12:00:00.000Z",
         browser: ({ startUrl, browserProfile }) => {
           observedStartUrl = startUrl;
@@ -234,7 +235,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     const incomplete = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit, browser: () => incompleteBrowser }),
+      executionHost: inProcessCheckHost({ browser: () => incompleteBrowser, capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
     }), task.id);
@@ -253,7 +254,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
       },
     };
     const malformed = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit, browser: () => malformedBrowser }),
+      executionHost: inProcessCheckHost({ browser: () => malformedBrowser, capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
     }), task.id);
@@ -275,7 +276,7 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     };
     const cancellationRuntime = runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         now: () => "2026-09-25T12:00:00.000Z",
         browser: () => cancellationBrowser,
       }),
@@ -304,12 +305,14 @@ test("CTBC App task maps credentials and reaches Canonical Financial Commit with
     let commitAttempts = 0;
     const ambiguous = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit: {
-          async execute() {
-            commitAttempts += 1;
-            throw new Error("synthetic transport loss after commit dispatch");
+        capabilities: fixedCapabilities({
+          financialCommit: {
+            async execute() {
+              commitAttempts += 1;
+              throw new Error("synthetic transport loss after commit dispatch");
+            },
           },
-        },
+        }),
         browser: () => ambiguousBrowser,
       }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },

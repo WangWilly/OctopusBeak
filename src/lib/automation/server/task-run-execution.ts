@@ -174,7 +174,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
   try {
     const input = plan.registration.inputFromEnvironment(launchEnv);
     const progressReporter = createWorkflowProgressReporter(context, input);
-    const pgliteRpc = workflowNeedsPgliteRpc(definition, runtime) ? plan.pgliteRpc : undefined;
+    const pgliteRpc = workflowNeedsPgliteRpc(definition) ? plan.pgliteRpc : undefined;
     const page = runtime.kind === "nonbrowser"
       ? undefined
       : {
@@ -215,7 +215,7 @@ async function executeSupervisedAppWorkflow(context: ExecutionContext): Promise<
           },
           ...(definition.requiresTdcc ? tdccSessionHostCalls(createTdccSessionHost(createTdccSecretStore(plan.credentials))) : {}),
         },
-        launchWorker: (start) => host.launchWorker(start, context.execution),
+        launchWorker: (launch) => host.launchWorker(launch, context.execution),
       });
     };
     const outcome = page

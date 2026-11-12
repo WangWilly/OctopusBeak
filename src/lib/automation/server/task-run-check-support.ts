@@ -14,11 +14,12 @@ import {
 import type { HumanAssistanceContractInput } from "../human-assistance.ts";
 import { parseAppWorkflowWorkerOutboundFrame, type AppWorkflowWorkerStart } from "./app-workflow-worker-protocol.ts";
 import {
+  fixedCapabilities,
   runAppWorkflowWorker,
   type AppWorkflowWorkerRuntimeOptions,
 } from "./app-workflow-worker-runtime.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
-import type { AppWorkflowWorkerHandle, ExecutionHost } from "./execution-host.ts";
+import type { AppWorkflowWorkerHandle, ExecutionHost, WorkerLaunch } from "./execution-host.ts";
 import { createAutomationRuntime, type AutomationRuntime } from "./automation-runtime.ts";
 import { createAutomationRuntimeState } from "./runtime-state.ts";
 import type { AutomationPersistencePort, AutomationPersistenceProvider, AutomationTaskRun } from "./store.ts";
@@ -43,7 +44,7 @@ import {
 import { sourceVerificationFacts } from "./verification-routing.ts";
 import type { TypedWorkflowOutcome } from "./typed-workflow-outcome.ts";
 
-/** A well-formed PGlite endpoint for checks whose worker never dials it. */
+/** A well-formed PGlite endpoint a check's plan carries; its worker never dials it. */
 export const CHECK_PGLITE_RPC: PGliteWorkflowRpc = Object.freeze({
   endpoint: "http://127.0.0.1:43121/rpc",
   token: "a".repeat(32),
@@ -190,14 +191,18 @@ export function firstRoundForCheck(
   return { attempt: 1, maxAttempts: 1, retrying: false, executionId: randomUUID(), ...round };
 }
 
-/** Ports a check gives the worker in place of the ones it builds from the PGlite child RPC. */
-export type CheckWorkerPorts = Omit<AppWorkflowWorkerRuntimeOptions, "port" | "browser">;
+/**
+ * Where a check's worker gets its capability ports, `fixedCapabilities({})`
+ * unless it names a source, and the definition and clock it runs with in
+ * place of the catalog's and the wall clock.
+ */
+export type CheckWorkerPorts = Partial<Pick<AppWorkflowWorkerRuntimeOptions, "capabilities" | "resolveDefinition" | "now">>;
 
 export type InProcessCheckHostOptions = CheckWorkerPorts & Readonly<{
   /** The browser a browser workflow's worker runs in, built from the page the round asked for. */
   browser?: (page: AppWorkflowBrowserHostInput) => WorkflowBrowserPort;
-  /** Frames a check scripts in place of the real worker. */
-  scriptedWorker?: (start: AppWorkflowWorkerStart) => AppWorkflowWorkerHandle;
+  /** Frames a check scripts in place of the real worker, given the start and the launch it came in. */
+  scriptedWorker?: (start: AppWorkflowWorkerStart, launch: WorkerLaunch) => AppWorkflowWorkerHandle;
 }>;
 
 /** The App worker runtime on a MessageChannel instead of a thread, so the supervisor and runtime exchange real frames. */
@@ -232,11 +237,12 @@ function inProcessWorker(
 
 /**
  * An execution host that opens no browser: the round's worker is the real
- * worker runtime in this process holding the check's ports, or the check's
- * scripted worker.
+ * worker runtime in this process holding the check's capability source, or
+ * the check's scripted worker. The launch's PGlite descriptor is not used; a
+ * check that wants the child RPC passes `childRpcCapabilities` itself.
  */
 export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): ExecutionHost {
-  const { browser, scriptedWorker, ...ports } = options;
+  const { browser, scriptedWorker, capabilities = fixedCapabilities({}), ...seams } = options;
   const pages = new Map<string, WorkflowBrowserPort>();
   return {
     async withPage(page, use) {
@@ -247,10 +253,11 @@ export function inProcessCheckHost(options: InProcessCheckHostOptions = {}): Exe
         pages.delete(page.taskRunId);
       }
     },
-    launchWorker(start) {
-      if (scriptedWorker) return scriptedWorker(start);
+    launchWorker(launch) {
+      const { start } = launch;
+      if (scriptedWorker) return scriptedWorker(start, launch);
       const page = pages.get(start.taskRunId);
-      return inProcessWorker(start, { ...ports, ...(page ? { browser: page } : {}) });
+      return inProcessWorker(start, { ...seams, capabilities, ...(page ? { browser: page } : {}) });
     },
   };
 }

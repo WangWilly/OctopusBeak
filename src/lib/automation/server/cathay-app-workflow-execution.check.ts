@@ -32,6 +32,7 @@ const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
   import("./task-run-check-support.ts"),
   import("./app-workflow-registry.ts"),
 ]);
+const { fixedCapabilities } = await import("./app-workflow-worker-runtime.ts");
 
 const LOGIN_URL = "https://www.cathaybk.com.tw/MyBank/";
 const credentialKey = (suffix: string) => ["LIBRETTO", "CLOUD", "CATHAY", suffix].join("_");
@@ -101,7 +102,7 @@ test("Cathay task dispatch resolves the typed App registration and preserves sel
     const provider = createPgliteOperationalProvider(store);
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         browser: ({ startUrl, browserProfile }) => {
           observedStartUrl = startUrl;
           observedBrowserProfile = browserProfile;

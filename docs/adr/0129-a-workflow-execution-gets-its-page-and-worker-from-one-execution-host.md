@@ -28,6 +28,8 @@ type ExecutionHost = Readonly<{
 }>;
 ```
 
+(Refined by [ADR 0134](0134-the-worker-core-takes-capability-ports-never-a-pglite-descriptor.md): `launchWorker` now takes a `WorkerLaunch`, the start plus the PGlite descriptor.)
+
 `withPage` keeps the round's page open while `use` runs. A nonbrowser workflow never calls it. `launchWorker` starts the round's worker and returns the handle the supervisor drives: `on` and `off` for `online`, `message`, `error` and `exit`, `postMessage` and `terminate`. A throw from `launchWorker` is a worker start failure.
 
 **The runtime is built with its host.** `createAutomationRuntime(provider, { executionHost?, runExecution?, ... })` defaults the host to `chromiumThreadHost`. Its default `runExecution` is `createTaskRunExecution(executionHost)`, which replaces `runAutomationTaskExecution`. `runExecution` stays for runner lifecycle checks that replace whole rounds.
@@ -36,11 +38,11 @@ type ExecutionHost = Readonly<{
 
 **The thread entry turns the descriptor into a browser.** `runAppWorkflowWorkerThread` validates `browserConnection` with the same loopback rules as before: `http`, host `127.0.0.1`, an explicit port, no path, query or hash, and a safe target id. It converts the connection to a `WorkflowBrowserPort` and calls the core with it. An invalid descriptor gets the `protocol-invalid` start refusal. `withAppWorkflowBrowserPage` still asserts the loopback endpoint when it connects.
 
-**The worker core takes a browser, never a descriptor.** `runAppWorkflowWorker(start, { port, browser?, financialCommit?, accountIdentity?, previewWrite?, now?, resolveDefinition? })` parses a start frame that has no `browserConnection`. A browser workflow without `browser`, or a nonbrowser workflow with one, gets the same `protocol-invalid` start refusal as a malformed frame. `pgliteRpc` is unchanged.
+**The worker core takes a browser, never a descriptor.** `runAppWorkflowWorker(start, { port, browser?, financialCommit?, accountIdentity?, previewWrite?, now?, resolveDefinition? })` parses a start frame that has no `browserConnection`. A browser workflow without `browser`, or a nonbrowser workflow with one, gets the same `protocol-invalid` start refusal as a malformed frame. `pgliteRpc` is unchanged. (Refined by [ADR 0134](0134-the-worker-core-takes-capability-ports-never-a-pglite-descriptor.md): the start no longer carries `pgliteRpc`, and the core takes its capability ports from one `CapabilitySource`.)
 
 **The supervisor gets its worker from the host.** `runSupervisedAppWorkflow` takes `launchWorker` and keeps its cancel and terminal grace timing. `workerFactory`, `workerPath` and the `browserConnection` option are removed.
 
-**Checks use `inProcessCheckHost`.** It lives in `task-run-check-support.ts`, outside production code. Its `withPage` opens no browser. Its `launchWorker` runs the real `runAppWorkflowWorker` over a `MessageChannel` with the check's `browser`, `financialCommit`, `accountIdentity`, `previewWrite`, `now` and `resolveDefinition`, or returns the check's `scriptedWorker`. `browser` is built from the page input the round asked for, so a check can read its start URL and profile. `runtimeForCheck` builds the real runtime with that host and writes the check's settings and credentials, and `runForCheck` starts one task and waits for it to settle.
+**Checks use `inProcessCheckHost`.** It lives in `task-run-check-support.ts`, outside production code. Its `withPage` opens no browser. Its `launchWorker` runs the real `runAppWorkflowWorker` over a `MessageChannel` with the check's `browser`, `financialCommit`, `accountIdentity`, `previewWrite`, `now` and `resolveDefinition`, or returns the check's `scriptedWorker`. (Refined by [ADR 0134](0134-the-worker-core-takes-capability-ports-never-a-pglite-descriptor.md): the three ports are now one `capabilities` source.) `browser` is built from the page input the round asked for, so a check can read its start URL and profile. `runtimeForCheck` builds the real runtime with that host and writes the check's settings and credentials, and `runForCheck` starts one task and waits for it to settle.
 
 **Deleted.** All four `AutomationTaskExecutionSeams` members, the fake descriptor, the `{} as never` host pages, `executeTaskRunForCheck`, `supervisedWithCheckWorker` and `inProcessAppWorkflowWorker`. `createTdccSessionHost` still reads the run's credentials, and it is no longer replaceable.
 

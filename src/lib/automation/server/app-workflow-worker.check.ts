@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
+import { createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { FailureCodeError } from "../workflow-failures.ts";
@@ -15,6 +16,7 @@ import {
   APP_WORKFLOW_WORKER_PROTOCOL_VERSION,
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowBrowserConnection,
+  parseAppWorkflowPgliteRpc,
   parseAppWorkflowWorkerOutboundFrame,
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerOutboundFrame,
@@ -24,8 +26,15 @@ import {
   type HostCallMethod,
   type HostCallRequest,
 } from "./app-workflow-host-calls.ts";
-import { runAppWorkflowWorker, runAppWorkflowWorkerThread } from "./app-workflow-worker-runtime.ts";
+import {
+  childRpcCapabilities,
+  fixedCapabilities,
+  runAppWorkflowWorker,
+  runAppWorkflowWorkerThread,
+} from "./app-workflow-worker-runtime.ts";
 import { chromiumThreadHost } from "./execution-host.ts";
+import { ATTACHED_PREVIEW_PRODUCTS } from "../../preview-sources/attached-products.ts";
+import type { WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
 import { createPGliteChildRpcServer } from "../../../../electron/pglite-child-rpc.ts";
 
 /** A registered browser workflow, since the worker protocol refuses an unknown id; the check supplies its definition. */
@@ -36,8 +45,10 @@ const start = {
   workflowId: FIXTURE_WORKFLOW_ID,
   taskRunId: "run-fixture-1",
   input: { credential: "sensitive-fixture" },
-  pgliteRpc: { endpoint: "/tmp/octopusbeak-fixture.sock", token: "a".repeat(32) },
 } as const;
+
+/** A well-formed child RPC descriptor whose socket a check never expects to answer. */
+const pgliteRpc = { endpoint: "/tmp/octopusbeak-fixture.sock", token: "a".repeat(32) } as const;
 
 const contract = {
   stageId: "fixture-verification",
@@ -195,12 +206,29 @@ test("worker protocol rejects malformed, oversized, and unexpected frames", () =
     ...start,
     browserConnection: { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" },
   }), /protocol rejected/u, "the core start never carries a DevTools descriptor");
-  assert.throws(() => parseAppWorkflowWorkerStart({
-    ...start,
-    workflowId: "sync-maicoin",
-    input: null,
-    pgliteRpc: undefined,
-  }), /protocol rejected/u);
+  assert.equal(parseAppWorkflowWorkerStart({ ...start, workflowId: "sync-maicoin", input: null }).workflowId, "sync-maicoin");
+  for (const rpc of [pgliteRpc, undefined]) {
+    assert.throws(
+      () => parseAppWorkflowWorkerStart({ ...start, pgliteRpc: rpc }),
+      /protocol rejected/u,
+      "the core start never carries a PGlite descriptor",
+    );
+  }
+});
+
+test("a PGlite child RPC descriptor is an endpoint and a bounded token", () => {
+  assert.deepEqual(parseAppWorkflowPgliteRpc(pgliteRpc), pgliteRpc);
+  for (const invalid of [
+    { ...pgliteRpc, token: "short" },
+    { ...pgliteRpc, token: `${"a".repeat(32)}/` },
+    { ...pgliteRpc, endpoint: "" },
+    { ...pgliteRpc, endpoint: "x".repeat(1_025) },
+    { ...pgliteRpc, extra: true },
+    { endpoint: pgliteRpc.endpoint },
+    null,
+  ]) {
+    assert.throws(() => parseAppWorkflowPgliteRpc(invalid), /protocol rejected/u, JSON.stringify(invalid));
+  }
 });
 
 test("a DevTools descriptor is a bare loopback page", () => {
@@ -239,10 +267,123 @@ const exchangeRateStart = { ...start, workflowId: "exchange-rates", input: null 
 const hostPage: WorkflowBrowserPort = { async withPage() { throw new Error("unused"); } };
 
 test("a browser workflow starts only with a browser and a nonbrowser workflow only without one", async () => {
-  assert.deepEqual(await startRefusal((port) => runAppWorkflowWorker(start, { port })), REFUSED_START);
+  assert.deepEqual(await startRefusal((port) => runAppWorkflowWorker(start, { port, capabilities: fixedCapabilities({}) })), REFUSED_START);
   assert.deepEqual(
-    await startRefusal((port) => runAppWorkflowWorker(exchangeRateStart, { port, browser: hostPage })),
+    await startRefusal((port) => runAppWorkflowWorker(exchangeRateStart, { port, browser: hostPage, capabilities: fixedCapabilities({}) })),
     REFUSED_START,
+  );
+});
+
+test("the worker core refuses a start that carries a PGlite descriptor", async () => {
+  assert.deepEqual(
+    await startRefusal((port) => runAppWorkflowWorker({ ...start, pgliteRpc }, {
+      port, browser: hostPage, capabilities: fixedCapabilities({}),
+    })),
+    REFUSED_START,
+  );
+  assert.deepEqual(
+    await startRefusal((port) => runAppWorkflowWorker({ ...exchangeRateStart, pgliteRpc }, {
+      port, capabilities: fixedCapabilities({}),
+    })),
+    REFUSED_START,
+  );
+});
+
+/** A local socket that accepts child RPC connections and never answers their authentication. */
+async function silentPgliteEndpoint() {
+  const endpoint = join(tmpdir(), `ob-silent-${randomUUID().slice(0, 12)}.sock`);
+  const sockets: Socket[] = [];
+  let connected!: () => void;
+  const firstConnection = new Promise<void>((resolve) => { connected = resolve; });
+  const server = createServer((socket) => {
+    sockets.push(socket);
+    connected();
+  });
+  await new Promise<void>((resolve) => server.listen(endpoint, resolve));
+  return {
+    descriptor: { endpoint, token: "a".repeat(32) },
+    sockets,
+    firstConnection,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+const unusedTdccSession = {
+  async open() { throw new Error("unused"); },
+  async signInDetails() { throw new Error("unused"); },
+  saveSession() { throw new Error("unused"); },
+} as const;
+
+test("the child RPC source dials only for a definition that declares a capability, and hangs up when cancelled", { timeout: 10_000 }, async () => {
+  const silent = await silentPgliteEndpoint();
+  const request = (definition: WorkflowDefinition, signal: AbortSignal) => ({
+    definition, workflowId: FIXTURE_WORKFLOW_ID, taskRunId: start.taskRunId, tdccSession: unusedTdccSession, signal,
+  });
+  try {
+    const none: WorkflowDefinition = { id: FIXTURE_WORKFLOW_ID, requiresFinancialCommit: false, async run() {} };
+    const opened = await childRpcCapabilities(silent.descriptor).open(request(none, new AbortController().signal));
+    assert.deepEqual(opened.ports, {});
+    opened.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(silent.sockets.length, 0, "a definition without a capability never dials the PGlite RPC");
+
+    const committing: WorkflowDefinition = { ...none, requiresFinancialCommit: true };
+    const controller = new AbortController();
+    const opening = childRpcCapabilities(silent.descriptor).open(request(committing, controller.signal));
+    await silent.firstConnection;
+    const hungUp = new Promise<void>((resolve) => silent.sockets[0]!.once("close", () => resolve()));
+    controller.abort();
+    await assert.rejects(opening, /cancelled/u);
+    await hungUp;
+  } finally {
+    await silent.close();
+  }
+});
+
+test("a source serves the required ports, and the preview write port only to a definition that may write previews", async () => {
+  const financialCommit = { commit: async () => { throw new Error("unused"); } } as unknown as WorkflowFinancialCommitPort;
+  const previewWrite = {} as WorkflowPreviewWritePort;
+  const accountIdentity = { continuity: async () => { throw new Error("unused"); } };
+  const source = fixedCapabilities({ financialCommit, previewWrite, accountIdentity });
+  const open = async (definition: WorkflowDefinition) => (await source.open({
+    definition, workflowId: FIXTURE_WORKFLOW_ID, taskRunId: start.taskRunId, tdccSession: unusedTdccSession, signal: new AbortController().signal,
+  })).ports;
+  const committing: WorkflowDefinition = { id: FIXTURE_WORKFLOW_ID, requiresFinancialCommit: true, async run() {} };
+  assert.deepEqual(await open(committing), { financialCommit });
+  assert.deepEqual(
+    await open({ ...committing, attachedPreviewProducts: ATTACHED_PREVIEW_PRODUCTS.esun }),
+    { financialCommit, previewWrite },
+  );
+});
+
+test("a definition that declares a capability fails its run without a PGlite descriptor", async () => {
+  const definition: WorkflowDefinition = {
+    id: FIXTURE_WORKFLOW_ID,
+    requiresFinancialCommit: true,
+    async run() { throw new Error("unreachable"); },
+  };
+  // The core's start failure is classified like any other run failure.
+  const expected = { kind: "failed", taskRunId: start.taskRunId, errorCode: "workflow-failed" };
+  const terminal = (frames: unknown[]) => {
+    const frame = parseAppWorkflowWorkerOutboundFrame(frames.at(-1));
+    if (frame.kind !== "failed") return frame;
+    assert.deepEqual(
+      [frame.diagnostic?.chain[0]?.type, frame.diagnostic?.chain[0]?.frames[0]?.file],
+      ["Error", "src/lib/automation/server/app-workflow-worker-runtime.ts"],
+      "the capability source refuses the run before the executor or the child RPC client is reached",
+    );
+    return { kind: frame.kind, taskRunId: frame.taskRunId, errorCode: frame.errorCode };
+  };
+  assert.deepEqual(terminal(await startRefusal((port) => runAppWorkflowWorker(start, {
+    port, browser: hostPage, resolveDefinition: () => definition, capabilities: childRpcCapabilities(undefined),
+  }))), expected);
+  assert.deepEqual(
+    terminal(await startRefusal((port) => runAppWorkflowWorkerThread({ port, workerData: exchangeRateStart }))),
+    expected,
+    "the thread gives a nonbrowser workflow without a descriptor no PGlite RPC",
   );
 });
 
@@ -252,6 +393,21 @@ test("the worker thread turns its DevTools descriptor into the browser and refus
     start,
     { ...start, browserConnection: { ...browserConnection, endpoint: "http://10.0.0.1:9222" } },
     { ...exchangeRateStart, browserConnection },
+  ]) {
+    assert.deepEqual(
+      await startRefusal((port) => runAppWorkflowWorkerThread({ port, workerData })),
+      REFUSED_START,
+      JSON.stringify(workerData),
+    );
+  }
+});
+
+test("the worker thread refuses an invalid PGlite descriptor", async () => {
+  const browserConnection = { endpoint: "http://127.0.0.1:9222", targetId: "fixture-target" };
+  for (const workerData of [
+    { ...exchangeRateStart, pgliteRpc: { ...pgliteRpc, token: "short" } },
+    { ...exchangeRateStart, pgliteRpc: { endpoint: pgliteRpc.endpoint } },
+    { ...start, browserConnection, pgliteRpc: { ...pgliteRpc, extra: true } },
   ]) {
     assert.deepEqual(
       await startRefusal((port) => runAppWorkflowWorkerThread({ port, workerData })),
@@ -394,14 +550,28 @@ test("bundled internal worker validates workerData and returns a sanitized frame
   assert.equal(JSON.stringify(terminal).includes("must-not-be-returned"), false);
 });
 
-test("the Chromium thread host hands a browser workflow's thread its DevTools descriptor", async () => {
+test("the Chromium thread host hands a browser workflow's thread its DevTools and PGlite descriptors", async () => {
+  const browserConnection = () => ({ endpoint: "http://127.0.0.1:9", targetId: "fixture-target" });
   assert.throws(
-    () => chromiumThreadHost.launchWorker(start, { browserConnection: () => null }),
+    () => chromiumThreadHost.launchWorker({ start }, { browserConnection: () => null }),
     /connection is unavailable/u,
   );
-  const worker = chromiumThreadHost.launchWorker(start, {
-    browserConnection: () => ({ endpoint: "http://127.0.0.1:9", targetId: "fixture-target" }),
-  });
+  const silent = await silentPgliteEndpoint();
+  const dialing = chromiumThreadHost.launchWorker({ start, pgliteRpc: silent.descriptor }, { browserConnection });
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      silent.firstConnection,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("The thread never dialled its PGlite descriptor.")), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    await dialing.terminate();
+    await silent.close();
+  }
+  const worker = chromiumThreadHost.launchWorker({ start }, { browserConnection });
   try {
     const terminal = await new Promise<AppWorkflowWorkerOutboundFrame>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("The thread did not end its run.")), 10_000);
@@ -417,7 +587,7 @@ test("the Chromium thread host hands a browser workflow's thread its DevTools de
       });
     });
     assert.equal(terminal.kind, "failed");
-    assert.equal(terminal.taskRunId, start.taskRunId, "the thread accepted its start and ran the workflow");
+    assert.equal(terminal.taskRunId, start.taskRunId, "the thread accepted its start");
   } finally {
     await worker.terminate();
   }
@@ -479,7 +649,7 @@ test("worker runs a definition through typed ports and the bounded host request 
           return await run({} as never);
         },
       },
-      financialCommit,
+      capabilities: fixedCapabilities({ financialCommit }),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal?.kind, "completed", observed.map((frame) => frame.kind === "failed" ? frame.errorCode : frame.kind).join(","));
@@ -553,16 +723,14 @@ test("a browser workflow that needs only account identity reaches it through the
   };
   try {
     await server.ready;
-    await runAppWorkflowWorker({
-      ...start,
-      pgliteRpc: {
-        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
-        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
-      },
-    }, {
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
+      capabilities: childRpcCapabilities({
+        endpoint: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_ENDPOINT,
+        token: server.env.OCTOPUSBEAK_PGLITE_CHILD_RPC_TOKEN,
+      }),
     });
     const frame = await terminal;
     assert.equal(frame.kind, "completed", JSON.stringify(frame));
@@ -598,6 +766,7 @@ test("a workflow output that is not exactly a run result fails the run without c
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
+      capabilities: fixedCapabilities({}),
     });
     const frame = await terminal;
     assert.equal(frame.kind, "failed");
@@ -649,17 +818,19 @@ test("a product failure inside a partial run appends one correlated diagnostic r
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
-      financialCommit: {
-        async execute() {
-          return {
-            ...successfulCommit(),
-            items: [{
-              provider: "fixture", product: "fixture", itemKey: "fixture-item",
-              status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
-            }],
-          };
+      capabilities: fixedCapabilities({
+        financialCommit: {
+          async execute() {
+            return {
+              ...successfulCommit(),
+              items: [{
+                provider: "fixture", product: "fixture", itemKey: "fixture-item",
+                status: "committed" as const, value: null, admissionSummaries: [], relationWarnings: [],
+              }],
+            };
+          },
         },
-      },
+      }),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "completed");
@@ -707,10 +878,11 @@ test("worker failures cross the boundary only as a stable error code", async () 
     },
   };
   try {
-    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -746,10 +918,11 @@ test("a Cathay run that needs device registration keeps that code across the wor
     },
   };
   try {
-    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -808,10 +981,11 @@ test("worker keeps the observed failure stage across the validated IPC boundary"
       },
     };
     try {
-      await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
+      await runAppWorkflowWorker(start, {
         port: channel.port1,
         resolveDefinition: () => definition,
         browser: { async withPage() { throw new Error("unused"); } },
+        capabilities: fixedCapabilities({}),
       });
       const terminal = await terminalReceived;
       assert.equal(terminal.kind === "failed" ? terminal.errorCode : terminal.kind, scenario.expected, JSON.stringify(scenario.events));
@@ -843,10 +1017,11 @@ test("SinoPac rejection crosses the worker boundary as an allowlisted typed term
     },
   };
   try {
-    await runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
+    await runAppWorkflowWorker(start, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     const terminal = await terminalReceived;
     assert.equal(terminal.kind, "failed");
@@ -883,10 +1058,11 @@ test("worker cancellation aborts a pending definition and emits no provider exce
     if (isAcknowledgedCall(frame)) channel.port2.postMessage(reply(frame.callId));
   });
   try {
-    const running = runAppWorkflowWorker((({ pgliteRpc: _pgliteRpc, ...withoutRpc }) => withoutRpc)(start), {
+    const running = runAppWorkflowWorker(start, {
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage() { throw new Error("unused"); } },
+      capabilities: fixedCapabilities({}),
     });
     await hasStarted;
     channel.port2.postMessage({ protocolVersion: APP_WORKFLOW_WORKER_PROTOCOL_VERSION, kind: "cancel" });
@@ -946,7 +1122,7 @@ test("a settlement that finishes after cancellation still reaches the host", asy
       port: channel.port1,
       resolveDefinition: () => definition,
       browser: { async withPage(run) { return await run({} as never); } },
-      financialCommit,
+      capabilities: fixedCapabilities({ financialCommit }),
     });
     assert.equal((await terminal).kind, "cancelled");
     assert.deepEqual(

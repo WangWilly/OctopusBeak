@@ -3,8 +3,6 @@ import type {
   WorkflowBrowserPort,
   WorkflowDefinition,
   WorkflowExecutorPorts,
-  WorkflowFinancialCommitPort,
-  WorkflowAccountIdentityPort,
   WorkflowCapabilityPorts,
 } from "../workflow-executor.ts";
 import type { WorkflowRunEvent } from "../run-event.ts";
@@ -34,6 +32,7 @@ import {
   parseAppWorkflowWorkerInboundFrame,
   parseAppWorkflowWorkerOutboundFrame,
   parseAppWorkflowBrowserConnection,
+  parseAppWorkflowPgliteRpc,
   parseAppWorkflowWorkerStart,
   isRecord,
   type AppWorkflowWorkerInboundFrame,
@@ -44,20 +43,10 @@ import { appWorkflowRegistration } from "./app-workflow-registry.ts";
 import { withAppWorkflowBrowserPage, type AppWorkflowBrowserConnection } from "./app-browser-host.ts";
 import {
   createPGliteChildRpcClient,
-  type PGliteChildRpcClient,
+  type PGliteWorkflowRpc,
 } from "../../pglite-rpc/pglite-child-rpc-client.ts";
-import { takePreviewObservations, type WorkflowPreviewWritePort } from "../../preview-sources/workflow.ts";
+import { takePreviewObservations } from "../../preview-sources/workflow.ts";
 import { previewResponseShapes } from "../../preview-sources/structure-report.ts";
-
-function previewWritePort(
-  definition: WorkflowDefinition,
-  injected: WorkflowPreviewWritePort | undefined,
-  fromChild: WorkflowPreviewWritePort | undefined,
-): { previewWrite?: WorkflowPreviewWritePort } {
-  if (!workflowUsesPreviewWrite(definition)) return {};
-  const port = injected ?? fromChild;
-  return port ? { previewWrite: port } : {};
-}
 
 const abortError = () => new Error("App workflow worker cancelled.");
 
@@ -79,40 +68,99 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+/** What a capability source opens for one run: the definition it serves and the run it serves it to. */
+export type CapabilityRequest = Readonly<{
+  definition: WorkflowDefinition;
+  workflowId: string;
+  taskRunId: string;
+  /** The run's TDCC session, which only the core can build: it is served through host calls. */
+  tdccSession: TdccSessionPort;
+  signal: AbortSignal;
+}>;
+
+/** The ports a definition's capabilities are served from for one run, and how to release them. */
+export type CapabilitySource = Readonly<{
+  open(request: CapabilityRequest): Promise<Readonly<{
+    ports: Partial<WorkflowCapabilityPorts>;
+    close(): void;
+  }>>;
+}>;
+
+/** The ports the definition requires, and the preview write port it may carry without requiring it. */
+function servedPorts(
+  definition: WorkflowDefinition,
+  ports: Partial<WorkflowCapabilityPorts>,
+): Partial<WorkflowCapabilityPorts> {
+  return {
+    ...requiredCapabilityPorts(definition, ports),
+    ...(workflowUsesPreviewWrite(definition) && ports.previewWrite ? { previewWrite: ports.previewWrite } : {}),
+  };
+}
+
+/**
+ * The App's source: every capability port is served from the authenticated
+ * PGlite child RPC that `descriptor` names. A definition that declares no
+ * capability never dials it.
+ */
+export function childRpcCapabilities(descriptor: PGliteWorkflowRpc | undefined): CapabilitySource {
+  return {
+    async open({ definition, workflowId, taskRunId, tdccSession, signal }) {
+      if (requiredWorkflowCapabilities(definition).length === 0) return { ports: {}, close() {} };
+      if (!descriptor) throw new Error("worker-start-failed");
+      const child = createPGliteChildRpcClient({
+        endpoint: descriptor.endpoint,
+        token: descriptor.token,
+        diagnosticContext: { workflowId, taskRunId },
+      });
+      try {
+        await abortable(child.ready, signal);
+      } catch (error) {
+        child.close();
+        throw error;
+      }
+      return {
+        ports: servedPorts(definition, {
+          financialCommit: createWorkflowFinancialCommitPort(child.workflow),
+          maicoinPersistence: child.operationalProvider.maicoin,
+          tdcc: {
+            session: tdccSession,
+            admittedFundAccounts: (connection) => child.financial.request("financial.tdccFundAccounts.list", [connection]),
+          },
+          exchangeRates: {
+            persistence: child.operationalProvider.exchangeRates,
+            overviewCurrent: () => child.financial.request("financial.overview.current", []),
+          },
+          accountIdentity: {
+            continuity: (request) => child.financial.request("financial.accountIdentity.continuity", [request]),
+          },
+          previewWrite: child.operationalProvider.preview,
+        }),
+        close: () => child.close(),
+      };
+    },
+  };
+}
+
+/** A check's source: the ports it was given, of which a run sees only those its definition may use. */
+export function fixedCapabilities(ports: Partial<WorkflowCapabilityPorts>): CapabilitySource {
+  return {
+    async open({ definition }) {
+      return { ports: servedPorts(definition, ports), close() {} };
+    },
+  };
+}
+
 export type AppWorkflowWorkerRuntimeOptions = Readonly<{
   port: MessagePort;
   /** Test seam; production resolves from the App's typed workflow catalog. */
   resolveDefinition?: (workflowId: string) => WorkflowDefinition | null;
   /** The page a browser workflow runs in; a nonbrowser workflow is refused one. */
   browser?: WorkflowBrowserPort;
-  /** Test seam; production creates this port from the authenticated PGlite RPC. */
-  financialCommit?: WorkflowFinancialCommitPort;
-  previewWrite?: WorkflowPreviewWritePort;
-  accountIdentity?: WorkflowAccountIdentityPort;
+  /** Where the definition's capability ports come from; opened once per run. */
+  capabilities: CapabilitySource;
+  /** Test seam for the run's clock; production reads the wall clock. */
   now?: WorkflowExecutorPorts["now"];
 }>;
-
-function childRpcCapabilityPorts(
-  child: PGliteChildRpcClient,
-  tdccSession: TdccSessionPort,
-): Required<WorkflowCapabilityPorts> {
-  return {
-    financialCommit: createWorkflowFinancialCommitPort(child.workflow),
-    maicoinPersistence: child.operationalProvider.maicoin,
-    tdcc: {
-      session: tdccSession,
-      admittedFundAccounts: (connection) => child.financial.request("financial.tdccFundAccounts.list", [connection]),
-    },
-    exchangeRates: {
-      persistence: child.operationalProvider.exchangeRates,
-      overviewCurrent: () => child.financial.request("financial.overview.current", []),
-    },
-    accountIdentity: {
-      continuity: (request) => child.financial.request("financial.accountIdentity.continuity", [request]),
-    },
-    previewWrite: child.operationalProvider.preview,
-  };
-}
 
 function throwOnProtocolFailure() {
   return new AppWorkflowWorkerProtocolError();
@@ -143,25 +191,35 @@ function refuseStart(port: MessagePort) {
 }
 
 /**
- * The worker thread's entry: a browser workflow's `workerData` carries the
- * loopback DevTools page it attaches to, which becomes the core's browser.
+ * The worker thread's entry: `workerData` is the core's start plus the
+ * descriptors the host hands the thread beside it. A browser workflow's
+ * loopback DevTools page becomes the core's browser, and the PGlite child RPC
+ * becomes its capability source (ADR 0134).
  */
 export async function runAppWorkflowWorkerThread(
   options: Readonly<{ port: MessagePort; workerData: unknown }>,
 ): Promise<void> {
   const { port, workerData } = options;
-  if (!isRecord(workerData) || !Object.hasOwn(workerData, "browserConnection")) {
-    return await runAppWorkflowWorker(workerData, { port });
+  if (!isRecord(workerData)) {
+    return await runAppWorkflowWorker(workerData, { port, capabilities: childRpcCapabilities(undefined) });
   }
-  const { browserConnection, ...start } = workerData;
-  let connection: AppWorkflowBrowserConnection;
+  const { browserConnection, pgliteRpc, ...start } = workerData;
+  let browser: WorkflowBrowserPort | undefined;
+  let descriptor: PGliteWorkflowRpc | undefined;
   try {
-    connection = parseAppWorkflowBrowserConnection(browserConnection);
+    if (Object.hasOwn(workerData, "browserConnection")) {
+      browser = appBrowserPort(parseAppWorkflowBrowserConnection(browserConnection));
+    }
+    if (Object.hasOwn(workerData, "pgliteRpc")) descriptor = parseAppWorkflowPgliteRpc(pgliteRpc);
   } catch {
     refuseStart(port);
     return;
   }
-  await runAppWorkflowWorker(start, { port, browser: appBrowserPort(connection) });
+  await runAppWorkflowWorker(start, {
+    port,
+    ...(browser ? { browser } : {}),
+    capabilities: childRpcCapabilities(descriptor),
+  });
 }
 
 /** Execute one typed definition inside the App-managed Node worker. */
@@ -231,44 +289,21 @@ export async function runAppWorkflowWorker(
     },
   };
 
-  let childRpc: PGliteChildRpcClient | undefined;
+  let opened: Awaited<ReturnType<CapabilitySource["open"]>> | undefined;
   let previewWorkflow = false;
-  const connectChildRpc = async (rpc: NonNullable<AppWorkflowWorkerStart["pgliteRpc"]>) => {
-    childRpc = createPGliteChildRpcClient({
-      endpoint: rpc.endpoint,
-      token: rpc.token,
-      diagnosticContext: { workflowId: start.workflowId, taskRunId: start.taskRunId },
-    });
-    await abortable(childRpc.ready, controller.signal);
-    return childRpc;
-  };
   try {
-    const runtime = appWorkflowRegistration(start.workflowId)?.runtime;
-    if (!runtime) throw new Error("worker-start-failed");
-    if (start.pgliteRpc && runtime.kind === "nonbrowser") {
-      await connectChildRpc(start.pgliteRpc);
-    }
     const definition = options.resolveDefinition
       ? options.resolveDefinition(start.workflowId)
       : appWorkflowRegistration(start.workflowId)?.definition;
     if (!definition || definition.id !== start.workflowId) throw new Error("worker-start-failed");
     previewWorkflow = definition.requiresPreviewWrite === true;
-    const previewWrite = workflowUsesPreviewWrite(definition) ? options.previewWrite : undefined;
-    const injected: Partial<WorkflowCapabilityPorts> = {
-      ...(options.financialCommit ? { financialCommit: options.financialCommit } : {}),
-      ...(options.accountIdentity ? { accountIdentity: options.accountIdentity } : {}),
-      ...(previewWrite ? { previewWrite } : {}),
-    };
-    const servedByInjection = requiredCapabilityPorts(definition, injected);
-    if (!childRpc && requiredWorkflowCapabilities(definition).some((capability) => !servedByInjection[capability])) {
-      if (!start.pgliteRpc) throw new Error("worker-start-failed");
-      await connectChildRpc(start.pgliteRpc);
-    }
-    const capabilityPorts = requiredCapabilityPorts(
+    opened = await options.capabilities.open({
       definition,
-      injected,
-      childRpc && childRpcCapabilityPorts(childRpc, tdccSessionPort),
-    );
+      workflowId: start.workflowId,
+      taskRunId: start.taskRunId,
+      tdccSession: tdccSessionPort,
+      signal: controller.signal,
+    });
 
     const eventsPort: WorkflowExecutorPorts["events"] = {
       async append(event) {
@@ -292,8 +327,7 @@ export async function runAppWorkflowWorker(
       browser: browser ?? nonbrowserPage,
       text: strictSourceText,
       humanAssistance,
-      ...capabilityPorts,
-      ...(previewWritePort(definition, previewWrite, childRpc?.operationalProvider.preview)),
+      ...opened.ports,
       commitAttempts,
       events: eventsPort,
       now: options.now ?? (() => new Date().toISOString()),
@@ -374,6 +408,6 @@ export async function runAppWorkflowWorker(
     terminal = true;
     options.port.off("message", onMessage);
     hostCalls.close();
-    childRpc?.close();
+    opened?.close();
   }
 }

@@ -31,7 +31,6 @@ export type AppWorkflowWorkerStart = Readonly<{
   workflowId: string;
   taskRunId: string;
   input: unknown;
-  pgliteRpc?: PGliteWorkflowRpc;
 }>;
 
 /** A host call (ADR 0072); its method's contract in app-workflow-host-calls.ts validates the request. */
@@ -159,7 +158,7 @@ function validLoopbackConnection(value: unknown): value is AppWorkflowBrowserCon
   }
 }
 
-function validPGliteRpc(value: unknown): value is NonNullable<AppWorkflowWorkerStart["pgliteRpc"]> {
+function validPGliteRpc(value: unknown): value is PGliteWorkflowRpc {
   return isRecord(value)
     && exactKeys(value, ["endpoint", "token"])
     && typeof value.endpoint === "string"
@@ -174,25 +173,25 @@ export function parseAppWorkflowBrowserConnection(value: unknown): AppWorkflowBr
   return value;
 }
 
+/** The PGlite child RPC descriptor the host hands the worker thread beside its start (ADR 0134). */
+export function parseAppWorkflowPgliteRpc(value: unknown): PGliteWorkflowRpc {
+  if (!validPGliteRpc(value)) invalid();
+  return value;
+}
+
 export function parseAppWorkflowWorkerStart(value: unknown): AppWorkflowWorkerStart {
   if (!isRecord(value) || !exactKeys(value, [
     "protocolVersion", "workflowId", "taskRunId", "input",
-  ], ["pgliteRpc"])) invalid();
-  // An unregistered workflow has no runtime to check the start against.
-  const runtime = typeof value.workflowId === "string"
-    ? appWorkflowRegistration(value.workflowId)?.runtime
-    : undefined;
-  const nonbrowser = runtime?.kind === "nonbrowser";
+  ])) invalid();
   if (
     value.protocolVersion !== APP_WORKFLOW_WORKER_PROTOCOL_VERSION
-    || !runtime
     || typeof value.workflowId !== "string"
     || !SAFE_WORKFLOW_ID.test(value.workflowId)
+    // An unregistered workflow has no runtime to run the start on.
+    || !appWorkflowRegistration(value.workflowId)
     || typeof value.taskRunId !== "string"
     || !SAFE_ID.test(value.taskRunId)
     || !Object.hasOwn(value, "input")
-    || (nonbrowser && !Object.hasOwn(value, "pgliteRpc"))
-    || (Object.hasOwn(value, "pgliteRpc") && !validPGliteRpc(value.pgliteRpc))
     || !boundedJson(value)
   ) invalid();
   return value as unknown as AppWorkflowWorkerStart;

@@ -27,6 +27,7 @@ import type { WorkflowRunEvent } from "./run-event.ts";
 import { createWorkflowFinancialCommitPort } from "./workflow-financial-commit.ts";
 import { runSupervisedAppWorkflow } from "./server/app-workflow-worker-supervisor.ts";
 import { inProcessCheckHost } from "./server/task-run-check-support.ts";
+import { childRpcCapabilities } from "./server/app-workflow-worker-runtime.ts";
 import { createAutomationCredentialStore } from "./server/config-files.ts";
 import { createPGliteSpendingPageActions } from "../../ledger/pglite/spending-command.ts";
 
@@ -671,8 +672,11 @@ test("through the supervised worker frames, a rotated token is saved when the ru
         humanAssistance: async () => ({ status: "failed" }),
         ...tdccSessionHostCalls(createTdccSessionHost(secrets)),
       },
-      launchWorker: (start) => inProcessCheckHost({ resolveDefinition: () => tdccDefinition(fake.fetch) })
-        .launchWorker(start, { browserConnection: () => null }),
+      launchWorker: (launch) => inProcessCheckHost({
+        capabilities: childRpcCapabilities(pgliteRpc),
+        resolveDefinition: () => tdccDefinition(fake.fetch),
+      })
+        .launchWorker(launch, { browserConnection: () => null }),
     });
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.errorCode, "source-unavailable");

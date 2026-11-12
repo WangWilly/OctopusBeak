@@ -12,7 +12,8 @@ import {
   parseAppWorkflowWorkerStart,
   type AppWorkflowWorkerStart,
 } from "./app-workflow-worker-protocol.ts";
-import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { AppWorkflowWorkerHandle, WorkerLaunch } from "./execution-host.ts";
+import type { PGliteWorkflowRpc } from "../../pglite-rpc/pglite-child-rpc-client.ts";
 import { createHostCallDispatcher, HostCallRefusal, type HostCallHandlers } from "./app-workflow-host-calls.ts";
 import type { PreviewResponseShapes } from "../../preview-sources/structure-report.ts";
 
@@ -34,7 +35,8 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
   runId: string;
   workflowId: string;
   input: unknown;
-  pgliteRpc?: AppWorkflowWorkerStart["pgliteRpc"];
+  /** Handed to the host beside the start, never inside it (ADR 0134). */
+  pgliteRpc?: PGliteWorkflowRpc;
   signal: AbortSignal;
   /** Force-quit: terminate the worker at once instead of waiting out the cancel grace. */
   forceSignal?: AbortSignal;
@@ -44,7 +46,7 @@ export type RunSupervisedAppWorkflowOptions = Readonly<{
    */
   hostCalls: HostCallHandlers;
   /** Starts this run's worker, as the execution host does. */
-  launchWorker: (start: AppWorkflowWorkerStart) => AppWorkflowWorkerHandle;
+  launchWorker: (launch: WorkerLaunch) => AppWorkflowWorkerHandle;
   /** Bounds how long a cancelled or unhealthy worker may ignore its cancel frame. */
   cancelGraceMs?: number;
   /** Bounds worker cleanup after a valid terminal frame. */
@@ -99,7 +101,6 @@ export async function runSupervisedAppWorkflow(
       workflowId: options.workflowId,
       taskRunId: options.runId,
       input: options.input,
-      ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}),
     });
   } catch {
     return failed("protocol-invalid", "protocol");
@@ -107,7 +108,7 @@ export async function runSupervisedAppWorkflow(
 
   let worker: AppWorkflowWorkerHandle;
   try {
-    worker = options.launchWorker(start);
+    worker = options.launchWorker({ start, ...(options.pgliteRpc ? { pgliteRpc: options.pgliteRpc } : {}) });
   } catch {
     return failed("worker-start-failed", "worker-start");
   }

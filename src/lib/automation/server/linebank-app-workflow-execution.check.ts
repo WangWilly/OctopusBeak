@@ -12,6 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { linebankEpochMillisecondsFromSourceDateTime } from "../../../ledger/canonical/linebank-domestic-deposit.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { StatementSelectionError } from "../statement-selection.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
@@ -247,7 +248,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         now: () => "2026-09-25T12:00:00.000Z",
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
@@ -282,7 +283,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
 
     const malformedPage = createPage({ malformedTransactions: true });
     const malformed = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(malformedPage); } }) }),
+      executionHost: inProcessCheckHost({ browser: () => ({ async withPage(runPage) { return runPage(malformedPage); } }), capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
     }), task.id);
@@ -295,7 +296,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
 
     const incompletePage = createPage({ incompleteTransactions: true });
     const incomplete = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(incompletePage); } }) }),
+      executionHost: inProcessCheckHost({ browser: () => ({ async withPage(runPage) { return runPage(incompletePage); } }), capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
     }), task.id);
@@ -313,7 +314,7 @@ test("LINE Bank App task dispatches through the typed browser host and injected 
       },
     });
     const cancellationRuntime = runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit, browser: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }) }),
+      executionHost: inProcessCheckHost({ browser: () => ({ async withPage(runPage) { return runPage(cancellationPage); } }), capabilities: fixedCapabilities({ financialCommit }) }),
       environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
       userDataDirectory: root,
     });

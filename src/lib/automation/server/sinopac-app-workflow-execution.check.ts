@@ -12,6 +12,7 @@ import type { WorkflowBrowserPort, WorkflowFinancialCommitPort } from "../workfl
 import { SINOPAC_LOGIN_URL } from "../../../workflows/sinopac-statements.ts";
 import { taskById } from "./tasks.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import { appWorkflowRegistration, workflowStartUrlForWorkflow } from "./app-workflow-registry.ts";
 import { createTestPGlite } from "../../../ledger/pglite/baseline-test-template.ts";
 import { fakeProviderReply } from "../../../workflows/provider-response-reader.fixtures.ts";
@@ -175,7 +176,8 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
     };
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit, now: () => "2026-09-25T12:00:00.000Z",
+        capabilities: fixedCapabilities({ financialCommit }),
+        now: () => "2026-09-25T12:00:00.000Z",
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
           return browser;
@@ -209,7 +211,7 @@ test("SinoPac App task dispatches through typed workflow and injected financial 
         async withPage(runPage) { return runPage(invalidPage); },
       };
       const rejected = await runForCheck(runtimeForCheck(provider, {
-        executionHost: inProcessCheckHost({ financialCommit, now: () => "2026-09-25T12:00:00.000Z", browser: () => invalidBrowser }),
+        executionHost: inProcessCheckHost({ now: () => "2026-09-25T12:00:00.000Z", browser: () => invalidBrowser, capabilities: fixedCapabilities({ financialCommit }) }),
         environment: { ...syntheticEnvironment(), OCTOPUSBEAK_USER_DATA: root },
         userDataDirectory: root,
       }), task.id);

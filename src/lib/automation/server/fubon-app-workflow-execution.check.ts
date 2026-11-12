@@ -32,6 +32,7 @@ const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
   import("./task-run-check-support.ts"),
   import("./app-workflow-registry.ts"),
 ]);
+const { fixedCapabilities } = await import("./app-workflow-worker-runtime.ts");
 
 const LOGIN_URL = "https://ebank.taipeifubon.com.tw/B2C/common/Index.faces";
 const credentialKey = (suffix: string) => ["LIBRETTO", "CLOUD", "FUBON", suffix].join("_");
@@ -101,7 +102,7 @@ test("Fubon task dispatch uses the App-owned typed workflow and maps its sign-in
     const provider = createPgliteOperationalProvider(store);
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit, accountIdentity,
+        capabilities: fixedCapabilities({ financialCommit, accountIdentity }),
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
           return browser;

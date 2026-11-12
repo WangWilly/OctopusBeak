@@ -9,7 +9,7 @@ import {
   createPgliteOperationalProvider,
 } from "../../../ledger/pglite/operational.ts";
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
-import type { AppWorkflowWorkerHandle } from "./execution-host.ts";
+import type { AppWorkflowWorkerHandle, WorkerLaunch } from "./execution-host.ts";
 import type { AppWorkflowBrowserHostInput } from "./app-browser-host.ts";
 import type { WorkflowExecution } from "./active-task-run.ts";
 import {
@@ -372,10 +372,12 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
     try {
       const provider = createPgliteOperationalProvider(store);
       let workerStart: AppWorkflowWorkerStart | undefined;
+      let workerLaunch: WorkerLaunch | undefined;
       const result = await runForCheck(runtimeForCheck(provider, {
         executionHost: {
-          ...inProcessCheckHost({ scriptedWorker: (start) => {
+          ...inProcessCheckHost({ scriptedWorker: (start, launch) => {
             workerStart = start;
+            workerLaunch = launch;
             return new NonBrowserFakeWorker(start);
           } }),
           withPage: () => { throw new Error("Nonbrowser task opened a browser."); },
@@ -386,7 +388,8 @@ test("exchange-rate and MaiCoin dispatch through supervised workers without a br
       assert.equal(result.status, "completed");
       assert.ok(workerStart);
       assert.equal(workerStart.workflowId, taskId);
-      assert.deepEqual(workerStart.pgliteRpc, CHECK_PGLITE_RPC);
+      assert.deepEqual(workerLaunch?.pgliteRpc, CHECK_PGLITE_RPC);
+      assert.equal(Object.hasOwn(workerStart, "pgliteRpc"), false, "the start never carries the PGlite descriptor");
       const run = await provider.automation.taskRunById(taskRunId);
       assert.equal(run?.status, "completed");
       assert.ok(run?.events.some((event) => event.code === "run-started"));
@@ -428,6 +431,7 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       options: { forceTerminated?: boolean } = {},
     ) => {
       let startData: AppWorkflowWorkerStart | undefined;
+      let launchData: WorkerLaunch | undefined;
       let worker: TaskExecutionFakeWorker | undefined;
       let resolveWorkerCreated!: () => void;
       const workerCreated = new Promise<void>((resolve) => { resolveWorkerCreated = resolve; });
@@ -437,8 +441,9 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
         // from failing closed as unrouted.
         assistanceRoute: (request) => { assistanceRequest = request; },
         environment: launchEnv,
-        executionHost: inProcessCheckHost({ scriptedWorker: (start) => {
+        executionHost: inProcessCheckHost({ scriptedWorker: (start, launch) => {
           startData = start;
+          launchData = launch;
           resolveWorkerCreated();
           worker = new TaskExecutionFakeWorker(
             start,
@@ -476,7 +481,8 @@ test("browser tasks use the supervised App worker, persist events before ACK, an
       assert.ok(startData, "the task creates the supervised worker");
       assert.equal(startData.workflowId, task.workflowId);
       assert.equal(startData.input && typeof startData.input, "object");
-      assert.deepEqual(startData.pgliteRpc, CHECK_PGLITE_RPC);
+      assert.deepEqual(launchData?.pgliteRpc, CHECK_PGLITE_RPC);
+      assert.equal(Object.hasOwn(startData, "pgliteRpc"), false, "the start never carries the PGlite descriptor");
       assert.equal(taskRunId, startData.taskRunId);
 
       if (scenario === "assistance-completion") {

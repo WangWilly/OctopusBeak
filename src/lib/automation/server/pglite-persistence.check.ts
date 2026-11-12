@@ -222,10 +222,11 @@ try {
     assert.ok(finished, "the started run has a record");
     return finished;
   };
-  const exchangeHost = inProcessCheckHost({ scriptedWorker: (start) => {
+  const exchangeHost = inProcessCheckHost({ scriptedWorker: (start, launch) => {
     exchangeWorkerStarts += 1;
     assert.equal(start.workflowId, "exchange-rates");
-    assert.ok(start.pgliteRpc);
+    assert.ok(launch.pgliteRpc, "the host is handed the PGlite RPC beside the start");
+    assert.equal(Object.hasOwn(start, "pgliteRpc"), false, "the start never carries the PGlite descriptor");
     return new ExchangeRateWorkerFixture(start);
   } });
   const exchangeExecutionResult = await runToEnd(provider, runtimeFor(provider, { executionHost: exchangeHost }));

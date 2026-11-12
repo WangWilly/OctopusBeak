@@ -33,6 +33,7 @@ const [{ taskById }, { inProcessCheckHost, runForCheck, runtimeForCheck }, {
   import("./app-workflow-registry.ts"),
   import("../../../workflows/yuanta-auth.ts"),
 ]);
+const { fixedCapabilities } = await import("./app-workflow-worker-runtime.ts");
 
 const credentialKey = (suffix: string) => ["LIBRETTO", "CLOUD", "YUANTA", suffix].join("_");
 const syntheticEnvironment = () => ({
@@ -92,7 +93,7 @@ test("Yuanta task dispatch uses the App-owned typed workflow and maps sign-in de
     const provider = createPgliteOperationalProvider(store);
     const result = await runForCheck(runtimeForCheck(provider, {
       executionHost: inProcessCheckHost({
-        financialCommit,
+        capabilities: fixedCapabilities({ financialCommit }),
         browser: ({ startUrl }) => {
           observedStartUrl = startUrl;
           return browser;

@@ -12,6 +12,7 @@ import {
 import { PGliteStore } from "../../../ledger/pglite/transaction.ts";
 import { createAppWorkflowBrowserPort } from "./app-browser-host.ts";
 import { inProcessCheckHost, runForCheck, runtimeForCheck, startForCheck } from "./task-run-check-support.ts";
+import { fixedCapabilities } from "./app-workflow-worker-runtime.ts";
 import type { WorkflowFinancialCommitPort } from "../workflow-executor.ts";
 import { taskById } from "./tasks.ts";
 import { ldataContext } from "../../../workflows/einvoice-app-protocol.ts";
@@ -142,7 +143,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
 
     // Successful empty collection commits.
     const firstResult = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
+      executionHost: inProcessCheckHost({ browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal), capabilities: fixedCapabilities({ financialCommit: committedFinancialCommit() }) }),
       environment: testCredentialEnvironment(),
     }), task.id);
     assert.equal(firstResult.status, "completed");
@@ -186,7 +187,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
       },
     };
     const rejectedResult = await runForCheck(runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit: rejectedCommit, browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal) }),
+      executionHost: inProcessCheckHost({ browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal), capabilities: fixedCapabilities({ financialCommit: rejectedCommit }) }),
       environment: testCredentialEnvironment(),
     }), task.id);
     assert.equal(rejectedResult.status, "failed");
@@ -196,7 +197,7 @@ test("App dispatch runs E-Invoice over its App protocol and commits, rejects, an
 
     // Shutdown interrupts a run still parked in its (slow) login.
     const shutdownRuntime = runtimeForCheck(provider, {
-      executionHost: inProcessCheckHost({ financialCommit: committedFinancialCommit(), browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000) }),
+      executionHost: inProcessCheckHost({ browser: ({ taskId, taskRunId, signal }) => makeBrowserPort(taskId, taskRunId, signal, 30_000), capabilities: fixedCapabilities({ financialCommit: committedFinancialCommit() }) }),
       environment: testCredentialEnvironment(),
     });
     const shutdown = await startForCheck(shutdownRuntime, task.id);
