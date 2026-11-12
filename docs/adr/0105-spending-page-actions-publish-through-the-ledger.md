@@ -20,7 +20,7 @@ A Spending page action, such as confirming a pairing, returns its exact summary 
 
 ## Considered options
 
-- **Keep the hooks on the registry, as one required `financialPageActions` member.** Rejected. The registry routes financial RPCs, and a live view would still reach the actions through it.
+- **Keep the hooks on the registry, as one required `spendingPageActions` member.** Rejected. The registry routes financial RPCs, and a live view would still reach the actions through it.
 - **Also move the renderer's handling of an action result.** Rejected. `PurchaseSpendingSession` applies the result to its own record list, selection and candidate page, which the worker never sees. It shares only the delta computation, which already lives in the Spending model.
 
 ## Consequences
