@@ -116,7 +116,7 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
 const CARD_REFUND_LABEL = /(退款|退貨|退刷|刷退|退費|退回|refund)/u;
 const CARD_REVERSAL_LABEL = /(沖正|沖銷|沖回|reversal)/u;
 const CARD_REWARD_LABEL = /(現金回饋|紅利回饋|回饋金|cashback)/u;
-const CARD_PAYMENT_LABEL = /(^繳款|網路繳款|行動銀行繳款|行動繳款|自動扣繳|atm繳款|臨櫃繳款|超商繳款|感謝您?的?繳款|paymentthankyou|thankyouforyourpayment|paymentreceived)/u;
+const CARD_PAYMENT_LABEL = /(^繳款|網路繳款|行動銀行繳款|行動繳款|^自動扣繳|atm繳款|臨櫃繳款|超商繳款|感謝您?的?繳款|paymentthankyou|thankyouforyourpayment|paymentreceived)/u;
 
 export function classifyCreditCardInflowKind(description: string | null | undefined): Readonly<{
   value: "reversal" | "income.reward" | "payment.credit_card";

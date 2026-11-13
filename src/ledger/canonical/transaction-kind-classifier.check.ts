@@ -40,7 +40,7 @@ test("a card inflow's issuer label names what it is", () => {
 test("a merchant's credit, a refund, or a label naming nothing gets no Kind from its description", () => {
   for (const description of [
     "中華電信繳費", "台灣大哥大電信繳費", "GOOGLE PAYMENT", "AMAZON PAYMENTS", "STRIPE PAYMENT",
-    "街口支付扣款", "悠遊卡自動加值扣款", "溢繳款退回", "全聯福利中心 退貨", "刷退 統一超商", "全聯福利中心", "", null,
+    "街口支付扣款", "台電電費自動扣繳", "中華電信自動扣繳", "悠遊卡自動加值扣款", "溢繳款退回", "全聯福利中心 退貨", "刷退 統一超商", "全聯福利中心", "", null,
   ])
     assert.equal(classifyCreditCardInflowKind(description), null, String(description));
 });
