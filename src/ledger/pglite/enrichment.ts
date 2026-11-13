@@ -8,7 +8,7 @@ import {
   CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
   CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
 } from "../canonical/transaction-taxonomy.ts";
-import { classifyBankTransactionKind } from "../canonical/transaction-kind-classifier.ts";
+import { classifyBankTransactionKind, classifyCreditCardInflowKind } from "../canonical/transaction-kind-classifier.ts";
 import { classifyCathayDescription } from "../canonical/cathay-description-classifier.ts";
 
 export type PGliteProjectionTransaction = Readonly<{
@@ -151,16 +151,20 @@ export function derivePGliteTransactionKind(
   ) return derivePGliteCathayDescriptionKind(transaction);
   const card = creditCardRoute(transaction);
   if (card) {
+    const described = transaction.direction === "inflow" ? classifyCreditCardInflowKind(transaction.description) : null;
+    if (described)
+      return {
+        ...described,
+        sourceValue: transaction.description ?? "",
+        ...card,
+        ruleLineage: `${card.contractVersion}/inflow-description`,
+      };
     return {
       value: transaction.direction === "outflow" ? "purchase" : "refund",
       evidenceKind: "direction",
       sourceField: "direction",
       sourceValue: transaction.direction,
-      contractVersion: card.contractVersion,
-      producerId: card.producerId,
-      producerVersion: card.producerVersion,
-      ruleLineage: card.ruleLineage,
-      routeId: card.routeId,
+      ...card,
     };
   }
   const route = bankRoute(transaction);

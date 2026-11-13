@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyBankTransactionKind } from "./transaction-kind-classifier.ts";
+import { classifyBankTransactionKind, classifyCreditCardInflowKind } from "./transaction-kind-classifier.ts";
 
 const fubonDeposit = { integrationNamespace: "fubon", stream: "domestic-deposit" } as const;
 
@@ -21,4 +21,22 @@ test("a Fubon description that only mentions an exchange later stays a purchase"
     classifyBankTransactionKind({ ...fubonDeposit, direction: "outflow", description: "行動支付 · 換匯小舖" }).value,
     "purchase",
   );
+});
+
+test("a card inflow's own label names what it is", () => {
+  for (const [description, value] of [
+    ["網路繳款", "payment.credit_card"],
+    ["自動扣繳 謝謝", "payment.credit_card"],
+    ["PAYMENT - THANK YOU", "payment.credit_card"],
+    ["全聯福利中心 退貨", "refund"],
+    ["刷退 統一超商", "refund"],
+    ["沖正", "reversal"],
+    ["現金回饋", "income.reward"],
+  ] as const)
+    assert.equal(classifyCreditCardInflowKind(description)?.value, value, description);
+});
+
+test("a card inflow whose label names nothing gets no Kind from its description", () => {
+  for (const description of ["全聯福利中心", "UBER *TRIP", "", null])
+    assert.equal(classifyCreditCardInflowKind(description), null, String(description));
 });

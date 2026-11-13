@@ -104,3 +104,23 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
     sourceField: "source_kind",
   };
 }
+
+/**
+ * A credit-card inflow is a refund, a reversal, a reward, or a bill payment
+ * credit, and its direction alone cannot tell which. Only the source
+ * description can, so this returns null when the description names none of
+ * them and the caller keeps its direction fallback.
+ */
+export function classifyCreditCardInflowKind(description: string | null | undefined): Readonly<{
+  value: "refund" | "reversal" | "income.reward" | "payment.credit_card";
+  evidenceKind: "bank-rule";
+  sourceField: "source_description";
+}> | null {
+  const text = description?.replace(/\s+/gu, "").toLowerCase() ?? "";
+  const value = /(退款|退貨|退刷|刷退|退費|退回|refund)/u.test(text) ? "refund"
+    : /(沖正|沖銷|沖回|撤銷|reversal)/u.test(text) ? "reversal"
+    : /(回饋|cashback)/u.test(text) ? "income.reward"
+    : /(繳款|繳費|扣繳|扣款|payment|thankyou)/u.test(text) ? "payment.credit_card"
+    : null;
+  return value === null ? null : { value, evidenceKind: "bank-rule", sourceField: "source_description" };
+}

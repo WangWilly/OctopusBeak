@@ -104,8 +104,9 @@ function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transf
   const linkOf = new Map<string, CashFlowTransferLink>(report.transfers.links.map((link) => [link.linkId, link]));
   const counted = new Map<string, CashFlowReportTransaction>();
   for (const row of report.transactions) {
+    // A card bill payment link shows under 信用卡繳款, not as a transfer pair.
+    if (cashFlowTransferRole(row) === null) continue;
     const linkId = row.transferLinkId;
-    if (linkId === null && cashFlowTransferRole(row) !== "internal") continue;
     const currency = normalizeCurrency(row.amount.currency);
     const entry = byCurrency.get(currency) ?? emptyTransfers();
     byCurrency.set(currency, entry);

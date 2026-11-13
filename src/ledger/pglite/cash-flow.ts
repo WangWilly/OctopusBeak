@@ -269,7 +269,7 @@ async function canonicalTransactions(
   });
   const refundIds = included.filter((entry) => entry.rule.class === "refund").map((entry) => entry.transaction.transactionId);
   const originalOf = await refundOriginals(reader, refundIds);
-  // A card inflow is a refund by direction alone; only a relation or Spending's refund recognition proves it is one.
+  // A card inflow whose description names nothing is a refund by direction alone; only a relation or Spending's refund recognition proves it is one.
   const directionRefunds = included
     .filter((entry) => entry.rule.class === "refund" && entry.evidence === "direction" && !originalOf.has(entry.transaction.transactionId))
     .map((entry) => entry.transaction.transactionId);

@@ -132,14 +132,15 @@ export function cashFlowTransferRefusal(
 }
 
 /**
- * Kinds that prove a side is a move between the person's own accounts. A
- * bank-side `payment.credit_card` has no evidence-backed card-side Kind to
- * meet yet: card inflows get theirs from direction alone (issue #467).
+ * Kinds that prove a side is a move between the person's own accounts. Both
+ * sides of an evidence link carry the same one: two internal transfers, or a
+ * card bill payment whose bank debit and card credit both name it.
  */
-const EVIDENCED_TRANSFER_KINDS: ReadonlySet<string> = new Set(["transfer.internal"]);
+const EVIDENCED_TRANSFER_KINDS: ReadonlySet<string> = new Set(["transfer.internal", "payment.credit_card"]);
 
-function evidencesTransfer(kind: CashFlowKind | null): boolean {
-  return kind !== null && kind.basis === "evidence" && EVIDENCED_TRANSFER_KINDS.has(kind.code);
+function evidencesTransfer(outflow: CashFlowKind | null, inflow: CashFlowKind | null): boolean {
+  return outflow !== null && inflow !== null && outflow.basis === "evidence" && inflow.basis === "evidence"
+    && outflow.code === inflow.code && EVIDENCED_TRANSFER_KINDS.has(outflow.code);
 }
 
 export type StoredCashFlowTransferLink = CashFlowTransferPair & Readonly<{
@@ -223,7 +224,7 @@ export function pairCashFlowTransfers(
   }
   for (const { outflow, inflow } of pairs) {
     const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
-    if (evidencesTransfer(outflow.kind) && evidencesTransfer(inflow.kind)
+    if (evidencesTransfer(outflow.kind, inflow.kind)
       && counterparts.get(outflow.transactionId) === 1 && counterparts.get(inflow.transactionId) === 1
       && context.history(pair) === undefined)
       link(pair, { kind: "evidence" });
@@ -248,10 +249,11 @@ type LinkedSide = Pick<CashFlowTransaction, "kind" | "cashFlow">;
  * only where no evidence does: `side` must carry a weak or fallback Kind, and
  * its counterpart a weak or fallback Kind or an evidence-backed internal
  * transfer. Any other evidence-backed Kind, or a missing one, on either side
- * keeps `side` in its own class.
+ * keeps `side` in its own class. A card bill payment does not prove the move
+ * for its counterpart: a link cannot tell whether that side is on the card.
  */
 function linkExcludes(side: CashFlowKind | null, counterpart: CashFlowKind | null): boolean {
-  return linkExcludable(side) && (linkExcludable(counterpart) || evidencesTransfer(counterpart));
+  return linkExcludable(side) && (linkExcludable(counterpart) || (counterpart?.basis === "evidence" && counterpart.code === "transfer.internal"));
 }
 
 /**
