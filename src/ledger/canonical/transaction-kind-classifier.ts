@@ -107,20 +107,27 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
 
 /**
  * A credit-card inflow is a refund, a reversal, a reward, or a bill payment
- * credit, and its direction alone cannot tell which. Only the source
- * description can, so this returns null when the description names none of
- * them and the caller keeps its direction fallback.
+ * credit, and its direction alone cannot tell which. The issuer's own label
+ * can, so this matches the issuer's phrasing rather than any word a merchant
+ * name may also hold: 中華電信繳費 or GOOGLE PAYMENT is a merchant's credit.
+ * A refund label is left to the direction fallback, which already reads it
+ * as a refund, so it returns null for that and for a label naming nothing.
  */
+const CARD_REFUND_LABEL = /(退款|退貨|退刷|刷退|退費|退回|refund)/u;
+const CARD_REVERSAL_LABEL = /(沖正|沖銷|沖回|reversal)/u;
+const CARD_REWARD_LABEL = /(現金回饋|紅利回饋|回饋金|cashback)/u;
+const CARD_PAYMENT_LABEL = /(^繳款|網路繳款|行動銀行繳款|行動繳款|自動扣繳|atm繳款|臨櫃繳款|超商繳款|感謝您?的?繳款|paymentthankyou|thankyouforyourpayment|paymentreceived)/u;
+
 export function classifyCreditCardInflowKind(description: string | null | undefined): Readonly<{
-  value: "refund" | "reversal" | "income.reward" | "payment.credit_card";
+  value: "reversal" | "income.reward" | "payment.credit_card";
   evidenceKind: "bank-rule";
   sourceField: "source_description";
 }> | null {
-  const text = description?.replace(/\s+/gu, "").toLowerCase() ?? "";
-  const value = /(退款|退貨|退刷|刷退|退費|退回|refund)/u.test(text) ? "refund"
-    : /(沖正|沖銷|沖回|撤銷|reversal)/u.test(text) ? "reversal"
-    : /(回饋|cashback)/u.test(text) ? "income.reward"
-    : /(繳款|繳費|扣繳|扣款|payment|thankyou)/u.test(text) ? "payment.credit_card"
+  const text = description?.replace(/[\s\-–—:：]+/gu, "").toLowerCase() ?? "";
+  if (CARD_REFUND_LABEL.test(text)) return null;
+  const value = CARD_REVERSAL_LABEL.test(text) ? "reversal"
+    : CARD_REWARD_LABEL.test(text) ? "income.reward"
+    : CARD_PAYMENT_LABEL.test(text) ? "payment.credit_card"
     : null;
   return value === null ? null : { value, evidenceKind: "bank-rule", sourceField: "source_description" };
 }

@@ -180,8 +180,8 @@ export function cashFlowTransferSuspension(
  * The current links, suspended links and candidates among `sides`. A stored
  * link applies only while both sides are among `sides` and still valid; a
  * suspended one blocks nothing and applies again once its sides are valid.
- * Evidence links a pair only when both sides carry an evidence-backed
- * internal-transfer Kind, the pair is each side's only candidate, and the
+ * Evidence links a pair only when both sides carry the same evidence-backed
+ * `transfer.internal` or `payment.credit_card` Kind, the pair is each side's only candidate, and the
  * person has never decided on it; anything ambiguous stays a candidate.
  */
 export function pairCashFlowTransfers(

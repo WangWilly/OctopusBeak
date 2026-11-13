@@ -2618,7 +2618,7 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'counterparty_role', 'merchant', '["description","merchant","mcc","combined"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'counterparty_display', NULL, '["description","merchant","mcc","combined"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'purchase', '["direction"]'),
-('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'refund', '["direction","bank-rule"]'),
+('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'refund', '["direction"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'reversal', '["bank-rule"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'income.reward', '["bank-rule"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'payment.credit_card', '["bank-rule"]'),

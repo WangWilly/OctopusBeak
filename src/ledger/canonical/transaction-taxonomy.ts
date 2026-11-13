@@ -669,11 +669,9 @@ const CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY: readonly ProducerCompatibilit
     origin: "derived" as const,
     field: "kind" as const,
     outputCode,
-    evidenceKinds: outputCode === "refund"
-      ? [CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND, "bank-rule"]
-      : [CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND],
+    evidenceKinds: [CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND],
   })),
-  // An inflow whose source description names what it is.
+  // An inflow whose issuer label names what it is. Added outputs, so v1's published rows stay as they were.
   ...(["reversal", "income.reward", "payment.credit_card"] as const).map((outputCode) => ({
     producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
     producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,

@@ -1,7 +1,7 @@
 {
   "packageId": "transaction-taxonomy",
   "version": "v1",
-  "semanticHash": "sha256:pd2OaefLYPNNM9sQyjaDyiR9swXetrhdrikSYGdCo9U",
+  "semanticHash": "sha256:fSnZfNIHgT5CYabHfpT-Dt-VRCvnunH0DrSNSRmZD04",
   "kinds": [
     "purchase", "transfer", "transfer.internal", "transfer.external",
     "transfer.investment_contribution", "transfer.investment_withdrawal", "transfer.security_position",
