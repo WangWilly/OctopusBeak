@@ -51,6 +51,7 @@
   import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
   import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
   import type { CashFlowTransferRequest } from "$lib/cash-flow/transfer-panel.ts";
+  import type { CashFlowDetailRequest } from "$lib/cash-flow/transaction-detail.ts";
   import { quickRange, rollRange, type CashFlowPeriodChoice } from "$lib/cash-flow/period.ts";
   import {
     createFinancialPage,
@@ -301,8 +302,8 @@
     financialPage.setParams("cash-flow", next);
   }
 
-  /** A transfer decision is a Financial page action; Cash flow then reads its page again (ADR 0136). */
-  async function decideCashFlowTransfer(request: CashFlowTransferRequest) {
+  /** A transfer decision or a transaction detail write is a Financial page action; Cash flow then reads its page again (ADR 0136). */
+  async function runCashFlowAction(request: CashFlowTransferRequest | CashFlowDetailRequest) {
     try {
       await window.octopusBeak.spending.applyPageAction(request);
     } finally {
@@ -796,7 +797,8 @@
       today={$taipeiDate}
       loading={cashFlow.status === "loading"}
       changeRequest={changeCashFlowRequest}
-      decideTransfer={decideCashFlowTransfer}
+      decideTransfer={runCashFlowAction}
+      applyDetail={runCashFlowAction}
     />
     <RouteLoadNotice state={cashFlow} retry={() => void loadRoute("cash-flow", { force: true })} />
   {:else}

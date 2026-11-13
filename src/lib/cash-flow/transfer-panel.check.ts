@@ -33,6 +33,7 @@ function row(id: string, direction: "inflow" | "outflow", overrides: Partial<Cas
     details: {
       description: null, counterparty: null, note: null, time: null,
       account: { id: "bank-a", source: "canonical", institutionKey: null, stream: null, mask: null, name: null },
+      edit: null,
     },
     transferLinkId: null,
     ...overrides,

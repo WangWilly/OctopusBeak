@@ -30,6 +30,7 @@ import { dayGap, transferLinkId } from "../canonical/cash-flow-transfer-rules.ts
 import { readPGliteCashFlow, type CashFlowReport, type CashFlowReportTransaction, type CashFlowSearchRow } from "./cash-flow.ts";
 import { cashFlowMatches, readCashFlowSearchMatches } from "./cash-flow-search.ts";
 import { ISO_DATE, type PGliteSpendingReader } from "./spending-sql.ts";
+import { readPGliteUserTags } from "./transaction-detail-command.ts";
 
 /**
  * The Cash flow page (PRD #456, issue #460): one period's counted flow per
@@ -288,5 +289,6 @@ export async function readCashFlowPage(reader: PGliteSpendingReader, input: Cash
     periodTransactions: search === null ? null : [...current.transactions].sort(newestFirst),
     search,
     transferPanel: transferPanel(current),
+    userTags: await readPGliteUserTags(reader),
   };
 }

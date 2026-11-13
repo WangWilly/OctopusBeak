@@ -26,7 +26,8 @@ import {
 import type { CanonicalSpendingCategorization, CanonicalSpendingTransaction } from "../canonical/canonical-spending-contracts.ts";
 import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts";
 import { exactFromManualAmount } from "../../lib/manual-assets/manual-assets.ts";
-import { absoluteExact, compareExact, sameCurrency, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
+import { absoluteExact, compareExact, normalizeExact, sameCurrency, type ExactAmount, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
+import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
 import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
@@ -60,6 +61,26 @@ export type CashFlowTransactionDetails = Readonly<{
   /** `HH:mm`, only when the source reported a minute or second on the transaction's own date. */
   time: string | null;
   account: CashFlowAccount;
+  /** What the transaction detail may change; null for a Manual Account row, which its own page edits. */
+  edit: CashFlowRowEdit | null;
+}>;
+
+/** The transaction's own Current categorization, which a refund's inherited categories never replace here. */
+export type CashFlowRowCategorization =
+  | Readonly<{ mode: "absent" }>
+  | Readonly<{ mode: "single"; origin: "user" | "source" | "derived"; categoryCode: string }>
+  | Readonly<{ mode: "allocated"; components: readonly Readonly<{ categoryCode: string; amount: ExactAmount }>[] }>;
+
+/** A canonical row's editable facts (issue #461). */
+export type CashFlowRowEdit = Readonly<{
+  /** The Spending purchase the `category` and `allocation` actions name: its link when linked, else the transaction. */
+  purchaseId: string;
+  /** Whether the row's Kind admits a Personal Category (Category applicability). */
+  categorizable: boolean;
+  categorization: CashFlowRowCategorization;
+  /** Whether the shown note is the person's own, so clearing it changes something. */
+  userNote: boolean;
+  tags: readonly Readonly<{ tagId: string; label: string }>[];
 }>;
 
 /**
@@ -210,7 +231,14 @@ export function lastFour(accountNumber: string | null): string | null {
   return digits.length >= 4 ? digits.slice(-4) : null;
 }
 
-type CanonicalFacts = Readonly<{ counterparty: string | null; note: string | null; time: Readonly<{ local: string; precision: string; origin: string }> | null }>;
+type CanonicalFacts = Readonly<{
+  counterparty: string | null;
+  note: string | null;
+  userNote: boolean;
+  /** The confirmed Spending link event the transaction belongs to, when it is linked. */
+  linkEventId: string | null;
+  time: Readonly<{ local: string; precision: string; origin: string }> | null;
+}>;
 
 /** The counterparty display, note and source time of each current transaction revision. */
 async function canonicalFacts(
@@ -221,9 +249,13 @@ async function canonicalFacts(
   const counterparties = await byChunk<{ transaction_id: unknown; value_text: unknown }>(reader, ids, (placeholders) =>
     `SELECT transaction_id, value_text FROM current_transaction_enrichment
       WHERE field_name = 'counterparty_display' AND transaction_id IN (${placeholders})`);
-  const notes = await byChunk<{ transaction_id: unknown; value_text: unknown }>(reader, ids, (placeholders) =>
-    `SELECT transaction_id, value_text FROM current_transaction_fields
+  const notes = await byChunk<{ transaction_id: unknown; value_text: unknown; origin: unknown }>(reader, ids, (placeholders) =>
+    `SELECT transaction_id, value_text, origin FROM current_transaction_fields
       WHERE field_name = 'note' AND transaction_id IN (${placeholders})`);
+  const links = await byChunk<{ transaction_id: unknown; confirmed_event_id: unknown }>(reader, ids, (placeholders) =>
+    `SELECT transaction_id, confirmed_event_id FROM current_spending_dedup_links WHERE transaction_id IN (${placeholders})`);
+  const userNotes = new Set(notes.filter((row) => row.origin === "user").map((row) => idString(row.transaction_id, "Transaction")));
+  const linkOf = new Map(links.map((row) => [idString(row.transaction_id, "Linked transaction"), idString(row.confirmed_event_id, "Spending link")]));
   const revisionOf = new Map(transactions.map((transaction) => [transaction.revisionId, transaction.transactionId]));
   const times = new Map<string, { local: string; precision: string; origin: string }>();
   const revisionIds = [...revisionOf.keys()];
@@ -242,7 +274,13 @@ async function canonicalFacts(
     .map((row) => [idString(row.transaction_id, "Transaction"), (row.value_text as string).trim()]));
   const counterpartyOf = text(counterparties);
   const noteOf = text(notes);
-  return new Map(ids.map((id) => [id, { counterparty: counterpartyOf.get(id) ?? null, note: noteOf.get(id) ?? null, time: times.get(id) ?? null }]));
+  return new Map(ids.map((id) => [id, {
+    counterparty: counterpartyOf.get(id) ?? null,
+    note: noteOf.get(id) ?? null,
+    userNote: userNotes.has(id) && noteOf.has(id),
+    linkEventId: linkOf.get(id) ?? null,
+    time: times.get(id) ?? null,
+  }]));
 }
 
 function canonicalDetails(transaction: CanonicalSpendingTransaction, date: string, facts: CanonicalFacts | undefined): CashFlowTransactionDetails {
@@ -259,7 +297,25 @@ function canonicalDetails(transaction: CanonicalSpendingTransaction, date: strin
       mask: lastFour(transaction.accountNumber),
       name: null,
     },
+    edit: {
+      purchaseId: facts?.linkEventId ? `link:${facts.linkEventId}` : `transaction:${transaction.transactionId}`,
+      categorizable: transaction.kind !== null && isCategoryApplicable("dining", transaction.kind),
+      categorization: rowCategorization(transaction.categorization),
+      userNote: facts?.userNote ?? false,
+      tags: transaction.tags.map((tag) => ({ tagId: tag.tagId, label: tag.label })),
+    },
   };
+}
+
+function rowCategorization(categorization: CanonicalSpendingCategorization): CashFlowRowCategorization {
+  if (categorization.mode === "single" && categorization.categoryCode && categorization.origin)
+    return { mode: "single", origin: categorization.origin, categoryCode: categorization.categoryCode };
+  if (categorization.mode === "allocated" && categorization.components)
+    return {
+      mode: "allocated",
+      components: categorization.components.map((component) => ({ categoryCode: component.categoryCode, amount: normalizeExact(component) })),
+    };
+  return { mode: "absent" };
 }
 
 /** A canonical row, the effective date the period filter reads, and the fact row its list details come from. */
@@ -355,6 +411,7 @@ async function manualTransactions(reader: PGliteSpendingReader, request: CashFlo
         note: row.note?.trim() || null,
         time: null,
         account: { id: row.account_id, source: "manual" as const, institutionKey: null, stream: null, mask: null, name: row.account_name },
+        edit: null,
       },
     };
   });

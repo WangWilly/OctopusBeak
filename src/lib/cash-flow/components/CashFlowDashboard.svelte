@@ -38,6 +38,8 @@
   import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
   import CashFlowTransferPanel from "./CashFlowTransferPanel.svelte";
+  import CashFlowTransactionDetail from "./CashFlowTransactionDetail.svelte";
+  import type { CashFlowDetailRequest } from "../transaction-detail.ts";
 
   export let page: CashFlowPageDto;
   export let request: CashFlowPageRequest;
@@ -48,6 +50,8 @@
   export let changeRequest: (request: CashFlowPageRequest, choice?: CashFlowPeriodChoice) => void;
   /** Send one transfer decision as a Financial page action; resolves once the page has read itself again (ADR 0136). */
   export let decideTransfer: (request: CashFlowTransferRequest) => Promise<void>;
+  /** Send one transaction detail write as a Financial page action; resolves once the page has read itself again. */
+  export let applyDetail: (request: CashFlowDetailRequest) => Promise<void>;
 
   type Drill = Readonly<{ kind: "outflow"; group: OutflowGroupKey }> | Readonly<{ kind: "inflow"; group: CashFlowInflowGroup }>;
 
@@ -61,6 +65,8 @@
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let transferPanelOpen = false;
   let exportOpen = false;
+  /** The open detail's row, kept as last read so a reload that drops it still shows what the person was editing. */
+  let detailRow: CashFlowRow | null = null;
 
   $: currencies = page.currencies.map((summary) => summary.currency);
   $: if (!currencies.includes(selectedCurrency)) selectedCurrency = currencies[0] ?? "TWD";
@@ -85,6 +91,7 @@
   $: note = transferNote(selectedCurrency, transfers, transferPanel);
   $: periodRows = page.periodTransactions ?? page.transactions;
   $: narrowed = page.search !== null || accountFilter !== null || listFilter !== null;
+  $: if (detailRow) detailRow = periodRows.find((row) => row.transactionId === detailRow!.transactionId) ?? detailRow;
 
   function amountText(amount: ExactAmount, currency = selectedCurrency, signed = false) {
     return moneyText({ ...amount, currency }, $locale, signed);
@@ -477,7 +484,8 @@
                 <ul class="rows">
                   {#each day.rows as row (row.transactionId)}
                     {@const tag = rowTag(row)}
-                    <li class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class}>
+                    <li>
+                    <button type="button" class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class} aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, row)}`} onclick={() => detailRow = row}>
                       <span class="time num" data-row-time>{row.details.time ?? ""}</span>
                       <span class="mark" aria-hidden="true">{#if row.cashFlow.class === "not_counted"}<ArrowLeftRight size={13} strokeWidth={2.2} />{:else}{accountInitial($t, row.details.account)}{/if}</span>
                       <span class="row-text">
@@ -485,12 +493,14 @@
                         <span><span class="dot" style:background={row.cashFlow.class === "outflow" || row.cashFlow.class === "refund" ? outflowColor(row.cashFlow.categories[0]?.group ?? null) : row.cashFlow.class === "inflow" ? inflowColor(0) : "var(--border)"} aria-hidden="true"></span>{rowCategoryText($t, row)} · {accountLabel($t, row.details.account)}{#if row.details.note && row.details.note !== rowTitle($t, row)} · {row.details.note}{/if}</span>
                       </span>
                       <span class="tags">
+                        {#each row.details.edit?.tags ?? [] as userTag (userTag.tagId)}<span class="tag" data-row-tag={userTag.label}>#{userTag.label}</span>{/each}
                         {#if row.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}
                         {#if tag}<span class="tag" class:accent={row.cashFlow.class === "not_counted"}>{tag}</span>{/if}
                       </span>
                       <strong class="amount money" class:positive={row.direction === "inflow" && row.cashFlow.class !== "not_counted"} data-sensitive>
                         {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted").replace(/^TWD /u, "")}
                       </strong>
+                    </button>
                     </li>
                   {/each}
                 </ul>
@@ -541,6 +551,17 @@
     dataVersion={page.knowledgeAt}
     decide={decideTransfer}
     onClose={() => transferPanelOpen = false}
+  />
+{/if}
+
+{#if detailRow}
+  <CashFlowTransactionDetail
+    row={detailRow}
+    rows={periodRows}
+    userTags={page.userTags}
+    dataVersion={page.knowledgeAt}
+    apply={applyDetail}
+    onClose={() => detailRow = null}
   />
 {/if}
 
@@ -1170,8 +1191,24 @@
     grid-template-columns: 48px 28px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 12px;
+    width: 100%;
     padding: 10px 12px;
+    border: 0;
     border-radius: 10px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row:hover {
+    background: var(--surface-soft);
+  }
+
+  .row:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .row.transfer {

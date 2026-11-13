@@ -16,6 +16,8 @@ import {
 import type { FinancialPageActionSubject } from "../../lib/financial/page-actions.ts";
 import type { SpendingPurchaseCategoryRequest, SpendingPurchaseCategoryResult } from "../../lib/spending/model.ts";
 import { idString } from "./spending-sql.ts";
+import { categoryAllocationProblem, type CategoryAllocationComponent } from "../../lib/financial/transaction-detail.ts";
+import { normalizeExact, parseExactMoney, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
 
 /**
  * `setPurchaseCategory` writes User Assertions on the subject that owns the
@@ -220,6 +222,38 @@ async function activeGenerationId(transaction: PGliteTransaction): Promise<numbe
   return row ? Number(row.generation_id) : null;
 }
 
+/** Supersedes `previous` and inserts the user's new category assertion in `commitId`; returns its id. */
+async function replaceUserCategoryAssertion(
+  transaction: PGliteTransaction,
+  transactionId: Uint8Array,
+  previous: Readonly<{ assertionId: Uint8Array; userId: string }> | null,
+  valueText: string,
+  commitId: Uint8Array,
+): Promise<Uint8Array> {
+  if (previous) await insertTransactionTransition(transaction, previous.assertionId, transactionId, previous.userId, commitId, "superseded");
+  const assertionId = uuidBytes();
+  await query(transaction,
+    `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
+     VALUES (?, ?, 'category', 'transaction', 'user', ?, ?, NULL, ?, ?)`,
+    [assertionId, transactionId, LOCAL_USER_ID, USER_CATEGORIZATION_RULE_LINEAGE, valueText, commitId],
+  );
+  await insertTransactionTransition(transaction, assertionId, transactionId, LOCAL_USER_ID, commitId, "observed");
+  await query(transaction,
+    "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES (?, NULL, NULL, NULL, NULL, ?)",
+    [assertionId, commitId],
+  );
+  return assertionId;
+}
+
+/** The one active user categorization this command may replace, or null; competing or foreign ones are a conflict. */
+async function replaceableUserCategory(transaction: PGliteTransaction, transactionId: Uint8Array) {
+  const prior = await activeUserTransactionCategories(transaction, transactionId);
+  if (prior.length > 1) fail("conflict", "Competing user categorizations are ambiguous.");
+  const previous = prior[0] ?? null;
+  if (previous && previous.userId !== LOCAL_USER_ID) fail("conflict", "Only the selected user categorization may be changed.");
+  return previous;
+}
+
 /** Writes or clears the user's single category on a transaction. Returns false when nothing changed. */
 async function writeTransactionUserCategory(
   transaction: PGliteTransaction,
@@ -227,10 +261,7 @@ async function writeTransactionUserCategory(
   categoryCode: string | null,
   commit: () => Promise<Uint8Array>,
 ): Promise<boolean> {
-  const prior = await activeUserTransactionCategories(transaction, transactionId);
-  if (prior.length > 1) fail("conflict", "Competing user categorizations are ambiguous.");
-  const previous = prior[0] ?? null;
-  if (previous && previous.userId !== LOCAL_USER_ID) fail("conflict", "Only the selected user categorization may be changed.");
+  const previous = await replaceableUserCategory(transaction, transactionId);
   if (categoryCode === null) {
     if (!previous) return false;
     const commitId = await commit();
@@ -239,18 +270,7 @@ async function writeTransactionUserCategory(
   }
   if (previous && previous.mode === "single" && previous.value === categoryCode) return false;
   const commitId = await commit();
-  if (previous) await insertTransactionTransition(transaction, previous.assertionId, transactionId, previous.userId, commitId, "superseded");
-  const assertionId = uuidBytes();
-  await query(transaction,
-    `INSERT INTO assertions(assertion_id, transaction_id, field_name, target_kind, origin, producer_id, rule_lineage, revision_id, value_text, created_commit_id)
-     VALUES (?, ?, 'category', 'transaction', 'user', ?, ?, NULL, ?, ?)`,
-    [assertionId, transactionId, LOCAL_USER_ID, USER_CATEGORIZATION_RULE_LINEAGE, categoryCode, commitId],
-  );
-  await insertTransactionTransition(transaction, assertionId, transactionId, LOCAL_USER_ID, commitId, "observed");
-  await query(transaction,
-    "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES (?, NULL, NULL, NULL, NULL, ?)",
-    [assertionId, commitId],
-  );
+  const assertionId = await replaceUserCategoryAssertion(transaction, transactionId, previous, categoryCode, commitId);
   await query(transaction,
     `INSERT INTO transaction_categorization_values(assertion_id, transaction_id, mode, category_code, allocation_set_id, taxonomy_id, taxonomy_version, taxonomy_dimension, created_commit_id)
      VALUES (?, ?, 'single', ?, NULL, ?, ?, 'category', ?)`,
@@ -311,4 +331,108 @@ export function setPGliteSpendingPurchaseCategory(
   request: SpendingPurchaseCategoryRequest,
 ): Promise<SpendingPurchaseCategoryResult> {
   return writer.transaction((transaction) => setPGliteSpendingPurchaseCategoryInTransaction(transaction, request));
+}
+
+/** The value text a user allocation assertion carries; its components live in the allocation set. */
+const ALLOCATION_VALUE_TEXT = "__allocation__";
+
+function parseAllocationComponents(value: unknown): readonly CategoryAllocationComponent[] {
+  if (!Array.isArray(value)) fail("invalid", "Category allocation components must be a list.");
+  return value.map((component: unknown, index) => {
+    if (!component || typeof component !== "object") fail("invalid", `Category allocation component ${index + 1} is invalid.`);
+    const { categoryCode, amount } = component as Record<string, unknown>;
+    if (typeof categoryCode !== "string") fail("invalid", `Category allocation component ${index + 1} has no category.`);
+    try {
+      return { categoryCode, amount: parseExactMoney(amount, `Category allocation component ${index + 1}`) };
+    } catch (error) {
+      return fail("invalid", error instanceof Error ? error.message : String(error));
+    }
+  });
+}
+
+/** The current revision's booked amount, unsigned, in its currency. */
+async function bookedAmount(transaction: PGliteTransaction, transactionId: Uint8Array): Promise<ExactMoney> {
+  const row = (await query<Row>(transaction,
+    `SELECT revision.amount_coefficient, revision.amount_scale, revision.currency
+       FROM current_transactions current_row
+       JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      WHERE current_row.transaction_id = ?`,
+    [transactionId],
+  ))[0];
+  if (!row) fail("stale", "Spending purchase is stale or no longer current.");
+  return { coefficient: String(row.amount_coefficient), scale: Number(row.amount_scale), currency: String(row.currency) };
+}
+
+async function allocationComponentsOf(transaction: PGliteTransaction, assertionId: Uint8Array): Promise<readonly string[]> {
+  const rows = await query<Row>(transaction,
+    `SELECT component.category_code, component.amount_coefficient, component.amount_scale
+       FROM transaction_categorization_values value
+       JOIN category_allocation_components component ON component.allocation_set_id = value.allocation_set_id
+      WHERE value.assertion_id = ?
+      ORDER BY component.component_ordinal`,
+    [assertionId],
+  );
+  return rows.map((row) => `${String(row.category_code)}=${row.amount_coefficient}e-${row.amount_scale}`);
+}
+
+/**
+ * Sets one complete user Category Allocation on the transaction a purchase
+ * owns (Current categorization): it supersedes the prior user category,
+ * single or allocated, in one commit. The same allocation again is a no-op.
+ * Component amounts are stored reduced, in the booked currency, with no
+ * conversion evidence.
+ */
+export async function setPGliteSpendingPurchaseAllocationInTransaction(
+  transaction: PGliteTransaction,
+  request: Readonly<{ purchaseId: string; knowledgeAt: number; components: unknown }>,
+): Promise<Readonly<{ baseKnowledgeAt: number; knowledgeAt: number }>> {
+  const identity = parsePurchaseIdentity(request.purchaseId);
+  const components = parseAllocationComponents(request.components);
+  const current = await readKnowledgePoint(transaction);
+  if (request.knowledgeAt !== current) fail("stale", "Spending purchase allocation data version is stale; reload Spending.");
+  const subject = await resolveSubject(transaction, identity);
+  if (subject.kind !== "transaction") fail("ineligible", "An invoice-only purchase has no transaction to allocate.");
+  const transactionId = subject.transactionId;
+  const kind = await transactionKind(transaction, transactionId);
+  if (kind === null) fail("ineligible", "A category cannot be assigned without a transaction Kind.");
+  const booked = await bookedAmount(transaction, transactionId);
+  const problem = categoryAllocationProblem(booked, components);
+  if (problem !== null) fail("invalid", `Category allocation is not complete (${problem}).`);
+  for (const component of components)
+    if (!isCategoryApplicable(component.categoryCode, kind)) fail("ineligible", `Category ${component.categoryCode} is incompatible with Kind ${kind}.`);
+  const reduced = components.map((component) => ({ categoryCode: component.categoryCode, amount: normalizeExact(component.amount) }));
+  const previous = await replaceableUserCategory(transaction, transactionId);
+  if (previous && previous.mode === "allocated") {
+    const same = reduced.map((component) => `${component.categoryCode}=${component.amount.coefficient}e-${component.amount.scale}`);
+    if (JSON.stringify(await allocationComponentsOf(transaction, previous.assertionId)) === JSON.stringify(same))
+      return Object.freeze({ baseKnowledgeAt: current, knowledgeAt: current });
+  }
+  const commitId = await createUserCommit(transaction);
+  const assertionId = await replaceUserCategoryAssertion(transaction, transactionId, previous, ALLOCATION_VALUE_TEXT, commitId);
+  const allocationSetId = uuidBytes();
+  const bookedTotal = normalizeExact(booked);
+  const currency = booked.currency;
+  await query(transaction,
+    `INSERT INTO category_allocation_sets(allocation_set_id, assertion_id, transaction_id, booked_coefficient, booked_scale, booked_currency, created_commit_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [allocationSetId, assertionId, transactionId, bookedTotal.coefficient, bookedTotal.scale, currency, commitId],
+  );
+  for (const [index, component] of reduced.entries()) {
+    await query(transaction,
+      `INSERT INTO category_allocation_components(
+         allocation_set_id, component_ordinal, taxonomy_id, taxonomy_version, taxonomy_dimension, category_code,
+         amount_coefficient, amount_scale, amount_currency, booked_coefficient, booked_scale, booked_currency
+       ) VALUES (?, ?, ?, ?, 'category', ?, ?, ?, ?, ?, ?, ?)`,
+      [allocationSetId, index + 1, TRANSACTION_TAXONOMY_ID, TRANSACTION_TAXONOMY_VERSION, component.categoryCode,
+        component.amount.coefficient, component.amount.scale, currency, component.amount.coefficient, component.amount.scale, currency],
+    );
+  }
+  await query(transaction,
+    `INSERT INTO transaction_categorization_values(assertion_id, transaction_id, mode, category_code, allocation_set_id, taxonomy_id, taxonomy_version, taxonomy_dimension, created_commit_id)
+     VALUES (?, ?, 'allocated', NULL, ?, ?, ?, 'category', ?)`,
+    [assertionId, transactionId, allocationSetId, TRANSACTION_TAXONOMY_ID, TRANSACTION_TAXONOMY_VERSION, commitId],
+  );
+  const generationId = await activeGenerationId(transaction);
+  if (generationId !== null) await refreshGenerationTransactionCategorizations(transaction, generationId, [transactionId], commitId);
+  return Object.freeze({ baseKnowledgeAt: current, knowledgeAt: await readKnowledgePoint(transaction) });
 }

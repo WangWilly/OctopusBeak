@@ -33,8 +33,14 @@ import type {
 import type { SpendingCandidatePairRef, SpendingStrongConflict } from "../../lib/spending/model.ts";
 import {
   purchaseCategoryActionSubject,
+  setPGliteSpendingPurchaseAllocationInTransaction,
   setPGliteSpendingPurchaseCategoryInTransaction,
 } from "./purchase-category-command.ts";
+import {
+  addPGliteTransactionTag,
+  removePGliteTransactionTag,
+  writePGliteTransactionNote,
+} from "./transaction-detail-command.ts";
 
 /** A command may only see the async transaction capability. */
 export type PGliteSpendingWriter = Pick<PGliteStore, "query" | "transaction">;
@@ -491,6 +497,10 @@ type PageActionAdmission = Readonly<{
   transfer_deny: ExactAdmission;
   transfer_revoke: ExactAdmission;
   transfer_pair: ExactAdmission;
+  allocation: ExactAdmission;
+  note: ExactAdmission;
+  tag_add: ExactAdmission;
+  tag_remove: ExactAdmission;
 }>;
 
 /**
@@ -559,26 +569,50 @@ const PAGE_ACTIONS: PageActionTable = Object.freeze({
   transfer_deny: cashFlowTransferEntry(),
   transfer_revoke: cashFlowTransferEntry(),
   transfer_pair: cashFlowTransferEntry(),
+  /** An allocation lands where a category does, so Spending gets the same exact delta. */
+  allocation: {
+    admit: admitExactVersion,
+    subject: (transaction, input) => purchaseCategoryActionSubject(transaction, input.purchaseId),
+    write: (tx, input, { current }) => setPGliteSpendingPurchaseAllocationInTransaction(tx, {
+      purchaseId: input.purchaseId,
+      knowledgeAt: current,
+      components: input.components,
+    }),
+    postcondition: () => {},
+  },
+  note: noSpendingEntry<PageActionOf<"note">>("A note", (tx, input) => writePGliteTransactionNote(tx, input)),
+  tag_add: noSpendingEntry<PageActionOf<"tag_add">>("A Transaction Tag", (tx, input) => addPGliteTransactionTag(tx, input)),
+  tag_remove: noSpendingEntry<PageActionOf<"tag_remove">>("A Transaction Tag", (tx, input) => removePGliteTransactionTag(tx, input)),
 });
 
 type CashFlowTransferRequest = Extract<FinancialPageActionRequest, Readonly<{ kind: `transfer_${string}` }>>;
 
 const NO_SPENDING_SUBJECT: FinancialPageActionSubject = Object.freeze({ invoiceIds: Object.freeze([]), transactionIds: Object.freeze([]) });
 
-/** A Cash-flow transfer decision reads no Purchase record, so Spending gets an empty delta. */
-function cashFlowTransferEntry<R extends CashFlowTransferRequest>(): PageActionEntry<R, ExactAdmission> {
+/**
+ * A write no Purchase record reads, so Spending gets an empty delta: a
+ * transfer decision, a note or a Tag. Spending shows none of them.
+ */
+function noSpendingEntry<R extends FinancialCommittingPageActionRequest>(
+  what: string,
+  write: (transaction: PGliteTransaction, input: R, current: number) => Promise<unknown>,
+): PageActionEntry<R, ExactAdmission> {
   return {
     admit: admitExactVersion,
     subject: () => NO_SPENDING_SUBJECT,
-    write: (tx, input, { current }) => decidePGliteCashFlowTransfer(tx, input.action, {
-      outflowTransactionId: idString(bytes(input.outflowTransactionId, "Outflow transaction")),
-      inflowTransactionId: idString(bytes(input.inflowTransactionId, "Inflow transaction")),
-    }, current),
+    write: (tx, input, { current }) => write(tx, input, current),
     postcondition: (_input, decision) => {
       if (decision.summaryDelta.before.length > 0 || decision.summaryDelta.after.length > 0)
-        throw new Error("A Cash-flow transfer decision changed Spending.");
+        throw new Error(`${what} changed Spending.`);
     },
   };
+}
+
+function cashFlowTransferEntry<R extends CashFlowTransferRequest>(): PageActionEntry<R, ExactAdmission> {
+  return noSpendingEntry<R>("A Cash-flow transfer decision", (tx, input, current) => decidePGliteCashFlowTransfer(tx, input.action, {
+    outflowTransactionId: idString(bytes(input.outflowTransactionId, "Outflow transaction")),
+    inflowTransactionId: idString(bytes(input.inflowTransactionId, "Inflow transaction")),
+  }, current));
 }
 
 async function admitExactVersion(
