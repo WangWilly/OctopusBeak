@@ -1,14 +1,15 @@
 import type {
   CASH_FLOW_INCLUSION_POLICY,
   CashFlowAmount,
+  CashFlowClass,
   CashFlowInflowGroup,
   CashFlowOutflowGroup,
 } from "../../ledger/canonical/cash-flow-inclusion.ts";
-import type { CashFlowTransferLinkOrigin } from "../../ledger/canonical/cash-flow-transfer.ts";
-import type { CashFlowAccount, CashFlowReportTransaction } from "../../ledger/pglite/cash-flow.ts";
+import type { CashFlowTransferLinkOrigin, CashFlowTransferSuspension } from "../../ledger/canonical/cash-flow-transfer.ts";
+import type { CashFlowAccount, CashFlowReportTransaction, CashFlowTransferSideRow } from "../../ledger/pglite/cash-flow.ts";
 import type { ExactAmount } from "../shared-money/exact-money.ts";
 
-export type { CashFlowAccount, CashFlowReportTransaction as CashFlowRow };
+export type { CashFlowAccount, CashFlowReportTransaction as CashFlowRow, CashFlowTransferSideRow };
 
 /** The Cash flow live view's parameters; both dates are inclusive. */
 export type CashFlowPageRequest = Readonly<{ startDate: string; endDate: string; query?: string }>;
@@ -73,6 +74,53 @@ export type CashFlowSearchResult = Readonly<{
   allPeriods: Readonly<{ matches: number; firstDate: string | null; lastDate: string | null }>;
 }>;
 
+/** One side of a transfer the panel lists, as a row shows it; `inPeriod` is false for a side dated outside the period. */
+export type CashFlowTransferSide = CashFlowTransferSideRow & Readonly<{ inPeriod: boolean }>;
+
+/** A current Cash-flow transfer link with a side in the period. */
+export type CashFlowTransferLinkView = Readonly<{
+  linkId: string;
+  origin: CashFlowTransferLinkOrigin["kind"];
+  outflow: CashFlowTransferSide;
+  inflow: CashFlowTransferSide;
+  /** Calendar days between the two sides' dates. */
+  dayGap: number;
+  /** Neither side stays counted, so the transfer note counts it as a pair. */
+  paired: boolean;
+}>;
+
+/** A similar pair the person may confirm or deny; `pairId` is the link id it would get. */
+export type CashFlowTransferCandidateView = Readonly<{
+  pairId: string;
+  outflow: CashFlowTransferSide;
+  inflow: CashFlowTransferSide;
+  dayGap: number;
+  /** The class each side would take once confirmed, by the rule a link applies. */
+  ifLinked: Readonly<{ outflow: CashFlowClass; inflow: CashFlowClass }>;
+}>;
+
+/** A stored link that does not apply now; a side Cash flow no longer counts is null. */
+export type CashFlowSuspendedTransferView = Readonly<{
+  linkId: string;
+  origin: Exclude<CashFlowTransferLinkOrigin["kind"], "evidence">;
+  outflowTransactionId: string;
+  inflowTransactionId: string;
+  outflow: CashFlowTransferSide | null;
+  inflow: CashFlowTransferSide | null;
+  suspension: CashFlowTransferSuspension;
+}>;
+
+/** What the transfer pairing panel lists for the period, every currency together. */
+export type CashFlowTransferPanel = Readonly<{
+  /** Newest outflow date first. */
+  links: readonly CashFlowTransferLinkView[];
+  /** Closest dates first. */
+  candidates: readonly CashFlowTransferCandidateView[];
+  suspended: readonly CashFlowSuspendedTransferView[];
+  /** Denied pairs, by link id, that touch the period: they are never proposed again or paired by hand. */
+  deniedPairs: readonly string[];
+}>;
+
 /** One complete Cash flow page for a period, optionally narrowed by a search. */
 export type CashFlowPageDto = Readonly<{
   policy: typeof CASH_FLOW_INCLUSION_POLICY;
@@ -87,5 +135,8 @@ export type CashFlowPageDto = Readonly<{
   transactions: readonly CashFlowReportTransaction[];
   /** In-period transaction count before any search. */
   transactionCount: number;
+  /** Every in-period transaction, newest first, when a search narrowed `transactions`; null without a search. */
+  periodTransactions: readonly CashFlowReportTransaction[] | null;
   search: CashFlowSearchResult | null;
+  transferPanel: CashFlowTransferPanel;
 }>;

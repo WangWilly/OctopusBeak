@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
+import type { CashFlowTransferLinkOrigin } from "../canonical/cash-flow-transfer.ts";
 import {
   cashFlowTransferContext,
   cashFlowTransferRefusal,
   dayGap,
   transferLinkId,
-  type CashFlowTransferLinkOrigin,
   type CashFlowTransferPair,
   type CashFlowTransferReach,
   type CashFlowTransferSide,
-} from "../canonical/cash-flow-transfer.ts";
+} from "../canonical/cash-flow-transfer-rules.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { readPGliteCashFlowTransfers, readStoredCashFlowTransferLinks } from "./cash-flow.ts";
 import { applyOperationalMigrations } from "./operational-migrations.ts";

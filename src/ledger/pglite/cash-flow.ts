@@ -6,20 +6,23 @@ import {
   cashFlowTotals,
   categoryShare,
   type CashFlowCategoryShare,
+  type CashFlowClass,
   type CashFlowCurrencyTotals,
   type CashFlowTransaction,
 } from "../canonical/cash-flow-inclusion.ts";
 import {
-  CASH_FLOW_TRANSFER_WINDOW_DAYS,
   cashFlowTransferSuspension,
   linkedCashFlow,
   pairCashFlowTransfers,
-  type CashFlowTransferPair,
-  type CashFlowTransferPairHistory,
   type CashFlowTransferPairing,
   type StoredCashFlowTransferLink,
-  transferLinkId,
 } from "../canonical/cash-flow-transfer.ts";
+import {
+  CASH_FLOW_TRANSFER_WINDOW_DAYS,
+  type CashFlowTransferPair,
+  type CashFlowTransferPairHistory,
+  transferLinkId,
+} from "../canonical/cash-flow-transfer-rules.ts";
 import type { CanonicalSpendingCategorization, CanonicalSpendingTransaction } from "../canonical/canonical-spending-contracts.ts";
 import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts";
 import { exactFromManualAmount } from "../../lib/manual-assets/manual-assets.ts";
@@ -75,7 +78,16 @@ export type CashFlowReport = Readonly<{
   totals: readonly CashFlowCurrencyTotals[];
   /** The links, suspended links and candidates with at least one side among `transactions`. */
   transfers: CashFlowTransferPairing;
+  /**
+   * Every side of `transfers` that Cash flow counts, in the range or not, as a
+   * row shows it, plus `ownCashFlow`: its class with no link applied.
+   */
+  transferSides: readonly CashFlowTransferSideRow[];
+  /** Pairs with a side among `transactions` that the person denied, by link id: never proposed again, never paired by hand. */
+  deniedPairs: readonly string[];
 }>;
+
+export type CashFlowTransferSideRow = CashFlowReportTransaction & Readonly<{ ownCashFlow: CashFlowClass }>;
 
 function direction(value: string): "inflow" | "outflow" {
   if (value === "inflow" || value === "outflow") return value;
@@ -509,7 +521,7 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
   if (!ISO_DATE.test(startDate) || !ISO_DATE.test(endDate) || startDate > endDate)
     throw new Error("Cash flow needs an ISO start date on or before its end date.");
   const knowledgeAt = await readKnowledgePoint(reader);
-  const { sides, focus, pairing } = await readPGliteCashFlowTransfers(reader, knowledgeAt, request);
+  const { sides, focus, pairing, history } = await readPGliteCashFlowTransfers(reader, knowledgeAt, request);
   const shown = new Set(focus.map((side) => side.transactionId));
   const touches = (pair: CashFlowTransferPair) => shown.has(pair.outflowTransactionId) || shown.has(pair.inflowTransactionId);
   const transfers = {
@@ -521,18 +533,36 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
     [link.outflowTransactionId, { linkId: link.linkId, counterpart: link.inflowTransactionId }],
     [link.inflowTransactionId, { linkId: link.linkId, counterpart: link.outflowTransactionId }],
   ] as const));
-  // Only the rows in the range are listed, so only they read their details.
-  const factsOf = await canonicalFacts(reader, focus.map((side) => side.spending));
-  const canonical = focus.map(({ effectiveOn: _effectiveOn, spending, ...side }): CashFlowReportTransaction => {
+  const sideIds = [...new Set([...transfers.links, ...transfers.suspended, ...transfers.candidates]
+    .flatMap((pair) => [pair.outflowTransactionId, pair.inflowTransactionId]))].filter((id) => sides.has(id));
+  const farSides = sideIds.filter((id) => !shown.has(id)).map((id) => sides.get(id)!);
+  // Only the rows in the range and the transfer sides are shown, so only they read their details.
+  const factsOf = await canonicalFacts(reader, [...focus, ...farSides].map((side) => side.spending));
+  const listRow = ({ effectiveOn: _effectiveOn, spending, ...side }: DatedCashFlowTransaction): CashFlowReportTransaction => {
     const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
     const link = linkOf.get(side.transactionId);
     if (!link) return { ...side, details, transferLinkId: null };
     const counterpart = sides.get(link.counterpart);
     const linked = counterpart ? linkedCashFlow(side, counterpart) : null;
     return { ...side, details, cashFlow: linked?.cashFlow ?? side.cashFlow, transferLinkId: linked?.paired ? link.linkId : null };
+  };
+  const canonical = focus.map(listRow);
+  const transferSides = sideIds.map((id) => {
+    const side = sides.get(id)!;
+    return { ...listRow(side), ownCashFlow: side.cashFlow };
   });
+  const deniedPairs = [...history]
+    .filter(([linkId, decided]) => {
+      const [outflowTransactionId = "", inflowTransactionId = ""] = linkId.split("/");
+      return decided === "denied" && touches({ outflowTransactionId, inflowTransactionId });
+    })
+    .map(([linkId]) => linkId)
+    .sort();
   const manual = (await manualTransactions(reader, request)).map((row) => ({ ...row, transferLinkId: null }));
   const transactions = [...canonical, ...manual]
     .sort((left, right) => left.date.localeCompare(right.date) || left.transactionId.localeCompare(right.transactionId));
-  return { policy: CASH_FLOW_INCLUSION_POLICY, knowledgeAt, startDate, endDate, transactions, totals: cashFlowTotals(transactions), transfers };
+  return {
+    policy: CASH_FLOW_INCLUSION_POLICY, knowledgeAt, startDate, endDate, transactions, totals: cashFlowTotals(transactions),
+    transfers, transferSides, deniedPairs,
+  };
 }

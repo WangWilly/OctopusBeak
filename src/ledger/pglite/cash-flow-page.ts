@@ -11,6 +11,8 @@ import {
   type CashFlowPeriodTotals,
   type CashFlowSearchField,
   type CashFlowSearchResult,
+  type CashFlowTransferPanel,
+  type CashFlowTransferSide,
   type CashFlowTransferSummary,
 } from "../../lib/cash-flow/model.ts";
 import {
@@ -23,7 +25,8 @@ import {
   subtractExact,
   type ExactAmount,
 } from "../../lib/shared-money/exact-money.ts";
-import type { CashFlowTransferLink } from "../canonical/cash-flow-transfer.ts";
+import { linkedCashFlow, type CashFlowTransferLink } from "../canonical/cash-flow-transfer.ts";
+import { dayGap, transferLinkId } from "../canonical/cash-flow-transfer-rules.ts";
 import { readPGliteCashFlow, type CashFlowReport, type CashFlowReportTransaction, type CashFlowSearchRow } from "./cash-flow.ts";
 import { cashFlowMatches, readCashFlowSearchMatches } from "./cash-flow-search.ts";
 import { ISO_DATE, type PGliteSpendingReader } from "./spending-sql.ts";
@@ -119,6 +122,64 @@ function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transf
     entry.pairs = { ...plus(entry.pairs, row.amount), origins: { ...entry.pairs.origins, [origin]: entry.pairs.origins[origin] + 1 } };
   }
   return byCurrency;
+}
+
+/**
+ * The pairing panel's lists. Each side comes with its own details, whether or
+ * not it is in the period, so a link whose other side falls outside still
+ * shows both. A suspended link's side that Cash flow no longer counts is null.
+ */
+function transferPanel(report: Pick<CashFlowReport, "transactions" | "transfers" | "transferSides" | "deniedPairs">): CashFlowTransferPanel {
+  const inPeriod = new Set(report.transactions.map((row) => row.transactionId));
+  const sideOf = new Map<string, CashFlowTransferSide>(report.transferSides
+    .map((side) => [side.transactionId, { ...side, inPeriod: inPeriod.has(side.transactionId) }]));
+  const side = (id: string) => sideOf.get(id) ?? null;
+  const both = <T extends { outflowTransactionId: string; inflowTransactionId: string }>(pair: T) => {
+    const outflow = side(pair.outflowTransactionId);
+    const inflow = side(pair.inflowTransactionId);
+    return outflow && inflow ? { pair, outflow, inflow } : null;
+  };
+  const notCounted = (entry: CashFlowTransferSide) => entry.cashFlow.class === "not_counted";
+  const links = report.transfers.links.flatMap((link) => {
+    const sides = both(link);
+    if (!sides) return [];
+    return [{
+      linkId: link.linkId,
+      origin: link.origin.kind,
+      outflow: sides.outflow,
+      inflow: sides.inflow,
+      dayGap: dayGap(sides.outflow.date, sides.inflow.date),
+      paired: notCounted(sides.outflow) && notCounted(sides.inflow),
+    }];
+  }).sort((left, right) => right.outflow.date.localeCompare(left.outflow.date) || left.linkId.localeCompare(right.linkId));
+  const candidates = report.transfers.candidates.flatMap((candidate) => {
+    const sides = both(candidate);
+    if (!sides) return [];
+    const own = (entry: CashFlowTransferSide) => ({ kind: entry.kind, cashFlow: entry.ownCashFlow });
+    return [{
+      pairId: transferLinkId(candidate),
+      outflow: sides.outflow,
+      inflow: sides.inflow,
+      dayGap: candidate.dayGap,
+      ifLinked: {
+        outflow: linkedCashFlow(own(sides.outflow), own(sides.inflow)).cashFlow,
+        inflow: linkedCashFlow(own(sides.inflow), own(sides.outflow)).cashFlow,
+      },
+    }];
+  });
+  const suspended = report.transfers.suspended.map((link) => {
+    if (link.origin.kind === "evidence") throw new Error("An evidence link is never stored, so it is never suspended.");
+    return {
+      linkId: link.linkId,
+      origin: link.origin.kind,
+      outflowTransactionId: link.outflowTransactionId,
+      inflowTransactionId: link.inflowTransactionId,
+      outflow: side(link.outflowTransactionId),
+      inflow: side(link.inflowTransactionId),
+      suspension: link.suspension,
+    };
+  });
+  return { links, candidates, suspended, deniedPairs: report.deniedPairs };
 }
 
 function currencySummaries(
@@ -224,6 +285,8 @@ export async function readCashFlowPage(reader: PGliteSpendingReader, input: Cash
     accounts: accountChanges(current.transactions),
     transactions: [...transactions].sort(newestFirst),
     transactionCount: current.transactions.length,
+    periodTransactions: search === null ? null : [...current.transactions].sort(newestFirst),
     search,
+    transferPanel: transferPanel(current),
   };
 }

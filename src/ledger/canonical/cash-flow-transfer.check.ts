@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CashFlowClass, CashFlowKind } from "./cash-flow-inclusion.ts";
+import { linkedCashFlow, pairCashFlowTransfers } from "./cash-flow-transfer.ts";
 import {
   cashFlowTransferContext,
   cashFlowTransferRefusal,
-  linkedCashFlow,
-  pairCashFlowTransfers,
   type CashFlowTransferPairHistory,
   type CashFlowTransferSide,
-} from "./cash-flow-transfer.ts";
+} from "./cash-flow-transfer-rules.ts";
 
 const evidence = (code: string): CashFlowKind => ({ code, basis: "evidence" });
 const fallback = (code: string): CashFlowKind => ({ code, basis: "fallback" });
