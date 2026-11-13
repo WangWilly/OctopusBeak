@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { ArrowLeft, ArrowRight } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
@@ -9,11 +10,10 @@
   import { accountInitial, accountLabel, rowTitle } from "../display.ts";
   import {
     linkEffect,
-    manualPairRefusal,
     pairableRows,
-    refusalOf,
     revokeEffect,
     transferReasons,
+    transferRefusal,
     transferRequest,
     type CashFlowTransferDecision,
     type CashFlowTransferReason,
@@ -39,7 +39,9 @@
   $: inflows = pairableRows(rows, "inflow");
   $: chosenOutflow = outflows.find((row) => row.transactionId === manualOutflow) ?? null;
   $: chosenInflow = inflows.find((row) => row.transactionId === manualInflow) ?? null;
-  $: manualRefusal = chosenOutflow && chosenInflow ? manualPairRefusal(chosenOutflow, chosenInflow, panel) : null;
+  $: manualRefusal = chosenOutflow && chosenInflow
+    ? transferRefusal("pair", { outflowTransactionId: chosenOutflow.transactionId, inflowTransactionId: chosenInflow.transactionId }, { rows, panel })
+    : null;
 
   function money(side: Pick<CashFlowTransferSide, "amount">, signedOut: "outflow" | "inflow" | null = null) {
     const amount = signedOut === "outflow" ? { ...negateExact(side.amount), currency: side.amount.currency } : side.amount;
@@ -56,7 +58,7 @@
       case "amount":
         return copy.reasonAmount(moneyText(reason.amount, $locale));
       case "days":
-        return long ? `${copy.reasonDays(reason.days)}${copy.windowNote(reason.withinWindow)}` : copy.reasonDays(reason.days);
+        return long ? `${copy.reasonDays(reason.days)}${copy.windowNote(reason.withinWindow, reason.origin === "manual")}` : copy.reasonDays(reason.days);
       case "accounts":
         return copy.reasonAccounts;
       case "evidence":
@@ -82,8 +84,10 @@
         manualOutflow = "";
         manualInflow = "";
       }
-    } catch (failure) {
-      const refusal = refusalOf(failure);
+    } catch {
+      // The worker's reason does not cross IPC; the page has been read again, so the reason is named from it.
+      await tick();
+      const refusal = transferRefusal(action, pair, { rows, panel });
       error = { key, text: refusal ? $t.cashFlow.transferPanel.refusals[refusal] : $t.cashFlow.transferPanel.failed };
     } finally {
       busy = null;

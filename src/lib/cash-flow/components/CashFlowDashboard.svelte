@@ -34,7 +34,7 @@
     type OutflowGroupKey,
   } from "../display.ts";
   import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
-  import type { CashFlowTransferRequest } from "../transfer-panel.ts";
+  import { transferNote, type CashFlowTransferRequest } from "../transfer-panel.ts";
   import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
   import CashFlowTransferPanel from "./CashFlowTransferPanel.svelte";
@@ -82,7 +82,7 @@
   $: drillRows = drill === null ? [] : page.transactions.filter((row) => row.amount.currency === selectedCurrency && rowInGroup(row, drill!));
   $: transfers = summary?.transfers ?? null;
   $: transferPanel = page.transferPanel;
-  $: pendingTransfers = transferPanel.candidates.length;
+  $: note = transferNote(selectedCurrency, transfers, transferPanel);
   $: periodRows = page.periodTransactions ?? page.transactions;
   $: narrowed = page.search !== null || accountFilter !== null || listFilter !== null;
 
@@ -261,10 +261,13 @@
             <span class="figure-sub">{keptText}</span>
           </div>
           <div class="aside-notes">
-            {#if (transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0)) || transferPanel.links.length > 0 || pendingTransfers > 0 || transferPanel.suspended.length > 0}
+            {#if note}
               <button type="button" class="note transfer" data-transfers aria-label={$t.cashFlow.transferNoteOpen} onclick={() => transferPanelOpen = true}>
-                {#if !transfers || (transfers.pairs.count === 0 && transfers.unpaired.count === 0)}
-                  <span class="note-head" data-transfer-pending><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPendingOnly(pendingTransfers)}</span>
+                {#if note.kind === "links"}
+                  <span class="note-head" data-transfer-links><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferLinksOnly(note.count)}</span>
+                  <span>{$t.cashFlow.transferLinksNote}</span>
+                {:else if note.kind === "pending" || !transfers}
+                  <span class="note-head" data-transfer-pending><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPendingOnly(note.pending)}</span>
                   <span>{$t.cashFlow.transfersNote}</span>
                 {:else if transfers.pairs.count > 0}
                   <span class="note-head" data-transfer-pairs><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPairs(transfers.pairs.count)}</span>
@@ -278,8 +281,8 @@
                   <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
                   <span>{$t.cashFlow.transfersNote}</span>
                 {/if}
-                {#if transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0) && pendingTransfers > 0}
-                  <span class="note-extra" data-transfer-pending>{$t.cashFlow.transferPending(pendingTransfers)}</span>
+                {#if note.kind === "summary" && note.pending > 0}
+                  <span class="note-extra" data-transfer-pending>{$t.cashFlow.transferPending(note.pending)}</span>
                 {/if}
                 <ChevronRight class="note-open" size={14} strokeWidth={2.2} aria-hidden="true" />
               </button>

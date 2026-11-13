@@ -301,7 +301,6 @@
     financialPage.setParams("cash-flow", next);
   }
 
-  // 本週, 本月 and 近 30 天 follow the Taipei date past midnight; a custom range stays put.
   /** A transfer decision is a Financial page action; Cash flow then reads its page again (ADR 0136). */
   async function decideCashFlowTransfer(request: CashFlowTransferRequest) {
     try {
@@ -312,6 +311,7 @@
     }
   }
 
+  // 本週, 本月 and 近 30 天 follow the Taipei date past midnight; a custom range stays put.
   $: rollCashFlowPeriod($taipeiDate);
   function rollCashFlowPeriod(today: string) {
     if (today === cashFlowToday) return;

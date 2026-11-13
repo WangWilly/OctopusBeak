@@ -128,6 +128,8 @@ const en = {
     transferNoteOpen: "Open transfer pairing",
     transferPendingOnly: (count: number) => `Transfers · ${count} to review`,
     transferPending: (count: number) => `${count} to review`,
+    transferLinksOnly: (count: number) => `Transfer pairing · ${count} ${count === 1 ? "pair" : "pairs"}`,
+    transferLinksNote: "These pairs change no total.",
     transferPanel: {
       title: "Transfer pairing",
       subtitle: "Moving money between your own accounts is not inflow or outflow. A pair links automatically when both sides' kinds show a transfer; other matches wait for you to review. You can unpair a wrong one.",
@@ -143,7 +145,8 @@ const en = {
       reasonAccounts: "both accounts are yours",
       reasonEvidence: { "transfer.internal": "both sides are internal transfers", "payment.credit_card": "both sides are card payments" },
       reasonDecided: { confirmed: "you confirmed it", manual: "you paired it" },
-      windowNote: (within: boolean): string => within ? "(matching allows up to 3 days)" : "(a manual pair has no day limit)",
+      windowNote: (within: boolean, manual: boolean): string => within ? "(matching allows up to 3 days)"
+        : manual ? "(a manual pair has no day limit)" : "(more than 3 days apart; you confirmed it)",
       revoke: "Unpair",
       revokeEffect: (effect: Effect): string => effect.outflow && effect.inflow
         ? "Once unpaired, the two count as outflow and inflow."
@@ -363,6 +366,8 @@ const zh: typeof en = {
     transferNoteOpen: "查看轉帳配對",
     transferPendingOnly: (count: number) => `轉帳 · ${count} 組待確認`,
     transferPending: (count: number) => `${count} 組待確認`,
+    transferLinksOnly: (count: number) => `轉帳配對 · ${count} 組`,
+    transferLinksNote: "這些配對不改變收支。",
     transferPanel: {
       title: "轉帳配對",
       subtitle: "帳戶之間搬錢不計入流入與流出。兩邊的交易類型都顯示是轉帳時會自動配對，其他相符的列為待確認。配錯可以解除。",
@@ -378,7 +383,8 @@ const zh: typeof en = {
       reasonAccounts: "兩個帳戶都是你的",
       reasonEvidence: { "transfer.internal": "兩邊都是內部轉帳", "payment.credit_card": "兩邊都是信用卡繳款" },
       reasonDecided: { confirmed: "你確認過", manual: "你手動配對" },
-      windowNote: (within: boolean): string => within ? "（自動比對容許 3 天內）" : "（手動配對不限天數）",
+      windowNote: (within: boolean, manual: boolean): string => within ? "（自動比對容許 3 天內）"
+        : manual ? "（手動配對不限天數）" : "（相隔超過 3 天，你確認過）",
       revoke: "解除配對",
       revokeEffect: (effect: Effect): string => effect.outflow && effect.inflow
         ? "解除後兩筆會分別計入流入與流出"
