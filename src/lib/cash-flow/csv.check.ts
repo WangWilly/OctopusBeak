@@ -93,6 +93,14 @@ test("commas, quotes and newlines are quoted so the cell reads back unchanged", 
   assert.equal(record![7], "他說 \"謝謝\"\n第二行");
 });
 
+test("text a spreadsheet would run as a formula stays text, and amounts stay numbers", () => {
+  const formula = { ...salary, details: { ...salary.details, note: "=HYPERLINK(\"x\")", description: "+886 轉入" } };
+  const [, record] = parse(cashFlowCsv([formula], "flow", zh).slice(1));
+  assert.equal(record![7], "'=HYPERLINK(\"x\")");
+  assert.equal(record![8], "'+886 轉入");
+  assert.ok(parse(cashFlowCsv(rows, "flow", zh).slice(1)).slice(1).some((cells) => /^-\d/u.test(cells[5] ?? "")), "a negative amount is not prefixed");
+});
+
 test("with transfers, both sides of a pair share one pairing id and an unpaired side has none", () => {
   const records = parse(cashFlowCsv(rows, "flow_and_transfers", zh).slice(1));
   assert.equal(records[0]!.at(-1), "配對編號");

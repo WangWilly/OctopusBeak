@@ -31,6 +31,11 @@ function signedText(row: CashFlowRow): string {
   return row.direction === "outflow" && /[1-9]/u.test(text) ? `-${text}` : text;
 }
 
+/** Text from a bank or the person that a spreadsheet would run as a formula is kept as text. */
+function inertText(value: string): string {
+  return /^[=+\-@\t\r]/u.test(value) ? `'${value}` : value;
+}
+
 function csvCell(value: string): string {
   return /[",\r\n]/u.test(value) ? `"${value.replaceAll("\"", "\"\"")}"` : value;
 }
@@ -57,13 +62,13 @@ export function cashFlowCsv(rows: readonly CashFlowRow[], content: CashFlowCsvCo
     ...cashFlowCsvRows(rows, content).map((row) => [
       row.date,
       row.details.time ?? "",
-      rowTitle(t, row),
-      rowCategoryText(t, row),
-      accountLabel(t, row.details.account),
+      inertText(rowTitle(t, row)),
+      inertText(rowCategoryText(t, row)),
+      inertText(accountLabel(t, row.details.account)),
       signedText(row),
       row.amount.currency,
-      row.details.note ?? "",
-      row.details.description ?? "",
+      inertText(row.details.note ?? ""),
+      inertText(row.details.description ?? ""),
       ...(withPairing ? [pairingId(row)] : []),
     ]),
   ];
