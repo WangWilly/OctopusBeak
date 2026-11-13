@@ -15,7 +15,7 @@ function row(id: string, overrides: Partial<CashFlowRow> & Pick<CashFlowRow, "di
     date: "2026-10-05",
     amount: { coefficient: "461", scale: 0, currency: "TWD" },
     kind: null,
-    details: { description: null, counterparty: null, note: null, time: null, account },
+    details: { description: null, counterparty: null, note: null, time: null, account, edit: null },
     transferLinkId: null,
     ...overrides,
   };
@@ -25,20 +25,20 @@ const share = (coefficient: string, scale = 0) => [{ category: null, group: null
 const water = row("water", {
   direction: "outflow",
   cashFlow: { class: "outflow", categories: share("461") },
-  details: { description: "台北自來水事業處 水費", counterparty: null, note: "每月固定", time: "16:05", account },
+  details: { description: "台北自來水事業處 水費", counterparty: null, note: "每月固定", time: "16:05", account, edit: null },
 });
 const salary = row("salary", {
   direction: "inflow",
   date: "2026-10-04",
   amount: { coefficient: "6200050", scale: 2, currency: "TWD" },
   cashFlow: { class: "inflow", group: "income.employment.salary" },
-  details: { description: "薪資, 十月", counterparty: null, note: "他說 \"謝謝\"\n第二行", time: null, account },
+  details: { description: "薪資, 十月", counterparty: null, note: "他說 \"謝謝\"\n第二行", time: null, account, edit: null },
 });
 const usd = row("usd", {
   direction: "outflow",
   amount: { coefficient: "1999", scale: 2, currency: "USD" },
   cashFlow: { class: "outflow", categories: share("1999", 2) },
-  details: { description: "App", counterparty: null, note: null, time: null, account },
+  details: { description: "App", counterparty: null, note: null, time: null, account, edit: null },
 });
 const pairOut = row("out", { direction: "outflow", amount: { coefficient: "20000", scale: 0, currency: "TWD" }, cashFlow: { class: "not_counted", reason: "transfer" }, transferLinkId: "out/in" });
 const pairIn = row("in", { direction: "inflow", amount: { coefficient: "20000", scale: 0, currency: "TWD" }, cashFlow: { class: "not_counted", reason: "transfer" }, transferLinkId: "out/in" });

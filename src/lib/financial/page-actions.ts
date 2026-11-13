@@ -1,4 +1,5 @@
 import type { PurchaseReport } from "../../ledger/canonical/spending-purchase-report.ts";
+import type { CategoryAllocationComponent } from "./transaction-detail.ts";
 import type {
   SpendingCandidatePairRef,
   SpendingStrongConflict,
@@ -55,7 +56,43 @@ export type FinancialPageActionRequest = Readonly<{
   | CashFlowTransferActionRequest<"deny", "transfer_deny">
   | CashFlowTransferActionRequest<"revoke", "transfer_revoke">
   /** Pair two transactions the person chose, without the candidate date window. */
-  | CashFlowTransferActionRequest<"pair", "transfer_pair">;
+  | CashFlowTransferActionRequest<"pair", "transfer_pair">
+  | Readonly<{
+    /**
+     * Split one purchase's transaction across categories with a complete
+     * Category Allocation; it supersedes any user category the transaction has.
+     * Clearing goes back to automatic through `category` with a null code.
+     */
+    action: "allocate";
+    kind: "allocation";
+    purchaseId: string;
+    components: readonly CategoryAllocationComponent[];
+    dataVersion: number;
+  }>
+  | Readonly<{
+    /** Set or, with null, clear the person's note on one canonical transaction. */
+    action: "annotate";
+    kind: "note";
+    transactionId: string;
+    note: string | null;
+    dataVersion: number;
+  }>
+  | Readonly<{
+    /** Apply a Transaction Tag by label, creating the User Tag when no tag has that normalized label. */
+    action: "add";
+    kind: "tag_add";
+    transactionId: string;
+    label: string;
+    dataVersion: number;
+  }>
+  | Readonly<{
+    /** Withdraw one Transaction Tag from one transaction; the User Tag itself stays. */
+    action: "remove";
+    kind: "tag_remove";
+    transactionId: string;
+    tagId: string;
+    dataVersion: number;
+  }>;
 
 /** The page actions that always commit, or fail: every kind but the strong batch. */
 export type FinancialCommittingPageActionRequest = Exclude<FinancialPageActionRequest, Readonly<{ kind: "strong" }>>;

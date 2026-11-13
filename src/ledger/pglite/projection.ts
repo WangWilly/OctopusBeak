@@ -348,6 +348,11 @@ async function refreshCurrentFields(
            ON commit_row.commit_id = assertion.created_commit_id
         WHERE assertion.field_name IN ('display_name', 'note')
           AND assertion.transaction_id IN (${inList(affected)})
+          -- A Transaction Tag association is a user 'note' assertion too; it is never the note.
+          AND NOT EXISTS (
+            SELECT 1 FROM transaction_tag_assertion_values tag_value
+             WHERE tag_value.assertion_id = assertion.assertion_id
+          )
           AND commit_row.commit_sequence <= ?
           AND COALESCE((
             SELECT transition.event_kind
@@ -372,6 +377,42 @@ async function refreshCurrentFields(
        FROM candidates
       WHERE rank = 1`,
     [ ...affected, context.cutoffSequence, context.cutoffSequence, context.commitId],
+  );
+}
+
+/**
+ * Reselects the current display name and note of `affected` after a user
+ * commit, and copies them into the active generation: the same selection a
+ * source commit's projection makes, without re-projecting anything else.
+ */
+export async function refreshPGliteTransactionFields(
+  transaction: PGliteTransaction,
+  affected: readonly Uint8Array[],
+  commit: Readonly<{ id: Uint8Array; sequence: number }>,
+): Promise<void> {
+  if (affected.length === 0) return;
+  await refreshCurrentFields(transaction, { commitId: commit.id, cutoffSequence: commit.sequence }, affected);
+  const active = await first<Row>(transaction, "SELECT generation_id FROM active_projection_generation WHERE singleton_id = 1");
+  if (!active) return;
+  const generationId = Number(active.generation_id);
+  await query(
+    transaction,
+    `DELETE FROM projection_generation_transaction_fields
+      WHERE generation_id = ?
+        AND transaction_id IN (${inList(affected)})`,
+    [generationId, ...affected],
+  );
+  await query(
+    transaction,
+    `INSERT INTO projection_generation_transaction_fields(
+       generation_id, transaction_id, field_name, value_text, origin,
+       derived_assertion_id, user_assertion_id, projection_commit_id
+     )
+     SELECT ?, field.transaction_id, field.field_name, field.value_text, field.origin,
+            field.derived_assertion_id, field.user_assertion_id, field.projection_commit_id
+       FROM current_transaction_fields field
+      WHERE field.transaction_id IN (${inList(affected)})`,
+    [generationId, ...affected],
   );
 }
 

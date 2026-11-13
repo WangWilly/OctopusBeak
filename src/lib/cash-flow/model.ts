@@ -6,10 +6,19 @@ import type {
   CashFlowOutflowGroup,
 } from "../../ledger/canonical/cash-flow-inclusion.ts";
 import type { CashFlowTransferLinkOrigin, CashFlowTransferSuspension } from "../../ledger/canonical/cash-flow-transfer.ts";
-import type { CashFlowAccount, CashFlowReportTransaction, CashFlowTransferSideRow } from "../../ledger/pglite/cash-flow.ts";
+import type {
+  CashFlowAccount,
+  CashFlowReportTransaction,
+  CashFlowRowCategorization,
+  CashFlowRowEdit,
+  CashFlowTransferSideRow,
+} from "../../ledger/pglite/cash-flow.ts";
 import type { ExactAmount } from "../shared-money/exact-money.ts";
 
-export type { CashFlowAccount, CashFlowReportTransaction as CashFlowRow, CashFlowTransferSideRow };
+export type { CashFlowAccount, CashFlowReportTransaction as CashFlowRow, CashFlowRowCategorization, CashFlowRowEdit, CashFlowTransferSideRow };
+
+/** A User Tag the person can apply, by its current label. */
+export type CashFlowUserTag = Readonly<{ tagId: string; label: string }>;
 
 /** The Cash flow live view's parameters; both dates are inclusive. */
 export type CashFlowPageRequest = Readonly<{ startDate: string; endDate: string; query?: string }>;
@@ -139,4 +148,6 @@ export type CashFlowPageDto = Readonly<{
   periodTransactions: readonly CashFlowReportTransaction[] | null;
   search: CashFlowSearchResult | null;
   transferPanel: CashFlowTransferPanel;
+  /** Every active User Tag, label order, for the transaction detail's suggestions. */
+  userTags: readonly CashFlowUserTag[];
 }>;
