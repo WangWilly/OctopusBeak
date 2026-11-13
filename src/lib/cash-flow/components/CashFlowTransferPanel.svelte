@@ -13,6 +13,7 @@
     pairableRows,
     revokeEffect,
     transferReasons,
+    transferErrorKey,
     transferRefusal,
     transferRequest,
     type CashFlowTransferDecision,
@@ -88,7 +89,8 @@
       // The worker's reason does not cross IPC; the page has been read again, so the reason is named from it.
       await tick();
       const refusal = transferRefusal(action, pair, { rows, panel });
-      error = { key, text: refusal ? $t.cashFlow.transferPanel.refusals[refusal] : $t.cashFlow.transferPanel.failed };
+      const text = refusal ? $t.cashFlow.transferPanel.refusals[refusal] : $t.cashFlow.transferPanel.failed;
+      error = { key: transferErrorKey(key, action, pair, panel), text };
     } finally {
       busy = null;
     }
@@ -186,6 +188,7 @@
     {:else}
       <section class="block" data-transfer-links>
         <h3>{$t.cashFlow.transferPanel.linksTitle(panel.links.length)}</h3>
+        {@render errorLine("links")}
         {#if panel.links.length === 0}
           <p class="muted">{$t.cashFlow.transferPanel.noLinks}</p>
         {/if}
@@ -216,6 +219,7 @@
 
       <section class="block" data-transfer-candidates>
         <h3>{$t.cashFlow.transferPanel.candidatesTitle(panel.candidates.length)}</h3>
+        {@render errorLine("candidates")}
         {#if panel.candidates.length === 0}
           <p class="muted" data-transfer-candidates-empty>{$t.cashFlow.transferPanel.noCandidates}</p>
         {/if}

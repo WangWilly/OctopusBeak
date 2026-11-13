@@ -8,6 +8,7 @@ import {
   linkEffect,
   pairableRows,
   revokeEffect,
+  transferErrorKey,
   transferNote,
   transferReasons,
   transferRefusal,
@@ -169,4 +170,18 @@ test("a decision becomes the Financial page action of its kind", () => {
     action: "pair", kind: "transfer_pair", outflowTransactionId: "o", inflowTransactionId: "i", dataVersion: 42,
   });
   assert.equal(transferRequest("revoke", { outflowTransactionId: "o", inflowTransactionId: "i" }, 1).kind, "transfer_revoke");
+});
+
+test("a failed decision whose row left the reloaded page shows its message at the top of its section", () => {
+  const out = row("o", "outflow");
+  const into = row("i", "inflow");
+  const other = row("x", "inflow");
+  const panel = (entries: Partial<CashFlowTransferPageData["panel"]>) => pageData([], entries).panel;
+  assert.equal(transferErrorKey("o/i", "confirm", pairOf(out, into), panel({ candidates: [candidate(out, into)] })), "o/i",
+    "a candidate still listed shows the message on its own row");
+  assert.equal(transferErrorKey("o/i", "confirm", pairOf(out, into), panel({ links: [link(out, other)] })), "candidates");
+  assert.equal(transferErrorKey("o/i:deny", "deny", pairOf(out, into), panel({})), "candidates");
+  assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({ links: [link(out, into)] })), "o/i");
+  assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({})), "links");
+  assert.equal(transferErrorKey("manual", "pair", pairOf(out, into), panel({})), "manual");
 });

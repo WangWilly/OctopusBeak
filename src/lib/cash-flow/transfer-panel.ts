@@ -159,3 +159,28 @@ export function transferNote(
     + panel.suspended.filter((link) => inCurrency(link.outflow ?? link.inflow)).length;
   return count > 0 ? { kind: "links", count } : null;
 }
+
+/**
+ * Where a failed decision's message shows. A failed confirm or deny whose
+ * candidate is gone from the reloaded page, or a failed revoke whose link is
+ * gone, has no row left to show it under, so it shows at the top of the
+ * candidates or links section instead.
+ */
+export function transferErrorKey(
+  key: string,
+  action: CashFlowTransferDecision,
+  pair: Pair,
+  panel: Pick<CashFlowTransferPanel, "links" | "candidates" | "suspended">,
+): string {
+  const same = (entry: Readonly<{ outflow: CashFlowTransferSide | null; inflow: CashFlowTransferSide | null }>) =>
+    entry.outflow?.transactionId === pair.outflowTransactionId && entry.inflow?.transactionId === pair.inflowTransactionId;
+  switch (action) {
+    case "confirm":
+    case "deny":
+      return panel.candidates.some(same) ? key : "candidates";
+    case "revoke":
+      return [...panel.links, ...panel.suspended].some(same) ? key : "links";
+    case "pair":
+      return key;
+  }
+}
