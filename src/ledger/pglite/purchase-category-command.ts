@@ -98,7 +98,14 @@ async function resolveSubject(transaction: PGliteTransaction, identity: Purchase
       const transactionId = bytes(identity.transactionId, "Spending transaction identity");
       const current = await query<Row>(transaction, "SELECT 1 FROM current_transactions WHERE transaction_id = ?", [transactionId]);
       if (current.length === 0) fail("stale", "Spending purchase is stale or no longer current.");
-      const linked = await query<Row>(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE transaction_id = ?", [transactionId]);
+      // A link whose invoice is no longer active makes no linked record; Spending lists the bank-only one.
+      const linked = await query<Row>(transaction,
+        `SELECT 1 FROM current_spending_dedup_links link
+          WHERE link.transaction_id = ?
+            AND (SELECT revision.state FROM einvoice_invoice_revisions revision
+                  WHERE revision.invoice_id = link.invoice_id
+                  ORDER BY revision.revision_number DESC, revision.revision_id DESC LIMIT 1) = 'active'`,
+        [transactionId]);
       if (linked.length > 0) fail("stale", "Spending purchase is now linked; reload Spending.");
       return { kind: "transaction", transactionId };
     }

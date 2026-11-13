@@ -265,7 +265,8 @@ export async function readCashFlowPage(reader: PGliteSpendingReader, input: Cash
   const period = periodOf(request.startDate, request.endDate);
   const previousPeriod = previousCashFlowPeriod(period);
   const current = await readPGliteCashFlow(reader, period);
-  const previous = await readPGliteCashFlow(reader, previousPeriod);
+  // The previous period gives only its totals, so its rows' detail facts are not read.
+  const previous = await readPGliteCashFlow(reader, previousPeriod, { details: false });
   let transactions = current.transactions;
   let search: CashFlowSearchResult | null = null;
   if (request.query !== null) {

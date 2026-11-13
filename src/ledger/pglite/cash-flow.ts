@@ -29,7 +29,6 @@ import { exactFromManualAmount } from "../../lib/manual-assets/manual-assets.ts"
 import { absoluteExact, compareExact, normalizeExact, sameCurrency, type ExactAmount, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
-import { purchaseRecordsByIdentity } from "./purchase-report.ts";
 import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
 import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
 
@@ -262,12 +261,17 @@ async function canonicalFacts(
   const notes = await byChunk<{ transaction_id: unknown; value_text: unknown; origin: unknown }>(reader, ids, (placeholders) =>
     `SELECT transaction_id, value_text, origin FROM current_transaction_fields
       WHERE field_name = 'note' AND transaction_id IN (${placeholders})`);
-  const links = await byChunk<{ transaction_id: unknown; confirmed_event_id: unknown; invoice_id: unknown }>(reader, ids, (placeholders) =>
-    `SELECT transaction_id, confirmed_event_id, invoice_id FROM current_spending_dedup_links WHERE transaction_id IN (${placeholders})`);
+  // A Spending link makes a `link:` record only while its invoice is active, as the Purchase report composes it.
+  const links = await byChunk<{ transaction_id: unknown; confirmed_event_id: unknown; invoice_state: unknown }>(reader, ids, (placeholders) =>
+    `SELECT link.transaction_id, link.confirmed_event_id,
+            (SELECT revision.state FROM einvoice_invoice_revisions revision
+              WHERE revision.invoice_id = link.invoice_id
+              ORDER BY revision.revision_number DESC, revision.revision_id DESC LIMIT 1) AS invoice_state
+       FROM current_spending_dedup_links link WHERE link.transaction_id IN (${placeholders})`);
   const userNotes = new Set(notes.filter((row) => row.origin === "user").map((row) => idString(row.transaction_id, "Transaction")));
-  const linkOf = new Map(links.map((row) => [idString(row.transaction_id, "Linked transaction"), idString(row.confirmed_event_id, "Spending link")]));
-  const linkedInvoiceOf = new Map(links.map((row) => [idString(row.transaction_id, "Linked transaction"), idString(row.invoice_id, "Linked invoice")]));
-  const purchases = await spendingPurchaseIds(reader, knowledgeAt, transactions, linkedInvoiceOf);
+  const linkOf = new Map(links.filter((row) => row.invoice_state === "active")
+    .map((row) => [idString(row.transaction_id, "Linked transaction"), idString(row.confirmed_event_id, "Spending link")]));
+  const purchases = await spendingPurchaseIds(reader, knowledgeAt, transactions);
   const revisionOf = new Map(transactions.map((transaction) => [transaction.revisionId, transaction.transactionId]));
   const times = new Map<string, { local: string; precision: string; origin: string }>();
   const revisionIds = [...revisionOf.keys()];
@@ -291,33 +295,26 @@ async function canonicalFacts(
     note: noteOf.get(id) ?? null,
     userNote: userNotes.has(id) && noteOf.has(id),
     linkEventId: linkOf.get(id) ?? null,
-    spendingPurchase: purchases.has(linkOf.has(id) ? `link:${linkOf.get(id)}` : `transaction:${id}`),
+    spendingPurchase: purchases.has(id),
     time: times.get(id) ?? null,
   }]));
 }
 
 /**
- * The purchase ids Spending's Purchase report lists for the categorizable
- * rows among `transactions`, read by the same rules Spending reads them. A
- * recognized refund is a `refund:` record with no category, and an inflow is
- * no purchase, so neither is here.
+ * The rows among `transactions` that Spending's Purchase report lists as a
+ * purchase, linked or bank-only: every row Spending includes, less a
+ * recognized refund, which is a `refund:` record with no category. Read from
+ * the inclusion the fact read already decided, so no Purchase record is built.
  */
 async function spendingPurchaseIds(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
   transactions: readonly CanonicalSpendingTransaction[],
-  linkedInvoiceOf: ReadonlyMap<string, string>,
 ): Promise<ReadonlySet<string>> {
-  const ids = transactions.filter((transaction) => categorizable(transaction.kind)).map((transaction) => transaction.transactionId);
-  const found = new Set<string>();
-  for (let start = 0; start < ids.length; start += 2_048) {
-    const chunk = ids.slice(start, start + 2_048);
-    // A linked record is composed from both members, so its invoice is read with it.
-    const invoiceIds = chunk.flatMap((id) => linkedInvoiceOf.get(id) ?? []);
-    const report = await purchaseRecordsByIdentity(reader, knowledgeAt, { invoiceIds, transactionIds: chunk }, { candidates: "none" });
-    for (const record of report.records) found.add(record.purchaseId);
-  }
-  return found;
+  const included = transactions.filter((transaction) => transaction.inclusion === "included").map((transaction) => transaction.transactionId);
+  // A recognized refund stands in for the outflow it names, so that outflow has no purchase record.
+  const refunds = await spendingRefunds(reader, knowledgeAt, included);
+  return new Set(included.filter((id) => !refunds.has(id)));
 }
 
 /** Category applicability is all or nothing per Kind, so one registered code decides it. */
@@ -615,8 +612,16 @@ export async function readPGliteCashFlowSearchRows(
   return [...canonical, ...manual];
 }
 
-/** Classify every transaction dated from `startDate` through `endDate`, both inclusive. */
-export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: CashFlowRequest): Promise<CashFlowReport> {
+/**
+ * Classify every transaction dated from `startDate` through `endDate`, both
+ * inclusive. `details: false` is for a caller that reads only the totals: the
+ * rows then carry no counterparty, note, time or Spending purchase facts.
+ */
+export async function readPGliteCashFlow(
+  reader: PGliteSpendingReader,
+  request: CashFlowRequest,
+  options: Readonly<{ details?: boolean }> = {},
+): Promise<CashFlowReport> {
   const { startDate, endDate } = request;
   if (!ISO_DATE.test(startDate) || !ISO_DATE.test(endDate) || startDate > endDate)
     throw new Error("Cash flow needs an ISO start date on or before its end date.");
@@ -637,7 +642,9 @@ export async function readPGliteCashFlow(reader: PGliteSpendingReader, request: 
     .flatMap((pair) => [pair.outflowTransactionId, pair.inflowTransactionId]))].filter((id) => sides.has(id));
   const farSides = sideIds.filter((id) => !shown.has(id)).map((id) => sides.get(id)!);
   // Only the rows in the range and the transfer sides are shown, so only they read their details.
-  const factsOf = await canonicalFacts(reader, knowledgeAt, [...focus, ...farSides].map((side) => side.spending));
+  const factsOf = options.details === false
+    ? new Map<string, CanonicalFacts>()
+    : await canonicalFacts(reader, knowledgeAt, [...focus, ...farSides].map((side) => side.spending));
   const listRow = ({ effectiveOn: _effectiveOn, spending, ...side }: DatedCashFlowTransaction): CashFlowReportTransaction => {
     const details = canonicalDetails(spending, side.date, factsOf.get(side.transactionId));
     const link = linkOf.get(side.transactionId);

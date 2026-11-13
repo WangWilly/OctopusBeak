@@ -4,7 +4,9 @@ import { readCashFlowPage } from "./cash-flow-page.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
-import { applyPGliteFinancialPageAction, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
+import { applyPGliteFinancialPageAction, commitPGliteSpendingRefundRevision, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
+import { purchaseRecordsByIdentity } from "./purchase-report.ts";
+import { BANK_ROUTE } from "./spending-test-fixture.ts";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import type { PGliteStore } from "./transaction.ts";
 import type { FinancialCommittingPageActionRequest, FinancialPageActionResult } from "../../lib/financial/page-actions.ts";
@@ -307,5 +309,51 @@ test("an archived Tag applied again is active on every transaction it was on, an
     assert.deepEqual(page.userTags, [{ tagId, label: "旅行" }], "the same User Tag is active again");
     for (const id of [first, second, third])
       assert.deepEqual(page.transactions.find((entry) => entry.transactionId === id)?.details.edit?.tags, [{ tagId, label: "旅行" }], id);
+  });
+});
+
+test("a row's Spending purchase id and listing agree with the Purchase report: bank-only, refunded, linked, and linked to a voided invoice", async () => {
+  await withFixture(async (fixture) => {
+    const plain = await fixture.addTransaction({ amount: "320", date: "2026-09-08" });
+    const refunded = await fixture.addTransaction({ amount: "300", date: "2026-09-09" });
+    const linked = await fixture.addTransaction({ amount: "350", date: "2026-09-10" });
+    const voided = await fixture.addTransaction({ amount: "410", date: "2026-09-11" });
+    const inflow = await fixture.addTransaction({ amount: "90", date: "2026-09-12", direction: "inflow" });
+    await fixture.store.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, {
+      stableRefundKey: `refund/${refunded}`, transactionId: refunded, sourceRevisionKey: "refund-v1", revisionNumber: 1, revisionKind: "asserted",
+      amount: { coefficient: "-100", scale: 0, currency: "TWD" },
+      occurrence: { value: "2026-09-13", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
+      authorityRoute: BANK_ROUTE, provenanceReference: "check/refund/1", evidence: { sourceProvesRefund: true },
+    }));
+    const linkedInvoice = await fixture.commitInvoice({ stableKey: "AB10000470:2026-09-10", date: "2026-09-10", items: [{ sequence: 1, name: "汽油", amount: "350" }] });
+    const voidedInvoice = await fixture.commitInvoice({ stableKey: "AB10000471:2026-09-11", date: "2026-09-11", items: [{ sequence: 1, name: "書", amount: "410" }] });
+    const linkEvent = await fixture.link(linkedInvoice, linked);
+    await fixture.link(voidedInvoice, voided);
+    await fixture.commitInvoice({ stableKey: "AB10000471:2026-09-11", revisionNumber: 2, revoked: true, date: "2026-09-11", items: [] });
+
+    const ids = [plain, refunded, linked, voided, inflow];
+    const knowledgeAt = await fixture.knowledgeAt();
+    const report = await purchaseRecordsByIdentity(fixture.store, knowledgeAt,
+      { invoiceIds: [linkedInvoice, voidedInvoice], transactionIds: ids }, { candidates: "none" });
+    const listed = new Set(report.records.map((record) => record.purchaseId));
+    const page = await readCashFlowPage(fixture.store, SEPTEMBER);
+    const derived = ids.map((id) => {
+      const edit = page.transactions.find((row) => row.transactionId === id)?.details.edit;
+      return [edit?.purchaseId, edit?.spendingPurchase];
+    });
+    assert.deepEqual(derived, ids.map((id) => {
+      const record = report.records.find((entry) => entry.transaction?.transactionId === id && entry.basis !== "refund");
+      return [record?.purchaseId ?? `transaction:${id}`, record !== undefined && listed.has(record.purchaseId)];
+    }), "the cheap derivation says what the Purchase report says");
+    assert.deepEqual(derived, [
+      [`transaction:${plain}`, true],
+      [`transaction:${refunded}`, false],
+      [`link:${linkEvent}`, true],
+      [`transaction:${voided}`, true],
+      [`transaction:${inflow}`, false],
+    ]);
+
+    const result = await act(fixture.store, { action: "categorize", kind: "category", purchaseId: `transaction:${voided}`, categoryCode: "education" });
+    assert.equal(result.summaryDelta.after[0]?.category.mode, "single", "a link to a voided invoice no longer blocks the bank-only purchase's category");
   });
 });
