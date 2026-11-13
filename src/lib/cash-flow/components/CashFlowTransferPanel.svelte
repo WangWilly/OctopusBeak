@@ -91,6 +91,8 @@
       const refusal = transferRefusal(action, pair, { rows, panel });
       const text = refusal ? $t.cashFlow.transferPanel.refusals[refusal] : $t.cashFlow.transferPanel.failed;
       error = { key: transferErrorKey(key, action, pair, panel), text };
+      // A revoke whose link is gone falls back to the list; a later link of the same pair must not reopen its detail.
+      if (error.key === "links") detailLinkId = null;
     } finally {
       busy = null;
     }

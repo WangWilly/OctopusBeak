@@ -172,14 +172,19 @@ export function transferErrorKey(
   pair: Pair,
   panel: Pick<CashFlowTransferPanel, "links" | "candidates" | "suspended">,
 ): string {
-  const same = (entry: Readonly<{ outflow: CashFlowTransferSide | null; inflow: CashFlowTransferSide | null }>) =>
-    entry.outflow?.transactionId === pair.outflowTransactionId && entry.inflow?.transactionId === pair.inflowTransactionId;
+  const same = (outflowTransactionId: string, inflowTransactionId: string) =>
+    outflowTransactionId === pair.outflowTransactionId && inflowTransactionId === pair.inflowTransactionId;
+  const sides = (entry: Readonly<{ outflow: CashFlowTransferSide; inflow: CashFlowTransferSide }>) =>
+    same(entry.outflow.transactionId, entry.inflow.transactionId);
   switch (action) {
     case "confirm":
     case "deny":
-      return panel.candidates.some(same) ? key : "candidates";
+      return panel.candidates.some(sides) ? key : "candidates";
     case "revoke":
-      return [...panel.links, ...panel.suspended].some(same) ? key : "links";
+      // A suspended link may have lost a side the page no longer counts, so it is matched by its ids.
+      return panel.links.some(sides) || panel.suspended.some((entry) => same(entry.outflowTransactionId, entry.inflowTransactionId))
+        ? key
+        : "links";
     case "pair":
       return key;
   }

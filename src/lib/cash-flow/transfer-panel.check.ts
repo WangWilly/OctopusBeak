@@ -3,7 +3,7 @@ import test from "node:test";
 import type { CashFlowClass, CashFlowKind } from "../../ledger/canonical/cash-flow-inclusion.ts";
 import { translations } from "../i18n/i18n.ts";
 import type { CashFlowRow, CashFlowTransferSide } from "./model.ts";
-import type { CashFlowTransferCandidateView, CashFlowTransferLinkView, CashFlowTransferSummary } from "./model.ts";
+import type { CashFlowSuspendedTransferView, CashFlowTransferCandidateView, CashFlowTransferLinkView, CashFlowTransferSummary } from "./model.ts";
 import {
   linkEffect,
   pairableRows,
@@ -184,4 +184,10 @@ test("a failed decision whose row left the reloaded page shows its message at th
   assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({ links: [link(out, into)] })), "o/i");
   assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({})), "links");
   assert.equal(transferErrorKey("manual", "pair", pairOf(out, into), panel({})), "manual");
+  const suspended: CashFlowSuspendedTransferView = {
+    linkId: "o/i", origin: "confirmed", outflowTransactionId: "o", inflowTransactionId: "i", outflow: null, inflow: null,
+    suspension: { reason: "not_counted", transactionIds: ["o", "i"] },
+  };
+  assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({ suspended: [suspended] })), "o/i",
+    "a suspended link that lost its sides is still matched by its ids");
 });
