@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CashFlowRow } from "./model.ts";
-import { allocationDraftState, detailRefusal, editableRow, initialAllocationLines, plainAmount } from "./transaction-detail.ts";
+import { allocationDraftState, detailRefusal, editableRow, initialAllocationLines, noteSaveEnabled, plainAmount, type EditableCashFlowRow } from "./transaction-detail.ts";
 
 const account = { id: "card", source: "canonical", institutionKey: null, stream: null, mask: null, name: null } as const;
 
@@ -17,7 +17,7 @@ function row(id: string, overrides: Partial<CashFlowRow> = {}): CashFlowRow {
     cashFlow: { class: "outflow", categories: [{ category: "dining", group: "dining", amount: { coefficient: "125050", scale: 2 } }] },
     details: {
       description: "Costco", counterparty: null, note: null, time: null, account,
-      edit: { purchaseId: `transaction:${id}`, categorizable: true, categorization: { mode: "single", origin: "derived", categoryCode: "dining" }, userNote: false, tags: [] },
+      edit: { purchaseId: `transaction:${id}`, categorizable: true, spendingPurchase: true, categorization: { mode: "single", origin: "derived", categoryCode: "dining" }, userNote: false, tags: [] },
     },
     transferLinkId: null,
     ...overrides,
@@ -59,4 +59,17 @@ test("a failed write names its refusal from the page read again", () => {
   assert.equal(detailRefusal("a", [row("b")]), "gone");
   assert.equal(detailRefusal("m", [manual]), "not_editable");
   assert.equal(editableRow(manual), false);
+});
+
+test("saving a note is offered only when it would write: a changed note, or clearing the person's own note", () => {
+  const withNote = (note: string | null, userNote: boolean) => {
+    const base = row("n");
+    return { ...base, details: { ...base.details, note, edit: { ...base.details.edit!, userNote } } } as EditableCashFlowRow;
+  };
+  assert.equal(noteSaveEnabled("午餐", withNote("午餐", true)), false, "unchanged");
+  assert.equal(noteSaveEnabled(" 晚餐 ", withNote("午餐", true)), true);
+  assert.equal(noteSaveEnabled("", withNote("午餐", true)), true, "clearing the person's own note");
+  assert.equal(noteSaveEnabled("", withNote("店家備註", false)), false, "a Derived note cannot be cleared, so an empty draft writes nothing");
+  assert.equal(noteSaveEnabled("", withNote(null, false)), false);
+  assert.equal(noteSaveEnabled("長".repeat(501), withNote(null, false)), false);
 });

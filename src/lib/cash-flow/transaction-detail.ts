@@ -2,6 +2,8 @@ import type { FinancialPageActionRequest } from "../financial/page-actions.ts";
 import {
   allocationRemainder,
   categoryAllocationProblem,
+  noteProblem,
+  noteText,
   parseAllocationAmount,
   type CategoryAllocationComponent,
   type CategoryAllocationProblem,
@@ -37,6 +39,18 @@ export function tagAddRequest(row: EditableCashFlowRow, label: string, dataVersi
 
 export function tagRemoveRequest(row: EditableCashFlowRow, tagId: string, dataVersion: number): CashFlowDetailRequest {
   return { action: "remove", kind: "tag_remove", transactionId: row.transactionId, tagId, dataVersion };
+}
+
+/**
+ * Whether saving the typed note would write something: a different note, or
+ * an empty draft that clears the person's own note. An empty draft over a
+ * Derived note writes nothing, since only the user lineage can be cleared.
+ */
+export function noteSaveEnabled(draft: string, row: EditableCashFlowRow): boolean {
+  if (noteProblem(draft) !== null) return false;
+  const text = noteText(draft);
+  if (text === null) return row.details.edit.userNote;
+  return text !== row.details.note;
 }
 
 /** One line of the allocation editor as typed. */

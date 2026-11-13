@@ -183,6 +183,7 @@ const en = {
       currency: "Currency",
       manual: "A manual account's transaction is edited on the Assets page.",
       spendingSync: "Category and split changes also show on Spending.",
+      cashFlowOnly: "Spending does not list this transaction as a purchase, so its category applies in Cash flow only.",
       saving: "Saving…",
       saved: "Saved",
       refusals: {
@@ -483,6 +484,7 @@ const zh: typeof en = {
       currency: "幣別",
       manual: "手動帳戶的交易請到資產頁編輯。",
       spendingSync: "分類與拆分的變更會同步到消費頁。",
+      cashFlowOnly: "消費頁沒有把這筆列為購買，分類只用在收支流水。",
       saving: "儲存中…",
       saved: "已儲存",
       refusals: {

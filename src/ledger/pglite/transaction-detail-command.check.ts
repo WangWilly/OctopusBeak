@@ -4,7 +4,7 @@ import { readCashFlowPage } from "./cash-flow-page.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
-import { applyPGliteFinancialPageAction } from "./spending-command.ts";
+import { applyPGliteFinancialPageAction, confirmPGliteSpendingDedupLink } from "./spending-command.ts";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import type { PGliteStore } from "./transaction.ts";
 import type { FinancialCommittingPageActionRequest, FinancialPageActionResult } from "../../lib/financial/page-actions.ts";
@@ -216,5 +216,96 @@ test("a Tag is created by label, reused by its normalized label, and removed wit
     assert.equal(row.details.note, null);
     assert.deepEqual(row.details.edit?.tags.map((tag) => tag.label), ["代墊"]);
     await assert.rejects(act(fixture.store, { action: "add", kind: "tag_add", transactionId: first, label: "   " }), /Tag label/u);
+  });
+});
+
+test("only a row Spending lists as a purchase says its category shows on Spending; another categorizable row changes Spending nothing", async () => {
+  await withFixture(async (fixture) => {
+    const purchase = await fixture.addTransaction({ amount: "320", date: "2026-09-08" });
+    const refund = await fixture.addTransaction({ amount: "90", date: "2026-09-09", direction: "inflow" });
+    const purchaseRow = await rowOf(fixture, purchase);
+    const refundRow = await rowOf(fixture, refund);
+    assert.equal(refundRow.kind?.code, "refund");
+    assert.deepEqual([purchaseRow.details.edit?.categorizable, purchaseRow.details.edit?.spendingPurchase], [true, true]);
+    assert.deepEqual([refundRow.details.edit?.categorizable, refundRow.details.edit?.spendingPurchase], [true, false],
+      "a refund takes a category, but Spending has no purchase record for it");
+    const categorized = await act(fixture.store, { action: "categorize", kind: "category", purchaseId: refundRow.details.edit!.purchaseId, categoryCode: "dining" });
+    assert.deepEqual(categorized.summaryDelta, emptyDelta, "the write lands, and Spending moves nothing");
+    const after = await rowOf(fixture, refund);
+    assert.deepEqual(after.details.edit?.categorization, { mode: "single", origin: "user", categoryCode: "dining" }, "Cash flow shows it");
+  });
+});
+
+test("a split on a Spending-linked purchase lands on the bank transaction and Spending's delta shows the split", async () => {
+  await withFixture(async (fixture) => {
+    const bank = await fixture.addTransaction({ amount: "350", date: "2026-09-10" });
+    const invoice = await fixture.commitInvoice({ stableKey: "AB10000461:2026-09-10", date: "2026-09-10", items: [{ sequence: 1, name: "汽油", amount: "350" }] });
+    const linkedAt = await fixture.knowledgeAt();
+    await fixture.store.transaction((transaction) => confirmPGliteSpendingDedupLink(transaction, {
+      invoiceId: invoice,
+      transactionId: bank,
+      decisionKey: `check/allocation-linked/${invoice}/${bank}`,
+      origin: { kind: "user", userId: "local-user" },
+      evidenceKnowledgeSequence: linkedAt,
+      evidence: { check: true },
+    }));
+    const row = await rowOf(fixture, bank);
+    const purchaseId = row.details.edit?.purchaseId ?? "";
+    assert.match(purchaseId, /^link:/u, "a linked row names its link, as Spending does");
+    assert.equal(row.details.edit?.spendingPurchase, true);
+
+    const result = await act(fixture.store, {
+      action: "allocate", kind: "allocation", purchaseId,
+      components: [{ categoryCode: "transportation", amount: twd("300") }, { categoryCode: "food_and_groceries", amount: twd("50") }],
+    });
+    assert.deepEqual(result.affectedRecords.map((record) => [record.purchaseId, record.basis]), [[purchaseId, "linked"]]);
+    const split = result.summaryDelta.after[0]?.category;
+    assert.deepEqual(split?.mode === "split" && split.components.map((component) => [component.categoryCode, component.amount]), [
+      ["transportation", twd("300")],
+      ["food_and_groceries", twd("50")],
+    ]);
+    const stored = await fixture.store.query<{ transaction_id: string }>(
+      "SELECT encode(transaction_id, 'hex') AS transaction_id FROM transaction_categorization_values WHERE mode = 'allocated'",
+    );
+    assert.deepEqual(stored.rows.map((entry) => entry.transaction_id), [bank.replaceAll("-", "")], "the allocation is the bank transaction's");
+  });
+});
+
+test("an archived Tag applied again is active on every transaction it was on, and the latest revision decides its lifecycle", async () => {
+  await withFixture(async (fixture) => {
+    const first = await fixture.addTransaction({ amount: "320", date: "2026-09-08" });
+    const second = await fixture.addTransaction({ amount: "180", date: "2026-09-09" });
+    const third = await fixture.addTransaction({ amount: "60", date: "2026-09-10" });
+    await act(fixture.store, { action: "add", kind: "tag_add", transactionId: first, label: "旅行" });
+    await act(fixture.store, { action: "add", kind: "tag_add", transactionId: second, label: "旅行" });
+    const tagId = (await readCashFlowPage(fixture.store, SEPTEMBER)).userTags[0]!.tagId;
+    const tagBytes = Buffer.from(tagId.replaceAll("-", ""), "hex");
+
+    /** A commit the way an archive writer would make one, then its revision row. */
+    const commit = async () => {
+      const id = Buffer.from(crypto.randomUUID().replaceAll("-", ""), "hex");
+      await fixture.store.query(
+        "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, $2, $3, 'user/local', 'user_assertion')",
+        [id, await fixture.knowledgeAt() + 1, Date.now() * 1000],
+      );
+      return id;
+    };
+    // Active by a status revision, then archived by a newer label revision: the newer one wins.
+    await fixture.store.query("INSERT INTO user_tag_status_revisions(status_revision_id, tag_id, user_id, lifecycle, created_commit_id) VALUES ($1, $2, 'local-user', 'active', $3)",
+      [Buffer.from(crypto.randomUUID().replaceAll("-", ""), "hex"), tagBytes, await commit()]);
+    await fixture.store.query(
+      `INSERT INTO user_tag_label_revisions(label_revision_id, tag_id, user_id, display_label, normalized_label, lifecycle, created_commit_id)
+       VALUES ($1, $2, 'local-user', '旅行', '旅行', 'archived', $3)`,
+      [Buffer.from(crypto.randomUUID().replaceAll("-", ""), "hex"), tagBytes, await commit()]);
+    // Archiving hides the tag's rows, as an archive writer would.
+    await fixture.store.query("DELETE FROM current_transaction_tags WHERE tag_id = $1", [tagBytes]);
+    assert.deepEqual((await readCashFlowPage(fixture.store, SEPTEMBER)).userTags, [], "an archived tag is not suggested");
+    assert.deepEqual((await rowOf(fixture, first)).details.edit?.tags, []);
+
+    await act(fixture.store, { action: "add", kind: "tag_add", transactionId: third, label: "旅行" });
+    const page = await readCashFlowPage(fixture.store, SEPTEMBER);
+    assert.deepEqual(page.userTags, [{ tagId, label: "旅行" }], "the same User Tag is active again");
+    for (const id of [first, second, third])
+      assert.deepEqual(page.transactions.find((entry) => entry.transactionId === id)?.details.edit?.tags, [{ tagId, label: "旅行" }], id);
   });
 });

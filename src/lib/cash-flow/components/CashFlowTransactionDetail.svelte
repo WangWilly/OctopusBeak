@@ -19,6 +19,7 @@
     editableRow,
     initialAllocationLines,
     noteRequest,
+    noteSaveEnabled,
     plainAmount,
     tagAddRequest,
     tagRemoveRequest,
@@ -58,7 +59,7 @@
     if (noteDraft.trim() === (shownNote ?? "")) noteDraft = row.details.note ?? "";
     shownNote = row.details.note;
   }
-  $: noteChanged = noteText(noteDraft) !== (row.details.note ?? null);
+  $: noteSavable = editableRow(row) && noteSaveEnabled(noteDraft, row);
   $: noteTooLong = noteProblem(noteDraft) !== null;
   $: appliedTags = new Set((edit?.tags ?? []).map((tag) => normalizeTagLabel(tag.label)));
   $: suggestions = userTags.filter((tag) => !appliedTags.has(normalizeTagLabel(tag.label))
@@ -88,6 +89,8 @@
     saved = null;
     try {
       await apply(request);
+      // The page has been read again; let the reloaded row reach this component before the step that reads it.
+      await tick();
       after?.();
       saved = section;
     } catch {
@@ -123,9 +126,10 @@
   }
 
   function saveNote(clear = false) {
-    if (!editableRow(row) || noteTooLong) return;
+    if (!editableRow(row) || (!clear && !noteSavable)) return;
     const note = clear ? null : noteText(noteDraft);
-    void run("note", noteRequest(row, note, dataVersion), () => { if (clear) noteDraft = ""; });
+    // The draft follows the note the reload shows: clearing a user note may reveal a Derived one.
+    void run("note", noteRequest(row, note, dataVersion), () => { noteDraft = row.details.note ?? ""; });
   }
 
   function addTag(label: string) {
@@ -254,7 +258,7 @@
               {@render errorLine("allocation")}
             </div>
           {/if}
-          <p class="muted small">{$t.cashFlow.detail.spendingSync}</p>
+          <p class="muted small" data-detail-spending-sync={edit.spendingPurchase}>{edit.spendingPurchase ? $t.cashFlow.detail.spendingSync : $t.cashFlow.detail.cashFlowOnly}</p>
         {/if}
       </section>
 
@@ -266,7 +270,7 @@
         <textarea id="cash-flow-detail-note" rows="2" maxlength={NOTE_MAX_LENGTH + 50} placeholder={$t.cashFlow.detail.notePlaceholder} bind:value={noteDraft} data-detail-note-input></textarea>
         {#if noteTooLong}<p class="error" role="status">{$t.cashFlow.detail.noteTooLong}</p>{/if}
         <div class="actions">
-          <button type="button" class="button primary" disabled={busy !== null || !noteChanged || noteTooLong} data-detail-note-save onclick={() => saveNote()}>{$t.cashFlow.detail.noteSave}</button>
+          <button type="button" class="button primary" disabled={busy !== null || !noteSavable} data-detail-note-save onclick={() => saveNote()}>{$t.cashFlow.detail.noteSave}</button>
           {#if edit.userNote}
             <button type="button" class="button" disabled={busy !== null} data-detail-note-clear onclick={() => saveNote(true)}>{$t.cashFlow.detail.noteClear}</button>
           {/if}

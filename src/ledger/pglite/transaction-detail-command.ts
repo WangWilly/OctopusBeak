@@ -154,24 +154,34 @@ export async function writePGliteTransactionNote(
   return true;
 }
 
-/** The user's tags with their current label and lifecycle. */
+/**
+ * The user's tags with their current label and lifecycle. A label revision
+ * and a status revision both carry a lifecycle; the one committed last
+ * decides it, a status revision winning a tie inside one commit.
+ */
 const CURRENT_TAGS = `
   WITH label AS (
-    SELECT DISTINCT ON (revision.tag_id) revision.tag_id, revision.display_label, revision.normalized_label, revision.lifecycle
+    SELECT DISTINCT ON (revision.tag_id) revision.tag_id, revision.display_label, revision.normalized_label
       FROM user_tag_label_revisions revision
       JOIN canonical_commits commit_row ON commit_row.commit_id = revision.created_commit_id
      ORDER BY revision.tag_id, commit_row.commit_sequence DESC, encode(revision.label_revision_id, 'hex') DESC
-  ), status AS (
-    SELECT DISTINCT ON (revision.tag_id) revision.tag_id, revision.lifecycle
+  ), lifecycle_event AS (
+    SELECT revision.tag_id, revision.lifecycle, commit_row.commit_sequence, 0 AS source_order, encode(revision.label_revision_id, 'hex') AS revision_key
+      FROM user_tag_label_revisions revision
+      JOIN canonical_commits commit_row ON commit_row.commit_id = revision.created_commit_id
+    UNION ALL
+    SELECT revision.tag_id, revision.lifecycle, commit_row.commit_sequence, 1 AS source_order, encode(revision.status_revision_id, 'hex') AS revision_key
       FROM user_tag_status_revisions revision
       JOIN canonical_commits commit_row ON commit_row.commit_id = revision.created_commit_id
-     ORDER BY revision.tag_id, commit_row.commit_sequence DESC, encode(revision.status_revision_id, 'hex') DESC
+  ), lifecycle AS (
+    SELECT DISTINCT ON (tag_id) tag_id, lifecycle
+      FROM lifecycle_event
+     ORDER BY tag_id, commit_sequence DESC, source_order DESC, revision_key DESC
   ), current_tags AS (
-    SELECT tag.tag_id, tag.user_id, label.display_label, label.normalized_label,
-           COALESCE(status.lifecycle, label.lifecycle) AS lifecycle
+    SELECT tag.tag_id, tag.user_id, label.display_label, label.normalized_label, lifecycle.lifecycle
       FROM user_tags tag
       JOIN label ON label.tag_id = tag.tag_id
-      LEFT JOIN status ON status.tag_id = tag.tag_id
+      JOIN lifecycle ON lifecycle.tag_id = tag.tag_id
   )`;
 
 /** Rebuild one transaction's active Tag rows from its active Tag assertions. */
@@ -227,10 +237,19 @@ export async function addPGliteTransactionTag(
   if (existing) {
     tagId = rowBytes(existing.tag_id, "User Tag");
     if (existing.lifecycle !== "active") {
+      const commitId = (await commit()).id;
       await query(transaction,
         "INSERT INTO user_tag_status_revisions(status_revision_id, tag_id, user_id, lifecycle, created_commit_id) VALUES (?, ?, ?, 'active', ?)",
-        [uuidBytes(), tagId, LOCAL_USER_ID, (await commit()).id],
+        [uuidBytes(), tagId, LOCAL_USER_ID, commitId],
       );
+      // The tag's other associations were hidden while it was archived; they show again.
+      for (const row of await query(transaction,
+        `SELECT DISTINCT value.transaction_id
+           FROM transaction_tag_assertion_values value
+           JOIN assertions assertion ON assertion.assertion_id = value.assertion_id
+          WHERE value.tag_id = ? AND ${ACTIVE}`,
+        [tagId],
+      )) await refreshTransactionTags(transaction, rowBytes(row.transaction_id, "Tagged transaction"), commitId);
     } else if (await activeTagAssertion(transaction, transactionId, tagId)) {
       return Object.freeze({ tagId: idString(tagId), changed: false });
     }
