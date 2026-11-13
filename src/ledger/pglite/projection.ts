@@ -851,10 +851,11 @@ async function refreshCurrentEnrichment(
   const refreshAll = context.refreshEnrichmentAll === true;
   const prior = await query<Row>(
     transaction,
-    `SELECT transaction_id, assertion_id, value_text, route_id
-       FROM current_transaction_enrichment
-      WHERE field_name = 'kind' AND origin = 'derived'
-        ${refreshAll ? "" : `AND transaction_id IN (${inList(affected)})`}`,
+    `SELECT current.transaction_id, current.assertion_id, current.value_text, current.route_id, assertion.rule_lineage
+       FROM current_transaction_enrichment current
+       JOIN assertions assertion ON assertion.assertion_id = current.assertion_id
+      WHERE current.field_name = 'kind' AND current.origin = 'derived'
+        ${refreshAll ? "" : `AND current.transaction_id IN (${inList(affected)})`}`,
     refreshAll ? [] : affected,
   );
   const priorByTransaction = new Map(
@@ -906,7 +907,8 @@ async function refreshCurrentEnrichment(
       kind.outputState !== "unsupported" &&
       previous &&
       String(previous.value_text) === kind.value &&
-      String(previous.route_id) === kind.routeId
+      String(previous.route_id) === kind.routeId &&
+      String(previous.rule_lineage) === kind.ruleLineage
     )
       return [];
     return [{ row, kind, previous }];

@@ -171,7 +171,7 @@ function cathayDepositCapture(
   };
 }
 
-function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outflow"): PGliteCanonicalCreditCardCaptureRequest {
+function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outflow", description = "Card purchase"): PGliteCanonicalCreditCardCaptureRequest {
   const instrumentOccurrence = token(`${captureId}:instrument`);
   const transactionOccurrence = token(`${captureId}:transaction`);
   const route = "fubon/credit-card/human-attested-v2";
@@ -180,7 +180,7 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
   const statementBucket = encodeCreditCardQueryBucket({ kind: "statement", period: "2026/09" });
   const records = [
     { occurrenceKey: instrumentOccurrence, providerKey: token(`${captureId}:instrument-provider`), contentHash: token(`${captureId}:instrument-content`), compact: { instrumentKey: "projection-card-instrument" }, description: "Card instrument" },
-    { occurrenceKey: transactionOccurrence, occurrenceGroup: { scopeKey: groupScope, fingerprint: groupFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: statementBucket, providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { sourceSequence: "card-1", direction }, description: "Card purchase" },
+    { occurrenceKey: transactionOccurrence, occurrenceGroup: { scopeKey: groupScope, fingerprint: groupFingerprint, partitionDate: "2026-09-22", ordinal: 1 }, occurrenceGroupBucketKey: statementBucket, providerKey: token(`${captureId}:provider`), contentHash: token(`${captureId}:content`), compact: { sourceSequence: "card-1", direction }, description },
   ];
   return {
     capture: {
@@ -218,7 +218,7 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
       postingOrigin: "provider_booked_history",
       postingBasis: "statement-posted-history",
       postingRuleVersion: route,
-      description: "Card purchase",
+      description,
       economicStatus: "normal",
       administrativeState: "active",
       semanticRuleVersion: route,
@@ -340,6 +340,18 @@ test("PGlite source revision recurrence and complete-range withdrawal update cur
     await commitPGliteCanonicalDepositCapture(store, empty);
     assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM current_transactions")).rows[0]?.count), 0);
     assert.equal(Number((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_records")).rows[0]?.count), 2);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a card bill payment credit gets payment.credit_card from its label, not refund from its direction", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalCreditCardCapture(store, cardCapture("projection-card-payment", "inflow", "網路繳款"));
+    const kinds = await store.query<{ value_text: string }>("SELECT value_text FROM current_transaction_enrichment WHERE route_id = 'fubon/credit-card/direction-enrichment/v1/kind'");
+    assert.deepEqual(kinds.rows.map((row) => row.value_text), ["payment.credit_card"]);
   } finally {
     await store.close();
   }

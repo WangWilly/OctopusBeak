@@ -73,7 +73,7 @@ test("evidence links a unique pair of internal transfers, and an ambiguous match
     "every counterpart is shown, the closest first");
 });
 
-test("evidence never links a fallback side, a decided pair, or a card bill payment", () => {
+test("evidence never links a fallback side, a decided pair, or a card bill payment whose credit names nothing", () => {
   const out = side("out", "outflow", { kind: evidence("transfer.internal") });
   const opaque = side("in", "inflow");
   assert.deepEqual(pairCashFlowTransfers([out, opaque], [], new Map()).links, []);
@@ -82,6 +82,15 @@ test("evidence never links a fallback side, a decided pair, or a card bill payme
     "a revoked automatic link stays revoked");
   const billPayment = side("out", "outflow", { kind: evidence("payment.credit_card") });
   assert.deepEqual(pairCashFlowTransfers([billPayment, side("in", "inflow", { kind: fallback("refund") })], [], new Map()).links, []);
+});
+
+test("a card bill payment links by evidence when the card's credit names itself", () => {
+  const billPayment = side("out", "outflow", { kind: evidence("payment.credit_card") });
+  const paymentCredit = side("in", "inflow", { kind: evidence("payment.credit_card") });
+  assert.deepEqual(pairCashFlowTransfers([billPayment, paymentCredit], [], new Map()).links.map((link) => [link.outflowTransactionId, link.inflowTransactionId, link.origin.kind]),
+    [["out", "in", "evidence"]]);
+  const internal = side("in", "inflow", { kind: evidence("transfer.internal") });
+  assert.deepEqual(pairCashFlowTransfers([billPayment, internal], [], new Map()).links, [], "both sides must prove the same move");
 });
 
 test("5000 and 5000.00 are one amount when pairing", () => {
@@ -152,6 +161,8 @@ test("a link excludes a weak or fallback side when the other side is weak, fallb
   // Any other evidence-backed Kind decides its own side and keeps the other side counted: no pair.
   assert.deepEqual(linked(evidence("payment.credit_card"), cardPayment, weak("transfer.external"), inflow), { cashFlow: cardPayment, paired: false });
   assert.deepEqual(linked(weak("transfer.external"), inflow, evidence("payment.credit_card"), cardPayment), { cashFlow: inflow, paired: false });
+  // Two card bill payment sides are both out already: a pair, though not a transfer one.
+  assert.deepEqual(linked(evidence("payment.credit_card"), cardPayment, evidence("payment.credit_card"), cardPayment), { cashFlow: cardPayment, paired: true });
   assert.deepEqual(linked(evidence("purchase"), outflow, fallback("receipt"), inflow), { cashFlow: outflow, paired: false });
   assert.deepEqual(linked(fallback("purchase"), outflow, evidence("income.employment.salary"), salary), { cashFlow: outflow, paired: false });
   assert.deepEqual(linked(evidence("transfer.internal"), internal, evidence("income.employment.salary"), salary), { cashFlow: internal, paired: false });

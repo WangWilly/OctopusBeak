@@ -141,7 +141,8 @@ function isRegisteredKind(code: string): code is TransactionKindCode {
  *   as 跨行 or 匯款 assign it, and they also match a move between two of the
  *   person's own accounts at different banks.
  * - `fallback`: nothing proves the purpose: a card Kind read from direction
- *   alone, or the `purchase` or `receipt` the bank rule ends on.
+ *   alone because the description names none, or the `purchase` or
+ *   `receipt` the bank rule ends on.
  * A Cash-flow transfer link may exclude a `weak` or `fallback` side, never an
  * `evidence` one.
  */

@@ -19,9 +19,10 @@ export const CATHAY_AUTOMATIC_ENRICHMENT_ROUTE_SCOPE =
   "cathay/domestic-deposit" as const;
 /**
  * Credit-card sources currently expose a reliable transaction direction but
- * do not expose a provider taxonomy Kind.  This producer records the
- * versioned, traceable fallback used until a source-specific Kind assertion
- * is available.  Its routes are deliberately scoped to the three supported
+ * do not expose a provider taxonomy Kind.  This producer reads an inflow's
+ * Kind from its source description when the description names one, and
+ * otherwise records the versioned, traceable direction fallback used until a
+ * source-specific Kind assertion is available.  Its routes are deliberately scoped to the three supported
  * credit-card streams instead of granting the producer global authority.
  */
 export const CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID =
@@ -669,6 +670,15 @@ const CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY: readonly ProducerCompatibilit
     field: "kind" as const,
     outputCode,
     evidenceKinds: [CREDIT_CARD_DIRECTION_ENRICHMENT_EVIDENCE_KIND],
+  })),
+  // An inflow whose issuer label names what it is. Added outputs, so v1's published rows stay as they were.
+  ...(["reversal", "income.reward", "payment.credit_card"] as const).map((outputCode) => ({
+    producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
+    producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "kind" as const,
+    outputCode,
+    evidenceKinds: ["bank-rule"],
   })),
 ];
 
