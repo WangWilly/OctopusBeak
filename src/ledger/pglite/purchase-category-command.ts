@@ -7,6 +7,7 @@ import {
   writeEInvoiceItemUserCategory,
 } from "./einvoice-item-categorization.ts";
 import { refreshGenerationTransactionCategorizations } from "./projection.ts";
+import { querySpendingReport } from "./spending-facts.ts";
 import {
   isCategoryApplicable,
   isTaxonomyCode,
@@ -127,8 +128,14 @@ async function resolveSubject(transaction: PGliteTransaction, identity: Purchase
         [invoiceId],
       ))[0];
       if (!state || state.state !== "active") fail("stale", "Spending invoice is missing or revoked.");
-      const linked = await query<Row>(transaction, "SELECT 1 FROM current_spending_dedup_links WHERE invoice_id = ?", [invoiceId]);
-      if (linked.length > 0) fail("stale", "Spending invoice is now linked; reload Spending.");
+      const links = await query<Row>(transaction, "SELECT transaction_id FROM current_spending_dedup_links WHERE invoice_id = ?", [invoiceId]);
+      // A link makes a linked record only while Spending includes its transaction; otherwise Spending lists the invoice alone.
+      if (links.length > 0) {
+        const transactionIds = links.map((link) => idString(link.transaction_id, "Linked transaction"));
+        const report = await querySpendingReport(transaction, "current", await readKnowledgePoint(transaction), null, { transactionIds });
+        if (report.transactions.some((linked) => linked.inclusion === "included"))
+          fail("stale", "Spending invoice is now linked; reload Spending.");
+      }
       return { kind: "items", invoiceId };
     }
   }

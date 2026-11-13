@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSpendingCategoryFixture, freshPage, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { createSpendingCategoryFixture, freshPage, setKind, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { purchaseRecordsByIdentity } from "./purchase-report.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import {
   parsePurchaseIdentity,
@@ -175,6 +176,28 @@ test("a linked purchase writes the transaction subject, not the items, and refun
       setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `refund:${invoiceId}`, knowledgeAt: result.knowledgeAt, categoryCode: "dining" }),
       (error: unknown) => error instanceof SpendingPurchaseCategoryError && error.code === "ineligible",
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an invoice whose link Spending no longer counts writes as the invoice-only purchase Spending lists", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const transactionId = await fixture.addTransaction({ amount: "180" });
+    const invoiceId = await fixture.commitInvoice({
+      stableKey: "AB33333333:2026-09-01",
+      items: [{ sequence: 1, name: "便當", amount: "180" }],
+    });
+    await fixture.link(invoiceId, transactionId);
+    // An own-account move is never a purchase, so the link makes no linked record.
+    await setKind(fixture.store, transactionId, "transfer.internal");
+    const base = await fixture.knowledgeAt();
+    const report = await purchaseRecordsByIdentity(fixture.store, base, { invoiceIds: [invoiceId], transactionIds: [transactionId] }, { candidates: "none" });
+    assert.deepEqual(report.records.map((record) => record.purchaseId), [`invoice:${invoiceId}`], "Spending lists the invoice alone");
+    const result = await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `invoice:${invoiceId}`, knowledgeAt: base, categoryCode: "dining" });
+    assert.equal(result.subject, "items");
+    assert.deepEqual(await itemRows(fixture), [[1, "user", "dining"]]);
   } finally {
     await fixture.close();
   }
