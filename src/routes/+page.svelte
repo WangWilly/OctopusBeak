@@ -50,6 +50,7 @@
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
   import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
   import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
+  import type { CashFlowTransferRequest } from "$lib/cash-flow/transfer-panel.ts";
   import { quickRange, rollRange, type CashFlowPeriodChoice } from "$lib/cash-flow/period.ts";
   import {
     createFinancialPage,
@@ -301,6 +302,16 @@
   }
 
   // 本週, 本月 and 近 30 天 follow the Taipei date past midnight; a custom range stays put.
+  /** A transfer decision is a Financial page action; Cash flow then reads its page again (ADR 0136). */
+  async function decideCashFlowTransfer(request: CashFlowTransferRequest) {
+    try {
+      await window.octopusBeak.spending.applyPageAction(request);
+    } finally {
+      // A refused or stale action leaves the page behind the store as well, so it is read again either way.
+      await financialPage.reload("cash-flow").catch(() => undefined);
+    }
+  }
+
   $: rollCashFlowPeriod($taipeiDate);
   function rollCashFlowPeriod(today: string) {
     if (today === cashFlowToday) return;
@@ -785,6 +796,7 @@
       today={$taipeiDate}
       loading={cashFlow.status === "loading"}
       changeRequest={changeCashFlowRequest}
+      decideTransfer={decideCashFlowTransfer}
     />
     <RouteLoadNotice state={cashFlow} retry={() => void loadRoute("cash-flow", { force: true })} />
   {:else}

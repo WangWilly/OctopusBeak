@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowLeftRight, ArrowRight, Calendar, CircleHelp, Filter, PiggyBank, Search, X } from "@lucide/svelte";
+  import { ArrowLeftRight, ArrowRight, Calendar, ChevronRight, CircleHelp, Download, Filter, PiggyBank, Search, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { moneyText } from "$lib/spending/components/money-text.ts";
@@ -34,7 +34,10 @@
     type OutflowGroupKey,
   } from "../display.ts";
   import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
+  import type { CashFlowTransferRequest } from "../transfer-panel.ts";
+  import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
+  import CashFlowTransferPanel from "./CashFlowTransferPanel.svelte";
 
   export let page: CashFlowPageDto;
   export let request: CashFlowPageRequest;
@@ -43,6 +46,8 @@
   export let today: string;
   export let loading = false;
   export let changeRequest: (request: CashFlowPageRequest, choice?: CashFlowPeriodChoice) => void;
+  /** Send one transfer decision as a Financial page action; resolves once the page has read itself again (ADR 0136). */
+  export let decideTransfer: (request: CashFlowTransferRequest) => Promise<void>;
 
   type Drill = Readonly<{ kind: "outflow"; group: OutflowGroupKey }> | Readonly<{ kind: "inflow"; group: CashFlowInflowGroup }>;
 
@@ -54,6 +59,8 @@
   let accountFilter: CashFlowAccount | null = null;
   let searchText = request.query ?? "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let transferPanelOpen = false;
+  let exportOpen = false;
 
   $: currencies = page.currencies.map((summary) => summary.currency);
   $: if (!currencies.includes(selectedCurrency)) selectedCurrency = currencies[0] ?? "TWD";
@@ -74,6 +81,10 @@
   $: fieldCounts = page.search?.fields ?? null;
   $: drillRows = drill === null ? [] : page.transactions.filter((row) => row.amount.currency === selectedCurrency && rowInGroup(row, drill!));
   $: transfers = summary?.transfers ?? null;
+  $: transferPanel = page.transferPanel;
+  $: pendingTransfers = transferPanel.candidates.length;
+  $: periodRows = page.periodTransactions ?? page.transactions;
+  $: narrowed = page.search !== null || accountFilter !== null || listFilter !== null;
 
   function amountText(amount: ExactAmount, currency = selectedCurrency, signed = false) {
     return moneyText({ ...amount, currency }, $locale, signed);
@@ -250,9 +261,12 @@
             <span class="figure-sub">{keptText}</span>
           </div>
           <div class="aside-notes">
-            {#if transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0)}
-              <div class="note transfer" data-transfers>
-                {#if transfers.pairs.count > 0}
+            {#if (transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0)) || transferPanel.links.length > 0 || pendingTransfers > 0 || transferPanel.suspended.length > 0}
+              <button type="button" class="note transfer" data-transfers aria-label={$t.cashFlow.transferNoteOpen} onclick={() => transferPanelOpen = true}>
+                {#if !transfers || (transfers.pairs.count === 0 && transfers.unpaired.count === 0)}
+                  <span class="note-head" data-transfer-pending><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPendingOnly(pendingTransfers)}</span>
+                  <span>{$t.cashFlow.transfersNote}</span>
+                {:else if transfers.pairs.count > 0}
                   <span class="note-head" data-transfer-pairs><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPairs(transfers.pairs.count)}</span>
                   <strong class="money" data-sensitive>{amountText(transfers.pairs.amount)}</strong>
                   {#if transfers.unpaired.count > 0}
@@ -264,7 +278,11 @@
                   <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
                   <span>{$t.cashFlow.transfersNote}</span>
                 {/if}
-              </div>
+                {#if transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0) && pendingTransfers > 0}
+                  <span class="note-extra" data-transfer-pending>{$t.cashFlow.transferPending(pendingTransfers)}</span>
+                {/if}
+                <ChevronRight class="note-open" size={14} strokeWidth={2.2} aria-hidden="true" />
+              </button>
             {/if}
             {#if summary.unresolved.count > 0}
               <div class="note unresolved" data-unresolved>
@@ -399,6 +417,8 @@
               {/if}
             </p>
           </div>
+          <div class="daily-tools">
+          <button type="button" class="button export" data-cash-flow-export-open onclick={() => exportOpen = true}><Download size={14} strokeWidth={2} aria-hidden="true" />{$t.cashFlow.csv.button}</button>
           <label class="search" class:active={searchText !== ""}>
             <Search size={15} strokeWidth={2} aria-hidden="true" />
             <input
@@ -414,6 +434,7 @@
               <button type="button" class="clear" aria-label={$t.cashFlow.clearSearch} onclick={clearSearch}><X size={14} strokeWidth={2} aria-hidden="true" /></button>
             {/if}
           </label>
+          </div>
         </header>
 
         {#if page.search}
@@ -509,6 +530,26 @@
     </div>
   </div>
 </DashboardShell>
+
+{#if transferPanelOpen}
+  <CashFlowTransferPanel
+    panel={transferPanel}
+    rows={periodRows}
+    dataVersion={page.knowledgeAt}
+    decide={decideTransfer}
+    onClose={() => transferPanelOpen = false}
+  />
+{/if}
+
+{#if exportOpen}
+  <CashFlowExportDialog
+    period={page.period}
+    periodText={$t.cashFlow.periodHeading(rangeText(range, today), $t.cashFlow.periodDays(page.period.days))}
+    {periodRows}
+    shownRows={narrowed ? visibleRows : null}
+    onClose={() => exportOpen = false}
+  />
+{/if}
 
 <style>
   .cash-flow {
@@ -615,8 +656,44 @@
   }
 
   .note.transfer {
+    position: relative;
+    border: 0;
+    padding-right: 30px;
     background: var(--accent-soft);
     color: var(--accent);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .note.transfer:hover {
+    background: color-mix(in oklch, var(--accent) 14%, white);
+  }
+
+  .note.transfer :global(.note-open) {
+    position: absolute;
+    top: 12px;
+    right: 10px;
+  }
+
+  .daily-tools {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .daily-tools .search {
+    flex: 0 1 240px;
+    width: 240px;
+    min-width: 0;
+  }
+
+  .button.export {
+    min-height: 34px;
+    white-space: nowrap;
   }
 
   .note-extra {

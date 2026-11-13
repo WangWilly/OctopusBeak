@@ -445,3 +445,76 @@ test("a quick choice applied from the picker rolls as its preset; a fixed range 
   assert.equal(pickerChoice("last30", null, true), "custom", "days picked by hand");
   assert.equal(pickerChoice("custom", "month", true), "month", "本月 tapped in the picker");
 });
+
+/** Send one transfer decision the way the pairing panel does. */
+async function decide(store: PGliteStore, action: "confirm" | "deny" | "pair", outflowTransactionId: string, inflowTransactionId: string) {
+  const request = {
+    action, kind: `transfer_${action}`, outflowTransactionId, inflowTransactionId, dataVersion: await readKnowledgePoint(store),
+  } as FinancialPageActionRequest;
+  await applyPGliteFinancialPageAction(store, request as Exclude<FinancialPageActionRequest, Readonly<{ kind: "strong" }>>);
+}
+
+test("the pairing panel lists links with both sides, candidates, suspended links and denials", async () => {
+  await withFixture(async (fixture) => {
+    const entries = [
+      ["transfer.internal", { amount: "5000", date: "2026-10-03", account: "bank-a", description: "本人轉帳" }],
+      ["transfer.internal", { amount: "5000", date: "2026-10-03", account: "bank-b", direction: "inflow", description: "本人轉入" }],
+      ["purchase", { amount: "3000", date: "2026-09-29", account: "bank-a", description: "Move out" }],
+      ["receipt", { amount: "3000", date: "2026-10-01", account: "bank-b", direction: "inflow", description: "Move in" }],
+      ["purchase", { amount: "700", date: "2026-10-05", account: "bank-a" }],
+      ["receipt", { amount: "700", date: "2026-10-07", account: "bank-b", direction: "inflow" }],
+      ["purchase", { amount: "900", date: "2026-10-06", account: "bank-a" }],
+      ["receipt", { amount: "900", date: "2026-10-06", account: "bank-b", direction: "inflow" }],
+      ["purchase", { amount: "1200", date: "2026-10-08", account: "bank-a" }],
+      ["receipt", { amount: "1200", date: "2026-10-08", account: "bank-b", direction: "inflow" }],
+      ["purchase", { amount: "8000", date: "2026-10-02", account: "bank-a" }],
+      ["receipt", { amount: "8000", date: "2026-10-09", account: "bank-b", direction: "inflow" }],
+    ] as const;
+    const ids = await addSides(fixture, entries);
+    const [evidenceOut, evidenceIn, farOut, nearIn, candidateOut, candidateIn, deniedOut, deniedIn, pausedOut, pausedIn, manualOut, manualIn] = ids as [
+      string, string, string, string, string, string, string, string, string, string, string, string];
+    await decide(fixture.store, "confirm", farOut, nearIn);
+    await decide(fixture.store, "deny", deniedOut, deniedIn);
+    await decide(fixture.store, "confirm", pausedOut, pausedIn);
+    await decide(fixture.store, "pair", manualOut, manualIn);
+    // A revised amount suspends the 1,200 link; every revision re-projects the Kinds, so they are set again.
+    await fixture.reviseTransaction(pausedIn, { amount: "1100", date: "2026-10-08", direction: "inflow" });
+    for (const [index, [code]] of entries.entries()) await setKind(fixture.store, ids[index]!, code);
+
+    const page = await readCashFlowPage(fixture.store, OCTOBER);
+    const panel = page.transferPanel;
+    assert.deepEqual(
+      panel.links.map((link) => [link.linkId, link.origin, link.dayGap, link.paired, link.outflow.inPeriod, link.inflow.inPeriod]),
+      [
+        [`${evidenceOut}/${evidenceIn}`, "evidence", 0, true, true, true],
+        [`${manualOut}/${manualIn}`, "manual", 7, true, true, true],
+        [`${farOut}/${nearIn}`, "confirmed", 2, true, false, true],
+      ],
+      "newest outflow first; a side dated before the period is still listed",
+    );
+    const far = panel.links.find((link) => link.origin === "confirmed")!;
+    assert.equal(far.outflow.details.description, "Move out", "the side outside the period carries its own details");
+    assert.deepEqual(far.outflow.amount, { ...amount("3000"), currency: "TWD" });
+    assert.deepEqual([far.outflow.cashFlow.class, far.outflow.ownCashFlow.class], ["not_counted", "outflow"], "ownCashFlow is the class without the link");
+    assert.ok(!page.transactions.some((row) => row.transactionId === farOut), "the far side is not a row of the period");
+    const evidence = panel.links[0]!;
+    assert.deepEqual([evidence.outflow.ownCashFlow, evidence.inflow.ownCashFlow], [
+      { class: "not_counted", reason: "transfer" }, { class: "not_counted", reason: "transfer" },
+    ]);
+
+    assert.deepEqual(panel.candidates.map((candidate) => [candidate.pairId, candidate.dayGap, candidate.outflow.details.account.id === candidate.inflow.details.account.id]),
+      [[`${candidateOut}/${candidateIn}`, 2, false]]);
+    assert.deepEqual(panel.candidates[0]?.ifLinked, {
+      outflow: { class: "not_counted", reason: "transfer" }, inflow: { class: "not_counted", reason: "transfer" },
+    }, "confirming two fallback sides takes both out");
+    assert.deepEqual([panel.candidates[0]?.outflow.ownCashFlow.class, panel.candidates[0]?.inflow.ownCashFlow.class], ["outflow", "inflow"]);
+    assert.deepEqual(panel.suspended.map((link) => [link.linkId, link.origin, link.suspension, link.outflow?.transactionId, link.inflow?.transactionId]),
+      [[`${pausedOut}/${pausedIn}`, "confirmed", { reason: "amount" }, pausedOut, pausedIn]]);
+    assert.deepEqual(panel.deniedPairs, [`${deniedOut}/${deniedIn}`]);
+
+    assert.equal(page.periodTransactions, null, "without a search the period's rows are the list's");
+    const searched = await readCashFlowPage(fixture.store, { ...OCTOBER, query: "Move" });
+    assert.deepEqual(searched.transactions.map((row) => row.transactionId), [nearIn]);
+    assert.equal(searched.periodTransactions?.length, page.transactions.length, "a search still sends every row of the period, for an export");
+  });
+});
