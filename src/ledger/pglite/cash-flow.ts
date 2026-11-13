@@ -271,7 +271,7 @@ async function canonicalFacts(
   const userNotes = new Set(notes.filter((row) => row.origin === "user").map((row) => idString(row.transaction_id, "Transaction")));
   const linkOf = new Map(links.filter((row) => row.invoice_state === "active")
     .map((row) => [idString(row.transaction_id, "Linked transaction"), idString(row.confirmed_event_id, "Spending link")]));
-  const purchases = await spendingPurchaseIds(reader, knowledgeAt, transactions);
+  const purchases = await spendingPurchaseIds(reader, knowledgeAt, transactions, new Set(linkOf.keys()));
   const revisionOf = new Map(transactions.map((transaction) => [transaction.revisionId, transaction.transactionId]));
   const times = new Map<string, { local: string; precision: string; origin: string }>();
   const revisionIds = [...revisionOf.keys()];
@@ -303,18 +303,21 @@ async function canonicalFacts(
 /**
  * The rows among `transactions` that Spending's Purchase report lists as a
  * purchase, linked or bank-only: every row Spending includes, less a
- * recognized refund, which is a `refund:` record with no category. Read from
- * the inclusion the fact read already decided, so no Purchase record is built.
+ * recognized refund on a bank-only row, which is a `refund:` record with no
+ * category. A row linked to an active invoice keeps its linked record even
+ * with a refund. Read from the inclusion the fact read already decided, so no
+ * Purchase record is built.
  */
 async function spendingPurchaseIds(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
   transactions: readonly CanonicalSpendingTransaction[],
+  linked: ReadonlySet<string>,
 ): Promise<ReadonlySet<string>> {
   const included = transactions.filter((transaction) => transaction.inclusion === "included").map((transaction) => transaction.transactionId);
-  // A recognized refund stands in for the outflow it names, so that outflow has no purchase record.
-  const refunds = await spendingRefunds(reader, knowledgeAt, included);
-  return new Set(included.filter((id) => !refunds.has(id)));
+  // A recognized refund stands in for the bank-only outflow it names, so that outflow has no purchase record.
+  const refunds = await spendingRefunds(reader, knowledgeAt, included.filter((id) => !linked.has(id)));
+  return new Set(included.filter((id) => linked.has(id) || !refunds.has(id)));
 }
 
 /** Category applicability is all or nothing per Kind, so one registered code decides it. */

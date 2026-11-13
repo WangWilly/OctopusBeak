@@ -319,22 +319,26 @@ test("a row's Spending purchase id and listing agree with the Purchase report: b
     const linked = await fixture.addTransaction({ amount: "350", date: "2026-09-10" });
     const voided = await fixture.addTransaction({ amount: "410", date: "2026-09-11" });
     const inflow = await fixture.addTransaction({ amount: "90", date: "2026-09-12", direction: "inflow" });
-    await fixture.store.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, {
-      stableRefundKey: `refund/${refunded}`, transactionId: refunded, sourceRevisionKey: "refund-v1", revisionNumber: 1, revisionKind: "asserted",
-      amount: { coefficient: "-100", scale: 0, currency: "TWD" },
-      occurrence: { value: "2026-09-13", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
-      authorityRoute: BANK_ROUTE, provenanceReference: "check/refund/1", evidence: { sourceProvesRefund: true },
-    }));
+    const linkedRefunded = await fixture.addTransaction({ amount: "520", date: "2026-09-14" });
+    for (const [transactionId, reference] of [[refunded, "1"], [linkedRefunded, "2"]] as const)
+      await fixture.store.transaction((transaction) => commitPGliteSpendingRefundRevision(transaction, {
+        stableRefundKey: `refund/${transactionId}`, transactionId, sourceRevisionKey: "refund-v1", revisionNumber: 1, revisionKind: "asserted",
+        amount: { coefficient: "-100", scale: 0, currency: "TWD" },
+        occurrence: { value: "2026-09-15", precision: "date", timeZone: "Asia/Taipei", basis: "source-occurrence" },
+        authorityRoute: BANK_ROUTE, provenanceReference: `check/refund/${reference}`, evidence: { sourceProvesRefund: true },
+      }));
     const linkedInvoice = await fixture.commitInvoice({ stableKey: "AB10000470:2026-09-10", date: "2026-09-10", items: [{ sequence: 1, name: "汽油", amount: "350" }] });
     const voidedInvoice = await fixture.commitInvoice({ stableKey: "AB10000471:2026-09-11", date: "2026-09-11", items: [{ sequence: 1, name: "書", amount: "410" }] });
     const linkEvent = await fixture.link(linkedInvoice, linked);
+    const refundedInvoice = await fixture.commitInvoice({ stableKey: "AB10000472:2026-09-14", date: "2026-09-14", items: [{ sequence: 1, name: "鞋", amount: "520" }] });
+    const refundedLinkEvent = await fixture.link(refundedInvoice, linkedRefunded);
     await fixture.link(voidedInvoice, voided);
     await fixture.commitInvoice({ stableKey: "AB10000471:2026-09-11", revisionNumber: 2, revoked: true, date: "2026-09-11", items: [] });
 
-    const ids = [plain, refunded, linked, voided, inflow];
+    const ids = [plain, refunded, linked, voided, inflow, linkedRefunded];
     const knowledgeAt = await fixture.knowledgeAt();
     const report = await purchaseRecordsByIdentity(fixture.store, knowledgeAt,
-      { invoiceIds: [linkedInvoice, voidedInvoice], transactionIds: ids }, { candidates: "none" });
+      { invoiceIds: [linkedInvoice, voidedInvoice, refundedInvoice], transactionIds: ids }, { candidates: "none" });
     const listed = new Set(report.records.map((record) => record.purchaseId));
     const page = await readCashFlowPage(fixture.store, SEPTEMBER);
     const derived = ids.map((id) => {
@@ -351,6 +355,7 @@ test("a row's Spending purchase id and listing agree with the Purchase report: b
       [`link:${linkEvent}`, true],
       [`transaction:${voided}`, true],
       [`transaction:${inflow}`, false],
+      [`link:${refundedLinkEvent}`, true],
     ]);
 
     const result = await act(fixture.store, { action: "categorize", kind: "category", purchaseId: `transaction:${voided}`, categoryCode: "education" });
