@@ -18,10 +18,12 @@ test("a refresh for a commit that touches no transaction writes no Kind and no c
     };
     const before = await counts();
     // What a balance-only capture leaves behind: a commit with no transaction in it.
-    await fixture.store.transaction(async (transaction) => {
-      const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
-      await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, transactionIds: [] });
-    });
+    const idleRefresh = () =>
+      fixture.store.transaction(async (transaction) => {
+        const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
+        await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, transactionIds: [] });
+      });
+    await idleRefresh();
     assert.deepEqual(await counts(), { ...before, commits: before.commits + 1 });
   } finally {
     await fixture.close();
@@ -50,11 +52,18 @@ test("planner statistics follow a table that grows, and are left alone when noth
       assert.ok(row.pages > 1, `${row.table_name} spans more than one page`);
       assert.ok(row.pages <= row.analyzed_pages * 1.1, `${row.table_name} statistics cover its size`);
     }
-    await fixture.store.transaction(async (transaction) => {
-      const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
-      await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, transactionIds: [] });
-    });
+    const idleRefresh = () =>
+      fixture.store.transaction(async (transaction) => {
+        const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
+        await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, transactionIds: [] });
+      });
+    await idleRefresh();
     assert.deepEqual(await statistics(), grown);
+    // What a rolled-back ANALYZE leaves behind: the page count it recorded, without its statistics.
+    await fixture.store.query("DELETE FROM pg_statistic WHERE starelid = 'assertions'::regclass");
+    await idleRefresh();
+    const restored = (await statistics()).find((row) => row.table_name === "assertions")!;
+    assert.ok(restored.written_by, "assertions has statistics again");
   } finally {
     await fixture.close();
   }

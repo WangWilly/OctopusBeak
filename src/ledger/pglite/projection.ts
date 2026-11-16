@@ -1377,17 +1377,23 @@ const PLANNER_STATISTICS_TABLES = [
  * the owning transaction and before it plans. This changes optimizer metadata,
  * not canonical facts.
  *
- * A table is analyzed once it has grown a tenth past its last analyzed size,
- * which is autovacuum's own default. Analyzing all of them on every refresh
- * costs seconds on a large store, even for a commit that appends nothing.
+ * A table is analyzed once it has grown a tenth past the size its statistics
+ * describe. Analyzing all of them on every refresh costs seconds on a large
+ * store, even for a commit that appends nothing. Statistics may then lag a
+ * table by up to a tenth of its pages.
+ *
+ * A table with no statistics is analyzed whatever its size: a rollback keeps
+ * the page count that ANALYZE recorded and discards the statistics it wrote.
  */
 async function refreshPlannerStatistics(transaction: PGliteTransaction): Promise<void> {
   const stale = await query<{ table_name: string }>(
     transaction,
-    `SELECT relname AS table_name
+    `SELECT oid::regclass::text AS table_name
        FROM pg_class
       WHERE oid = ANY(?::regclass[])
-        AND pg_relation_size(oid) / current_setting('block_size')::int > relpages * 1.1`,
+        AND pg_relation_size(oid) > 0
+        AND (pg_relation_size(oid) / current_setting('block_size')::int > relpages * 1.1
+             OR NOT EXISTS (SELECT 1 FROM pg_statistic statistic WHERE statistic.starelid = pg_class.oid))`,
     [PLANNER_STATISTICS_TABLES],
   );
   if (stale.length > 0) await query(transaction, `ANALYZE ${stale.map((row) => row.table_name).join(", ")}`);
