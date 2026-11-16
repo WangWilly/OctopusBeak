@@ -95,6 +95,26 @@ export async function applyPgliteKindDuplicateCleanup(store: PGliteStore): Promi
         WHERE current.field_name = 'kind'
           AND current.assertion_id = chain.assertion_id`,
     );
+    // Every other table that names an assertion must name a kept one. Checked
+    // once here, the per-row foreign-key checks can be skipped for the delete,
+    // which on a large store would otherwise take most of an hour.
+    const references = await transaction.query<{ table_name: string; column_name: string }>(
+      `SELECT constraint_row.conrelid::regclass::text AS table_name, quote_ident(attribute.attname) AS column_name
+         FROM pg_constraint constraint_row
+         JOIN pg_attribute attribute
+           ON attribute.attrelid = constraint_row.conrelid AND attribute.attnum = constraint_row.conkey[1]
+        WHERE constraint_row.contype = 'f'
+          AND constraint_row.confrelid = ANY($1::regclass[])
+          AND NOT constraint_row.conrelid = ANY($1::regclass[])`,
+      [HISTORY_TABLES],
+    );
+    for (const { table_name, column_name } of references.rows) {
+      const named = await transaction.query(
+        `SELECT 1 FROM ${table_name} referencing JOIN kind_chain chain ON chain.assertion_id = referencing.${column_name} LIMIT 1`,
+      );
+      if (named.rows.length > 0) throw new Error(`Kind duplicate cleanup would remove an assertion ${table_name} names.`);
+    }
+    await transaction.query("SET LOCAL session_replication_role = replica");
     let removed = 0;
     for (const table of HISTORY_TABLES)
       removed += (await transaction.query(
@@ -119,6 +139,7 @@ export async function applyPgliteKindDuplicateCleanup(store: PGliteStore): Promi
         WINDOW history AS (PARTITION BY output.transaction_id ORDER BY written.commit_sequence, encode(output.output_id, 'hex'))
       ) repeated
       WHERE history.output_id = repeated.output_id AND repeated.removable`)).affectedRows ?? 0;
+    await transaction.query("SET LOCAL session_replication_role = origin");
     if (removed > 0) await transaction.query(`ANALYZE ${HISTORY_TABLES.join(", ")}`);
     await transaction.query(
       "INSERT INTO pglite_operational_migrations(migration_key, schema_signature) VALUES ($1, $2)",
