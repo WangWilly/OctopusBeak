@@ -33,6 +33,7 @@ import {
 import type { PurchaseItemCategorization } from "../canonical/purchase-category.ts";
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import { isLoanCharge } from "../canonical/loan-charge.ts";
+import { isInvoicelessCharge } from "../canonical/card-charge.ts";
 import {
   addExact,
   addToTotals,
@@ -716,8 +717,8 @@ export async function queryCurrentTransactionById(
     );
   })).includedTransactions.find((transaction) =>
     transaction.transactionId === transactionId
-    // A loan charge is no payment an invoice can name, so it never pairs (ADR 0141).
-    && !isLoanCharge(transaction.kind, transaction.direction, transaction.stream)) ?? null;
+    // A loan's or card's interest or fee is no payment an invoice can name, so it never pairs (ADR 0141, ADR 0142).
+    && !isInvoicelessCharge(transaction.kind, transaction.direction, transaction.stream)) ?? null;
 }
 
 function invoiceMoney(row: Row): CanonicalEInvoiceMoneyView | null {

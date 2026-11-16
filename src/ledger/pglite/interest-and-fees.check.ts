@@ -199,3 +199,61 @@ test("for one period and currency, Cash flow's interest-and-fees outflow equals 
     assert.deepEqual(normalizeExact(recordTotal), normalizeExact(cashFlowTotal), "the built records agree with the summary");
   });
 });
+
+const cardRow = (fixture: SpendingCategoryFixture, amount: string, description: string, date = "2026-09-12") =>
+  fixture.addTransaction({ amount, date, description });
+
+async function kindCode(fixture: SpendingCategoryFixture, transactionId: string): Promise<string | null> {
+  return (await fixture.store.query<{ taxonomy_code: string }>(
+    "SELECT taxonomy_code FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'", [idBytes(transactionId)])).rows[0]?.taxonomy_code ?? null;
+}
+
+test("a card's own interest and fee lines read interest.charged and fee.card and take the Derived interest-and-fees category, and a merchant's 年費 stays a purchase (ADR 0142)", async () => {
+  await withFixture(async (fixture) => {
+    const interest = await cardRow(fixture, "321", "循環利息");
+    const fee = await cardRow(fixture, "45", "國外交易服務費");
+    const membership = await cardRow(fixture, "1200", "測試健身房會員年費");
+    assert.deepEqual([await kindCode(fixture, interest), await kindCode(fixture, fee), await kindCode(fixture, membership)],
+      ["interest.charged", "fee.card", "purchase"]);
+    for (const id of [interest, fee])
+      assert.deepEqual((await categoryEnrichment(fixture, id))?.taxonomy_code, "interest_and_fees");
+    assert.equal(await categoryEnrichment(fixture, membership), null);
+
+    const cashFlow = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    const row = cashFlow.transactions.find((transaction) => transaction.transactionId === fee);
+    assert.deepEqual(row?.cashFlow, { class: "outflow", categories: [{ category: "interest_and_fees", group: "other", amount: { coefficient: "45", scale: 0 } }] });
+
+    const purchaseId = `transaction:${fee}`;
+    await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId, knowledgeAt: await fixture.knowledgeAt(), categoryCode: "travel" });
+    const read = async () => (await querySpendingReport(fixture.store, "current", await fixture.knowledgeAt(), null, SEPTEMBER))
+      .transactions.find((transaction) => transaction.transactionId === fee)?.categorization;
+    assert.deepEqual([(await read())?.origin, (await read())?.categoryCode], ["user", "travel"], "the person's category wins");
+  });
+});
+
+test("a card's fee is never a candidate for a same-amount invoice, stays a Spending purchase, and an earlier confirmed link still stands (ADR 0142)", async () => {
+  await withFixture(async (fixture) => {
+    const fee = await cardRow(fixture, "300", "年費", "2026-09-20");
+    const purchase = await cardRow(fixture, "480", "測試商店", "2026-09-20");
+    const earlier = await cardRow(fixture, "90", "測試商店", "2026-09-15");
+    const feeInvoice = await fixture.commitInvoice({ stableKey: "AB12345681", date: "2026-09-21", items: [{ sequence: 1, name: "測試品項", amount: "300" }] });
+    await fixture.commitInvoice({ stableKey: "AB12345682", date: "2026-09-20", items: [{ sequence: 1, name: "測試品項", amount: "480" }] });
+    const linkedInvoice = await fixture.commitInvoice({ stableKey: "AB12345683", date: "2026-09-15", items: [{ sequence: 1, name: "測試品項", amount: "90" }] });
+    await fixture.link(linkedInvoice, earlier);
+    await fixture.reviseTransaction(earlier, { amount: "90", direction: "outflow", date: "2026-09-15", description: "滯納金" });
+    assert.equal(await kindCode(fixture, earlier), "fee.card");
+    const knowledgeAt = await fixture.knowledgeAt();
+
+    const pending = await queryPendingSpendingCandidates(fixture.store, knowledgeAt);
+    assert.deepEqual(pending.pairs.map((pair) => pair.transactionId), [purchase], "only the card purchase pairs");
+    const { purchaseReport } = await queryCurrentSpending(fixture.store);
+    const feeRecord = purchaseReport.records.find((record) => record.purchaseId === `transaction:${fee}`);
+    assert.deepEqual([feeRecord?.basis, feeRecord?.possibleDuplicate, feeRecord?.candidateIds], ["bank-transaction", false, []]);
+    assert.equal(purchaseReport.candidates.some((candidate) => candidate.transactionId === fee), false);
+    await assert.rejects(queryPGliteSpendingDirectPair(fixture.store, feeInvoice, fee, knowledgeAt), /ineligible/u);
+    const linked = purchaseReport.records.find((record) => record.transaction?.transactionId === earlier);
+    assert.deepEqual([linked?.basis, linked?.link?.invoiceId], ["linked", linkedInvoice], "a link the person confirmed before stays");
+    const summary = await queryCurrentSpendingSummary(fixture.store, { knowledgeAt });
+    assert.equal(summary.purchaseReport.recordCount, purchaseReport.records.length, "the summary and the built records agree");
+  });
+});

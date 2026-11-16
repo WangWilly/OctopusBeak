@@ -26,6 +26,9 @@ const KIND_REDERIVATIONS = [
   // ADR 0141: interest charged and bank, card and loan fees take the
   // interest-and-fees category, derived from the Kind each row already has.
   "kind-rederivation-interest-and-fees-category-v1",
+  // A card outflow whose issuer label names the card's interest or fee reads
+  // interest.charged or fee.card, and so takes the interest-and-fees category.
+  "kind-rederivation-credit-card-charge-kinds-v1",
 ] as const;
 
 const signature = (id: string) => createHash("sha256").update(id).digest("hex");

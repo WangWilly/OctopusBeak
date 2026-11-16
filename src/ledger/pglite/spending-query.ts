@@ -99,6 +99,7 @@ import {
   type Row,
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { CARD_CHARGE_KINDS, CREDIT_CARD_ACCOUNT_STREAM } from "../canonical/card-charge.ts";
 
 export type { PGliteSpendingReader, PGliteSpendingStore } from "./spending-sql.ts";
 export { recordedAtIso, querySpendingRecognition } from "./spending-facts.ts";
@@ -341,6 +342,16 @@ async function queryPairingTransactionsDirect(
       WHERE NOT EXISTS (
               SELECT 1 FROM financial_transactions identity
                WHERE identity.transaction_id = entry.transaction_id AND NOT (${COUNTED_ACCOUNT_SQL("identity.account_id")})
+            )
+        -- A card's interest or fee stays a Spending purchase, but no invoice names it (ADR 0142).
+        AND NOT EXISTS (
+              SELECT 1 FROM financial_transactions identity
+                JOIN financial_accounts account ON account.account_id = identity.account_id
+                JOIN current_transaction_enrichment kind
+                  ON kind.transaction_id = identity.transaction_id AND kind.field_name = 'kind'
+               WHERE identity.transaction_id = entry.transaction_id
+                 AND account.stream = '${CREDIT_CARD_ACCOUNT_STREAM}'
+                 AND kind.taxonomy_code IN (${[...CARD_CHARGE_KINDS].map((code) => `'${code}'`).join(", ")})
             )
         ${dateBounds ? "AND SUBSTRING(COALESCE(consume_date, posting_date, effective_on), 1, 10) BETWEEN ? AND ?" : ""}`,
     [await readPGliteCoveredAccountIds(reader, await readKnowledgePoint(reader)), ...(dateBounds ? [dateBounds.start, dateBounds.end] : [])],

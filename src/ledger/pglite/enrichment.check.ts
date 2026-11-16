@@ -34,9 +34,24 @@ test("a card inflow whose label names nothing keeps the direction fallback", () 
   assert.deepEqual([kind?.value, kind?.evidenceKind, kind?.ruleLineage], ["refund", "direction", "credit-card/direction/v1/direction-fallback"]);
 });
 
-test("a card outflow stays a purchase whatever its label says", () => {
-  const kind = derivePGliteTransactionKind(card("outflow", "繳費 中華電信"));
-  assert.deepEqual([kind?.value, kind?.evidenceKind], ["purchase", "direction"]);
+test("a card outflow stays a purchase when its label names no interest or fee", () => {
+  for (const description of ["繳費 中華電信", "測試健身房會員年費"]) {
+    const kind = derivePGliteTransactionKind(card("outflow", description));
+    assert.deepEqual([kind?.value, kind?.evidenceKind, kind?.ruleLineage], ["purchase", "direction", "credit-card/direction/v1/direction-fallback"], description);
+  }
+});
+
+test("a card's interest or fee line gets its Kind from the issuer label, on the card route", () => {
+  for (const [description, value] of [["循環利息", "interest.charged"], ["國外交易服務費", "fee.card"]] as const) {
+    const kind = derivePGliteTransactionKind(card("outflow", description));
+    assert.deepEqual(
+      [kind?.value, kind?.evidenceKind, kind?.sourceField, kind?.sourceValue, kind?.routeId, kind?.producerId],
+      [value, "bank-rule", "source_description", description, "esun/credit-card/direction-enrichment/v1/kind", "credit-card/direction-enrichment"],
+      description,
+    );
+    assert.equal(kind?.ruleLineage, "credit-card/direction/v1/outflow-description",
+      "a new lineage makes an earlier direction-only purchase re-derive");
+  }
 });
 
 const eventRow = (integrationNamespace: string, stream: string, accountEvent: PGliteProjectionTransaction["accountEvent"]): PGliteProjectionTransaction =>
