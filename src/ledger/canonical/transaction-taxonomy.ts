@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { PERSONAL_CATEGORY_CODES } from "./personal-category-codes.ts";
+import { PERSONAL_CATEGORY_CODES, type PersonalCategoryCode } from "./personal-category-codes.ts";
 
 /**
  * The transaction taxonomy package is the only authoring source for the
@@ -116,6 +116,27 @@ export const EINVOICE_ITEM_CATEGORY_ENRICHMENT_EVIDENCE_KINDS = [
 ] as const;
 export type EInvoiceItemCategoryEvidenceKind =
   (typeof EINVOICE_ITEM_CATEGORY_ENRICHMENT_EVIDENCE_KINDS)[number];
+/**
+ * A transaction's Personal Category read from its current Kind (ADR 0141):
+ * interest charged and a bank, card or loan fee are interest and fees on
+ * every stream, so the producer's one route is global. It reads nothing but
+ * the Kind, and a person's categorization still wins.
+ */
+export const KIND_CATEGORY_ENRICHMENT_PRODUCER_ID =
+  "kind/category-enrichment" as const;
+export const KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION = "v1" as const;
+export const KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION =
+  "kind/category/v1" as const;
+export const KIND_CATEGORY_ENRICHMENT_ROUTE_ID =
+  "global/kind-category-enrichment/v1/category" as const;
+export const KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND = "kind" as const;
+/** The Kinds whose category the Kind alone decides. `fee.investment` is not here: an investment-account row never counts (ADR 0138). */
+export const KIND_DERIVED_CATEGORIES = {
+  "interest.charged": "interest_and_fees",
+  "fee.bank": "interest_and_fees",
+  "fee.card": "interest_and_fees",
+  "fee.loan": "interest_and_fees",
+} as const satisfies Partial<Record<TransactionKindCode, PersonalCategoryCode>>;
 export const BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES = [
   "cathay/foreign-currency-deposit",
   "yuanta/domestic-deposit",
@@ -389,6 +410,7 @@ const CATEGORY_SEMANTICS: Readonly<Record<string, string>> = {
   taxes_and_government: "Taxes, permits, and government services.",
   gifts_and_donations: "Gifts, charitable donations, and contributions.",
   work_and_business: "Work-related and business expenses.",
+  interest_and_fees: "Interest charged and fees for bank, card, and loan services.",
 };
 
 const ROLE_SEMANTICS: Readonly<Record<string, string>> = {
@@ -442,6 +464,7 @@ function zhLabel(dimension: TaxonomyDimension, code: string): string {
     taxes_and_government: "稅務與政府",
     gifts_and_donations: "禮物與捐贈",
     work_and_business: "工作與商務",
+    interest_and_fees: "利息與手續費",
   };
   const roles: Readonly<Record<string, string>> = {
     merchant: "商家",
@@ -528,6 +551,12 @@ const BANK_TRANSACTION_KIND_PRODUCER_VERSION = {
 const ACCOUNT_EVENT_KIND_PRODUCER_VERSION = {
   producerId: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
   producerVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
+  confidenceThresholdBasisPoints: 10_000,
+} as const;
+
+const KIND_CATEGORY_PRODUCER_VERSION = {
+  producerId: KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  producerVersion: KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
   confidenceThresholdBasisPoints: 10_000,
 } as const;
 
@@ -751,6 +780,28 @@ const ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[]
       evidenceKinds: [evidenceKind],
     })));
 
+const KIND_CATEGORY_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
+  [...new Set(Object.values(KIND_DERIVED_CATEGORIES))].map((outputCode) => ({
+    producerId: KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+    producerVersion: KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "category" as const,
+    outputCode,
+    evidenceKinds: [KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND],
+  }));
+
+const KIND_CATEGORY_ROUTE: AutomaticEnrichmentRouteDefinition = {
+  routeId: KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
+  subjectKind: "transaction",
+  field: "category",
+  scopeKind: "global",
+  scopeKey: null,
+  producerId: KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  producerVersion: KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+  originPolicy: "derived",
+  validFromCommitSequence: 1,
+};
+
 const CATHAY_SOURCE_DISPLAY_COMPATIBILITY: readonly ProducerCompatibility[] = [
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -772,6 +823,7 @@ const PRODUCER_COMPATIBILITY = [
   ...CATHAY_LEDGER_LABEL_DERIVED_COMPATIBILITY,
   ...EINVOICE_ITEM_CATEGORY_DERIVED_COMPATIBILITY,
   ...ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY,
+  ...KIND_CATEGORY_DERIVED_COMPATIBILITY,
 ] as const;
 
 const AUTOMATIC_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] = (
@@ -934,6 +986,7 @@ export const TRANSACTION_TAXONOMY_PACKAGE_V1: TransactionTaxonomyPackage = {
     BANK_TRANSACTION_KIND_PRODUCER_VERSION,
     EINVOICE_ITEM_CATEGORY_PRODUCER_VERSION,
     ACCOUNT_EVENT_KIND_PRODUCER_VERSION,
+    KIND_CATEGORY_PRODUCER_VERSION,
   ],
   automaticRoutes: [
     ...AUTOMATIC_ROUTES,
@@ -941,6 +994,7 @@ export const TRANSACTION_TAXONOMY_PACKAGE_V1: TransactionTaxonomyPackage = {
     ...BANK_TRANSACTION_KIND_ROUTES,
     EINVOICE_ITEM_CATEGORY_ROUTE,
     ...ACCOUNT_EVENT_KIND_ROUTES,
+    KIND_CATEGORY_ROUTE,
   ],
   fixtures: FIXTURES,
 };

@@ -14,6 +14,12 @@ import {
   CREDIT_CARD_DIRECTION_ENRICHMENT_CONTRACT_VERSION,
   CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
   CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+  KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION,
+  KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND,
+  KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+  KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
+  KIND_DERIVED_CATEGORIES,
 } from "../canonical/transaction-taxonomy.ts";
 import { classifyBankTransactionKind, classifyCreditCardInflowKind } from "../canonical/transaction-kind-classifier.ts";
 import { classifyCathayDescription } from "../canonical/cathay-description-classifier.ts";
@@ -242,5 +248,40 @@ function derivePGliteCathayDescriptionKind(
     producerVersion: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
     ruleLineage: "cathay/domestic-deposit/v1/description-taxonomy",
     routeId: "cathay/domestic-deposit/automatic-enrichment/v1/kind",
+  };
+}
+
+export type PGliteDerivedCategory = Readonly<{
+  value: string;
+  evidenceKind: typeof KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND;
+  sourceField: "kind";
+  /** The Kind code the category was read from. */
+  sourceValue: string;
+  contractVersion: string;
+  producerId: string;
+  producerVersion: string;
+  ruleLineage: string;
+  routeId: string;
+}>;
+
+const KIND_CATEGORIES: ReadonlyMap<string, string> = new Map(Object.entries(KIND_DERIVED_CATEGORIES));
+
+/**
+ * The Personal Category a transaction's current Kind alone decides (ADR 0141),
+ * or null when the Kind decides none. It reads nothing else about the row.
+ */
+export function derivePGliteKindCategory(kind: string | null): PGliteDerivedCategory | null {
+  const value = kind === null ? undefined : KIND_CATEGORIES.get(kind);
+  if (value === undefined || kind === null) return null;
+  return {
+    value,
+    evidenceKind: KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND,
+    sourceField: "kind",
+    sourceValue: kind,
+    contractVersion: KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION,
+    producerId: KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+    producerVersion: KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+    ruleLineage: `${KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION}/${value}`,
+    routeId: KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
   };
 }

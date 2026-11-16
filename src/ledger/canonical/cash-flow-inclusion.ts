@@ -1,5 +1,6 @@
 import type { PersonalCategoryCode } from "./personal-category-codes.ts";
 import { TRANSACTION_KIND_CODES, type TransactionKindCode } from "./transaction-taxonomy.ts";
+import { isLoanCharge } from "./loan-charge.ts";
 import { spendingCategoryGroup, type SpendingCategoryGroup } from "../../lib/spending/category-groups.ts";
 import {
   addExact,
@@ -169,9 +170,6 @@ export function linkExcludable(kind: CashFlowKind | null): boolean {
 /** The streams of investment accounts: every cash effect there has its counterpart on a funding account. */
 export const INVESTMENT_ACCOUNT_STREAMS: ReadonlySet<string> = new Set(["investment", "investment-fund"]);
 
-/** What a loan charges, which the loan account books as an inflow. */
-const LOAN_CHARGE_KINDS: ReadonlySet<string> = new Set(["interest.charged", "fee.loan"]);
-
 /**
  * An unregistered or absent Kind leaves inclusion undecided. Two account
  * rules come first (ADR 0138): nothing on an investment account counts,
@@ -182,7 +180,7 @@ const LOAN_CHARGE_KINDS: ReadonlySet<string> = new Set(["interest.charged", "fee
  */
 export function cashFlowRule(kind: string | null, direction: "inflow" | "outflow", stream: string | null = null): CashFlowRule {
   if (stream !== null && INVESTMENT_ACCOUNT_STREAMS.has(stream)) return { class: "not_counted", reason: "investment_move" };
-  if (stream === "loan" && direction === "inflow" && kind !== null && LOAN_CHARGE_KINDS.has(kind)) return OUTFLOW;
+  if (isLoanCharge(kind, direction, stream)) return OUTFLOW;
   if (kind === null || !isRegisteredKind(kind)) return UNRESOLVED;
   return CASH_FLOW_KIND_INCLUSION[kind][direction];
 }

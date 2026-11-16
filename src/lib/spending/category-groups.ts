@@ -41,6 +41,7 @@ export const SPENDING_CATEGORY_GROUP_BY_CODE: Readonly<Record<PersonalCategoryCo
   gifts_and_donations: "other",
   work_and_business: "other",
   education: "other",
+  interest_and_fees: "other",
 });
 
 export function spendingCategoryGroup(code: PersonalCategoryCode): SpendingCategoryGroup {

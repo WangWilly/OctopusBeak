@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { derivePGliteTransactionKind, type PGliteProjectionTransaction } from "./enrichment.ts";
+import { derivePGliteKindCategory, derivePGliteTransactionKind, type PGliteProjectionTransaction } from "./enrichment.ts";
+import { TRANSACTION_KIND_CODES } from "../canonical/transaction-taxonomy.ts";
 
 const card = (direction: "inflow" | "outflow", description: string): PGliteProjectionTransaction => ({
   transactionId: "00000000-0000-4000-8000-000000000001",
@@ -87,4 +88,19 @@ test("a TDCC settlement deposit gets a bank Kind on its own route, read by its m
 test("a Cathay passbook label gets its Kind on Cathay's route", () => {
   const kind = derivePGliteTransactionKind(deposit("cathay", "cathay", "outflow", "跨行提款"));
   assert.deepEqual([kind?.value, kind?.outputState, kind?.routeId], ["cash.withdrawal", "supported", "cathay/domestic-deposit/automatic-enrichment/v1/kind"]);
+});
+
+test("interest charged and a bank, card or loan fee derive the interest-and-fees category from the Kind, and no other Kind derives one (ADR 0141)", () => {
+  const derived = TRANSACTION_KIND_CODES.flatMap((kind) => {
+    const category = derivePGliteKindCategory(kind);
+    return category ? [[kind, category.value, category.sourceValue, category.evidenceKind]] : [];
+  });
+  assert.deepEqual(derived, [
+    ["fee.bank", "interest_and_fees", "fee.bank", "kind"],
+    ["fee.card", "interest_and_fees", "fee.card", "kind"],
+    ["fee.loan", "interest_and_fees", "fee.loan", "kind"],
+    ["interest.charged", "interest_and_fees", "interest.charged", "kind"],
+  ]);
+  assert.equal(derivePGliteKindCategory(null), null);
+  assert.equal(derivePGliteKindCategory("fee.investment"), null, "an investment-account fee never counts (ADR 0138)");
 });

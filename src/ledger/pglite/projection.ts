@@ -2,6 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
+  KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION,
+  KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND,
+  KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+  KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+  KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
+} from "../canonical/transaction-taxonomy.ts";
+import {
+  derivePGliteKindCategory,
   derivePGliteTransactionKind,
   type PGliteAccountEvent,
   type PGliteProjectionRelations,
@@ -993,14 +1001,14 @@ async function refreshCurrentEnrichment(
   });
 
   let projectionContext = context;
-  if (pending.length > 0) {
-    const projectionCommit = await createProjectionCommit(transaction);
-    projectionContext = {
-      ...context,
-      commitId: projectionCommit.id,
-      cutoffSequence: projectionCommit.sequence,
-    };
-  }
+  const projectionCommit = async () => {
+    if (projectionContext === context) {
+      const created = await createProjectionCommit(transaction);
+      projectionContext = { ...context, commitId: created.id, cutoffSequence: created.sequence };
+    }
+    return projectionContext;
+  };
+  if (pending.length > 0) await projectionCommit();
 
   if (refreshAll) {
     await query(transaction, "DELETE FROM current_transaction_enrichment");
@@ -1012,15 +1020,65 @@ async function refreshCurrentEnrichment(
       affected,
     );
   }
-  const groups = new Map<string, typeof pending>();
-  for (const item of pending) {
-    const key = [item.kind.producerId, item.kind.producerVersion, item.row.integrationNamespace, item.row.stream, item.row.sourceConnectionKey, item.row.identityEpoch].join("\u0000");
+  await writeDerivedOutputs(transaction, projectionContext.commitId, "kind", pending.map(({ row, kind, previous }) => ({
+    row,
+    previous,
+    output: { ...kind, value: kind.outputState === "unsupported" ? null : kind.value },
+  })));
+  await selectCurrentEnrichment(transaction, projectionContext, refreshAll, affected);
+
+  // A Kind-derived category reads the Kind just selected, so it follows that selection (ADR 0141).
+  const categories = await kindCategoryWrites(transaction, projectionContext.cutoffSequence, rows, refreshAll, affected);
+  if (categories.length > 0) {
+    const categoryContext = await projectionCommit();
+    await writeDerivedOutputs(transaction, categoryContext.commitId, "category", categories);
+    await query(
+      transaction,
+      `DELETE FROM current_transaction_enrichment
+        WHERE field_name = 'category' ${refreshAll ? "" : `AND transaction_id IN (${inList(affected)})`}`,
+      refreshAll ? [] : affected,
+    );
+    await selectCurrentEnrichment(transaction, categoryContext, refreshAll, affected, "category");
+  }
+  return projectionContext;
+}
+
+/** One derived output; a null value records it as unsupported, which withdraws `previous`. */
+type DerivedOutput = Readonly<{
+  value: string | null;
+  evidenceKind: string;
+  sourceField: string;
+  sourceValue: string;
+  contractVersion: string;
+  producerId: string;
+  producerVersion: string;
+  ruleLineage: string;
+  routeId: string;
+  /** The assertion the output was read from, when another assertion is its evidence. */
+  evidenceAssertionId?: string;
+}>;
+
+type DerivedWrite = Readonly<{ row: PGliteProjectionTransaction; output: DerivedOutput; previous: Row | undefined }>;
+
+/**
+ * Records each output in an enrichment run with its assertion, provenance and
+ * transitions, superseding or withdrawing the transaction's previous one.
+ */
+async function writeDerivedOutputs(
+  transaction: PGliteTransaction,
+  commitId: Uint8Array,
+  field: "kind" | "category",
+  items: readonly DerivedWrite[],
+): Promise<void> {
+  const groups = new Map<string, DerivedWrite[]>();
+  for (const item of items) {
+    const key = [item.output.producerId, item.output.producerVersion, item.row.integrationNamespace, item.row.stream, item.row.sourceConnectionKey, item.row.identityEpoch].join("\u0000");
     const existing = groups.get(key);
     if (existing) existing.push(item);
     else groups.set(key, [item]);
   }
-  for (const items of groups.values()) {
-    const firstItem = items[0]!;
+  for (const group of groups.values()) {
+    const firstItem = group[0]!;
     const runId = uuidBytes();
     await query(
       transaction,
@@ -1042,64 +1100,56 @@ async function refreshCurrentEnrichment(
       [
         runId,
         firstItem.row.stream,
-        firstItem.kind.producerId,
-        firstItem.kind.producerVersion,
-        firstItem.kind.ruleLineage,
-        projectionContext.commitId,
+        firstItem.output.producerId,
+        firstItem.output.producerVersion,
+        firstItem.output.ruleLineage,
+        commitId,
         Uint8Array.from(Buffer.from(firstItem.row.transactionId.replaceAll("-", ""), "hex")),
       ],
     );
-    for (const item of items) {
+    for (const item of group) {
+      const { output } = item;
       const transactionId = Uint8Array.from(Buffer.from(item.row.transactionId.replaceAll("-", ""), "hex"));
       const sourceRecordId = Uint8Array.from(Buffer.from(item.row.sourceRecordId.replaceAll("-", ""), "hex"));
       const provenance = json({
-        evidenceKind: item.kind.evidenceKind,
+        evidenceKind: output.evidenceKind,
         sourceRecordId: item.row.sourceRecordId,
-        sourceField: item.kind.sourceField,
-        sourceValue: item.kind.sourceValue,
-        contractVersion: item.kind.contractVersion,
+        sourceField: output.sourceField,
+        sourceValue: output.sourceValue,
+        contractVersion: output.contractVersion,
+        ...(output.evidenceAssertionId === undefined ? {} : { evidenceAssertionId: output.evidenceAssertionId }),
       });
-      if (item.kind.outputState === "unsupported") {
+      const previousAssertion = item.previous ? bytes(item.previous.assertion_id, "Prior enrichment assertion") : null;
+      const previousRun = previousAssertion === null ? undefined : await first<{ enrichment_run_id: unknown }>(
+        transaction,
+        `SELECT enrichment_run_id FROM assertion_provenance
+           WHERE assertion_id = ? AND enrichment_run_id IS NOT NULL
+           ORDER BY commit_id DESC LIMIT 1`,
+        [previousAssertion],
+      );
+      const retire = async (eventKind: "superseded" | "withdrawn") => {
+        if (!previousAssertion || !previousRun?.enrichment_run_id) return;
+        await query(
+          transaction,
+          `INSERT INTO assertion_transitions(
+             event_id, assertion_id, transaction_id, field_name, capture_id,
+             scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
+             commit_id, event_kind
+           ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL, ?, ?)`,
+          [uuidBytes(), previousAssertion, transactionId, field, runId, commitId, eventKind],
+        );
+      };
+      if (output.value === null) {
         await query(
           transaction,
           `INSERT INTO enrichment_run_outputs(
              output_id, run_id, transaction_id, field_name, output_state, origin,
              value_text, confidence_basis_points, route_id, source_record_id,
              source_field, source_value_text, provenance_json, assertion_id, commit_id
-           ) VALUES (?, ?, ?, 'kind', 'unsupported', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, ?)`,
-          [
-            uuidBytes(),
-            runId,
-            transactionId,
-            item.kind.routeId,
-            sourceRecordId,
-            item.kind.sourceField,
-            item.kind.sourceValue,
-            provenance,
-            projectionContext.commitId,
-          ],
+           ) VALUES (?, ?, ?, ?, 'unsupported', NULL, NULL, NULL, ?, ?, ?, ?, ?, NULL, ?)`,
+          [uuidBytes(), runId, transactionId, field, output.routeId, sourceRecordId, output.sourceField, output.sourceValue, provenance, commitId],
         );
-        if (item.previous) {
-          const previousAssertion = bytes(item.previous.assertion_id, "Prior enrichment assertion");
-          const previousRun = await first<{ enrichment_run_id: unknown }>(
-            transaction,
-            `SELECT enrichment_run_id FROM assertion_provenance
-               WHERE assertion_id = ? AND enrichment_run_id IS NOT NULL
-               ORDER BY commit_id DESC LIMIT 1`,
-            [previousAssertion],
-          );
-          if (previousRun?.enrichment_run_id) {
-            await query(
-              transaction,
-              `INSERT INTO assertion_transitions(
-                 event_id, assertion_id, transaction_id, field_name, capture_id,
-                 scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
-                 commit_id, event_kind
-               ) VALUES (?, ?, ?, 'kind', NULL, NULL, NULL, ?, NULL, NULL, ?, 'withdrawn')`,
-              [uuidBytes(), previousAssertion, transactionId, runId, projectionContext.commitId],
-            );
-          }
-        }
+        await retire("withdrawn");
         continue;
       }
       const assertionId = uuidBytes();
@@ -1108,8 +1158,8 @@ async function refreshCurrentEnrichment(
         `INSERT INTO assertions(
            assertion_id, transaction_id, field_name, target_kind, origin,
            producer_id, rule_lineage, revision_id, value_text, created_commit_id
-         ) VALUES (?, ?, 'kind', 'transaction', 'derived', ?, ?, NULL, ?, ?)`,
-        [assertionId, transactionId, item.kind.producerId, item.kind.ruleLineage, item.kind.value, projectionContext.commitId],
+         ) VALUES (?, ?, ?, 'transaction', 'derived', ?, ?, NULL, ?, ?)`,
+        [assertionId, transactionId, field, output.producerId, output.ruleLineage, output.value, commitId],
       );
       await query(
         transaction,
@@ -1117,15 +1167,15 @@ async function refreshCurrentEnrichment(
            output_id, run_id, transaction_id, field_name, output_state, origin,
            value_text, confidence_basis_points, route_id, source_record_id,
            source_field, source_value_text, provenance_json, assertion_id, commit_id
-         ) VALUES (?, ?, ?, 'kind', 'supported', 'derived', ?, 10000, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuidBytes(), runId, transactionId, item.kind.value, item.kind.routeId, null, item.kind.sourceField, item.kind.sourceValue, provenance, assertionId, projectionContext.commitId],
+         ) VALUES (?, ?, ?, ?, 'supported', 'derived', ?, 10000, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuidBytes(), runId, transactionId, field, output.value, output.routeId, null, output.sourceField, output.sourceValue, provenance, assertionId, commitId],
       );
       await query(
         transaction,
         `INSERT INTO assertion_provenance(
            assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id
          ) VALUES (?, NULL, NULL, ?, NULL, ?)`,
-        [assertionId, runId, projectionContext.commitId],
+        [assertionId, runId, commitId],
       );
       await query(
         transaction,
@@ -1133,8 +1183,8 @@ async function refreshCurrentEnrichment(
            event_id, assertion_id, transaction_id, field_name, capture_id,
            scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
            commit_id, event_kind
-         ) VALUES (?, ?, ?, 'kind', NULL, NULL, NULL, ?, NULL, NULL, ?, 'observed')`,
-        [uuidBytes(), assertionId, transactionId, runId, projectionContext.commitId],
+         ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL, ?, 'observed')`,
+        [uuidBytes(), assertionId, transactionId, field, runId, commitId],
       );
       await query(
         transaction,
@@ -1142,32 +1192,110 @@ async function refreshCurrentEnrichment(
            assertion_id, field_name, taxonomy_id, taxonomy_version,
            taxonomy_dimension, taxonomy_code, route_id, run_id,
            source_record_id, provenance_json
-         ) VALUES (?, 'kind', 'transaction-taxonomy', 'v1', 'kind', ?, ?, ?, ?, ?)`,
-        [assertionId, item.kind.value, item.kind.routeId, runId, null, provenance],
+         ) VALUES (?, ?, 'transaction-taxonomy', 'v1', ?, ?, ?, ?, ?, ?)`,
+        [assertionId, field, field, output.value, output.routeId, runId, null, provenance],
       );
-      if (item.previous) {
-        const previousAssertion = bytes(item.previous.assertion_id, "Prior enrichment assertion");
-        const previousRun = await first<{ enrichment_run_id: unknown }>(
-          transaction,
-          `SELECT enrichment_run_id FROM assertion_provenance
-             WHERE assertion_id = ? AND enrichment_run_id IS NOT NULL
-             ORDER BY commit_id DESC LIMIT 1`,
-          [previousAssertion],
-        );
-        if (previousRun?.enrichment_run_id) {
-          await query(
-            transaction,
-            `INSERT INTO assertion_transitions(
-               event_id, assertion_id, transaction_id, field_name, capture_id,
-               scope_id, run_id, enrichment_run_id, coordinate_id, user_id,
-               commit_id, event_kind
-             ) VALUES (?, ?, ?, 'kind', NULL, NULL, NULL, ?, NULL, NULL, ?, 'superseded')`,
-            [uuidBytes(), previousAssertion, transactionId, runId, projectionContext.commitId],
-          );
-        }
-      }
+      await retire("superseded");
     }
   }
+}
+
+/**
+ * The Kind-derived category changes the selected Kinds call for: a new
+ * category where the Kind decides one and the active one differs, and a
+ * withdrawal where the Kind no longer decides one.
+ */
+async function kindCategoryWrites(
+  transaction: PGliteTransaction,
+  cutoffSequence: number,
+  rows: readonly PGliteProjectionTransaction[],
+  refreshAll: boolean,
+  affected: readonly Uint8Array[],
+): Promise<DerivedWrite[]> {
+  if (!refreshAll && affected.length === 0) return [];
+  const kinds = await query<Row>(
+    transaction,
+    `SELECT transaction_id, assertion_id, taxonomy_code FROM current_transaction_enrichment
+      WHERE field_name = 'kind' ${refreshAll ? "" : `AND transaction_id IN (${inList(affected)})`}`,
+    refreshAll ? [] : affected,
+  );
+  const prior = await query<Row>(
+    transaction,
+    `SELECT DISTINCT ON (assertion.transaction_id)
+            assertion.transaction_id, assertion.assertion_id, assertion.value_text,
+            assertion.rule_lineage, output.route_id, output.source_value_text
+       FROM assertions assertion
+       JOIN canonical_commits created ON created.commit_id = assertion.created_commit_id
+       JOIN enrichment_run_outputs output ON output.assertion_id = assertion.assertion_id
+      WHERE assertion.producer_id = ?
+        AND assertion.field_name = 'category'
+        AND assertion.target_kind = 'transaction'
+        ${refreshAll ? "" : `AND assertion.transaction_id IN (${inList(affected)})`}
+        AND created.commit_sequence <= ?
+        AND COALESCE((
+          SELECT transition.event_kind
+            FROM assertion_transitions transition
+            JOIN canonical_commits event_commit ON event_commit.commit_id = transition.commit_id
+           WHERE transition.assertion_id = assertion.assertion_id
+             AND event_commit.commit_sequence <= ?
+           ORDER BY event_commit.commit_sequence DESC,
+                    encode(transition.event_id, 'hex') DESC
+           LIMIT 1
+        ), 'observed') NOT IN ('withdrawn', 'superseded')
+      ORDER BY assertion.transaction_id, created.commit_sequence DESC,
+               encode(assertion.assertion_id, 'hex') DESC`,
+    [KIND_CATEGORY_ENRICHMENT_PRODUCER_ID, ...(refreshAll ? [] : affected), cutoffSequence, cutoffSequence],
+  );
+  const kindOf = new Map(kinds.map((row) => [idText(row.transaction_id, "Kind transaction"), row]));
+  const priorOf = new Map(prior.map((row) => [idText(row.transaction_id, "Prior category transaction"), row]));
+  return rows.flatMap((row): DerivedWrite[] => {
+    const kind = kindOf.get(row.transactionId);
+    const kindCode = kind?.taxonomy_code == null ? null : String(kind.taxonomy_code);
+    const category = derivePGliteKindCategory(kindCode);
+    const previous = priorOf.get(row.transactionId);
+    if (category) {
+      if (
+        previous &&
+        String(previous.value_text) === category.value &&
+        String(previous.route_id) === category.routeId &&
+        String(previous.rule_lineage) === category.ruleLineage &&
+        String(previous.source_value_text) === category.sourceValue
+      )
+        return [];
+      return [{ row, previous, output: { ...category, evidenceAssertionId: idText(kind!.assertion_id, "Kind assertion") } }];
+    }
+    if (!previous) return [];
+    return [{
+      row,
+      previous,
+      output: {
+        value: null,
+        evidenceKind: KIND_CATEGORY_ENRICHMENT_EVIDENCE_KIND,
+        sourceField: "kind",
+        sourceValue: kindCode ?? "",
+        contractVersion: KIND_CATEGORY_ENRICHMENT_CONTRACT_VERSION,
+        producerId: KIND_CATEGORY_ENRICHMENT_PRODUCER_ID,
+        producerVersion: KIND_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
+        ruleLineage: String(previous.rule_lineage),
+        routeId: KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
+      },
+    }];
+  });
+}
+
+/**
+ * Selects each transaction's current enrichment from its eligible assertions:
+ * a source one first, then the latest. `field` limits it to one field whose
+ * rows the caller has deleted.
+ */
+async function selectCurrentEnrichment(
+  transaction: PGliteTransaction,
+  context: PGliteCanonicalProjectionContext,
+  refreshAll: boolean,
+  affected: readonly Uint8Array[],
+  field?: "category",
+): Promise<void> {
+  const cutoff = context.cutoffSequence;
   await query(
     transaction,
     `WITH eligible AS (
@@ -1191,6 +1319,7 @@ async function refreshCurrentEnrichment(
          LEFT JOIN enrichment_taxonomy_assertion_values typed
            ON typed.assertion_id = assertion.assertion_id
         WHERE assertion.target_kind = 'transaction'
+          ${field === undefined ? "" : "AND assertion.field_name = ?"}
           AND created.commit_sequence <= ?
           ${refreshAll ? "" : `AND assertion.transaction_id IN (${inList(affected)})`}
           AND route.valid_from_commit_sequence <= ?
@@ -1216,16 +1345,16 @@ async function refreshCurrentEnrichment(
              taxonomy_dimension, COALESCE(taxonomy_code, value_text), ?
         FROM eligible
        WHERE rank = 1`,
-    refreshAll ? [projectionContext.cutoffSequence, projectionContext.cutoffSequence, projectionContext.cutoffSequence, projectionContext.cutoffSequence, projectionContext.commitId] : [
-      projectionContext.cutoffSequence,
-      ...affected,
-      projectionContext.cutoffSequence,
-      projectionContext.cutoffSequence,
-      projectionContext.cutoffSequence,
-      projectionContext.commitId,
+    [
+      ...(field === undefined ? [] : [field]),
+      cutoff,
+      ...(refreshAll ? [] : affected),
+      cutoff,
+      cutoff,
+      cutoff,
+      context.commitId,
     ],
   );
-  return projectionContext;
 }
 
 /**

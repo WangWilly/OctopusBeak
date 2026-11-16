@@ -68,3 +68,40 @@ test("Cathay labels, Cathay foreign-currency rows and TDCC deposits get their Ki
     await fixture.close();
   }
 });
+
+test("rows whose Kind is interest or a fee, projected before the Kind decided a category, get it when the store next opens, once (ADR 0141)", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const deposit = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
+    const fee = await fixture.addTransaction({ amount: "15", direction: "outflow", date: "2026-09-10", description: "手續費", account: "salary-account", accountStream: deposit });
+    const interest = await fixture.addTransaction({
+      amount: "1200", direction: "inflow", date: "2026-09-21", account: "mortgage",
+      accountStream: { namespace: "fubon", stream: "loan", accountType: "loan" }, event: { loan: "interest" },
+    });
+    await installFinancialStore(fixture.database);
+    // A store projected before ADR 0141 held no category for these rows.
+    await fixture.store.query("DELETE FROM current_transaction_enrichment WHERE field_name = 'category'");
+    const tables = ["enrichment_taxonomy_assertion_values", "assertion_transitions", "assertion_provenance", "enrichment_run_outputs", "assertions"];
+    for (const table of tables) await fixture.store.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
+    const scope = "SELECT assertion_id FROM assertions WHERE field_name = 'category' AND producer_id = $1";
+    const producer = ["kind/category-enrichment"];
+    await fixture.store.query(`DELETE FROM enrichment_taxonomy_assertion_values WHERE assertion_id IN (${scope})`, producer);
+    await fixture.store.query(`DELETE FROM assertion_transitions WHERE assertion_id IN (${scope})`, producer);
+    await fixture.store.query(`DELETE FROM assertion_provenance WHERE assertion_id IN (${scope})`, producer);
+    await fixture.store.query("DELETE FROM enrichment_run_outputs WHERE field_name = 'category' AND route_id = $1", ["global/kind-category-enrichment/v1/category"]);
+    await fixture.store.query("DELETE FROM assertions WHERE field_name = 'category' AND producer_id = $1", producer);
+    for (const table of tables) await fixture.store.query(`ALTER TABLE ${table} ENABLE TRIGGER USER`);
+    await fixture.store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["kind-rederivation-interest-and-fees-category-v1"]);
+    const categories = async () => Promise.all([fee, interest].map(async (id) => (await fixture.store.query<{ taxonomy_code: string; origin: string }>(
+      "SELECT taxonomy_code, origin FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'category'", [idBytes(id)])).rows[0] ?? null));
+    assert.deepEqual(await categories(), [null, null]);
+
+    await installFinancialStore(fixture.database);
+    assert.deepEqual(await categories(), [{ taxonomy_code: "interest_and_fees", origin: "derived" }, { taxonomy_code: "interest_and_fees", origin: "derived" }]);
+    const before = await fixture.knowledgeAt();
+    await installFinancialStore(fixture.database);
+    assert.equal(await fixture.knowledgeAt(), before, "a second open re-derives nothing");
+  } finally {
+    await fixture.close();
+  }
+});

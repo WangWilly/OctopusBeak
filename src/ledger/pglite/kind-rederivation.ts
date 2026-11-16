@@ -23,6 +23,9 @@ const KIND_REDERIVATIONS = [
   // labels for currency exchange, investment settlement, dividends and
   // deposit interest, with payload keys no longer read as words.
   "kind-rederivation-deposit-kind-gaps-v1",
+  // ADR 0141: interest charged and bank, card and loan fees take the
+  // interest-and-fees category, derived from the Kind each row already has.
+  "kind-rederivation-interest-and-fees-category-v1",
 ] as const;
 
 const signature = (id: string) => createHash("sha256").update(id).digest("hex");

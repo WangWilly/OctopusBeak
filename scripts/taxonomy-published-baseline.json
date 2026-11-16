@@ -1,7 +1,7 @@
 {
   "packageId": "transaction-taxonomy",
   "version": "v1",
-  "semanticHash": "sha256:IaQESgKYIe9K9cW9j6QH6Nu91Up8T-lXJGp-_imBOvY",
+  "semanticHash": "sha256:gK0gSvJl8wx_Tim1S7ULhnecyN35PtAjEOj-vIFGdck",
   "kinds": [
     "purchase", "transfer", "transfer.internal", "transfer.external",
     "transfer.investment_contribution", "transfer.investment_withdrawal", "transfer.security_position",
@@ -25,7 +25,7 @@
     "housing_and_utilities", "household_goods_and_services", "healthcare", "transportation",
     "travel", "information_and_communication", "recreation_sports_and_culture", "education",
     "personal_and_family_care", "insurance", "taxes_and_government", "gifts_and_donations",
-    "work_and_business"
+    "work_and_business", "interest_and_fees"
   ],
   "counterpartyRoles": [
     "merchant", "marketplace", "payment_platform", "financial_institution",

@@ -29,7 +29,7 @@ test("the groups follow Spending v2 plan decision 1", () => {
   assert.deepEqual(spendingCategoryCodesForGroup("shopping"), ["clothing_and_footwear"]);
   assert.deepEqual(spendingCategoryCodesForGroup("home"), ["housing_and_utilities", "household_goods_and_services", "information_and_communication"]);
   assert.deepEqual(spendingCategoryCodesForGroup("leisure"), ["travel", "recreation_sports_and_culture"]);
-  assert.deepEqual(spendingCategoryCodesForGroup("other"), ["education", "insurance", "taxes_and_government", "gifts_and_donations", "work_and_business"]);
+  assert.deepEqual(spendingCategoryCodesForGroup("other"), ["education", "insurance", "taxes_and_government", "gifts_and_donations", "work_and_business", "interest_and_fees"]);
 });
 
 test("every group and the Unclassified bucket have zh-TW and en labels", () => {

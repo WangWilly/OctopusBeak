@@ -98,7 +98,7 @@ export type SpendingSummaryDto = Readonly<{
   schemaVersion: 1;
   knowledgeAt: number;
   availability: "empty" | "available";
-  inclusionPolicy: Readonly<{ id: "gross-posted-outflow"; version: "v1"; name: "Gross posted outflow" }>;
+  inclusionPolicy: Readonly<{ id: "gross-posted-outflow"; version: "v2"; name: "Gross posted outflow" }>;
   purchaseReport: SpendingPurchaseReportSummaryDto & Readonly<{
     kind: "current";
     financialAt: null;
@@ -703,7 +703,7 @@ export type CanonicalSpendingView = {
   availability: "empty" | "available" | "unavailable";
   policy: {
     id: "gross-posted-outflow";
-    version: "v1";
+    version: "v2";
     name: "Gross posted outflow";
   };
   knowledgePoint: number;

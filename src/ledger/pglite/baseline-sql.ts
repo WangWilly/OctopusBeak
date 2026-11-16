@@ -2031,7 +2031,8 @@ INSERT INTO "automatic_enrichment_authority_routes" ("route_id", "subject_kind",
 ('maicoin/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'maicoin/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('binance/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'binance/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('yuanta/loan/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'yuanta/loan', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
-('fubon/loan/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'fubon/loan', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
+('fubon/loan/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'fubon/loan', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('global/kind-category-enrichment/v1/category', 'transaction', 'category', 'global', NULL, 'kind/category-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
 ON CONFLICT DO NOTHING;
 INSERT INTO "canonical_grouped_role_contracts" ("producer_id", "producer_version", "contract_version", "admission_policy", "origin", "field_name", "evidence_kinds_json", "role_codes_json") VALUES
 ('cathay/domestic-deposit/automatic-enrichment', 'v1', 'cathay/domestic-deposit/counterparty-group/v1', 'admit', 'source', 'counterparty_role', '["explicit-source-field"]', '["merchant","marketplace","payment_platform","financial_institution"]'),
@@ -2044,7 +2045,8 @@ INSERT INTO "enrichment_producer_versions" ("producer_id", "producer_version", "
 ('credit-card/direction-enrichment', 'v1', 'transaction-taxonomy', 'v1', 7500),
 ('bank/deposit-kind-enrichment', 'v4', 'transaction-taxonomy', 'v1', 7500),
 ('einvoice/item-category-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000),
-('account-event/kind-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000)
+('account-event/kind-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000),
+('kind/category-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000)
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_applicability" ("taxonomy_id", "taxonomy_version", "category_dimension", "category_code", "kind_dimension", "kind_code") VALUES
 ('transaction-taxonomy', 'v1', 'category', 'food_and_groceries', 'kind', 'purchase'),
@@ -2284,7 +2286,21 @@ INSERT INTO "taxonomy_applicability" ("taxonomy_id", "taxonomy_version", "catego
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'kind', 'tax.payment'),
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'kind', 'tax.refund'),
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'kind', 'refund'),
-('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'kind', 'reversal')
+('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'kind', 'reversal'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'purchase'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'payment'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'payment.bill'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'payment.loan'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'fee'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'fee.bank'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'fee.card'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'fee.loan'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'fee.investment'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'interest.charged'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'tax.payment'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'tax.refund'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'refund'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'kind', 'reversal')
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_codes" ("taxonomy_id", "taxonomy_version", "dimension", "code", "parent_code", "definition", "localization_key", "aggregation_safe") VALUES
 ('transaction-taxonomy', 'v1', 'kind', 'purchase', NULL, 'A purchase of goods or services.', 'transaction-taxonomy.kind.purchase', 1),
@@ -2361,6 +2377,7 @@ INSERT INTO "taxonomy_codes" ("taxonomy_id", "taxonomy_version", "dimension", "c
 ('transaction-taxonomy', 'v1', 'category', 'taxes_and_government', NULL, 'Taxes, permits, and government services.', 'transaction-taxonomy.category.taxes_and_government', 1),
 ('transaction-taxonomy', 'v1', 'category', 'gifts_and_donations', NULL, 'Gifts, charitable donations, and contributions.', 'transaction-taxonomy.category.gifts_and_donations', 1),
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', NULL, 'Work-related and business expenses.', 'transaction-taxonomy.category.work_and_business', 1),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', NULL, 'Interest charged and fees for bank, card, and loan services.', 'transaction-taxonomy.category.interest_and_fees', 1),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'merchant', NULL, 'Party selling goods or services.', 'transaction-taxonomy.counterparty_role.merchant', 1),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'marketplace', NULL, 'Marketplace facilitating a sale between parties.', 'transaction-taxonomy.counterparty_role.marketplace', 1),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'payment_platform', NULL, 'Platform processing or routing a payment.', 'transaction-taxonomy.counterparty_role.payment_platform', 1),
@@ -2518,6 +2535,8 @@ INSERT INTO "taxonomy_localizations" ("taxonomy_id", "taxonomy_version", "dimens
 ('transaction-taxonomy', 'v1', 'category', 'gifts_and_donations', 'zh-Hant', '禮物與捐贈'),
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'en', 'Work And Business'),
 ('transaction-taxonomy', 'v1', 'category', 'work_and_business', 'zh-Hant', '工作與商務'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'en', 'Interest And Fees'),
+('transaction-taxonomy', 'v1', 'category', 'interest_and_fees', 'zh-Hant', '利息與手續費'),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'merchant', 'en', 'Merchant'),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'merchant', 'zh-Hant', '商家'),
 ('transaction-taxonomy', 'v1', 'counterparty_role', 'marketplace', 'en', 'Marketplace'),
@@ -2608,6 +2627,7 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'category', 'taxes_and_government', '["explicit-source-field"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'category', 'gifts_and_donations', '["explicit-source-field"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'category', 'work_and_business', '["explicit-source-field"]'),
+('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'category', 'interest_and_fees', '["explicit-source-field"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'counterparty_role', 'merchant', '["explicit-source-field"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'counterparty_role', 'marketplace', '["explicit-source-field"]'),
 ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'source', 'counterparty_role', 'payment_platform', '["explicit-source-field"]'),
@@ -2711,6 +2731,7 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'taxes_and_government', '["item-name","seller-tax-id","seller-name"]'),
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'gifts_and_donations', '["item-name","seller-tax-id","seller-name"]'),
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'work_and_business', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'interest_and_fees', '["item-name","seller-tax-id","seller-name"]'),
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.trade.buy', '["investment-event"]'),
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.trade.sell', '["investment-event"]'),
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.corporate_action', '["investment-event"]'),
@@ -2719,7 +2740,8 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'loan.disbursement', '["loan-event"]'),
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'interest.charged', '["loan-event"]'),
 ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'fee.loan', '["loan-event"]'),
-('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'transfer', '["bank-rule"]')
+('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'transfer', '["bank-rule"]'),
+('transaction-taxonomy', 'v1', 'kind/category-enrichment', 'v1', 'derived', 'category', 'interest_and_fees', '["kind"]')
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_versions" ("taxonomy_id", "taxonomy_version", "status", "package_hash", "published_at_utc_us") VALUES
 ('transaction-taxonomy', 'v1', 'published', 'sha256:OZAcDNxJ9u91Dy6SnAzjP0Wm79NKjnawZ-Nd_3MpK4o', 0)
