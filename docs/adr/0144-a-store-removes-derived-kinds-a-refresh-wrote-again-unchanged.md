@@ -6,9 +6,10 @@ A projection refresh for a commit that touched no transaction read every transac
 
 ADR 0008 keeps Derived Assertion lineage append-only, and its only hard delete is a Contract Purge. **This ADR adds a second, one-time hard delete: a store removes the derived Kind assertions a refresh wrote again unchanged.**
 
-- **What is removed.** A derived Kind assertion that repeats the assertion before it on the same transaction: same producer, rule lineage, route, value and output provenance, where neither was ever superseded, withdrawn or restored. Its output, provenance, transition and taxonomy value are removed with it. An unsupported Kind output that repeats the output before it is removed too, unless a withdrawal rests on its run.
+- **What is removed.** A derived Kind assertion that repeats the assertion before it on the same transaction: same producer, rule lineage, route, value, taxonomy code and output provenance, each with exactly one output, where neither was ever superseded, withdrawn or restored. Its output, provenance, transition and taxonomy value are removed with it. An unsupported Kind output that repeats the output before it is removed too, unless a withdrawal rests on its run.
 - **What stays.** The first assertion of each run, which is the one a correct refresh would have kept. Any assertion a category's provenance names as its evidence also stays. Source and User Assertions, categories, enrichment runs and commits are never touched.
-- **How.** It runs once, on store open, in one transaction. Current rows move onto the kept assertion, so the cleanup writes no commit and the knowledge point does not move. The tables are then rewritten to return the space to the disk.
+- **How.** It runs once, on store open, in one transaction. Current rows move onto the kept assertion the Kind selection picks, so the cleanup writes no commit and the knowledge point does not move. The tables are then rewritten to return the space to the disk; an interrupted rewrite runs again on the next open.
+- **When it cannot finish.** The cleanup only returns space. If it fails, it rolls back, keeps every row, and is not tried again; the store opens as before.
 
 The Kind every transaction had at every commit, and the evidence behind it, stay the same. Only the repeats, which say nothing the first assertion does not, disappear.
 
