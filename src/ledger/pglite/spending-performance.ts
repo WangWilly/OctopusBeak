@@ -9,6 +9,7 @@ import {
 } from "./spending-performance-fixture.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import { queryCurrentSpendingSummary } from "./purchase-report.ts";
+import { spendingIncludedKindSql } from "./pairing-projection-sql.ts";
 import { applyPGliteFinancialPageAction } from "./spending-command.ts";
 import type { FinancialCommittingPageActionRequest } from "../../lib/financial/page-actions.ts";
 import { applySpendingSummaryDelta } from "../../lib/spending/model.ts";
@@ -62,13 +63,7 @@ const countRows = (await store.query<{ transactions: number | string; invoices: 
         AND revision.economic_status = 'normal'
         AND revision.posting_status = 'posted'
         AND revision.direction = 'outflow'
-        AND kind.taxonomy_code IS NOT NULL
-        AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
-        AND kind.taxonomy_code NOT LIKE 'transfer.%'
-        AND kind.taxonomy_code NOT LIKE 'cash.%'
-        AND kind.taxonomy_code NOT LIKE 'investment.%'
-        AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
-        AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+        AND ${spendingIncludedKindSql("kind.taxonomy_code")}
         AND NOT EXISTS (SELECT 1 FROM current_spending_dedup_links active_link WHERE active_link.transaction_id = current_row.transaction_id)
     ) AS "eligibleTransactions"
 `)).rows[0]!;

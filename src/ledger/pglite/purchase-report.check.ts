@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BANK_ROUTE, createSpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { BANK_ROUTE, createSpendingCategoryFixture, setKind } from "./spending-test-fixture.ts";
+import { queryPendingSpendingCandidates } from "./spending-query.ts";
 import {
   decide,
   queryCurrentSpending,
@@ -242,6 +243,35 @@ test("decide returns the summary delta that reproduces the recomputed category t
     assert.deepEqual(patched.totalsByCurrency, after.purchaseReport.totalsByCurrency);
     assert.deepEqual(categoryTotal(after.purchaseReport.categoryTotalsByMonth, "transportation"), { coefficient: "350", scale: 0, count: 1 }, "the linked purchase takes the items' code once on the bank amount");
     assert.equal(categoryTotal(after.purchaseReport.categoryTotalsByMonth, null), null, "the bank-only Unclassified row is gone");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("every SQL read leaves out a loan Kind as the built records do, a loan account's disbursement outflow too (ADR 0138)", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const loanAccount = { namespace: "fubon", stream: "loan", accountType: "loan" } as const;
+    const purchase = await fixture.addTransaction({ amount: "250", date: "2026-09-05", description: "Cafe" });
+    const disbursement = await fixture.addTransaction({ amount: "500000", direction: "outflow", date: "2026-09-02", account: "mortgage", accountStream: loanAccount, event: { loan: "disbursement" } });
+    const interest = await fixture.addTransaction({ amount: "1200", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: loanAccount, event: { loan: "interest" } });
+    const bareLoan = await fixture.addTransaction({ amount: "300", date: "2026-09-08", description: "Shop" });
+    const linkedPayment = await fixture.addTransaction({ amount: "700", date: "2026-09-15", description: "Books" });
+    await fixture.link(await fixture.commitInvoice({ stableKey: "XM00000010:2026-09-15", date: "2026-09-15", sellerName: "Books", items: [{ sequence: 1, name: "Book", amount: "700" }] }), linkedPayment);
+    // A same-amount invoice the disbursement must never be offered for.
+    await fixture.commitInvoice({ stableKey: "XM00000011:2026-09-02", date: "2026-09-02", sellerName: "Bank", items: [{ sequence: 1, name: "Item", amount: "500000" }] });
+    await setKind(fixture.store, bareLoan, "loan");
+    await setKind(fixture.store, linkedPayment, "loan.disbursement");
+
+    const report = await assertReadsAgree(fixture, ["2026-09"]);
+    const counted = new Set(report.records.flatMap((record) => record.transaction ? [record.transaction.transactionId] : []));
+    assert.deepEqual([...counted].sort(), [purchase, interest].sort(), "only the purchase and the loan's interest count as bank transactions");
+    const pairing = await fixture.store.query<{ count: number | string }>(
+      "SELECT COUNT(*) AS count FROM current_spending_pairing_entries WHERE transaction_id = ANY($1::bytea[])",
+      [[disbursement, bareLoan, linkedPayment].map((id) => Buffer.from(id.replaceAll("-", ""), "hex"))]);
+    assert.equal(Number(pairing.rows[0]?.count), 0, "no loan Kind is a pairing entry");
+    const pending = await queryPendingSpendingCandidates(fixture.store, await fixture.knowledgeAt());
+    assert.equal(pending.pairs.some((pair) => pair.transactionId === disbursement), false, "the disbursement is never a candidate");
   } finally {
     await fixture.close();
   }
