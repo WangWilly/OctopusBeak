@@ -1,4 +1,4 @@
-import { cashFlowRule, type CashFlowRule } from "../canonical/cash-flow-inclusion.ts";
+import { cashFlowRule, INVESTMENT_ACCOUNT_STREAMS, type CashFlowRule } from "../canonical/cash-flow-inclusion.ts";
 import { PERSONAL_CATEGORY_CODES } from "../canonical/personal-category-codes.ts";
 import { TRANSACTION_KIND_CODES } from "../canonical/transaction-taxonomy.ts";
 import { cashFlowCopy } from "../../lib/cash-flow/copy.ts";
@@ -125,7 +125,7 @@ function ruleMatches(rule: CashFlowRule, has: (value: string) => boolean, outflo
 }
 
 /** Which Kinds could carry a category label that contains `needle`. */
-function categoryKinds(needle: string): Readonly<{ kinds: readonly string[]; unregistered: boolean; linked: boolean }> {
+function categoryKinds(needle: string): Readonly<{ kinds: readonly string[]; unregistered: boolean; linked: boolean; investmentAccounts: boolean }> {
   const has = (value: string) => value.toLocaleLowerCase().includes(needle);
   const outflowLabels = LOCALES.some((locale) => {
     const spending = spendingCopy[locale].spending;
@@ -139,6 +139,8 @@ function categoryKinds(needle: string): Readonly<{ kinds: readonly string[]; unr
     kinds,
     unregistered: LOCALES.some((locale) => has(cashFlowCopy[locale].cashFlow.unresolvedTag)),
     linked: LOCALES.some((locale) => has(cashFlowCopy[locale].cashFlow.notCounted.transfer)),
+    // An investment-account row is an investment move whatever its Kind, or with none.
+    investmentAccounts: ruleMatches({ class: "not_counted", reason: "investment_move" }, has, outflowLabels),
   };
 }
 
@@ -213,6 +215,14 @@ export async function cashFlowSearchCandidates(reader: PGliteSpendingReader, que
            ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
         WHERE kind.taxonomy_code IS NULL OR kind.taxonomy_code NOT IN (${TRANSACTION_KIND_CODES.map(() => "?").join(",")})`,
       [...TRANSACTION_KIND_CODES])));
+  if (category.investmentAccounts)
+    add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,
+      `SELECT current_row.transaction_id
+         FROM current_transactions current_row
+         JOIN financial_transactions transaction_row ON transaction_row.transaction_id = current_row.transaction_id
+         JOIN financial_accounts account ON account.account_id = transaction_row.account_id
+        WHERE account.stream IN (${[...INVESTMENT_ACCOUNT_STREAMS].map(() => "?").join(",")})`,
+      [...INVESTMENT_ACCOUNT_STREAMS])));
   // A stored link turns two fallback or weak sides into an internal transfer.
   if (category.linked)
     add(rows(await pgliteQuery<{ transaction_id: unknown }>(reader,

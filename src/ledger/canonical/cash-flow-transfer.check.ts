@@ -22,11 +22,19 @@ function side(transactionId: string, direction: "outflow" | "inflow", overrides:
     amount: { coefficient: "5000", scale: 0, currency: "TWD" },
     direction,
     kind: direction === "outflow" ? fallback("purchase") : fallback("receipt"),
+    cashFlow: direction === "outflow" ? { class: "outflow", categories: [] } : { class: "inflow", group: "other" },
     ...overrides,
   };
 }
 
 const none = cashFlowTransferContext([], new Map());
+
+test("a loan's interest, booked in on the loan account and counted out, is neither side of a pair", () => {
+  const interest = side("interest", "inflow", { kind: evidence("interest.charged"), cashFlow: { class: "outflow", categories: [] } });
+  assert.equal(cashFlowTransferRefusal(side("out", "outflow"), interest, "manual", none), "direction");
+  const pairing = pairCashFlowTransfers([side("out", "outflow"), interest], [], new Map());
+  assert.deepEqual(pairing.candidates, [], "an equal deposit outflow is no candidate for it");
+});
 
 test("a pair needs equal amounts in one currency, opposite directions and two accounts", () => {
   const out = side("out", "outflow");

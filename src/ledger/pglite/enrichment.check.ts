@@ -36,3 +36,39 @@ test("a card outflow stays a purchase whatever its label says", () => {
   const kind = derivePGliteTransactionKind(card("outflow", "繳費 中華電信"));
   assert.deepEqual([kind?.value, kind?.evidenceKind], ["purchase", "direction"]);
 });
+
+const eventRow = (integrationNamespace: string, stream: string, accountEvent: PGliteProjectionTransaction["accountEvent"]): PGliteProjectionTransaction =>
+  ({ ...card("inflow", "說明文字不影響結果"), integrationNamespace, stream, accountEvent });
+
+test("an investment row's Kind is its recorded action, never its description (ADR 0138)", () => {
+  const cases = [
+    ["buy", "investment.trade.buy"],
+    ["sell", "investment.trade.sell"],
+    ["corporate_action_in", "investment.corporate_action"],
+    ["corporate_action_out", "investment.corporate_action"],
+    ["dividend", "income.dividend"],
+  ] as const;
+  for (const [action, expected] of cases) {
+    const kind = derivePGliteTransactionKind(eventRow("maicoin", "investment", { evidenceKind: "investment-event", value: action }));
+    assert.deepEqual([kind?.value, kind?.evidenceKind, kind?.sourceValue], [expected, "investment-event", action], action);
+    assert.equal(kind?.routeId, "maicoin/investment/event-kind-enrichment/v1/kind");
+  }
+});
+
+test("a loan row's Kind is its recorded event kind (ADR 0138)", () => {
+  const cases = [
+    ["payment", "payment.loan"],
+    ["disbursement", "loan.disbursement"],
+    ["interest", "interest.charged"],
+    ["fee", "fee.loan"],
+  ] as const;
+  for (const [event, expected] of cases) {
+    const kind = derivePGliteTransactionKind(eventRow("yuanta", "loan", { evidenceKind: "loan-event", value: event }));
+    assert.deepEqual([kind?.value, kind?.evidenceKind, kind?.routeId], [expected, "loan-event", "yuanta/loan/event-kind-enrichment/v1/kind"], event);
+  }
+});
+
+test("an investment or loan row without its event gets no Kind, and a stream outside the routes none either", () => {
+  assert.equal(derivePGliteTransactionKind(eventRow("fubon", "loan", null)), null);
+  assert.equal(derivePGliteTransactionKind(eventRow("tdcc", "investment", { evidenceKind: "investment-event", value: "buy" })), null);
+});

@@ -13,11 +13,12 @@ import {
 /**
  * Cash flow's Financial report inclusion (PRD #456): every canonical and
  * Manual Account transaction gets exactly one cash-flow class, decided by its
- * Transaction Kind and direction alone. Totals stay per currency.
+ * Transaction Kind, its direction and its account's stream. Totals stay per
+ * currency. v2 (ADR 0138) adds the two account rules in `cashFlowRule`.
  */
 export const CASH_FLOW_INCLUSION_POLICY = Object.freeze({
   id: "cash-flow-by-kind",
-  version: "v1",
+  version: "v2",
 } as const);
 
 export type CashFlowInflowGroup =
@@ -165,8 +166,23 @@ export function linkExcludable(kind: CashFlowKind | null): boolean {
   return kind !== null && kind.basis !== "evidence";
 }
 
-/** An unregistered or absent Kind leaves inclusion undecided. */
-export function cashFlowRule(kind: string | null, direction: "inflow" | "outflow"): CashFlowRule {
+/** The streams of investment accounts: every cash effect there has its counterpart on a funding account. */
+export const INVESTMENT_ACCOUNT_STREAMS: ReadonlySet<string> = new Set(["investment", "investment-fund"]);
+
+/** What a loan charges, which the loan account books as an inflow. */
+const LOAN_CHARGE_KINDS: ReadonlySet<string> = new Set(["interest.charged", "fee.loan"]);
+
+/**
+ * An unregistered or absent Kind leaves inclusion undecided. Two account
+ * rules come first (ADR 0138): nothing on an investment account counts,
+ * whatever its Kind, since its funding account already holds the cash; and a
+ * loan's interest or fee counts once as an outflow, from the loan account,
+ * although that account books it as an inflow. `stream` is the account's;
+ * a Manual Account has none.
+ */
+export function cashFlowRule(kind: string | null, direction: "inflow" | "outflow", stream: string | null = null): CashFlowRule {
+  if (stream !== null && INVESTMENT_ACCOUNT_STREAMS.has(stream)) return { class: "not_counted", reason: "investment_move" };
+  if (stream === "loan" && direction === "inflow" && kind !== null && LOAN_CHARGE_KINDS.has(kind)) return OUTFLOW;
   if (kind === null || !isRegisteredKind(kind)) return UNRESOLVED;
   return CASH_FLOW_KIND_INCLUSION[kind][direction];
 }

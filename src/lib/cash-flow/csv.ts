@@ -2,7 +2,7 @@ import type { Translation } from "../i18n/i18n.ts";
 import type { ExactAmount } from "../shared-money/exact-money.ts";
 import { accountLabel, rowCategoryText, rowTitle } from "./display.ts";
 import type { CashFlowRow } from "./model.ts";
-import { cashFlowTransferRole } from "./model.ts";
+import { cashFlowDirection, cashFlowTransferRole } from "./model.ts";
 
 /** `flow` is every counted row; `flow_and_transfers` adds both sides of each internal transfer, tagged with a pairing id. */
 export type CashFlowCsvContent = "flow" | "flow_and_transfers";
@@ -25,10 +25,10 @@ export function exactDecimalText(amount: ExactAmount): string {
   return negative && /[1-9]/u.test(digits) ? `-${text}` : text;
 }
 
-/** The amount as it moved the account: outflows negative. */
+/** The amount as Cash flow counts it: outflows negative, a loan's interest too. */
 function signedText(row: CashFlowRow): string {
   const text = exactDecimalText(row.amount);
-  return row.direction === "outflow" && /[1-9]/u.test(text) ? `-${text}` : text;
+  return cashFlowDirection(row) === "outflow" && /[1-9]/u.test(text) ? `-${text}` : text;
 }
 
 /** Text from a bank or the person that a spreadsheet would run as a formula is kept as text. */

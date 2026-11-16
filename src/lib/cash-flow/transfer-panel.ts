@@ -8,6 +8,7 @@ import {
 } from "../../ledger/canonical/cash-flow-transfer-rules.ts";
 import type { FinancialPageActionRequest } from "../financial/page-actions.ts";
 import { normalizeCurrency, type ExactMoney } from "../shared-money/exact-money.ts";
+import { cashFlowDirection } from "./model.ts";
 import type {
   CashFlowRow,
   CashFlowTransferCandidateView,
@@ -93,9 +94,9 @@ export function linkEffect(candidate: Pick<CashFlowTransferCandidateView, "outfl
   };
 }
 
-/** The period's rows a person may pick for a manual pair: canonical rows in one direction. */
+/** The period's rows a person may pick for a manual pair: canonical rows booked and counted in one direction. */
 export function pairableRows(rows: readonly CashFlowRow[], direction: CashFlowRow["direction"]): readonly CashFlowRow[] {
-  return rows.filter((row) => row.source === "canonical" && row.direction === direction);
+  return rows.filter((row) => row.source === "canonical" && row.direction === direction && cashFlowDirection(row) === direction);
 }
 
 /** What the page holds that a transfer decision is checked against: the period's rows and the panel's lists. */

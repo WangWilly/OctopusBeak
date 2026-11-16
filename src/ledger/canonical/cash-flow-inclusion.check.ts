@@ -37,6 +37,36 @@ test("the PRD's counting rules hold in the table", () => {
   assert.deepEqual(rule("refund", "inflow"), { class: "refund" });
 });
 
+test("nothing on an investment account counts, whatever its Kind (ADR 0138)", () => {
+  const moved = { class: "not_counted", reason: "investment_move" };
+  for (const stream of ["investment", "investment-fund"]) {
+    assert.deepEqual(cashFlowRule("investment.trade.buy", "outflow", stream), moved);
+    assert.deepEqual(cashFlowRule("investment.trade.sell", "inflow", stream), moved);
+    assert.deepEqual(cashFlowRule("investment.corporate_action", "inflow", stream), moved);
+    assert.deepEqual(cashFlowRule("investment.corporate_action", "outflow", stream), moved);
+    // The bank-side credit counts the dividend once; the investment side records it truthfully.
+    assert.deepEqual(cashFlowRule("income.dividend", "inflow", stream), moved);
+    assert.deepEqual(cashFlowRule("income.reward", "inflow", stream), moved);
+    assert.deepEqual(cashFlowRule(null, "outflow", stream), moved, "even a row with no Kind");
+  }
+  assert.deepEqual(cashFlowRule("income.dividend", "inflow", "domestic-deposit"), { class: "inflow", group: "income.dividend" });
+});
+
+test("a loan's interest and fee count once as an outflow from the loan account, its principal not at all (ADR 0138)", () => {
+  assert.deepEqual(cashFlowRule("interest.charged", "inflow", "loan"), { class: "outflow", group: "by_category" });
+  assert.deepEqual(cashFlowRule("fee.loan", "inflow", "loan"), { class: "outflow", group: "by_category" });
+  assert.deepEqual(cashFlowRule("payment.loan", "inflow", "loan"), { class: "not_counted", reason: "loan_principal" });
+  assert.deepEqual(cashFlowRule("loan.disbursement", "outflow", "loan"), { class: "not_counted", reason: "loan_disbursement" });
+  // Only the loan account turns an inflow charge into an outflow.
+  assert.deepEqual(cashFlowRule("interest.charged", "inflow", "domestic-deposit"), { class: "unresolved" });
+  assert.deepEqual(cashFlowRule("interest.charged", "inflow"), { class: "unresolved" });
+});
+
+test("a Kind read from an investment or loan event is evidence", () => {
+  assert.deepEqual(canonicalCashFlowKind("interest.charged", "loan-event"), { code: "interest.charged", basis: "evidence" });
+  assert.deepEqual(canonicalCashFlowKind("investment.trade.buy", "investment-event"), { code: "investment.trade.buy", basis: "evidence" });
+});
+
 test("an absent, unregistered, or direction-contradicting Kind is unresolved", () => {
   assert.deepEqual(cashFlowRule(null, "outflow"), { class: "unresolved" });
   assert.deepEqual(cashFlowRule("income.lottery", "inflow"), { class: "unresolved" });

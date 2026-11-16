@@ -56,6 +56,46 @@ export const BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS = [
   "credit-card-statement-relation",
 ] as const;
 /**
+ * Investment and loan sources record what each row is as a structured event:
+ * an investment action or a loan event kind. This producer reads the Kind from
+ * that event, never from description text (ADR 0138). Its routes cover only the
+ * investment and loan streams whose writers record those events.
+ */
+export const ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID =
+  "account-event/kind-enrichment" as const;
+export const ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION = "v1" as const;
+export const ACCOUNT_EVENT_KIND_ENRICHMENT_CONTRACT_VERSION =
+  "account-event/kind/v1" as const;
+export const ACCOUNT_EVENT_KIND_ENRICHMENT_ROUTE_SCOPES = {
+  "investment-event": [
+    "yuanta-fund/investment",
+    "yuanta-trade/investment",
+    "maicoin/investment",
+    "binance/investment",
+  ],
+  "loan-event": [
+    "yuanta/loan",
+    "fubon/loan",
+  ],
+} as const;
+export type AccountEventEvidenceKind = keyof typeof ACCOUNT_EVENT_KIND_ENRICHMENT_ROUTE_SCOPES;
+/** The Kind each structured event names; an event the table does not hold gets no Kind. */
+export const ACCOUNT_EVENT_KINDS = {
+  "investment-event": {
+    buy: "investment.trade.buy",
+    sell: "investment.trade.sell",
+    corporate_action_in: "investment.corporate_action",
+    corporate_action_out: "investment.corporate_action",
+    dividend: "income.dividend",
+  },
+  "loan-event": {
+    payment: "payment.loan",
+    disbursement: "loan.disbursement",
+    interest: "interest.charged",
+    fee: "fee.loan",
+  },
+} as const;
+/**
  * E-invoice items are the second categorization subject (ADR 0038).  The
  * producer reads one item's name first, then the invoice seller's tax ID,
  * then the seller name; a rule that does not match emits nothing.
@@ -483,6 +523,12 @@ const BANK_TRANSACTION_KIND_PRODUCER_VERSION = {
   confidenceThresholdBasisPoints: 7_500,
 } as const;
 
+const ACCOUNT_EVENT_KIND_PRODUCER_VERSION = {
+  producerId: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
+  producerVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
+  confidenceThresholdBasisPoints: 10_000,
+} as const;
+
 const EINVOICE_ITEM_CATEGORY_PRODUCER_VERSION = {
   producerId: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_ID,
   producerVersion: EINVOICE_ITEM_CATEGORY_ENRICHMENT_PRODUCER_VERSION,
@@ -682,6 +728,17 @@ const CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY: readonly ProducerCompatibilit
   })),
 ];
 
+const ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
+  (Object.keys(ACCOUNT_EVENT_KINDS) as AccountEventEvidenceKind[]).flatMap((evidenceKind) =>
+    [...new Set(Object.values(ACCOUNT_EVENT_KINDS[evidenceKind]))].map((outputCode) => ({
+      producerId: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
+      producerVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
+      origin: "derived" as const,
+      field: "kind" as const,
+      outputCode,
+      evidenceKinds: [evidenceKind],
+    })));
+
 const CATHAY_SOURCE_DISPLAY_COMPATIBILITY: readonly ProducerCompatibility[] = [
   {
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -701,6 +758,7 @@ const PRODUCER_COMPATIBILITY = [
   ...BANK_TRANSACTION_KIND_DERIVED_COMPATIBILITY,
   ...CATHAY_BANK_KIND_DERIVED_COMPATIBILITY,
   ...EINVOICE_ITEM_CATEGORY_DERIVED_COMPATIBILITY,
+  ...ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY,
 ] as const;
 
 const AUTOMATIC_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] = (
@@ -739,6 +797,19 @@ const BANK_TRANSACTION_KIND_ROUTES: readonly AutomaticEnrichmentRouteDefinition[
     scopeKey,
     producerId: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
     producerVersion: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+    originPolicy: "derived" as const,
+    validFromCommitSequence: 1,
+  }));
+
+const ACCOUNT_EVENT_KIND_ROUTES: readonly AutomaticEnrichmentRouteDefinition[] =
+  Object.values(ACCOUNT_EVENT_KIND_ENRICHMENT_ROUTE_SCOPES).flat().map((scopeKey) => ({
+    routeId: `${scopeKey}/event-kind-enrichment/v1/kind`,
+    subjectKind: "transaction" as const,
+    field: "kind" as const,
+    scopeKind: "source_stream" as const,
+    scopeKey,
+    producerId: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
+    producerVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
     originPolicy: "derived" as const,
     validFromCommitSequence: 1,
   }));
@@ -849,12 +920,14 @@ export const TRANSACTION_TAXONOMY_PACKAGE_V1: TransactionTaxonomyPackage = {
     CREDIT_CARD_DIRECTION_PRODUCER_VERSION,
     BANK_TRANSACTION_KIND_PRODUCER_VERSION,
     EINVOICE_ITEM_CATEGORY_PRODUCER_VERSION,
+    ACCOUNT_EVENT_KIND_PRODUCER_VERSION,
   ],
   automaticRoutes: [
     ...AUTOMATIC_ROUTES,
     ...CREDIT_CARD_DIRECTION_ROUTES,
     ...BANK_TRANSACTION_KIND_ROUTES,
     EINVOICE_ITEM_CATEGORY_ROUTE,
+    ...ACCOUNT_EVENT_KIND_ROUTES,
   ],
   fixtures: FIXTURES,
 };

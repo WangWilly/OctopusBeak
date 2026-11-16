@@ -67,6 +67,17 @@ function parse(text: string): string[][] {
   return records;
 }
 
+test("a loan's interest, booked in on the loan account, exports as a negative outflow (ADR 0138)", () => {
+  const interest = row("interest", {
+    direction: "inflow",
+    amount: { coefficient: "1234", scale: 0, currency: "TWD" },
+    kind: { code: "interest.charged", basis: "evidence" },
+    cashFlow: { class: "outflow", categories: share("1234") },
+  });
+  const records = parse(cashFlowCsv([interest], "flow", zh).slice(1)).slice(1);
+  assert.equal(records[0]![5], "-1234");
+});
+
 test("the file starts with a UTF-8 byte-order mark and has no balance column", () => {
   const csv = cashFlowCsv(rows, "flow", zh);
   assert.deepEqual([...Buffer.from(csv, "utf8").subarray(0, 3)], [0xef, 0xbb, 0xbf]);

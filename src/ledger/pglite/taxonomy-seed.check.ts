@@ -20,3 +20,48 @@ test("a store holds every producer compatibility row the package defines, and re
     await store.close();
   }
 });
+
+test("a store holds every producer version and automatic route the package defines", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    const versions = await store.query<{ producer_id: string; producer_version: string; confidence_threshold_basis_points: number | string }>(
+      "SELECT producer_id, producer_version, confidence_threshold_basis_points FROM enrichment_producer_versions");
+    assert.deepEqual(
+      new Set(versions.rows.map((row) => `${row.producer_id}@${row.producer_version}:${Number(row.confidence_threshold_basis_points)}`)),
+      new Set(TRANSACTION_TAXONOMY_PACKAGE_V1.producerVersions.map((row) => `${row.producerId}@${row.producerVersion}:${row.confidenceThresholdBasisPoints}`)));
+    const routes = await store.query<{ route_id: string; scope_key: string | null; producer_id: string; producer_version: string; field_name: string }>(
+      "SELECT route_id, scope_key, producer_id, producer_version, field_name FROM automatic_enrichment_authority_routes");
+    assert.deepEqual(
+      new Set(routes.rows.map((row) => [row.route_id, row.scope_key, row.producer_id, row.producer_version, row.field_name].join("|"))),
+      new Set(TRANSACTION_TAXONOMY_PACKAGE_V1.automaticRoutes.map((row) => [row.routeId, row.scopeKey, row.producerId, row.producerVersion, row.field].join("|"))));
+  } finally {
+    await store.close();
+  }
+});
+
+test("a store installed before the investment and loan event producer gains it on open", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    // An older baseline held none of the producer's rows and recorded no seed step for them.
+    await database.exec(`
+      ALTER TABLE taxonomy_producer_compatibility DISABLE TRIGGER USER;
+      ALTER TABLE automatic_enrichment_authority_routes DISABLE TRIGGER USER;
+      ALTER TABLE enrichment_producer_versions DISABLE TRIGGER USER;
+      DELETE FROM taxonomy_producer_compatibility WHERE producer_id = 'account-event/kind-enrichment';
+      DELETE FROM automatic_enrichment_authority_routes WHERE producer_id = 'account-event/kind-enrichment';
+      DELETE FROM enrichment_producer_versions WHERE producer_id = 'account-event/kind-enrichment';
+      ALTER TABLE taxonomy_producer_compatibility ENABLE TRIGGER USER;
+      ALTER TABLE automatic_enrichment_authority_routes ENABLE TRIGGER USER;
+      ALTER TABLE enrichment_producer_versions ENABLE TRIGGER USER;
+      DELETE FROM pglite_operational_migrations WHERE migration_key = 'taxonomy-account-event-kinds-v1';`);
+    await installFinancialStore(database);
+    const count = async (table: string) => Number((await store.query<{ count: number | string }>(
+      `SELECT COUNT(*) AS count FROM ${table} WHERE producer_id = 'account-event/kind-enrichment'`)).rows[0]?.count);
+    assert.deepEqual([await count("enrichment_producer_versions"), await count("automatic_enrichment_authority_routes"), await count("taxonomy_producer_compatibility")],
+      [1, 6, 8]);
+  } finally {
+    await store.close();
+  }
+});

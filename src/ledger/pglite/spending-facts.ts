@@ -76,6 +76,8 @@ const EXCLUDED_KIND_PREFIXES = [
   "investment",
   "payment.credit_card",
   "payment.loan",
+  // A loan's disbursement moves the loan's principal, never spending (ADR 0138).
+  "loan",
 ] as const;
 
 function emptySpendingReport(kind: QueryKind, knowledgePoint: number, financialAt: string | null): CanonicalSpendingReport {
