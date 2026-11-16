@@ -179,11 +179,11 @@ async function byChunk<T extends Record<string, unknown>>(
   return found;
 }
 
-/** The `evidenceKind` the Kind enrichment recorded for each transaction, when it recorded one. */
 /**
- * The run that wrote a Kind is read from its provenance, so its one output is
- * found by key: a transaction keeps an output for every run that ever looked
- * at it, and reading them by transaction scans them all.
+ * The `evidenceKind` the Kind enrichment recorded for each transaction, when
+ * it recorded one. The run that wrote a Kind is read from its provenance, so
+ * its one output is found by key: a transaction keeps an output for every run
+ * that ever looked at it, and reading them by transaction scans them all.
  */
 async function kindEvidence(reader: PGliteSpendingReader, transactionIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
   const found = await byChunk<{ transaction_id: unknown; evidence_kind: unknown }>(reader, transactionIds, (placeholders) =>
