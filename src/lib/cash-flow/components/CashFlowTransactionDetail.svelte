@@ -10,7 +10,8 @@
   import { absoluteExact, type ExactAmount } from "$lib/shared-money/exact-money.ts";
   import { NOTE_MAX_LENGTH, normalizeTagLabel, noteProblem, noteText, tagLabelProblem } from "$lib/financial/transaction-detail.ts";
   import { cashFlowDirection, type CashFlowRow, type CashFlowUserTag } from "../model.ts";
-  import { accountInitial, accountLabel, rowCategoryText, rowTitle, signedAmount } from "../display.ts";
+  import { accountLabel, rowCategoryText, rowTitle, signedAmount } from "../display.ts";
+  import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import {
     allocationDraftState,
     allocationRequest,
@@ -162,7 +163,7 @@
 <Modal titleId="cash-flow-detail-title" title={$t.cashFlow.detail.title} subtitle={dateLine(row, $t, $locale)} {onClose} closable={busy === null} width="min(640px, 100%)">
   <div class="modal-body body" data-transaction-detail={row.transactionId}>
     <header class="head">
-      <span class="mark" aria-hidden="true">{accountInitial($t, row.details.account)}</span>
+      <CashFlowAccountMark account={row.details.account} size={36} />
       <div class="head-text">
         <strong class="name">{rowTitle($t, row)}</strong>
         <span class="muted">{rowCategoryText($t, row)}</span>
@@ -352,17 +353,6 @@
     grid-template-columns: 36px minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-3);
-  }
-
-  .mark {
-    display: grid;
-    place-items: center;
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-    background: var(--surface-strong);
-    color: white;
-    font-weight: 750;
   }
 
   .head-text {

@@ -8,7 +8,8 @@
   import { negateExact } from "$lib/shared-money/exact-money.ts";
   import type { CashFlowRow, CashFlowTransferLinkView, CashFlowTransferPanel, CashFlowTransferSide } from "../model.ts";
   import { exchangeRateText } from "../exchange-rate.ts";
-  import { accountInitial, accountLabel, rowTitle } from "../display.ts";
+  import { accountLabel, rowTitle } from "../display.ts";
+  import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import {
     linkEffect,
     pairableRows,
@@ -167,7 +168,7 @@
 {#snippet side(entry: CashFlowTransferSide | null, direction: "outflow" | "inflow")}
   <div class="side" data-transfer-side={direction}>
     {#if entry}
-      <span class="mark" aria-hidden="true">{accountInitial($t, entry.details.account)}</span>
+      <CashFlowAccountMark account={entry.details.account} size={28} tone="soft" />
       <span class="side-text">
         <strong>{accountLabel($t, entry.details.account)}</strong>
         <span class="muted">{sideMeta(entry, direction)}</span>
@@ -349,7 +350,7 @@
           {#each unpaired as entry (entry.row.transactionId)}
             <article class="item unpaired" data-transfer-unpaired-row={entry.row.transactionId} data-reason={entry.reason}>
               <button type="button" class="unpaired-open" aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, entry.row)}`} onclick={() => openRow(entry.row)}>
-                <span class="mark" aria-hidden="true">{accountInitial($t, entry.row.details.account)}</span>
+                <CashFlowAccountMark account={entry.row.details.account} size={28} tone="soft" />
                 <span class="side-text">
                   <strong>{rowTitle($t, entry.row)}</strong>
                   <span class="muted">{[shortDate(entry.row.date), accountLabel($t, entry.row.details.account)].join(" · ")}</span>
