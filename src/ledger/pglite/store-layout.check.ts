@@ -38,3 +38,17 @@ test("reopening an existing store installs nothing and keeps its rows", async ()
     await db.close();
   }
 });
+
+test("an older store gains the read indexes on its next open", async () => {
+  const db = await PGlite.create();
+  try {
+    await installFinancialStore(db);
+    await db.exec("DROP INDEX idx_assertions_revision");
+    await installFinancialStore(db);
+    const indexes = (await db.query<{ indexdef: string }>("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_assertions_revision'")).rows;
+    assert.equal(indexes.length, 1);
+    assert.match(indexes[0]!.indexdef, /\(revision_id\) WHERE \(revision_id IS NOT NULL\)/u);
+  } finally {
+    await db.close();
+  }
+});
