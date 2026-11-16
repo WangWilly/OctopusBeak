@@ -569,7 +569,7 @@ export async function readPGliteCashFlowTransfers(
   const farSides = [...new Set(stored.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId]))].filter((id) => !sides.has(id));
   for (const side of await canonicalTransactionsById(reader, knowledgeAt, farSides)) sides.set(side.transactionId, side);
   const history = await transferHistory(reader, [...sides.keys()]);
-  const pairingSides = [...sides.values()].map((side) => ({ ...side, institutionKey: side.spending.institutionKey }));
+  const pairingSides = [...sides.values()].map((side) => ({ ...side, institutionKey: side.spending.institutionKey, stream: side.spending.stream }));
   return { sides, focus, pairing: pairCashFlowTransfers(pairingSides, stored, history), history };
 }
 

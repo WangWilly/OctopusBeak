@@ -525,9 +525,11 @@ test("the pairing panel lists links with both sides, candidates, suspended links
 });
 
 /** A bank's exchange of TWD 32,703.60 for USD 1,000; each side carries 行動換匯 and is an internal transfer by evidence. */
+/** Exchanges happen between deposit accounts (ADR 0143). */
+const DEPOSIT = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
 const exchangeSides = (overrides: Readonly<{ inDate?: string }> = {}) => [
-  ["transfer.internal", { amount: "3270360", scale: 2, date: "2026-10-04", description: "行動換匯", account: "twd-a" }],
-  ["transfer.internal", { amount: "1000", currency: "USD", date: overrides.inDate ?? "2026-10-04", direction: "inflow", description: "行動換匯", account: "usd-a" }],
+  ["transfer.internal", { amount: "3270360", scale: 2, date: "2026-10-04", description: "行動換匯", account: "twd-a", accountStream: DEPOSIT }],
+  ["transfer.internal", { amount: "1000", currency: "USD", date: overrides.inDate ?? "2026-10-04", direction: "inflow", description: "行動換匯", account: "usd-a", accountStream: DEPOSIT }],
 ] as const;
 
 async function moveAccount(store: PGliteStore, accountKey: string, institutionKey: string) {

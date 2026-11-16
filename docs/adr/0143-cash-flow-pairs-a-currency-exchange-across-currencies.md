@@ -6,7 +6,7 @@ A person who exchanges TWD for USD at their bank produces two transactions: a TW
 
 **A currency exchange link is a Cash-flow transfer link whose sides are in different currencies.** It has the same lifecycle as any other link: evidence, candidate, confirm, deny, revoke and suspend, stored in the same history.
 - **Evidence:** it is established automatically when both sides carry a bank's exchange label and an evidence-backed `transfer.internal`, sit at the same Institution, move in opposite directions on the same date, and are each other's only such candidate.
-- **Candidate:** two transactions in different currencies, in opposite directions, in two owned accounts, at most 3 days apart, are proposed when at least one of them carries an exchange label.
+- **Candidate:** two deposit transactions in different currencies, in opposite directions, in two owned accounts, at most 3 days apart, are proposed when at least one of them carries an exchange label and neither carries an evidence-backed Kind other than `transfer.internal`. A card purchase, an investment row or an evidenced salary is never offered beside an exchange.
 - **Manual:** the person may pair any two such transactions, at any distance. ADR 0137's exclusion rules apply unchanged: only a weak or fallback side is excluded, and an evidence-backed Kind keeps its own side.
 
 The amounts never match, so they are not evidence. The exchange labels at both ends, the shared Institution and the shared date are.

@@ -26,6 +26,9 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
 }
 
 /** Add every transaction, then set Kinds: each addition re-projects them all. */
+/** Exchanges happen between deposit accounts (ADR 0143). */
+const DEPOSIT = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
+
 async function addSides(
   fixture: SpendingCategoryFixture,
   entries: readonly (readonly [code: string, evidenceKind: string, input: FixtureTransactionInput])[],
@@ -279,11 +282,11 @@ test("a counterpart dated by its consume date, with a far effective date, is see
 test("the person pairs two currencies by hand at any distance, an income side stays counted, and an exchange can be denied and revoked", async () => {
   await withFixture(async (fixture) => {
     const [twdOut, usdIn, salary, labelledOut, usdNear] = await addSides(fixture, [
-      ["transfer.internal", "bank-rule", { amount: "30000", date: "2026-09-02", account: "bank-a" }],
-      ["receipt", "bank-rule", { amount: "900", currency: "USD", date: "2026-09-20", direction: "inflow", account: "bank-usd" }],
-      ["income.employment.salary", "bank-rule", { amount: "1200", currency: "USD", date: "2026-09-25", direction: "inflow", account: "bank-usd-2" }],
-      ["transfer.internal", "bank-rule", { amount: "16000", date: "2026-09-12", account: "bank-a", description: "網銀換匯" }],
-      ["receipt", "bank-rule", { amount: "500", currency: "USD", date: "2026-09-13", direction: "inflow", account: "bank-usd-3" }],
+      ["transfer.internal", "bank-rule", { amount: "30000", date: "2026-09-02", account: "bank-a", accountStream: DEPOSIT }],
+      ["receipt", "bank-rule", { amount: "900", currency: "USD", date: "2026-09-20", direction: "inflow", account: "bank-usd", accountStream: DEPOSIT }],
+      ["income.employment.salary", "bank-rule", { amount: "1200", currency: "USD", date: "2026-09-25", direction: "inflow", account: "bank-usd-2", accountStream: DEPOSIT }],
+      ["transfer.internal", "bank-rule", { amount: "16000", date: "2026-09-12", account: "bank-a", description: "網銀換匯", accountStream: DEPOSIT }],
+      ["receipt", "bank-rule", { amount: "500", currency: "USD", date: "2026-09-13", direction: "inflow", account: "bank-usd-3", accountStream: DEPOSIT }],
     ]);
     const before = await readPGliteCashFlow(fixture.store, SEPTEMBER);
     assert.deepEqual(pairsOf(before.transfers.candidates), [[labelledOut, usdNear]], "only the labelled exchange is proposed");

@@ -17,6 +17,7 @@ function side(transactionId: string, direction: "outflow" | "inflow", overrides:
   return {
     exchangeLabel: false,
     institutionKey: "bank",
+    stream: "domestic-deposit",
     transactionId,
     source: "canonical",
     accountId: direction === "outflow" ? "bank-a" : "bank-b",
@@ -232,6 +233,16 @@ test("a pair across currencies is proposed only with an exchange label, within 3
   assert.deepEqual(candidatesOf(pairCashFlowTransfers([out, labelled], [], new Map())), ["twd-out/usd-in"]);
   assert.deepEqual(candidatesOf(pairCashFlowTransfers([out, { ...labelled, date: "2026-09-14" }], [], new Map())), [], "4 days apart is too far");
   assert.equal(cashFlowTransferRefusal(out, { ...labelled, date: "2026-09-30" }, "manual", none), null, "but the person may pair it");
+});
+
+test("a labelled exchange side is never proposed with a card purchase, an investment row or an evidenced income", () => {
+  const [, into] = exchange();
+  const card = (id: string) => side(id, "outflow", { accountId: `card-${id}`, stream: "credit-card", amount: twd("486") });
+  const investment = side("buy", "outflow", { accountId: "broker", stream: "investment", amount: twd("1200"), kind: evidence("investment.trade.buy") });
+  const salary = side("salary", "outflow", { accountId: "bank-b", amount: twd("50000"), kind: evidence("payment.loan") });
+  const transfer = side("own-out", "outflow", { accountId: "bank-c", amount: twd("16040"), kind: evidence("transfer.internal") });
+  const pairing = pairCashFlowTransfers([into, card("c1"), card("c2"), card("c3"), investment, salary, transfer], [], new Map());
+  assert.deepEqual(candidatesOf(pairing), ["own-out/usd-in"], "only a deposit row that may be an internal transfer is offered");
 });
 
 test("a same-currency evidence link survives an exchange's side nearby", () => {

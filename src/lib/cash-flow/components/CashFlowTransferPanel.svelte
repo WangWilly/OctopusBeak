@@ -385,7 +385,7 @@
           </label>
         </div>
         {#if manualRefusal}<p class="error" role="status" data-manual-refusal={manualRefusal}>{$t.cashFlow.transferPanel.refusals[manualRefusal]}</p>
-        {:else if chosenOutflow && chosenInflow && isExchange({ outflow: chosenOutflow, inflow: chosenInflow })}<p class="muted" role="status" data-manual-exchange>{$t.cashFlow.transferPanel.manualExchange(manualRate)}</p>{/if}
+        {:else if chosenOutflow && chosenInflow && isExchange({ outflow: chosenOutflow, inflow: chosenInflow })}<p class="muted" role="status" data-manual-exchange data-sensitive>{$t.cashFlow.transferPanel.manualExchange(manualRate)}</p>{/if}
         <div class="actions">
           <button
             type="button"
