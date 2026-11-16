@@ -14,6 +14,7 @@ const card = (direction: "inflow" | "outflow", description: string): PGliteProje
   sourcePayload: null,
   integrationNamespace: "esun",
   stream: "credit-card",
+  institutionKey: "esun",
   sourceConnectionKey: "connection",
   identityEpoch: "epoch",
 });
@@ -71,4 +72,19 @@ test("a loan row's Kind is its recorded event kind (ADR 0138)", () => {
 test("an investment or loan row without its event gets no Kind, and a stream outside the routes none either", () => {
   assert.equal(derivePGliteTransactionKind(eventRow("fubon", "loan", null)), null);
   assert.equal(derivePGliteTransactionKind(eventRow("tdcc", "investment", { evidenceKind: "investment-event", value: "buy" })), null);
+});
+
+const deposit = (integrationNamespace: string, institutionKey: string, direction: "inflow" | "outflow", description: string): PGliteProjectionTransaction =>
+  ({ ...card(direction, description), integrationNamespace, institutionKey, stream: "domestic-deposit" });
+
+test("a TDCC settlement deposit gets a bank Kind on its own route, read by its maintaining Institution", () => {
+  const exchange = derivePGliteTransactionKind(deposit("tdcc", "fubon", "inflow", "行動換匯 · 0123"));
+  assert.deepEqual([exchange?.value, exchange?.routeId], ["transfer.internal", "tdcc/domestic-deposit/kind-enrichment/v4/kind"]);
+  const otherBank = derivePGliteTransactionKind(deposit("tdcc", "bank-007", "outflow", "提款"));
+  assert.deepEqual([otherBank?.value, otherBank?.producerId], ["cash.withdrawal", "bank/deposit-kind-enrichment"]);
+});
+
+test("a Cathay passbook label gets its Kind on Cathay's route", () => {
+  const kind = derivePGliteTransactionKind(deposit("cathay", "cathay", "outflow", "跨行提款"));
+  assert.deepEqual([kind?.value, kind?.outputState, kind?.routeId], ["cash.withdrawal", "supported", "cathay/domestic-deposit/automatic-enrichment/v1/kind"]);
 });

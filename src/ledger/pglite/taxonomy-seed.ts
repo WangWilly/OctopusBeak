@@ -46,6 +46,20 @@ const TAXONOMY_SEED_MIGRATIONS = [{
       ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'interest.charged', '["loan-event"]'),
       ('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'fee.loan', '["loan-event"]')
     ON CONFLICT DO NOTHING;`,
+}, {
+  // TDCC settlement deposits get a bank Kind route, and a Cathay 網銀轉帳 may be a plain transfer.
+  id: "taxonomy-deposit-kind-gaps-v1",
+  sql: `INSERT INTO automatic_enrichment_authority_routes(
+      route_id, subject_kind, field_name, scope_kind, scope_key, producer_id, producer_version,
+      origin_policy, taxonomy_id, taxonomy_version, valid_from_commit_sequence, valid_to_commit_sequence
+    ) VALUES
+      ('tdcc/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'tdcc/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
+    ON CONFLICT DO NOTHING;
+    INSERT INTO taxonomy_producer_compatibility(
+      taxonomy_id, taxonomy_version, producer_id, producer_version, origin, field_name, output_code, evidence_kinds_json
+    ) VALUES
+      ('transaction-taxonomy', 'v1', 'cathay/domestic-deposit/automatic-enrichment', 'v1', 'derived', 'kind', 'transfer', '["bank-rule"]')
+    ON CONFLICT DO NOTHING;`,
 }] as const;
 
 export function applyPgliteTaxonomySeed(store: PGliteStore): Promise<void> {

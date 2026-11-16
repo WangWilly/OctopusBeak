@@ -127,6 +127,8 @@ export const BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES = [
   "fubon/domestic-deposit",
   "post/domestic-deposit",
   "ctbc/domestic-deposit",
+  // TDCC settlement accounts, every currency on one stream; rules read the maintaining Institution.
+  "tdcc/domestic-deposit",
 ] as const;
 /**
  * Grouped counterparty output is a v23 extension contract.  It is kept
@@ -622,6 +624,16 @@ const CATHAY_BANK_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
     evidenceKinds: [...BANK_TRANSACTION_KIND_ENRICHMENT_EVIDENCE_KINDS],
   }));
 
+// 網銀轉帳 does not say whose account the money went to. An added output, so v1's published rows stay as they were.
+const CATHAY_LEDGER_LABEL_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] = [{
+  producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
+  producerVersion: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
+  origin: "derived",
+  field: "kind",
+  outputCode: "transfer",
+  evidenceKinds: ["bank-rule"],
+}];
+
 const CATHAY_SOURCE_COMPATIBILITY: readonly ProducerCompatibility[] = [
   ...KINDS.map((kind) => ({
     producerId: CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
@@ -757,6 +769,7 @@ const PRODUCER_COMPATIBILITY = [
   ...CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY,
   ...BANK_TRANSACTION_KIND_DERIVED_COMPATIBILITY,
   ...CATHAY_BANK_KIND_DERIVED_COMPATIBILITY,
+  ...CATHAY_LEDGER_LABEL_DERIVED_COMPATIBILITY,
   ...EINVOICE_ITEM_CATEGORY_DERIVED_COMPATIBILITY,
   ...ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY,
 ] as const;

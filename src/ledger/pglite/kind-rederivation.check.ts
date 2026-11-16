@@ -36,3 +36,35 @@ test("a loan row captured before its producer existed gets its Kind when the sto
     await fixture.close();
   }
 });
+
+test("Cathay labels, Cathay foreign-currency rows and TDCC deposits get their Kind, and a store projected without them gains it on open", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const withdrawal = await fixture.addTransaction({
+      amount: "1000", direction: "outflow", date: "2026-09-21", account: "cathay-twd", description: "自行提款",
+      accountStream: { namespace: "cathay", stream: "domestic-deposit", accountType: "depository", institutionKey: "cathay" },
+    });
+    const foreign = await fixture.addTransaction({
+      amount: "30", direction: "outflow", date: "2026-09-22", account: "cathay-usd", description: "跨行匯款",
+      accountStream: { namespace: "cathay", stream: "foreign-currency-deposit", accountType: "depository", institutionKey: "cathay" },
+    });
+    const settlement = await fixture.addTransaction({
+      amount: "500", direction: "inflow", date: "2026-09-23", account: "tdcc-fubon", description: "行動換匯 · 0123",
+      accountStream: { namespace: "tdcc", stream: "domestic-deposit", accountType: "depository", institutionKey: "fubon" },
+    });
+    const kinds = async () => Promise.all([withdrawal, foreign, settlement].map(async (id) => (await fixture.store.query<{ value_text: string }>(
+      "SELECT value_text FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'", [idBytes(id)])).rows[0]?.value_text ?? null));
+    const expected = ["cash.withdrawal", "transfer.external", "transfer.internal"];
+    assert.deepEqual(await kinds(), expected);
+
+    // A store projected before this change held no Kind for these rows.
+    await installFinancialStore(fixture.database);
+    await fixture.store.query("DELETE FROM current_transaction_enrichment WHERE field_name = 'kind'");
+    await fixture.store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["kind-rederivation-deposit-kind-gaps-v1"]);
+    assert.deepEqual(await kinds(), [null, null, null]);
+    await installFinancialStore(fixture.database);
+    assert.deepEqual(await kinds(), expected);
+  } finally {
+    await fixture.close();
+  }
+});

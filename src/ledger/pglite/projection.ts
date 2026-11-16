@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
-  derivePGliteCathayDescriptionKind,
   derivePGliteTransactionKind,
   type PGliteAccountEvent,
   type PGliteProjectionRelations,
@@ -752,7 +751,7 @@ async function readCurrentTransactions(
             revision.currency, revision.effective_on, revision.description,
             source_record.payload_json AS source_payload,
             connection.integration_namespace,
-            account.stream, connection.source_connection_key,
+            account.stream, account.institution_key, connection.source_connection_key,
             epoch.epoch_key AS identity_epoch,
             investment.action AS investment_action,
             loan_fact.event_kind AS loan_event_kind
@@ -788,6 +787,7 @@ async function readCurrentTransactions(
     sourcePayload: row.source_payload == null ? null : String(row.source_payload),
     integrationNamespace: String(row.integration_namespace),
     stream: String(row.stream),
+    institutionKey: String(row.institution_key),
     sourceConnectionKey: String(row.source_connection_key),
     identityEpoch: String(row.identity_epoch),
     accountEvent: accountEvent(row),
@@ -978,9 +978,7 @@ async function refreshCurrentEnrichment(
   const relations = await relationMap(transaction, rows, context.cutoffSequence);
   const pending = rows.flatMap((row) => {
     if (sourceKindIds.has(row.transactionId)) return [];
-    const kind = row.integrationNamespace === "cathay"
-      ? derivePGliteCathayDescriptionKind(row)
-      : derivePGliteTransactionKind(row, relations.get(row.transactionId));
+    const kind = derivePGliteTransactionKind(row, relations.get(row.transactionId));
     if (!kind) return [];
     const previous = priorByTransaction.get(row.transactionId);
     if (
