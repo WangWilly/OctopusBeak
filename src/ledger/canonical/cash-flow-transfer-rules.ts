@@ -3,7 +3,7 @@ import { compareExact, sameCurrency } from "../../lib/shared-money/exact-money.t
 import { cashFlowDirection } from "../../lib/cash-flow/model.ts";
 
 /**
- * The rules every Cash-flow transfer link meets (ADR 0137), apart from the
+ * The rules every Cash-flow transfer link meets (ADR 0137, ADR 0143), apart from the
  * pairing itself, so the renderer can check a manual pair with the same rule
  * the worker applies without loading inclusion or taxonomy code.
  */
@@ -15,11 +15,15 @@ import { cashFlowDirection } from "../../lib/cash-flow/model.ts";
  */
 export const CASH_FLOW_TRANSFER_WINDOW_DAYS = 3;
 
-/** One side of a possible link. Only Cash flow rows can become one, so every side is in a counted, non-preview account. */
+/**
+ * One side of a possible link. Only Cash flow rows can become one, so every
+ * side is in a counted, non-preview account. `exchangeLabel` says the row
+ * carries a bank's currency exchange label (ADR 0140).
+ */
 export type CashFlowTransferSide = Pick<
   CashFlowTransaction,
   "transactionId" | "source" | "accountId" | "date" | "amount" | "direction" | "kind" | "cashFlow"
->;
+> & Readonly<{ exchangeLabel: boolean }>;
 
 export type CashFlowTransferPair = Readonly<{ outflowTransactionId: string; inflowTransactionId: string }>;
 
@@ -32,10 +36,10 @@ export type CashFlowTransferInvalidity =
   | "manual_account"
   | "direction"
   | "same_account"
-  | "currency"
   | "amount";
 
-export type CashFlowTransferRefusal = CashFlowTransferInvalidity | "too_far" | "linked" | "denied";
+/** `exchange_label`: a candidate across currencies needs an exchange label on at least one side (ADR 0143). */
+export type CashFlowTransferRefusal = CashFlowTransferInvalidity | "exchange_label" | "too_far" | "linked" | "denied";
 
 /** `candidate` is what the page proposes; `manual` is what the person may pair, without the date window. */
 export type CashFlowTransferReach = "candidate" | "manual";
@@ -64,6 +68,11 @@ export function cashFlowTransferContext(
   };
 }
 
+/** A currency exchange link: its sides are in different currencies, so their amounts never match (ADR 0143). */
+export function isCurrencyExchange(outflow: Pick<CashFlowTransferSide, "amount">, inflow: Pick<CashFlowTransferSide, "amount">): boolean {
+  return !sameCurrency(outflow.amount, inflow.amount);
+}
+
 export function dayGap(left: string, right: string): number {
   return Math.abs(Date.parse(`${left}T00:00:00Z`) - Date.parse(`${right}T00:00:00Z`)) / 86_400_000;
 }
@@ -81,8 +90,8 @@ export function cashFlowTransferInvalidity(outflow: CashFlowTransferSide, inflow
   if (outflow.direction !== "outflow" || inflow.direction !== "inflow"
     || cashFlowDirection(outflow) !== "outflow" || cashFlowDirection(inflow) !== "inflow") return "direction";
   if (outflow.accountId === inflow.accountId) return "same_account";
-  if (!sameCurrency(outflow.amount, inflow.amount)) return "currency";
-  if (compareExact(outflow.amount, inflow.amount) !== 0) return "amount";
+  // Amounts in two currencies never match: a currency exchange link (ADR 0143) has no amount rule.
+  if (sameCurrency(outflow.amount, inflow.amount) && compareExact(outflow.amount, inflow.amount) !== 0) return "amount";
   return null;
 }
 
@@ -95,6 +104,7 @@ export function cashFlowTransferRefusal(
 ): CashFlowTransferRefusal | null {
   const invalidity = cashFlowTransferInvalidity(outflow, inflow);
   if (invalidity !== null) return invalidity;
+  if (reach === "candidate" && isCurrencyExchange(outflow, inflow) && !outflow.exchangeLabel && !inflow.exchangeLabel) return "exchange_label";
   if (reach === "candidate" && dayGap(outflow.date, inflow.date) > CASH_FLOW_TRANSFER_WINDOW_DAYS) return "too_far";
   const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
   if (context.linkedElsewhere(outflow.transactionId, pair) || context.linkedElsewhere(inflow.transactionId, pair)) return "linked";

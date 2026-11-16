@@ -28,6 +28,7 @@ import { isPersonalCategoryCode } from "../canonical/personal-category-codes.ts"
 import { exactFromManualAmount } from "../../lib/manual-assets/manual-assets.ts";
 import { absoluteExact, compareExact, normalizeExact, sameCurrency, type ExactAmount, type ExactMoney } from "../../lib/shared-money/exact-money.ts";
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
+import { carriesCurrencyExchangeLabel } from "../canonical/transaction-kind-classifier.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
 import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
@@ -92,9 +93,15 @@ export type CashFlowRowEdit = Readonly<{
 /**
  * `transferLinkId` names the row's current Cash-flow transfer link when that
  * link is a pair: neither of its sides stays counted. A link that leaves a side
- * counted changes nothing, so its rows carry none.
+ * counted changes nothing, so its rows carry none. `exchangeLabel` says the
+ * row carries a bank's currency exchange label (ADR 0140), which a currency
+ * exchange link reads (ADR 0143).
  */
-export type CashFlowReportTransaction = CashFlowTransaction & Readonly<{ details: CashFlowTransactionDetails; transferLinkId: string | null }>;
+export type CashFlowReportTransaction = CashFlowTransaction & Readonly<{
+  details: CashFlowTransactionDetails;
+  transferLinkId: string | null;
+  exchangeLabel: boolean;
+}>;
 
 export type CashFlowReport = Readonly<{
   policy: typeof CASH_FLOW_INCLUSION_POLICY;
@@ -362,7 +369,7 @@ function rowCategorization(categorization: CanonicalSpendingCategorization): Cas
 }
 
 /** A canonical row, the effective date the period filter reads, and the fact row its list details come from. */
-type DatedCashFlowTransaction = CashFlowTransaction & Readonly<{ effectiveOn: string; spending: CanonicalSpendingTransaction }>;
+type DatedCashFlowTransaction = CashFlowTransaction & Readonly<{ exchangeLabel: boolean; effectiveOn: string; spending: CanonicalSpendingTransaction }>;
 
 async function canonicalTransactions(
   reader: PGliteSpendingReader,
@@ -408,6 +415,7 @@ async function canonicalTransactions(
       amount,
       direction: flowDirection,
       kind: canonicalCashFlowKind(transaction.kind, evidence),
+      exchangeLabel: carriesCurrencyExchangeLabel(transaction.description),
       cashFlow: unproven.has(transaction.transactionId)
         ? { class: "unresolved" as const }
         : cashFlowClass(rule, amount, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
@@ -447,6 +455,7 @@ async function manualTransactions(reader: PGliteSpendingReader, request: CashFlo
       amount,
       direction: flowDirection,
       kind: { code: row.kind, basis: "evidence" as const },
+      exchangeLabel: false,
       cashFlow: cashFlowClass(cashFlowRule(row.kind === "transfer" ? "transfer.internal" : row.kind, flowDirection), amount, [categoryShare(category, amount)], null),
       details: {
         description: null,
@@ -560,7 +569,8 @@ export async function readPGliteCashFlowTransfers(
   const farSides = [...new Set(stored.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId]))].filter((id) => !sides.has(id));
   for (const side of await canonicalTransactionsById(reader, knowledgeAt, farSides)) sides.set(side.transactionId, side);
   const history = await transferHistory(reader, [...sides.keys()]);
-  return { sides, focus, pairing: pairCashFlowTransfers([...sides.values()], stored, history), history };
+  const pairingSides = [...sides.values()].map((side) => ({ ...side, institutionKey: side.spending.institutionKey }));
+  return { sides, focus, pairing: pairCashFlowTransfers(pairingSides, stored, history), history };
 }
 
 /** A row a search reads outside one period; `periodDate` is the date the period filter compares. */

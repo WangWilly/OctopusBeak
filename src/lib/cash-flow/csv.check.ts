@@ -17,6 +17,7 @@ function row(id: string, overrides: Partial<CashFlowRow> & Pick<CashFlowRow, "di
     kind: null,
     details: { description: null, counterparty: null, note: null, time: null, account, edit: null },
     transferLinkId: null,
+    exchangeLabel: false,
     ...overrides,
   };
 }
@@ -142,4 +143,17 @@ test("exact decimals keep their scale and sign without a float", () => {
 
 test("the file name carries the period's dates", () => {
   assert.equal(cashFlowCsvName(zh, { startDate: "2026-10-01", endDate: "2026-10-05" }), "收支流水_20261001-20261005");
+});
+
+test("both sides of a currency exchange share one pairing id, each in its own currency", () => {
+  const transfer = { class: "not_counted", reason: "transfer" } as const;
+  const twdOut = row("twd-out", { direction: "outflow", amount: { coefficient: "32700", scale: 0, currency: "TWD" }, cashFlow: transfer, transferLinkId: "twd-out/usd-in" });
+  const usdIn = row("usd-in", { direction: "inflow", amount: { coefficient: "1000", scale: 0, currency: "USD" }, cashFlow: transfer, transferLinkId: "twd-out/usd-in" });
+  const records = parse(cashFlowCsv([pairOut, twdOut, pairIn, usdIn], "flow_and_transfers", zh).slice(1)).slice(1);
+  assert.deepEqual(records.map((record) => [record[5], record[6], record.at(-1)]), [
+    ["-20000", "TWD", "T1"],
+    ["-32700", "TWD", "T2"],
+    ["20000", "TWD", "T1"],
+    ["1000", "USD", "T2"],
+  ]);
 });

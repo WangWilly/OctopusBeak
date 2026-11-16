@@ -275,3 +275,37 @@ test("a counterpart dated by its consume date, with a far effective date, is see
     assert.deepEqual(pairsOf((await readPGliteCashFlow(fixture.store, SEPTEMBER)).transfers.links), [[out, into]]);
   });
 });
+
+test("the person pairs two currencies by hand at any distance, an income side stays counted, and an exchange can be denied and revoked", async () => {
+  await withFixture(async (fixture) => {
+    const [twdOut, usdIn, salary, labelledOut, usdNear] = await addSides(fixture, [
+      ["transfer.internal", "bank-rule", { amount: "30000", date: "2026-09-02", account: "bank-a" }],
+      ["receipt", "bank-rule", { amount: "900", currency: "USD", date: "2026-09-20", direction: "inflow", account: "bank-usd" }],
+      ["income.employment.salary", "bank-rule", { amount: "1200", currency: "USD", date: "2026-09-25", direction: "inflow", account: "bank-usd-2" }],
+      ["transfer.internal", "bank-rule", { amount: "16000", date: "2026-09-12", account: "bank-a", description: "網銀換匯" }],
+      ["receipt", "bank-rule", { amount: "500", currency: "USD", date: "2026-09-13", direction: "inflow", account: "bank-usd-3" }],
+    ]);
+    const before = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(pairsOf(before.transfers.candidates), [[labelledOut, usdNear]], "only the labelled exchange is proposed");
+    await assert.rejects(act(fixture.store, "transfer_confirm", twdOut!, usdIn!), /exchange_label/u);
+
+    await act(fixture.store, "transfer_pair", twdOut!, usdIn!);
+    const paired = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(paired.transfers.links.map((link) => [link.linkId, link.origin.kind]), [[`${twdOut}/${usdIn}`, "manual"]]);
+    assert.deepEqual([classOf(paired, twdOut!), classOf(paired, usdIn!)], ["not_counted", "not_counted"], "a fallback receipt leaves the totals");
+    assert.deepEqual(paired.totals.find((totals) => totals.currency === "USD")?.inflow.amount, amount("1700"), "the salary and the unconfirmed exchange still count");
+
+    await act(fixture.store, "transfer_revoke", twdOut!, usdIn!);
+    await act(fixture.store, "transfer_pair", twdOut!, salary!);
+    const income = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(pairsOf(income.transfers.links), [[twdOut, salary]]);
+    assert.equal(classOf(income, salary!), "inflow", "an evidence-backed income decides its own side");
+    assert.equal(income.transactions.find((row) => row.transactionId === salary)?.transferLinkId, null, "and the link is no pair");
+
+    await act(fixture.store, "transfer_deny", labelledOut!, usdNear!);
+    const denied = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.deepEqual(denied.transfers.candidates, []);
+    assert.deepEqual(denied.deniedPairs, [`${labelledOut}/${usdNear}`]);
+    await assert.rejects(act(fixture.store, "transfer_pair", labelledOut!, usdNear!), /denied/u);
+  });
+});

@@ -59,6 +59,14 @@ function bankLabel(description: string | null | undefined): string {
  * has its own label, such as 換匯手續費, and stays a fee.
  */
 const CURRENCY_EXCHANGE_LABEL = /^(?:手機|行動|網路|網銀)?換匯$/u;
+
+/**
+ * Whether a bank row carries a bank's currency exchange label (ADR 0140). A
+ * fee written after the label, such as 換匯 · 手續費, is a fee, not the exchange.
+ */
+export function carriesCurrencyExchangeLabel(description: string | null | undefined): boolean {
+  return CURRENCY_EXCHANGE_LABEL.test(bankLabel(description)) && !/(手續費|服務費|fee)/iu.test(description ?? "");
+}
 const INVESTMENT_SETTLEMENT_LABEL = /^(?:複委託|交割股款)$/u;
 const DIVIDEND_LABEL = /^(?:[A-Za-z][A-Za-z0-9.]{0,9}息|.{0,6}配息)$/u;
 const DEPOSIT_INTEREST_LABEL = /^(?:存款|活存)息$/u;
@@ -96,8 +104,7 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
     /^\s*轉帳支取\s*·\s*\d{16}\s+YT\d{2}\s+FS\d{8}\s+約定申購\s+\d{5}\s+174\s+FISB\s*$/iu.test(input.description ?? "")
   )
     return { value: "investment.trade.buy", evidenceKind: "bank-rule", sourceField: "source_description" };
-  // A fee written after the label, such as 換匯 · 手續費, is a fee, not the exchange.
-  if (CURRENCY_EXCHANGE_LABEL.test(label) && !/(手續費|服務費|fee)/iu.test(input.description ?? ""))
+  if (carriesCurrencyExchangeLabel(input.description))
     return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_description" };
   if (INVESTMENT_SETTLEMENT_LABEL.test(label))
     return {

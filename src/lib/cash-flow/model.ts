@@ -57,6 +57,12 @@ export type CashFlowTransferSummary = Readonly<{
   pairs: CashFlowAmount & Readonly<{ origins: Readonly<Record<CashFlowTransferLinkOrigin["kind"], number>> }>;
   /** Internal-transfer rows not in a pair: no current link, or one that leaves its other side counted. */
   unpaired: CashFlowAmount;
+  /**
+   * Currency exchange links that are pairs and touch this currency, once
+   * each, at their side in this currency (ADR 0143). Apart from `pairs`: an
+   * exchange shows in both of its currencies and counts in neither.
+   */
+  exchanges: CashFlowAmount;
 }>;
 
 /** How a not-counted transfer row reads: one side of a link, or an unpaired internal transfer. */
@@ -138,6 +144,21 @@ export type CashFlowSuspendedTransferView = Readonly<{
   suspension: CashFlowTransferSuspension;
 }>;
 
+/**
+ * Why an Unpaired internal transfer has no pair, as far as the page knows:
+ * `exchange`, a row with a bank's exchange label whose other side was not
+ * found; `no_counterpart`, no counterpart found in the connected accounts;
+ * `manual_account`, a Manual Account transfer, which records itself;
+ * `counted_counterpart`, a link whose other side keeps its own count.
+ */
+export type CashFlowUnpairedReason = "exchange" | "no_counterpart" | "manual_account" | "counted_counterpart";
+
+/** An Unpaired internal transfer in the period: information, not a task. */
+export type CashFlowUnpairedTransferView = Readonly<{
+  row: CashFlowReportTransaction;
+  reason: CashFlowUnpairedReason;
+}>;
+
 /** What the transfer pairing panel lists for the period, every currency together. */
 export type CashFlowTransferPanel = Readonly<{
   /** Newest outflow date first. */
@@ -145,6 +166,8 @@ export type CashFlowTransferPanel = Readonly<{
   /** Closest dates first. */
   candidates: readonly CashFlowTransferCandidateView[];
   suspended: readonly CashFlowSuspendedTransferView[];
+  /** The period's Unpaired internal transfers, newest first; the same rows `CashFlowTransferSummary.unpaired` counts. */
+  unpaired: readonly CashFlowUnpairedTransferView[];
   /** Denied pairs, by link id, that touch the period: they are never proposed again or paired by hand. */
   deniedPairs: readonly string[];
 }>;
