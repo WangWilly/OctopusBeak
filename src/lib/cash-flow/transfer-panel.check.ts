@@ -13,6 +13,7 @@ import {
   transferReasons,
   transferRefusal,
   transferRequest,
+  unpairedTransfers,
   type CashFlowTransferPageData,
 } from "./transfer-panel.ts";
 
@@ -36,6 +37,7 @@ function row(id: string, direction: "inflow" | "outflow", overrides: Partial<Cas
       edit: null,
     },
     transferLinkId: null,
+    exchangeLabel: false,
     ...overrides,
   };
 }
@@ -113,7 +115,12 @@ test("a manual pair is checked with the worker's rule, links and denials include
     transferRefusal("pair", pairOf(out, inflow), pageData([out, inflow], panel));
   assert.equal(refusal(into), null);
   assert.equal(refusal(row("i", "inflow", { amount: { coefficient: "501", scale: 0, currency: "TWD" } })), "amount");
-  assert.equal(refusal(row("i", "inflow", { amount: { coefficient: "500", scale: 0, currency: "USD" } })), "currency");
+  const usd = row("i", "inflow", { amount: { coefficient: "15", scale: 0, currency: "USD" } });
+  assert.equal(refusal(usd), null, "two currencies pair by hand as an exchange");
+  assert.equal(transferRefusal("confirm", pairOf(out, usd), pageData([out, usd])), "exchange_label",
+    "a confirm is checked as a candidate: across currencies it needs an exchange label");
+  assert.equal(transferRefusal("confirm", pairOf(out, { ...usd, exchangeLabel: true }), pageData([out, { ...usd, exchangeLabel: true }])), null);
+  assert.equal(translations["zh-TW"].cashFlow.transferPanel.refusals.exchange_label, "兩筆都沒有銀行的換匯標記，不會列為換匯配對。");
   assert.equal(refusal(row("i", "inflow", { accountId: "bank-a" })), "same_account");
   assert.equal(refusal(row("i", "inflow", { date: "2026-12-31" })), null, "a manual pair has no day window");
   assert.equal(refusal(into, { deniedPairs: ["o/i"] }), "denied");
@@ -140,9 +147,10 @@ test("after a failed action, the refusal is named from the page read again, not 
   assert.equal(transferRefusal("revoke", pairOf(out, into), reread), null, "a revoke has no refusal to name");
 });
 
-const summary = (pairs: number, unpaired: number): CashFlowTransferSummary => ({
+const summary = (pairs: number, unpaired: number, exchanges = 0): CashFlowTransferSummary => ({
   pairs: { amount: { coefficient: "0", scale: 0 }, count: pairs, origins: { evidence: 0, confirmed: pairs, manual: 0 } },
   unpaired: { amount: { coefficient: "0", scale: 0 }, count: unpaired },
+  exchanges: { amount: { coefficient: "0", scale: 0 }, count: exchanges },
 });
 
 test("the transfer note counts only its own currency, and never shows a zero to review", () => {
@@ -191,4 +199,46 @@ test("a failed decision whose row left the reloaded page shows its message at th
   };
   assert.equal(transferErrorKey("o/i", "revoke", pairOf(out, into), panel({ suspended: [suspended] })), "o/i",
     "a suspended link that lost its sides is still matched by its ids");
+});
+
+test("an exchange states both amounts and the rate they imply, and evidence as the labels it rests on", () => {
+  const account = (institutionKey: string) => ({ id: institutionKey, source: "canonical", institutionKey, stream: null, mask: null, name: null } as const);
+  const exchangeRow = (id: string, direction: "outflow" | "inflow", amount: CashFlowRow["amount"], institutionKey = "bank", exchangeLabel = true) =>
+    row(id, direction, {
+      amount, exchangeLabel, kind: evidence("transfer.internal"), cashFlow: TRANSFER,
+      details: { description: null, counterparty: null, note: null, time: null, account: account(institutionKey), edit: null },
+    });
+  const twd = { coefficient: "3270360", scale: 2, currency: "TWD" };
+  const usd = { coefficient: "1000", scale: 0, currency: "USD" };
+  const out = side(exchangeRow("o", "outflow", twd), TRANSFER, TRANSFER);
+  const into = side(exchangeRow("i", "inflow", usd), TRANSFER, TRANSFER);
+  assert.deepEqual(transferReasons({ outflow: out, inflow: into, dayGap: 0 }, "evidence"), [
+    { kind: "exchange", outflow: twd, inflow: usd, rate: { base: "USD", quote: "TWD", rate: "32.7036" } },
+    { kind: "days", days: 0, withinWindow: true, origin: "evidence" },
+    { kind: "accounts" },
+    { kind: "exchange_label", both: true, sameInstitution: true },
+  ], "an exchange never claims an equal amount");
+  const elsewhere = side(exchangeRow("i", "inflow", usd, "other-bank", false), INFLOW, INFLOW);
+  assert.deepEqual(transferReasons({ outflow: out, inflow: elsewhere, dayGap: 1 }, null).at(-1), { kind: "exchange_label", both: false, sameInstitution: false });
+  const copy = translations["zh-TW"].cashFlow.transferPanel;
+  assert.equal(copy.reasonExchange("TWD 32,703.60", "USD 1,000", "1 USD = 32.7036 TWD"), "TWD 32,703.60 換成 USD 1,000（1 USD = 32.7036 TWD）");
+  assert.equal(copy.reasonExchangeLabel(true, true), "兩邊都是同一家銀行的換匯紀錄");
+});
+
+test("an exchange shows in the transfer note of both its currencies", () => {
+  const twdOut = row("o", "outflow");
+  const usdIn = row("ui", "inflow", { amount: { coefficient: "15", scale: 0, currency: "USD" }, exchangeLabel: true });
+  const empty = { links: [], candidates: [], suspended: [] };
+  for (const currency of ["TWD", "USD"])
+    assert.deepEqual(transferNote(currency, summary(0, 0), { ...empty, candidates: [candidate(twdOut, usdIn)] }), { kind: "pending", pending: 1 }, currency);
+  assert.deepEqual(transferNote("USD", summary(0, 0, 1), empty), { kind: "summary", pending: 0 }, "an exchange pair alone is a summary");
+  assert.equal(transferNote("JPY", null, { ...empty, candidates: [candidate(twdOut, usdIn)] }), null);
+});
+
+test("the unpaired list keeps to the chosen currency", () => {
+  const twd = row("t", "outflow", { cashFlow: TRANSFER });
+  const usd = row("u", "inflow", { cashFlow: TRANSFER, amount: { coefficient: "15", scale: 0, currency: "USD" } });
+  const panel = { unpaired: [{ row: twd, reason: "no_counterpart" as const }, { row: usd, reason: "exchange" as const }] };
+  assert.deepEqual(unpairedTransfers(panel, "USD").map((entry) => entry.row.transactionId), ["u"]);
+  assert.deepEqual(unpairedTransfers(panel, "twd").map((entry) => entry.row.transactionId), ["t"]);
 });

@@ -14,6 +14,7 @@ import {
   type CashFlowTransferPanel,
   type CashFlowTransferSide,
   type CashFlowTransferSummary,
+  type CashFlowUnpairedReason,
 } from "../../lib/cash-flow/model.ts";
 import {
   addExact,
@@ -26,7 +27,7 @@ import {
   type ExactAmount,
 } from "../../lib/shared-money/exact-money.ts";
 import { linkedCashFlow, type CashFlowTransferLink } from "../canonical/cash-flow-transfer.ts";
-import { dayGap, transferLinkId } from "../canonical/cash-flow-transfer-rules.ts";
+import { dayGap, isCurrencyExchange, transferLinkId } from "../canonical/cash-flow-transfer-rules.ts";
 import { readPGliteCashFlow, type CashFlowReport, type CashFlowReportTransaction, type CashFlowSearchRow } from "./cash-flow.ts";
 import { cashFlowMatches, readCashFlowSearchMatches } from "./cash-flow-search.ts";
 import { ISO_DATE, type PGliteSpendingReader } from "./spending-sql.ts";
@@ -88,9 +89,10 @@ function periodTotals(totals: CashFlowCurrencyTotals | undefined): CashFlowPerio
 
 const EMPTY_AMOUNT: CashFlowAmount = { amount: ZERO, count: 0 };
 
-const emptyTransfers = (): { pairs: CashFlowTransferSummary["pairs"]; unpaired: CashFlowAmount } => ({
+const emptyTransfers = (): { pairs: CashFlowTransferSummary["pairs"]; unpaired: CashFlowAmount; exchanges: CashFlowAmount } => ({
   pairs: { amount: ZERO, count: 0, origins: { evidence: 0, confirmed: 0, manual: 0 } },
   unpaired: EMPTY_AMOUNT,
+  exchanges: EMPTY_AMOUNT,
 });
 
 const plus = (total: CashFlowAmount, amount: ExactAmount): CashFlowAmount =>
@@ -101,28 +103,64 @@ const plus = (total: CashFlowAmount, amount: ExactAmount): CashFlowAmount =>
  * (neither side stays counted), so the note never repeats money a total holds.
  * A pair counts once, at its outflow side's amount, whichever of its sides is
  * in the period; the two sides' amounts are equal, so an inflow side alone
- * stands in for it.
+ * stands in for it. A currency exchange pair (ADR 0143) counts apart, once in
+ * each of its two currencies, at that currency's side.
  */
-function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transfers">): ReadonlyMap<string, CashFlowTransferSummary> {
+function transferSummaries(report: Pick<CashFlowReport, "transactions" | "transfers" | "transferSides">): ReadonlyMap<string, CashFlowTransferSummary> {
   const byCurrency = new Map<string, ReturnType<typeof emptyTransfers>>();
+  const entryOf = (currency: string) => {
+    const key = normalizeCurrency(currency);
+    const entry = byCurrency.get(key) ?? emptyTransfers();
+    byCurrency.set(key, entry);
+    return entry;
+  };
   const linkOf = new Map<string, CashFlowTransferLink>(report.transfers.links.map((link) => [link.linkId, link]));
+  const sideOf = new Map(report.transferSides.map((side) => [side.transactionId, side]));
+  const sidesOf = (link: CashFlowTransferLink) => {
+    const outflow = sideOf.get(link.outflowTransactionId);
+    const inflow = sideOf.get(link.inflowTransactionId);
+    return outflow && inflow ? { outflow, inflow } : null;
+  };
+  const exchange = (link: CashFlowTransferLink) => {
+    const sides = sidesOf(link);
+    return sides !== null && isCurrencyExchange(sides.outflow, sides.inflow);
+  };
   const counted = new Map<string, CashFlowReportTransaction>();
   for (const row of report.transactions) {
     // A card bill payment link shows under 信用卡繳款, not as a transfer pair.
     if (cashFlowTransferRole(row) === null) continue;
     const linkId = row.transferLinkId;
-    const currency = normalizeCurrency(row.amount.currency);
-    const entry = byCurrency.get(currency) ?? emptyTransfers();
-    byCurrency.set(currency, entry);
+    const entry = entryOf(row.amount.currency);
     if (linkId === null) entry.unpaired = plus(entry.unpaired, row.amount);
+    else if (exchange(linkOf.get(linkId)!)) continue;
     else if (row.direction === "outflow" || !counted.has(linkId)) counted.set(linkId, row);
   }
   for (const [linkId, row] of counted) {
-    const entry = byCurrency.get(normalizeCurrency(row.amount.currency))!;
+    const entry = entryOf(row.amount.currency);
     const origin = linkOf.get(linkId)!.origin.kind;
     entry.pairs = { ...plus(entry.pairs, row.amount), origins: { ...entry.pairs.origins, [origin]: entry.pairs.origins[origin] + 1 } };
   }
+  for (const link of report.transfers.links) {
+    const sides = sidesOf(link);
+    // A side's `transferLinkId` is set only when the link is a pair.
+    if (!sides || !isCurrencyExchange(sides.outflow, sides.inflow) || sides.outflow.transferLinkId === null) continue;
+    for (const side of [sides.outflow, sides.inflow]) {
+      const entry = entryOf(side.amount.currency);
+      entry.exchanges = plus(entry.exchanges, side.amount);
+    }
+  }
   return byCurrency;
+}
+
+/**
+ * Why an Unpaired internal transfer has no pair. The page knows only that no
+ * counterpart was found, so it says no more: an exchange label says the other
+ * side is in another currency.
+ */
+function unpairedReason(row: CashFlowReportTransaction, named: ReadonlySet<string>): CashFlowUnpairedReason {
+  if (row.source === "manual") return "manual_account";
+  if (named.has(row.transactionId)) return "counted_counterpart";
+  return row.exchangeLabel ? "exchange" : "no_counterpart";
 }
 
 /**
@@ -180,7 +218,12 @@ function transferPanel(report: Pick<CashFlowReport, "transactions" | "transfers"
       suspension: link.suspension,
     };
   });
-  return { links, candidates, suspended, deniedPairs: report.deniedPairs };
+  const named = new Set(report.transfers.links.flatMap((link) => [link.outflowTransactionId, link.inflowTransactionId]));
+  const unpaired = report.transactions
+    .filter((row) => cashFlowTransferRole(row) === "internal")
+    .map((row) => ({ row, reason: unpairedReason(row, named) }))
+    .sort((left, right) => right.row.date.localeCompare(left.row.date) || left.row.transactionId.localeCompare(right.row.transactionId));
+  return { links, candidates, suspended, unpaired, deniedPairs: report.deniedPairs };
 }
 
 function currencySummaries(

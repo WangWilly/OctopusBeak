@@ -64,6 +64,8 @@
   let searchText = request.query ?? "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let transferPanelOpen = false;
+  /** The panel section to open on: the unpaired list, or the top. */
+  let transferPanelSection: "unpaired" | null = null;
   let exportOpen = false;
   /** The open detail's row, kept as last read so a reload that drops it still shows what the person was editing. */
   let detailRow: CashFlowRow | null = null;
@@ -159,8 +161,13 @@
     changeRequest({ startDate: all.firstDate < endDate ? all.firstDate : endDate, endDate, ...(request.query ? { query: request.query } : {}) }, "custom");
   }
 
-  function transferOriginText(origins: Readonly<{ evidence: number; confirmed: number; manual: number }>): string {
-    return origins.confirmed === 0 && origins.manual === 0 ? $t.cashFlow.transfersAutoPaired : $t.cashFlow.transferOrigins(origins);
+  function openTransferPanel(section: "unpaired" | null) {
+    transferPanelSection = section;
+    transferPanelOpen = true;
+  }
+
+  function transferOriginShortText(origins: Readonly<{ evidence: number; confirmed: number; manual: number }>): string {
+    return $t.cashFlow.transferOriginsShort(origins);
   }
 
   function onlyGroup(target: Drill) {
@@ -269,30 +276,49 @@
           </div>
           <div class="aside-notes">
             {#if note}
-              <button type="button" class="note transfer" data-transfers aria-label={$t.cashFlow.transferNoteOpen} onclick={() => transferPanelOpen = true}>
-                {#if note.kind === "links"}
-                  <span class="note-head" data-transfer-links><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferLinksOnly(note.count)}</span>
-                  <span>{$t.cashFlow.transferLinksNote}</span>
-                {:else if note.kind === "pending" || !transfers}
-                  <span class="note-head" data-transfer-pending><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPendingOnly(note.pending)}</span>
-                  <span>{$t.cashFlow.transfersNote}</span>
-                {:else if transfers.pairs.count > 0}
-                  <span class="note-head" data-transfer-pairs><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPairs(transfers.pairs.count)}</span>
-                  <strong class="money" data-sensitive>{amountText(transfers.pairs.amount)}</strong>
-                  {#if transfers.unpaired.count > 0}
-                    <span class="note-extra" data-transfer-unpaired data-sensitive>{$t.cashFlow.transferUnpaired(transfers.unpaired.count, amountText(transfers.unpaired.amount))}</span>
+              <div class="transfer-card">
+                <button type="button" class="note transfer" data-transfers aria-label={$t.cashFlow.transferNoteOpen} onclick={() => openTransferPanel(null)}>
+                  {#if note.kind === "links"}
+                    <span class="note-head" data-transfer-links><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferLinksOnly(note.count)}</span>
+                    <span>{$t.cashFlow.transferLinksNote}</span>
+                  {:else if note.kind === "pending" || !transfers}
+                    <span class="note-head" data-transfer-pending><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferPendingOnly(note.pending)}</span>
+                    <span>{$t.cashFlow.transfersNote}</span>
+                  {:else if transfers.pairs.count > 0 || transfers.exchanges.count > 0}
+                    <span class="note-head"><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferSummaryHead}</span>
+                    <span class="ledger">
+                      {#if transfers.pairs.count > 0}
+                        <span class="ledger-row" data-transfer-pairs>
+                          <span class="ledger-label">{$t.cashFlow.transferRowPairs(transfers.pairs.count)}</span>
+                          <span class="ledger-amount money" data-sensitive>{amountText(transfers.pairs.amount)}</span>
+                          <span class="ledger-sub" data-transfer-origins>{transferOriginShortText(transfers.pairs.origins)}</span>
+                        </span>
+                      {/if}
+                      {#if transfers.exchanges.count > 0}
+                        <span class="ledger-row" data-transfer-exchanges>
+                          <span class="ledger-label">{$t.cashFlow.transferRowExchanges(transfers.exchanges.count)}</span>
+                          <span class="ledger-amount money" data-sensitive>{amountText(transfers.exchanges.amount)}</span>
+                        </span>
+                      {/if}
+                    </span>
+                  {:else}
+                    <span class="note-head" data-transfer-unpaired><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferUnpairedOnly(transfers.unpaired.count)}</span>
+                    <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
+                    <span>{$t.cashFlow.transfersNote}</span>
                   {/if}
-                  <span data-transfer-origins>{transferOriginText(transfers.pairs.origins)}</span>
-                {:else}
-                  <span class="note-head" data-transfer-unpaired><ArrowLeftRight size={13} strokeWidth={2.2} aria-hidden="true" />{$t.cashFlow.transferUnpairedOnly(transfers.unpaired.count)}</span>
-                  <strong class="money" data-sensitive>{amountText(transfers.unpaired.amount)}</strong>
-                  <span>{$t.cashFlow.transfersNote}</span>
+                  {#if note.kind === "summary" && note.pending > 0}
+                    <span class="pending-pill" data-transfer-pending>{$t.cashFlow.transferPending(note.pending)}</span>
+                  {/if}
+                  <ChevronRight class="note-open" size={14} strokeWidth={2.2} aria-hidden="true" />
+                </button>
+                {#if note.kind === "summary" && transfers && transfers.unpaired.count > 0 && (transfers.pairs.count > 0 || transfers.exchanges.count > 0)}
+                  <button type="button" class="note-unpaired" data-transfer-unpaired data-sensitive aria-label={$t.cashFlow.transferUnpairedOpen} onclick={() => openTransferPanel("unpaired")}>
+                    <span class="ledger-label">{$t.cashFlow.transferRowUnpaired(transfers.unpaired.count)}</span>
+                    <span class="ledger-amount money">{amountText(transfers.unpaired.amount)}</span>
+                    <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
+                  </button>
                 {/if}
-                {#if note.kind === "summary" && note.pending > 0}
-                  <span class="note-extra" data-transfer-pending>{$t.cashFlow.transferPending(note.pending)}</span>
-                {/if}
-                <ChevronRight class="note-open" size={14} strokeWidth={2.2} aria-hidden="true" />
-              </button>
+              </div>
             {/if}
             {#if summary.unresolved.count > 0}
               <div class="note unresolved" data-unresolved>
@@ -550,6 +576,12 @@
     rows={periodRows}
     dataVersion={page.knowledgeAt}
     decide={decideTransfer}
+    currency={selectedCurrency}
+    section={transferPanelSection}
+    openRow={(row) => {
+      transferPanelOpen = false;
+      detailRow = row;
+    }}
     onClose={() => transferPanelOpen = false}
   />
 {/if}
@@ -691,6 +723,87 @@
     cursor: pointer;
   }
 
+  .transfer-card {
+    display: grid;
+  }
+
+  .transfer-card:has(.note-unpaired) .note.transfer {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .note-unpaired {
+    display: grid;
+    grid-template-columns: 1fr auto 12px;
+    align-items: baseline;
+    column-gap: 8px;
+    padding: 8px 10px 9px 14px;
+    border: 0;
+    border-top: 1px solid color-mix(in oklch, var(--accent) 12%, transparent);
+    border-radius: 0 0 10px 10px;
+    background: var(--accent-soft);
+    color: color-mix(in oklch, var(--accent) 60%, var(--muted));
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .note-unpaired .ledger-amount {
+    color: inherit;
+    font-weight: 600;
+  }
+
+  .ledger {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .ledger-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 10px;
+    align-items: baseline;
+  }
+
+  .ledger-label {
+    color: color-mix(in oklch, var(--accent) 82%, var(--fg));
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .ledger-amount {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    color: var(--fg);
+    white-space: nowrap;
+  }
+
+  .ledger-sub {
+    grid-column: 1 / -1;
+    color: color-mix(in oklch, var(--accent) 60%, var(--muted));
+    font-size: 11px;
+  }
+
+  .pending-pill {
+    justify-self: start;
+    margin-top: 8px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--surface, white);
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .note-unpaired:hover {
+    background: color-mix(in oklch, var(--accent) 14%, white);
+  }
+
   .note.transfer:hover {
     background: color-mix(in oklch, var(--accent) 14%, white);
   }
@@ -718,10 +831,6 @@
   .button.export {
     min-height: 34px;
     white-space: nowrap;
-  }
-
-  .note-extra {
-    font-weight: 600;
   }
 
   .drill-search {

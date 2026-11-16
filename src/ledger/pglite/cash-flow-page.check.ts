@@ -258,7 +258,9 @@ test("a linked transfer counts once at its outflow amount, and an external trans
     assert.deepEqual(page.currencies[0]?.transfers, {
       pairs: { amount: amount("30000"), count: 1, origins: { evidence: 0, confirmed: 1, manual: 0 } },
       unpaired: { amount: amount("1000"), count: 1 },
+      exchanges: { amount: amount("0"), count: 0 },
     }, "one 30,000 transfer is one pair of 30,000, not 60,000");
+    assert.deepEqual(page.transferPanel.unpaired.map((entry) => [entry.row.transactionId, entry.reason]), [[unpaired, "no_counterpart"]]);
     const twd = page.currencies[0]!;
     assert.deepEqual(twd.outflow.groups, [{ group: "transfers_out", amount: amount("2500"), count: 2, previous: amount("0") }],
       "an external or unspecified transfer out is 轉帳支出");
@@ -330,7 +332,10 @@ test("a confirmed link pairs a weak or fallback side with an internal transfer, 
     assert.deepEqual(twd.transfers, {
       pairs: { amount: amount("9000"), count: 2, origins: { evidence: 0, confirmed: 2, manual: 0 } },
       unpaired: { amount: amount("8000"), count: 1 },
+      exchanges: { amount: amount("0"), count: 0 },
     }, "the note holds only links whose sides both stay out of the totals");
+    assert.deepEqual(page.transferPanel.unpaired.map((entry) => [entry.row.transactionId, entry.reason]), [[internalOut, "counted_counterpart"]],
+      "the panel lists the rows the note counts as unpaired, and why");
   });
 });
 
@@ -517,4 +522,60 @@ test("the pairing panel lists links with both sides, candidates, suspended links
     assert.deepEqual(searched.transactions.map((row) => row.transactionId), [nearIn]);
     assert.equal(searched.periodTransactions?.length, page.transactions.length, "a search still sends every row of the period, for an export");
   });
+});
+
+/** A bank's exchange of TWD 32,703.60 for USD 1,000; each side carries 行動換匯 and is an internal transfer by evidence. */
+/** Exchanges happen between deposit accounts (ADR 0143). */
+const DEPOSIT = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
+const exchangeSides = (overrides: Readonly<{ inDate?: string }> = {}) => [
+  ["transfer.internal", { amount: "3270360", scale: 2, date: "2026-10-04", description: "行動換匯", account: "twd-a", accountStream: DEPOSIT }],
+  ["transfer.internal", { amount: "1000", currency: "USD", date: overrides.inDate ?? "2026-10-04", direction: "inflow", description: "行動換匯", account: "usd-a", accountStream: DEPOSIT }],
+] as const;
+
+async function moveAccount(store: PGliteStore, accountKey: string, institutionKey: string) {
+  await store.query("UPDATE financial_accounts SET institution_key = $2 WHERE source_account_key = $1", [accountKey, institutionKey]);
+}
+
+test("a currency exchange links by evidence, shows in both currencies and counts in neither", async () => {
+  await withFixture(async (fixture) => {
+    const [twdOut, usdIn] = await addSides(fixture, exchangeSides());
+    const page = await readCashFlowPage(fixture.store, OCTOBER);
+    assert.deepEqual(page.transferPanel.links.map((link) => [link.linkId, link.origin, link.paired]), [[`${twdOut}/${usdIn}`, "evidence", true]]);
+    assert.deepEqual(page.transferPanel.candidates, []);
+    const byCurrency = new Map(page.currencies.map((summary) => [summary.currency, summary]));
+    assert.deepEqual([...byCurrency.keys()], ["TWD", "USD"]);
+    for (const currency of ["TWD", "USD"]) {
+      const summary = byCurrency.get(currency)!;
+      assert.deepEqual([summary.inflow.amount, summary.outflow.amount], [amount("0"), amount("0")], `${currency} counts neither side`);
+      assert.equal(summary.transfers.exchanges.count, 1, `${currency} shows the exchange`);
+      assert.deepEqual([summary.transfers.pairs.count, summary.transfers.unpaired.count], [0, 0], "an exchange is no same-currency pair, and not unpaired");
+    }
+    assert.deepEqual(byCurrency.get("TWD")!.transfers.exchanges.amount, { coefficient: "327036", scale: 1 });
+    assert.deepEqual(byCurrency.get("USD")!.transfers.exchanges.amount, amount("1000"));
+    assert.deepEqual(page.transferPanel.unpaired, []);
+    assert.ok(page.transactions.every((row) => row.transferLinkId === `${twdOut}/${usdIn}` && row.exchangeLabel));
+  });
+});
+
+test("an exchange across Institutions or a day apart is only a candidate, and an unpaired side is listed", async () => {
+  for (const overrides of [{ inInstitution: "bank-y" }, { inDate: "2026-10-05" }]) {
+    await withFixture(async (fixture) => {
+      const [twdOut, usdIn] = await addSides(fixture, exchangeSides(overrides));
+      if (overrides.inInstitution !== undefined) await moveAccount(fixture.store, "usd-a", overrides.inInstitution);
+      const page = await readCashFlowPage(fixture.store, OCTOBER);
+      assert.deepEqual(page.transferPanel.links, [], JSON.stringify(overrides));
+      assert.deepEqual(page.transferPanel.candidates.map((candidate) => candidate.pairId), [`${twdOut}/${usdIn}`]);
+      assert.deepEqual(page.currencies.map((summary) => [summary.currency, summary.transfers.unpaired.count, summary.transfers.exchanges.count]),
+        [["TWD", 1, 0], ["USD", 1, 0]]);
+      assert.deepEqual(page.transferPanel.unpaired.map((entry) => [entry.row.transactionId, entry.reason]).sort(),
+        [[twdOut, "exchange"], [usdIn, "exchange"]].sort(), "each labelled side is an exchange whose other side was not found");
+
+      await confirmTransfer(fixture.store, twdOut!, usdIn!);
+      const confirmed = await readCashFlowPage(fixture.store, OCTOBER);
+      assert.deepEqual(confirmed.transferPanel.links.map((link) => [link.linkId, link.origin]), [[`${twdOut}/${usdIn}`, "confirmed"]]);
+      assert.deepEqual(confirmed.currencies.map((summary) => [summary.currency, summary.transfers.unpaired.count, summary.transfers.exchanges.count]),
+        [["TWD", 0, 1], ["USD", 0, 1]], "the unpaired count leaves out the rows an exchange link now names");
+      assert.deepEqual(confirmed.transferPanel.unpaired, []);
+    });
+  }
 });

@@ -1,9 +1,11 @@
 import { linkExcludable, type CashFlowClass, type CashFlowKind, type CashFlowTransaction } from "./cash-flow-inclusion.ts";
 import {
+  CASH_FLOW_TRANSFER_WINDOW_DAYS,
   cashFlowTransferContext,
   cashFlowTransferInvalidity,
   cashFlowTransferRefusal,
   dayGap,
+  isCurrencyExchange,
   transferLinkId,
   type CashFlowTransferInvalidity,
   type CashFlowTransferPair,
@@ -63,6 +65,39 @@ function evidencesTransfer(outflow: CashFlowKind | null, inflow: CashFlowKind | 
     && outflow.code === inflow.code && EVIDENCED_TRANSFER_KINDS.has(outflow.code);
 }
 
+const internalTransfer = (kind: CashFlowKind | null) => kind?.basis === "evidence" && kind.code === "transfer.internal";
+
+/**
+ * A side as pairing reads it: `institutionKey` is the Institution of its
+ * account, which a currency exchange link's evidence compares (ADR 0143).
+ */
+export type CashFlowTransferPairingSide = CashFlowTransferSide & Readonly<{ institutionKey: string | null; stream: string | null }>;
+
+/** Exchanges happen between deposit accounts; a card or investment row is never an exchange side. */
+const EXCHANGE_STREAMS: ReadonlySet<string> = new Set(["domestic-deposit", "foreign-currency-deposit"]);
+
+/**
+ * Whether a side may be proposed as one end of an exchange (ADR 0143): a
+ * deposit row whose own evidence does not already decide it as something other
+ * than an internal transfer, so a salary or an evidenced payment is never offered.
+ */
+function exchangeSideEligible(side: CashFlowTransferPairingSide): boolean {
+  if (side.stream === null || !EXCHANGE_STREAMS.has(side.stream)) return false;
+  return side.kind === null || side.kind.basis !== "evidence" || side.kind.code === "transfer.internal";
+}
+
+/**
+ * What proves a currency exchange (ADR 0143): both sides carry a bank's
+ * exchange label and an evidence-backed internal transfer, at the same
+ * Institution, on the same date. The amounts never match, so they prove nothing.
+ */
+function evidencesExchange(outflow: CashFlowTransferPairingSide, inflow: CashFlowTransferPairingSide): boolean {
+  return outflow.exchangeLabel && inflow.exchangeLabel
+    && internalTransfer(outflow.kind) && internalTransfer(inflow.kind)
+    && outflow.institutionKey !== null && outflow.institutionKey === inflow.institutionKey
+    && outflow.date === inflow.date;
+}
+
 export type StoredCashFlowTransferLink = CashFlowTransferPair & Readonly<{
   origin: Extract<CashFlowTransferLinkOrigin, { kind: "confirmed" | "manual" }>;
 }>;
@@ -102,10 +137,12 @@ export function cashFlowTransferSuspension(
  * suspended one blocks nothing and applies again once its sides are valid.
  * Evidence links a pair only when both sides carry the same evidence-backed
  * `transfer.internal` or `payment.credit_card` Kind, the pair is each side's only candidate, and the
- * person has never decided on it; anything ambiguous stays a candidate.
+ * person has never decided on it; anything ambiguous stays a candidate. A pair
+ * across currencies is a currency exchange (ADR 0143): evidence links it only
+ * as `evidencesExchange` says, when it is each side's only such candidate.
  */
 export function pairCashFlowTransfers(
-  sides: readonly CashFlowTransferSide[],
+  sides: readonly CashFlowTransferPairingSide[],
   stored: readonly StoredCashFlowTransferLink[],
   history: ReadonlyMap<string, CashFlowTransferPairHistory>,
 ): CashFlowTransferPairing {
@@ -124,32 +161,50 @@ export function pairCashFlowTransfers(
   }
 
   const context = cashFlowTransferContext(links, history);
-  const inflows = new Map<string, CashFlowTransferSide[]>();
+  type Pair = { outflow: CashFlowTransferPairingSide; inflow: CashFlowTransferPairingSide };
+  const inflows = new Map<string, CashFlowTransferPairingSide[]>();
   for (const side of sides) {
     if (side.direction !== "inflow") continue;
     const key = amountKey(side);
     inflows.set(key, [...inflows.get(key) ?? [], side]);
   }
-  const pairs: { outflow: CashFlowTransferSide; inflow: CashFlowTransferSide }[] = [];
+  const pairs: Pair[] = [];
   for (const outflow of sides) {
     if (outflow.direction !== "outflow") continue;
     for (const inflow of inflows.get(amountKey(outflow)) ?? []) {
       if (cashFlowTransferRefusal(outflow, inflow, "candidate", context) === null) pairs.push({ outflow, inflow });
     }
   }
-  const counterparts = new Map<string, number>();
-  for (const { outflow, inflow } of pairs) {
-    counterparts.set(outflow.transactionId, (counterparts.get(outflow.transactionId) ?? 0) + 1);
-    counterparts.set(inflow.transactionId, (counterparts.get(inflow.transactionId) ?? 0) + 1);
-  }
+  const exchanges = exchangeCandidates(sides, context);
+  const counterparts = (found: readonly Pair[]) => {
+    const counts = new Map<string, number>();
+    for (const { outflow, inflow } of found) {
+      counts.set(outflow.transactionId, (counts.get(outflow.transactionId) ?? 0) + 1);
+      counts.set(inflow.transactionId, (counts.get(inflow.transactionId) ?? 0) + 1);
+    }
+    return (id: string) => counts.get(id) ?? 0;
+  };
+  // Same-currency evidence counts same-currency candidates only, so an exchange nearby never unlinks a transfer.
+  const sameCurrencyCount = counterparts(pairs);
   for (const { outflow, inflow } of pairs) {
     const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
     if (evidencesTransfer(outflow.kind, inflow.kind)
-      && counterparts.get(outflow.transactionId) === 1 && counterparts.get(inflow.transactionId) === 1
+      && sameCurrencyCount(outflow.transactionId) === 1 && sameCurrencyCount(inflow.transactionId) === 1
       && context.history(pair) === undefined)
       link(pair, { kind: "evidence" });
   }
-  const candidates = pairs
+  // An exchange's sides must be each other's only candidate that evidence would link: a
+  // labelled side is also a candidate for other-currency rows nearby, such as a purchase.
+  const evidenced = exchanges.filter(({ outflow, inflow }) => evidencesExchange(outflow, inflow));
+  const exchangeCount = counterparts(evidenced);
+  for (const { outflow, inflow } of evidenced) {
+    const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
+    if (exchangeCount(outflow.transactionId) === 1 && exchangeCount(inflow.transactionId) === 1
+      && !linked.has(outflow.transactionId) && !linked.has(inflow.transactionId)
+      && context.history(pair) === undefined)
+      link(pair, { kind: "evidence" });
+  }
+  const candidates = [...pairs, ...exchanges]
     .filter(({ outflow, inflow }) => !linked.has(outflow.transactionId) && !linked.has(inflow.transactionId))
     .map(({ outflow, inflow }) => ({
       outflowTransactionId: outflow.transactionId,
@@ -158,6 +213,35 @@ export function pairCashFlowTransfers(
     }))
     .sort((left, right) => ranked(left, right, (id) => sideOf.get(id)?.date ?? ""));
   return { links, suspended, candidates };
+}
+
+/**
+ * Candidates across currencies (ADR 0143): only a side carrying an exchange
+ * label proposes one, so each labelled side is compared with the opposite
+ * direction's sides in other currencies within the window.
+ */
+function exchangeCandidates(
+  sides: readonly CashFlowTransferPairingSide[],
+  context: ReturnType<typeof cashFlowTransferContext>,
+): { outflow: CashFlowTransferPairingSide; inflow: CashFlowTransferPairingSide }[] {
+  const byDate = new Map<string, CashFlowTransferPairingSide[]>();
+  for (const side of sides) byDate.set(side.date, [...byDate.get(side.date) ?? [], side]);
+  const found = new Map<string, { outflow: CashFlowTransferPairingSide; inflow: CashFlowTransferPairingSide }>();
+  for (const labelled of sides) {
+    if (!labelled.exchangeLabel || !exchangeSideEligible(labelled)) continue;
+    const start = Date.parse(`${labelled.date}T00:00:00Z`);
+    for (let offset = -CASH_FLOW_TRANSFER_WINDOW_DAYS; offset <= CASH_FLOW_TRANSFER_WINDOW_DAYS; offset += 1) {
+      const date = new Date(start + offset * 86_400_000).toISOString().slice(0, 10);
+      for (const other of byDate.get(date) ?? []) {
+        if (other.direction === labelled.direction || !isCurrencyExchange(labelled, other) || !exchangeSideEligible(other)) continue;
+        const [outflow, inflow] = labelled.direction === "outflow" ? [labelled, other] : [other, labelled];
+        const pair = { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId };
+        if (!found.has(transferLinkId(pair)) && cashFlowTransferRefusal(outflow, inflow, "candidate", context) === null)
+          found.set(transferLinkId(pair), { outflow, inflow });
+      }
+    }
+  }
+  return [...found.values()];
 }
 
 const LINKED_TRANSFER: CashFlowClass = Object.freeze({ class: "not_counted", reason: "transfer" });

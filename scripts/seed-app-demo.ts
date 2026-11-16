@@ -39,6 +39,7 @@ import { productCollectionHandle, type ProductCollectionHandle } from "../src/li
 import { freshPage, removeSpendingDemo, seedSpendingDemo, SNAPSHOT_DATES } from "./seed-spending-demo.ts";
 import { applyPGliteFinancialPageAction, createPGliteFinancialPageActions } from "../src/ledger/pglite/spending-command.ts";
 import { readPGliteCashFlow } from "../src/ledger/pglite/cash-flow.ts";
+import { taipeiInstant } from "../src/lib/time/timezone.ts";
 
 const FUBON_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["fubon/domestic-deposit/current-balance-v1"];
 const YUANTA_BALANCE_CONTRACT = CURRENT_DEPOSIT_BALANCE_ROUTE_CONTRACTS["yuanta/domestic-deposit/current-balance-v1"];
@@ -55,6 +56,8 @@ registerHooks({
   },
 });
 const { stageYuantaForeignCurrency } = await import("../src/workflows/yuanta-foreign-currency-statements.ts");
+const { stageYuantaDeposit } = await import("../src/workflows/yuanta-statements.ts");
+const { deriveYuantaSourceConnectionKey, yuantaSourceConnectionScope } = await import("../src/workflows/yuanta-auth.ts");
 const { buildYuantaTradeCanonicalCaptures } = await import("../src/workflows/yuanta-trade-statements.ts");
 
 /**
@@ -62,7 +65,8 @@ const { buildYuantaTradeCanonicalCaptures } = await import("../src/workflows/yua
  * recording. It seeds the Spending demo first, then replays the collection
  * runs a user would have made every third day since June: 台北富邦 TWD
  * deposits, a 元大銀行 USD account, 元大證券 holdings, 元大投信 funds and a
- * MaiCoin wallet. Every run goes through the production collectors, adapters
+ * MaiCoin wallet, plus a 元大銀行 TWD account whose 10/03 exchange into the USD
+ * account Cash flow pairs across currencies. Every run goes through the production collectors, adapters
  * and the worker's canonical commit commands, so balance history, holdings
  * history and transactions look like collected data.
  *
@@ -149,6 +153,10 @@ function fubonRows(cardBills: readonly { dueDate: string; amount: number }[]): D
   rows.push(["2026-10-05", "10:05:51", "網銀轉帳", 22_000, 0, "房租"]);
   rows.push([HERO_TRANSACTION.date, HERO_TRANSACTION.time, HERO_TRANSACTION.summary, HERO_TRANSACTION.amount, 0, HERO_TRANSACTION.note]);
   rows.push(["2026-10-07", "20:11:36", "ATM提款", 5_000, 0, "富邦松江ATM"]);
+  // An exchange into the 元大銀行 USD account: another bank, so Cash flow only proposes the pair.
+  rows.push(["2026-10-07", "09:40:12", "網銀換匯", 16_040, 0, "元大外幣 7835"]);
+  // A move into an account the demo never collects, so it stays an Unpaired internal transfer.
+  rows.push(["2026-10-08", "21:05:44", "網銀轉帳", 8_000, 0, "自轉 定存帳戶"]);
   rows.push(["2026-10-08", "06:30:03", "代繳電費", 1_568, 0, "台灣電力公司"]);
   rows.push(["2026-10-09", "14:20:47", "跨行轉帳", 30_000, 0, "元大證券交割"]);
   rows.push(["2026-10-10", "11:48:02", "利息存入", 0, 412, "活期存款息"]);
@@ -249,6 +257,10 @@ const USD_ROWS: readonly (readonly [string, string, string, number, number, stri
   ["2026-08-21", "00:05:00", "利息存入", 0, 4.95, "外幣活存息", ""],
   ["2026-09-21", "10:18:05", "結購外匯", 0, 500, "網銀結購", "32.05"],
   ["2026-09-21", "00:05:00", "利息存入", 0, 5.34, "外幣活存息", ""],
+  // The USD side of the 10/03 exchange from the 元大銀行 TWD account: one bank, one date, so Cash flow pairs it.
+  ["2026-10-03", "10:21:40", "行動換匯", 0, 1_000, "臺幣帳戶轉入", "32.064"],
+  // The USD side of the 10/07 exchange from 台北富邦.
+  ["2026-10-07", "09:52:30", "匯入匯款", 0, 500, "台北富邦 匯入", ""],
 ];
 
 async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
@@ -299,6 +311,59 @@ async function collectYuantaFx(date: string): Promise<PGliteWorkflowRunItem[]> {
     text: strictSourceText,
     now: () => at,
   } as never, demoProductHandle("yuanta", items, at));
+  return items;
+}
+
+// ── 元大銀行 TWD deposit ────────────────────────────────────────────────────
+
+const YUANTA_TWD_ACCOUNT = { value: "20661234567819", label: "臺幣活期儲蓄存款 20661234567819" };
+const YUANTA_LOGIN = { yuanta_user_id: "DEMO-YUANTA-USER", yuanta_account: "DEMO-YUANTA-LOGIN" };
+const YUANTA_TWD_OPENING = 186_400;
+/** [date, time, memo, out, in] in TWD: the TWD side of the 10/03 exchange into the USD account. */
+const YUANTA_TWD_ROWS: readonly (readonly [string, string, string, number, number])[] = [
+  ["2026-10-03", "10:21:12", "行動換匯", 32_064, 0],
+];
+
+async function collectYuantaDeposit(date: string): Promise<PGliteWorkflowRunItem[]> {
+  let balance = YUANTA_TWD_OPENING;
+  const values = YUANTA_TWD_ROWS.filter(([day]) => day <= date).map(([day, time, memo, out, inn]) => {
+    balance += inn - out;
+    const compact = day.replaceAll("-", "");
+    return ["臺幣活期儲蓄存款", YUANTA_TWD_ACCOUNT.value, compact, compact, time, memo, out ? String(out) : "", inn ? String(inn) : "", String(balance), "", ""];
+  });
+  if (values.length === 0) return [];
+  const at = `${date}T01:27:00.000Z`;
+  const columnNames = ["帳戶名稱", "帳號", "帳務日期", "交易日期", "交易時間", "交易說明", "支出金額", "存入金額", "帳面餘額", "票據號碼", "備註"];
+  const download = {
+    filename: `${YUANTA_TWD_ACCOUNT.value}.csv`,
+    rows: values.map((cells, sourceRowOrdinal) => ({ accountLabel: YUANTA_TWD_ACCOUNT.label, values: cells.slice(1), sourceRowOrdinal })),
+    source: {
+      filename: `${YUANTA_TWD_ACCOUNT.value}.csv`,
+      byteLength: 64 * (values.length + 1),
+      contentDigest: `sha256:${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`,
+      columnNames,
+      terminal: true,
+      rows: values.map((cells, rowOrdinal) => ({ rowOrdinal, values: cells })),
+    },
+  };
+  const items: PGliteWorkflowRunItem[] = [];
+  await stageYuantaDeposit({
+    observedAt: taipeiInstant(at),
+    queryRange: { dateRange: "three_months", startDate: addDays(date, -91), endDate: date },
+    accounts: [{ account: YUANTA_TWD_ACCOUNT, query: "download-ready", download } as never],
+  }, {
+    accountFilters: [],
+    sourceConnectionScope: yuantaSourceConnectionScope(YUANTA_LOGIN),
+    sourceConnectionKey: deriveYuantaSourceConnectionKey(YUANTA_LOGIN)!,
+  }, demoProductHandle("yuanta", items, at), async () => ({
+    evidence: { kind: "cells", rows: [["臺幣活期儲蓄存款", "營業部", YUANTA_TWD_ACCOUNT.value, "0.1%", `${balance}.00`, `${balance}.00`]] },
+    response: {
+      url: `https://${YUANTA_BALANCE_CONTRACT.endpointHost}${YUANTA_BALANCE_CONTRACT.endpointPath}`,
+      status: 200,
+      method: YUANTA_CURRENT_DEPOSIT_BALANCE_METHOD,
+      headers: { date: new Date(at).toUTCString(), "cache-control": "no-store" },
+    },
+  }));
   return items;
 }
 
@@ -481,6 +546,7 @@ export async function seedAppDemo(userData: string) {
       runDate = date;
       await run("fubon", await collectFubon(deposits, date, (request) => child!.financial.request("financial.accountIdentity.continuity", [request])));
       await run("yuanta", await collectYuantaFx(date));
+      await run("yuanta", await collectYuantaDeposit(date));
       await run("yuanta-trade", collectYuantaTrade(date));
       await run("yuanta-fund", collectYuantaFund(date));
       await maicoin.run("sync-maicoin", `maicoin-demo-${date}`, {
@@ -538,6 +604,20 @@ export async function seedAppDemo(userData: string) {
       dataVersion: await latestKnowledge(),
     });
     committed.confirmedTransfers = 1;
+
+    // The 10/03 exchange pairs by evidence, the 10/07 one waits as a candidate, and the 10/08 move stays unpaired.
+    const october = await readPGliteCashFlow(store, { startDate: "2026-10-01", endDate: TODAY });
+    const currencyOf = new Map(october.transferSides.map((side) => [side.transactionId, side.amount.currency]));
+    const crosses = (pair: Readonly<{ outflowTransactionId: string; inflowTransactionId: string }>) =>
+      currencyOf.get(pair.outflowTransactionId) !== currencyOf.get(pair.inflowTransactionId);
+    const exchanges = {
+      evidence: october.transfers.links.filter((link) => crosses(link) && link.origin.kind === "evidence").length,
+      candidates: october.transfers.candidates.filter(crosses).length,
+      unpaired: october.transactions.filter((row) => row.cashFlow.class === "not_counted" && row.cashFlow.reason === "transfer" && row.transferLinkId === null).length,
+    };
+    if (exchanges.evidence !== 1 || exchanges.candidates !== 1 || exchanges.unpaired !== 2)
+      throw new Error(`The demo expects one exchange paired, one proposed and two unpaired transfers in October: ${JSON.stringify(exchanges)}`);
+    committed.exchangeDemo = exchanges.evidence + exchanges.candidates;
 
     const fubonFinal = fubonStatementThrough(deposits, TODAY).balance;
     return {

@@ -3,11 +3,13 @@ import {
   CASH_FLOW_TRANSFER_WINDOW_DAYS,
   cashFlowTransferContext,
   cashFlowTransferRefusal,
+  isCurrencyExchange,
   type CashFlowTransferPairHistory,
   type CashFlowTransferRefusal,
 } from "../../ledger/canonical/cash-flow-transfer-rules.ts";
 import type { FinancialPageActionRequest } from "../financial/page-actions.ts";
 import { normalizeCurrency, type ExactMoney } from "../shared-money/exact-money.ts";
+import { impliedExchangeRate, type ImpliedExchangeRate } from "./exchange-rate.ts";
 import { cashFlowDirection } from "./model.ts";
 import type {
   CashFlowRow,
@@ -16,6 +18,7 @@ import type {
   CashFlowTransferPanel,
   CashFlowTransferSide,
   CashFlowTransferSummary,
+  CashFlowUnpairedTransferView,
 } from "./model.ts";
 
 /** A transfer decision the page sends as a Financial page action (ADR 0136). */
@@ -47,32 +50,64 @@ export function transferRequest(
  * Why the page shows two sides as a transfer, from facts the page holds and
  * nothing more: both amounts, the day gap, that both accounts are the
  * person's (every Cash flow side is in an owned, non-Preview account), and the
- * Kinds when both sides carry the same evidence-backed one.
+ * Kinds when both sides carry the same evidence-backed one. A currency
+ * exchange (ADR 0143) states both amounts and the rate they imply instead of
+ * one amount, and which of its sides carry a bank's exchange label.
  */
 export type CashFlowTransferReason =
   | Readonly<{ kind: "amount"; amount: ExactMoney }>
+  | Readonly<{ kind: "exchange"; outflow: ExactMoney; inflow: ExactMoney; rate: ImpliedExchangeRate | null }>
   /** `origin` says why a link beyond the window still applies: the person paired it by hand, or confirmed it before its dates moved apart. */
   | Readonly<{ kind: "days"; days: number; withinWindow: boolean; origin: CashFlowTransferLinkView["origin"] | null }>
   | Readonly<{ kind: "accounts" }>
   | Readonly<{ kind: "evidence"; code: "transfer.internal" | "payment.credit_card" }>
+  /** `both` when each side carries the label; `sameInstitution` when both accounts are at one Institution. */
+  | Readonly<{ kind: "exchange_label"; both: boolean; sameInstitution: boolean }>
   | Readonly<{ kind: "decided"; origin: "confirmed" | "manual" }>;
 
+type ReasonSide = Pick<CashFlowTransferSide, "amount" | "kind" | "exchangeLabel"> & Readonly<{ details: Readonly<{ account: Pick<CashFlowTransferSide["details"]["account"], "institutionKey"> }> }>;
+
 export function transferReasons(
-  pair: Readonly<{ outflow: CashFlowTransferSide; inflow: CashFlowTransferSide; dayGap: number }>,
+  pair: Readonly<{ outflow: ReasonSide; inflow: ReasonSide; dayGap: number }>,
   origin: CashFlowTransferLinkView["origin"] | null,
 ): readonly CashFlowTransferReason[] {
+  const exchange = isCurrencyExchange(pair.outflow, pair.inflow);
   const reasons: CashFlowTransferReason[] = [
-    { kind: "amount", amount: pair.outflow.amount },
+    exchange
+      ? { kind: "exchange", outflow: pair.outflow.amount, inflow: pair.inflow.amount, rate: impliedExchangeRate(pair.outflow.amount, pair.inflow.amount) }
+      : { kind: "amount", amount: pair.outflow.amount },
     { kind: "days", days: pair.dayGap, withinWindow: pair.dayGap <= CASH_FLOW_TRANSFER_WINDOW_DAYS, origin },
     { kind: "accounts" },
   ];
   const outflowKind = pair.outflow.kind;
-  if (origin === "evidence" && outflowKind?.basis === "evidence" && pair.inflow.kind?.basis === "evidence"
+  if (exchange) {
+    const institution = pair.outflow.details.account.institutionKey;
+    if (pair.outflow.exchangeLabel || pair.inflow.exchangeLabel)
+      reasons.push({
+        kind: "exchange_label",
+        both: pair.outflow.exchangeLabel && pair.inflow.exchangeLabel,
+        sameInstitution: institution !== null && institution === pair.inflow.details.account.institutionKey,
+      });
+  } else if (origin === "evidence" && outflowKind?.basis === "evidence" && pair.inflow.kind?.basis === "evidence"
     && outflowKind.code === pair.inflow.kind.code
     && (outflowKind.code === "transfer.internal" || outflowKind.code === "payment.credit_card"))
     reasons.push({ kind: "evidence", code: outflowKind.code });
   if (origin === "confirmed" || origin === "manual") reasons.push({ kind: "decided", origin });
   return reasons;
+}
+
+/** The rate a pair's two amounts imply, or null for a pair in one currency. */
+export function pairExchangeRate(pair: Readonly<{ outflow: Pick<CashFlowTransferSide, "amount">; inflow: Pick<CashFlowTransferSide, "amount"> }>): ImpliedExchangeRate | null {
+  return isCurrencyExchange(pair.outflow, pair.inflow) ? impliedExchangeRate(pair.outflow.amount, pair.inflow.amount) : null;
+}
+
+/** The period's Unpaired internal transfers in one currency, as the panel lists them. */
+export function unpairedTransfers(
+  panel: Pick<CashFlowTransferPanel, "unpaired">,
+  currency: string,
+): readonly CashFlowUnpairedTransferView[] {
+  const own = normalizeCurrency(currency);
+  return panel.unpaired.filter((entry) => normalizeCurrency(entry.row.amount.currency) === own);
 }
 
 const counted = (flow: CashFlowClass) => flow.class === "inflow" || flow.class === "outflow" || flow.class === "refund";
@@ -153,11 +188,13 @@ export function transferNote(
 ): CashFlowTransferNote | null {
   const own = normalizeCurrency(currency);
   const inCurrency = (side: CashFlowTransferSide | null) => side !== null && normalizeCurrency(side.amount.currency) === own;
-  const pending = panel.candidates.filter((candidate) => inCurrency(candidate.outflow)).length;
-  if (transfers && (transfers.pairs.count > 0 || transfers.unpaired.count > 0)) return { kind: "summary", pending };
+  // A currency exchange touches two currencies, so it shows under both.
+  const touches = (entry: Readonly<{ outflow: CashFlowTransferSide | null; inflow: CashFlowTransferSide | null }>) =>
+    inCurrency(entry.outflow) || inCurrency(entry.inflow);
+  const pending = panel.candidates.filter(touches).length;
+  if (transfers && (transfers.pairs.count > 0 || transfers.exchanges.count > 0 || transfers.unpaired.count > 0)) return { kind: "summary", pending };
   if (pending > 0) return { kind: "pending", pending };
-  const count = panel.links.filter((link) => inCurrency(link.outflow)).length
-    + panel.suspended.filter((link) => inCurrency(link.outflow ?? link.inflow)).length;
+  const count = panel.links.filter(touches).length + panel.suspended.filter(touches).length;
   return count > 0 ? { kind: "links", count } : null;
 }
 

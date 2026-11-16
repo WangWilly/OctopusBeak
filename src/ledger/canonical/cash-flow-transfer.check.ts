@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CashFlowClass, CashFlowKind } from "./cash-flow-inclusion.ts";
-import { linkedCashFlow, pairCashFlowTransfers } from "./cash-flow-transfer.ts";
+import { linkedCashFlow, pairCashFlowTransfers, type CashFlowTransferPairingSide } from "./cash-flow-transfer.ts";
 import {
   cashFlowTransferContext,
   cashFlowTransferRefusal,
@@ -13,8 +13,11 @@ const evidence = (code: string): CashFlowKind => ({ code, basis: "evidence" });
 const fallback = (code: string): CashFlowKind => ({ code, basis: "fallback" });
 const weak = (code: string): CashFlowKind => ({ code, basis: "weak" });
 
-function side(transactionId: string, direction: "outflow" | "inflow", overrides: Partial<CashFlowTransferSide> = {}): CashFlowTransferSide {
+function side(transactionId: string, direction: "outflow" | "inflow", overrides: Partial<CashFlowTransferPairingSide> = {}): CashFlowTransferPairingSide {
   return {
+    exchangeLabel: false,
+    institutionKey: "bank",
+    stream: "domestic-deposit",
     transactionId,
     source: "canonical",
     accountId: direction === "outflow" ? "bank-a" : "bank-b",
@@ -42,7 +45,9 @@ test("a pair needs equal amounts in one currency, opposite directions and two ac
   assert.equal(cashFlowTransferRefusal(out, side("in", "inflow", { amount: { coefficient: "4999", scale: 0, currency: "TWD" } }), "manual", none), "amount");
   assert.equal(cashFlowTransferRefusal(out, side("in", "inflow", { amount: { coefficient: "50000", scale: 1, currency: "TWD" } }), "candidate", none), null,
     "an equal amount at another scale is still equal");
-  assert.equal(cashFlowTransferRefusal(out, side("in", "inflow", { amount: { coefficient: "5000", scale: 0, currency: "USD" } }), "manual", none), "currency");
+  const usd = side("in", "inflow", { amount: { coefficient: "5000", scale: 0, currency: "USD" } });
+  assert.equal(cashFlowTransferRefusal(out, usd, "manual", none), null, "two currencies pair by hand as an exchange, whatever the amounts");
+  assert.equal(cashFlowTransferRefusal(out, usd, "candidate", none), "exchange_label", "but are proposed only with an exchange label");
   assert.equal(cashFlowTransferRefusal(out, side("in", "inflow", { accountId: "bank-a" }), "manual", none), "same_account");
   assert.equal(cashFlowTransferRefusal(out, side("in", "outflow"), "manual", none), "direction");
   assert.equal(cashFlowTransferRefusal(out, side("in", "inflow", { source: "manual" }), "manual", none), "manual_account");
@@ -129,7 +134,6 @@ test("a stored link suspends while its sides break a rule, and applies again onc
   assert.deepEqual(suspended.links, []);
   assert.deepEqual(suspended.suspended.map((link) => link.suspension), [{ reason: "amount" }]);
   for (const [overrides, reason] of [
-    [{ amount: { coefficient: "5000", scale: 0, currency: "USD" } }, "currency"],
     [{ direction: "outflow" }, "direction"],
     [{ accountId: "bank-a" }, "same_account"],
   ] as const)
@@ -174,4 +178,95 @@ test("a link excludes a weak or fallback side when the other side is weak, fallb
   assert.deepEqual(linked(fallback("purchase"), outflow, evidence("income.employment.salary"), salary), { cashFlow: outflow, paired: false });
   assert.deepEqual(linked(evidence("transfer.internal"), internal, evidence("income.employment.salary"), salary), { cashFlow: internal, paired: false });
   assert.deepEqual(linked(null, { class: "unresolved" }, fallback("receipt"), inflow), { cashFlow: { class: "unresolved" }, paired: false });
+});
+
+const twd = (coefficient: string) => ({ coefficient, scale: 0, currency: "TWD" });
+const usdAmount = (coefficient: string, scale = 0) => ({ coefficient, scale, currency: "USD" });
+
+/** A bank's exchange: a TWD outflow and a USD inflow at one Institution, both labelled and internal transfers by evidence. */
+function exchange(overrides: Readonly<{ out?: Partial<CashFlowTransferPairingSide>; into?: Partial<CashFlowTransferPairingSide> }> = {}) {
+  return [
+    side("twd-out", "outflow", { amount: twd("32703"), kind: evidence("transfer.internal"), cashFlow: { class: "not_counted", reason: "transfer" }, exchangeLabel: true, ...overrides.out }),
+    side("usd-in", "inflow", {
+      accountId: "bank-a-usd", amount: usdAmount("100000", 2), kind: evidence("transfer.internal"), cashFlow: { class: "not_counted", reason: "transfer" }, exchangeLabel: true, ...overrides.into,
+    }),
+  ] as const;
+}
+
+const linksOf = (pairing: ReturnType<typeof pairCashFlowTransfers>) => pairing.links.map((link) => [link.linkId, link.origin.kind]);
+const candidatesOf = (pairing: ReturnType<typeof pairCashFlowTransfers>) => pairing.candidates.map((candidate) => `${candidate.outflowTransactionId}/${candidate.inflowTransactionId}`);
+
+test("evidence links a currency exchange at one Institution on one date, labelled on both sides", () => {
+  assert.deepEqual(linksOf(pairCashFlowTransfers(exchange(), [], new Map())), [["twd-out/usd-in", "evidence"]]);
+});
+
+test("an exchange links by evidence beside an unrelated purchase, which is no longer its candidate", () => {
+  const [out, into] = exchange();
+  const groceries = side("groceries", "outflow", { accountId: "bank-b", amount: twd("486") });
+  const pairing = pairCashFlowTransfers([out, into, groceries], [], new Map());
+  assert.deepEqual(linksOf(pairing), [["twd-out/usd-in", "evidence"]]);
+  assert.deepEqual(candidatesOf(pairing), []);
+  const alone = pairCashFlowTransfers([into, groceries], [], new Map());
+  assert.deepEqual(candidatesOf(alone), ["groceries/usd-in"], "an unpaired labelled side proposes any opposite row in another currency nearby");
+});
+
+test("an exchange across Institutions, a day apart, or ambiguous is only a candidate", () => {
+  const otherBank = pairCashFlowTransfers(exchange({ into: { institutionKey: "other-bank" } }), [], new Map());
+  assert.deepEqual([linksOf(otherBank), candidatesOf(otherBank)], [[], ["twd-out/usd-in"]]);
+  const nextDay = pairCashFlowTransfers(exchange({ into: { date: "2026-09-11" } }), [], new Map());
+  assert.deepEqual([linksOf(nextDay), candidatesOf(nextDay)], [[], ["twd-out/usd-in"]]);
+  const [out, into] = exchange();
+  const second = side("usd-in-2", "inflow", { ...into, transactionId: "usd-in-2", accountId: "bank-a-usd-2" });
+  const ambiguous = pairCashFlowTransfers([out, into, second], [], new Map());
+  assert.deepEqual([linksOf(ambiguous), candidatesOf(ambiguous).sort()], [[], ["twd-out/usd-in", "twd-out/usd-in-2"]]);
+  const unlabelled = pairCashFlowTransfers(exchange({ into: { exchangeLabel: false } }), [], new Map());
+  assert.deepEqual([linksOf(unlabelled), candidatesOf(unlabelled)], [[], ["twd-out/usd-in"]], "one label proposes, but evidence needs both");
+  const decided = pairCashFlowTransfers(exchange(), [], new Map([["twd-out/usd-in", "decided" as const]]));
+  assert.deepEqual(linksOf(decided), [], "a revoked automatic exchange stays revoked");
+});
+
+test("a pair across currencies is proposed only with an exchange label, within 3 days", () => {
+  const out = side("twd-out", "outflow", { amount: twd("32703") });
+  const into = side("usd-in", "inflow", { amount: usdAmount("1000") });
+  assert.deepEqual(candidatesOf(pairCashFlowTransfers([out, into], [], new Map())), [], "a card purchase and an unrelated inflow are no exchange");
+  const labelled = { ...into, exchangeLabel: true };
+  assert.deepEqual(candidatesOf(pairCashFlowTransfers([out, labelled], [], new Map())), ["twd-out/usd-in"]);
+  assert.deepEqual(candidatesOf(pairCashFlowTransfers([out, { ...labelled, date: "2026-09-14" }], [], new Map())), [], "4 days apart is too far");
+  assert.equal(cashFlowTransferRefusal(out, { ...labelled, date: "2026-09-30" }, "manual", none), null, "but the person may pair it");
+});
+
+test("a labelled exchange side is never proposed with a card purchase, an investment row or an evidenced income", () => {
+  const [, into] = exchange();
+  const card = (id: string) => side(id, "outflow", { accountId: `card-${id}`, stream: "credit-card", amount: twd("486") });
+  const investment = side("buy", "outflow", { accountId: "broker", stream: "investment", amount: twd("1200"), kind: evidence("investment.trade.buy") });
+  const salary = side("salary", "outflow", { accountId: "bank-b", amount: twd("50000"), kind: evidence("payment.loan") });
+  const transfer = side("own-out", "outflow", { accountId: "bank-c", amount: twd("16040"), kind: evidence("transfer.internal") });
+  const pairing = pairCashFlowTransfers([into, card("c1"), card("c2"), card("c3"), investment, salary, transfer], [], new Map());
+  assert.deepEqual(candidatesOf(pairing), ["own-out/usd-in"], "only a deposit row that may be an internal transfer is offered");
+});
+
+test("a same-currency evidence link survives an exchange's side nearby", () => {
+  const out = side("out", "outflow", { kind: evidence("transfer.internal") });
+  const into = side("in", "inflow", { kind: evidence("transfer.internal") });
+  const usdIn = side("usd-in", "inflow", { accountId: "bank-d", amount: usdAmount("150"), exchangeLabel: true, kind: evidence("transfer.internal") });
+  const pairing = pairCashFlowTransfers([out, into, usdIn], [], new Map());
+  assert.deepEqual(linksOf(pairing), [["out/in", "evidence"]]);
+  assert.deepEqual(candidatesOf(pairing), [], "a linked side is no candidate");
+});
+
+test("a manual exchange keeps ADR 0137's exclusion rules: an income side stays counted", () => {
+  const out = side("twd-out", "outflow", { amount: twd("30000"), kind: evidence("transfer.internal"), cashFlow: { class: "not_counted", reason: "transfer" } });
+  const salary = side("usd-in", "inflow", { amount: usdAmount("1000"), kind: evidence("income.employment.salary"), cashFlow: { class: "inflow", group: "income.employment.salary" } });
+  const manual = { outflowTransactionId: "twd-out", inflowTransactionId: "usd-in", origin: { kind: "manual" as const, eventId: "event", decidedAtKnowledge: 4 } };
+  assert.deepEqual(linksOf(pairCashFlowTransfers([out, salary], [manual], new Map())), [["twd-out/usd-in", "manual"]]);
+  assert.deepEqual(linkedCashFlow(salary, out), { cashFlow: salary.cashFlow, paired: false });
+  const receipt = side("usd-in", "inflow", { amount: usdAmount("1000") });
+  assert.deepEqual(linkedCashFlow(receipt, out), { cashFlow: { class: "not_counted", reason: "transfer" }, paired: true }, "a fallback side is excluded");
+});
+
+test("a denied exchange is never proposed or linked again", () => {
+  const history = new Map<string, CashFlowTransferPairHistory>([["twd-out/usd-in", "denied"]]);
+  assert.deepEqual(pairCashFlowTransfers(exchange(), [], history), { links: [], suspended: [], candidates: [] });
+  const [out, into] = exchange();
+  assert.equal(cashFlowTransferRefusal(out, into, "manual", cashFlowTransferContext([], history)), "denied");
 });

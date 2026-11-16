@@ -7,10 +7,13 @@
   import { dayHeadingText } from "$lib/spending/spending-display.ts";
   import { negateExact } from "$lib/shared-money/exact-money.ts";
   import type { CashFlowRow, CashFlowTransferLinkView, CashFlowTransferPanel, CashFlowTransferSide } from "../model.ts";
+  import { exchangeRateText } from "../exchange-rate.ts";
   import { accountInitial, accountLabel, rowTitle } from "../display.ts";
   import {
     linkEffect,
     pairableRows,
+    pairExchangeRate,
+    unpairedTransfers,
     revokeEffect,
     transferReasons,
     transferErrorKey,
@@ -29,11 +32,19 @@
   export let onClose: () => void;
   /** Open on one link's detail instead of the list. */
   export let detailLinkId: string | null = null;
+  /** The currency the page shows; the unpaired list keeps to it. */
+  export let currency: string;
+  /** Open scrolled to one section of the list. */
+  export let section: "unpaired" | null = null;
+  /** Open one row's transaction detail. */
+  export let openRow: (row: CashFlowRow) => void;
 
   let busy: string | null = null;
   let error: Readonly<{ key: string; text: string }> | null = null;
   let manualOutflow = "";
   let manualInflow = "";
+  let unpairedSection: HTMLElement | null = null;
+  let manualSection: HTMLElement | null = null;
 
   $: detail = detailLinkId === null ? null : panel.links.find((link) => link.linkId === detailLinkId) ?? null;
   $: outflows = pairableRows(rows, "outflow");
@@ -43,6 +54,36 @@
   $: manualRefusal = chosenOutflow && chosenInflow
     ? transferRefusal("pair", { outflowTransactionId: chosenOutflow.transactionId, inflowTransactionId: chosenInflow.transactionId }, { rows, panel })
     : null;
+  $: manualRate = chosenOutflow && chosenInflow && chosenOutflow.amount.currency !== chosenInflow.amount.currency
+    ? rateText({ outflow: chosenOutflow, inflow: chosenInflow })
+    : null;
+  $: unpaired = unpairedTransfers(panel, currency);
+  $: candidateSides = new Set(panel.candidates.flatMap((candidate) => [candidate.outflow.transactionId, candidate.inflow.transactionId]));
+  $: if (section === "unpaired" && unpairedSection) {
+    unpairedSection.scrollIntoView({ block: "start" });
+    section = null;
+  }
+
+  type Sides = Readonly<{ outflow: Pick<CashFlowTransferSide, "amount">; inflow: Pick<CashFlowTransferSide, "amount"> }>;
+
+  const isExchange = (pair: Sides) => pair.outflow.amount.currency !== pair.inflow.amount.currency;
+
+  function rateText(pair: Sides): string | null {
+    const rate = pairExchangeRate(pair);
+    return rate ? exchangeRateText(rate) : null;
+  }
+
+  /** One amount for a transfer, or both of an exchange's amounts in their own currencies. */
+  function pairAmount(pair: Sides): string {
+    return isExchange(pair) ? `${money(pair.outflow)} → ${money(pair.inflow)}` : money(pair.outflow);
+  }
+
+  async function pairByHand(row: CashFlowRow) {
+    if (row.direction === "outflow") manualOutflow = row.transactionId;
+    else manualInflow = row.transactionId;
+    await tick();
+    manualSection?.scrollIntoView({ block: "start" });
+  }
 
   function money(side: Pick<CashFlowTransferSide, "amount">, signedOut: "outflow" | "inflow" | null = null) {
     const amount = signedOut === "outflow" ? { ...negateExact(side.amount), currency: side.amount.currency } : side.amount;
@@ -58,6 +99,10 @@
     switch (reason.kind) {
       case "amount":
         return copy.reasonAmount(moneyText(reason.amount, $locale));
+      case "exchange":
+        return copy.reasonExchange(moneyText(reason.outflow, $locale), moneyText(reason.inflow, $locale), reason.rate ? exchangeRateText(reason.rate) : null);
+      case "exchange_label":
+        return copy.reasonExchangeLabel(reason.both, reason.sameInstitution);
       case "days":
         return long ? `${copy.reasonDays(reason.days)}${copy.windowNote(reason.withinWindow, reason.origin === "manual")}` : copy.reasonDays(reason.days);
       case "accounts":
@@ -70,7 +115,9 @@
   }
 
   function basis(link: Readonly<{ outflow: CashFlowTransferSide; inflow: CashFlowTransferSide; dayGap: number }>, origin: CashFlowTransferLinkView["origin"] | null) {
-    return $t.cashFlow.transferPanel.basis(transferReasons(link, origin).map((reason) => reasonText(reason)).join(" · "));
+    return $t.cashFlow.transferPanel.basis(transferReasons(link, origin)
+      .filter((reason) => reason.kind !== "exchange")
+      .map((reason) => reasonText(reason)).join(" · "));
   }
 
   async function run(key: string, action: CashFlowTransferDecision, pair: Readonly<{ outflowTransactionId: string; inflowTransactionId: string }>) {
@@ -133,13 +180,22 @@
   </div>
 {/snippet}
 
+{#snippet rateLine(pair: Sides)}
+  {#if isExchange(pair) && rateText(pair)}
+    <p class="rate-line" data-transfer-rate>
+      <span class="rate-label">{$t.cashFlow.transferPanel.rateLabel}</span>
+      <strong class="money" data-sensitive>{rateText(pair)}</strong>
+    </p>
+  {/if}
+{/snippet}
+
 {#snippet errorLine(key: string)}
   {#if error?.key === key}<p class="error" role="alert" data-transfer-error>{error.text}</p>{/if}
 {/snippet}
 
 <Modal
   titleId="cash-flow-transfer-title"
-  title={detail ? $t.cashFlow.transferPanel.detailTitle : $t.cashFlow.transferPanel.title}
+  title={detail ? (isExchange(detail) ? $t.cashFlow.transferPanel.exchangeTitle : $t.cashFlow.transferPanel.detailTitle) : $t.cashFlow.transferPanel.title}
   subtitle={detail ? `${$t.cashFlow.transferPanel.origin[detail.origin]} · ${detail.paired ? $t.cashFlow.transferPanel.paired : $t.cashFlow.transferPanel.notPaired}` : $t.cashFlow.transferPanel.subtitle}
   {onClose}
   closable={busy === null}
@@ -151,7 +207,7 @@
       {@const effect = revokeEffect(link)}
       <button type="button" class="text-link back" onclick={() => detailLinkId = null}><ArrowLeft size={14} strokeWidth={2} aria-hidden="true" />{$t.cashFlow.transferPanel.back}</button>
       <div class="detail-head">
-        <strong class="money detail-amount" data-sensitive>{money(link.outflow)}</strong>
+        <strong class="money detail-amount" data-sensitive>{pairAmount(link)}</strong>
         <span class="muted">{accountLabel($t, link.outflow.details.account)} <ArrowRight size={12} strokeWidth={2} aria-hidden="true" /> {accountLabel($t, link.inflow.details.account)} · {shortDate(link.outflow.date)}</span>
       </div>
       <section class="block">
@@ -170,7 +226,13 @@
         </ul>
         {#if !link.paired}<p class="muted">{$t.cashFlow.transferPanel.notPairedNote}</p>{/if}
       </section>
-      {#if link.outflow.amount.currency === link.inflow.amount.currency}
+      {#if isExchange(link)}
+        <section class="block" data-transfer-rate>
+          <h3>{$t.cashFlow.transferPanel.rateTitle}</h3>
+          <p class="rate" data-sensitive>{rateText(link) ?? "—"}</p>
+          <p class="muted">{$t.cashFlow.transferPanel.rateNote}</p>
+        </section>
+      {:else}
         <section class="block">
           <h3>{$t.cashFlow.transferPanel.netEffect}</h3>
           <dl class="net">
@@ -199,9 +261,11 @@
             <header class="item-head">
               <span>{shortDate(link.outflow.date)}</span>
               <span class="badge">{$t.cashFlow.transferPanel.origin[link.origin]}</span>
+              {#if isExchange(link)}<span class="badge muted-badge" data-transfer-exchange>{$t.cashFlow.transferPanel.exchangeBadge}</span>{/if}
               {#if !link.paired}<span class="badge muted-badge">{$t.cashFlow.transferPanel.notPaired}</span>{/if}
-              <strong class="money" data-sensitive>{money(link.outflow)}</strong>
+              <strong class="money" data-sensitive>{pairAmount(link)}</strong>
             </header>
+            {@render rateLine(link)}
             <div class="sides">
               {@render side(link.outflow, "outflow")}
               {@render side(link.inflow, "inflow")}
@@ -229,8 +293,10 @@
           <article class="item" data-transfer-candidate={candidate.pairId}>
             <header class="item-head">
               <span>{shortDate(candidate.outflow.date)}</span>
-              <strong class="money" data-sensitive>{money(candidate.outflow)}</strong>
+              {#if isExchange(candidate)}<span class="badge muted-badge" data-transfer-exchange>{$t.cashFlow.transferPanel.exchangeBadge}</span>{/if}
+              <strong class="money" data-sensitive>{pairAmount(candidate)}</strong>
             </header>
+            {@render rateLine(candidate)}
             <div class="sides">
               {@render side(candidate.outflow, "outflow")}
               {@render side(candidate.inflow, "inflow")}
@@ -276,7 +342,30 @@
         </section>
       {/if}
 
-      <section class="block manual" data-transfer-manual>
+      {#if unpaired.length > 0}
+        <section class="block" data-transfer-unpaired bind:this={unpairedSection}>
+          <h3>{$t.cashFlow.transferPanel.unpairedTitle(unpaired.length)}</h3>
+          <p class="muted">{$t.cashFlow.transferPanel.unpairedNote}</p>
+          {#each unpaired as entry (entry.row.transactionId)}
+            <article class="item unpaired" data-transfer-unpaired-row={entry.row.transactionId} data-reason={entry.reason}>
+              <button type="button" class="unpaired-open" aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, entry.row)}`} onclick={() => openRow(entry.row)}>
+                <span class="mark" aria-hidden="true">{accountInitial($t, entry.row.details.account)}</span>
+                <span class="side-text">
+                  <strong>{rowTitle($t, entry.row)}</strong>
+                  <span class="muted">{[shortDate(entry.row.date), accountLabel($t, entry.row.details.account)].join(" · ")}</span>
+                  <span class="reason" data-unpaired-reason>{candidateSides.has(entry.row.transactionId) ? $t.cashFlow.transferPanel.unpairedHasCandidate : $t.cashFlow.transferPanel.unpairedReason[entry.reason]}</span>
+                </span>
+                <strong class="money" class:positive={entry.row.direction === "inflow"} data-sensitive>{money(entry.row, entry.row.direction)}</strong>
+              </button>
+              {#if entry.reason !== "manual_account" && entry.reason !== "counted_counterpart" && !candidateSides.has(entry.row.transactionId)}
+                <button type="button" class="text-link pair-link" data-unpaired-pair={entry.row.transactionId} onclick={() => pairByHand(entry.row)}>{$t.cashFlow.transferPanel.unpairedPair}</button>
+              {/if}
+            </article>
+          {/each}
+        </section>
+      {/if}
+
+      <section class="block manual" data-transfer-manual bind:this={manualSection}>
         <h3>{$t.cashFlow.transferPanel.manualTitle}</h3>
         <p class="muted">{$t.cashFlow.transferPanel.manualNote}</p>
         <div class="manual-fields">
@@ -295,7 +384,8 @@
             </select>
           </label>
         </div>
-        {#if manualRefusal}<p class="error" role="status" data-manual-refusal={manualRefusal}>{$t.cashFlow.transferPanel.refusals[manualRefusal]}</p>{/if}
+        {#if manualRefusal}<p class="error" role="status" data-manual-refusal={manualRefusal}>{$t.cashFlow.transferPanel.refusals[manualRefusal]}</p>
+        {:else if chosenOutflow && chosenInflow && isExchange({ outflow: chosenOutflow, inflow: chosenInflow })}<p class="muted" role="status" data-manual-exchange data-sensitive>{$t.cashFlow.transferPanel.manualExchange(manualRate)}</p>{/if}
         <div class="actions">
           <button
             type="button"
@@ -485,6 +575,63 @@
     margin: 0;
     padding-left: 18px;
     font-size: 13px;
+  }
+
+  .rate {
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .unpaired {
+    gap: var(--space-1);
+  }
+
+  .unpaired .reason {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .rate-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: var(--surface-soft);
+    font-size: 13px;
+  }
+
+  .rate-label {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .unpaired-open {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-3);
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .pair-link {
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
   }
 
   .net {
