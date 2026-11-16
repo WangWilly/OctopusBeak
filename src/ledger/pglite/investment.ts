@@ -497,8 +497,8 @@ async function persistExtensions(transaction: PGliteTransaction, context: Invest
   const records = context.capture.sourceRecordIdsByOccurrence;
   const securities = new Map<string, Uint8Array>();
   for (const security of capture.securities) {
-    const prior = await first<{ security_id: unknown; producer_security_id: string; name: string | null; ticker: string | null; currency: string; security_type: string }>(transaction, "SELECT security_id, producer_security_id, name, ticker, currency, security_type FROM investment_securities WHERE source_id = ? AND security_key = ?", [capture.sourceId, security.securityKey]);
-    if (prior && (prior.producer_security_id !== security.producerSecurityId || prior.name !== (security.name ?? null) || prior.ticker !== (security.ticker ?? null) || prior.currency !== security.currency || prior.security_type !== (security.securityType ?? "other"))) fail("Immutable investment Security evidence changed.");
+    const prior = await first<{ security_id: unknown; producer_security_id: string; ticker: string | null; currency: string; security_type: string }>(transaction, "SELECT security_id, producer_security_id, ticker, currency, security_type FROM investment_securities WHERE source_id = ? AND security_key = ?", [capture.sourceId, security.securityKey]);
+    if (prior && (prior.producer_security_id !== security.producerSecurityId || prior.ticker !== (security.ticker ?? null) || prior.currency !== security.currency || prior.security_type !== (security.securityType ?? "other"))) fail("Immutable investment Security evidence changed.");
     const securityId = prior?.security_id ? bytes(prior.security_id, "Investment Security") : uuidBytes();
     if (!prior) await query(transaction, `INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [securityId, capture.sourceId, security.securityKey, security.producerSecurityId, security.name ?? null, security.ticker ?? null, security.currency, security.securityType ?? "other"]);
     securities.set(security.securityKey, securityId);

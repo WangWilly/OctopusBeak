@@ -660,6 +660,55 @@ test("PGlite investment command rolls back changed source evidence", async () =>
   }
 });
 
+function securityRequest(
+  captureId: string,
+  change: (security: PGliteCanonicalInvestmentCommitRequest["capture"]["securities"][number]) => PGliteCanonicalInvestmentCommitRequest["capture"]["securities"][number],
+): PGliteCanonicalInvestmentCommitRequest {
+  const request = investmentRequest(captureId);
+  return { ...request, capture: { ...request.capture, securities: request.capture.securities.map(change) } };
+}
+
+test("a provider's new label for a known Security is a name observation, not a rejected commit", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-name-1"), { clock: () => 100 });
+    await commitPGliteCanonicalInvestmentCapture(store, securityRequest("investment-name-2", (security) => ({ ...security, name: "艾克米公司" })), { clock: () => 101 });
+
+    assert.deepEqual((await store.query<{ name: string }>("SELECT name FROM investment_securities")).rows, [{ name: "Acme Equity" }]);
+    assert.deepEqual(
+      (await store.query<{ name: string }>("SELECT observation.name FROM investment_security_name_observations observation JOIN canonical_commits commit_row USING (commit_id) ORDER BY commit_row.commit_sequence")).rows,
+      [{ name: "Acme Equity" }, { name: "艾克米公司" }],
+    );
+    const projection = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    assert.deepEqual(projection.positions.map((position) => position.name), ["艾克米公司"]);
+    const transaction = Object.values(mapCanonicalProduct(projection, "assets").transactionsByAccount)
+      .flat().find((row) => row.investment);
+    assert.equal(transaction?.investment?.securityName, "艾克米公司");
+
+    await commitPGliteCanonicalInvestmentCapture(store, securityRequest("investment-name-3", ({ name: _name, nameEvidence: _evidence, ...security }) => security), { clock: () => 102 });
+    const afterUnnamed = (await createPGliteCanonicalOverviewQuery(store).current()).projection;
+    assert.deepEqual(afterUnnamed.positions.map((position) => position.name), ["艾克米公司"]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a changed ticker for a known Security still rolls the commit back", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = new PGliteStore(database);
+  try {
+    await commitPGliteCanonicalInvestmentCapture(store, investmentRequest("investment-ticker-1"), { clock: () => 100 });
+    await assert.rejects(
+      commitPGliteCanonicalInvestmentCapture(store, securityRequest("investment-ticker-2", (security) => ({ ...security, ticker: "ACM" })), { clock: () => 101 }),
+      /Immutable investment Security evidence changed/u,
+    );
+    assert.equal((await store.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM source_captures")).rows[0]?.count, 1);
+  } finally {
+    await store.close();
+  }
+});
+
 test("PGlite investment command records independent margin loan as a balance-only source", async () => {
   const database = await createTestPGlite("ledger");
   const store = new PGliteStore(database);
