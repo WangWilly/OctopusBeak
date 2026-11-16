@@ -105,3 +105,31 @@ test("rows whose Kind is interest or a fee, projected before the Kind decided a 
     await fixture.close();
   }
 });
+
+test("a card's interest or fee line projected as a purchase gets its Kind and the interest-and-fees category when the store next opens, once (ADR 0142)", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    // Projected before the card outflow classifier: the issuer's label read as a purchase.
+    const fee = await fixture.addTransaction({ amount: "45", date: "2026-09-12", description: "測試商店" });
+    await installFinancialStore(fixture.database);
+    await fixture.store.query("ALTER TABLE transaction_revisions DISABLE TRIGGER USER");
+    await fixture.store.query(
+      `UPDATE transaction_revisions SET description = $2
+        WHERE revision_id = (SELECT revision_id FROM current_transactions WHERE transaction_id = $1)`,
+      [idBytes(fee), "國外交易服務費"],
+    );
+    await fixture.store.query("ALTER TABLE transaction_revisions ENABLE TRIGGER USER");
+    await fixture.store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["kind-rederivation-credit-card-charge-kinds-v1"]);
+    const read = async (field: string) => (await fixture.store.query<{ taxonomy_code: string }>(
+      "SELECT taxonomy_code FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = $2", [idBytes(fee), field])).rows[0]?.taxonomy_code ?? null;
+    assert.deepEqual([await read("kind"), await read("category")], ["purchase", null]);
+
+    await installFinancialStore(fixture.database);
+    assert.deepEqual([await read("kind"), await read("category")], ["fee.card", "interest_and_fees"]);
+    const before = await fixture.knowledgeAt();
+    await installFinancialStore(fixture.database);
+    assert.equal(await fixture.knowledgeAt(), before, "a second open re-derives nothing");
+  } finally {
+    await fixture.close();
+  }
+});

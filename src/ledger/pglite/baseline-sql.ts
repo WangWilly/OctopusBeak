@@ -2650,6 +2650,8 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'reversal', '["bank-rule"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'income.reward', '["bank-rule"]'),
 ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'payment.credit_card', '["bank-rule"]'),
+('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'interest.charged', '["bank-rule"]'),
+('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'fee.card', '["bank-rule"]'),
 ('transaction-taxonomy', 'v1', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'kind', 'purchase', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
 ('transaction-taxonomy', 'v1', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'kind', 'transfer.internal', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),
 ('transaction-taxonomy', 'v1', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'kind', 'transfer.external', '["bank-rule","investment-relation","loan-relation","credit-card-statement-relation"]'),

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { CanonicalSpendingTransaction } from "./canonical-spending-contracts.ts";
-import { isLoanCharge } from "./loan-charge.ts";
+import { isInvoicelessCharge } from "./card-charge.ts";
 import type {
   CanonicalEInvoiceItemView,
   CanonicalEInvoiceView,
@@ -230,8 +230,8 @@ export function evaluateSpendingMatchCandidates(
     date: ReturnType<typeof transactionPurchaseDate>;
   }>>();
   for (const transaction of transactions) {
-    // A loan charge is no payment an invoice can name (ADR 0141).
-    if (isLoanCharge(transaction.kind, transaction.direction, transaction.stream)) continue;
+    // A loan's or card's interest or fee is no payment an invoice can name (ADR 0141, ADR 0142).
+    if (isInvoicelessCharge(transaction.kind, transaction.direction, transaction.stream)) continue;
     const values = transactionsByMoney.get(exactMoneyKey(transaction.amount)) ?? [];
     values.push({ transaction, date: transactionPurchaseDate(transaction) });
     transactionsByMoney.set(exactMoneyKey(transaction.amount), values);

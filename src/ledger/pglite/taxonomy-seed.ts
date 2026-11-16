@@ -106,6 +106,15 @@ const TAXONOMY_SEED_MIGRATIONS = [{
       ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'interest_and_fees', '["item-name","seller-tax-id","seller-name"]'),
       ('transaction-taxonomy', 'v1', 'kind/category-enrichment', 'v1', 'derived', 'category', 'interest_and_fees', '["kind"]')
     ON CONFLICT DO NOTHING;`,
+}, {
+  // A card outflow whose issuer label names the card's interest or fee.
+  id: "taxonomy-credit-card-charge-kinds-v1",
+  sql: `INSERT INTO taxonomy_producer_compatibility(
+      taxonomy_id, taxonomy_version, producer_id, producer_version, origin, field_name, output_code, evidence_kinds_json
+    ) VALUES
+      ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'interest.charged', '["bank-rule"]'),
+      ('transaction-taxonomy', 'v1', 'credit-card/direction-enrichment', 'v1', 'derived', 'kind', 'fee.card', '["bank-rule"]')
+    ON CONFLICT DO NOTHING;`,
 }] as const;
 
 export function applyPgliteTaxonomySeed(store: PGliteStore): Promise<void> {

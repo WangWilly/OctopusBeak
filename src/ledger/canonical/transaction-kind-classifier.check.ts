@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyBankTransactionKind, classifyCreditCardInflowKind } from "./transaction-kind-classifier.ts";
+import { classifyBankTransactionKind, classifyCreditCardInflowKind, classifyCreditCardOutflowKind } from "./transaction-kind-classifier.ts";
 
 const fubonDeposit = { institutionKey: "fubon", stream: "domestic-deposit" } as const;
 
@@ -88,4 +88,43 @@ test("investment settlement, dividend and deposit interest labels name their Kin
     assert.equal(deposit(direction, description), value, `${direction} ${description}`);
   assert.equal(deposit("outflow", "Debit ABCD 息"), "purchase", "a dividend label on an outflow is not income");
   assert.equal(deposit("outflow", "活存息"), "purchase", "an interest label on an outflow is not earned interest");
+});
+
+test("a card outflow whose whole issuer label names interest or a fee gets that Kind", () => {
+  for (const [description, value] of [
+    ["循環利息", "interest.charged"],
+    ["循環信用利息", "interest.charged"],
+    ["預借現金利息", "interest.charged"],
+    ["利息", "interest.charged"],
+    ["FINANCE CHARGE", "interest.charged"],
+    ["Interest Charge", "interest.charged"],
+    ["年費", "fee.card"],
+    ["信用卡年費", "fee.card"],
+    ["國外交易手續費", "fee.card"],
+    ["國外交易服務費", "fee.card"],
+    ["國外交易服務費（簽帳 1,234 )", "fee.card"],
+    ["(X-0001)國外交易授權結匯手續費", "fee.card"],
+    ["海外手續費", "fee.card"],
+    ["預借現金手續費", "fee.card"],
+    ["分期手續費", "fee.card"],
+    ["滯納金", "fee.card"],
+    ["違約金", "fee.card"],
+    ["手續費", "fee.card"],
+    [" 年 費 ", "fee.card"],
+    ["年費 · 白金卡", "fee.card"],
+    ["ANNUAL FEE", "fee.card"],
+    ["FOREIGN TRANSACTION FEE", "fee.card"],
+    ["LATE FEE", "fee.card"],
+    ["ＬＡＴＥ　ＦＥＥ", "fee.card"],
+  ] as const)
+    assert.equal(classifyCreditCardOutflowKind(description)?.value, value, description);
+});
+
+test("a merchant whose name merely holds a fee or interest word stays a purchase", () => {
+  for (const description of [
+    "測試健身房會員年費", "測試量販店續期會員年費", "測試手續費代辦", "息壤咖啡", "消費", "測試利息計算機專賣",
+    "測試錢包－測試公司水費", "測試停車場停車費", "FEEDBACK STORE", "COFFEE HOUSE", "INTEREST BOOKS", "LATE NIGHT DINER",
+    "測試商店 · 國外交易手續費", "國外交易手續費退回", "", null,
+  ])
+    assert.equal(classifyCreditCardOutflowKind(description), null, String(description));
 });

@@ -142,3 +142,28 @@ test("a fresh store holds every Personal Category, localization and applicabilit
     await store.close();
   }
 });
+
+test("a store installed before card interest and fee Kinds gains their compatibility rows on open (ADR 0142)", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    const rows = () => store.query<{ output_code: string; evidence_kinds_json: string }>(
+      `SELECT output_code, evidence_kinds_json FROM taxonomy_producer_compatibility
+        WHERE producer_id = $1 AND field_name = 'kind' AND output_code = ANY($2::text[]) ORDER BY output_code`,
+      ["credit-card/direction-enrichment", ["interest.charged", "fee.card"]]);
+    await store.query("ALTER TABLE taxonomy_producer_compatibility DISABLE TRIGGER USER");
+    await store.query("DELETE FROM taxonomy_producer_compatibility WHERE producer_id = $1 AND output_code = ANY($2::text[])",
+      ["credit-card/direction-enrichment", ["interest.charged", "fee.card"]]);
+    await store.query("ALTER TABLE taxonomy_producer_compatibility ENABLE TRIGGER USER");
+    await store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["taxonomy-credit-card-charge-kinds-v1"]);
+    assert.equal((await rows()).rows.length, 0);
+
+    await installFinancialStore(database);
+    assert.deepEqual((await rows()).rows, [
+      { output_code: "fee.card", evidence_kinds_json: '["bank-rule"]' },
+      { output_code: "interest.charged", evidence_kinds_json: '["bank-rule"]' },
+    ]);
+  } finally {
+    await store.close();
+  }
+});

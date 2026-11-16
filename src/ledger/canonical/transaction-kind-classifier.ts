@@ -190,3 +190,45 @@ export function classifyCreditCardInflowKind(description: string | null | undefi
     : null;
   return value === null ? null : { value, evidenceKind: "bank-rule", sourceField: "source_description" };
 }
+
+/**
+ * A credit-card outflow is a purchase unless the issuer itself charged it:
+ * interest, or a fee for the card. The issuer writes such a charge as its own
+ * line whose whole label names it, such as 循環利息, 年費 or 國外交易服務費,
+ * sometimes with a reference in brackets before or after it. So the label
+ * must be one of these words whole: a merchant whose name merely holds one,
+ * such as a shop's 會員年費, 息壤咖啡 or FEEDBACK STORE, stays a purchase.
+ */
+const CARD_INTEREST_LABEL = /^(?:(?:循環(?:信用)?|預借現金|分期(?:付款)?|延滯|遲延)?利息|循環息|(?:purchase|cashadvance)?interest(?:charges?)?|financecharges?)$/u;
+const CARD_FEE_LABEL = new RegExp(
+  "^(?:"
+    + "(?:信用卡|卡片|正卡|附卡)?年費"
+    + "|(?:國外|海外|境外)(?:交易|刷卡|消費)?(?:授權結匯)?(?:手續費|服務費)"
+    + "|(?:預借現金|分期(?:付款)?|掛失|補發卡?|補卡|逾期)?手續費"
+    + "|滯納金|違約金"
+    + "|(?:annual|membership|late(?:payment)?|cashadvance|overlimit|returnedpayment)fees?"
+    + "|(?:foreign|international|overseas)(?:transaction|currency|purchase)?(?:service)?fees?"
+    + ")$",
+  "u",
+);
+
+/** The issuer's label on a card line: its first `·` part, without whitespace or a bracketed reference before or after it. */
+function cardLabel(description: string | null | undefined): string {
+  return (description?.normalize("NFKC").split("·", 1)[0] ?? "")
+    .replace(/\s+/gu, "")
+    .replace(/^\([^()]*\)/u, "")
+    .replace(/\([^()]*\)$/u, "")
+    .toLowerCase();
+}
+
+export function classifyCreditCardOutflowKind(description: string | null | undefined): Readonly<{
+  value: "interest.charged" | "fee.card";
+  evidenceKind: "bank-rule";
+  sourceField: "source_description";
+}> | null {
+  const label = cardLabel(description);
+  const value = CARD_INTEREST_LABEL.test(label) ? "interest.charged"
+    : CARD_FEE_LABEL.test(label) ? "fee.card"
+    : null;
+  return value === null ? null : { value, evidenceKind: "bank-rule", sourceField: "source_description" };
+}

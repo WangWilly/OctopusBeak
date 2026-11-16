@@ -21,7 +21,7 @@ import {
   KIND_CATEGORY_ENRICHMENT_ROUTE_ID,
   KIND_DERIVED_CATEGORIES,
 } from "../canonical/transaction-taxonomy.ts";
-import { classifyBankTransactionKind, classifyCreditCardInflowKind } from "../canonical/transaction-kind-classifier.ts";
+import { classifyBankTransactionKind, classifyCreditCardInflowKind, classifyCreditCardOutflowKind } from "../canonical/transaction-kind-classifier.ts";
 import { classifyCathayDescription } from "../canonical/cathay-description-classifier.ts";
 
 export type PGliteProjectionTransaction = Readonly<{
@@ -201,13 +201,15 @@ export function derivePGliteTransactionKind(
   if (event !== undefined) return event;
   const card = creditCardRoute(transaction);
   if (card) {
-    const described = transaction.direction === "inflow" ? classifyCreditCardInflowKind(transaction.description) : null;
+    const described = transaction.direction === "inflow"
+      ? classifyCreditCardInflowKind(transaction.description)
+      : classifyCreditCardOutflowKind(transaction.description);
     if (described)
       return {
         ...described,
         sourceValue: transaction.description ?? "",
         ...card,
-        ruleLineage: `${card.contractVersion}/inflow-description`,
+        ruleLineage: `${card.contractVersion}/${transaction.direction}-description`,
       };
     return {
       value: transaction.direction === "outflow" ? "purchase" : "refund",

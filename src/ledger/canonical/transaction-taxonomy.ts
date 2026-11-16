@@ -767,6 +767,15 @@ const CREDIT_CARD_DIRECTION_DERIVED_COMPATIBILITY: readonly ProducerCompatibilit
     outputCode,
     evidenceKinds: ["bank-rule"],
   })),
+  // An outflow whose issuer label names a card's interest or fee. Added outputs, as above.
+  ...(["interest.charged", "fee.card"] as const).map((outputCode) => ({
+    producerId: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_ID,
+    producerVersion: CREDIT_CARD_DIRECTION_ENRICHMENT_PRODUCER_VERSION,
+    origin: "derived" as const,
+    field: "kind" as const,
+    outputCode,
+    evidenceKinds: ["bank-rule"],
+  })),
 ];
 
 const ACCOUNT_EVENT_KIND_DERIVED_COMPATIBILITY: readonly ProducerCompatibility[] =
