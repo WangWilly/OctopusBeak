@@ -167,7 +167,7 @@ export function linkExcludable(kind: CashFlowKind | null): boolean {
 }
 
 /** The streams of investment accounts: every cash effect there has its counterpart on a funding account. */
-const INVESTMENT_ACCOUNT_STREAMS: ReadonlySet<string> = new Set(["investment", "investment-fund"]);
+export const INVESTMENT_ACCOUNT_STREAMS: ReadonlySet<string> = new Set(["investment", "investment-fund"]);
 
 /** What a loan charges, which the loan account books as an inflow. */
 const LOAN_CHARGE_KINDS: ReadonlySet<string> = new Set(["interest.charged", "fee.loan"]);

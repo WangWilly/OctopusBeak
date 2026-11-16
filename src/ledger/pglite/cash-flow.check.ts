@@ -14,6 +14,7 @@ import { BANK_ROUTE, createSpendingCategoryFixture, setKind, type FixtureTransac
 import { PGliteStore } from "./transaction.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import { querySpendingReport } from "./spending-facts.ts";
+import { readCashFlowSearchMatches } from "./cash-flow-search.ts";
 import type { CashFlowClass } from "../canonical/cash-flow-inclusion.ts";
 
 const SEPTEMBER = { startDate: "2026-09-01", endDate: "2026-09-30" } as const;
@@ -160,6 +161,18 @@ test("buy, sell, corporate action and dividend on an investment account carry th
     for (const id of ids) assert.deepEqual(rowOf(id)?.cashFlow, { class: "not_counted", reason: "investment_move" });
     const [twd] = report.totals;
     assert.deepEqual([twd?.inflow.count, twd?.outflow.count, twd?.unresolved.count], [0, 0, 0]);
+  });
+});
+
+test("searching every period for the investment-move label finds investment-account rows whatever their Kind (ADR 0138)", async () => {
+  await withFixture(async (fixture) => {
+    const dividend = await fixture.addTransaction({ amount: "700", direction: "inflow", date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: "dividend" } });
+    const eventless = await fixture.addTransaction({ amount: "0", direction: "inflow", date: "2026-09-13", account: "exchange", accountStream: MAICOIN });
+    const knowledgeAt = await fixture.knowledgeAt();
+    for (const query of ["投資進出", "investment move"]) {
+      const found = (await readCashFlowSearchMatches(fixture.store, knowledgeAt, query)).map((row) => row.transactionId);
+      assert.deepEqual([found.includes(dividend), found.includes(eventless)], [true, true], `query ${query}`);
+    }
   });
 });
 
