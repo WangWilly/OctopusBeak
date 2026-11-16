@@ -67,6 +67,25 @@ export function cashFlowTransferRole(row: Pick<CashFlowReportTransaction, "cashF
   return row.transferLinkId !== null ? "paired" : "internal";
 }
 
+/**
+ * The way a row moves the person's money as Cash flow counts it: a counted
+ * outflow goes out and a counted inflow or refund comes in, whatever the
+ * account booked. Only a loan's interest or fee differs from `direction`: the
+ * loan account books it as an inflow, and it counts as an outflow (ADR 0138).
+ * A row Cash flow does not count keeps its account's direction.
+ */
+export function cashFlowDirection(row: Pick<CashFlowReportTransaction, "direction" | "cashFlow">): CashFlowReportTransaction["direction"] {
+  switch (row.cashFlow.class) {
+    case "outflow":
+      return "outflow";
+    case "inflow":
+    case "refund":
+      return "inflow";
+    default:
+      return row.direction;
+  }
+}
+
 /** An account's signed change over the period, transfers included. */
 export type CashFlowAccountChange = Readonly<{
   account: CashFlowAccount;

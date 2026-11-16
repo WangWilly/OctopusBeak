@@ -4,6 +4,7 @@ import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import {
   derivePGliteCathayDescriptionKind,
   derivePGliteTransactionKind,
+  type PGliteAccountEvent,
   type PGliteProjectionRelations,
   type PGliteProjectionTransaction,
 } from "./enrichment.ts";
@@ -752,7 +753,9 @@ async function readCurrentTransactions(
             source_record.payload_json AS source_payload,
             connection.integration_namespace,
             account.stream, connection.source_connection_key,
-            epoch.epoch_key AS identity_epoch
+            epoch.epoch_key AS identity_epoch,
+            investment.action AS investment_action,
+            loan_fact.event_kind AS loan_event_kind
        FROM current_transactions current_row
        JOIN transaction_revisions revision
          ON revision.revision_id = current_row.revision_id
@@ -765,6 +768,10 @@ async function readCurrentTransactions(
        JOIN source_records source_record
          ON source_record.source_record_id = revision.source_record_id
         AND source_record.capture_id = revision.capture_id
+       LEFT JOIN investment_transactions investment
+         ON investment.transaction_id = current_row.transaction_id
+       LEFT JOIN loan_transaction_facts loan_fact
+         ON loan_fact.revision_id = current_row.revision_id
       ${filterSql}
       ORDER BY encode(current_row.transaction_id, 'hex')`,
     filter && filter.length > 0 ? filter : [],
@@ -783,7 +790,17 @@ async function readCurrentTransactions(
     stream: String(row.stream),
     sourceConnectionKey: String(row.source_connection_key),
     identityEpoch: String(row.identity_epoch),
+    accountEvent: accountEvent(row),
   }));
+}
+
+/** The event an investment or loan writer recorded; the tables' CHECK constraints bound its values. */
+function accountEvent(row: Row): PGliteAccountEvent | null {
+  if (row.investment_action != null)
+    return { evidenceKind: "investment-event", value: String(row.investment_action) as Extract<PGliteAccountEvent, { evidenceKind: "investment-event" }>["value"] };
+  if (row.loan_event_kind != null)
+    return { evidenceKind: "loan-event", value: String(row.loan_event_kind) as Extract<PGliteAccountEvent, { evidenceKind: "loan-event" }>["value"] };
+  return null;
 }
 
 function exactAmountKey(coefficient: string, scale: number): string {
@@ -845,6 +862,28 @@ async function relationMap(
     [cutoffSequence],
   );
   for (const row of loans)
+    add(idText(row.transaction_id, "Loan repayment transaction"), { activeLoanRepayment: true });
+  // A repayment matched one to one is a transfer_counterpart relation; its outflow endpoint is the deposit side.
+  const exactLoans = await query<Row>(
+    transaction,
+    `SELECT CASE WHEN relation.from_direction = 'outflow' THEN relation.from_transaction_id
+                 ELSE relation.to_transaction_id END AS transaction_id
+       FROM transaction_relations relation
+      WHERE relation.relation_kind = 'transfer_counterpart'
+        AND 'outflow' IN (relation.from_direction, relation.to_direction)
+        AND COALESCE((
+          SELECT event.event_kind
+            FROM loan_repayment_relation_events event
+            JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id
+           WHERE event.relation_id = relation.relation_id
+             AND event_commit.commit_sequence <= ?
+           ORDER BY event_commit.commit_sequence DESC,
+                    encode(event.event_id, 'hex') DESC
+           LIMIT 1
+        ), 'withdrawn') NOT IN ('withdrawn', 'superseded')`,
+    [cutoffSequence],
+  );
+  for (const row of exactLoans)
     add(idText(row.transaction_id, "Loan repayment transaction"), { activeLoanRepayment: true });
   const statementRows = await query<Row>(
     transaction,

@@ -36,6 +36,11 @@ export type FixtureTransactionInput = Readonly<{
   account?: string;
   /** Credit-card facts: a consume date makes the transaction's date a purchase date. */
   card?: FixtureCardFacts;
+  /** Where a new `account` lives; omitted means a card of the fixture's own source. */
+  accountStream?: Readonly<{ namespace: string; stream: string; accountType: "depository" | "investment" | "loan" }>;
+  /** The investment action or loan event kind its writer records beside the transaction. */
+  event?: Readonly<{ investment: "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend" }>
+    | Readonly<{ loan: "disbursement" | "payment" | "interest" | "fee" }>;
 }>;
 
 export type FixtureCardFacts = Readonly<{
@@ -190,20 +195,77 @@ export async function createSpendingCategoryFixture() {
   );
 
   const accounts = new Map<string, Uint8Array>();
-  async function accountFor(transaction: Pick<PGliteStore, "query">, key: string | undefined): Promise<Uint8Array> {
+  const connections = new Map<string, Readonly<{ connection: Uint8Array; epoch: Uint8Array }>>([["fubon", { connection: sourceConnection, epoch }]]);
+  async function connectionFor(transaction: Pick<PGliteStore, "query">, namespace: string) {
+    let found = connections.get(namespace);
+    if (!found) {
+      found = { connection: uuidBytes(), epoch: uuidBytes() };
+      connections.set(namespace, found);
+      await transaction.query(
+        "INSERT INTO source_connections(source_connection_id, integration_namespace, source_connection_key, created_commit_id) VALUES ($1, $2, $3, $4)",
+        [found.connection, namespace, `fixture-${namespace}-connection`, sourceCommit],
+      );
+      await transaction.query(
+        "INSERT INTO identity_epochs(identity_epoch_id, source_connection_id, epoch_key, created_commit_id) VALUES ($1, $2, $3, $4)",
+        [found.epoch, found.connection, `fixture-${namespace}-epoch`, sourceCommit],
+      );
+    }
+    return found;
+  }
+  async function accountFor(transaction: Pick<PGliteStore, "query">, key: string | undefined, where: FixtureTransactionInput["accountStream"]): Promise<Uint8Array> {
     if (key === undefined) return account;
     let id = accounts.get(key);
     if (!id) {
       id = uuidBytes();
       accounts.set(key, id);
+      const placed = where ?? { namespace: "fubon", stream: "credit-card", accountType: "credit" as const };
+      const owner = await connectionFor(transaction, placed.namespace);
       await transaction.query(
         `INSERT INTO financial_accounts(
            account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id
-         ) VALUES ($1, $2, $3, 'credit-card', $4, $4, 'credit', 'TWD', 'fubon', $5)`,
-        [id, sourceConnection, epoch, key, sourceCommit],
+         ) VALUES ($1, $2, $3, $6, $4, $4, $7, 'TWD', 'fubon', $5)`,
+        [id, owner.connection, owner.epoch, key, sourceCommit, placed.stream, placed.accountType],
       );
+      if (placed.accountType === "investment")
+        await transaction.query(
+          `INSERT INTO investment_accounts(account_id, source_connection_id, identity_epoch_id, source_id, account_key, account_type)
+           VALUES ($1, $2, $3, $4, $5, 'investment')`,
+          [id, owner.connection, owner.epoch, placed.namespace, key],
+        );
     }
     return id;
+  }
+
+  let security: Uint8Array | null = null;
+  async function recordEvent(transaction: Pick<PGliteStore, "query">, ids: Readonly<{ transactionId: Uint8Array; revisionId: Uint8Array; recordId: Uint8Array; commitId: Uint8Array; accountId: Uint8Array }>, input: FixtureTransactionInput) {
+    const event = input.event;
+    if (!event) return;
+    if ("loan" in event) {
+      await transaction.query(
+        `INSERT INTO loan_transaction_facts(transaction_id, revision_id, source_record_id, capture_id, commit_id, occurrence_index, event_kind, event_source_code, event_evidence_contract_version)
+         VALUES ($1, $2, $3, $4, $5, 1, $6, 'FIXTURE', 'fixture/loan-event')`,
+        [ids.transactionId, ids.revisionId, ids.recordId, bankCapture, ids.commitId, event.loan],
+      );
+      return;
+    }
+    if (!security) {
+      security = uuidBytes();
+      await transaction.query(
+        "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'fixture', 'fixture/investment') ON CONFLICT DO NOTHING",
+        [bankCapture, sourceCommit],
+      );
+      await transaction.query(
+        `INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type)
+         VALUES ($1, 'fixture', 'fixture-security', 'fixture-security', NULL, NULL, 'TWD', 'equity')`,
+        [security],
+      );
+    }
+    await transaction.query(
+      `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action,
+         quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, '1', 0, $8, $9, 'TWD', $10, '{}')`,
+      [ids.transactionId, bankCapture, ids.commitId, ids.accountId, security, ids.recordId, event.investment, input.amount, input.scale ?? 0, input.date ?? "2026-09-01"],
+    );
   }
 
   async function knowledgeAt(): Promise<number> {
@@ -231,7 +293,7 @@ export async function createSpendingCategoryFixture() {
     const ordinal = ++captureCount;
     const date = input.date ?? "2026-09-01";
     await store.transaction(async (transaction) => {
-      const accountId = await accountFor(transaction, input.account);
+      const accountId = await accountFor(transaction, input.account, input.accountStream);
       const sequence = Number((await transaction.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits")).rows[0]?.value ?? 1);
       await transaction.query(
         "INSERT INTO canonical_commits(commit_id, commit_sequence, recorded_at_utc_us, authority_route, commit_kind) VALUES ($1, $2, $3, $4, 'source_capture')",
@@ -271,6 +333,7 @@ export async function createSpendingCategoryFixture() {
         "INSERT INTO assertion_provenance(assertion_id, source_record_id, run_id, enrichment_run_id, coordinate_id, commit_id) VALUES ($1, $2, NULL, NULL, NULL, $3)",
         [assertionId, recordId, commitId],
       );
+      await recordEvent(transaction, { transactionId, revisionId, recordId, commitId, accountId }, input);
       if (input.card) {
         const card = input.card;
         const maskKey = card.cardMask ?? "";

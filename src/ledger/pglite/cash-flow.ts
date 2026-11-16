@@ -376,7 +376,7 @@ async function canonicalTransactions(
     const flowDirection = direction(transaction.direction);
     const amount = { ...absoluteExact(transaction.amount), currency: transaction.amount.currency };
     const evidence = evidenceOf.get(transaction.transactionId) ?? null;
-    return { transaction, flowDirection, amount, evidence, rule: cashFlowRule(transaction.kind, flowDirection) };
+    return { transaction, flowDirection, amount, evidence, rule: cashFlowRule(transaction.kind, flowDirection, transaction.stream) };
   });
   const refundIds = included.filter((entry) => entry.rule.class === "refund").map((entry) => entry.transaction.transactionId);
   const originalOf = await refundOriginals(reader, refundIds);

@@ -1,4 +1,10 @@
 import {
+  ACCOUNT_EVENT_KIND_ENRICHMENT_CONTRACT_VERSION,
+  ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
+  ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
+  ACCOUNT_EVENT_KIND_ENRICHMENT_ROUTE_SCOPES,
+  ACCOUNT_EVENT_KINDS,
+  type AccountEventEvidenceKind,
   BANK_TRANSACTION_KIND_ENRICHMENT_CONTRACT_VERSION,
   BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
   BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
@@ -25,7 +31,13 @@ export type PGliteProjectionTransaction = Readonly<{
   stream: string;
   sourceConnectionKey: string;
   identityEpoch: string;
+  /** The investment action or loan event kind its source recorded, when it recorded one. */
+  accountEvent?: PGliteAccountEvent | null;
 }>;
+
+export type PGliteAccountEvent =
+  | Readonly<{ evidenceKind: "investment-event"; value: keyof (typeof ACCOUNT_EVENT_KINDS)["investment-event"] }>
+  | Readonly<{ evidenceKind: "loan-event"; value: keyof (typeof ACCOUNT_EVENT_KINDS)["loan-event"] }>;
 
 export type PGliteProjectionRelations = Readonly<{
   investmentFundingDirection?: "inflow" | "outflow";
@@ -41,7 +53,8 @@ export type PGliteDerivedKind = Readonly<{
     | "investment-relation"
     | "loan-relation"
     | "credit-card-statement-relation"
-    | "direction";
+    | "direction"
+    | AccountEventEvidenceKind;
   sourceField: string;
   sourceValue: string;
   contractVersion: string;
@@ -109,6 +122,42 @@ function creditCardRoute(transaction: PGliteProjectionTransaction): {
   };
 }
 
+const ACCOUNT_EVENT_SCOPES: ReadonlyMap<string, AccountEventEvidenceKind> = new Map(
+  (Object.entries(ACCOUNT_EVENT_KIND_ENRICHMENT_ROUTE_SCOPES) as [AccountEventEvidenceKind, readonly string[]][])
+    .flatMap(([evidenceKind, scopes]) => scopes.map((scope) => [scope, evidenceKind] as const)),
+);
+
+const ACCOUNT_EVENT_SOURCE_FIELDS: Readonly<Record<AccountEventEvidenceKind, string>> = {
+  "investment-event": "investment_transactions.action",
+  "loan-event": "loan_transaction_facts.event_kind",
+};
+
+/**
+ * An investment or loan row's Kind, read from the event its source recorded
+ * (ADR 0138). A row on such a stream without that event gets no Kind.
+ */
+function accountEventKind(transaction: PGliteProjectionTransaction): PGliteDerivedKind | null | undefined {
+  const scope = `${transaction.integrationNamespace}/${transaction.stream}`;
+  const evidenceKind = ACCOUNT_EVENT_SCOPES.get(scope);
+  if (evidenceKind === undefined) return undefined;
+  const event = transaction.accountEvent;
+  if (!event || event.evidenceKind !== evidenceKind) return null;
+  const kinds: Readonly<Record<string, string>> = ACCOUNT_EVENT_KINDS[evidenceKind];
+  const value = kinds[event.value];
+  if (value === undefined) return null;
+  return {
+    value,
+    evidenceKind,
+    sourceField: ACCOUNT_EVENT_SOURCE_FIELDS[evidenceKind],
+    sourceValue: event.value,
+    contractVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_CONTRACT_VERSION,
+    producerId: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_ID,
+    producerVersion: ACCOUNT_EVENT_KIND_ENRICHMENT_PRODUCER_VERSION,
+    ruleLineage: `${ACCOUNT_EVENT_KIND_ENRICHMENT_CONTRACT_VERSION}/${evidenceKind}`,
+    routeId: `${scope}/event-kind-enrichment/v1/kind`,
+  };
+}
+
 function bankClassification(
   transaction: PGliteProjectionTransaction,
   relations: PGliteProjectionRelations,
@@ -149,6 +198,8 @@ export function derivePGliteTransactionKind(
     transaction.integrationNamespace === "cathay" &&
     transaction.stream === "domestic-deposit"
   ) return derivePGliteCathayDescriptionKind(transaction);
+  const event = accountEventKind(transaction);
+  if (event !== undefined) return event;
   const card = creditCardRoute(transaction);
   if (card) {
     const described = transaction.direction === "inflow" ? classifyCreditCardInflowKind(transaction.description) : null;

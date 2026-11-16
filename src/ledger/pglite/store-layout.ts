@@ -1,6 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { applyPgliteBaseline } from "./baseline.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
+import { applyPgliteKindRederivation } from "./kind-rederivation.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { applyPgliteOperationalBaseline } from "./operational.ts";
@@ -24,5 +25,6 @@ export async function installFinancialStore(db: PGlite): Promise<PGliteStore> {
   await applyPgliteManualAssetsSchema(store);
   await applyPgliteCashFlowTransferSchema(store);
   await applyPgliteTaxonomySeed(store);
+  await applyPgliteKindRederivation(store);
   return store;
 }

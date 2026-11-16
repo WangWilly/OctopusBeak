@@ -2024,7 +2024,13 @@ INSERT INTO "automatic_enrichment_authority_routes" ("route_id", "subject_kind",
 ('fubon/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'fubon/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('post/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'post/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
 ('ctbc/domestic-deposit/kind-enrichment/v4/kind', 'transaction', 'kind', 'source_stream', 'ctbc/domestic-deposit', 'bank/deposit-kind-enrichment', 'v4', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
-('einvoice/personal-invoices/item-category-enrichment/v1/category', 'einvoice_item', 'category', 'source_stream', 'einvoice/personal-invoices', 'einvoice/item-category-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
+('einvoice/personal-invoices/item-category-enrichment/v1/category', 'einvoice_item', 'category', 'source_stream', 'einvoice/personal-invoices', 'einvoice/item-category-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('yuanta-fund/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'yuanta-fund/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('yuanta-trade/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'yuanta-trade/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('maicoin/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'maicoin/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('binance/investment/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'binance/investment', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('yuanta/loan/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'yuanta/loan', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL),
+('fubon/loan/event-kind-enrichment/v1/kind', 'transaction', 'kind', 'source_stream', 'fubon/loan', 'account-event/kind-enrichment', 'v1', 'derived', 'transaction-taxonomy', 'v1', 1, NULL)
 ON CONFLICT DO NOTHING;
 INSERT INTO "canonical_grouped_role_contracts" ("producer_id", "producer_version", "contract_version", "admission_policy", "origin", "field_name", "evidence_kinds_json", "role_codes_json") VALUES
 ('cathay/domestic-deposit/automatic-enrichment', 'v1', 'cathay/domestic-deposit/counterparty-group/v1', 'admit', 'source', 'counterparty_role', '["explicit-source-field"]', '["merchant","marketplace","payment_platform","financial_institution"]'),
@@ -2036,7 +2042,8 @@ INSERT INTO "enrichment_producer_versions" ("producer_id", "producer_version", "
 ('cathay/domestic-deposit/automatic-enrichment', 'v1', 'transaction-taxonomy', 'v1', 7500),
 ('credit-card/direction-enrichment', 'v1', 'transaction-taxonomy', 'v1', 7500),
 ('bank/deposit-kind-enrichment', 'v4', 'transaction-taxonomy', 'v1', 7500),
-('einvoice/item-category-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000)
+('einvoice/item-category-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000),
+('account-event/kind-enrichment', 'v1', 'transaction-taxonomy', 'v1', 10000)
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_applicability" ("taxonomy_id", "taxonomy_version", "category_dimension", "category_code", "kind_dimension", "kind_code") VALUES
 ('transaction-taxonomy', 'v1', 'category', 'food_and_groceries', 'kind', 'purchase'),
@@ -2702,7 +2709,15 @@ INSERT INTO "taxonomy_producer_compatibility" ("taxonomy_id", "taxonomy_version"
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'insurance', '["item-name","seller-tax-id","seller-name"]'),
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'taxes_and_government', '["item-name","seller-tax-id","seller-name"]'),
 ('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'gifts_and_donations', '["item-name","seller-tax-id","seller-name"]'),
-('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'work_and_business', '["item-name","seller-tax-id","seller-name"]')
+('transaction-taxonomy', 'v1', 'einvoice/item-category-enrichment', 'v1', 'derived', 'category', 'work_and_business', '["item-name","seller-tax-id","seller-name"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.trade.buy', '["investment-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.trade.sell', '["investment-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'investment.corporate_action', '["investment-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'income.dividend', '["investment-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'payment.loan', '["loan-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'loan.disbursement', '["loan-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'interest.charged', '["loan-event"]'),
+('transaction-taxonomy', 'v1', 'account-event/kind-enrichment', 'v1', 'derived', 'kind', 'fee.loan', '["loan-event"]')
 ON CONFLICT DO NOTHING;
 INSERT INTO "taxonomy_versions" ("taxonomy_id", "taxonomy_version", "status", "package_hash", "published_at_utc_us") VALUES
 ('transaction-taxonomy', 'v1', 'published', 'sha256:OZAcDNxJ9u91Dy6SnAzjP0Wm79NKjnawZ-Nd_3MpK4o', 0)

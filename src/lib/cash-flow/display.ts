@@ -10,7 +10,7 @@ import {
   type ExactAmount,
   type ExactMoney,
 } from "../shared-money/exact-money.ts";
-import type { CashFlowAccount, CashFlowRow } from "./model.ts";
+import { cashFlowDirection, type CashFlowAccount, type CashFlowRow } from "./model.ts";
 
 /** An outflow group; null is the Unclassified bucket. */
 export type OutflowGroupKey = CashFlowOutflowGroup;
@@ -92,9 +92,9 @@ export function countedEffect(row: CashFlowRow): ExactAmount | null {
   }
 }
 
-/** The row's effect on its account, as the list shows it. */
+/** The row's amount as the list shows it, signed the way Cash flow counts it. */
 export function signedAmount(row: CashFlowRow): ExactMoney {
-  const exact = row.direction === "inflow" ? row.amount : negateExact(row.amount);
+  const exact = cashFlowDirection(row) === "inflow" ? row.amount : negateExact(row.amount);
   return { ...exact, currency: row.amount.currency };
 }
 

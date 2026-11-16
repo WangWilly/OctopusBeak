@@ -12,6 +12,8 @@ import { commitPGliteSpendingRefundRevision } from "./spending-command.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { BANK_ROUTE, createSpendingCategoryFixture, setKind, type FixtureTransactionInput, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { PGliteStore } from "./transaction.ts";
+import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
+import { querySpendingReport } from "./spending-facts.ts";
 import type { CashFlowClass } from "../canonical/cash-flow-inclusion.ts";
 
 const SEPTEMBER = { startDate: "2026-09-01", endDate: "2026-09-30" } as const;
@@ -133,6 +135,121 @@ test("each Kind class sorts its transaction into inflow, outflow, refund, not co
     const [twd] = report.totals;
     assert.deepEqual(twd?.unresolved, { amount: amount("100"), count: 1 });
     assert.deepEqual(twd?.inflow.amount, amount("400"));
+  });
+});
+
+const MAICOIN = { namespace: "maicoin", stream: "investment", accountType: "investment" } as const;
+const FUBON_LOAN = { namespace: "fubon", stream: "loan", accountType: "loan" } as const;
+const FUBON_DEPOSIT = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
+
+test("buy, sell, corporate action and dividend on an investment account carry their own Kind and are not counted (ADR 0138)", async () => {
+  await withFixture(async (fixture) => {
+    const entries = [
+      ["buy", "outflow", "investment.trade.buy"],
+      ["sell", "inflow", "investment.trade.sell"],
+      ["corporate_action_in", "inflow", "investment.corporate_action"],
+      ["corporate_action_out", "outflow", "investment.corporate_action"],
+      ["dividend", "inflow", "income.dividend"],
+    ] as const;
+    const ids: string[] = [];
+    for (const [action, direction] of entries)
+      ids.push(await fixture.addTransaction({ amount: "700", direction, date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: action } }));
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    const rowOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
+    assert.deepEqual(ids.map((id) => rowOf(id)?.kind), entries.map(([, , code]) => ({ code, basis: "evidence" })));
+    for (const id of ids) assert.deepEqual(rowOf(id)?.cashFlow, { class: "not_counted", reason: "investment_move" });
+    const [twd] = report.totals;
+    assert.deepEqual([twd?.inflow.count, twd?.outflow.count, twd?.unresolved.count], [0, 0, 0]);
+  });
+});
+
+test("a loan's interest and fee count once as outflows from the loan account, and its principal does not count (ADR 0138)", async () => {
+  await withFixture(async (fixture) => {
+    const loan = (amount: string, event: "payment" | "interest" | "fee") =>
+      fixture.addTransaction({ amount, direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: event } });
+    const principal = await loan("9000", "payment");
+    const interest = await loan("1200", "interest");
+    const fee = await loan("100", "fee");
+    // The deposit-side debit for the whole instalment, matched by its label.
+    const debit = await fixture.addTransaction({ amount: "10300", direction: "outflow", date: "2026-09-21", description: "房貸 扣款", account: "salary-account", accountStream: FUBON_DEPOSIT });
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    const rowOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
+    assert.deepEqual(rowOf(principal)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
+    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: unclassified("1200") });
+    assert.deepEqual(rowOf(fee)?.cashFlow, { class: "outflow", categories: unclassified("100") });
+    assert.equal(rowOf(interest)?.direction, "inflow", "the row keeps the direction its account booked");
+    assert.deepEqual(rowOf(debit)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
+    const [twd] = report.totals;
+    assert.deepEqual([twd?.outflow.amount, twd?.outflow.count], [amount("1300"), 2], "the interest and fee count once, from the loan side");
+    assert.deepEqual(report.transfers.candidates, [], "the interest is no transfer side");
+  });
+});
+
+test("Spending leaves out every investment and loan row that now carries a Kind, a disbursement outflow too (ADR 0138)", async () => {
+  await withFixture(async (fixture) => {
+    const purchase = await fixture.addTransaction({ amount: "250", date: "2026-09-05" });
+    const rows = [
+      await fixture.addTransaction({ amount: "700", direction: "outflow", date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: "buy" } }),
+      await fixture.addTransaction({ amount: "700", direction: "outflow", date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: "corporate_action_out" } }),
+      await fixture.addTransaction({ amount: "500000", direction: "outflow", date: "2026-09-02", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "disbursement" } }),
+      await fixture.addTransaction({ amount: "1200", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "interest" } }),
+    ];
+    const report = await querySpendingReport(fixture.store, "current", await fixture.knowledgeAt(), null, SEPTEMBER);
+    const inclusionOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
+    assert.deepEqual(rows.map((id) => [inclusionOf(id)?.kind !== null, inclusionOf(id)?.inclusion]), rows.map(() => [true, "excluded"]));
+    assert.deepEqual(report.includedTransactions.map((transaction) => transaction.transactionId), [purchase]);
+  });
+});
+
+/** A one-to-one loan repayment relation the resolver observed, then the projection its commit runs. */
+async function relateLoanRepayment(fixture: SpendingCategoryFixture, depositId: string, loanId: string) {
+  await fixture.store.transaction(async (transaction) => {
+    const latest = (await transaction.query<{ commit_id: Uint8Array; commit_sequence: number }>(
+      "SELECT commit_id, commit_sequence FROM canonical_commits ORDER BY commit_sequence DESC LIMIT 1")).rows[0]!;
+    const [relationId, resolutionId] = [idBytes(randomUUID()), idBytes(randomUUID())];
+    await transaction.query(
+      `INSERT INTO loan_repayment_resolution_runs(resolution_id, resolution_key, source_connection_id, resolver_version, coverage_state, outcome, observed_at, commit_id)
+       SELECT $1, 'fixture-resolution', account.source_connection_id, 'fixture', 'complete', 'changed', '2026-09-22T00:00:00Z', $2
+         FROM financial_transactions financial JOIN financial_accounts account ON account.account_id = financial.account_id
+        WHERE financial.transaction_id = $3`,
+      [resolutionId, latest.commit_id, idBytes(depositId)]);
+    await transaction.query(
+      `INSERT INTO transaction_relations(relation_id, account_id, source_connection_id, identity_epoch_id, commit_id, relation_key, relation_kind,
+         from_account_id, to_account_id, from_source_record_key, to_source_record_key, from_transaction_id, to_transaction_id,
+         from_direction, to_direction, evidence_source_record_key, evidence_relation_id, evidence_contract_version)
+       SELECT $1, deposit.account_id, account.source_connection_id, account.identity_epoch_id, $2, 'fixture-relation', 'transfer_counterpart',
+              deposit.account_id, loan.account_id, 'deposit', 'loan', deposit.transaction_id, loan.transaction_id,
+              'outflow', 'inflow', 'deposit', 'fixture', 'fixture'
+         FROM financial_transactions deposit
+         JOIN financial_accounts account ON account.account_id = deposit.account_id
+         JOIN financial_transactions loan ON loan.transaction_id = $4
+        WHERE deposit.transaction_id = $3`,
+      [relationId, latest.commit_id, idBytes(depositId), idBytes(loanId)]);
+    await transaction.query(
+      `INSERT INTO loan_repayment_relation_events(event_id, resolution_id, relation_id, event_kind, support_kind, support_key, evidence_json, commit_id)
+       VALUES ($1, $2, $3, 'observed', 'verified-repayment-destination', 'fixture', '{}', $4)`,
+      [idBytes(randomUUID()), resolutionId, relationId, latest.commit_id]);
+    await refreshPGliteCurrentProjectionInTransaction(transaction, {
+      commitId: latest.commit_id,
+      cutoffSequence: Number(latest.commit_sequence),
+      transactionIds: [idBytes(depositId)],
+    });
+  });
+}
+
+test("a deposit debit the keyword rule reads as interest does not count again once a loan repayment relation names it (ADR 0138)", async () => {
+  await withFixture(async (fixture) => {
+    const interest = await fixture.addTransaction({ amount: "800", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "interest" } });
+    const debit = await fixture.addTransaction({ amount: "800", direction: "outflow", date: "2026-09-21", description: "扣繳利息", account: "salary-account", accountStream: FUBON_DEPOSIT });
+    const before = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    assert.equal(before.transactions.find((row) => row.transactionId === debit)?.kind?.code, "interest.charged", "the label alone reads as interest");
+    await relateLoanRepayment(fixture, debit, interest);
+    const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
+    const rowOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
+    assert.deepEqual(rowOf(debit)?.kind, { code: "payment.loan", basis: "evidence" });
+    assert.deepEqual(rowOf(debit)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
+    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: unclassified("800") });
+    assert.deepEqual(report.totals[0]?.outflow.amount, amount("800"), "the interest counts exactly once");
   });
 });
 

@@ -1,5 +1,6 @@
 import type { CashFlowTransaction } from "./cash-flow-inclusion.ts";
 import { compareExact, sameCurrency } from "../../lib/shared-money/exact-money.ts";
+import { cashFlowDirection } from "../../lib/cash-flow/model.ts";
 
 /**
  * The rules every Cash-flow transfer link meets (ADR 0137), apart from the
@@ -17,7 +18,7 @@ export const CASH_FLOW_TRANSFER_WINDOW_DAYS = 3;
 /** One side of a possible link. Only Cash flow rows can become one, so every side is in a counted, non-preview account. */
 export type CashFlowTransferSide = Pick<
   CashFlowTransaction,
-  "transactionId" | "source" | "accountId" | "date" | "amount" | "direction" | "kind"
+  "transactionId" | "source" | "accountId" | "date" | "amount" | "direction" | "kind" | "cashFlow"
 >;
 
 export type CashFlowTransferPair = Readonly<{ outflowTransactionId: string; inflowTransactionId: string }>;
@@ -76,7 +77,9 @@ export function cashFlowTransferInvalidity(outflow: CashFlowTransferSide, inflow
   if (outflow.transactionId === inflow.transactionId) return "same_transaction";
   // A Manual Account transfer already records both of its sides.
   if (outflow.source !== "canonical" || inflow.source !== "canonical") return "manual_account";
-  if (outflow.direction !== "outflow" || inflow.direction !== "inflow") return "direction";
+  // A loan's interest counts out of an account that booked it in, so it is neither side of a move.
+  if (outflow.direction !== "outflow" || inflow.direction !== "inflow"
+    || cashFlowDirection(outflow) !== "outflow" || cashFlowDirection(inflow) !== "inflow") return "direction";
   if (outflow.accountId === inflow.accountId) return "same_account";
   if (!sameCurrency(outflow.amount, inflow.amount)) return "currency";
   if (compareExact(outflow.amount, inflow.amount) !== 0) return "amount";
