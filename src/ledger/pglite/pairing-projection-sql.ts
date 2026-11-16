@@ -1,24 +1,23 @@
-/**
- * Disposable, transactionally maintained read projection for Spending Pairing.
- * Install after the authoritative baseline tables and foreign keys. This SQL
- * never replaces canonical transaction, enrichment, date-fact, or link rows.
- */
-export const PGLITE_SPENDING_PAIRING_PROJECTION_SQL = `
-CREATE TABLE current_spending_pairing_entries (
-  transaction_id BYTEA PRIMARY KEY REFERENCES financial_transactions(transaction_id),
-  revision_id BYTEA NOT NULL REFERENCES transaction_revisions(revision_id),
-  effective_on TEXT NOT NULL,
-  consume_date TEXT,
-  posting_date TEXT,
-  effective_date_basis TEXT,
-  description TEXT,
-  amount_coefficient TEXT NOT NULL,
-  amount_scale INTEGER NOT NULL,
-  currency TEXT NOT NULL
-);
+import { SPENDING_EXCLUDED_KIND_PREFIXES } from "../canonical/spending-inclusion-policy.ts";
 
-CREATE OR REPLACE FUNCTION refresh_current_spending_pairing_entry(target_transaction_id BYTEA)
-RETURNS VOID LANGUAGE plpgsql AS $$
+for (const prefix of SPENDING_EXCLUDED_KIND_PREFIXES)
+  if (!/^[a-z_.]+$/u.test(prefix)) throw new Error(`Spending excluded Kind prefix is not a plain code: ${prefix}`);
+
+/**
+ * SQL conditions, joined by AND, that hold for a Kind Spending may count, as
+ * `isSpendingExcludedKind` decides it. `starts_with` keeps a `_` in a code
+ * literal, where LIKE would read it as a wildcard.
+ */
+export function spendingIncludedKindSql(column: string): string {
+  return [
+    `${column} IS NOT NULL`,
+    `${column} NOT IN (${SPENDING_EXCLUDED_KIND_PREFIXES.map((prefix) => `'${prefix}'`).join(", ")})`,
+    ...SPENDING_EXCLUDED_KIND_PREFIXES.map((prefix) => `NOT starts_with(${column}, '${prefix}.')`),
+  ].join("\n     AND ");
+}
+
+/** The body of `refresh_current_spending_pairing_entry`, as `pg_proc.prosrc` holds it. */
+export const PGLITE_SPENDING_PAIRING_REFRESH_BODY = `
 BEGIN
   DELETE FROM current_spending_pairing_entries WHERE transaction_id = target_transaction_id;
   INSERT INTO current_spending_pairing_entries (
@@ -45,20 +44,65 @@ BEGIN
      AND revision.economic_status = 'normal'
      AND revision.posting_status = 'posted'
      AND revision.direction = 'outflow'
-     AND kind.taxonomy_code IS NOT NULL
-     AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
-     AND kind.taxonomy_code NOT LIKE 'transfer.%'
-     AND kind.taxonomy_code NOT LIKE 'cash.%'
-     AND kind.taxonomy_code NOT LIKE 'investment.%'
-     AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
-     AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+     AND ${spendingIncludedKindSql("kind.taxonomy_code")}
      AND NOT EXISTS (
        SELECT 1 FROM current_spending_dedup_links active_link
         WHERE active_link.transaction_id = current_row.transaction_id
      );
 END
-$$;
+`;
 
+/** Installs the current refresh function in place of whatever a store holds. */
+export const PGLITE_SPENDING_PAIRING_REFRESH_SQL = `
+CREATE OR REPLACE FUNCTION refresh_current_spending_pairing_entry(target_transaction_id BYTEA)
+RETURNS VOID LANGUAGE plpgsql AS $$${PGLITE_SPENDING_PAIRING_REFRESH_BODY}$$;
+`;
+
+type SqlRunner = Readonly<{
+  query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  exec(sql: string): Promise<unknown>;
+}>;
+
+/**
+ * Brings a store's pairing eligibility to the current Spending exclusions: a
+ * refresh function whose body differs from this module's is replaced, and
+ * every pairing entry rebuilt with it. A store that already holds the current
+ * function is left as it is, so the step is safe on every open, and a later
+ * change to the exclusions converges every store without a new entry.
+ * Returns whether it rebuilt.
+ */
+export async function applyPgliteSpendingPairingEligibility(transaction: SqlRunner): Promise<boolean> {
+  const installed = await transaction.query<{ prosrc: string }>(
+    "SELECT prosrc FROM pg_proc WHERE oid = to_regprocedure($1)",
+    [`${PGLITE_SPENDING_PAIRING_PROJECTION_OBJECTS.refreshFunction}(bytea)`],
+  );
+  if (installed.rows[0]?.prosrc === PGLITE_SPENDING_PAIRING_REFRESH_BODY) return false;
+  await transaction.exec(PGLITE_SPENDING_PAIRING_REFRESH_SQL);
+  await transaction.query(`SELECT ${PGLITE_SPENDING_PAIRING_PROJECTION_OBJECTS.rebuildFunction}()`);
+  return true;
+}
+
+/**
+ * Disposable, transactionally maintained read projection for Spending Pairing.
+ * Install after the authoritative baseline tables and foreign keys. This SQL
+ * never replaces canonical transaction, enrichment, date-fact, or link rows.
+ * The baseline SQL keeps the refresh function as first reviewed;
+ * `applyPgliteSpendingPairingEligibility` replaces it with this one.
+ */
+export const PGLITE_SPENDING_PAIRING_PROJECTION_SQL = `
+CREATE TABLE current_spending_pairing_entries (
+  transaction_id BYTEA PRIMARY KEY REFERENCES financial_transactions(transaction_id),
+  revision_id BYTEA NOT NULL REFERENCES transaction_revisions(revision_id),
+  effective_on TEXT NOT NULL,
+  consume_date TEXT,
+  posting_date TEXT,
+  effective_date_basis TEXT,
+  description TEXT,
+  amount_coefficient TEXT NOT NULL,
+  amount_scale INTEGER NOT NULL,
+  currency TEXT NOT NULL
+);
+${PGLITE_SPENDING_PAIRING_REFRESH_SQL}
 CREATE OR REPLACE FUNCTION rebuild_current_spending_pairing_entries()
 RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE current_id BYTEA;

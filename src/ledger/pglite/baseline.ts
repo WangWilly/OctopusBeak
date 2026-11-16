@@ -8,7 +8,10 @@ import {
   PGLITE_OCCURRENCE_GROUP_OBJECT_COUNTS,
   PGLITE_OCCURRENCE_GROUP_SQL,
 } from "./occurrence-group-sql.ts";
-import { PGLITE_SPENDING_PAIRING_PROJECTION_OBJECTS } from "./pairing-projection-sql.ts";
+import {
+  applyPgliteSpendingPairingEligibility,
+  PGLITE_SPENDING_PAIRING_PROJECTION_OBJECTS,
+} from "./pairing-projection-sql.ts";
 import {
   PGLITE_ATTESTATION_TABLES,
   PGLITE_ATTESTATION_TRIGGER_NAMES,
@@ -79,6 +82,7 @@ export async function applyPgliteBaseline(
     await database.transaction(async (transaction) => {
       await extendTrustedSourceContractCatalog(transaction, registrations);
       await assertPgliteBaseline(transaction, registrations);
+      await applyPgliteSpendingPairingEligibility(transaction);
     });
     return;
   }
@@ -87,6 +91,8 @@ export async function applyPgliteBaseline(
     await transaction.exec(PGLITE_OCCURRENCE_GROUP_SQL);
     await installTrustedSourceContractCatalog(transaction, registrations);
     await transaction.exec(PGLITE_SOURCE_CONTRACT_CATALOG_GUARDS_SQL);
+    // The baseline SQL keeps the refresh function as first reviewed.
+    await applyPgliteSpendingPairingEligibility(transaction);
     await transaction.query(
       `UPDATE pglite_baseline_metadata
           SET baseline_version = $1,

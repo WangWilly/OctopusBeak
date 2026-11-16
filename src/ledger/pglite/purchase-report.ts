@@ -2,6 +2,7 @@ import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-sourc
 import type { PGliteTransaction } from "./transaction.ts";
 import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
 import { LOAN_ACCOUNT_STREAM, LOAN_CHARGE_KINDS } from "../canonical/loan-charge.ts";
+import { spendingIncludedKindSql } from "./pairing-projection-sql.ts";
 import {
   composePurchaseReport,
   withPossibleDuplicates,
@@ -374,13 +375,7 @@ function purchaseRowsCte(scope: "all" | "month"): string {
          AND revision.economic_status = 'normal'
          AND revision.posting_status = 'posted'
          AND revision.direction = 'outflow'
-         AND kind.taxonomy_code IS NOT NULL
-         AND kind.taxonomy_code NOT IN ('transfer', 'cash', 'investment', 'payment.credit_card', 'payment.loan')
-         AND kind.taxonomy_code NOT LIKE 'transfer.%'
-         AND kind.taxonomy_code NOT LIKE 'cash.%'
-         AND kind.taxonomy_code NOT LIKE 'investment.%'
-         AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
-         AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+         AND ${spendingIncludedKindSql("kind.taxonomy_code")}
     ), loan_charges AS MATERIALIZED (
       SELECT current_row.transaction_id, revision.amount_coefficient,
              revision.amount_scale, revision.currency, revision.effective_on AS occurrence_value

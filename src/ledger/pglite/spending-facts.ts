@@ -17,7 +17,7 @@ import type {
   CanonicalSpendingReport,
   CanonicalSpendingTransaction,
 } from "../canonical/canonical-spending-contracts.ts";
-import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
+import { CANONICAL_SPENDING_INCLUSION_POLICY, isSpendingExcludedKind } from "../canonical/spending-inclusion-policy.ts";
 import type {
   SpendingCandidateView,
   SpendingDedupLinkView,
@@ -72,16 +72,6 @@ import { readKnowledgePoint } from "./knowledge-point.ts";
 
 export type QueryKind = "current" | "historical";
 
-const EXCLUDED_KIND_PREFIXES = [
-  "transfer",
-  "cash",
-  "investment",
-  "payment.credit_card",
-  "payment.loan",
-  // A loan's disbursement moves the loan's principal, never spending (ADR 0138).
-  "loan",
-] as const;
-
 function emptySpendingReport(kind: QueryKind, knowledgePoint: number, financialAt: string | null): CanonicalSpendingReport {
   return {
     status: "ok",
@@ -105,10 +95,6 @@ function emptySpendingReport(kind: QueryKind, knowledgePoint: number, financialA
     reportEligibility: { status: "complete", gapCount: 0, gapAmountByCurrency: [] },
     totalStatus: "complete",
   };
-}
-
-function excludedKind(kind: string): boolean {
-  return EXCLUDED_KIND_PREFIXES.some((prefix) => kind === prefix || kind.startsWith(`${prefix}.`));
 }
 
 /** Money the person spent: an outflow, or a loan's interest or fee its loan account books as an inflow (ADR 0141). */
@@ -577,7 +563,7 @@ function spendingReport(kind: QueryKind, knowledgeAt: number, financialAt: strin
     if (gap) {
       gapValues.push(amount);
       transaction = { ...original, inclusion: "eligibility-gap", eligibilityGap: "missing-report-inclusion-semantics" };
-    } else if (original.administrativeState !== "active" || original.economicStatus !== "normal" || original.postingStatus !== "posted" || !spent(original) || excludedKind(original.kind!)) {
+    } else if (original.administrativeState !== "active" || original.economicStatus !== "normal" || original.postingStatus !== "posted" || !spent(original) || isSpendingExcludedKind(original.kind!)) {
       transaction = { ...original, inclusion: "excluded" };
     } else {
       transaction = { ...original, inclusion: "included" };

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { PGliteStore } from "./transaction.ts";
-import { PGLITE_SPENDING_PAIRING_PROJECTION_SQL } from "./pairing-projection-sql.ts";
+import { applyPgliteSpendingPairingEligibility, PGLITE_SPENDING_PAIRING_PROJECTION_SQL } from "./pairing-projection-sql.ts";
+import { PGLITE_BASELINE_SQL } from "./baseline-sql.ts";
 
 const id = (value: number) => Uint8Array.from({ length: 16 }, () => value);
 
@@ -59,7 +60,7 @@ test("derived Spending pairing entries follow authoritative changes, rollback, a
     assert.equal(await count(), 0);
     await store.query("UPDATE current_transaction_enrichment SET taxonomy_code='purchase' WHERE transaction_id=$1", [transactionId]);
     assert.equal(await count(), 1);
-    for (const excluded of ["cash", "transfer.internal", "investment.buy", "payment.credit_card", "payment.loan.installment"]) {
+    for (const excluded of ["cash", "transfer.internal", "investment.buy", "payment.credit_card", "payment.loan.installment", "loan", "loan.disbursement"]) {
       await store.query("UPDATE current_transaction_enrichment SET taxonomy_code=$2 WHERE transaction_id=$1", [transactionId, excluded]);
       assert.equal(await count(), 0, `${excluded} remains excluded`);
     }
@@ -94,5 +95,32 @@ test("derived Spending pairing entries follow authoritative changes, rollback, a
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a store holding the baseline's refresh function takes the current Spending exclusions and rebuilds its entries once", async () => {
+  const store = new PGliteStore(await PGlite.create());
+  try {
+    await store.exec(minimalAuthorityTables);
+    await store.exec(PGLITE_SPENDING_PAIRING_PROJECTION_SQL);
+    // The refresh function as the baseline first installed it, before `loan` was excluded.
+    const start = PGLITE_BASELINE_SQL.indexOf("CREATE OR REPLACE FUNCTION refresh_current_spending_pairing_entry(");
+    await store.exec(PGLITE_BASELINE_SQL.slice(start, PGLITE_BASELINE_SQL.indexOf("$$;", start) + 3));
+    const transactionId = id(1), revisionId = id(2);
+    await store.query("INSERT INTO financial_transactions(transaction_id) VALUES ($1)", [transactionId]);
+    await store.query(`INSERT INTO transaction_revisions(revision_id,effective_on,description,amount_coefficient,amount_scale,currency,administrative_state,economic_status,posting_status,direction)
+      VALUES ($1,'2026-09-02','loan','500000',0,'TWD','active','normal','posted','outflow')`, [revisionId]);
+    await store.query("INSERT INTO current_transactions(transaction_id,revision_id) VALUES ($1,$2)", [transactionId, revisionId]);
+    await store.query("INSERT INTO current_transaction_enrichment(transaction_id,field_name,taxonomy_code) VALUES ($1,'kind','loan.disbursement')", [transactionId]);
+    const count = async () => Number((await store.query<{ count: number | string }>("SELECT COUNT(*) AS count FROM current_spending_pairing_entries")).rows[0]?.count);
+    assert.equal(await count(), 1, "the baseline's function admits a disbursement outflow");
+
+    assert.equal(await store.transaction((transaction) => applyPgliteSpendingPairingEligibility(transaction)), true);
+    assert.equal(await count(), 0, "the rebuilt entries leave the disbursement out");
+    assert.equal(await store.transaction((transaction) => applyPgliteSpendingPairingEligibility(transaction)), false, "a current store is left as it is");
+    await store.query("UPDATE current_transaction_enrichment SET taxonomy_code='purchase' WHERE transaction_id=$1", [transactionId]);
+    assert.equal(await count(), 1, "triggers call the replaced function");
+  } finally {
+    await store.close();
   }
 });
