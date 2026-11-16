@@ -749,9 +749,10 @@ async function readCurrentTransactions(
   transaction: PGliteTransaction,
   filter?: readonly Uint8Array[],
 ): Promise<PGliteProjectionTransaction[]> {
-  const filterSql = filter && filter.length > 0
-    ? `WHERE current_row.transaction_id IN (${inList(filter)})`
-    : "";
+  // No filter reads every transaction; an empty one reads none, so a commit
+  // that touches no transaction re-derives nothing.
+  if (filter?.length === 0) return [];
+  const filterSql = filter ? `WHERE current_row.transaction_id IN (${inList(filter)})` : "";
   const rows = await query<Row>(
     transaction,
     `SELECT current_row.transaction_id, revision.source_record_id,
