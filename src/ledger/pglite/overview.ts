@@ -819,7 +819,7 @@ async function readProjection(
               encode(holding.account_id, 'hex') AS account_id,
               encode(holding.security_id, 'hex') AS security_id,
               security.security_key,
-              security.name AS security_name,
+              COALESCE(latest_name.name, security.name) AS security_name,
               security.ticker AS security_ticker,
               security.security_type,
               security.currency AS security_currency,
@@ -839,6 +839,15 @@ async function readProjection(
               ) AS selection_rank
          FROM visible holding
          JOIN investment_securities security ON security.security_id = holding.security_id
+         LEFT JOIN LATERAL (
+           SELECT observation.name
+             FROM investment_security_name_observations observation
+             JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
+            WHERE observation.security_id = security.security_id
+              AND name_commit.commit_sequence <= $1
+            ORDER BY name_commit.commit_sequence DESC, observation.capture_id DESC
+            LIMIT 1
+         ) latest_name ON TRUE
      )
      SELECT account_id, security_id, security_key, security_name, security_ticker,
             security_type, security_currency, quantity_coefficient, quantity_scale,
