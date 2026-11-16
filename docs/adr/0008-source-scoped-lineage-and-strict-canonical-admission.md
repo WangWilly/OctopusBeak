@@ -4,6 +4,7 @@ Accepted amendment: [ADR 0024](./0024-purchase-basis-spending-and-report-dedupli
 
 Accepted amendment: [ADR 0055](./0055-revisable-payload-fields-continue-admitted-occurrences.md) lets a registered route continue an admitted occurrence when a recapture differs only in declared revisable payload fields, making the summary-free group collision key that route's stable claim identity.
 
+Accepted amendment: [ADR 0144](./0144-a-store-removes-derived-kinds-a-refresh-wrote-again-unchanged.md) adds a one-time hard delete of derived Kind assertions a refresh wrote again unchanged, keeping the first of each run so the Kind at every commit stays the same.
 
 Status: accepted
 
