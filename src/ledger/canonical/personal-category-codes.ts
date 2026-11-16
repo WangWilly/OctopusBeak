@@ -20,6 +20,7 @@ export const PERSONAL_CATEGORY_CODES = [
   "taxes_and_government",
   "gifts_and_donations",
   "work_and_business",
+  "interest_and_fees",
 ] as const;
 
 export type PersonalCategoryCode = (typeof PERSONAL_CATEGORY_CODES)[number];

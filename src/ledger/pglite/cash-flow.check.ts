@@ -21,6 +21,7 @@ const SEPTEMBER = { startDate: "2026-09-01", endDate: "2026-09-30" } as const;
 const idBytes = (id: string) => Buffer.from(id.replaceAll("-", ""), "hex");
 const amount = (coefficient: string) => ({ coefficient, scale: 0 });
 const unclassified = (coefficient: string) => [{ category: null, group: null, amount: amount(coefficient) }];
+const interestAndFees = (coefficient: string) => [{ category: "interest_and_fees", group: "other", amount: amount(coefficient) }];
 
 async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<void>) {
   const fixture = await createSpendingCategoryFixture();
@@ -188,8 +189,8 @@ test("a loan's interest and fee count once as outflows from the loan account, an
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
     const rowOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
     assert.deepEqual(rowOf(principal)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
-    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: unclassified("1200") });
-    assert.deepEqual(rowOf(fee)?.cashFlow, { class: "outflow", categories: unclassified("100") });
+    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: interestAndFees("1200") });
+    assert.deepEqual(rowOf(fee)?.cashFlow, { class: "outflow", categories: interestAndFees("100") });
     assert.equal(rowOf(interest)?.direction, "inflow", "the row keeps the direction its account booked");
     assert.deepEqual(rowOf(debit)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
     const [twd] = report.totals;
@@ -198,19 +199,20 @@ test("a loan's interest and fee count once as outflows from the loan account, an
   });
 });
 
-test("Spending leaves out every investment and loan row that now carries a Kind, a disbursement outflow too (ADR 0138)", async () => {
+test("Spending leaves out every investment row and a loan's principal, a disbursement outflow too, and counts a loan's interest (ADR 0138, ADR 0141)", async () => {
   await withFixture(async (fixture) => {
     const purchase = await fixture.addTransaction({ amount: "250", date: "2026-09-05" });
     const rows = [
       await fixture.addTransaction({ amount: "700", direction: "outflow", date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: "buy" } }),
       await fixture.addTransaction({ amount: "700", direction: "outflow", date: "2026-09-12", account: "exchange", accountStream: MAICOIN, event: { investment: "corporate_action_out" } }),
       await fixture.addTransaction({ amount: "500000", direction: "outflow", date: "2026-09-02", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "disbursement" } }),
-      await fixture.addTransaction({ amount: "1200", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "interest" } }),
+      await fixture.addTransaction({ amount: "9000", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "payment" } }),
     ];
+    const interest = await fixture.addTransaction({ amount: "1200", direction: "inflow", date: "2026-09-21", account: "mortgage", accountStream: FUBON_LOAN, event: { loan: "interest" } });
     const report = await querySpendingReport(fixture.store, "current", await fixture.knowledgeAt(), null, SEPTEMBER);
     const inclusionOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
     assert.deepEqual(rows.map((id) => [inclusionOf(id)?.kind !== null, inclusionOf(id)?.inclusion]), rows.map(() => [true, "excluded"]));
-    assert.deepEqual(report.includedTransactions.map((transaction) => transaction.transactionId), [purchase]);
+    assert.deepEqual(report.includedTransactions.map((transaction) => transaction.transactionId), [purchase, interest]);
   });
 });
 
@@ -261,7 +263,7 @@ test("a deposit debit the keyword rule reads as interest does not count again on
     const rowOf = (id: string) => report.transactions.find((transaction) => transaction.transactionId === id);
     assert.deepEqual(rowOf(debit)?.kind, { code: "payment.loan", basis: "evidence" });
     assert.deepEqual(rowOf(debit)?.cashFlow, { class: "not_counted", reason: "loan_principal" });
-    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: unclassified("800") });
+    assert.deepEqual(rowOf(interest)?.cashFlow, { class: "outflow", categories: interestAndFees("800") });
     assert.deepEqual(report.totals[0]?.outflow.amount, amount("800"), "the interest counts exactly once");
   });
 });

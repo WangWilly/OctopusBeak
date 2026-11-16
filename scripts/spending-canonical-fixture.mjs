@@ -121,7 +121,7 @@ export function view(records, { selectedMonth = null, selectedCategory = null } 
   const categoryTotalsByCurrency = categoryTotals(includedTransactions);
   return {
     availability: records.length > 0 ? "available" : "empty",
-    policy: { id: "gross-posted-outflow", version: "v1", name: "Gross posted outflow" },
+    policy: { id: "gross-posted-outflow", version: "v2", name: "Gross posted outflow" },
     knowledgePoint: 42,
     selectedMonth,
     selectedCategory,

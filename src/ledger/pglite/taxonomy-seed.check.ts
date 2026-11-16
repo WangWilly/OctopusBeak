@@ -91,3 +91,54 @@ test("a store installed before TDCC deposits had a Kind route gains the route an
     await store.close();
   }
 });
+
+test("a store installed before the interest-and-fees category gains the code, its labels and applicability, and its Kind producer on open (ADR 0141)", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    const tables = ["taxonomy_producer_compatibility", "automatic_enrichment_authority_routes", "enrichment_producer_versions", "taxonomy_applicability", "taxonomy_localizations", "taxonomy_codes"];
+    for (const table of tables) await store.query(`ALTER TABLE ${table} DISABLE TRIGGER USER`);
+    await store.query("DELETE FROM taxonomy_producer_compatibility WHERE output_code = $1", ["interest_and_fees"]);
+    await store.query("DELETE FROM automatic_enrichment_authority_routes WHERE producer_id = $1", ["kind/category-enrichment"]);
+    await store.query("DELETE FROM enrichment_producer_versions WHERE producer_id = $1", ["kind/category-enrichment"]);
+    await store.query("DELETE FROM taxonomy_applicability WHERE category_code = $1", ["interest_and_fees"]);
+    await store.query("DELETE FROM taxonomy_localizations WHERE code = $1", ["interest_and_fees"]);
+    await store.query("DELETE FROM taxonomy_codes WHERE code = $1", ["interest_and_fees"]);
+    for (const table of tables) await store.query(`ALTER TABLE ${table} ENABLE TRIGGER USER`);
+    await store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["taxonomy-interest-and-fees-v1"]);
+
+    await installFinancialStore(database);
+    const count = async (sql: string, value: string) => Number((await store.query<{ count: number | string }>(sql, [value])).rows[0]?.count);
+    assert.deepEqual([
+      await count("SELECT COUNT(*) AS count FROM taxonomy_codes WHERE dimension = 'category' AND code = $1", "interest_and_fees"),
+      await count("SELECT COUNT(*) AS count FROM taxonomy_localizations WHERE code = $1", "interest_and_fees"),
+      await count("SELECT COUNT(*) AS count FROM taxonomy_applicability WHERE category_code = $1", "interest_and_fees"),
+      await count("SELECT COUNT(*) AS count FROM enrichment_producer_versions WHERE producer_id = $1", "kind/category-enrichment"),
+      await count("SELECT COUNT(*) AS count FROM automatic_enrichment_authority_routes WHERE producer_id = $1", "kind/category-enrichment"),
+      await count("SELECT COUNT(*) AS count FROM taxonomy_producer_compatibility WHERE output_code = $1", "interest_and_fees"),
+    ], [1, 2, 14, 1, 1, 3]);
+    const labels = await store.query<{ locale: string; label: string }>(
+      "SELECT locale, label FROM taxonomy_localizations WHERE code = $1 ORDER BY locale", ["interest_and_fees"]);
+    assert.deepEqual(labels.rows, [{ locale: "en", label: "Interest And Fees" }, { locale: "zh-Hant", label: "利息與手續費" }]);
+  } finally {
+    await store.close();
+  }
+});
+
+test("a fresh store holds every Personal Category, localization and applicability row the package defines", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    const codes = await store.query<{ code: string }>("SELECT code FROM taxonomy_codes WHERE dimension = 'category'");
+    assert.deepEqual(new Set(codes.rows.map((row) => row.code)), new Set(TRANSACTION_TAXONOMY_PACKAGE_V1.categories.map((row) => row.code)));
+    const applicability = await store.query<{ category_code: string; kind_code: string }>("SELECT category_code, kind_code FROM taxonomy_applicability");
+    assert.deepEqual(new Set(applicability.rows.map((row) => `${row.category_code}|${row.kind_code}`)),
+      new Set(TRANSACTION_TAXONOMY_PACKAGE_V1.applicability.map((row) => `${row.categoryCode}|${row.kindCode}`)));
+    const labels = await store.query<{ dimension: string; code: string; locale: string; label: string }>("SELECT dimension, code, locale, label FROM taxonomy_localizations");
+    assert.deepEqual(new Set(labels.rows.map((row) => `${row.dimension}.${row.code}|${row.locale}|${row.label}`)),
+      new Set(Object.entries(TRANSACTION_TAXONOMY_PACKAGE_V1.localizations).flatMap(([key, value]) =>
+        Object.entries(value).map(([locale, label]) => `${key.replace("transaction-taxonomy.", "")}|${locale}|${label}`))));
+  } finally {
+    await store.close();
+  }
+});

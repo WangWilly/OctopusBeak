@@ -1,6 +1,7 @@
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
 import type { PGliteTransaction } from "./transaction.ts";
 import { CANONICAL_SPENDING_INCLUSION_POLICY } from "../canonical/spending-inclusion-policy.ts";
+import { LOAN_ACCOUNT_STREAM, LOAN_CHARGE_KINDS } from "../canonical/loan-charge.ts";
 import {
   composePurchaseReport,
   withPossibleDuplicates,
@@ -312,7 +313,10 @@ function sqlUuid(expression: string): string {
 /**
  * Every purchase-basis Spending query starts from the same purchase rows: the
  * active invoices, the eligible transactions, the links joining them, and the
- * refunds. purchaseRowsParams supplies its leading parameters. A transaction
+ * refunds. A loan's interest or fee is an eligible transaction although its
+ * loan account books it as an inflow (ADR 0141); it is not a Pairing entry,
+ * so it is never a candidate. purchaseRowsParams supplies its leading
+ * parameters. A transaction
  * of an account Direct source precedence covers is not eligible, and neither
  * is a refund of one. Only an active refund with an amount and an occurrence
  * counts and replaces its transaction's bank-only row. The record builder
@@ -377,6 +381,21 @@ function purchaseRowsCte(scope: "all" | "month"): string {
          AND kind.taxonomy_code NOT LIKE 'investment.%'
          AND kind.taxonomy_code NOT LIKE 'payment.credit_card.%'
          AND kind.taxonomy_code NOT LIKE 'payment.loan.%'
+    ), loan_charges AS MATERIALIZED (
+      SELECT current_row.transaction_id, revision.amount_coefficient,
+             revision.amount_scale, revision.currency, revision.effective_on AS occurrence_value
+        FROM financial_accounts account
+        JOIN financial_transactions transaction_row ON transaction_row.account_id = account.account_id
+        JOIN current_transactions current_row ON current_row.transaction_id = transaction_row.transaction_id
+        JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+        JOIN current_transaction_enrichment kind
+          ON kind.transaction_id = current_row.transaction_id AND kind.field_name = 'kind'
+       WHERE account.stream = '${LOAN_ACCOUNT_STREAM}'
+         AND revision.administrative_state = 'active'
+         AND revision.economic_status = 'normal'
+         AND revision.posting_status = 'posted'
+         AND revision.direction = 'inflow'
+         AND kind.taxonomy_code IN (${[...LOAN_CHARGE_KINDS].map((code) => `'${code}'`).join(", ")})
     ), eligible_transactions AS MATERIALIZED (
       SELECT transaction_id, amount_coefficient, amount_scale, currency,
              COALESCE(consume_date, posting_date, effective_on) AS occurrence_value
@@ -387,6 +406,11 @@ function purchaseRowsCte(scope: "all" | "month"): string {
       SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
         FROM linked_transactions
        WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
+      UNION ALL
+      SELECT transaction_id, amount_coefficient, amount_scale, currency, occurrence_value
+        FROM loan_charges
+       WHERE transaction_id NOT IN (SELECT transaction_id FROM covered_transactions)
+         ${inMonth("occurrence_value")}
     ), valid_links AS MATERIALIZED (
       SELECT active_link.invoice_id, active_link.transaction_id,
              active_link.confirmed_event_id AS event_id,

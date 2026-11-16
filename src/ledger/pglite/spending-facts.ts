@@ -32,6 +32,7 @@ import {
 } from "../canonical/spending-purchase-report-core.ts";
 import type { PurchaseItemCategorization } from "../canonical/purchase-category.ts";
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
+import { isLoanCharge } from "../canonical/loan-charge.ts";
 import {
   addExact,
   addToTotals,
@@ -107,6 +108,11 @@ function emptySpendingReport(kind: QueryKind, knowledgePoint: number, financialA
 
 function excludedKind(kind: string): boolean {
   return EXCLUDED_KIND_PREFIXES.some((prefix) => kind === prefix || kind.startsWith(`${prefix}.`));
+}
+
+/** Money the person spent: an outflow, or a loan's interest or fee its loan account books as an inflow (ADR 0141). */
+function spent(transaction: CanonicalSpendingTransaction): boolean {
+  return transaction.direction === "outflow" || isLoanCharge(transaction.kind, transaction.direction, transaction.stream);
 }
 
 async function activeGeneration(reader: PGliteSpendingReader): Promise<number | null> {
@@ -570,7 +576,7 @@ function spendingReport(kind: QueryKind, knowledgeAt: number, financialAt: strin
     if (gap) {
       gapValues.push(amount);
       transaction = { ...original, inclusion: "eligibility-gap", eligibilityGap: "missing-report-inclusion-semantics" };
-    } else if (original.administrativeState !== "active" || original.economicStatus !== "normal" || original.postingStatus !== "posted" || original.direction !== "outflow" || excludedKind(original.kind!)) {
+    } else if (original.administrativeState !== "active" || original.economicStatus !== "normal" || original.postingStatus !== "posted" || !spent(original) || excludedKind(original.kind!)) {
       transaction = { ...original, inclusion: "excluded" };
     } else {
       transaction = { ...original, inclusion: "included" };
@@ -708,7 +714,10 @@ export async function queryCurrentTransactionById(
       enrichmentsBy.get(id) ?? [],
       tagsBy.get(id) ?? [],
     );
-  })).includedTransactions.find((transaction) => transaction.transactionId === transactionId) ?? null;
+  })).includedTransactions.find((transaction) =>
+    transaction.transactionId === transactionId
+    // A loan charge is no payment an invoice can name, so it never pairs (ADR 0141).
+    && !isLoanCharge(transaction.kind, transaction.direction, transaction.stream)) ?? null;
 }
 
 function invoiceMoney(row: Row): CanonicalEInvoiceMoneyView | null {
