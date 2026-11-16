@@ -17,7 +17,6 @@
   import type { CashFlowAccount, CashFlowPageDto, CashFlowPageRequest, CashFlowRow } from "../model.ts";
   import { CASH_FLOW_SEARCH_FIELDS, cashFlowDirection, cashFlowTransferRole } from "../model.ts";
   import {
-    accountInitial,
     accountLabel,
     countedNet,
     groupByDay,
@@ -33,6 +32,7 @@
     signedAmount,
     type OutflowGroupKey,
   } from "../display.ts";
+  import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
   import { transferNote, type CashFlowTransferRequest } from "../transfer-panel.ts";
   import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
@@ -513,7 +513,7 @@
                     <li>
                     <button type="button" class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class} aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, row)}`} onclick={() => detailRow = row}>
                       <span class="time num" data-row-time>{row.details.time ?? ""}</span>
-                      <span class="mark" aria-hidden="true">{#if row.cashFlow.class === "not_counted"}<ArrowLeftRight size={13} strokeWidth={2.2} />{:else}{accountInitial($t, row.details.account)}{/if}</span>
+                      {#if row.cashFlow.class === "not_counted"}<span class="mark" aria-hidden="true"><ArrowLeftRight size={13} strokeWidth={2.2} /></span>{:else}<CashFlowAccountMark account={row.details.account} />{/if}
                       <span class="row-text">
                         <strong>{rowTitle($t, row)}</strong>
                         <span><span class="dot" style:background={row.cashFlow.class === "outflow" || row.cashFlow.class === "refund" ? outflowColor(row.cashFlow.categories[0]?.group ?? null) : row.cashFlow.class === "inflow" ? inflowColor(0) : "var(--border)"} aria-hidden="true"></span>{rowCategoryText($t, row)} · {accountLabel($t, row.details.account)}{#if row.details.note && row.details.note !== rowTitle($t, row)} · {row.details.note}{/if}</span>
@@ -554,7 +554,7 @@
               {@const value = exactToNumber(change.amount)}
               <li>
                 <button type="button" class="account" aria-pressed={accountFilter?.id === change.account.id} data-account={change.account.id} onclick={() => accountFilter = accountFilter?.id === change.account.id ? null : change.account}>
-                  <span class="mark" aria-hidden="true">{accountInitial($t, change.account)}</span>
+                  <CashFlowAccountMark account={change.account} size={24} />
                   <span class="account-name">{accountLabel($t, change.account)}{#if change.account.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}</span>
                   <strong class="money" class:positive={value > 0} class:negative={value < 0} data-sensitive>{digits(change.amount, true)}</strong>
                   <span class="account-bar" aria-hidden="true">
@@ -1463,12 +1463,6 @@
   .account[aria-pressed="true"] {
     border-color: var(--border);
     background: var(--surface-soft);
-  }
-
-  .account .mark {
-    width: 24px;
-    height: 24px;
-    font-size: 11px;
   }
 
   .account-name {

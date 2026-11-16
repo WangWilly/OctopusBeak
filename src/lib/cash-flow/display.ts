@@ -1,5 +1,5 @@
 import type { Translation } from "../i18n/i18n.ts";
-import { isInstitutionKey } from "../institutions/institutions.ts";
+import { institutionLogo, isInstitutionKey, type LogoKey } from "../institutions/institutions.ts";
 import { SPENDING_GROUP_COLORS } from "../spending/spending-display.ts";
 import type { CashFlowInflowGroup, CashFlowOutflowGroup } from "../../ledger/canonical/cash-flow-inclusion.ts";
 import {
@@ -49,6 +49,12 @@ export function accountLabel(t: Translation, account: CashFlowAccount): string {
   const key = account.institutionKey;
   const institution = key !== null && isInstitutionKey(key) ? t.institutions[key] : t.cashFlow.unknownAccount;
   return account.mask ? `${institution} ${account.mask}` : institution;
+}
+
+/** The Institution logo an account shows, or null for a Manual Account or an Institution without one. */
+export function accountLogo(account: CashFlowAccount): LogoKey | null {
+  const key = account.institutionKey;
+  return key !== null && isInstitutionKey(key) ? institutionLogo(key) : null;
 }
 
 /** One character for the account mark: the institution's first, or the Manual Account name's. */
