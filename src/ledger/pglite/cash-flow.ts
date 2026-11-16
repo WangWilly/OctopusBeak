@@ -179,13 +179,22 @@ async function byChunk<T extends Record<string, unknown>>(
   return found;
 }
 
-/** The `evidenceKind` the Kind enrichment recorded for each transaction, when it recorded one. */
+/**
+ * The `evidenceKind` the Kind enrichment recorded for each transaction, when
+ * it recorded one. The run that wrote a Kind is read from its provenance, so
+ * its one output is found by key: a transaction keeps an output for every run
+ * that ever looked at it, and reading them by transaction scans them all.
+ */
 async function kindEvidence(reader: PGliteSpendingReader, transactionIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
   const found = await byChunk<{ transaction_id: unknown; evidence_kind: unknown }>(reader, transactionIds, (placeholders) =>
     `SELECT enrichment.transaction_id, (output.provenance_json::jsonb)->>'evidenceKind' AS evidence_kind
        FROM current_transaction_enrichment enrichment
+       JOIN assertion_provenance provenance
+         ON provenance.assertion_id = enrichment.assertion_id
+        AND provenance.enrichment_run_id IS NOT NULL
        JOIN enrichment_run_outputs output
-         ON output.transaction_id = enrichment.transaction_id
+         ON output.run_id = provenance.enrichment_run_id
+        AND output.transaction_id = enrichment.transaction_id
         AND output.field_name = 'kind'
         AND output.assertion_id = enrichment.assertion_id
       WHERE enrichment.field_name = 'kind'
