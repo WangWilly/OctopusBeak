@@ -513,7 +513,7 @@
                     <li>
                     <button type="button" class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class} aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, row)}`} onclick={() => detailRow = row}>
                       <span class="time num" data-row-time>{row.details.time ?? ""}</span>
-                      {#if row.cashFlow.class === "not_counted"}<span class="mark" aria-hidden="true"><ArrowLeftRight size={13} strokeWidth={2.2} /></span>{:else}<CashFlowAccountMark account={row.details.account} />{/if}
+                      {#if row.cashFlow.class === "not_counted"}<CashFlowAccountMark account={row.details.account}><ArrowLeftRight size={13} strokeWidth={2.2} /></CashFlowAccountMark>{:else}<CashFlowAccountMark account={row.details.account} />{/if}
                       <span class="row-text">
                         <strong>{rowTitle($t, row)}</strong>
                         <span><span class="dot" style:background={row.cashFlow.class === "outflow" || row.cashFlow.class === "refund" ? outflowColor(row.cashFlow.categories[0]?.group ?? null) : row.cashFlow.class === "inflow" ? inflowColor(0) : "var(--border)"} aria-hidden="true"></span>{rowCategoryText($t, row)} · {accountLabel($t, row.details.account)}{#if row.details.note && row.details.note !== rowTitle($t, row)} · {row.details.note}{/if}</span>
@@ -1333,22 +1333,6 @@
     font-size: 11px;
   }
 
-  .mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-    background: var(--surface-strong);
-    color: white;
-    font-size: 12px;
-    font-weight: 750;
-  }
-
-  .row.transfer .mark {
-    background: var(--surface);
-    color: var(--accent);
-  }
 
   .row-text {
     display: grid;
