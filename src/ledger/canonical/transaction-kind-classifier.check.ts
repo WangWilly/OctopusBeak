@@ -70,6 +70,7 @@ test("any bank's currency exchange label moves money between the person's own ac
     for (const description of ["手機換匯", "行動換匯 · 0123", "網路換匯", "換匯"])
       assert.equal(deposit(direction, description, JSON.stringify({ feeAmount: "1" })), "transfer.internal", `${direction} ${description}`);
   assert.equal(deposit("outflow", "換匯手續費"), "fee.bank", "an exchange's own fee row stays a fee");
+  assert.equal(deposit("outflow", "換匯 · 手續費"), "fee.bank", "a fee written after the exchange label stays a fee");
   assert.equal(deposit("outflow", "網購 · 換匯優惠"), "purchase", "the word elsewhere is not the label");
 });
 

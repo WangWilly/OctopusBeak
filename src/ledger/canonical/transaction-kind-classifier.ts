@@ -96,7 +96,8 @@ export function classifyBankTransactionKind(input: TransactionKindClassifierInpu
     /^\s*轉帳支取\s*·\s*\d{16}\s+YT\d{2}\s+FS\d{8}\s+約定申購\s+\d{5}\s+174\s+FISB\s*$/iu.test(input.description ?? "")
   )
     return { value: "investment.trade.buy", evidenceKind: "bank-rule", sourceField: "source_description" };
-  if (CURRENCY_EXCHANGE_LABEL.test(label))
+  // A fee written after the label, such as 換匯 · 手續費, is a fee, not the exchange.
+  if (CURRENCY_EXCHANGE_LABEL.test(label) && !/(手續費|服務費|fee)/iu.test(input.description ?? ""))
     return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_description" };
   if (INVESTMENT_SETTLEMENT_LABEL.test(label))
     return {
