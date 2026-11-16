@@ -6,6 +6,7 @@ import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { applyPgliteOperationalBaseline } from "./operational.ts";
 import { applyPglitePreviewFinancialDataSchema } from "./preview-financial-data.ts";
+import { applyPgliteReadIndexes } from "./read-indexes.ts";
 import { applyPgliteTaxonomySeed } from "./taxonomy-seed.ts";
 import { PGliteStore } from "./transaction.ts";
 
@@ -25,6 +26,7 @@ export async function installFinancialStore(db: PGlite): Promise<PGliteStore> {
   await applyPgliteManualAssetsSchema(store);
   await applyPgliteCashFlowTransferSchema(store);
   await applyPgliteTaxonomySeed(store);
+  await applyPgliteReadIndexes(store);
   await applyPgliteKindRederivation(store);
   return store;
 }

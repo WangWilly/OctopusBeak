@@ -798,7 +798,13 @@ async function readProjection(
     [knowledgeAt, financialAt ?? null],
   );
   const holdingsQuery = store.query<HoldingRow>(
-    `WITH visible AS (
+    `WITH latest_names AS MATERIALIZED (
+       SELECT DISTINCT ON (observation.security_id) observation.security_id, observation.name
+         FROM investment_security_name_observations observation
+         JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
+        WHERE name_commit.commit_sequence <= $1
+        ORDER BY observation.security_id, name_commit.commit_sequence DESC, observation.capture_id DESC
+     ), visible AS (
        SELECT holding.*, commit_row.commit_sequence
          FROM investment_holding_observations holding
          JOIN canonical_commits commit_row ON commit_row.commit_id = holding.commit_id
@@ -839,15 +845,7 @@ async function readProjection(
               ) AS selection_rank
          FROM visible holding
          JOIN investment_securities security ON security.security_id = holding.security_id
-         LEFT JOIN LATERAL (
-           SELECT observation.name
-             FROM investment_security_name_observations observation
-             JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
-            WHERE observation.security_id = security.security_id
-              AND name_commit.commit_sequence <= $1
-            ORDER BY name_commit.commit_sequence DESC, observation.capture_id DESC
-            LIMIT 1
-         ) latest_name ON TRUE
+         LEFT JOIN latest_names latest_name ON latest_name.security_id = security.security_id
      )
      SELECT account_id, security_id, security_key, security_name, security_ticker,
             security_type, security_currency, quantity_coefficient, quantity_scale,
@@ -913,7 +911,14 @@ async function readProjection(
     [knowledgeAt, financialAt ?? null],
   );
   const investmentTransactionsQuery = store.query<InvestmentTransactionRow>(
-    `SELECT encode(investment_transaction.transaction_id, 'hex') AS transaction_id,
+    `WITH latest_names AS MATERIALIZED (
+       SELECT DISTINCT ON (observation.security_id) observation.security_id, observation.name
+         FROM investment_security_name_observations observation
+         JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
+        WHERE name_commit.commit_sequence <= $1
+        ORDER BY observation.security_id, name_commit.commit_sequence DESC, observation.capture_id DESC
+     )
+     SELECT encode(investment_transaction.transaction_id, 'hex') AS transaction_id,
             encode(investment_transaction.account_id, 'hex') AS account_id,
             investment_transaction.action,
             COALESCE(latest_name.name, security.name) AS security_name,
@@ -930,15 +935,7 @@ async function readProjection(
        FROM investment_transactions investment_transaction
        JOIN canonical_commits commit_row ON commit_row.commit_id = investment_transaction.commit_id
        JOIN investment_securities security ON security.security_id = investment_transaction.security_id
-       LEFT JOIN LATERAL (
-         SELECT observation.name
-           FROM investment_security_name_observations observation
-           JOIN canonical_commits name_commit ON name_commit.commit_id = observation.commit_id
-          WHERE observation.security_id = security.security_id
-            AND name_commit.commit_sequence <= $1
-          ORDER BY name_commit.commit_sequence DESC, observation.capture_id DESC
-          LIMIT 1
-       ) latest_name ON TRUE
+       LEFT JOIN latest_names latest_name ON latest_name.security_id = security.security_id
        JOIN source_records source_record ON source_record.source_record_id = investment_transaction.source_record_id
       WHERE commit_row.commit_sequence <= $1
         AND ($2::text IS NULL OR investment_transaction.effective_on <= $2)
