@@ -1358,6 +1358,41 @@ async function selectCurrentEnrichment(
   );
 }
 
+/** The append-only tables the projection joins; their statistics decide its plans. */
+const PLANNER_STATISTICS_TABLES = [
+  "canonical_commits",
+  "transaction_revisions",
+  "assertions",
+  "assertion_transitions",
+  "enrichment_run_outputs",
+  "enrichment_runs",
+  "enrichment_taxonomy_assertion_values",
+  "automatic_enrichment_authority_routes",
+] as const;
+
+/**
+ * Imports append lifecycle and enrichment history in bursts, and stale
+ * estimates can turn the projection's joins into minutes of nested-loop scans.
+ * PGlite runs no autovacuum, so the refresh analyzes these tables itself, in
+ * the owning transaction and before it plans. This changes optimizer metadata,
+ * not canonical facts.
+ *
+ * A table is analyzed once it has grown a tenth past its last analyzed size,
+ * which is autovacuum's own default. Analyzing all of them on every refresh
+ * costs seconds on a large store, even for a commit that appends nothing.
+ */
+async function refreshPlannerStatistics(transaction: PGliteTransaction): Promise<void> {
+  const stale = await query<{ table_name: string }>(
+    transaction,
+    `SELECT relname AS table_name
+       FROM pg_class
+      WHERE oid = ANY(?::regclass[])
+        AND pg_relation_size(oid) / current_setting('block_size')::int > relpages * 1.1`,
+    [PLANNER_STATISTICS_TABLES],
+  );
+  if (stale.length > 0) await query(transaction, `ANALYZE ${stale.map((row) => row.table_name).join(", ")}`);
+}
+
 /**
  * Rebuilds the authoritative current transaction and enrichment rows in the
  * caller-owned PGlite transaction.  The immutable source spine remains the
@@ -1370,14 +1405,7 @@ export async function refreshPGliteCurrentProjectionInTransaction(
 ): Promise<void> {
   if (!Number.isSafeInteger(context.cutoffSequence) || context.cutoffSequence < 0)
     throw new Error("PGlite projection cutoff must be a non-negative safe integer.");
-  // Keep planner statistics current at the source-commit boundary. Imports
-  // append lifecycle and enrichment history in bursts;
-  // stale estimates can turn these joins into minutes of nested-loop scans.
-  // Analyze the selector tables inside the owning transaction, before planning
-  // projections. This changes optimizer metadata, not canonical facts.
-  await query(transaction, `ANALYZE canonical_commits, transaction_revisions,
-    assertions, assertion_transitions, enrichment_run_outputs, enrichment_runs,
-    enrichment_taxonomy_assertion_values, automatic_enrichment_authority_routes`);
+  await refreshPlannerStatistics(transaction);
   const generationId = await ensureActiveGeneration(transaction, context);
   const affected = await resolveAffectedTransactionIds(transaction, context);
   const affectedAccounts = await resolveAffectedAccountIds(transaction, context, affected);
