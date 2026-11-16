@@ -77,7 +77,7 @@ const TDCC_CATHAY_COUNTED = {
   activity: ["inflow 167000", "outflow 15000"],
   positions: [],
   spendingRows: 2,
-  spendingGap: ["18200e-0 TWD"],
+  spendingGap: [],
   covered: [],
 };
 
@@ -234,27 +234,6 @@ test("a direct deposit account does not cover a TDCC fund account sold by the sa
  * for the one row, shows that those readers would still leave a covered
  * account out if a Kind producer ever covered TDCC.
  */
-async function grantPurchaseKind(store: PGliteStore): Promise<void> {
-  await store.transaction(async (transaction) => {
-    const [row] = (await transaction.query<{ transaction_id: Uint8Array }>(
-      `SELECT current_row.transaction_id
-         FROM current_transactions current_row
-         JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
-        WHERE revision.direction = 'outflow'`,
-    )).rows;
-    await transaction.query("SET LOCAL session_replication_role = replica");
-    await transaction.query(
-      `INSERT INTO current_transaction_enrichment(
-         transaction_id, field_name, assertion_id, value_text, origin, producer_id, producer_version,
-         route_id, taxonomy_id, taxonomy_version, taxonomy_dimension, taxonomy_code, projection_commit_id
-       ) VALUES ($1, 'kind', $1, 'purchase', 'derived', 'test', 'v1', 'test', 'test', 'v1', 'kind', 'purchase', $1)`,
-      [row!.transaction_id],
-    );
-    await transaction.query("SET LOCAL session_replication_role = origin");
-    await transaction.query("SELECT refresh_current_spending_pairing_entry($1)", [row!.transaction_id]);
-  });
-}
-
 async function purchaseSpending(store: PGliteStore) {
   const spending = createPGliteSpendingQuery(store);
   const summary = await spending.summary();
@@ -268,7 +247,6 @@ async function purchaseSpending(store: PGliteStore) {
 test("purchase-basis Spending and pairing leave out a covered account's purchase", async () => {
   await withStore(async (store) => {
     await commitTdccSettlement(store, "013");
-    await grantPurchaseKind(store);
     await commitPGliteCanonicalEInvoiceCapture(store, {
       captureId: "invoice-capture",
       sourceConnectionKey: token("einvoice-connection"),
@@ -296,7 +274,7 @@ test("purchase-basis Spending and pairing leave out a covered account's purchase
     // A refund of the covered purchase does not count either, in the
     // summary or in the complete Purchase report (ADR 0076).
     const [outflow] = (await store.query<{ transaction_id: Uint8Array }>(
-      "SELECT transaction_id FROM current_transaction_enrichment WHERE field_name = 'kind' AND producer_id = 'test'",
+      "SELECT transaction_id FROM current_transaction_enrichment WHERE field_name = 'kind' AND value_text = 'purchase'",
     )).rows;
     const [route] = (await store.query<{ authority_route: string }>(
       "SELECT authority_route FROM source_authority_routes ORDER BY authority_route LIMIT 1",

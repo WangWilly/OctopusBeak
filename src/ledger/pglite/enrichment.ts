@@ -8,6 +8,7 @@ import {
   BANK_TRANSACTION_KIND_ENRICHMENT_CONTRACT_VERSION,
   BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
   BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
+  BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES,
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_ID,
   CATHAY_AUTOMATIC_ENRICHMENT_PRODUCER_VERSION,
   CREDIT_CARD_DIRECTION_ENRICHMENT_CONTRACT_VERSION,
@@ -29,6 +30,8 @@ export type PGliteProjectionTransaction = Readonly<{
   sourcePayload: string | null;
   integrationNamespace: string;
   stream: string;
+  /** The Institution that maintains the account; an Intermediary source's account names the bank, not the source. */
+  institutionKey: string;
   sourceConnectionKey: string;
   identityEpoch: string;
   /** The investment action or loan event kind its source recorded, when it recorded one. */
@@ -64,6 +67,8 @@ export type PGliteDerivedKind = Readonly<{
   routeId: string;
 }>;
 
+const BANK_ROUTE_SCOPES: ReadonlySet<string> = new Set(BANK_TRANSACTION_KIND_ENRICHMENT_ROUTE_SCOPES);
+
 function bankRoute(transaction: PGliteProjectionTransaction): {
   producerId: string;
   producerVersion: string;
@@ -81,19 +86,7 @@ function bankRoute(transaction: PGliteProjectionTransaction): {
       routeId: "cathay/domestic-deposit/automatic-enrichment/v1/kind",
     };
   }
-  const supported = new Set([
-    "cathay/foreign-currency-deposit",
-    "yuanta/domestic-deposit",
-    "yuanta/foreign-currency-deposit",
-    "hncb/domestic-deposit",
-    "sinopac/domestic-deposit",
-    "sinopac/foreign-currency-deposit",
-    "linebank/domestic-deposit",
-    "fubon/domestic-deposit",
-    "post/domestic-deposit",
-    "ctbc/domestic-deposit",
-  ]);
-  if (!supported.has(scope)) return null;
+  if (!BANK_ROUTE_SCOPES.has(scope)) return null;
   return {
     producerId: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_ID,
     producerVersion: BANK_TRANSACTION_KIND_ENRICHMENT_PRODUCER_VERSION,
@@ -180,7 +173,7 @@ function bankClassification(
     direction: transaction.direction,
     description: transaction.description,
     sourcePayload: transaction.sourcePayload,
-    integrationNamespace: transaction.integrationNamespace,
+    institutionKey: transaction.institutionKey,
     stream: transaction.stream,
   });
   return { ...classified, sourceValue: transaction.description ?? transaction.sourcePayload ?? "" };
@@ -229,14 +222,14 @@ export function derivePGliteTransactionKind(
  * that state explicit so a source row with an unrecognised description does
  * not silently become a generic purchase/receipt in the worker projection.
  */
-export function derivePGliteCathayDescriptionKind(
+function derivePGliteCathayDescriptionKind(
   transaction: PGliteProjectionTransaction,
 ): PGliteDerivedKind | null {
   if (
     transaction.integrationNamespace !== "cathay" ||
     transaction.stream !== "domestic-deposit"
   ) return null;
-  const classification = classifyCathayDescription(transaction.description);
+  const classification = classifyCathayDescription(transaction.description, transaction.direction);
   const candidate = classification.candidates[0];
   return {
     value: candidate?.value ?? "",

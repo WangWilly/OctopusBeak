@@ -18,6 +18,11 @@ const KIND_REDERIVATIONS = [
   // event, and a deposit outflow a one-to-one loan repayment relation names
   // reads payment.loan.
   "kind-rederivation-account-events-v1",
+  // Cathay's own deposit labels, Cathay foreign-currency deposits, TDCC
+  // settlement deposits read by their maintaining Institution, and the bank
+  // labels for currency exchange, investment settlement, dividends and
+  // deposit interest, with payload keys no longer read as words.
+  "kind-rederivation-deposit-kind-gaps-v1",
 ] as const;
 
 const signature = (id: string) => createHash("sha256").update(id).digest("hex");

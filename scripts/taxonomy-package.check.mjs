@@ -151,14 +151,14 @@ test("every published definition has executable registry and admission fixtures"
 });
 
 test("Cathay producer fixtures use retained descriptions as Derived evidence", () => {
-  assert.deepEqual(classifyCathayDescription("Synthetic Cathay deposit description").candidates, [
+  assert.deepEqual(classifyCathayDescription("Synthetic Cathay deposit description", "inflow").candidates, [
     { value: "cash.deposit", confidenceBasisPoints: 9200 },
   ]);
-  assert.deepEqual(classifyCathayDescription("Synthetic Cathay transfer description").candidates, [
+  assert.deepEqual(classifyCathayDescription("Synthetic Cathay transfer description", "outflow").candidates, [
     { value: "transfer.internal", confidenceBasisPoints: 8600 },
   ]);
-  assert.deepEqual(classifyCathayDescription("Synthetic Cathay credit description").candidates, [
+  assert.deepEqual(classifyCathayDescription("Synthetic Cathay credit description", "inflow").candidates, [
     { value: "payment.credit_card", confidenceBasisPoints: 8200 },
   ]);
-  assert.deepEqual(classifyCathayDescription("unrelated description"), { candidates: [], tie: false });
+  assert.deepEqual(classifyCathayDescription("unrelated description", "inflow"), { candidates: [], tie: false });
 });

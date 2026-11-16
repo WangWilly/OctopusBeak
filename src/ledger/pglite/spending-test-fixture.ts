@@ -37,7 +37,7 @@ export type FixtureTransactionInput = Readonly<{
   /** Credit-card facts: a consume date makes the transaction's date a purchase date. */
   card?: FixtureCardFacts;
   /** Where a new `account` lives; omitted means a card of the fixture's own source. */
-  accountStream?: Readonly<{ namespace: string; stream: string; accountType: "depository" | "investment" | "loan" }>;
+  accountStream?: Readonly<{ namespace: string; stream: string; accountType: "depository" | "investment" | "loan"; institutionKey?: string }>;
   /** The investment action or loan event kind its writer records beside the transaction. */
   event?: Readonly<{ investment: "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend" }>
     | Readonly<{ loan: "disbursement" | "payment" | "interest" | "fee" }>;
@@ -223,8 +223,8 @@ export async function createSpendingCategoryFixture() {
       await transaction.query(
         `INSERT INTO financial_accounts(
            account_id, source_connection_id, identity_epoch_id, stream, source_account_key, account_no, account_type, currency, institution_key, created_commit_id
-         ) VALUES ($1, $2, $3, $6, $4, $4, $7, 'TWD', 'fubon', $5)`,
-        [id, owner.connection, owner.epoch, key, sourceCommit, placed.stream, placed.accountType],
+         ) VALUES ($1, $2, $3, $6, $4, $4, $7, 'TWD', $8, $5)`,
+        [id, owner.connection, owner.epoch, key, sourceCommit, placed.stream, placed.accountType, where?.institutionKey ?? "fubon"],
       );
       if (placed.accountType === "investment")
         await transaction.query(

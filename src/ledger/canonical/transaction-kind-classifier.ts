@@ -7,49 +7,108 @@ export type TransactionKindClassifierInput = Readonly<{
   direction: "inflow" | "outflow";
   description?: string | null;
   sourcePayload?: string | null;
-  integrationNamespace?: string;
+  /**
+   * The Institution that maintains the account. Institution-specific label
+   * rules key on it, so they also read that bank's rows an Intermediary
+   * source such as TDCC reports.
+   */
+  institutionKey?: string;
   stream?: string;
 }>;
+
+/**
+ * A machine token a payload carries beside its text: a digest, an id, a date,
+ * a number, a version or contract name. Its letters are not words, so a
+ * keyword rule must not read them: a base64 digest can hold `fee` or `ach`.
+ */
+const MACHINE_TOKEN = /^[\x21-\x7e]*[\d:_\-/=.+][\x21-\x7e]*$/u;
+
+/**
+ * The human text in a source payload: its string values, never its keys,
+ * without machine tokens. A key such as `feeAmount` names a field, not what
+ * the row is. A payload that is not JSON is text as it stands.
+ */
+function payloadText(payload: string | null | undefined): string {
+  if (!payload) return "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return payload;
+  }
+  const values = (value: unknown): string[] =>
+    typeof value === "string" ? (MACHINE_TOKEN.test(value) ? [] : [value])
+      : value && typeof value === "object" ? Object.values(value).flatMap(values)
+      : [];
+  return values(parsed).join(" ");
+}
+
+/**
+ * A bank's own label for a row: the description's first `·` part, without
+ * whitespace or the Debit/Credit marker a foreign-currency statement puts
+ * before it. Label rules match it whole, so a word elsewhere in the text, a
+ * merchant name or a note, never reads as the label.
+ */
+function bankLabel(description: string | null | undefined): string {
+  return (description?.split("·", 1)[0] ?? "").replace(/\s+/gu, "").replace(/^(?:debit|credit)/iu, "");
+}
+
+/**
+ * Labels whose words say what the row is. A currency exchange moves money
+ * into the person's own other-currency account; a separate exchange fee row
+ * has its own label, such as 換匯手續費, and stays a fee.
+ */
+const CURRENCY_EXCHANGE_LABEL = /^(?:手機|行動|網路|網銀)?換匯$/u;
+const INVESTMENT_SETTLEMENT_LABEL = /^(?:複委託|交割股款)$/u;
+const DIVIDEND_LABEL = /^(?:[A-Za-z][A-Za-z0-9.]{0,9}息|.{0,6}配息)$/u;
+const DEPOSIT_INTEREST_LABEL = /^(?:存款|活存)息$/u;
 
 export function classifyBankTransactionKind(input: TransactionKindClassifierInput): Readonly<{
   value: string;
   evidenceKind: "bank-rule";
   sourceField: string;
 }> {
-  const text = [input.description, input.sourcePayload]
+  const text = [input.description, payloadText(input.sourcePayload)]
     .filter((value): value is string => Boolean(value && value.trim()))
     .join(" ")
     .toLowerCase();
-  const sourceValue = input.description ?? input.sourcePayload ?? "";
   const direction = input.direction;
   const structured = input.description?.replace(/\s+/gu, "") ?? "";
+  const label = bankLabel(input.description);
   if (
-    input.integrationNamespace === "fubon" &&
+    input.institutionKey === "fubon" &&
     input.stream === "domestic-deposit" &&
     direction === "outflow" &&
     /^(?:行動|網路)?繳費·(?:繳)?[^·]+信用卡(?:款|費)[^·]*$/u.test(structured)
   )
     return { value: "payment.credit_card", evidenceKind: "bank-rule", sourceField: "source_description" };
   if (
-    input.integrationNamespace === "fubon" &&
+    input.institutionKey === "fubon" &&
     input.stream === "domestic-deposit" &&
     direction === "outflow" &&
     (input.description?.split("·", 1)[0]?.replace(/\s+/gu, "") ?? "") === "放款繳款"
   )
     return { value: "payment.loan", evidenceKind: "bank-rule", sourceField: "source_description" };
-  // Fubon's own currency exchange moves money into the person's other-currency account.
   if (
-    input.integrationNamespace === "fubon" &&
-    /^(?:行動|網路)?換匯$/u.test(input.description?.split("·", 1)[0]?.replace(/\s+/gu, "") ?? "")
-  )
-    return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_description" };
-  if (
-    input.integrationNamespace === "yuanta" &&
+    input.institutionKey === "yuanta-bank" &&
     input.stream === "domestic-deposit" &&
     direction === "outflow" &&
     /^\s*轉帳支取\s*·\s*\d{16}\s+YT\d{2}\s+FS\d{8}\s+約定申購\s+\d{5}\s+174\s+FISB\s*$/iu.test(input.description ?? "")
   )
     return { value: "investment.trade.buy", evidenceKind: "bank-rule", sourceField: "source_description" };
+  // A fee written after the label, such as 換匯 · 手續費, is a fee, not the exchange.
+  if (CURRENCY_EXCHANGE_LABEL.test(label) && !/(手續費|服務費|fee)/iu.test(input.description ?? ""))
+    return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_description" };
+  if (INVESTMENT_SETTLEMENT_LABEL.test(label))
+    return {
+      value: direction === "outflow" ? "transfer.investment_contribution" : "transfer.investment_withdrawal",
+      evidenceKind: "bank-rule",
+      sourceField: "source_description",
+    };
+  if (direction === "inflow" && DIVIDEND_LABEL.test(label))
+    return { value: "income.dividend", evidenceKind: "bank-rule", sourceField: "source_description" };
+  if (direction === "inflow" && DEPOSIT_INTEREST_LABEL.test(label))
+    return { value: "interest.earned", evidenceKind: "bank-rule", sourceField: "source_description" };
   if (/(自轉|自動轉帳|本人(?:帳戶|轉帳|匯款)|同名(?:轉帳|帳戶)|自有帳戶|轉入本人|轉出本人)/u.test(text))
     return { value: "transfer.internal", evidenceKind: "bank-rule", sourceField: "source_kind" };
   if (/(匯款|電匯|跨行|ach|wire|swift|remittance|轉出至|轉入自)/iu.test(text))

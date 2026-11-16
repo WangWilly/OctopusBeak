@@ -65,3 +65,29 @@ test("a store installed before the investment and loan event producer gains it o
     await store.close();
   }
 });
+
+test("a store installed before TDCC deposits had a Kind route gains the route and Cathay's transfer output on open", async () => {
+  const database = await createTestPGlite("ledger");
+  const store = await installFinancialStore(database);
+  try {
+    await database.exec(`
+      ALTER TABLE taxonomy_producer_compatibility DISABLE TRIGGER USER;
+      ALTER TABLE automatic_enrichment_authority_routes DISABLE TRIGGER USER;
+      DELETE FROM taxonomy_producer_compatibility
+       WHERE producer_id = 'cathay/domestic-deposit/automatic-enrichment' AND origin = 'derived' AND field_name = 'kind' AND output_code = 'transfer';
+      DELETE FROM automatic_enrichment_authority_routes WHERE scope_key = 'tdcc/domestic-deposit';
+      ALTER TABLE taxonomy_producer_compatibility ENABLE TRIGGER USER;
+      ALTER TABLE automatic_enrichment_authority_routes ENABLE TRIGGER USER;`);
+    await store.query("DELETE FROM pglite_operational_migrations WHERE migration_key = $1", ["taxonomy-deposit-kind-gaps-v1"]);
+    await installFinancialStore(database);
+    const routes = await store.query<{ route_id: string; producer_id: string }>(
+      "SELECT route_id, producer_id FROM automatic_enrichment_authority_routes WHERE scope_key = 'tdcc/domestic-deposit'");
+    assert.deepEqual(routes.rows, [{ route_id: "tdcc/domestic-deposit/kind-enrichment/v4/kind", producer_id: "bank/deposit-kind-enrichment" }]);
+    const transfer = await store.query(
+      `SELECT 1 FROM taxonomy_producer_compatibility
+        WHERE producer_id = 'cathay/domestic-deposit/automatic-enrichment' AND origin = 'derived' AND field_name = 'kind' AND output_code = 'transfer'`);
+    assert.equal(transfer.rows.length, 1);
+  } finally {
+    await store.close();
+  }
+});

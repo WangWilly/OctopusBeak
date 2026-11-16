@@ -389,8 +389,10 @@ test("a TDCC account that a direct source covers leaves Cash flow", async () => 
     const august = { startDate: "2026-08-01", endDate: "2026-08-31" };
     await commitTdccSettlement(store, "013");
     const uncovered = await readPGliteCashFlow(store, august);
-    assert.equal(uncovered.transactions.length, 2, "TDCC rows carry no Kind, so they count as unresolved while uncovered");
-    assert.ok(uncovered.transactions.every((transaction) => transaction.cashFlow.class === "unresolved"));
+    assert.deepEqual(uncovered.transactions.map((transaction) => [transaction.kind?.code, transaction.cashFlow.class]).sort(), [
+      ["income.employment.salary", "inflow"],
+      ["purchase", "outflow"],
+    ], "an uncovered TDCC account's rows count with the Kind their bank's labels give");
 
     await commitCathay(store);
     assert.deepEqual((await readPGliteCashFlow(store, august)).transactions, []);

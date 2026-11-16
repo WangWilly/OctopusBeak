@@ -241,10 +241,10 @@ function cardCapture(captureId: string, direction: "inflow" | "outflow" = "outfl
 }
 
 test("Cathay worker classification preserves transfer and unsupported outcomes", () => {
-  assert.deepEqual(classifyCathayDescription("transfer").candidates, [
+  assert.deepEqual(classifyCathayDescription("transfer", "outflow").candidates, [
     { value: "transfer.internal", confidenceBasisPoints: 8_600 },
   ]);
-  assert.deepEqual(classifyCathayDescription("opaque provider note").candidates, []);
+  assert.deepEqual(classifyCathayDescription("opaque provider note", "outflow").candidates, []);
 });
 
 test("PGlite provider deposits maintain current transaction and derived bank kind", async () => {
@@ -261,9 +261,9 @@ test("PGlite provider deposits maintain current transaction and derived bank kin
           AND enrichment.field_name = 'kind'`,
     );
     assert.equal(rows.rows.length, 1);
-    // Keep parity with the canonical rule table: the fixture's retained
-    // description contains the `fee` token inside "fixture".
-    assert.equal(rows.rows[0]?.value_text, "fee.bank");
+    // The payload's `feeAmount` key is a field name, not a word (ADR 0140), so
+    // an inflow whose text names nothing falls back to receipt.
+    assert.equal(rows.rows[0]?.value_text, "receipt");
     assert.equal(rows.rows[0]?.route_id, "yuanta/foreign-currency-deposit/kind-enrichment/v4/kind");
     const commits = await store.query<{ commit_sequence: number; commit_kind: string }>(
       "SELECT commit_sequence, commit_kind FROM canonical_commits ORDER BY commit_sequence",
