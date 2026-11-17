@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { ArrowLeft, ArrowRight } from "@lucide/svelte";
-  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { locale, t, type Locale, type Translation } from "$lib/i18n/i18n.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
   import { moneyText } from "$lib/spending/components/money-text.ts";
   import { dayHeadingText } from "$lib/spending/spending-display.ts";
@@ -12,7 +12,8 @@
   import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import {
     linkEffect,
-    pairableRows,
+    manualPairAnchors,
+    manualPairSuggestions,
     pairExchangeRate,
     unpairedTransfers,
     revokeEffect,
@@ -21,8 +22,10 @@
     transferRefusal,
     transferRequest,
     type CashFlowTransferDecision,
+    type CashFlowTransferPanelStart,
     type CashFlowTransferReason,
     type CashFlowTransferRequest,
+    type ManualPairSuggestion,
   } from "../transfer-panel.ts";
 
   export let panel: CashFlowTransferPanel;
@@ -35,34 +38,41 @@
   export let detailLinkId: string | null = null;
   /** The currency the page shows; the unpaired list keeps to it. */
   export let currency: string;
-  /** Open scrolled to one section of the list. */
-  export let section: "unpaired" | null = null;
+  /** Open scrolled to the unpaired list, or to the manual pair section with one row chosen. */
+  export let start: CashFlowTransferPanelStart | null = null;
   /** Open one row's transaction detail. */
   export let openRow: (row: CashFlowRow) => void;
 
+  const SUGGESTIONS_SHOWN = 5;
+
   let busy: string | null = null;
   let error: Readonly<{ key: string; text: string }> | null = null;
-  let manualOutflow = "";
-  let manualInflow = "";
+  let manualDirection: CashFlowRow["direction"] = "outflow";
+  let anchorId: string | null = null;
+  let anchorQuery = "";
+  let suggestionQuery = "";
+  let allSuggestions = false;
+  let pairingId: string | null = null;
   let unpairedSection: HTMLElement | null = null;
   let manualSection: HTMLElement | null = null;
 
   $: detail = detailLinkId === null ? null : panel.links.find((link) => link.linkId === detailLinkId) ?? null;
-  $: outflows = pairableRows(rows, "outflow");
-  $: inflows = pairableRows(rows, "inflow");
-  $: chosenOutflow = outflows.find((row) => row.transactionId === manualOutflow) ?? null;
-  $: chosenInflow = inflows.find((row) => row.transactionId === manualInflow) ?? null;
-  $: manualRefusal = chosenOutflow && chosenInflow
-    ? transferRefusal("pair", { outflowTransactionId: chosenOutflow.transactionId, inflowTransactionId: chosenInflow.transactionId }, { rows, panel })
-    : null;
-  $: manualRate = chosenOutflow && chosenInflow && chosenOutflow.amount.currency !== chosenInflow.amount.currency
-    ? rateText({ outflow: chosenOutflow, inflow: chosenInflow })
-    : null;
+  $: anchors = manualPairAnchors(manualDirection, { rows, panel });
+  $: anchor = anchors.find((row) => row.transactionId === anchorId) ?? null;
+  $: anchorOptions = anchors.filter((row) => matches(row, anchorQuery, $t, $locale));
+  $: suggestions = anchor ? manualPairSuggestions(anchor, { rows, panel }) : [];
+  $: shownSuggestions = allSuggestions
+    ? suggestions.filter((suggestion) => matches(suggestion.row, suggestionQuery, $t, $locale))
+    : suggestions.slice(0, SUGGESTIONS_SHOWN);
   $: unpaired = unpairedTransfers(panel, currency);
   $: candidateSides = new Set(panel.candidates.flatMap((candidate) => [candidate.outflow.transactionId, candidate.inflow.transactionId]));
-  $: if (section === "unpaired" && unpairedSection) {
+  $: if (start?.kind === "unpaired" && unpairedSection) {
     unpairedSection.scrollIntoView({ block: "start" });
-    section = null;
+    start = null;
+  }
+  $: if (start?.kind === "pair" && manualSection) {
+    void pairByHand(start.row);
+    start = null;
   }
 
   type Sides = Readonly<{ outflow: Pick<CashFlowTransferSide, "amount">; inflow: Pick<CashFlowTransferSide, "amount"> }>;
@@ -80,10 +90,48 @@
   }
 
   async function pairByHand(row: CashFlowRow) {
-    if (row.direction === "outflow") manualOutflow = row.transactionId;
-    else manualInflow = row.transactionId;
+    chooseDirection(row.direction);
+    chooseAnchor(row);
     await tick();
     manualSection?.scrollIntoView({ block: "start" });
+  }
+
+  function chooseDirection(direction: CashFlowRow["direction"]) {
+    manualDirection = direction;
+    anchorId = null;
+    anchorQuery = "";
+  }
+
+  function chooseAnchor(row: CashFlowRow | null) {
+    anchorId = row?.transactionId ?? null;
+    suggestionQuery = "";
+    allSuggestions = false;
+  }
+
+  async function pairWith(chosen: CashFlowRow, row: CashFlowRow) {
+    const [outflow, inflow] = chosen.direction === "outflow" ? [chosen, row] : [row, chosen];
+    pairingId = row.transactionId;
+    await run("manual", "pair", { outflowTransactionId: outflow.transactionId, inflowTransactionId: inflow.transactionId });
+    pairingId = null;
+  }
+
+  function matches(row: CashFlowRow, query: string, copy: Translation, lang: Locale): boolean {
+    const plain = (text: string) => text.toLocaleLowerCase(lang).replaceAll(",", "");
+    const needle = plain(query.trim());
+    return needle === "" || plain(`${rowTitle(copy, row)} ${accountLabel(copy, row.details.account)} ${moneyText(row.amount, lang)}`).includes(needle);
+  }
+
+  function suggestionChips(suggestion: ManualPairSuggestion): readonly string[] {
+    const copy = $t.cashFlow.transferPanel;
+    const days = copy.manualDays(suggestion.days);
+    switch (suggestion.kind) {
+      case "same_amount":
+        return [copy.manualSameAmount, days];
+      case "exchange":
+        return [copy.manualExchange(suggestion.rate ? exchangeRateText(suggestion.rate) : null), days];
+      case "refused":
+        return [suggestion.difference ? copy.manualDifference(moneyText(suggestion.difference, $locale)) : copy.refusals[suggestion.refusal], days];
+    }
   }
 
   function money(side: Pick<CashFlowTransferSide, "amount">, signedOut: "outflow" | "inflow" | null = null) {
@@ -129,10 +177,7 @@
       await decide(transferRequest(action, pair, dataVersion));
       // A revoked link is gone; if the same pair is linked again later, the list shows it rather than reopening its detail.
       if (action === "revoke") detailLinkId = null;
-      if (action === "pair") {
-        manualOutflow = "";
-        manualInflow = "";
-      }
+      if (action === "pair") chooseAnchor(null);
     } catch {
       // The worker's reason does not cross IPC; the page has been read again, so the reason is named from it.
       await tick();
@@ -159,10 +204,6 @@
       entry.inPeriod ? null : copy.outsidePeriod,
     ].filter((part) => part).join(" · ");
   }
-
-  function optionText(row: CashFlowRow) {
-    return `${row.date.slice(5).replace("-", "/")} · ${rowTitle($t, row)} · ${accountLabel($t, row.details.account)} · ${moneyText(row.amount, $locale)}`;
-  }
 </script>
 
 {#snippet side(entry: CashFlowTransferSide | null, direction: "outflow" | "inflow")}
@@ -188,6 +229,15 @@
       <strong class="money" data-sensitive>{rateText(pair)}</strong>
     </p>
   {/if}
+{/snippet}
+
+{#snippet rowLine(row: CashFlowRow)}
+  <CashFlowAccountMark account={row.details.account} size={28} tone="soft" />
+  <span class="side-text">
+    <strong>{rowTitle($t, row)}</strong>
+    <span class="muted">{[shortDate(row.date), accountLabel($t, row.details.account)].join(" · ")}</span>
+  </span>
+  <strong class="money" class:positive={row.direction === "inflow"} data-sensitive>{money(row, row.direction)}</strong>
 {/snippet}
 
 {#snippet errorLine(key: string)}
@@ -369,33 +419,52 @@
       <section class="block manual" data-transfer-manual bind:this={manualSection}>
         <h3>{$t.cashFlow.transferPanel.manualTitle}</h3>
         <p class="muted">{$t.cashFlow.transferPanel.manualNote}</p>
-        <div class="manual-fields">
-          <label>
-            <span>{$t.cashFlow.transferPanel.manualOutflow}</span>
-            <select bind:value={manualOutflow} data-manual-outflow>
-              <option value="">{$t.cashFlow.transferPanel.choose}</option>
-              {#each outflows as row (row.transactionId)}<option value={row.transactionId}>{optionText(row)}</option>{/each}
-            </select>
-          </label>
-          <label>
-            <span>{$t.cashFlow.transferPanel.manualInflow}</span>
-            <select bind:value={manualInflow} data-manual-inflow>
-              <option value="">{$t.cashFlow.transferPanel.choose}</option>
-              {#each inflows as row (row.transactionId)}<option value={row.transactionId}>{optionText(row)}</option>{/each}
-            </select>
-          </label>
-        </div>
-        {#if manualRefusal}<p class="error" role="status" data-manual-refusal={manualRefusal}>{$t.cashFlow.transferPanel.refusals[manualRefusal]}</p>
-        {:else if chosenOutflow && chosenInflow && isExchange({ outflow: chosenOutflow, inflow: chosenInflow })}<p class="muted" role="status" data-manual-exchange data-sensitive>{$t.cashFlow.transferPanel.manualExchange(manualRate)}</p>{/if}
-        <div class="actions">
-          <button
-            type="button"
-            class="button primary"
-            disabled={busy !== null || !chosenOutflow || !chosenInflow || manualRefusal !== null}
-            data-manual-pair
-            onclick={() => chosenOutflow && chosenInflow && run("manual", "pair", { outflowTransactionId: chosenOutflow.transactionId, inflowTransactionId: chosenInflow.transactionId })}
-          >{busy === "manual" ? $t.cashFlow.transferPanel.busy : $t.cashFlow.transferPanel.manualSubmit}</button>
-        </div>
+        {#if anchor}
+          {@const chosen = anchor}
+          <div class="pick anchor" data-manual-anchor={chosen.transactionId}>
+            {@render rowLine(chosen)}
+            <button type="button" class="text-link pair-link" disabled={busy !== null} data-manual-change onclick={() => chooseAnchor(null)}>{$t.cashFlow.transferPanel.manualChange}</button>
+          </div>
+          <div class="step-head">
+            <h4>{$t.cashFlow.transferPanel.manualSuggestionsTitle[chosen.direction]}</h4>
+            <span class="muted">{$t.cashFlow.transferPanel.manualRanked}</span>
+          </div>
+          {#if suggestions.length === 0}<p class="muted" data-manual-none>{$t.cashFlow.transferPanel.manualNone}</p>{/if}
+          {#if allSuggestions}
+            <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={suggestionQuery} data-manual-suggestion-search />
+          {/if}
+          <ul class="picks">
+            {#each shownSuggestions as suggestion (suggestion.row.transactionId)}
+              <li class="pick" class:best={suggestion === suggestions[0] && suggestion.kind !== "refused"} class:refused={suggestion.kind === "refused"} data-manual-suggestion={suggestion.row.transactionId} data-kind={suggestion.kind}>
+                {@render rowLine(suggestion.row)}
+                {#if suggestion.kind !== "refused"}
+                  <button type="button" class="button" class:primary={suggestion === suggestions[0]} disabled={busy !== null} data-manual-pair={suggestion.row.transactionId} onclick={() => pairWith(chosen, suggestion.row)}>
+                    {busy === "manual" && pairingId === suggestion.row.transactionId ? $t.cashFlow.transferPanel.busy : $t.cashFlow.transferPanel.manualSubmit}
+                  </button>
+                {/if}
+                <span class="chips">
+                  {#each suggestionChips(suggestion) as chip, index (index)}<span class="badge muted-badge" data-sensitive>{chip}</span>{/each}
+                </span>
+              </li>
+            {/each}
+          </ul>
+          {#if !allSuggestions && suggestions.length > SUGGESTIONS_SHOWN}
+            <button type="button" class="text-link pair-link" data-manual-more onclick={() => allSuggestions = true}>{$t.cashFlow.transferPanel.manualMore(suggestions.length - SUGGESTIONS_SHOWN)}</button>
+          {/if}
+        {:else}
+          {@const other = manualDirection === "outflow" ? "inflow" : "outflow"}
+          <div class="step-head">
+            <h4>{$t.cashFlow.transferPanel.manualPick[manualDirection]}</h4>
+            <button type="button" class="text-link pair-link" data-manual-direction={other} onclick={() => chooseDirection(other)}>{$t.cashFlow.transferPanel.manualSwitch[manualDirection]}</button>
+          </div>
+          <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={anchorQuery} data-manual-anchor-search />
+          {#if anchorOptions.length === 0}<p class="muted" data-manual-none>{$t.cashFlow.transferPanel.manualNone}</p>{/if}
+          <ul class="picks options">
+            {#each anchorOptions as row (row.transactionId)}
+              <li><button type="button" class="pick option" data-manual-anchor-option={row.transactionId} onclick={() => chooseAnchor(row)}>{@render rowLine(row)}</button></li>
+            {/each}
+          </ul>
+        {/if}
         {@render errorLine("manual")}
       </section>
     {/if}
@@ -524,27 +593,91 @@
     font-size: 12.5px;
   }
 
-  .manual-fields {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-3);
+  .step-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
   }
 
-  .manual-fields label {
-    display: grid;
-    gap: var(--space-1);
-    font-size: 12.5px;
+  h4 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
   }
 
-  .manual-fields select {
+  .search {
     min-height: 36px;
     min-width: 0;
-    padding: 0 var(--space-2);
+    padding: 0 var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--fg);
     font: inherit;
+    font-size: 13px;
+  }
+
+  .picks {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .options {
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  .pick {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: var(--space-1) var(--space-3);
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+  }
+
+  .option {
+    cursor: pointer;
+  }
+
+  .option:hover,
+  .option:focus-visible {
+    background: var(--surface-soft);
+  }
+
+  .anchor {
+    border-color: color-mix(in oklch, var(--accent) 35%, var(--border));
+    background: var(--accent-soft);
+  }
+
+  .best {
+    border-color: color-mix(in oklch, var(--success) 45%, var(--border));
+    background: color-mix(in oklch, var(--success) 8%, var(--surface));
+  }
+
+  .refused {
+    opacity: 0.6;
+  }
+
+  .pick .button {
+    min-height: 32px;
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    grid-column: 2 / -1;
   }
 
   .back {
