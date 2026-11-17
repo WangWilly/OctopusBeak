@@ -293,7 +293,7 @@ async function writeTransactionUserCategory(
   return true;
 }
 
-function parseCategoryCode(categoryCode: unknown): string | null {
+export function parseCategoryCode(categoryCode: unknown): string | null {
   if (categoryCode !== null && (typeof categoryCode !== "string" || !isTaxonomyCode("category", categoryCode)))
     fail("invalid", `Unknown category code ${String(categoryCode)}.`);
   return categoryCode;
@@ -311,7 +311,7 @@ function parseKnowledgeAt(knowledgeAt: unknown): number {
  */
 export const MAX_CATEGORIZATION_TARGETS = 1000;
 
-/** Parse a Categorization target set: a non-empty list of distinct purchase ids. */
+/** Parse a User categorization scope: a non-empty list of distinct purchase ids. */
 export function parsePurchaseIdSet(purchaseIds: unknown): readonly PurchaseIdentity[] {
   if (!Array.isArray(purchaseIds) || purchaseIds.length === 0) fail("invalid", "A category operation needs at least one purchase.");
   if (purchaseIds.length > MAX_CATEGORIZATION_TARGETS)
@@ -380,7 +380,7 @@ export async function setPGliteSpendingPurchaseCategoryInTransaction(
 
 /**
  * Sets, or with a null code clears, the user's category on every purchase of
- * a Categorization target set in one commit, or on none: any refused target
+ * a User categorization scope in one commit, or on none: any refused target
  * rejects the whole set.
  */
 export async function setPGliteSpendingPurchaseCategoriesInTransaction(

@@ -45,7 +45,7 @@ export type FinancialPageActionRequest = Readonly<{
 }> | Readonly<{
   /**
    * Set or, with a null code, clear the user's category on every purchase of
-   * a Categorization target set, in one commit or none.
+   * a User categorization scope, in one commit or none.
    */
   action: "categorize";
   kind: "category_many";

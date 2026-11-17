@@ -32,6 +32,7 @@ import type {
 } from "../../lib/financial/page-actions.ts";
 import type { SpendingCandidatePairRef, SpendingStrongConflict } from "../../lib/spending/model.ts";
 import {
+  parseCategoryCode,
   parsePurchaseIdSet,
   purchaseCategoryActionSubject,
   setPGliteSpendingPurchaseAllocationInTransaction,
@@ -562,6 +563,7 @@ const PAGE_ACTIONS: PageActionTable = Object.freeze({
   category_many: {
     admit: (transaction, input) => {
       parsePurchaseIdSet(input.purchaseIds);
+      parseCategoryCode(input.categoryCode);
       return admitExactVersion(transaction, input);
     },
     subject: categoryManySubject,
@@ -641,7 +643,7 @@ async function admitExactVersion(
   return Object.freeze({ status: "admitted" as const, current });
 }
 
-/** The union of every target's subject; a stale or ineligible target refuses the set before the write. */
+/** The union of every target's subject; a refund or a stale target refuses here, any later refusal rolls the set back. */
 async function categoryManySubject(
   transaction: PGliteTransaction,
   input: PageActionOf<"category_many">,
