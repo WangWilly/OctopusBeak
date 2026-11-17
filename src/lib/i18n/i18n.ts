@@ -35,6 +35,7 @@ function translationFor(locale: Locale) {
     purchaseSpending: spendingCopy[locale].purchaseSpending,
     spendingInsight: spendingCopy[locale].spendingInsight,
     spendingReview: spendingCopy[locale].spendingReview,
+    classifyInbox: spendingCopy[locale].classifyInbox,
     cashFlow: cashFlowCopy[locale].cashFlow,
     accounts: accountsCopy[locale].accounts,
     historyTable: accountsCopy[locale].historyTable,
