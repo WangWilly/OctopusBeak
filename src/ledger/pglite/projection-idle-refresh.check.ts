@@ -68,3 +68,35 @@ test("planner statistics follow a table that grows, and are left alone when noth
     await fixture.close();
   }
 });
+
+test("an unsupported Kind is recorded once until what it was read from changes", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const cathay = { namespace: "cathay", stream: "domestic-deposit", accountType: "depository" } as const;
+    const unsupported = await fixture.addTransaction({ amount: "301", account: "cathay", accountStream: cathay, description: "opaque provider note" });
+    const outputs = async () =>
+      (await fixture.store.query<{ output_state: string; source_value_text: string }>(
+        `SELECT output.output_state, output.source_value_text
+           FROM enrichment_run_outputs output
+           JOIN canonical_commits written ON written.commit_id = output.commit_id
+          WHERE output.field_name = 'kind' AND output.transaction_id = $1
+          ORDER BY written.commit_sequence`,
+        [Uint8Array.from(Buffer.from(unsupported.replaceAll("-", ""), "hex"))],
+      )).rows.map((row) => `${row.output_state}:${row.source_value_text}`);
+    assert.deepEqual(await outputs(), ["unsupported:opaque provider note"]);
+    for (const amount of ["302", "303"]) await fixture.addTransaction({ amount, date: "2026-09-10" });
+    assert.deepEqual(await outputs(), ["unsupported:opaque provider note"], "a refresh of other transactions writes nothing for it");
+    await fixture.reviseTransaction(unsupported, { amount: "301", accountStream: cathay, description: "another opaque note" });
+    assert.deepEqual(await outputs(), ["unsupported:opaque provider note", "unsupported:another opaque note"]);
+    await fixture.reviseTransaction(unsupported, { amount: "301", accountStream: cathay, description: "transfer" });
+    await fixture.reviseTransaction(unsupported, { amount: "301", accountStream: cathay, description: "another opaque note" });
+    assert.deepEqual(await outputs(), [
+      "unsupported:opaque provider note",
+      "unsupported:another opaque note",
+      "supported:transfer",
+      "unsupported:another opaque note",
+    ], "an unsupported Kind after a supported one withdraws it");
+  } finally {
+    await fixture.close();
+  }
+});
