@@ -121,16 +121,19 @@
     return needle === "" || plain(`${rowTitle(copy, row)} ${accountLabel(copy, row.details.account)} ${moneyText(row.amount, lang)}`).includes(needle);
   }
 
-  function suggestionChips(suggestion: ManualPairSuggestion): readonly string[] {
+  /** Each chip's text, and whether it shows an amount the page masks. */
+  function suggestionChips(suggestion: ManualPairSuggestion): readonly Readonly<{ text: string; sensitive: boolean }>[] {
     const copy = $t.cashFlow.transferPanel;
-    const days = copy.manualDays(suggestion.days);
+    const days = { text: copy.manualDays(suggestion.days), sensitive: false };
     switch (suggestion.kind) {
       case "same_amount":
-        return [copy.manualSameAmount, days];
+        return [{ text: copy.manualSameAmount, sensitive: false }, days];
       case "exchange":
-        return [copy.manualExchange(suggestion.rate ? exchangeRateText(suggestion.rate) : null), days];
+        return [{ text: copy.manualExchange(suggestion.rate ? exchangeRateText(suggestion.rate) : null), sensitive: suggestion.rate !== null }, days];
       case "refused":
-        return [suggestion.difference ? copy.manualDifference(moneyText(suggestion.difference, $locale)) : copy.refusals[suggestion.refusal], days];
+        return [suggestion.difference
+          ? { text: copy.manualDifference(moneyText(suggestion.difference, $locale)), sensitive: true }
+          : { text: copy.refusals[suggestion.refusal], sensitive: false }, days];
     }
   }
 
@@ -435,15 +438,15 @@
           {/if}
           <ul class="picks">
             {#each shownSuggestions as suggestion (suggestion.row.transactionId)}
-              <li class="pick" class:best={suggestion === suggestions[0] && suggestion.kind !== "refused"} class:refused={suggestion.kind === "refused"} data-manual-suggestion={suggestion.row.transactionId} data-kind={suggestion.kind}>
+              <li class="pick" class:best={suggestion === suggestions[0] && suggestion.kind === "same_amount"} class:refused={suggestion.kind === "refused"} data-manual-suggestion={suggestion.row.transactionId} data-kind={suggestion.kind}>
                 {@render rowLine(suggestion.row)}
                 {#if suggestion.kind !== "refused"}
-                  <button type="button" class="button" class:primary={suggestion === suggestions[0]} disabled={busy !== null} data-manual-pair={suggestion.row.transactionId} onclick={() => pairWith(chosen, suggestion.row)}>
+                  <button type="button" class="button" class:primary={suggestion === suggestions[0] && suggestion.kind === "same_amount"} disabled={busy !== null} data-manual-pair={suggestion.row.transactionId} onclick={() => pairWith(chosen, suggestion.row)}>
                     {busy === "manual" && pairingId === suggestion.row.transactionId ? $t.cashFlow.transferPanel.busy : $t.cashFlow.transferPanel.manualSubmit}
                   </button>
                 {/if}
                 <span class="chips">
-                  {#each suggestionChips(suggestion) as chip, index (index)}<span class="badge muted-badge" data-sensitive>{chip}</span>{/each}
+                  {#each suggestionChips(suggestion) as chip, index (index)}<span class="badge muted-badge" data-sensitive={chip.sensitive || undefined}>{chip.text}</span>{/each}
                 </span>
               </li>
             {/each}
@@ -665,7 +668,7 @@
     background: color-mix(in srgb, var(--success) 8%, var(--surface));
   }
 
-  .refused {
+  .refused > :global(:not(.chips)) {
     opacity: 0.6;
   }
 
