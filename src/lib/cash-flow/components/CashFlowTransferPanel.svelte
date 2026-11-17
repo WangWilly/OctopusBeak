@@ -44,6 +44,7 @@
   export let openRow: (row: CashFlowRow) => void;
 
   const SUGGESTIONS_SHOWN = 5;
+  const ANCHORS_SHOWN = 20;
 
   let busy: string | null = null;
   let error: Readonly<{ key: string; text: string }> | null = null;
@@ -52,6 +53,10 @@
   let anchorQuery = "";
   let suggestionQuery = "";
   let allSuggestions = false;
+  let allAnchors = false;
+  let anchorSearch: HTMLInputElement | null = null;
+  let suggestionSearch: HTMLInputElement | null = null;
+  let suggestionsHeading: HTMLElement | null = null;
   let pairingId: string | null = null;
   let unpairedSection: HTMLElement | null = null;
   let manualSection: HTMLElement | null = null;
@@ -59,7 +64,9 @@
   $: detail = detailLinkId === null ? null : panel.links.find((link) => link.linkId === detailLinkId) ?? null;
   $: anchors = manualPairAnchors(manualDirection, { rows, panel });
   $: anchor = anchors.find((row) => row.transactionId === anchorId) ?? null;
-  $: anchorOptions = anchors.filter((row) => matches(row, anchorQuery, $t, $locale));
+  $: anchorMatches = anchors.filter((row) => matches(row, anchorQuery, $t, $locale));
+  // A search reaches every row, so only an unsearched list is cut short.
+  $: anchorOptions = allAnchors || anchorQuery.trim() !== "" ? anchorMatches : anchorMatches.slice(0, ANCHORS_SHOWN);
   $: suggestions = anchor ? manualPairSuggestions(anchor, { rows, panel }) : [];
   $: shownSuggestions = allSuggestions
     ? suggestions.filter((suggestion) => matches(suggestion.row, suggestionQuery, $t, $locale))
@@ -100,12 +107,31 @@
     manualDirection = direction;
     anchorId = null;
     anchorQuery = "";
+    allAnchors = false;
+    clearManualError();
   }
 
   function chooseAnchor(row: CashFlowRow | null) {
     anchorId = row?.transactionId ?? null;
     suggestionQuery = "";
     allSuggestions = false;
+    clearManualError();
+  }
+
+  /** A refusal names the pair just tried, so it goes once the person moves on to another. */
+  function clearManualError() {
+    if (error?.key === "manual") error = null;
+  }
+
+  /** The control that was clicked leaves the page, so focus moves to what replaced it. */
+  async function focusAfter(target: () => HTMLElement | null) {
+    await tick();
+    target()?.focus();
+  }
+
+  function pickAnchor(row: CashFlowRow | null) {
+    chooseAnchor(row);
+    void focusAfter(() => row ? suggestionsHeading : anchorSearch);
   }
 
   async function pairWith(chosen: CashFlowRow, row: CashFlowRow) {
@@ -180,7 +206,7 @@
       await decide(transferRequest(action, pair, dataVersion));
       // A revoked link is gone; if the same pair is linked again later, the list shows it rather than reopening its detail.
       if (action === "revoke") detailLinkId = null;
-      if (action === "pair") chooseAnchor(null);
+      if (action === "pair") pickAnchor(null);
     } catch {
       // The worker's reason does not cross IPC; the page has been read again, so the reason is named from it.
       await tick();
@@ -426,15 +452,15 @@
           {@const chosen = anchor}
           <div class="pick anchor" data-manual-anchor={chosen.transactionId}>
             {@render rowLine(chosen)}
-            <button type="button" class="text-link pair-link" disabled={busy !== null} data-manual-change onclick={() => chooseAnchor(null)}>{$t.cashFlow.transferPanel.manualChange}</button>
+            <button type="button" class="text-link pair-link" disabled={busy !== null} data-manual-change onclick={() => pickAnchor(null)}>{$t.cashFlow.transferPanel.manualChange}</button>
           </div>
           <div class="step-head">
-            <h4>{$t.cashFlow.transferPanel.manualSuggestionsTitle[chosen.direction]}</h4>
+            <h4 tabindex="-1" bind:this={suggestionsHeading}>{$t.cashFlow.transferPanel.manualSuggestionsTitle[chosen.direction]}</h4>
             <span class="muted">{$t.cashFlow.transferPanel.manualRanked}</span>
           </div>
           {#if suggestions.length === 0}<p class="muted" data-manual-none>{$t.cashFlow.transferPanel.manualNone}</p>{/if}
           {#if allSuggestions}
-            <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={suggestionQuery} data-manual-suggestion-search />
+            <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={suggestionQuery} bind:this={suggestionSearch} data-manual-suggestion-search />
           {/if}
           <ul class="picks">
             {#each shownSuggestions as suggestion (suggestion.row.transactionId)}
@@ -452,7 +478,7 @@
             {/each}
           </ul>
           {#if !allSuggestions && suggestions.length > SUGGESTIONS_SHOWN}
-            <button type="button" class="text-link pair-link" data-manual-more onclick={() => allSuggestions = true}>{$t.cashFlow.transferPanel.manualMore(suggestions.length - SUGGESTIONS_SHOWN)}</button>
+            <button type="button" class="text-link pair-link" data-manual-more onclick={() => { allSuggestions = true; void focusAfter(() => suggestionSearch); }}>{$t.cashFlow.transferPanel.manualMore(suggestions.length - SUGGESTIONS_SHOWN)}</button>
           {/if}
         {:else}
           {@const other = manualDirection === "outflow" ? "inflow" : "outflow"}
@@ -460,13 +486,16 @@
             <h4>{$t.cashFlow.transferPanel.manualPick[manualDirection]}</h4>
             <button type="button" class="text-link pair-link" data-manual-direction={other} onclick={() => chooseDirection(other)}>{$t.cashFlow.transferPanel.manualSwitch[manualDirection]}</button>
           </div>
-          <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={anchorQuery} data-manual-anchor-search />
-          {#if anchorOptions.length === 0}<p class="muted" data-manual-none>{$t.cashFlow.transferPanel.manualNone}</p>{/if}
+          <input type="search" class="search" placeholder={$t.cashFlow.transferPanel.manualSearch} aria-label={$t.cashFlow.transferPanel.manualSearch} bind:value={anchorQuery} bind:this={anchorSearch} data-manual-anchor-search />
+          {#if anchorMatches.length === 0}<p class="muted" data-manual-none>{$t.cashFlow.transferPanel.manualNone}</p>{/if}
           <ul class="picks options">
             {#each anchorOptions as row (row.transactionId)}
-              <li><button type="button" class="pick option" data-manual-anchor-option={row.transactionId} onclick={() => chooseAnchor(row)}>{@render rowLine(row)}</button></li>
+              <li><button type="button" class="pick option" data-manual-anchor-option={row.transactionId} onclick={() => pickAnchor(row)}>{@render rowLine(row)}</button></li>
             {/each}
           </ul>
+          {#if anchorOptions.length < anchorMatches.length}
+            <button type="button" class="text-link pair-link" data-manual-more-anchors onclick={() => { allAnchors = true; void focusAfter(() => manualSection?.querySelectorAll<HTMLElement>("[data-manual-anchor-option]")[ANCHORS_SHOWN] ?? null); }}>{$t.cashFlow.transferPanel.manualMore(anchorMatches.length - anchorOptions.length)}</button>
+          {/if}
         {/if}
         {@render errorLine("manual")}
       </section>
@@ -601,6 +630,10 @@
     flex-wrap: wrap;
     align-items: baseline;
     gap: var(--space-2);
+  }
+
+  h4:focus {
+    outline: none;
   }
 
   h4 {
