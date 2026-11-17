@@ -164,7 +164,15 @@ test("deriving again keeps every user choice and grows no table beyond its own c
                   ORDER BY event_commit.commit_sequence DESC, encode(transition.event_id, 'hex') DESC LIMIT 1) AS state
            FROM assertions assertion WHERE assertion.origin = 'user'
           ORDER BY 1, 2, encode(assertion.assertion_id, 'hex')`)).rows,
-      note: (await fixture.store.query("SELECT value_text FROM current_transaction_fields WHERE field_name = 'note'")).rows,
+      note: (await fixture.store.query<{ value_text: string; origin: string; user_assertion_id: string }>(
+        "SELECT value_text, origin, encode(user_assertion_id, 'hex') AS user_assertion_id FROM current_transaction_fields WHERE field_name = 'note'")).rows,
+      // What Spending reads a transaction's category and allocation from.
+      categorizations: (await fixture.store.query<{ mode: string; category_code: string; amount_coefficient: string | null }>(
+        `SELECT encode(transaction_id, 'hex') AS transaction_id, encode(assertion_id, 'hex') AS assertion_id, mode, category_code,
+                component_ordinal, amount_coefficient, amount_scale, amount_currency
+           FROM projection_generation_transaction_categorizations
+          WHERE generation_id = (SELECT generation_id FROM projection_generations WHERE status = 'active')
+          ORDER BY 1, component_ordinal`)).rows,
       items: (await fixture.store.query(
         `SELECT encode(invoice_id, 'hex') AS invoice_id, item_sequence, encode(assertion_id, 'hex') AS assertion_id, category_code
            FROM current_einvoice_item_categorizations WHERE origin = 'user' ORDER BY 1, 2`)).rows,
@@ -174,7 +182,13 @@ test("deriving again keeps every user choice and grows no table beyond its own c
     });
     const chosen = await choices();
     assert.deepEqual(
-      { assertions: chosen.assertions.map((row) => `${row.field_name}:${/^[0-9a-f-]{36}$/u.test(row.value_text) ? "<tag id>" : row.value_text}:${row.state}`), note: chosen.note, items: chosen.items.length, tags: chosen.tags.length },
+      {
+        assertions: chosen.assertions.map((row) => `${row.field_name}:${/^[0-9a-f-]{36}$/u.test(row.value_text) ? "<tag id>" : row.value_text}:${row.state}`).sort(),
+        note: chosen.note.map((row) => `${row.origin}:${row.value_text}`),
+        categorizations: chosen.categorizations.map((row) => `${row.mode}:${row.category_code}:${row.amount_coefficient ?? "-"}`).sort(),
+        items: chosen.items.length,
+        tags: chosen.tags.length,
+      },
       {
         assertions: [
           "einvoice_item.category:gifts_and_donations:observed",
@@ -183,7 +197,8 @@ test("deriving again keeps every user choice and grows no table beyond its own c
           "transaction.note:<tag id>:observed",
           "transaction.note:a note:observed",
         ],
-        note: [{ value_text: "a note" }],
+        note: ["user:a note"],
+        categorizations: ["allocated:dining:300", "allocated:healthcare:200", "single:dining:-"],
         items: 1,
         tags: 1,
       },
