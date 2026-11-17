@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readPGliteCashFlow } from "./cash-flow.ts";
 import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
-import { commitTdccSettlement } from "./direct-source-precedence-fixture.ts";
+import { commitFubon, commitTdccSettlement } from "./direct-source-precedence-fixture.ts";
+import { readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { queryPGliteCurrentInvestmentFundingRelations, resolvePGliteCanonicalInvestmentFundingRelations } from "./relations.ts";
 import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
@@ -150,5 +152,22 @@ test("a store holding a matched pair gains the relation on its next open, once",
     const before = await counts();
     await installFinancialStore(fixture.database);
     assert.deepEqual(await counts(), before, "a second open writes nothing");
+  });
+});
+
+test("a TDCC copy of a directly synced bank account does not make the match ambiguous", async () => {
+  await withFixture(async (fixture) => {
+    await commitFubon(fixture.store);
+    await commitTdccSettlement(fixture.store, "012", {
+      withBalance: false,
+      rows: [["20260801090000", "16700.0", "0.0", "16700.0", "跨行轉入"]],
+    });
+    assert.equal((await readPGliteCoveredAccountIds(fixture.store, await readKnowledgePoint(fixture.store))).length, 1, "the direct account covers the TDCC copy");
+    await addMax(fixture, "out", "16700", "2026-08-02");
+    const deposit = await addBank(fixture, "inflow", "16700", "2026-08-01");
+    await resolve(fixture);
+    const relations = await queryPGliteCurrentInvestmentFundingRelations(fixture.store);
+    assert.deepEqual(relations.map((relation) => String(relation.fundingTransactionId)), [deposit]);
+    assert.equal(await kindOf(fixture, deposit), "transfer.investment_withdrawal");
   });
 });

@@ -10,7 +10,7 @@ The MAX adapter records a TWD movement as a `corporate_action_in` or `corporate_
 
 **A MAX TWD movement and a bank row form an investment funding relation when all of these hold:**
 
-- The bank row is posted, normal and active, in TWD, on a domestic or foreign-currency deposit account.
+- The bank row is posted, normal and active, in TWD, on a domestic or foreign-currency deposit account that Direct source precedence does not cover. A TDCC copy of a directly synced account repeats every row of that account, so counting it would make every match on that account ambiguous.
 - The directions are opposite. A MAX withdrawal pairs with a bank inflow, and a MAX deposit with a bank outflow.
 - The amounts are exactly equal.
 - The dates are at most `CASH_FLOW_TRANSFER_WINDOW_DAYS` (3) days apart.

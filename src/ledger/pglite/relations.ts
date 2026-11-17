@@ -20,6 +20,8 @@ import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
+import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
  * Relation resolution is a worker-owned command.  The request contains only
@@ -1509,8 +1511,10 @@ async function readTwdDepositLegs(transaction: PGliteTransaction, from: string, 
         AND revision.effective_on BETWEEN ? AND ?
         AND revision.posting_status = 'posted'
         AND revision.economic_status = 'normal'
-        AND revision.administrative_state = 'active'`,
-    [from, to],
+        AND revision.administrative_state = 'active'
+        -- A TDCC copy of a directly synced account would make every match on it ambiguous.
+        AND ${COUNTED_ACCOUNT_SQL("financial.account_id")}`,
+    [from, to, await readPGliteCoveredAccountIds(transaction, await readKnowledgePoint(transaction))],
   );
   return rows.map((row) => ({
     transactionId: bytes(row.transaction_id, "Bank transaction"),
