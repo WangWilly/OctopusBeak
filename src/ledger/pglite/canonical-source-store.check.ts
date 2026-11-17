@@ -157,7 +157,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     assert.equal(recurrence.transactions[0]?.revisionCreated, false);
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 4,
+      commits: 3,
       provenance: 2,
       records: 2,
       revisions: 1,
@@ -167,7 +167,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
       (await store.query<{ recorded_at_utc_us: number | string }>(
         "SELECT recorded_at_utc_us FROM canonical_commits ORDER BY commit_sequence",
       )).rows.map((row) => Number(row.recorded_at_utc_us)),
-      [100, 101, 102, 103],
+      [100, 101, 102],
     );
 
     await assert.rejects(
@@ -218,7 +218,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     );
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 4,
+      commits: 3,
       provenance: 2,
       records: 2,
       revisions: 1,
@@ -238,7 +238,7 @@ test("PGlite canonical source admission writes typed facts atomically", async ()
     );
     assert.deepEqual(await counts(store), {
       captures: 2,
-      commits: 4,
+      commits: 3,
       provenance: 2,
       records: 2,
       revisions: 1,

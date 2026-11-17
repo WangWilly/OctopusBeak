@@ -985,20 +985,55 @@ async function refreshCurrentEnrichment(
   );
   const sourceKindIds = new Set(sourceKinds.map((row) => idText(row.transaction_id, "Source kind transaction")));
   const relations = await relationMap(transaction, rows, context.cutoffSequence);
-  const pending = rows.flatMap((row) => {
+  const derived = rows.flatMap((row) => {
     if (sourceKindIds.has(row.transactionId)) return [];
     const kind = derivePGliteTransactionKind(row, relations.get(row.transactionId));
-    if (!kind) return [];
-    const previous = priorByTransaction.get(row.transactionId);
-    if (
-      kind.outputState !== "unsupported" &&
+    return kind ? [{ row, kind, previous: priorByTransaction.get(row.transactionId) }] : [];
+  });
+  // With no current Kind to withdraw, an unsupported output only records what the
+  // producer read, so it is written again only when that changes.
+  const unsupportedIds = derived
+    .filter(({ kind, previous }) => kind.outputState === "unsupported" && !previous)
+    .map(({ row }) => Uint8Array.from(Buffer.from(row.transactionId.replaceAll("-", ""), "hex")));
+  const lastOutputs = unsupportedIds.length === 0 ? [] : await query<Row>(
+    transaction,
+    `SELECT DISTINCT ON (output.transaction_id)
+            output.transaction_id, output.output_state, output.route_id,
+            output.source_record_id, output.source_field, output.source_value_text,
+            run.producer_version, run.rule_lineage
+       FROM enrichment_run_outputs output
+       JOIN enrichment_runs run ON run.run_id = output.run_id
+       JOIN canonical_commits written ON written.commit_id = output.commit_id
+      WHERE output.field_name = 'kind' AND output.transaction_id IN (${inList(unsupportedIds)})
+        AND written.commit_sequence <= ?
+      ORDER BY output.transaction_id, written.commit_sequence DESC, encode(output.output_id, 'hex') DESC`,
+    [...unsupportedIds, context.cutoffSequence],
+  );
+  const lastOutputByTransaction = new Map(
+    lastOutputs.map((row) => [idText(row.transaction_id, "Last enrichment output transaction"), row]),
+  );
+  const pending = derived.filter(({ row, kind, previous }) => {
+    if (kind.outputState === "unsupported") {
+      if (previous) return true;
+      const last = lastOutputByTransaction.get(row.transactionId);
+      return !(
+        last &&
+        String(last.output_state) === "unsupported" &&
+        String(last.route_id) === kind.routeId &&
+        last.source_record_id != null &&
+        idText(last.source_record_id, "Last enrichment output source record") === row.sourceRecordId &&
+        String(last.source_field) === kind.sourceField &&
+        String(last.source_value_text) === kind.sourceValue &&
+        String(last.producer_version) === kind.producerVersion &&
+        String(last.rule_lineage) === kind.ruleLineage
+      );
+    }
+    return !(
       previous &&
       String(previous.value_text) === kind.value &&
       String(previous.route_id) === kind.routeId &&
       String(previous.rule_lineage) === kind.ruleLineage
-    )
-      return [];
-    return [{ row, kind, previous }];
+    );
   });
 
   let projectionContext = context;
