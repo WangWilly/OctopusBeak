@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
+import { resolvePGliteCanonicalInvestmentFundingRelations } from "./relations.ts";
 import { syncEInvoiceItemCategorizations } from "./einvoice-item-categorization.ts";
 import { setPGliteSpendingPurchaseAllocationInTransaction, setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
 import { addPGliteTransactionTag, writePGliteTransactionNote } from "./transaction-detail-command.ts";
@@ -205,6 +206,25 @@ test("deriving again keeps every user choice and grows no table beyond its own c
     );
     await assertDerivingAgainGrowsOnlyItsCommit(fixture);
     assert.deepEqual(await choices(), chosen, "every user choice stays current, on the same assertion");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("deriving again with a MaiCoin TWD funding relation present grows no table beyond its own commit", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const bank = { namespace: "fubon", stream: "domestic-deposit", accountType: "depository" } as const;
+    const exchange = { namespace: "maicoin", stream: "investment", accountType: "investment" } as const;
+    await fixture.addTransaction({ amount: "0", direction: "outflow", date: "2026-09-10", account: "exchange", accountStream: exchange, event: { investment: "corporate_action_out", twdQuantity: "5000" } });
+    const deposit = await fixture.addTransaction({ amount: "5000", direction: "inflow", date: "2026-09-11", account: "savings", accountStream: bank });
+    await resolvePGliteCanonicalInvestmentFundingRelations(fixture.store, {});
+    const kind = await fixture.store.query<{ value_text: string }>(
+      "SELECT value_text FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind'",
+      [Buffer.from(deposit.replaceAll("-", ""), "hex")]);
+    assert.deepEqual(kind.rows.map((row) => row.value_text), ["transfer.investment_withdrawal"]);
+
+    await assertDerivingAgainGrowsOnlyItsCommit(fixture);
   } finally {
     await fixture.close();
   }
