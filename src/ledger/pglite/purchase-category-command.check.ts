@@ -4,7 +4,10 @@ import { createSpendingCategoryFixture, freshPage, setKind, type SpendingCategor
 import { purchaseRecordsByIdentity } from "./purchase-report.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
 import {
+  MAX_CATEGORIZATION_TARGETS,
   parsePurchaseIdentity,
+  parsePurchaseIdSet,
+  setPGliteSpendingPurchaseCategoriesInTransaction,
   setPGliteSpendingPurchaseCategory,
   SpendingPurchaseCategoryError,
 } from "./purchase-category-command.ts";
@@ -227,6 +230,90 @@ test("the record page reads an invoice-only purchase's user category after the c
   } finally {
     await fixture.close();
   }
+});
+
+function setCategories(fixture: SpendingCategoryFixture, purchaseIds: readonly string[], knowledgeAt: number, categoryCode: string | null) {
+  return fixture.store.transaction((transaction) => setPGliteSpendingPurchaseCategoriesInTransaction(transaction, { purchaseIds, knowledgeAt, categoryCode }));
+}
+
+test("a target set writes every purchase in one commit and a null code restores each automatic reading", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const first = await fixture.addTransaction({ amount: "120", description: "Fixture purchase one" });
+    const second = await fixture.addTransaction({ amount: "80", description: "Fixture purchase two" });
+    const invoiceId = await fixture.commitInvoice({
+      stableKey: "AB44444444:2026-09-01",
+      sellerName: "全聯實業股份有限公司",
+      items: [{ sequence: 1, name: "鮮奶", amount: "90" }],
+    });
+    const purchaseIds = [`transaction:${first}`, `transaction:${second}`, `invoice:${invoiceId}`];
+    const base = await fixture.knowledgeAt();
+
+    const set = await setCategories(fixture, purchaseIds, base, "dining");
+    assert.deepEqual(set, { baseKnowledgeAt: base, knowledgeAt: base + 1 }, "the whole set is one commit");
+    assert.deepEqual(await transactionUserCategory(fixture, first), [{ code: "dining", mode: "single" }]);
+    assert.deepEqual(await transactionUserCategory(fixture, second), [{ code: "dining", mode: "single" }]);
+    assert.deepEqual(await itemRows(fixture), [[1, "user", "dining"]]);
+
+    const repeat = await setCategories(fixture, purchaseIds, base + 1, "dining");
+    assert.equal(repeat.knowledgeAt, base + 1, "the same code on the same set writes no commit");
+
+    const cleared = await setCategories(fixture, purchaseIds, base + 1, null);
+    assert.deepEqual(cleared, { baseKnowledgeAt: base + 1, knowledgeAt: base + 2 });
+    assert.deepEqual(await transactionUserCategory(fixture, first), []);
+    assert.deepEqual(await transactionUserCategory(fixture, second), []);
+    assert.deepEqual(await itemRows(fixture), [[1, "derived", "food_and_groceries"]]);
+    assert.deepEqual(await userLineage(fixture, first), [{ code: "dining", events: ["observed", "withdrawn"] }]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("one refused target writes nothing for the rest of the set", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const first = await fixture.addTransaction({ amount: "120", description: "Fixture purchase one" });
+    const second = await fixture.addTransaction({ amount: "80", description: "Fixture purchase two" });
+    const transfer = await fixture.addTransaction({ amount: "500", description: "Fixture move" });
+    await setKind(fixture.store, transfer, "transfer.internal");
+    const base = await fixture.knowledgeAt();
+    const missing = "00000000-0000-4000-8000-000000000001";
+    const refusals = [
+      [`transaction:${missing}`, "stale"],
+      [`refund:${missing}`, "ineligible"],
+      [`transaction:${transfer}`, "ineligible"],
+    ] as const;
+    for (const [refused, code] of refusals) {
+      await assert.rejects(
+        setCategories(fixture, [`transaction:${first}`, `transaction:${second}`, refused], base, "dining"),
+        (error: unknown) => error instanceof SpendingPurchaseCategoryError && error.code === code,
+        refused,
+      );
+    }
+    assert.equal(await fixture.knowledgeAt(), base, "a refused set writes no commit");
+    assert.deepEqual(await transactionUserCategory(fixture, first), [], "an earlier target stays unclassified");
+    assert.deepEqual(await transactionUserCategory(fixture, second), [], "an earlier target stays unclassified");
+    await assert.rejects(
+      setCategories(fixture, [`transaction:${first}`, `transaction:${second}`], base - 1, "dining"),
+      (error: unknown) => error instanceof SpendingPurchaseCategoryError && error.code === "stale",
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a target set must be non-empty, distinct, and bounded", () => {
+  const uuid = "0123abcd-0123-4abc-8def-0123456789ab";
+  const invalid = (error: unknown) => error instanceof SpendingPurchaseCategoryError && error.code === "invalid";
+  assert.deepEqual(parsePurchaseIdSet([`transaction:${uuid}`, `invoice:${uuid}`]).map((identity) => identity.basis), ["bank-transaction", "invoice"]);
+  assert.throws(() => parsePurchaseIdSet([]), invalid);
+  assert.throws(() => parsePurchaseIdSet(`transaction:${uuid}`), invalid);
+  assert.throws(() => parsePurchaseIdSet([`transaction:${uuid}`, `transaction:${uuid.toUpperCase()}`]), invalid, "a case variant is the same purchase");
+  assert.throws(() => parsePurchaseIdSet([`transaction:${uuid}`, "transaction:nope"]), invalid);
+  const many = Array.from({ length: MAX_CATEGORIZATION_TARGETS + 1 }, (_, index) =>
+    `transaction:${uuid.slice(0, 24)}${index.toString(16).padStart(12, "0")}`);
+  assert.equal(parsePurchaseIdSet(many.slice(0, MAX_CATEGORIZATION_TARGETS)).length, MAX_CATEGORIZATION_TARGETS);
+  assert.throws(() => parsePurchaseIdSet(many), invalid);
 });
 
 function pickCategory(category: unknown) {
