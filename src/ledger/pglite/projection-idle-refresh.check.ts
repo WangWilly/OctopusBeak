@@ -74,6 +74,7 @@ test("an unsupported Kind is recorded once until what it was read from changes",
   try {
     const cathay = { namespace: "cathay", stream: "domestic-deposit", accountType: "depository" } as const;
     const unsupported = await fixture.addTransaction({ amount: "301", account: "cathay", accountStream: cathay, description: "opaque provider note" });
+    const id = Uint8Array.from(Buffer.from(unsupported.replaceAll("-", ""), "hex"));
     const outputs = async () =>
       (await fixture.store.query<{ output_state: string; source_value_text: string }>(
         `SELECT output.output_state, output.source_value_text
@@ -81,7 +82,7 @@ test("an unsupported Kind is recorded once until what it was read from changes",
            JOIN canonical_commits written ON written.commit_id = output.commit_id
           WHERE output.field_name = 'kind' AND output.transaction_id = $1
           ORDER BY written.commit_sequence`,
-        [Uint8Array.from(Buffer.from(unsupported.replaceAll("-", ""), "hex"))],
+        [id],
       )).rows.map((row) => `${row.output_state}:${row.source_value_text}`);
     assert.deepEqual(await outputs(), ["unsupported:opaque provider note"]);
     for (const amount of ["302", "303"]) await fixture.addTransaction({ amount, date: "2026-09-10" });
@@ -95,7 +96,13 @@ test("an unsupported Kind is recorded once until what it was read from changes",
       "unsupported:another opaque note",
       "supported:transfer",
       "unsupported:another opaque note",
-    ], "an unsupported Kind after a supported one withdraws it");
+    ], "an unsupported Kind after a supported one is written again");
+    const withdrawal = await fixture.store.query<{ withdrawn: number | string; current: number | string }>(
+      `SELECT (SELECT count(*) FROM assertion_transitions WHERE transaction_id = $1 AND field_name = 'kind' AND event_kind = 'withdrawn') AS withdrawn,
+              (SELECT count(*) FROM current_transaction_enrichment WHERE transaction_id = $1 AND field_name = 'kind') AS current`,
+      [id],
+    );
+    assert.deepEqual(withdrawal.rows.map((row) => [Number(row.withdrawn), Number(row.current)]), [[1, 0]], "it withdraws the supported Kind");
   } finally {
     await fixture.close();
   }

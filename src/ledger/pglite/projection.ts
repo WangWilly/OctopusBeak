@@ -999,13 +999,15 @@ async function refreshCurrentEnrichment(
     transaction,
     `SELECT DISTINCT ON (output.transaction_id)
             output.transaction_id, output.output_state, output.route_id,
-            output.source_field, output.source_value_text, run.producer_version, run.rule_lineage
+            output.source_record_id, output.source_field, output.source_value_text,
+            run.producer_version, run.rule_lineage
        FROM enrichment_run_outputs output
        JOIN enrichment_runs run ON run.run_id = output.run_id
        JOIN canonical_commits written ON written.commit_id = output.commit_id
       WHERE output.field_name = 'kind' AND output.transaction_id IN (${inList(unsupportedIds)})
+        AND written.commit_sequence <= ?
       ORDER BY output.transaction_id, written.commit_sequence DESC, encode(output.output_id, 'hex') DESC`,
-    unsupportedIds,
+    [...unsupportedIds, context.cutoffSequence],
   );
   const lastOutputByTransaction = new Map(
     lastOutputs.map((row) => [idText(row.transaction_id, "Last enrichment output transaction"), row]),
@@ -1018,6 +1020,8 @@ async function refreshCurrentEnrichment(
         last &&
         String(last.output_state) === "unsupported" &&
         String(last.route_id) === kind.routeId &&
+        last.source_record_id != null &&
+        idText(last.source_record_id, "Last enrichment output source record") === row.sourceRecordId &&
         String(last.source_field) === kind.sourceField &&
         String(last.source_value_text) === kind.sourceValue &&
         String(last.producer_version) === kind.producerVersion &&
