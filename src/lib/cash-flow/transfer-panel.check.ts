@@ -6,6 +6,9 @@ import type { CashFlowRow, CashFlowTransferSide } from "./model.ts";
 import type { CashFlowSuspendedTransferView, CashFlowTransferCandidateView, CashFlowTransferLinkView, CashFlowTransferSummary } from "./model.ts";
 import {
   linkEffect,
+  manualPairAnchors,
+  manualPairSuggestions,
+  pairableByHand,
   pairableRows,
   revokeEffect,
   transferErrorKey,
@@ -241,4 +244,59 @@ test("the unpaired list keeps to the chosen currency", () => {
   const panel = { unpaired: [{ row: twd, reason: "no_counterpart" as const }, { row: usd, reason: "exchange" as const }] };
   assert.deepEqual(unpairedTransfers(panel, "USD").map((entry) => entry.row.transactionId), ["u"]);
   assert.deepEqual(unpairedTransfers(panel, "twd").map((entry) => entry.row.transactionId), ["t"]);
+});
+
+test("manual pair suggestions put equal amounts first, then exchanges, then near misses, each closest first", () => {
+  const twd = (coefficient: string) => ({ coefficient, scale: 0, currency: "TWD" });
+  const anchor = row("a", "outflow", { date: "2026-10-10" });
+  const other = row("x", "outflow");
+  const linked = row("linked", "inflow", { date: "2026-10-25" });
+  const rows = [
+    anchor, other, linked,
+    row("same-far", "inflow", { date: "2026-10-20" }),
+    row("same-near", "inflow", { date: "2026-10-09" }),
+    row("same-twin", "inflow", { date: "2026-10-11" }),
+    row("same-near-later", "inflow", { date: "2026-10-11" }),
+    row("fx", "inflow", { date: "2026-10-30", amount: { coefficient: "15", scale: 0, currency: "USD" } }),
+    row("off-big", "inflow", { date: "2026-10-10", amount: twd("1273") }),
+    row("off-small", "inflow", { date: "2026-10-30", amount: twd("510") }),
+    row("own-equal", "inflow", { accountId: "bank-a", date: "2026-10-10" }),
+    row("own-other", "inflow", { accountId: "bank-a", amount: twd("999") }),
+    row("manual", "inflow", { source: "manual" }),
+  ];
+  const suggestions = manualPairSuggestions(anchor, pageData(rows, { links: [link(other, linked)] }));
+  assert.deepEqual(suggestions.map((entry) => [entry.kind, entry.row.transactionId]), [
+    ["same_amount", "same-near-later"],
+    ["same_amount", "same-twin"],
+    ["same_amount", "same-near"],
+    ["same_amount", "same-far"],
+    ["exchange", "fx"],
+    ["refused", "own-equal"],
+    ["refused", "linked"],
+    ["refused", "off-small"],
+    ["refused", "off-big"],
+  ], "a same-account row of another amount and a Manual Account row are no answer, so they are left out");
+  assert.deepEqual(suggestions.map((entry) => entry.days), [1, 1, 1, 10, 20, 0, 15, 20, 0]);
+  assert.deepEqual(suggestions.slice(5).map((entry) => entry.kind === "refused" ? [entry.refusal, entry.difference] : null), [
+    ["same_account", null],
+    ["linked", null],
+    ["amount", twd("10")],
+    ["amount", twd("773")],
+  ], "an amount refusal ranks by how far apart the amounts are, not by days");
+});
+
+test("an anchor never suggests itself, and its suggestions are always the other direction", () => {
+  const anchor = row("a", "inflow");
+  const rows = [anchor, row("o", "outflow"), row("p", "outflow", { date: "2026-10-05" }), row("i", "inflow")];
+  assert.deepEqual(manualPairSuggestions(anchor, pageData(rows)).map((entry) => entry.row.transactionId), ["o", "p"]);
+});
+
+test("a row already in a link is no anchor for a manual pair", () => {
+  const out = row("o", "outflow");
+  const into = row("i", "inflow");
+  const free = row("f", "inflow");
+  const data = pageData([out, into, free, row("m", "inflow", { source: "manual" })], { links: [link(out, into)] });
+  assert.deepEqual(manualPairAnchors("inflow", data).map((entry) => entry.transactionId), ["f"]);
+  assert.equal(pairableByHand(out, data), false);
+  assert.equal(pairableByHand(free, data), true);
 });

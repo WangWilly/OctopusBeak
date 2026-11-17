@@ -34,7 +34,7 @@
   } from "../display.ts";
   import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
-  import { transferNote, type CashFlowTransferRequest } from "../transfer-panel.ts";
+  import { pairableByHand, transferNote, type CashFlowTransferPanelStart, type CashFlowTransferRequest } from "../transfer-panel.ts";
   import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
   import CashFlowTransferPanel from "./CashFlowTransferPanel.svelte";
@@ -64,8 +64,8 @@
   let searchText = request.query ?? "";
   let searchTimer: ReturnType<typeof setTimeout> | null = null;
   let transferPanelOpen = false;
-  /** The panel section to open on: the unpaired list, or the top. */
-  let transferPanelSection: "unpaired" | null = null;
+  /** Where the panel opens: the unpaired list, a manual pair from one row, or the top. */
+  let transferPanelStart: CashFlowTransferPanelStart | null = null;
   let exportOpen = false;
   /** The open detail's row, kept as last read so a reload that drops it still shows what the person was editing. */
   let detailRow: CashFlowRow | null = null;
@@ -94,6 +94,7 @@
   $: periodRows = page.periodTransactions ?? page.transactions;
   $: narrowed = page.search !== null || accountFilter !== null || listFilter !== null;
   $: if (detailRow) detailRow = periodRows.find((row) => row.transactionId === detailRow!.transactionId) ?? detailRow;
+  $: detailPairable = detailRow !== null && pairableByHand(detailRow, { rows: periodRows, panel: transferPanel });
 
   function amountText(amount: ExactAmount, currency = selectedCurrency, signed = false) {
     return moneyText({ ...amount, currency }, $locale, signed);
@@ -168,8 +169,8 @@
     changeRequest({ startDate: all.firstDate < endDate ? all.firstDate : endDate, endDate, ...(request.query ? { query: request.query } : {}) }, "custom");
   }
 
-  function openTransferPanel(section: "unpaired" | null) {
-    transferPanelSection = section;
+  function openTransferPanel(start: CashFlowTransferPanelStart | null) {
+    transferPanelStart = start;
     transferPanelOpen = true;
   }
 
@@ -319,7 +320,7 @@
                   <ChevronRight class="note-open" size={14} strokeWidth={2.2} aria-hidden="true" />
                 </button>
                 {#if note.kind === "summary" && transfers && transfers.unpaired.count > 0 && (transfers.pairs.count > 0 || transfers.exchanges.count > 0)}
-                  <button type="button" class="note-unpaired" data-transfer-unpaired data-sensitive aria-label={$t.cashFlow.transferUnpairedOpen} onclick={() => openTransferPanel("unpaired")}>
+                  <button type="button" class="note-unpaired" data-transfer-unpaired data-sensitive aria-label={$t.cashFlow.transferUnpairedOpen} onclick={() => openTransferPanel({ kind: "unpaired" })}>
                     <span class="ledger-label">{$t.cashFlow.transferRowUnpaired(transfers.unpaired.count)}</span>
                     <span class="ledger-amount money">{amountText(transfers.unpaired.amount)}</span>
                     <ChevronRight size={12} strokeWidth={2.2} aria-hidden="true" />
@@ -586,7 +587,7 @@
     dataVersion={page.knowledgeAt}
     decide={decideTransfer}
     currency={selectedCurrency}
-    section={transferPanelSection}
+    start={transferPanelStart}
     openRow={(row) => {
       transferPanelOpen = false;
       detailRow = row;
@@ -603,6 +604,11 @@
     dataVersion={page.knowledgeAt}
     apply={applyDetail}
     onClose={() => detailRow = null}
+    pairAsTransfer={detailPairable ? () => {
+      const row = detailRow;
+      detailRow = null;
+      if (row) openTransferPanel({ kind: "pair", row });
+    } : null}
   />
 {/if}
 

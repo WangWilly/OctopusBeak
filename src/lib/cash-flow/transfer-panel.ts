@@ -3,12 +3,13 @@ import {
   CASH_FLOW_TRANSFER_WINDOW_DAYS,
   cashFlowTransferContext,
   cashFlowTransferRefusal,
+  dayGap,
   isCurrencyExchange,
   type CashFlowTransferPairHistory,
   type CashFlowTransferRefusal,
 } from "../../ledger/canonical/cash-flow-transfer-rules.ts";
 import type { FinancialPageActionRequest } from "../financial/page-actions.ts";
-import { normalizeCurrency, type ExactMoney } from "../shared-money/exact-money.ts";
+import { absoluteExact, compareExact, equalMoney, normalizeCurrency, subtractExact, type ExactMoney } from "../shared-money/exact-money.ts";
 import { impliedExchangeRate, type ImpliedExchangeRate } from "./exchange-rate.ts";
 import { cashFlowDirection } from "./model.ts";
 import type {
@@ -165,10 +166,93 @@ export function transferRefusal(
   const outflow = sides.get(pair.outflowTransactionId);
   const inflow = sides.get(pair.inflowTransactionId);
   if (!outflow || !inflow) return null;
+  return cashFlowTransferRefusal(outflow, inflow, action === "pair" ? "manual" : "candidate", pageContext(panel));
+}
+
+function pageContext(panel: CashFlowTransferPageData["panel"]) {
   const links = panel.links.map((link) => ({ outflowTransactionId: link.outflow.transactionId, inflowTransactionId: link.inflow.transactionId }));
   const history = new Map<string, CashFlowTransferPairHistory>(panel.deniedPairs.map((pairId) => [pairId, "denied"]));
-  return cashFlowTransferRefusal(outflow, inflow, action === "pair" ? "manual" : "candidate", cashFlowTransferContext(links, history));
+  return cashFlowTransferContext(links, history);
 }
+
+/** The rows a manual pair may start from: pairable, and not already a side of a link. */
+export function manualPairAnchors(direction: CashFlowRow["direction"], data: CashFlowTransferPageData): readonly CashFlowRow[] {
+  const linked = new Set(data.panel.links.flatMap((link) => [link.outflow.transactionId, link.inflow.transactionId]));
+  return pairableRows(data.rows, direction).filter((row) => !linked.has(row.transactionId));
+}
+
+export function pairableByHand(row: CashFlowRow, data: CashFlowTransferPageData): boolean {
+  return manualPairAnchors(row.direction, data).some((anchor) => anchor.transactionId === row.transactionId);
+}
+
+/** A refusal worth showing on a suggestion; the others describe rows that are no answer at all. */
+export type ManualPairRefusal = Extract<CashFlowTransferRefusal, "amount" | "same_account" | "linked" | "denied">;
+
+/** One row the other side of a manual pair could be, and how well it fits the anchor. */
+export type ManualPairSuggestion =
+  | Readonly<{ kind: "same_amount"; row: CashFlowRow; days: number }>
+  | Readonly<{ kind: "exchange"; row: CashFlowRow; days: number; rate: ImpliedExchangeRate | null }>
+  /** `difference` is how far apart the amounts are, for an `amount` refusal only. */
+  | Readonly<{ kind: "refused"; row: CashFlowRow; days: number; refusal: ManualPairRefusal; difference: ExactMoney | null }>;
+
+const TIER = { same_amount: 0, exchange: 1, refused: 2 } satisfies Record<ManualPairSuggestion["kind"], number>;
+
+/**
+ * The opposite-direction rows `anchor` could pair with, best fit first: equal
+ * amounts, then exchanges, then refused rows whose refusal explains a near
+ * miss (an amount refusal after the others, by its difference). Within a
+ * tier, the fewer days apart, then the later date.
+ */
+export function manualPairSuggestions(anchor: CashFlowRow, data: CashFlowTransferPageData): readonly ManualPairSuggestion[] {
+  const context = pageContext(data.panel);
+  const suggestions: ManualPairSuggestion[] = [];
+  for (const row of pairableRows(data.rows, anchor.direction === "outflow" ? "inflow" : "outflow")) {
+    if (row.transactionId === anchor.transactionId) continue;
+    const [outflow, inflow] = anchor.direction === "outflow" ? [anchor, row] : [row, anchor];
+    const days = dayGap(anchor.date, row.date);
+    const refusal = cashFlowTransferRefusal(outflow, inflow, "manual", context);
+    switch (refusal) {
+      case null:
+        suggestions.push(isCurrencyExchange(outflow, inflow)
+          ? { kind: "exchange", row, days, rate: pairExchangeRate({ outflow, inflow }) }
+          : { kind: "same_amount", row, days });
+        break;
+      case "amount":
+        suggestions.push({
+          kind: "refused", row, days, refusal,
+          difference: { ...absoluteExact(subtractExact(outflow.amount, inflow.amount)), currency: outflow.amount.currency },
+        });
+        break;
+      case "same_account":
+        // Every row booked into the anchor's own account lands here; only an equal amount makes one a near miss.
+        if (equalMoney(outflow.amount, inflow.amount)) suggestions.push({ kind: "refused", row, days, refusal, difference: null });
+        break;
+      case "linked":
+      case "denied":
+        suggestions.push({ kind: "refused", row, days, refusal, difference: null });
+        break;
+    }
+  }
+  return suggestions.sort(compareSuggestions);
+}
+
+const difference = (suggestion: ManualPairSuggestion) => suggestion.kind === "refused" ? suggestion.difference : null;
+const compareText = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+
+function compareSuggestions(left: ManualPairSuggestion, right: ManualPairSuggestion): number {
+  const leftDifference = difference(left);
+  const rightDifference = difference(right);
+  return TIER[left.kind] - TIER[right.kind]
+    || (leftDifference && rightDifference
+      ? compareExact(leftDifference, rightDifference)
+      : Number(leftDifference !== null) - Number(rightDifference !== null))
+    || left.days - right.days
+    || compareText(right.row.date, left.row.date)
+    || compareText(left.row.transactionId, right.row.transactionId);
+}
+
+/** Where the transfer panel opens: on the unpaired list, or on the manual pair section with `row` as its anchor. */
+export type CashFlowTransferPanelStart = Readonly<{ kind: "unpaired" }> | Readonly<{ kind: "pair"; row: CashFlowRow }>;
 
 /**
  * What the transfer note under one currency says, or null when it shows

@@ -37,6 +37,8 @@
   /** Send one write as a Financial page action; resolves once the page has read itself again (ADR 0136). */
   export let apply: (request: CashFlowDetailRequest) => Promise<void>;
   export let onClose: () => void;
+  /** Close this detail and pair the row by hand in the transfer panel; null when the row cannot start a manual pair. */
+  export let pairAsTransfer: (() => void) | null = null;
 
   type Section = "category" | "allocation" | "note" | "tags";
 
@@ -319,6 +321,11 @@
         <dt>{$t.cashFlow.detail.currency}</dt><dd>{currency}</dd>
       </dl>
     </section>
+    {#if pairAsTransfer}
+      <div class="actions">
+        <button type="button" class="button" disabled={busy !== null} data-detail-pair-transfer onclick={pairAsTransfer}>{$t.cashFlow.detail.pairAsTransfer}</button>
+      </div>
+    {/if}
   </div>
 </Modal>
 
