@@ -167,6 +167,44 @@ test("a category page action returns the summary delta that reproduces the recom
   }
 });
 
+test("a category_many page action moves every target's line in one delta and its undo moves them back", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const first = await fixture.addTransaction({ amount: "350", date: "2026-09-03" });
+    const second = await fixture.addTransaction({ amount: "120", date: "2026-09-05" });
+    const untouched = await fixture.addTransaction({ amount: "70", date: "2026-09-06" });
+    const invoice = await fixture.commitInvoice({ stableKey: "AB10000007:2026-09-04", date: "2026-09-04", items: [{ sequence: 1, name: "鮮奶", amount: "90" }] });
+    const purchaseIds = [`transaction:${first}`, `transaction:${second}`, `invoice:${invoice}`];
+    const summary = () => fixture.store.transaction((transaction) => queryCurrentSpendingSummary(transaction));
+    const categorizeMany = (categoryCode: string | null, dataVersion: number, ids: readonly string[] = purchaseIds) =>
+      applyPGliteFinancialPageAction(fixture.store, { action: "categorize", kind: "category_many", purchaseIds: ids, categoryCode, dataVersion });
+
+    const before = await summary();
+    for (const ids of [[], [purchaseIds[0]!, purchaseIds[0]!]]) {
+      await assert.rejects(categorizeMany("dining", before.knowledgeAt, ids), /at least one purchase|names a purchase twice/u);
+    }
+    await assert.rejects(categorizeMany("dining", before.knowledgeAt - 1), /stale/u);
+    await assert.rejects(categorizeMany("dining", before.knowledgeAt, [...purchaseIds, `refund:${invoice}`]), /refund record/u);
+    assert.equal((await summary()).knowledgeAt, before.knowledgeAt, "a rejected set writes no commit");
+
+    const result = await categorizeMany("dining", before.knowledgeAt);
+    assert.equal(result.knowledgeAt, before.knowledgeAt + 1);
+    assert.deepEqual(result.affectedRecords.map((record) => record.purchaseId).sort(), [...purchaseIds].sort());
+    const patched = applySpendingSummaryDelta(before.purchaseReport, result.baseKnowledgeAt, result.knowledgeAt, result.summaryDelta);
+    const after = await summary();
+    assert.deepEqual(patched.categoryTotalsByMonth, after.purchaseReport.categoryTotalsByMonth);
+    assert.deepEqual(categoryTotal(after.purchaseReport.categoryTotalsByMonth, "dining"), { coefficient: "560", scale: 0, count: 3 });
+    assert.deepEqual(categoryTotal(after.purchaseReport.categoryTotalsByMonth, null), { coefficient: "70", scale: 0, count: 1 }, `${untouched} stays unclassified`);
+
+    const undo = await categorizeMany(null, result.knowledgeAt);
+    const undone = await summary();
+    assert.deepEqual(applySpendingSummaryDelta(after.purchaseReport, undo.baseKnowledgeAt, undo.knowledgeAt, undo.summaryDelta).categoryTotalsByMonth, undone.purchaseReport.categoryTotalsByMonth);
+    assert.deepEqual(undone.purchaseReport.categoryTotalsByMonth, before.purchaseReport.categoryTotalsByMonth, "clearing restores every automatic reading");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a category page action on a linked purchase moves the linked record's line, not a bank-only one", async () => {
   const fixture = await createSpendingCategoryFixture();
   try {
