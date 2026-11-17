@@ -19,6 +19,10 @@ import {
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
+import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
+import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
+import { maicoinStatementRecordKey } from "../canonical/maicoin-crypto-adapters.ts";
+import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
  * Relation resolution is a worker-owned command.  The request contains only
@@ -1314,6 +1318,7 @@ async function resolveInvestmentRelationsInTransaction(
   options: PGliteCanonicalCommitOptions,
 ): Promise<PGliteCanonicalInvestmentRelationResolutionResult> {
   assertPGliteCanonicalCommitNotCancelled(options.signal);
+  const maicoin = await resolvePGliteMaicoinTwdTransfersInTransaction(transaction, options);
   const investments = await readInvestmentRows(transaction, request.sourceConnectionKey);
   const groups = new Map<string, InvestmentRow[]>();
   for (const row of investments) {
@@ -1324,8 +1329,8 @@ async function resolveInvestmentRelationsInTransaction(
   let commit: Readonly<{ id: Uint8Array; sequence: number }> | null = null;
   const reasons = new Set<string>();
   const warnings: string[] = [];
-  let resolved = 0;
-  let withdrawn = 0;
+  let resolved = maicoin.resolved;
+  let withdrawn = maicoin.withdrawn;
   let noAdmission = 0;
   const affected = new Map<string, Uint8Array>();
   for (const rows of groups.values()) {
@@ -1404,8 +1409,8 @@ async function resolveInvestmentRelationsInTransaction(
   if (!commit) {
     return {
       status: "canonical-live",
-      outcome: noAdmission > 0 ? "no-admission" : "unchanged",
-      resolutionId: null,
+      outcome: resolved > 0 || withdrawn > 0 ? "changed" : noAdmission > 0 ? "no-admission" : "unchanged",
+      resolutionId: maicoin.commitId ? id(maicoin.commitId, "Investment resolution") : null,
       resolved,
       noAdmission,
       reasons: [...reasons].sort(),
@@ -1438,6 +1443,194 @@ export async function resolvePGliteCanonicalInvestmentFundingRelations(
 ): Promise<PGliteCanonicalInvestmentRelationResolutionResult> {
   return store.transaction((transaction) => resolveInvestmentRelationsInTransaction(transaction, structuredClone(request), options));
 }
+
+/* ------------------------------------------------------------------------- *
+ * MaiCoin TWD transfer resolution (ADR 0145)
+ * ------------------------------------------------------------------------- */
+
+const MAICOIN_TWD_TRANSFER_CONTRACT_VERSION = "maicoin-twd-bank-transfer/v1";
+const MAICOIN_TWD_OBSERVED_REASON = "unique-exact-amount-within-window";
+
+type TransferLeg = Readonly<{
+  transactionId: Uint8Array;
+  accountId: Uint8Array;
+  sourceRecordId: Uint8Array;
+  /** The bank side's direction: a MAX withdrawal is a bank inflow. */
+  bankDirection: "inflow" | "outflow";
+  coefficient: string;
+  scale: number;
+  effectiveOn: string;
+}>;
+
+type MaicoinTwdTransfer = Readonly<{ movement: TransferLeg; bank: TransferLeg }>;
+
+/**
+ * The source record keys of MAX deposits and withdrawals. A convert, reward or
+ * wallet transfer also moves the TWD cash security, but no bank row mirrors it.
+ */
+async function readMaicoinFundTransferKeys(transaction: PGliteTransaction): Promise<string[]> {
+  // The statement log is an operational table; a store that never synced MAX may not have it.
+  const logged = await first<Row>(transaction, "SELECT to_regclass('maicoin_statement_rows') IS NOT NULL AS present");
+  if (logged?.present !== true) return [];
+  const rows = await query<Row>(
+    transaction,
+    `SELECT DISTINCT endpoint, wallet_type, row_type, external_id
+       FROM maicoin_statement_rows
+      WHERE row_type IN ('deposit', 'withdrawal')`,
+  );
+  return rows.map((row) => maicoinStatementRecordKey({
+    endpoint: String(row.endpoint),
+    walletType: row.wallet_type === null ? null : String(row.wallet_type),
+    rowType: String(row.row_type),
+    externalId: String(row.external_id),
+    leg: "transaction",
+  }));
+}
+
+async function readMaicoinTwdMovements(transaction: PGliteTransaction): Promise<TransferLeg[]> {
+  const keys = await readMaicoinFundTransferKeys(transaction);
+  if (keys.length === 0) return [];
+  const rows = await query<Row>(
+    transaction,
+    `SELECT investment.transaction_id, investment.account_id, investment.source_record_id, investment.action,
+            investment.quantity_coefficient, investment.quantity_scale, investment.effective_on
+       FROM investment_transactions investment
+       JOIN source_records source_record ON source_record.source_record_id = investment.source_record_id
+       JOIN investment_securities security ON security.security_id = investment.security_id
+       JOIN current_transactions current_row ON current_row.transaction_id = investment.transaction_id
+       JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+      WHERE security.source_id = 'maicoin'
+        AND security.security_type = 'cash'
+        AND upper(security.producer_security_id) = 'TWD'
+        AND investment.action IN ('corporate_action_in','corporate_action_out')
+        AND source_record.provider_key = ANY(?::text[])
+        AND revision.posting_status = 'posted'
+        AND revision.economic_status = 'normal'
+        AND revision.administrative_state = 'active'`,
+    [keys],
+  );
+  return rows.map((row) => ({
+    transactionId: bytes(row.transaction_id, "MAX movement"),
+    accountId: bytes(row.account_id, "MAX account"),
+    sourceRecordId: bytes(row.source_record_id, "MAX source record"),
+    bankDirection: row.action === "corporate_action_out" ? "inflow" : "outflow",
+    coefficient: String(row.quantity_coefficient),
+    scale: Number(row.quantity_scale),
+    effectiveOn: String(row.effective_on),
+  }));
+}
+
+function shiftDate(date: string, days: number): string {
+  const shifted = new Date(`${date}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+async function readTwdDepositLegs(transaction: PGliteTransaction, from: string, to: string): Promise<TransferLeg[]> {
+  const rows = await query<Row>(
+    transaction,
+    `SELECT current_row.transaction_id, financial.account_id, revision.source_record_id, revision.direction,
+            revision.amount_coefficient, revision.amount_scale, revision.effective_on
+       FROM current_transactions current_row
+       JOIN transaction_revisions revision ON revision.revision_id = current_row.revision_id
+       JOIN financial_transactions financial ON financial.transaction_id = current_row.transaction_id
+       JOIN financial_accounts account ON account.account_id = financial.account_id
+      WHERE account.stream IN ('domestic-deposit','foreign-currency-deposit')
+        AND revision.currency = 'TWD'
+        AND revision.effective_on BETWEEN ? AND ?
+        AND revision.posting_status = 'posted'
+        AND revision.economic_status = 'normal'
+        AND revision.administrative_state = 'active'
+        -- A TDCC copy of a directly synced account would make every match on it ambiguous.
+        AND ${COUNTED_ACCOUNT_SQL("financial.account_id")}`,
+    [from, to, await readPGliteCoveredAccountIds(transaction, await readKnowledgePoint(transaction))],
+  );
+  return rows.map((row) => ({
+    transactionId: bytes(row.transaction_id, "Bank transaction"),
+    accountId: bytes(row.account_id, "Bank account"),
+    sourceRecordId: bytes(row.source_record_id, "Bank source record"),
+    bankDirection: String(row.direction) as "inflow" | "outflow",
+    coefficient: String(row.amount_coefficient),
+    scale: Number(row.amount_scale),
+    effectiveOn: String(row.effective_on),
+  }));
+}
+
+/** The pairs each of whose sides fits exactly one leg of the other side. */
+function uniqueMaicoinTwdTransfers(movements: readonly TransferLeg[], banks: readonly TransferLeg[]): MaicoinTwdTransfer[] {
+  const fits = movements.map((movement) => ({
+    movement,
+    banks: banks.filter((bank) =>
+      bank.bankDirection === movement.bankDirection &&
+      exactAmountEquals(bank.coefficient, bank.scale, movement.coefficient, movement.scale) &&
+      dayGap(bank.effectiveOn, movement.effectiveOn) <= CASH_FLOW_TRANSFER_WINDOW_DAYS),
+  }));
+  const claims = new Map<string, number>();
+  for (const { banks: candidates } of fits)
+    for (const bank of candidates) claims.set(hex(bank.transactionId), (claims.get(hex(bank.transactionId)) ?? 0) + 1);
+  return fits.flatMap(({ movement, banks: candidates }) =>
+    candidates.length === 1 && claims.get(hex(candidates[0]!.transactionId)) === 1 ? [{ movement, bank: candidates[0]! }] : []);
+}
+
+async function latestFundingEvent(transaction: PGliteTransaction, relationId: Uint8Array): Promise<Row | undefined> {
+  return first<Row>(transaction, `SELECT event.event_kind FROM investment_funding_relation_events event JOIN canonical_commits event_commit ON event_commit.commit_id = event.commit_id WHERE event.relation_id = ? ORDER BY event_commit.commit_sequence DESC, encode(event.event_id, 'hex') DESC LIMIT 1`, [relationId]);
+}
+
+/**
+ * Relate each MAX TWD cash movement to the one TWD deposit row that mirrors
+ * it, and withdraw every MAX relation whose match is gone or no longer
+ * unique. It reads every MAX movement, so any caller converges on the same
+ * relations; it writes a commit only when one changes.
+ */
+export async function resolvePGliteMaicoinTwdTransfersInTransaction(
+  transaction: PGliteTransaction,
+  options: PGliteCanonicalCommitOptions = {},
+): Promise<Readonly<{ resolved: number; withdrawn: number; commitId: Uint8Array | null }>> {
+  const movements = await readMaicoinTwdMovements(transaction);
+  const dates = movements.map((movement) => movement.effectiveOn).sort();
+  const banks = dates.length === 0
+    ? []
+    : await readTwdDepositLegs(transaction, shiftDate(dates[0]!, -CASH_FLOW_TRANSFER_WINDOW_DAYS), shiftDate(dates.at(-1)!, CASH_FLOW_TRANSFER_WINDOW_DAYS));
+  const desired = new Map(uniqueMaicoinTwdTransfers(movements, banks).map((transfer) =>
+    [digest("maicoin-twd-funding-relation-v1", hex(transfer.movement.transactionId), hex(transfer.bank.transactionId)), transfer]));
+  const route = "canonical/maicoin-twd-funding-relation-resolution-v1";
+  let commit: Readonly<{ id: Uint8Array; sequence: number }> | null = null;
+  const affected = new Map<string, Uint8Array>();
+  let resolved = 0;
+  let withdrawn = 0;
+  for (const [relationKey, { movement, bank }] of desired) {
+    const existing = await first<Row>(transaction, "SELECT relation_id FROM investment_funding_relations WHERE relation_key = ?", [relationKey]);
+    if (existing && (await latestFundingEvent(transaction, bytes(existing.relation_id, "Investment relation")))?.event_kind === "observed") continue;
+    commit ??= await relationCommit(transaction, route, options);
+    const commitId = commit.id;
+    const relationId = existing ? bytes(existing.relation_id, "Investment relation") : uuidBytes();
+    if (!existing)
+      await query(transaction, `INSERT INTO investment_funding_relations(relation_id, relation_key, settlement_group_key, investment_account_id, funding_account_id, funding_transaction_id, funding_source_record_id, settlement_effective_on, settlement_model, coefficient, scale, currency, direction, source_linkage_key, evidence_contract_version, created_commit_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'single-transaction', ?, ?, 'TWD', ?, ?, ?, ?)`, [relationId, relationKey, `maicoin-twd:${hex(movement.transactionId)}`, movement.accountId, bank.accountId, bank.transactionId, bank.sourceRecordId, bank.effectiveOn, bank.coefficient, bank.scale, bank.bankDirection, hex(movement.sourceRecordId), MAICOIN_TWD_TRANSFER_CONTRACT_VERSION, commitId]);
+    await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'observed', ?, ?, ?)`, [uuidBytes(), relationId, MAICOIN_TWD_OBSERVED_REASON, commitId, Date.now() * 1_000]);
+    affected.set(hex(bank.transactionId), bank.transactionId);
+    resolved += 1;
+  }
+  const current = await query<Row>(transaction, `SELECT relation_id, relation_key, funding_transaction_id FROM investment_funding_relations WHERE evidence_contract_version = ?`, [MAICOIN_TWD_TRANSFER_CONTRACT_VERSION]);
+  for (const row of current) {
+    if (desired.has(String(row.relation_key))) continue;
+    const relationId = bytes(row.relation_id, "Investment relation");
+    if ((await latestFundingEvent(transaction, relationId))?.event_kind !== "observed") continue;
+    commit ??= await relationCommit(transaction, route, options);
+    const commitId = commit.id;
+    await query(transaction, `INSERT INTO investment_funding_relation_events(event_id, relation_id, event_kind, reason, commit_id, recorded_at_utc_us) VALUES (?, ?, 'withdrawn', 'match-no-longer-unique', ?, ?)`, [uuidBytes(), relationId, commitId, Date.now() * 1_000]);
+    const fundingTransactionId = bytes(row.funding_transaction_id, "Funding transaction");
+    affected.set(hex(fundingTransactionId), fundingTransactionId);
+    withdrawn += 1;
+  }
+  if (!commit) return { resolved, withdrawn, commitId: null };
+  await (options.projection ?? refreshPGliteCurrentProjectionInTransaction)(transaction, {
+    commitId: commit.id,
+    cutoffSequence: commit.sequence,
+    transactionIds: [...affected.values()],
+  });
+  return { resolved, withdrawn, commitId: commit.id };
+}
+
 
 export async function queryPGliteCurrentLoanRepaymentRelations(
   store: PGliteStore,

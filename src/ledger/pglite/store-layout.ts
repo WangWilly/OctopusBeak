@@ -4,6 +4,7 @@ import { applyPgliteCashFlowTransferSchema } from "./cash-flow-transfer.ts";
 import { applyPgliteKindDuplicateCleanup } from "./kind-duplicate-cleanup.ts";
 import { applyPgliteKindRederivation } from "./kind-rederivation.ts";
 import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
+import { applyPgliteMaicoinTwdTransferPass } from "./maicoin-twd-transfer-pass.ts";
 import { applyPgliteManualAssetsSchema } from "./manual-assets.ts";
 import { applyPgliteOperationalBaseline } from "./operational.ts";
 import { applyPglitePreviewFinancialDataSchema } from "./preview-financial-data.ts";
@@ -30,5 +31,6 @@ export async function installFinancialStore(db: PGlite): Promise<PGliteStore> {
   await applyPgliteReadIndexes(store);
   await applyPgliteKindDuplicateCleanup(store);
   await applyPgliteKindRederivation(store);
+  await applyPgliteMaicoinTwdTransferPass(store);
   return store;
 }

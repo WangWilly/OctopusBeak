@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type { PGliteStore } from "./transaction.ts";
 import {
-  commitPGliteCanonicalFinancialCapture,
+  admitPGliteCanonicalFinancialCaptureInTransaction,
+  assertPGliteCanonicalCommitNotCancelled,
+  refreshPGliteAdmittedFinancialProjection,
   type PGliteCanonicalCommitOptions,
   type PGliteCanonicalFinancialCommitResult,
   type PGliteCanonicalFinancialCommitRequest,
@@ -11,7 +13,8 @@ import type {
   PGliteCanonicalFinancialAccountInput,
   PGliteCanonicalSourceEvidence,
 } from "./source-admission-validation.ts";
-import { PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
+import { classifyPGliteCanonicalAdmissionError, PGliteCanonicalSourceAdmissionError } from "./source-admission-validation.ts";
+import { resolvePGliteMaicoinTwdTransfersInTransaction } from "./relations.ts";
 import type {
   CanonicalFinancialDepositCapture,
   CanonicalFinancialDepositRecord,
@@ -698,10 +701,18 @@ export async function commitPGliteCanonicalDepositCapture(
   options: PGliteCanonicalCommitOptions = {},
 ): Promise<PGliteCanonicalDepositCommitResult> {
   const normalized = normalizeRequest(request);
-  const result = await commitPGliteCanonicalFinancialCapture(
-    store,
-    toFinancialRequest(normalized),
-    options,
-  );
+  let result: PGliteCanonicalFinancialCommitResult;
+  try {
+    result = await store.transaction(async (transaction) => {
+      const admitted = await admitPGliteCanonicalFinancialCaptureInTransaction(transaction, toFinancialRequest(normalized), options);
+      await refreshPGliteAdmittedFinancialProjection(transaction, [admitted], options);
+      // A TWD deposit row can complete or break a MaiCoin transfer match (ADR 0145).
+      await resolvePGliteMaicoinTwdTransfersInTransaction(transaction, options);
+      assertPGliteCanonicalCommitNotCancelled(options.signal);
+      return admitted.result;
+    });
+  } catch (error) {
+    throw classifyPGliteCanonicalAdmissionError(error);
+  }
   return readDepositCommit(store, normalized, result);
 }
