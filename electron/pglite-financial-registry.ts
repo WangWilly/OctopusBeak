@@ -100,6 +100,7 @@ export function createPGliteFinancialRegistry(
     "financial.cashFlow.current": ([request]) =>
       store.transaction((transaction) => readCashFlowPage(transaction, request)),
     "financial.spending.recordPage": ([request]) => spending.recordPage(request),
+    "financial.spending.classifyQueue": ([request]) => spending.classifyQueue(request),
     "financial.spending.candidatePage": ([request]) => spending.candidatePage(request),
     "financial.spending.pendingOverview": ([request]) => spending.pendingOverview(request),
     "financial.spending.mergeLog": ([request]) => spending.mergeLog(request),

@@ -32,6 +32,9 @@ import {
 import {
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCategoryMonthTotal,
+  type SpendingClassifyQueueDto,
+  type SpendingClassifyQueueItem,
+  type SpendingClassifyQueueRequest,
   type SpendingPageDto,
   type SpendingPurchaseReportDto,
   type SpendingPurchaseReportSummaryDto,
@@ -70,6 +73,7 @@ import {
   type Row,
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { kindAcceptsCategory } from "../canonical/transaction-taxonomy.ts";
 
 /**
  * The Purchase report: the one interface for Purchase-basis spending
@@ -491,6 +495,16 @@ type PurchaseCategoryRow = Readonly<{
   occurrence: string;
   amount: Money | null;
   category: PurchaseCategory;
+  invoiceId: string | null;
+  transactionId: string | null;
+  /** The transaction's Kind, which decides whether it accepts a category at all. */
+  kind: string | null;
+  /**
+   * Whether the user has any current categorization behind the purchase: a
+   * transaction category or allocation, or an item category. It counts even
+   * when the reading ignores it, as it ignores an inapplicable code.
+   */
+  userCategorized: boolean;
 }>;
 
 /**
@@ -501,11 +515,15 @@ type PurchaseCategoryRow = Readonly<{
 async function queryPurchaseCategoryRows(
   reader: PGliteSpendingReader,
   knowledgeAt: number,
-  scope: Readonly<{ month?: string | null; day?: string | null }> = {},
+  scope: Readonly<{ month?: string | null; day?: string | null; startDate?: string; endDate?: string }> = {},
 ): Promise<readonly PurchaseCategoryRow[]> {
   const params: unknown[] = await purchaseRowsParams(reader, knowledgeAt, scope.month);
   const dayFilter = scope.day ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) = ?" : "";
   if (scope.day) params.push(scope.day);
+  const rangeFilter = scope.startDate && scope.endDate
+    ? "AND SUBSTRING(purchase_rows.occurrence_value, 1, 10) BETWEEN ? AND ?"
+    : "";
+  if (rangeFilter) params.push(scope.startDate, scope.endDate);
   const result = await pgliteQuery<Row>(reader, `${scope.month ? MONTH_PURCHASE_ROWS_CTE : PURCHASE_ROWS_CTE}
     SELECT purchase_rows.basis, purchase_rows.occurrence_value, purchase_rows.purchase_id,
            purchase_rows.amount_coefficient, purchase_rows.amount_scale, purchase_rows.currency,
@@ -551,17 +569,19 @@ async function queryPurchaseCategoryRows(
                 ON categorization.invoice_id = purchase_rows.invoice_id AND categorization.item_sequence = item.sequence
              WHERE item.revision_id = purchase_rows.invoice_revision_id) AS item_rows
       FROM purchase_rows
-     WHERE TRUE ${dayFilter}
+     WHERE TRUE ${dayFilter} ${rangeFilter}
   `, params);
   return rows(result).map((row) => {
     const basis = stringValue(row.basis, "Purchase basis") as PurchaseCategoryRow["basis"];
     const amount = row.amount_coefficient === null || row.amount_coefficient === undefined ? null : exactMoney(row);
+    const kind = nullableString(row.kind_code);
+    const userRows = jsonRows(row.user_rows ?? [], "Purchase user categorization rows") as readonly CategorizationRow[];
     const categorization = row.transaction_id === null || row.transaction_id === undefined
       ? null
       : categoryFromRows(
           row as TransactionRow,
-          nullableString(row.kind_code),
-          jsonRows(row.user_rows ?? [], "Purchase user categorization rows") as readonly CategorizationRow[],
+          kind,
+          userRows,
           jsonRows(row.automatic_rows ?? [], "Purchase automatic categorization rows") as readonly EnrichmentRow[],
         );
     const itemRows = jsonRows(row.item_rows ?? [], "Purchase item rows");
@@ -590,6 +610,10 @@ async function queryPurchaseCategoryRows(
       occurrence: stringValue(row.occurrence_value, "Purchase occurrence"),
       amount,
       category,
+      invoiceId: row.invoice_id === null || row.invoice_id === undefined ? null : idString(row.invoice_id, "Purchase invoice"),
+      transactionId: row.transaction_id === null || row.transaction_id === undefined ? null : idString(row.transaction_id, "Purchase transaction"),
+      kind,
+      userCategorized: userRows.length > 0 || itemRows.some((item) => item.origin === "user"),
     });
   });
 }
@@ -751,6 +775,63 @@ export async function queryCurrentSpendingRecordPage(
   return page;
 }
 
+/**
+ * Whether the classification inbox may offer a purchase: Unclassified, not a
+ * refund (it is no purchase to categorize), with no user categorization
+ * behind it, and a subject that accepts a category. Clearing a user category
+ * falls back to the automatic one, so only a purchase the user never
+ * categorized comes back exactly as it was when the inbox's undo clears it.
+ */
+function classifyQueueEligible(row: PurchaseCategoryRow): boolean {
+  if (row.basis === "refund" || row.category.mode !== "absent" || row.userCategorized) return false;
+  // An invoice-only purchase writes its items as Kind purchase; the others write the transaction.
+  return row.basis === "invoice" || (row.kind !== null && kindAcceptsCategory(row.kind));
+}
+
+/**
+ * The classification inbox: every purchase in the date range that the inbox
+ * may categorize, by the Purchase records Spending shows.
+ * request.knowledgeAt is the reader's knowledge point; the query facade gates it.
+ */
+export async function queryCurrentSpendingClassifyQueue(
+  reader: PGliteSpendingReader,
+  request: SpendingClassifyQueueRequest,
+): Promise<SpendingClassifyQueueDto> {
+  const current = request.knowledgeAt;
+  const { startDate, endDate } = request;
+  if (typeof startDate !== "string" || typeof endDate !== "string" || !validSpendingDate(startDate) || !validSpendingDate(endDate))
+    throw new TypeError("Spending classify queue dates must be YYYY-MM-DD.");
+  if (startDate > endDate) throw new TypeError("Spending classify queue range ends before it starts.");
+  const queued = (await queryPurchaseCategoryRows(reader, current, { startDate, endDate })).filter(classifyQueueEligible);
+  const composed = await purchaseRecordsByIdentity(reader, current, {
+    invoiceIds: [...new Set(queued.flatMap((row) => row.invoiceId ? [row.invoiceId] : []))],
+    transactionIds: [...new Set(queued.flatMap((row) => row.transactionId ? [row.transactionId] : []))],
+  }, { candidates: "none" });
+  const recordById = new Map(composed.records.map((record) => [record.purchaseId, record]));
+  const unbuilt: string[] = [];
+  const items = queued.flatMap((row): SpendingClassifyQueueItem[] => {
+    const record = recordById.get(row.purchaseId);
+    if (!record || record.basis === "refund") {
+      unbuilt.push(row.purchaseId);
+      return [];
+    }
+    return [Object.freeze({
+      purchaseId: record.purchaseId,
+      basis: record.basis,
+      date: record.occurrence.value.slice(0, 10),
+      title: record.description,
+      amount: record.amount,
+      payment: record.transaction && record.paymentSource ? Object.freeze({
+        stream: record.transaction.stream,
+        institution: record.paymentSource.institution,
+        cardMask: record.paymentSource.cardMask,
+      }) : null,
+    })];
+  });
+  // As on the record page: the SQL rows and the record builder should agree.
+  if (unbuilt.length > 0) console.error("spending-purchase-rules-disagree", { startDate, endDate, purchaseIds: unbuilt });
+  return Object.freeze({ schemaVersion: 1, knowledgeAt: current, startDate, endDate, items: Object.freeze(items) });
+}
 
 /**
  * Hydrate only the records one Pairing decision touches: every record whose

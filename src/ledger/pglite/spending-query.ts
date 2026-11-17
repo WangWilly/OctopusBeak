@@ -20,6 +20,7 @@ import type {
   SpendingCandidatePageRequest,
   SpendingCandidatePageDto,
   SpendingCandidatePairRef,
+  SpendingClassifyQueueRequest,
   SpendingPendingOverviewDto,
   SpendingPendingOverviewRequest,
   SpendingMergeLogDto,
@@ -71,6 +72,7 @@ import {
 import {
   purchaseRecordsByIdentity,
   queryCurrentSpending,
+  queryCurrentSpendingClassifyQueue,
   queryCurrentSpendingRecordPage,
   queryCurrentSpendingSummary,
   queryCurrentSpendingSummaryPage,
@@ -1100,6 +1102,8 @@ export function createPGliteSpendingQuery(store: PGliteSpendingStore) {
       store.transaction((transaction) => queryCurrentSpendingSummaryPage(transaction, request)),
     recordPage: pageRead((transaction, request: SpendingRecordPageRequest) =>
       queryCurrentSpendingRecordPage(transaction, request)),
+    classifyQueue: pageRead((transaction, request: SpendingClassifyQueueRequest) =>
+      queryCurrentSpendingClassifyQueue(transaction, request)),
     candidatePage: pageRead(async (transaction, request: SpendingCandidatePageRequest) =>
       queryCurrentSpendingCandidatePage(transaction, request, await pendingAt(transaction, request.knowledgeAt))),
     monthInsight: pageRead((transaction, request: SpendingMonthInsightRequest) =>
