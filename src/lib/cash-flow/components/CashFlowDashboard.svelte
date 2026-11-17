@@ -108,6 +108,13 @@
     return total > 0 ? exactToNumber(part) / total : 0;
   }
 
+  function hideOverflowingLabel(node: HTMLElement, _label: string) {
+    const check = () => node.classList.toggle("label-clipped", node.scrollWidth > node.clientWidth);
+    const observer = new ResizeObserver(check);
+    observer.observe(node);
+    return { update: check, destroy: () => observer.disconnect() };
+  }
+
   function width(amount: ExactAmount): string {
     return scale > 0 ? `${Math.max(0, exactToNumber(amount)) / scale * 100}%` : "0%";
   }
@@ -343,6 +350,7 @@
                 title={`${inflowGroupLabel($t, group.group)} ${digits(group.amount)}`}
                 data-inflow-group={group.group}
                 onclick={() => openDrill({ kind: "inflow", group: group.group })}
+                use:hideOverflowingLabel={index === 0 ? `${inflowGroupLabel($t, group.group)} ${digits(group.amount)}` : ""}
               >{#if index === 0}<span data-sensitive>{inflowGroupLabel($t, group.group)} {digits(group.amount)}</span>{/if}</button>
             {/each}
           </div>
@@ -358,6 +366,7 @@
                 title={`${outflowGroupLabel($t, group.group)} ${digits(group.amount)}`}
                 data-outflow-group={group.group ?? "unclassified"}
                 onclick={() => openDrill({ kind: "outflow", group: group.group })}
+                use:hideOverflowingLabel={index === 0 ? `${outflowGroupLabel($t, group.group)} ${digits(group.amount)}` : ""}
               >{#if index === 0}<span data-sensitive>{outflowGroupLabel($t, group.group)} {digits(group.amount)}</span>{/if}</button>
             {/each}
             {#if keptPositive && summary.keptRatio !== null}
@@ -923,6 +932,10 @@
     transition: opacity 120ms ease;
   }
 
+  .segment:global(.label-clipped) > span {
+    visibility: hidden;
+  }
+
   .segment.dimmed {
     opacity: 0.32;
   }
@@ -995,6 +1008,29 @@
     border-radius: 12px;
     background: var(--surface);
     box-shadow: 0 14px 34px rgb(15 23 42 / 0.12);
+  }
+
+  .icon-button {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--fg);
+    cursor: pointer;
+  }
+
+  .icon-button:hover {
+    background: var(--surface-soft);
+  }
+
+  .icon-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
   }
 
   .drill-head {
