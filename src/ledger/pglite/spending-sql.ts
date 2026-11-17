@@ -108,3 +108,19 @@ export function optionalMoney(row: Row, coefficient: string, scale: string, curr
 export function pairKey(invoiceId: string, transactionId: string): string {
   return `${invoiceId}/${transactionId}`;
 }
+
+/** Run one `IN (...)` read per chunk of transaction ids. */
+export async function byChunk<T extends Record<string, unknown>>(
+  reader: PGliteSpendingReader,
+  ids: readonly string[],
+  sql: (placeholders: string) => string,
+  leading: readonly unknown[] = [],
+): Promise<T[]> {
+  const found: T[] = [];
+  for (let start = 0; start < ids.length; start += 2_048) {
+    const chunk = ids.slice(start, start + 2_048);
+    const params = [...leading, ...chunk.map((id) => bytes(id, "Transaction"))];
+    found.push(...rows(await pgliteQuery<T>(reader, sql(chunk.map(() => "?").join(",")), params)));
+  }
+  return found;
+}

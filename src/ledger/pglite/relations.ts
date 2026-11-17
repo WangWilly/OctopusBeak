@@ -21,7 +21,7 @@ import type { PGliteStore, PGliteTransaction } from "./transaction.ts";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { CASH_FLOW_TRANSFER_WINDOW_DAYS, dayGap } from "../canonical/cash-flow-transfer-rules.ts";
 import { COUNTED_ACCOUNT_SQL, readPGliteCoveredAccountIds } from "./direct-source-precedence.ts";
-import { maicoinStatementRecordKey } from "../canonical/maicoin-crypto-adapters.ts";
+import { readMaicoinStatementLog } from "./maicoin-statement-log.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 
 /**
@@ -1469,22 +1469,7 @@ type MaicoinTwdTransfer = Readonly<{ movement: TransferLeg; bank: TransferLeg }>
  * wallet transfer also moves the TWD cash security, but no bank row mirrors it.
  */
 async function readMaicoinFundTransferKeys(transaction: PGliteTransaction): Promise<string[]> {
-  // The statement log is an operational table; a store that never synced MAX may not have it.
-  const logged = await first<Row>(transaction, "SELECT to_regclass('maicoin_statement_rows') IS NOT NULL AS present");
-  if (logged?.present !== true) return [];
-  const rows = await query<Row>(
-    transaction,
-    `SELECT DISTINCT endpoint, wallet_type, row_type, external_id
-       FROM maicoin_statement_rows
-      WHERE row_type IN ('deposit', 'withdrawal')`,
-  );
-  return rows.map((row) => maicoinStatementRecordKey({
-    endpoint: String(row.endpoint),
-    walletType: row.wallet_type === null ? null : String(row.wallet_type),
-    rowType: String(row.row_type),
-    externalId: String(row.external_id),
-    leg: "transaction",
-  }));
+  return (await readMaicoinStatementLog(transaction, ["deposit", "withdrawal"])).map((entry) => entry.recordKey);
 }
 
 async function readMaicoinTwdMovements(transaction: PGliteTransaction): Promise<TransferLeg[]> {
