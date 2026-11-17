@@ -293,51 +293,105 @@ async function writeTransactionUserCategory(
   return true;
 }
 
-function validateRequest(request: SpendingPurchaseCategoryRequest): Readonly<{ identity: PurchaseIdentity; knowledgeAt: number; categoryCode: string | null }> {
-  if (!request || typeof request !== "object") fail("invalid", "Spending purchase category request is invalid.");
-  const identity = parsePurchaseIdentity(request.purchaseId);
-  if (!Number.isSafeInteger(request.knowledgeAt) || request.knowledgeAt < 0) fail("invalid", "Spending purchase category knowledgeAt is invalid.");
-  const categoryCode = request.categoryCode;
+function parseCategoryCode(categoryCode: unknown): string | null {
   if (categoryCode !== null && (typeof categoryCode !== "string" || !isTaxonomyCode("category", categoryCode)))
     fail("invalid", `Unknown category code ${String(categoryCode)}.`);
-  return { identity, knowledgeAt: request.knowledgeAt, categoryCode };
+  return categoryCode;
+}
+
+function parseKnowledgeAt(knowledgeAt: unknown): number {
+  if (!Number.isSafeInteger(knowledgeAt) || (knowledgeAt as number) < 0) fail("invalid", "Spending purchase category knowledgeAt is invalid.");
+  return knowledgeAt as number;
+}
+
+/**
+ * The most purchases one category operation may name. Every target is
+ * resolved and written inside one writer transaction, which holds back every
+ * other write until it ends.
+ */
+export const MAX_CATEGORIZATION_TARGETS = 1000;
+
+/** Parse a Categorization target set: a non-empty list of distinct purchase ids. */
+export function parsePurchaseIdSet(purchaseIds: unknown): readonly PurchaseIdentity[] {
+  if (!Array.isArray(purchaseIds) || purchaseIds.length === 0) fail("invalid", "A category operation needs at least one purchase.");
+  if (purchaseIds.length > MAX_CATEGORIZATION_TARGETS)
+    fail("invalid", `A category operation names at most ${MAX_CATEGORIZATION_TARGETS} purchases.`);
+  const identities = purchaseIds.map(parsePurchaseIdentity);
+  if (new Set(identities.map((identity) => Object.values(identity).join(":"))).size !== identities.length)
+    fail("invalid", "A category operation names a purchase twice.");
+  return Object.freeze(identities);
+}
+
+/** Every target shares one lazy commit, so a refused target throws before anything the caller commits. */
+async function writePurchaseCategories(
+  transaction: PGliteTransaction,
+  identities: readonly PurchaseIdentity[],
+  knowledgeAt: number,
+  categoryCode: string | null,
+): Promise<Readonly<{ subjects: readonly PurchaseCategorySubject["kind"][]; baseKnowledgeAt: number; knowledgeAt: number }>> {
+  const current = await readKnowledgePoint(transaction);
+  if (knowledgeAt !== current) fail("stale", "Spending purchase category data version is stale; reload Spending.");
+  let commitId: Uint8Array | null = null;
+  const commit = async (): Promise<Uint8Array> => {
+    commitId ??= await createUserCommit(transaction);
+    return commitId;
+  };
+  const subjects: PurchaseCategorySubject["kind"][] = [];
+  const changedTransactions: Uint8Array[] = [];
+  for (const identity of identities) {
+    const subject = await resolveSubject(transaction, identity);
+    const kind = subject.kind === "items" ? "purchase" : await transactionKind(transaction, subject.transactionId);
+    if (categoryCode !== null) {
+      if (kind === null) fail("ineligible", "A category cannot be assigned without a transaction Kind.");
+      if (!isCategoryApplicable(categoryCode, kind)) fail("ineligible", `Category ${categoryCode} is incompatible with Kind ${kind}.`);
+    }
+    if (subject.kind === "transaction") {
+      if (await writeTransactionUserCategory(transaction, subject.transactionId, categoryCode, commit))
+        changedTransactions.push(subject.transactionId);
+    } else {
+      await writeEInvoiceItemUserCategory(transaction, { invoiceId: subject.invoiceId, commitId: commit, userId: LOCAL_USER_ID, categoryCode });
+    }
+    subjects.push(subject.kind);
+  }
+  if (changedTransactions.length > 0) {
+    const generationId = await activeGenerationId(transaction);
+    if (generationId !== null)
+      await refreshGenerationTransactionCategorizations(transaction, generationId, changedTransactions, commitId!);
+  }
+  return Object.freeze({ subjects: Object.freeze(subjects), baseKnowledgeAt: current, knowledgeAt: await readKnowledgePoint(transaction) });
 }
 
 export async function setPGliteSpendingPurchaseCategoryInTransaction(
   transaction: PGliteTransaction,
   request: SpendingPurchaseCategoryRequest,
 ): Promise<SpendingPurchaseCategoryResult> {
-  const { identity, knowledgeAt, categoryCode } = validateRequest(request);
-  const current = await readKnowledgePoint(transaction);
-  if (knowledgeAt !== current) fail("stale", "Spending purchase category data version is stale; reload Spending.");
-  const subject = await resolveSubject(transaction, identity);
-  const kind = subject.kind === "items" ? "purchase" : await transactionKind(transaction, subject.transactionId);
-  if (categoryCode !== null) {
-    if (kind === null) fail("ineligible", "A category cannot be assigned without a transaction Kind.");
-    if (!isCategoryApplicable(categoryCode, kind)) fail("ineligible", `Category ${categoryCode} is incompatible with Kind ${kind}.`);
-  }
-  let commitId: Uint8Array | null = null;
-  const commit = async (): Promise<Uint8Array> => {
-    commitId ??= await createUserCommit(transaction);
-    return commitId;
-  };
-  if (subject.kind === "transaction") {
-    const changed = await writeTransactionUserCategory(transaction, subject.transactionId, categoryCode, commit);
-    if (changed) {
-      const generationId = await activeGenerationId(transaction);
-      if (generationId !== null)
-        await refreshGenerationTransactionCategorizations(transaction, generationId, [subject.transactionId], commitId!);
-    }
-  } else {
-    await writeEInvoiceItemUserCategory(transaction, { invoiceId: subject.invoiceId, commitId: commit, userId: LOCAL_USER_ID, categoryCode });
-  }
+  if (!request || typeof request !== "object") fail("invalid", "Spending purchase category request is invalid.");
+  const identity = parsePurchaseIdentity(request.purchaseId);
+  const categoryCode = parseCategoryCode(request.categoryCode);
+  const written = await writePurchaseCategories(transaction, [identity], parseKnowledgeAt(request.knowledgeAt), categoryCode);
   return Object.freeze({
     purchaseId: request.purchaseId,
-    subject: subject.kind,
+    subject: written.subjects[0]!,
     categoryCode,
-    baseKnowledgeAt: current,
-    knowledgeAt: await readKnowledgePoint(transaction),
+    baseKnowledgeAt: written.baseKnowledgeAt,
+    knowledgeAt: written.knowledgeAt,
   });
+}
+
+/**
+ * Sets, or with a null code clears, the user's category on every purchase of
+ * a Categorization target set in one commit, or on none: any refused target
+ * rejects the whole set.
+ */
+export async function setPGliteSpendingPurchaseCategoriesInTransaction(
+  transaction: PGliteTransaction,
+  request: Readonly<{ purchaseIds: readonly string[]; knowledgeAt: number; categoryCode: string | null }>,
+): Promise<Readonly<{ baseKnowledgeAt: number; knowledgeAt: number }>> {
+  if (!request || typeof request !== "object") fail("invalid", "Spending purchase category request is invalid.");
+  const identities = parsePurchaseIdSet(request.purchaseIds);
+  const { baseKnowledgeAt, knowledgeAt } = await writePurchaseCategories(
+    transaction, identities, parseKnowledgeAt(request.knowledgeAt), parseCategoryCode(request.categoryCode));
+  return Object.freeze({ baseKnowledgeAt, knowledgeAt });
 }
 
 export function setPGliteSpendingPurchaseCategory(
