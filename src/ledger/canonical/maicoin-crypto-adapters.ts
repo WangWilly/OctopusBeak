@@ -585,14 +585,22 @@ function statementRecordKey(
   row: Record<string, unknown>,
   leg: string,
 ): `sha256:${string}` {
-  return digest(
-    "maicoin-statement-record-v1",
-    batch.endpoint,
-    batch.walletType ?? "",
-    batch.rowType,
-    statementExternalIdentity(batch, row),
-    leg,
-  );
+  return maicoinStatementRecordKey({ ...batch, externalId: statementExternalIdentity(batch, row), leg });
+}
+
+/**
+ * The source record key of one leg of a MAX statement row. A reader that
+ * holds the statement row, such as the operational statement log, can name
+ * the investment transaction it became.
+ */
+export function maicoinStatementRecordKey(input: Readonly<{
+  endpoint: string;
+  walletType: string | null;
+  rowType: string;
+  externalId: string;
+  leg: string;
+}>): `sha256:${string}` {
+  return digest("maicoin-statement-record-v1", input.endpoint, input.walletType ?? "", input.rowType, input.externalId, input.leg);
 }
 
 function walletTypeValue(value: unknown): MaicoinWalletType | null {

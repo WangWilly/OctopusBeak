@@ -26,11 +26,11 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
   }
 }
 
-/** TWD leaving MAX (`out`) or arriving in MAX (`in`). */
-function addMax(fixture: SpendingCategoryFixture, way: "in" | "out", amount: string, date: string) {
+/** TWD leaving MAX (`out`) or arriving in MAX (`in`), from a withdrawal or deposit statement unless `rowType` says otherwise. */
+function addMax(fixture: SpendingCategoryFixture, way: "in" | "out", amount: string, date: string, rowType?: "convert" | "reward") {
   return fixture.addTransaction({
     amount: "0", direction: way === "out" ? "outflow" : "inflow", date, account: "exchange", accountStream: MAICOIN,
-    event: { investment: way === "out" ? "corporate_action_out" : "corporate_action_in", twdQuantity: amount },
+    event: { investment: way === "out" ? "corporate_action_out" : "corporate_action_in", twdQuantity: amount, ...(rowType ? { rowType } : {}) },
   });
 }
 
@@ -169,5 +169,21 @@ test("a TDCC copy of a directly synced bank account does not make the match ambi
     const relations = await queryPGliteCurrentInvestmentFundingRelations(fixture.store);
     assert.deepEqual(relations.map((relation) => String(relation.fundingTransactionId)), [deposit]);
     assert.equal(await kindOf(fixture, deposit), "transfer.investment_withdrawal");
+  });
+});
+
+test("a convert or reward moves MAX TWD but never matches a bank row", async () => {
+  await withFixture(async (fixture) => {
+    await addMax(fixture, "out", "5000", "2026-09-10", "convert");
+    await addMax(fixture, "in", "3000", "2026-09-10", "convert");
+    await addMax(fixture, "in", "40", "2026-09-10", "reward");
+    await addMax(fixture, "out", "7000", "2026-09-10");
+    const withdrawn = await addBank(fixture, "inflow", "7000", "2026-09-11");
+    const receipt = await addBank(fixture, "inflow", "5000", "2026-09-11");
+    const payment = await addBank(fixture, "outflow", "3000", "2026-09-11");
+    const small = await addBank(fixture, "outflow", "40", "2026-09-11");
+    await resolve(fixture);
+    assert.deepEqual((await queryPGliteCurrentInvestmentFundingRelations(fixture.store)).map((relation) => String(relation.fundingTransactionId)), [withdrawn]);
+    assert.deepEqual([await kindOf(fixture, receipt), await kindOf(fixture, payment) === "transfer.investment_contribution", await kindOf(fixture, small) === "transfer.investment_contribution"], ["receipt", false, false]);
   });
 });

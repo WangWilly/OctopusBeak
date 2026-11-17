@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createTestPGlite } from "./baseline-test-template.ts";
 import { PGliteStore } from "./transaction.ts";
+import { applyPgliteMaicoinOperationalSchema } from "./maicoin-operational.ts";
+import { maicoinStatementRecordKey } from "../canonical/maicoin-crypto-adapters.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import {
   commitPGliteCanonicalEInvoiceCapture,
@@ -41,8 +43,12 @@ export type FixtureTransactionInput = Readonly<{
   /** The investment action or loan event kind its writer records beside the transaction. */
   event?: Readonly<{ investment: "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend" }>
     | Readonly<{ loan: "disbursement" | "payment" | "interest" | "fee" }>
-    /** A MaiCoin TWD cash movement as the MAX adapter records it: the TWD is a quantity and the cash effect is zero. */
-    | Readonly<{ investment: "corporate_action_in" | "corporate_action_out"; twdQuantity: string }>;
+    /**
+     * A MaiCoin TWD cash movement as the MAX adapter records it: the TWD is a
+     * quantity and the cash effect is zero. `rowType` is the MAX statement it
+     * came from, logged as the sync logs it; a deposit or withdrawal by default.
+     */
+    | Readonly<{ investment: "corporate_action_in" | "corporate_action_out"; twdQuantity: string; rowType?: "deposit" | "withdrawal" | "convert" | "reward" }>;
 }>;
 
 export type FixtureCardFacts = Readonly<{
@@ -270,6 +276,18 @@ export async function createSpendingCategoryFixture() {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '0', 0, 'TWD', $10, '{"kind":"unresolved"}')`,
         [ids.transactionId, bankCapture, ids.commitId, ids.accountId, twdCash, ids.recordId, event.investment, event.twdQuantity, input.scale ?? 0, input.date ?? "2026-09-01"],
       );
+      const rowType = event.rowType ?? (event.investment === "corporate_action_in" ? "deposit" : "withdrawal");
+      const statement = { endpoint: `/fixture/${rowType}`, walletType: null, rowType, externalId: `fixture-${Buffer.from(ids.recordId).toString("hex")}`, leg: rowType === "convert" ? (event.investment === "corporate_action_in" ? "to" : "from") : "transaction" };
+      await transaction.query("UPDATE source_records SET provider_key = $1 WHERE source_record_id = $2", [maicoinStatementRecordKey(statement), ids.recordId]);
+      await transaction.query(
+        `INSERT INTO maicoin_sync_runs(sync_run_id, started_at, sub_account, wallet_types_json, statement_enabled, statement_limit, record_json)
+         VALUES ('fixture-run', '2026-09-30T00:00:00Z', 'fixture', '[]', 1, 100, '{}') ON CONFLICT DO NOTHING`,
+      );
+      await transaction.query(
+        `INSERT INTO maicoin_statement_rows(statement_id, sync_run_id, captured_at, endpoint, wallet_type, row_type, external_id, currency, raw_payload_json)
+         VALUES ($1, 'fixture-run', '2026-09-30T00:00:00Z', $2, NULL, $3, $4, 'twd', '{}')`,
+        [statement.externalId, statement.endpoint, rowType, statement.externalId],
+      );
       return;
     }
     if (!security) {
@@ -312,6 +330,7 @@ export async function createSpendingCategoryFixture() {
     const commitId = uuidBytes();
     const ordinal = ++captureCount;
     const date = input.date ?? "2026-09-01";
+    if (input.event && "twdQuantity" in input.event) await applyPgliteMaicoinOperationalSchema(store);
     await store.transaction(async (transaction) => {
       const accountId = await accountFor(transaction, input.account, input.accountStream);
       const sequence = Number((await transaction.query<{ value: number | string }>("SELECT COALESCE(MAX(commit_sequence), 0) + 1 AS value FROM canonical_commits")).rows[0]?.value ?? 1);
