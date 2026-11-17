@@ -34,7 +34,7 @@
   } from "../display.ts";
   import CashFlowAccountMark from "./CashFlowAccountMark.svelte";
   import { quickRange, rangeText, type CashFlowPeriodChoice, type CashFlowPreset, type CashFlowRange } from "../period.ts";
-  import { transferNote, type CashFlowTransferPanelStart, type CashFlowTransferRequest } from "../transfer-panel.ts";
+  import { pairableByHand, transferNote, type CashFlowTransferPanelStart, type CashFlowTransferRequest } from "../transfer-panel.ts";
   import CashFlowExportDialog from "./CashFlowExportDialog.svelte";
   import CashFlowRangePicker from "./CashFlowRangePicker.svelte";
   import CashFlowTransferPanel from "./CashFlowTransferPanel.svelte";
@@ -94,6 +94,7 @@
   $: periodRows = page.periodTransactions ?? page.transactions;
   $: narrowed = page.search !== null || accountFilter !== null || listFilter !== null;
   $: if (detailRow) detailRow = periodRows.find((row) => row.transactionId === detailRow!.transactionId) ?? detailRow;
+  $: detailPairable = detailRow !== null && pairableByHand(detailRow, { rows: periodRows, panel: transferPanel });
 
   function amountText(amount: ExactAmount, currency = selectedCurrency, signed = false) {
     return moneyText({ ...amount, currency }, $locale, signed);
@@ -603,6 +604,11 @@
     dataVersion={page.knowledgeAt}
     apply={applyDetail}
     onClose={() => detailRow = null}
+    pairAsTransfer={detailPairable ? () => {
+      const row = detailRow;
+      detailRow = null;
+      if (row) openTransferPanel({ kind: "pair", row });
+    } : null}
   />
 {/if}
 
