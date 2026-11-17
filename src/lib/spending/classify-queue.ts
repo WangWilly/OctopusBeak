@@ -1,4 +1,5 @@
 import { compareExact, moneyTotals, type ExactAmount, type MoneyTotal } from "../shared-money/exact-money.ts";
+import { MAX_CATEGORIZATION_TARGETS } from "../financial/page-actions.ts";
 import type { SpendingClassifyQueueItem } from "./model.ts";
 
 /**
@@ -7,9 +8,6 @@ import type { SpendingClassifyQueueItem } from "./model.ts";
  * scope names. A merchant key groups rows for display only; it is never
  * stored and never becomes a categorization rule (User categorization scope).
  */
-
-/** The most purchases one `category_many` action may name. */
-export const CATEGORIZE_MANY_LIMIT = 1000;
 
 export type ClassifyMerchantGroup = Readonly<{
   key: string;
@@ -53,14 +51,32 @@ function unlessEmpty(value: string, rewritten: string): string {
   return trimmed === "" ? value : trimmed;
 }
 
+/** The chain a text names exactly, such as 「7-11」, or null when it says more or names none. */
+function chainNamedBy(text: string): string | null {
+  return CHAIN_ALIASES.find(([name, prefixes]) => name === text || prefixes.includes(text))?.[0] ?? null;
+}
+
 /**
  * The grouping key of a purchase title: NFKC-folded (full-width to
  * half-width) and lower-cased, without a payment-channel prefix, a company
  * form, or a branch or store number, and with known chains named once.
+ * A deposit description 「摘要 · 備註」 keys on its 備註, the payee; its
+ * 摘要 only names the transaction type, such as 金融卡消費 or 全國繳費.
+ * A rule never cuts text it cannot name as a branch: two merchants wrongly
+ * merged get one category, two keys for one merchant only cost a row.
  * An empty title has the empty key, which groups nothing.
  */
 export function merchantKey(title: string | null): string {
-  let key = normalizedText(title);
+  const text = normalizedText(title);
+  const parts = text.split(/\s*[·・]\s*/u).filter((part) => part !== "");
+  if (parts.length < 2) return payeeKey(text);
+  const note = parts.at(-1)!;
+  // A 備註 of only a reference number names no payee; the whole text keeps the purchase apart.
+  return /\p{L}/u.test(note) ? payeeKey(note) : parts.join(" · ");
+}
+
+function payeeKey(text: string): string {
+  let key = text;
   for (let previous = ""; previous !== key;) {
     previous = key;
     key = unlessEmpty(key, key.replace(CHANNEL_PREFIX, ""));
@@ -69,10 +85,8 @@ export function merchantKey(title: string | null): string {
   for (const [name, prefixes] of CHAIN_ALIASES) {
     if (prefixes.some((prefix) => key.startsWith(prefix))) return name;
   }
-  // 「統一超商－蘭雲」, 「全家便利商店 信義店」: a separator after a Han character starts the branch.
-  key = unlessEmpty(key, key.replace(/(?<=\p{Script=Han})\s*[\s\-–—_*#/|(].*$/u, ""));
-  // 「7-eleven 松江門市」: a separated trailing branch name.
-  key = unlessEmpty(key, key.replace(/[\s\-_/]+\p{Script=Han}{1,8}(?:門市|分店|店|營業所|分公司)$/u, ""));
+  // 「鼎泰豐－信義店」, 「7-eleven 松江門市」: a separated trailing branch name.
+  key = unlessEmpty(key, key.replace(/[\s\-–—_*#/|(]+[\p{Script=Han}\p{N}a-z]{1,10}(?:門市|分店|店|營業所|分公司)\)?$/u, ""));
   // 「全聯福利中心松江店」: a branch glued to a store-type word.
   key = unlessEmpty(key, key.replace(/^(.+?(?:中心|超商|商店|超市|藥局|藥妝|量販|百貨|商場|賣場))\p{Script=Han}{1,6}(?:門市|分店|店)$/u, "$1"));
   // 「cafe 123」, 「shop #0042」: a trailing store number.
@@ -152,24 +166,27 @@ function searchAmount(query: string): ExactAmount | null {
 }
 
 /**
- * Whether a row answers the search box: its title holds the text, its
- * merchant key equals the query's (so 「7-11」 finds 統一超商), or its amount
- * equals a numeric query. A blank query matches every row.
+ * Whether a row answers the search box: its title holds the text, the query
+ * is exactly a chain's name and the row belongs to the chain (so 「7-11」
+ * finds 統一超商), or its amount equals a numeric query. A query that says
+ * more than a chain's name, such as a branch, matches by its text alone, so
+ * 「apply to all results」 never reaches past what the user typed. A blank
+ * query matches every row.
  */
 export function matches(item: SpendingClassifyQueueItem, query: string): boolean {
   const text = normalizedText(query);
   if (text === "") return true;
   if (normalizedText(item.title).includes(text)) return true;
-  const key = merchantKey(query);
-  if (key !== "" && merchantKey(item.title) === key) return true;
+  const chain = chainNamedBy(text);
+  if (chain !== null && merchantKey(item.title) === chain) return true;
   const amount = searchAmount(text);
   return amount !== null && item.amount !== null && compareExact(item.amount, amount) === 0;
 }
 
 function capped(purchaseIds: readonly string[]): ClassifyApplyTargets {
   return Object.freeze({
-    purchaseIds: Object.freeze(purchaseIds.slice(0, CATEGORIZE_MANY_LIMIT)),
-    overflow: Math.max(0, purchaseIds.length - CATEGORIZE_MANY_LIMIT),
+    purchaseIds: Object.freeze(purchaseIds.slice(0, MAX_CATEGORIZATION_TARGETS)),
+    overflow: Math.max(0, purchaseIds.length - MAX_CATEGORIZATION_TARGETS),
   });
 }
 

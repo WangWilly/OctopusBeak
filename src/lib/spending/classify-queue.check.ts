@@ -4,10 +4,10 @@ import {
   applyTargets,
   byAmount,
   byMerchant,
-  CATEGORIZE_MANY_LIMIT,
   matches,
   merchantKey,
 } from "./classify-queue.ts";
+import { MAX_CATEGORIZATION_TARGETS } from "../financial/page-actions.ts";
 import type { SpendingClassifyQueueItem } from "./model.ts";
 
 function item(purchaseId: string, title: string | null, amount: string | null, date = "2026-09-01"): SpendingClassifyQueueItem {
@@ -51,9 +51,27 @@ test("merchantKey keeps different merchants apart", () => {
   assert.notEqual(merchantKey("UBER EATS"), merchantKey("UBER TRIP"));
   assert.notEqual(merchantKey("大全聯"), merchantKey("全聯福利中心"));
   assert.equal(merchantKey("全家便利商店"), "全家");
-  assert.equal(merchantKey("LINE Pay卡 正卡"), "line pay卡", "a card product name is not a channel prefix");
+  assert.equal(merchantKey("LINE Pay卡 正卡"), "line pay卡 正卡", "a card product name is not a channel prefix");
+  assert.equal(merchantKey("消費 誠品"), "消費 誠品", "text after a space is not cut unless it names a branch");
   assert.equal(merchantKey(null), "");
   assert.equal(merchantKey("   "), "");
+});
+
+test("merchantKey keys a deposit's 摘要 · 備註 on the payee, never on the transaction type", () => {
+  const descriptions = [
+    "金融卡消費 · 全聯福利中心",
+    "金融卡消費 · 鼎泰豐",
+    "全國繳費 · 台灣電力",
+    "全國繳費 · 中華電信",
+    "行動支付 · 星巴克",
+    "消費 · 誠品",
+    "金融卡消費 · 00123",
+    "金融卡消費 · 00456",
+  ];
+  const keys = descriptions.map(merchantKey);
+  assert.equal(new Set(keys).size, descriptions.length, keys.join(" | "));
+  assert.deepEqual(keys.slice(0, 6), ["全聯", "鼎泰豐", "台灣電力", "中華電信", "星巴克", "誠品"]);
+  assert.equal(merchantKey("金融卡消費 · 全聯福利中心"), merchantKey("全聯實業股份有限公司"));
 });
 
 test("byAmount puts the largest purchase first and a missing amount last", () => {
@@ -100,6 +118,23 @@ test("matches finds a row by title text, merchant alias, or exact amount", () =>
   assert.ok(!matches(row, "全家"));
 });
 
+test("a branch-specific search matches only that branch, never the whole chain", () => {
+  const rows = [
+    item("transaction:1", "全聯福利中心松江店", "300"),
+    item("transaction:2", "全聯福利中心－台北民生", "200"),
+    item("invoice:3", "全聯實業股份有限公司", "100"),
+    item("transaction:4", "統一超商－蘭雲", "90"),
+    item("transaction:5", "統一超商－松江", "80"),
+  ];
+  const found = (query: string) => rows.filter((row) => matches(row, query)).map((row) => row.purchaseId);
+  assert.deepEqual(found("全聯福利中心松江店"), ["transaction:1"]);
+  assert.deepEqual(found("7-11 蘭雲"), []);
+  assert.deepEqual(found("統一超商－蘭雲"), ["transaction:4"]);
+  assert.deepEqual(found("全聯"), ["transaction:1", "transaction:2", "invoice:3"]);
+  assert.deepEqual(found("7-11"), ["transaction:4", "transaction:5"]);
+  assert.deepEqual(applyTargets(rows, { kind: "search", query: "全聯福利中心松江店" }).purchaseIds, ["transaction:1"]);
+});
+
 test("an apply scope resolves to the queued purchases it names, capped per action", () => {
   const rows = [
     item("transaction:1", "全聯福利中心", "300"),
@@ -112,9 +147,9 @@ test("an apply scope resolves to the queued purchases it names, capped per actio
   assert.deepEqual(applyTargets(rows, { kind: "search", query: "全聯" }), { purchaseIds: ["invoice:2", "transaction:1"], overflow: 0 });
   assert.deepEqual(applyTargets(rows, { kind: "search", query: "  " }), { purchaseIds: [], overflow: 0 });
 
-  const many = Array.from({ length: CATEGORIZE_MANY_LIMIT + 5 }, (_, index) => item(`transaction:${String(index).padStart(5, "0")}`, "全聯", String(index + 1)));
+  const many = Array.from({ length: MAX_CATEGORIZATION_TARGETS + 5 }, (_, index) => item(`transaction:${String(index).padStart(5, "0")}`, "全聯", String(index + 1)));
   const capped = applyTargets(many, { kind: "merchant", key: "全聯" });
-  assert.equal(capped.purchaseIds.length, CATEGORIZE_MANY_LIMIT);
+  assert.equal(capped.purchaseIds.length, MAX_CATEGORIZATION_TARGETS);
   assert.equal(capped.overflow, 5);
   assert.equal(capped.purchaseIds[0], "transaction:01004", "the largest purchases go first");
 });

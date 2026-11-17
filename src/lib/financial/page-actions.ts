@@ -6,6 +6,13 @@ import type {
   SpendingSummaryDeltaLine,
 } from "../spending/model.ts";
 
+/**
+ * The most purchases one `category_many` action may name. Every target is
+ * resolved and written inside one writer transaction, which holds back every
+ * other write until it ends.
+ */
+export const MAX_CATEGORIZATION_TARGETS = 1000;
+
 /** A decision on one Cash-flow transfer pair (ADR 0137); it never changes Spending. */
 type CashFlowTransferActionRequest<A extends string, K extends string> = Readonly<{
   action: A;

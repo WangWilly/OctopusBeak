@@ -505,6 +505,8 @@ type PurchaseCategoryRow = Readonly<{
    * when the reading ignores it, as it ignores an inapplicable code.
    */
   userCategorized: boolean;
+  /** Whether the invoice has an item an item category can show on: one whose amount is not negative. */
+  hasNonNegativeItem: boolean;
 }>;
 
 /**
@@ -614,6 +616,7 @@ async function queryPurchaseCategoryRows(
       transactionId: row.transaction_id === null || row.transaction_id === undefined ? null : idString(row.transaction_id, "Purchase transaction"),
       kind,
       userCategorized: userRows.length > 0 || itemRows.some((item) => item.origin === "user"),
+      hasNonNegativeItem: invoice?.items.some((item) => item.amount === null || BigInt(item.amount.coefficient) >= 0n) ?? false,
     });
   });
 }
@@ -784,8 +787,11 @@ export async function queryCurrentSpendingRecordPage(
  */
 function classifyQueueEligible(row: PurchaseCategoryRow): boolean {
   if (row.basis === "refund" || row.category.mode !== "absent" || row.userCategorized) return false;
-  // An invoice-only purchase writes its items as Kind purchase; the others write the transaction.
-  return row.basis === "invoice" || (row.kind !== null && kindAcceptsCategory(row.kind));
+  // An invoice-only purchase writes its items as Kind purchase, and the
+  // Purchase category reads only items that are not negative: without one, a
+  // write changes nothing and the purchase would stay queued for good.
+  if (row.basis === "invoice") return row.hasNonNegativeItem;
+  return row.kind !== null && kindAcceptsCategory(row.kind);
 }
 
 /**
