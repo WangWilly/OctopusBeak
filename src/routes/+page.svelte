@@ -48,6 +48,7 @@
   import { latestExchangeRateRun, linkedSourceCount } from "$lib/settings/settings-status.ts";
   import { applySystemSettings, taipeiDate, usageStatisticsEnabled } from "$lib/settings/system-timezone-store.ts";
   import PurchaseSpendingDashboard from "$lib/spending/components/PurchaseSpendingDashboard.svelte";
+  import { classifyInboxRequested } from "$lib/spending/classify-inbox-link.ts";
   import CashFlowDashboard from "$lib/cash-flow/components/CashFlowDashboard.svelte";
   import type { CashFlowPageRequest } from "$lib/cash-flow/model.ts";
   import type { CashFlowTransferRequest } from "$lib/cash-flow/transfer-panel.ts";
@@ -96,6 +97,7 @@
 
   let route: RouteId = "overview";
   let focusAccountId: string | null = null;
+  let classifyInboxPending = false;
   let cashFlowToday = get(taipeiDate);
   let cashFlowRequest: CashFlowPageRequest = quickRange("month", cashFlowToday);
   let cashFlowPeriodChoice: CashFlowPeriodChoice = "month";
@@ -269,6 +271,7 @@
       id = null;
     }
     focusAccountId = route === "assets" || route === "liabilities" ? id : null;
+    classifyInboxPending = classifyInboxRequested(classifyInboxPending, route, location.hash);
     const canonicalHash = id ? `/${route}/${encodeURIComponent(id)}` : `/${route}`;
     if (
       !location.hash
@@ -781,6 +784,8 @@
       fallbackCanonical={spendingRenderValue.canonical}
       manualPurchases={spendingRenderValue.manual?.purchases ?? []}
       refreshSummary={() => route === "spending" ? financialPage.reload("spending") : Promise.resolve()}
+      openClassifyRequested={classifyInboxPending}
+      classifyRequestHandled={() => classifyInboxPending = false}
     />
     <RouteLoadNotice state={spending} retry={() => void loadRoute("spending", { force: true })} />
   {:else}
