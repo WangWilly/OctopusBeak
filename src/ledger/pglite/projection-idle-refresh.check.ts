@@ -3,7 +3,9 @@ import test from "node:test";
 import { insertPGliteCanonicalCommit } from "./canonical-commit.ts";
 import { refreshPGliteCurrentProjectionInTransaction } from "./projection.ts";
 import { syncEInvoiceItemCategorizations } from "./einvoice-item-categorization.ts";
-import { createSpendingCategoryFixture } from "./spending-test-fixture.ts";
+import { setPGliteSpendingPurchaseAllocationInTransaction, setPGliteSpendingPurchaseCategory } from "./purchase-category-command.ts";
+import { addPGliteTransactionTag, writePGliteTransactionNote } from "./transaction-detail-command.ts";
+import { createSpendingCategoryFixture, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 
 test("a refresh for a commit that touches no transaction writes no Kind and no commit", async () => {
   const fixture = await createSpendingCategoryFixture();
@@ -126,31 +128,97 @@ test("deriving again from unchanged facts grows no table beyond its own commit",
       "SELECT DISTINCT target_kind, field_name FROM assertions WHERE origin = 'derived' ORDER BY 1, 2");
     assert.deepEqual(derived.rows.map((row) => `${row.target_kind}.${row.field_name}`), ["einvoice_item.category", "transaction.category", "transaction.kind"]);
 
-    const tables = (await fixture.store.query<{ table_name: string }>(
-      "SELECT tablename AS table_name FROM pg_tables WHERE schemaname = 'public' ORDER BY 1")).rows.map((row) => row.table_name);
-    const counts = async () => Object.fromEntries(await Promise.all(tables.map(async (table) =>
-      [table, Number((await fixture.store.query<{ n: number | string }>(`SELECT count(*) AS n FROM "${table}"`)).rows[0]!.n)])));
-    const invoices = (await fixture.store.query<{ invoice_id: Uint8Array }>("SELECT invoice_id FROM einvoice_invoices")).rows;
-    const transactions = (await fixture.store.query<{ transaction_id: Uint8Array }>("SELECT transaction_id FROM financial_transactions")).rows;
-    const derive = {
-      "a full refresh": { refreshEnrichmentAll: true },
-      "a refresh of every transaction": { transactionIds: transactions.map((row) => row.transaction_id) },
-    } as const;
-    for (const pass of [1, 2])
-      for (const [name, scope] of Object.entries(derive)) {
-        const before = await counts();
-        await fixture.store.transaction(async (transaction) => {
-          const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
-          await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, ...scope });
-          for (const { invoice_id } of invoices)
-            await syncEInvoiceItemCategorizations(transaction, { invoiceId: invoice_id, commitId: commit.id, observedAt: "2026-09-30T00:00:00Z" });
-        });
-        const after = await counts();
-        const grew = Object.fromEntries(tables.filter((table) => after[table] !== before[table]).map((table) => [table, after[table]! - before[table]!]));
-        // The pass's own commit and the knowledge event that records it.
-        assert.deepEqual(grew, { canonical_commits: 1, projection_generation_provenance: 1 }, `${name}, pass ${pass}`);
-      }
+    await assertDerivingAgainGrowsOnlyItsCommit(fixture);
   } finally {
     await fixture.close();
   }
 });
+
+test("deriving again keeps every user choice and grows no table beyond its own commit", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const categorized = await fixture.addTransaction({ amount: "501", date: "2026-09-10" });
+    const allocated = await fixture.addTransaction({ amount: "500", date: "2026-09-11" });
+    const invoice = await fixture.commitInvoice({ stableKey: "XM00000002:2026-09-12", date: "2026-09-12", sellerName: "Cinema", items: [{ sequence: 1, name: "電影票", amount: "300" }] });
+    await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `transaction:${categorized}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode: "dining" });
+    await setPGliteSpendingPurchaseCategory(fixture.store, { purchaseId: `invoice:${invoice}`, knowledgeAt: await fixture.knowledgeAt(), categoryCode: "gifts_and_donations" });
+    const knowledgeAt = await fixture.knowledgeAt();
+    await fixture.store.transaction(async (transaction) => {
+      await setPGliteSpendingPurchaseAllocationInTransaction(transaction, {
+        purchaseId: `transaction:${allocated}`,
+        knowledgeAt,
+        components: [
+          { categoryCode: "dining", amount: { coefficient: "300", scale: 0, currency: "TWD" } },
+          { categoryCode: "healthcare", amount: { coefficient: "200", scale: 0, currency: "TWD" } },
+        ],
+      });
+      await writePGliteTransactionNote(transaction, { transactionId: categorized, note: "a note" });
+      await addPGliteTransactionTag(transaction, { transactionId: categorized, label: "a tag" });
+    });
+    const choices = async () => ({
+      assertions: (await fixture.store.query<{ field_name: string; value_text: string; state: string }>(
+        `SELECT assertion.target_kind || '.' || assertion.field_name AS field_name, assertion.value_text,
+                (SELECT transition.event_kind FROM assertion_transitions transition
+                   JOIN canonical_commits event_commit ON event_commit.commit_id = transition.commit_id
+                  WHERE transition.assertion_id = assertion.assertion_id
+                  ORDER BY event_commit.commit_sequence DESC, encode(transition.event_id, 'hex') DESC LIMIT 1) AS state
+           FROM assertions assertion WHERE assertion.origin = 'user'
+          ORDER BY 1, 2, encode(assertion.assertion_id, 'hex')`)).rows,
+      note: (await fixture.store.query("SELECT value_text FROM current_transaction_fields WHERE field_name = 'note'")).rows,
+      items: (await fixture.store.query(
+        `SELECT encode(invoice_id, 'hex') AS invoice_id, item_sequence, encode(assertion_id, 'hex') AS assertion_id, category_code
+           FROM current_einvoice_item_categorizations WHERE origin = 'user' ORDER BY 1, 2`)).rows,
+      tags: (await fixture.store.query(
+        `SELECT encode(transaction_id, 'hex') AS transaction_id, encode(assertion_id, 'hex') AS assertion_id, display_label
+           FROM current_transaction_tags ORDER BY 1, 2`)).rows,
+    });
+    const chosen = await choices();
+    assert.deepEqual(
+      { assertions: chosen.assertions.map((row) => `${row.field_name}:${/^[0-9a-f-]{36}$/u.test(row.value_text) ? "<tag id>" : row.value_text}:${row.state}`), note: chosen.note, items: chosen.items.length, tags: chosen.tags.length },
+      {
+        assertions: [
+          "einvoice_item.category:gifts_and_donations:observed",
+          "transaction.category:__allocation__:observed",
+          "transaction.category:dining:observed",
+          "transaction.note:<tag id>:observed",
+          "transaction.note:a note:observed",
+        ],
+        note: [{ value_text: "a note" }],
+        items: 1,
+        tags: 1,
+      },
+    );
+    await assertDerivingAgainGrowsOnlyItsCommit(fixture);
+    assert.deepEqual(await choices(), chosen, "every user choice stays current, on the same assertion");
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** Re-derives every Kind, category and invoice item category twice over, from facts that did not change. */
+async function assertDerivingAgainGrowsOnlyItsCommit(fixture: SpendingCategoryFixture): Promise<void> {
+  const tables = (await fixture.store.query<{ table_name: string }>(
+    "SELECT tablename AS table_name FROM pg_tables WHERE schemaname = 'public' ORDER BY 1")).rows.map((row) => row.table_name);
+  const counts = async () => Object.fromEntries(await Promise.all(tables.map(async (table) =>
+    [table, Number((await fixture.store.query<{ n: number | string }>(`SELECT count(*) AS n FROM "${table}"`)).rows[0]!.n)])));
+  const invoices = (await fixture.store.query<{ invoice_id: Uint8Array }>("SELECT invoice_id FROM einvoice_invoices")).rows;
+  const transactions = (await fixture.store.query<{ transaction_id: Uint8Array }>("SELECT transaction_id FROM financial_transactions")).rows;
+  const derive = {
+    "a full refresh": { refreshEnrichmentAll: true },
+    "a refresh of every transaction": { transactionIds: transactions.map((row) => row.transaction_id) },
+  } as const;
+  for (const pass of [1, 2])
+    for (const [name, scope] of Object.entries(derive)) {
+      const before = await counts();
+      await fixture.store.transaction(async (transaction) => {
+        const commit = await insertPGliteCanonicalCommit(transaction, { kind: "user_assertion", authorityRoute: "user/local", time: { kind: "wall-clock" } });
+        await refreshPGliteCurrentProjectionInTransaction(transaction, { commitId: commit.id, cutoffSequence: commit.sequence, ...scope });
+        for (const { invoice_id } of invoices)
+          await syncEInvoiceItemCategorizations(transaction, { invoiceId: invoice_id, commitId: commit.id, observedAt: "2026-09-30T00:00:00Z" });
+      });
+      const after = await counts();
+      const grew = Object.fromEntries(tables.filter((table) => after[table] !== before[table]).map((table) => [table, after[table]! - before[table]!]));
+      // The pass's own commit and the knowledge event that records it.
+      assert.deepEqual(grew, { canonical_commits: 1, projection_generation_provenance: 1 }, `${name}, pass ${pass}`);
+    }
+}
