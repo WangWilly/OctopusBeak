@@ -244,8 +244,8 @@ An Intermediary source's record of a change in Security quantity that carries no
 _Avoid_: Investment transaction with estimated cash, quantity-times-price amount, raw movement text
 
 **Investment transaction action**:
-A source-reported investment event whose meaning is explicit in the provider record. `buy` and `sell` move both Security quantity and settlement cash; `corporate_action_in` and `corporate_action_out` move Security quantity with provider-reported zero cash; `dividend` records provider-reported cash with zero Security quantity. An unfamiliar provider label is not coerced from date, amount, or direction and instead rejects the Capture. Only buy and sell actions may participate in a bank-settlement Transaction Relation.
-_Avoid_: Inferred trade, zero-price buy or sell, dividend as a Security purchase, corporate action as a funding relation
+A source-reported investment event whose meaning is explicit in the provider record. `buy` and `sell` move both Security quantity and settlement cash; `corporate_action_in` and `corporate_action_out` move Security quantity with provider-reported zero cash; `dividend` records provider-reported cash with zero Security quantity. An unfamiliar provider label is not coerced from date, amount, or direction and instead rejects the Capture. Only buy and sell actions may participate in a bank-settlement Transaction Relation. The one exception is a MaiCoin TWD cash movement, which relates to the one bank row it uniquely matches by direction, amount and date (ADR 0145).
+_Avoid_: Inferred trade, zero-price buy or sell, dividend as a Security purchase, corporate action as a funding relation outside ADR 0145
 
 **Fund subscription source evidence**:
 A provider-specific transaction description whose complete contract-defined structure identifies an outflow as payment for a fund subscription. A subscription phrase, destination reference, or private identifier alone is insufficient; the source namespace, direction, operation label, structured fund reference, event discriminator, and terminal system marker must agree before the transaction receives an investment-buy Kind.
