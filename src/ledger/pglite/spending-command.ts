@@ -32,8 +32,10 @@ import type {
 } from "../../lib/financial/page-actions.ts";
 import type { SpendingCandidatePairRef, SpendingStrongConflict } from "../../lib/spending/model.ts";
 import {
+  parsePurchaseIdSet,
   purchaseCategoryActionSubject,
   setPGliteSpendingPurchaseAllocationInTransaction,
+  setPGliteSpendingPurchaseCategoriesInTransaction,
   setPGliteSpendingPurchaseCategoryInTransaction,
 } from "./purchase-category-command.ts";
 import {
@@ -492,6 +494,7 @@ type PageActionAdmission = Readonly<{
   direct: ExactAdmission;
   revoke: ExactAdmission;
   category: ExactAdmission;
+  category_many: ExactAdmission;
   strong: StrongAdmission;
   transfer_confirm: ExactAdmission;
   transfer_deny: ExactAdmission;
@@ -551,6 +554,19 @@ const PAGE_ACTIONS: PageActionTable = Object.freeze({
     subject: (transaction, input) => purchaseCategoryActionSubject(transaction, input.purchaseId),
     write: (tx, input, { current }) => setPGliteSpendingPurchaseCategoryInTransaction(tx, {
       purchaseId: input.purchaseId,
+      knowledgeAt: current,
+      categoryCode: input.categoryCode,
+    }),
+    postcondition: () => {},
+  },
+  category_many: {
+    admit: (transaction, input) => {
+      parsePurchaseIdSet(input.purchaseIds);
+      return admitExactVersion(transaction, input);
+    },
+    subject: categoryManySubject,
+    write: (tx, input, { current }) => setPGliteSpendingPurchaseCategoriesInTransaction(tx, {
+      purchaseIds: input.purchaseIds,
       knowledgeAt: current,
       categoryCode: input.categoryCode,
     }),
@@ -623,6 +639,21 @@ async function admitExactVersion(
   if (!Number.isSafeInteger(input.dataVersion) || input.dataVersion !== current)
     throw new Error("Spending action data version is stale; reload Spending.");
   return Object.freeze({ status: "admitted" as const, current });
+}
+
+/** The union of every target's subject; a stale or ineligible target refuses the set before the write. */
+async function categoryManySubject(
+  transaction: PGliteTransaction,
+  input: PageActionOf<"category_many">,
+): Promise<FinancialPageActionSubject> {
+  const invoiceIds = new Set<string>();
+  const transactionIds = new Set<string>();
+  for (const purchaseId of input.purchaseIds) {
+    const subject = await purchaseCategoryActionSubject(transaction, purchaseId);
+    for (const id of subject.invoiceIds) invoiceIds.add(id);
+    for (const id of subject.transactionIds) transactionIds.add(id);
+  }
+  return Object.freeze({ invoiceIds: Object.freeze([...invoiceIds]), transactionIds: Object.freeze([...transactionIds]) });
 }
 
 function pairSubject(

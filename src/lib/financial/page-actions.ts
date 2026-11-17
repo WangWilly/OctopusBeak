@@ -43,6 +43,16 @@ export type FinancialPageActionRequest = Readonly<{
   categoryCode: string | null;
   dataVersion: number;
 }> | Readonly<{
+  /**
+   * Set or, with a null code, clear the user's category on every purchase of
+   * a Categorization target set, in one commit or none.
+   */
+  action: "categorize";
+  kind: "category_many";
+  purchaseIds: readonly string[];
+  categoryCode: string | null;
+  dataVersion: number;
+}> | Readonly<{
   /** 合併所有高度相符: confirm exactly the strong pairs the user was shown, in one commit or none. */
   action: "confirm";
   kind: "strong";
