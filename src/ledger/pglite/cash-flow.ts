@@ -5,6 +5,7 @@ import {
   cashFlowRule,
   cashFlowTotals,
   categoryShare,
+  INVESTMENT_ACCOUNT_STREAMS,
   type CashFlowCategoryShare,
   type CashFlowClass,
   type CashFlowCurrencyTotals,
@@ -30,8 +31,9 @@ import { absoluteExact, compareExact, normalizeExact, sameCurrency, type ExactAm
 import { isCategoryApplicable } from "../canonical/transaction-taxonomy.ts";
 import { carriesCurrencyExchangeLabel } from "../canonical/transaction-kind-classifier.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
+import { readMaicoinCashFlowIncome } from "./maicoin-statement-log.ts";
 import { currentTransactionIdsByFinancialDate, querySpendingReport } from "./spending-facts.ts";
-import { bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
+import { byChunk, bytes, idString, ISO_DATE, pgliteQuery, rows, type PGliteSpendingReader } from "./spending-sql.ts";
 
 /**
  * The Cash flow inclusion query (PRD #456, issue #457): every canonical and
@@ -161,22 +163,6 @@ function counted(transaction: CanonicalSpendingTransaction): boolean {
   return transaction.administrativeState === "active"
     && transaction.postingStatus === "posted"
     && transaction.economicStatus !== "canceled";
-}
-
-/** Run one `IN (...)` read per chunk of transaction ids. */
-async function byChunk<T extends Record<string, unknown>>(
-  reader: PGliteSpendingReader,
-  ids: readonly string[],
-  sql: (placeholders: string) => string,
-  leading: readonly unknown[] = [],
-): Promise<T[]> {
-  const found: T[] = [];
-  for (let start = 0; start < ids.length; start += 2_048) {
-    const chunk = ids.slice(start, start + 2_048);
-    const params = [...leading, ...chunk.map((id) => bytes(id, "Transaction"))];
-    found.push(...rows(await pgliteQuery<T>(reader, sql(chunk.map(() => "?").join(",")), params)));
-  }
-  return found;
 }
 
 /**
@@ -394,6 +380,9 @@ async function canonicalTransactions(
     const evidence = evidenceOf.get(transaction.transactionId) ?? null;
     return { transaction, flowDirection, amount, evidence, rule: cashFlowRule(transaction.kind, flowDirection, transaction.stream) };
   });
+  const incomeOf = await readMaicoinCashFlowIncome(reader, included
+    .filter((entry) => entry.flowDirection === "inflow" && INVESTMENT_ACCOUNT_STREAMS.has(entry.transaction.stream ?? ""))
+    .map((entry) => entry.transaction.transactionId));
   const refundIds = included.filter((entry) => entry.rule.class === "refund").map((entry) => entry.transaction.transactionId);
   const originalOf = await refundOriginals(reader, refundIds);
   // A card inflow whose description names nothing is a refund by direction alone; only a relation or Spending's refund recognition proves it is one.
@@ -407,7 +396,9 @@ async function canonicalTransactions(
     ? new Map<string, CanonicalSpendingTransaction>()
     : new Map((await querySpendingReport(reader, "current", knowledgeAt, null, { transactionIds: originalIds }))
       .transactions.map((original) => [original.transactionId, original]));
-  return included.map(({ transaction, flowDirection, amount, evidence, rule }) => {
+  return included.map(({ transaction, flowDirection, amount: booked, evidence, rule }) => {
+    const income = incomeOf.get(transaction.transactionId);
+    const amount = income?.value ?? booked;
     const own = sharesOf(transaction.categorization, amount);
     // Only a refund's own User Categorization outranks Relation-backed categorization.
     const originalId = rule.class === "refund" && transaction.categorization.origin !== "user"
@@ -425,7 +416,8 @@ async function canonicalTransactions(
       direction: flowDirection,
       kind: canonicalCashFlowKind(transaction.kind, evidence),
       exchangeLabel: carriesCurrencyExchangeLabel(transaction.description),
-      cashFlow: unproven.has(transaction.transactionId)
+      cashFlow: income ? (income.value ? { class: "inflow" as const, group: income.group } : { class: "unresolved" as const })
+        : unproven.has(transaction.transactionId)
         ? { class: "unresolved" as const }
         : cashFlowClass(rule, amount, inherited ?? own ?? unclassified(amount), inherited ? originalId! : null),
     };

@@ -15,11 +15,13 @@ import {
  * Cash flow's Financial report inclusion (PRD #456): every canonical and
  * Manual Account transaction gets exactly one cash-flow class, decided by its
  * Transaction Kind, its direction and its account's stream. Totals stay per
- * currency. v2 (ADR 0138) adds the two account rules in `cashFlowRule`.
+ * currency. v2 (ADR 0138) adds the two account rules in `cashFlowRule`. v3
+ * (ADR 0146) counts a MAX reward or outside crypto deposit as income, which
+ * the Cash flow read decides from the MAX statement log.
  */
 export const CASH_FLOW_INCLUSION_POLICY = Object.freeze({
   id: "cash-flow-by-kind",
-  version: "v2",
+  version: "v3",
 } as const);
 
 export type CashFlowInflowGroup =
@@ -173,7 +175,8 @@ export const INVESTMENT_ACCOUNT_STREAMS: ReadonlySet<string> = new Set(["investm
 /**
  * An unregistered or absent Kind leaves inclusion undecided. Two account
  * rules come first (ADR 0138): nothing on an investment account counts,
- * whatever its Kind, since its funding account already holds the cash; and a
+ * whatever its Kind, since its funding account already holds the cash, apart
+ * from the MAX income the Cash flow read adds (ADR 0146); and a
  * loan's interest or fee counts once as an outflow, from the loan account,
  * although that account books it as an inflow. `stream` is the account's;
  * a Manual Account has none.
