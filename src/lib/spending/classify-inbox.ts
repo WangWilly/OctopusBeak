@@ -5,6 +5,8 @@ import {
   spendingCategoryCodesForGroup,
   type SpendingCategoryGroup,
 } from "./category-groups.ts";
+import { byAmount, byMerchant, capped, matches, type ClassifyApplyTargets, type ClassifyMerchantGroup } from "./classify-queue.ts";
+import type { SpendingClassifyQueueItem } from "./model.ts";
 
 /**
  * The classification inbox's keyboard and row rules, kept apart from the
@@ -79,4 +81,56 @@ export function classifyPeriod(today: string): Readonly<{ startDate: string; end
   const lastDay = new Date(Date.UTC(year - 1, month, 0)).getUTCDate();
   const start = new Date(Date.UTC(year - 1, month - 1, Math.min(day, lastDay) + 1));
   return { startDate: start.toISOString().slice(0, 10), endDate: today };
+}
+
+/** What the inbox shows: its order, the search box, and the 「只看」 merchant in 依金額. */
+export type ClassifyView = Readonly<{ mode: "amount" | "merchant"; query: string; merchantKey: string | null }>;
+
+/** A merchant row with the purchases it shows and writes, and how many of its purchases the search hides. */
+export type ClassifyMerchantRow = Readonly<{ group: ClassifyMerchantGroup; members: readonly SpendingClassifyQueueItem[]; unmatched: number }>;
+
+/** The control a write comes from: the current row's apply, or 「全部套用」. */
+export type ClassifyControl = Readonly<{ kind: "current"; key: string }> | Readonly<{ kind: "search" }>;
+
+function merchantPurchaseIds(items: readonly SpendingClassifyQueueItem[], key: string): ReadonlySet<string> {
+  return new Set(byMerchant(items).find((group) => group.key === key)?.purchaseIds ?? []);
+}
+
+/** The 依金額 rows, largest first: the search's matches, inside 「只看」 when one is set. */
+export function classifyAmountRows(items: readonly SpendingClassifyQueueItem[], view: ClassifyView): readonly SpendingClassifyQueueItem[] {
+  const only = view.merchantKey === null ? null : merchantPurchaseIds(items, view.merchantKey);
+  return byAmount(items).filter((item) => (only === null || only.has(item.purchaseId)) && matches(item, view.query));
+}
+
+/** The 依商家 rows: each group with a purchase the search matches, showing only those purchases. */
+export function classifyMerchantRows(items: readonly SpendingClassifyQueueItem[], query: string): readonly ClassifyMerchantRow[] {
+  const byId = new Map(items.map((item) => [item.purchaseId, item]));
+  return byMerchant(items).flatMap((group) => {
+    const members = group.purchaseIds.map((id) => byId.get(id)!).filter((item) => matches(item, query));
+    return members.length === 0 ? [] : [{ group, members, unmatched: group.count - members.length }];
+  });
+}
+
+/**
+ * The purchases one control writes, which are always the purchases that
+ * control shows: the current row's purchase or merchant members, or every
+ * row 「全部套用」 covers. A blank search covers nothing.
+ */
+export function classifyWriteTargets(items: readonly SpendingClassifyQueueItem[], view: ClassifyView, control: ClassifyControl): ClassifyApplyTargets {
+  if (control.kind === "search") {
+    if (view.query.trim() === "") return capped([]);
+    const merchantKey = view.mode === "amount" ? view.merchantKey : null;
+    return capped(classifyAmountRows(items, { ...view, merchantKey }).map((item) => item.purchaseId));
+  }
+  if (view.mode === "amount")
+    return capped(classifyAmountRows(items, view).some((item) => item.purchaseId === control.key) ? [control.key] : []);
+  return capped(classifyMerchantRows(items, view.query).find((row) => row.group.key === control.key)?.members.map((item) => item.purchaseId) ?? []);
+}
+
+/** 「只看」 stays while its merchant has a queued purchase the write left, whether or not the search shows it. */
+export function keepsMerchantFilter(items: readonly SpendingClassifyQueueItem[], view: ClassifyView, written: readonly string[]): boolean {
+  if (view.merchantKey === null) return false;
+  const left = new Set(merchantPurchaseIds(items, view.merchantKey));
+  for (const id of written) left.delete(id);
+  return left.size > 0;
 }

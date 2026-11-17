@@ -380,6 +380,13 @@
     mergeTab = tab;
   }
 
+  /** A queue whose last read failed reads again as the inbox opens, which shows the outcome. */
+  function openClassify() {
+    detailRecord = null;
+    if ($classifyState.error) classifyQueue.reload();
+    classifyOpen = true;
+  }
+
   function applyClassification(purchaseIds: readonly string[], categoryCode: string | null) {
     return spendingSession.applyPageAction({ kind: "category_many", purchaseIds, categoryCode });
   }
@@ -431,19 +438,19 @@
         <span>{$t.spendingReview.mergeButton}</span>
         {#if pendingOverviewCount !== null && pendingOverviewCount > 0}<span class="merge-count num" data-pending-overview-count>{pendingOverviewCount}</span>{/if}
       </button>
-      {#if classifyCount !== null}
+      {#if classifyCount !== null || $classifyState.error}
         <button
           type="button"
           class="merge-trigger"
           data-open-classify
           disabled={classifyCount === 0}
           title={classifyCount === 0 ? $t.classifyInbox.triggerDone : null}
-          aria-label={classifyCount === 0 ? $t.classifyInbox.triggerDone : $t.classifyInbox.triggerAria(classifyCount)}
-          onclick={() => { detailRecord = null; classifyOpen = true; }}
+          aria-label={classifyCount === null ? $t.classifyInbox.trigger : classifyCount === 0 ? $t.classifyInbox.triggerDone : $t.classifyInbox.triggerAria(classifyCount)}
+          onclick={openClassify}
         >
           <ListChecks size={15} strokeWidth={2} aria-hidden="true" />
           <span>{$t.classifyInbox.trigger}</span>
-          {#if classifyCount > 0}<span class="merge-count num" data-classify-count>{classifyCount}</span>{/if}
+          {#if classifyCount !== null && classifyCount > 0}<span class="merge-count num" data-classify-count>{classifyCount}</span>{/if}
         </button>
       {/if}
     {/if}
@@ -929,6 +936,7 @@
     {#if classifyOpen}
       <SpendingClassifyModal
         queue={classifyQueue}
+        busy={busyAction !== null || isUpdating}
         onApply={applyClassification}
         onClose={() => classifyOpen = false}
       />

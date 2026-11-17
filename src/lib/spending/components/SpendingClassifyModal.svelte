@@ -6,19 +6,33 @@
   import { MAX_CATEGORIZATION_TARGETS } from "../../financial/page-actions.ts";
   import type { PersonalCategoryCode } from "../../../ledger/canonical/personal-category-codes.ts";
   import { SPENDING_CATEGORY_GROUP_BY_CODE, type SpendingCategoryGroup } from "../category-groups.ts";
-  import { classifyGroupCodes, classifyKeyCommand, followingKey, movedKey } from "../classify-inbox.ts";
-  import { applyTargets, byAmount, byMerchant, matches, type ClassifyApplyScope, type ClassifyMerchantGroup } from "../classify-queue.ts";
+  import {
+    classifyAmountRows,
+    classifyGroupCodes,
+    classifyKeyCommand,
+    classifyMerchantRows,
+    classifyWriteTargets,
+    followingKey,
+    keepsMerchantFilter,
+    movedKey,
+    type ClassifyControl,
+    type ClassifyView,
+  } from "../classify-inbox.ts";
+  import type { ClassifyMerchantGroup } from "../classify-queue.ts";
   import type { ClassifyQueueStore } from "../classify-queue-store.ts";
   import type { SpendingClassifyQueueItem } from "../model.ts";
   import type { SpendingPageActionOutcome } from "../purchase-spending-session.ts";
   import { monthDayText, paymentText } from "../spending-display.ts";
   import CategoryKeyPicker from "./CategoryKeyPicker.svelte";
+  import { moneyTotals } from "$lib/shared-money/exact-money.ts";
   import { moneyText } from "./money-text.ts";
 
   export let queue: ClassifyQueueStore;
   /** Sets, or with null clears, the user's category on these purchases in one commit. */
   export let onApply: (purchaseIds: readonly string[], categoryCode: PersonalCategoryCode | null) => Promise<SpendingPageActionOutcome>;
   export let onClose: () => void;
+  /** Another Spending action is running; the page takes one action at a time. */
+  export let busy = false;
 
   type Mode = "amount" | "merchant";
   type Toast =
@@ -41,20 +55,16 @@
   let searchInput: HTMLInputElement | null = null;
 
   $: items = $state.items ?? [];
-  $: groups = byMerchant(items);
-  $: itemById = new Map(items.map((item) => [item.purchaseId, item]));
-  $: filterIds = merchantFilter ? new Set(groups.find((entry) => entry.key === merchantFilter?.key)?.purchaseIds ?? []) : null;
-  $: amountRows = byAmount(items).filter((item) => (filterIds === null || filterIds.has(item.purchaseId)) && matches(item, query));
-  $: merchantRows = groups.filter((entry) => entry.purchaseIds.some((id) => matches(itemById.get(id)!, query)));
-  $: keys = mode === "amount" ? amountRows.map((item) => item.purchaseId) : merchantRows.map((entry) => entry.key);
+  $: view = { mode, query, merchantKey: mode === "amount" ? merchantFilter?.key ?? null : null } satisfies ClassifyView;
+  $: amountRows = classifyAmountRows(items, view);
+  $: merchantRows = classifyMerchantRows(items, query);
+  $: keys = mode === "amount" ? amountRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
   $: followRows(keys);
-  $: currentScope = currentKey === null ? null
-    : mode === "amount" ? { kind: "one", purchaseId: currentKey } satisfies ClassifyApplyScope
-    : { kind: "merchant", key: currentKey } satisfies ClassifyApplyScope;
-  $: currentTargets = currentScope ? applyTargets(items, currentScope) : null;
-  $: searchTargets = applyTargets(items, { kind: "search", query });
+  $: currentControl = currentKey === null ? null : { kind: "current", key: currentKey } satisfies ClassifyControl;
+  $: currentTargets = currentControl ? classifyWriteTargets(items, view, currentControl) : null;
+  $: searchTargets = classifyWriteTargets(items, view, { kind: "search" });
   $: categoryText = code ? categoryLabel(code) : "";
-  $: disabled = saving;
+  $: disabled = saving || busy;
 
   /** 「居家 › 資訊與通訊」, or one name when the code reads as its group, such as 交通. */
   function categoryLabel(value: PersonalCategoryCode) {
@@ -116,9 +126,10 @@
     }
   }
 
-  async function apply(scope: ClassifyApplyScope | null) {
-    if (!scope || !code || saving) return;
-    const targets = applyTargets(items, scope);
+  async function apply(control: ClassifyControl | null) {
+    if (!control || !code || disabled) return;
+    const shown = view;
+    const targets = classifyWriteTargets(items, shown, control);
     if (targets.purchaseIds.length === 0) return;
     saving = true;
     notice = "";
@@ -128,18 +139,19 @@
       toast = { kind: "applied", purchaseIds: targets.purchaseIds };
       group = null;
       code = null;
-      if (scope.kind === "search") query = "";
-      if (merchantFilter && !amountRows.some((item) => !targets.purchaseIds.includes(item.purchaseId))) merchantFilter = null;
+      if (control.kind === "search") query = "";
+      if (merchantFilter && !keepsMerchantFilter(items, shown, targets.purchaseIds)) merchantFilter = null;
       queue.committed(targets.purchaseIds, result.knowledgeAt);
     } else {
-      notice = result.status === "failed" ? $t.classifyInbox.failed(result.message) : $t.classifyInbox.conflict;
+      // A failed call may still have committed, so only a refusal can say nothing was written.
+      notice = result.status === "failed" ? $t.classifyInbox.unconfirmed : $t.classifyInbox.conflict;
       queue.reload();
     }
     void focusCurrent();
   }
 
   async function undo() {
-    if (toast?.kind !== "applied" || saving) return;
+    if (toast?.kind !== "applied" || disabled) return;
     const { purchaseIds } = toast;
     saving = true;
     notice = "";
@@ -149,7 +161,7 @@
       toast = { kind: "undone", count: purchaseIds.length };
       queue.committed([], result.knowledgeAt);
     } else {
-      notice = $t.classifyInbox.undoFailed;
+      notice = result.status === "failed" ? $t.classifyInbox.undoUnconfirmed : $t.classifyInbox.undoRefused;
       queue.reload();
     }
     void focusCurrent();
@@ -166,6 +178,8 @@
     // Enter on a control activates that control.
     if (command.kind === "apply" && event.target instanceof HTMLElement && event.target.closest("button, a")) return;
     event.preventDefault();
+    // A pick made during a save would be cleared when the save lands, so keys wait for it.
+    if (disabled && command.kind !== "move") return;
     if (command.kind === "move") {
       currentKey = movedKey(keys, currentKey, command.delta);
       void focusCurrent();
@@ -174,7 +188,7 @@
     } else if (command.kind === "code") {
       pickCode(command.code);
     } else {
-      void apply(currentScope);
+      void apply(currentControl);
     }
   }
 
@@ -196,10 +210,6 @@
     return item.payment
       ? paymentText($t, item.payment, { institution: item.payment.institution, cardMask: item.payment.cardMask, billingPeriod: null })
       : $t.classifyInbox.noPayment;
-  }
-
-  function groupMembers(entry: ClassifyMerchantGroup) {
-    return entry.purchaseIds.flatMap((id) => itemById.get(id) ?? []);
   }
 
   function dateRange(members: readonly SpendingClassifyQueueItem[]) {
@@ -253,7 +263,10 @@
   <div class="modal-body list-body" bind:this={list}>
     {#if $state.items === null}
       {#if $state.error}
-        <p class="notice danger" role="alert">{$t.classifyInbox.loadFailed} {$state.error}</p>
+        <p class="notice danger" role="alert">
+          {$t.classifyInbox.loadFailed} {$state.error}
+          <button type="button" class="text-button" disabled={$state.loading} data-classify-retry onclick={() => queue.reload()}>{$t.classifyInbox.retry}</button>
+        </p>
       {:else}
         <div class="list-skeleton" role="status" aria-label={$t.common.loading}></div>
       {/if}
@@ -282,9 +295,8 @@
             </div>
           {/each}
         {:else}
-          {#each merchantRows as entry (entry.key)}
+          {#each merchantRows as { group: entry, members, unmatched } (entry.key)}
             {@const current = entry.key === currentKey}
-            {@const members = groupMembers(entry)}
             <div
               class="row merchant"
               role="option"
@@ -297,9 +309,9 @@
               <div class="merchant-head">
                 <span class="row-texts">
                   <strong>{entry.displayName ?? $t.purchaseSpending.merchantUnavailable}</strong>
-                  <span>{$t.classifyInbox.purchases(entry.count)} · {dateRange(members)}</span>
+                  <span>{$t.classifyInbox.purchases(members.length)} · {dateRange(members)}</span>
                 </span>
-                <span class="money" data-sensitive>{entry.totals.map((total) => moneyText(total, $locale)).join(" / ")}</span>
+                <span class="money" data-sensitive>{moneyTotals(members.flatMap((member) => member.amount ? [member.amount] : [])).map((total) => moneyText(total, $locale)).join(" / ")}</span>
               </div>
               {#if current}
                 <ul class="members" data-classify-members>
@@ -311,6 +323,7 @@
                     </li>
                   {/each}
                 </ul>
+                {#if unmatched > 0}<p class="unmatched" data-classify-unmatched>{$t.classifyInbox.unmatched(unmatched)}</p>{/if}
                 <button type="button" class="text-button" data-classify-review-each onclick={(event) => { event.stopPropagation(); reviewEach(entry); }}>{$t.classifyInbox.reviewEach}</button>
               {/if}
             </div>
@@ -325,25 +338,29 @@
     <div class="apply-row">
       {#if query.trim() !== ""}
         <div class="search-apply" data-classify-search-apply>
-          <span>{$t.classifyInbox.searchCovers(searchTargets.purchaseIds.length + searchTargets.overflow)}</span>
+          <span data-classify-search-covers={searchTargets.purchaseIds.length}>{$t.classifyInbox.searchCovers(searchTargets.purchaseIds.length)}</span>
           {#if searchTargets.overflow > 0}
-            <span class="overflow" data-classify-overflow>{$t.classifyInbox.searchOverflow(MAX_CATEGORIZATION_TARGETS, searchTargets.overflow)}</span>
+            <span class="overflow" data-classify-overflow>{$t.classifyInbox.overflow(MAX_CATEGORIZATION_TARGETS, searchTargets.overflow)}</span>
           {/if}
           <button
             type="button"
             class="button"
             disabled={disabled || !code || searchTargets.purchaseIds.length === 0}
             data-classify-apply-search
-            onclick={() => void apply({ kind: "search", query })}
-          >{code ? $t.classifyInbox.applySearch(searchTargets.purchaseIds.length, categoryText) : $t.classifyInbox.applySearch(searchTargets.purchaseIds.length, "…")}</button>
+            onclick={() => void apply({ kind: "search" })}
+          >{$t.classifyInbox.applySearch(searchTargets.purchaseIds.length, code ? categoryText : "…")}</button>
         </div>
+      {/if}
+      {#if currentTargets && currentTargets.overflow > 0}
+        <span class="overflow" data-classify-current-overflow>{$t.classifyInbox.overflow(MAX_CATEGORIZATION_TARGETS, currentTargets.overflow)}</span>
       {/if}
       <button
         type="button"
         class="button primary apply-current"
         disabled={disabled || !code || !currentTargets || currentTargets.purchaseIds.length === 0}
         data-classify-apply
-        onclick={() => void apply(currentScope)}
+        data-classify-apply-count={currentTargets?.purchaseIds.length ?? 0}
+        onclick={() => void apply(currentControl)}
       >
         {#if saving}{$t.classifyInbox.saving}
         {:else if !code}{$t.classifyInbox.keysApply}
@@ -361,7 +378,7 @@
       <div class="toast" role="status" data-classify-toast={toast?.kind ?? ""}>
         {#if toast?.kind === "applied"}
           {$t.classifyInbox.applied(toast.purchaseIds.length)}
-          <button type="button" class="text-button" disabled={saving} data-classify-undo onclick={() => void undo()}>{$t.classifyInbox.undo}</button>
+          <button type="button" class="text-button" disabled={disabled} data-classify-undo onclick={() => void undo()}>{$t.classifyInbox.undo}</button>
         {:else if toast?.kind === "undone"}
           {$t.classifyInbox.undone(toast.count)}
         {/if}
@@ -400,6 +417,7 @@
   .member-date { flex: none; width: 44px; color: var(--muted); }
   .member-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .members .money { font-size: 12px; font-weight: 650; }
+  .unmatched { margin: 0; color: var(--muted); font-size: 12px; }
   .row.merchant .text-button { justify-self: start; }
   .list-empty { margin: 0; padding: var(--space-8) var(--space-5); border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); text-align: center; }
   .list-skeleton { min-height: 220px; border-radius: 12px; background: var(--surface-soft); }
