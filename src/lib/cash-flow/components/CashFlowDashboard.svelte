@@ -350,7 +350,7 @@
                 title={`${inflowGroupLabel($t, group.group)} ${digits(group.amount)}`}
                 data-inflow-group={group.group}
                 onclick={() => openDrill({ kind: "inflow", group: group.group })}
-                use:hideOverflowingLabel={`${index}:${digits(group.amount)}`}
+                use:hideOverflowingLabel={index === 0 ? `${inflowGroupLabel($t, group.group)} ${digits(group.amount)}` : ""}
               >{#if index === 0}<span data-sensitive>{inflowGroupLabel($t, group.group)} {digits(group.amount)}</span>{/if}</button>
             {/each}
           </div>
@@ -366,7 +366,7 @@
                 title={`${outflowGroupLabel($t, group.group)} ${digits(group.amount)}`}
                 data-outflow-group={group.group ?? "unclassified"}
                 onclick={() => openDrill({ kind: "outflow", group: group.group })}
-                use:hideOverflowingLabel={`${index}:${digits(group.amount)}`}
+                use:hideOverflowingLabel={index === 0 ? `${outflowGroupLabel($t, group.group)} ${digits(group.amount)}` : ""}
               >{#if index === 0}<span data-sensitive>{outflowGroupLabel($t, group.group)} {digits(group.amount)}</span>{/if}</button>
             {/each}
             {#if keptPositive && summary.keptRatio !== null}
