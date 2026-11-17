@@ -3,8 +3,8 @@ import test from "node:test";
 import { createSpendingCategoryFixture, freshPage, setKind, type SpendingCategoryFixture } from "./spending-test-fixture.ts";
 import { purchaseRecordsByIdentity } from "./purchase-report.ts";
 import { createPGliteSpendingQuery } from "./spending-query.ts";
+import { MAX_CATEGORIZATION_TARGETS } from "../../lib/financial/page-actions.ts";
 import {
-  MAX_CATEGORIZATION_TARGETS,
   parsePurchaseIdentity,
   parsePurchaseIdSet,
   setPGliteSpendingPurchaseCategoriesInTransaction,

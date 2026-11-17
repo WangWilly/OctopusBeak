@@ -328,6 +328,39 @@ export type SpendingMerchantStatsDto = Readonly<{
   totalsByCurrency: readonly Readonly<{ currency: string; coefficient: string; scale: number; count: number }>[];
 }>;
 
+export type SpendingClassifyQueueRequest = Readonly<{
+  knowledgeAt: number;
+  /** Inclusive `YYYY-MM-DD` bounds on the purchase's occurrence date. */
+  startDate: string;
+  endDate: string;
+}>;
+
+/**
+ * One purchase the classification inbox offers: Unclassified, with no user
+ * categorization behind it, so setting a category and then clearing it
+ * returns the purchase to exactly this state.
+ */
+export type SpendingClassifyQueueItem = Readonly<{
+  purchaseId: string;
+  basis: "invoice" | "bank-transaction" | "linked";
+  /** `YYYY-MM-DD` occurrence date. */
+  date: string;
+  /** The invoice seller when there is one, else the bank description. */
+  title: string | null;
+  amount: SpendingMoneyDto | null;
+  /** The paying account, for paymentText; null for an invoice-only purchase. */
+  payment: Readonly<{ stream: string; institution: string; cardMask: string | null }> | null;
+}>;
+
+/** Every queued purchase in the range, unpaginated; knowledgeAt is the categorize action's dataVersion. */
+export type SpendingClassifyQueueDto = Readonly<{
+  schemaVersion: 1;
+  knowledgeAt: number;
+  startDate: string;
+  endDate: string;
+  items: readonly SpendingClassifyQueueItem[];
+}>;
+
 /**
  * A strong batch that wrote nothing: a shown pair is no longer pending or no
  * longer strong. The page has nothing to take.

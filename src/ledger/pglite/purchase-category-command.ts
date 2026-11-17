@@ -14,7 +14,7 @@ import {
   TRANSACTION_TAXONOMY_ID,
   TRANSACTION_TAXONOMY_VERSION,
 } from "../canonical/transaction-taxonomy.ts";
-import type { FinancialPageActionSubject } from "../../lib/financial/page-actions.ts";
+import { MAX_CATEGORIZATION_TARGETS, type FinancialPageActionSubject } from "../../lib/financial/page-actions.ts";
 import type { SpendingPurchaseCategoryRequest, SpendingPurchaseCategoryResult } from "../../lib/spending/model.ts";
 import { idString } from "./spending-sql.ts";
 import { categoryAllocationProblem, type CategoryAllocationComponent } from "../../lib/financial/transaction-detail.ts";
@@ -303,13 +303,6 @@ function parseKnowledgeAt(knowledgeAt: unknown): number {
   if (!Number.isSafeInteger(knowledgeAt) || (knowledgeAt as number) < 0) fail("invalid", "Spending purchase category knowledgeAt is invalid.");
   return knowledgeAt as number;
 }
-
-/**
- * The most purchases one category operation may name. Every target is
- * resolved and written inside one writer transaction, which holds back every
- * other write until it ends.
- */
-export const MAX_CATEGORIZATION_TARGETS = 1000;
 
 /** Parse a User categorization scope: a non-empty list of distinct purchase ids. */
 export function parsePurchaseIdSet(purchaseIds: unknown): readonly PurchaseIdentity[] {

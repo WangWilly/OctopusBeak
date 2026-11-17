@@ -1314,6 +1314,14 @@ export function isCategoryApplicable(
   );
 }
 
+/** Whether any Personal Category applies to this Kind; a transfer or an income accepts none. */
+export function kindAcceptsCategory(
+  kindCode: string,
+  taxonomyPackage: TransactionTaxonomyPackage = TRANSACTION_TAXONOMY_PACKAGE_V1,
+): boolean {
+  return taxonomyPackage.applicability.some((entry) => entry.kindCode === kindCode);
+}
+
 export function producerAllowsOutput(
   producerId: string,
   producerVersion: string,

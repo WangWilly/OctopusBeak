@@ -23,7 +23,7 @@ export const SPENDING_CATEGORY_GROUP_IDS = [
 
 export type SpendingCategoryGroup = (typeof SPENDING_CATEGORY_GROUP_IDS)[number];
 
-export const SPENDING_CATEGORY_GROUP_BY_CODE: Readonly<Record<PersonalCategoryCode, SpendingCategoryGroup>> = Object.freeze({
+export const SPENDING_CATEGORY_GROUP_BY_CODE = Object.freeze({
   dining: "dining",
   alcohol_and_tobacco: "dining",
   food_and_groceries: "daily",
@@ -42,6 +42,27 @@ export const SPENDING_CATEGORY_GROUP_BY_CODE: Readonly<Record<PersonalCategoryCo
   work_and_business: "other",
   education: "other",
   interest_and_fees: "other",
+} as const satisfies Record<PersonalCategoryCode, SpendingCategoryGroup>);
+
+/** The Personal Category codes the group mapping places in group G. */
+export type SpendingCategoryGroupCode<G extends SpendingCategoryGroup> = {
+  [Code in PersonalCategoryCode]: (typeof SPENDING_CATEGORY_GROUP_BY_CODE)[Code] extends G ? Code : never;
+}[PersonalCategoryCode];
+
+/**
+ * The code a group key in the classification inbox assigns: one per group,
+ * and it must belong to that group.
+ */
+export const SPENDING_CATEGORY_GROUP_DEFAULT_CODE: Readonly<{
+  [G in SpendingCategoryGroup]: SpendingCategoryGroupCode<G>;
+}> = Object.freeze({
+  dining: "dining",
+  daily: "food_and_groceries",
+  transport: "transportation",
+  shopping: "clothing_and_footwear",
+  home: "housing_and_utilities",
+  leisure: "recreation_sports_and_culture",
+  other: "insurance",
 });
 
 export function spendingCategoryGroup(code: PersonalCategoryCode): SpendingCategoryGroup {

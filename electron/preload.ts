@@ -125,6 +125,7 @@ const INVOKE_CHANNELS = {
   // (ipc-channels.ts); the others have their own main-process handler.
   spending: {
     loadRecordPage: "financial.spending.recordPage",
+    loadClassifyQueue: "financial.spending.classifyQueue",
     loadCandidatePage: "spending:candidate-page",
     cancelCandidatePage: "spending:candidate-page-cancel",
     applyPageAction: "financial.pageAction",

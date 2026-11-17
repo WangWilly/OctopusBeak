@@ -10,6 +10,8 @@ import type {
   SpendingPageReadResult,
   SpendingCandidatePageDto,
   SpendingCandidatePageRequest,
+  SpendingClassifyQueueDto,
+  SpendingClassifyQueueRequest,
   SpendingMergeLogDto,
   SpendingMergeLogRequest,
   SpendingMerchantStatsDto,
@@ -186,6 +188,10 @@ export const PGLITE_FINANCIAL_CONTRACTS = Object.freeze({
   ),
   "financial.spending.recordPage": rendered("spending", "loadRecordPage", operation<[request: SpendingRecordPageRequest], SpendingPageReadResult<SpendingRecordPageDto>>(
     (args) => args.length === 1 && plainRecord(args[0]),
+    { lane: "interactive" },
+  )),
+  "financial.spending.classifyQueue": rendered("spending", "loadClassifyQueue", operation<[request: SpendingClassifyQueueRequest], SpendingPageReadResult<SpendingClassifyQueueDto>>(
+    (args) => args.length === 1 && stringField(args[0], "startDate") && stringField(args[0], "endDate"),
     { lane: "interactive" },
   )),
   "financial.spending.candidatePage": operation<[request: SpendingCandidatePageRequest], SpendingPageReadResult<SpendingCandidatePageDto>>(
