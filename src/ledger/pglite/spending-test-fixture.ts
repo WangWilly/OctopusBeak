@@ -51,8 +51,9 @@ export type FixtureTransactionInput = Readonly<{
     | Readonly<{ investment: "corporate_action_in" | "corporate_action_out"; twdQuantity: string; rowType?: "deposit" | "withdrawal" | "convert" | "reward" }>
     /**
      * A coin moving in or out of an exchange account as a corporate action. A
-     * MaiCoin row is logged like a TWD movement, with `valueTwd` and once per
-     * sync in `syncs`; a Binance row is not logged.
+     * MaiCoin row is logged like a TWD movement, with `valueTwd` and MAX's
+     * `state` ("done" for a deposit or withdrawal unless given); a Binance
+     * row is not logged.
      */
     | Readonly<{
       investment: "corporate_action_in" | "corporate_action_out";
@@ -61,7 +62,7 @@ export type FixtureTransactionInput = Readonly<{
       source?: "maicoin" | "binance";
       rowType?: "deposit" | "withdrawal" | "convert" | "reward";
       valueTwd?: number | null;
-      syncs?: number;
+      state?: string | null;
     }>;
 }>;
 
@@ -276,7 +277,7 @@ export async function createSpendingCategoryFixture() {
       [bankCapture, sourceCommit],
     );
     const coinEvent = "twdQuantity" in event
-      ? { investment: event.investment, coin: "TWD", quantity: event.twdQuantity, source: "maicoin" as const, rowType: event.rowType, valueTwd: null, syncs: 1 }
+      ? { investment: event.investment, coin: "TWD", quantity: event.twdQuantity, source: "maicoin" as const, rowType: event.rowType, valueTwd: null, state: undefined }
       : "coin" in event ? event : null;
     if (coinEvent) {
       const source = coinEvent.source ?? "maicoin";
@@ -305,15 +306,16 @@ export async function createSpendingCategoryFixture() {
         `INSERT INTO maicoin_sync_runs(sync_run_id, started_at, sub_account, wallet_types_json, statement_enabled, statement_limit, record_json)
          VALUES ('fixture-run', '2026-09-30T00:00:00Z', 'fixture', '[]', 1, 100, '{}') ON CONFLICT DO NOTHING`,
       );
-      for (let sync = 1; sync <= (coinEvent.syncs ?? 1); sync += 1)
-        await transaction.query(
-          `INSERT INTO maicoin_statement_rows(statement_id, sync_run_id, captured_at, endpoint, wallet_type, row_type, external_id, occurred_at, currency, amount, value_twd, raw_payload_json)
-           VALUES ($1, 'fixture-run', $2, $3, NULL, $4, $5, $6, $7, $8, $9, '{}')`,
-          // An early-morning Taipei time, which MAX logs in UTC on the day before.
-          [`${statement.externalId}-${sync}`, `2026-09-30T00:00:0${sync}Z`, statement.endpoint, rowType, statement.externalId,
-            new Date(Date.parse(`${input.date ?? "2026-09-01"}T04:00:00+08:00`)).toISOString(),
-            coinEvent.coin.toLowerCase(), Number(coinEvent.quantity) / 10 ** (input.scale ?? 0), coinEvent.valueTwd ?? null],
-        );
+      const state = coinEvent.state !== undefined ? coinEvent.state : rowType === "deposit" || rowType === "withdrawal" ? "done" : null;
+      await transaction.query(
+        `INSERT INTO maicoin_statement_rows(statement_id, sync_run_id, captured_at, endpoint, wallet_type, row_type, external_id, occurred_at, currency, amount, value_twd, raw_payload_json)
+         VALUES ($1, 'fixture-run', '2026-09-30T00:00:00Z', $2, NULL, $3, $1, $4, $5, $6, $7, $8)`,
+        // An early-morning Taipei time, which MAX logs in UTC on the day before.
+        [statement.externalId, statement.endpoint, rowType,
+          new Date(Date.parse(`${input.date ?? "2026-09-01"}T04:00:00+08:00`)).toISOString(),
+          coinEvent.coin.toLowerCase(), Number(coinEvent.quantity) / 10 ** (input.scale ?? 0), coinEvent.valueTwd ?? null,
+          JSON.stringify(state === null ? {} : { state })],
+      );
       return;
     }
     if (!security) {

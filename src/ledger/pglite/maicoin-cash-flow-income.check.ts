@@ -24,13 +24,13 @@ async function withFixture(run: (fixture: SpendingCategoryFixture) => Promise<vo
   }
 }
 
-type MaxInflow = Readonly<{ coin: string; quantity: string; scale?: number; date: string; valueTwd?: number | null; rowType?: "deposit" | "reward" | "convert"; syncs?: number }>;
+type MaxInflow = Readonly<{ coin: string; quantity: string; scale?: number; date: string; valueTwd?: number | null; rowType?: "deposit" | "reward" | "convert"; state?: string | null }>;
 
 /** A coin arriving in MAX as the MAX adapter records it: a zero-cash corporate action logged with its statement row. */
 function addMaxInflow(fixture: SpendingCategoryFixture, input: MaxInflow) {
   return fixture.addTransaction({
     amount: "0", direction: "inflow", date: input.date, scale: input.scale, account: "max", accountStream: MAICOIN,
-    event: { investment: "corporate_action_in", coin: input.coin, quantity: input.quantity, rowType: input.rowType ?? "deposit", valueTwd: input.valueTwd, syncs: input.syncs },
+    event: { investment: "corporate_action_in", coin: input.coin, quantity: input.quantity, rowType: input.rowType ?? "deposit", valueTwd: input.valueTwd, ...(input.state !== undefined ? { state: input.state } : {}) },
   });
 }
 
@@ -133,12 +133,15 @@ test("a qualifying row with no logged value is unresolved, never dropped", async
   });
 });
 
-test("a statement logged by several syncs counts once, at its latest logged value", async () => {
+test("a deposit MAX has not completed or has rejected is not income", async () => {
   await withFixture(async (fixture) => {
-    await addMaxInflow(fixture, { coin: "USDT", quantity: "1", date: "2026-09-04", rowType: "reward", valueTwd: 32, syncs: 3 });
-    await fixture.store.query("UPDATE maicoin_statement_rows SET value_twd = 999 WHERE captured_at < (SELECT MAX(captured_at) FROM maicoin_statement_rows)");
+    const pending = await addMaxInflow(fixture, { coin: "USDT", quantity: "10", date: "2026-09-04", valueTwd: 320, state: "processing" });
+    const rejected = await addMaxInflow(fixture, { coin: "USDT", quantity: "20", date: "2026-09-05", valueTwd: 640, state: "rejected" });
+    const done = await addMaxInflow(fixture, { coin: "USDT", quantity: "30", date: "2026-09-06", valueTwd: 960 });
     const report = await readPGliteCashFlow(fixture.store, SEPTEMBER);
-    assert.deepEqual([report.totals[0]?.inflow.amount, report.totals[0]?.inflow.count], [{ coefficient: "32", scale: 0 }, 1]);
+    assert.deepEqual([rowOf(report, pending)?.cashFlow, rowOf(report, rejected)?.cashFlow], [NOT_COUNTED, NOT_COUNTED]);
+    assert.deepEqual(rowOf(report, done)?.cashFlow, { class: "inflow", group: "income" });
+    assert.deepEqual([report.totals[0]?.inflow.amount, report.totals[0]?.inflow.count], [{ coefficient: "960", scale: 0 }, 1]);
   });
 });
 

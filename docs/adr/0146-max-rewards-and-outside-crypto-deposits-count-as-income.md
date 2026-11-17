@@ -12,13 +12,13 @@ ADR 0138 also deferred valuing a reward, and said a value would sit beside the t
 
 - It is a `corporate_action_in` on a MAX account.
 - Its source record key names a statement row in the MAX statement log, `maicoin_statement_rows`.
-- That statement row is a `reward`, or a `deposit` in a currency other than TWD.
+- That statement row is a `reward`, or a `deposit` in a currency other than TWD that MAX reports as `done`. A deposit still processing, or one MAX rejected, never arrived. A reward carries no state.
 
 A reward counts in the `income.reward` group. A deposit counts in the `income` group. The row keeps its Kind, `investment.corporate_action`, and its booked direction.
 
 **The amount is the statement's logged `value_twd`, in TWD.** The MAX sync computes it as the statement amount times a price. The price is MAX's daily candle close for the row's UTC day. A coin with no TWD market is priced through USDT. Cash flow rounds the value half-up to two decimals and keeps it as an exact amount. The value is an estimate from MAX's own daily close, not the price at the moment the coin arrived. The person accepted that estimate, because a period with crypto salary otherwise shows no income at all. The list, the account change, the detail and the CSV show the row at this amount.
 
-Every sync appends a full copy of the statement log. A statement counts once, at its latest logged copy.
+A sync upserts each statement by its own id, so the log holds the latest copy and the latest value. A statement counts once.
 
 **A crypto deposit that is the person's own transfer does not count.** It is their own transfer when it matches one outflow from another imported investment account, and that match is unique. The outflow must be:
 
@@ -51,3 +51,5 @@ Cash flow inclusion policy `cash-flow-by-kind` moves to v3.
 - An own transfer with an ambiguous match counts as income.
 - A Cash flow search across every period finds an amount by its stored value. A MAX income row stores zero, so an amount search outside the shown period does not find its TWD value.
 - A reward worth less than half a cent counts as zero.
+- A Cash flow search across every period also picks rows by the label their Kind gives. A MAX income row's Kind is an investment move, so a search for its income or reward label outside the shown period does not find it.
+- A later sync that cannot price an old statement replaces its value with none, and the row moves to unresolved.

@@ -13,6 +13,8 @@ export type MaicoinLoggedStatement = Readonly<{
   currency: string | null;
   /** `amount × price` at MAX's daily close, as the sync logged it. */
   valueTwd: number | null;
+  /** MAX's own state for the statement; a reward carries none. */
+  state: string | null;
 }>;
 
 /** A MAX `corporate_action_in` with the statement row it came from. */
@@ -34,8 +36,10 @@ export type MaicoinIncome = Readonly<{ group: MaicoinIncomeGroup; value: ExactMo
 
 /** A TWD deposit comes from a bank, which ADR 0145 matches instead. */
 export function maicoinIncomeGroup(statement: MaicoinLoggedStatement, coin: string): MaicoinIncomeGroup | null {
+  // A deposit MAX has not completed, or has rejected, never arrived.
+  if (statement.state !== null && statement.state !== "done") return null;
   if (statement.rowType === "reward") return "income.reward";
-  if (statement.rowType === "deposit" && (statement.currency ?? coin).toUpperCase() !== "TWD") return "income";
+  if (statement.rowType === "deposit" && statement.state === "done" && (statement.currency ?? coin).toUpperCase() !== "TWD") return "income";
   return null;
 }
 

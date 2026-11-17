@@ -12,8 +12,8 @@ import { byChunk, idString, pgliteQuery, rows, type PGliteSpendingReader, type R
 
 /**
  * The MAX statement log, `maicoin_statement_rows`, read by the investment row
- * each statement became. Every sync appends a full copy of the statement, so
- * a row is read once, from its latest capture.
+ * each statement became. A sync upserts each statement by its own id, so the
+ * log holds the latest copy; a row is still read once if a copy repeats.
  */
 
 export type MaicoinStatementLogEntry = MaicoinLoggedStatement & Readonly<{ recordKey: string }>;
@@ -22,7 +22,7 @@ export type MaicoinStatementLogEntry = MaicoinLoggedStatement & Readonly<{ recor
  * The latest logged copy of each statement of `rowTypes`, keyed by the source
  * record key of its `transaction` leg. `occurredOn` bounds the read to the
  * statements of those Taipei dates, plus rows with no logged time: a reward
- * history logs a row a day, and every sync copies it again.
+ * history logs a row a day.
  */
 export async function readMaicoinStatementLog(
   reader: PGliteSpendingReader,
@@ -35,7 +35,8 @@ export async function readMaicoinStatementLog(
   const found = rows(await pgliteQuery<Row>(
     reader,
     `SELECT DISTINCT ON (endpoint, wallet_type, row_type, external_id)
-            endpoint, wallet_type, row_type, external_id, currency, value_twd
+            endpoint, wallet_type, row_type, external_id, currency, value_twd,
+            raw_payload_json::jsonb->>'state' AS state
        FROM maicoin_statement_rows
       WHERE row_type = ANY(?::text[])
         ${occurredOn === null ? "" : "AND (occurred_at IS NULL OR (occurred_at >= ? AND occurred_at < ?))"}
@@ -54,6 +55,7 @@ export async function readMaicoinStatementLog(
     rowType: String(row.row_type),
     currency: typeof row.currency === "string" ? row.currency : null,
     valueTwd: row.value_twd === null || row.value_twd === undefined ? null : Number(row.value_twd),
+    state: typeof row.state === "string" ? row.state : null,
   }));
 }
 
