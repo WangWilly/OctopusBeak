@@ -662,7 +662,7 @@
 
   .best {
     border-color: color-mix(in oklch, var(--success) 45%, var(--border));
-    background: color-mix(in oklch, var(--success) 8%, var(--surface));
+    background: color-mix(in srgb, var(--success) 8%, var(--surface));
   }
 
   .refused {
