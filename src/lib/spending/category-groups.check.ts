@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SPENDING_CATEGORY_GROUP_BY_CODE,
+  SPENDING_CATEGORY_GROUP_DEFAULT_CODE,
   SPENDING_CATEGORY_GROUP_IDS,
   spendingCategoryCodesForGroup,
   spendingCategoryGroup,
@@ -43,4 +44,18 @@ test("every group and the Unclassified bucket have zh-TW and en labels", () => {
   );
   assert.equal(translations["zh-TW"].spending.unclassifiedCategory, "未分類");
   assert.equal(translations.en.spending.unclassifiedCategory, "Unclassified");
+});
+
+test("every group defaults to one code of its own group", () => {
+  for (const group of SPENDING_CATEGORY_GROUP_IDS)
+    assert.equal(spendingCategoryGroup(SPENDING_CATEGORY_GROUP_DEFAULT_CODE[group]), group, group);
+  const zh = translations["zh-TW"].spending;
+  assert.deepEqual(
+    Object.fromEntries(SPENDING_CATEGORY_GROUP_IDS.map((group) =>
+      [zh.categoryGroups[group], zh.personalCategories[SPENDING_CATEGORY_GROUP_DEFAULT_CODE[group]]])),
+    { 餐飲: "餐飲", 日常: "食品與雜貨", 交通: "交通", 購物: "服飾與鞋類", 居家: "住房與公用事業", 休閒: "休閒運動與文化", 其他: "保險" },
+  );
+  // @ts-expect-error a default outside its group does not compile
+  const outside: (typeof SPENDING_CATEGORY_GROUP_DEFAULT_CODE)["daily"] = "insurance";
+  assert.ok(outside);
 });
