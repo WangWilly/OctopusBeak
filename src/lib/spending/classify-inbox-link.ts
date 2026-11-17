@@ -1,3 +1,5 @@
+import { classifyPeriod } from "./classify-inbox.ts";
+
 /** Where another page sends a person to open the classification inbox. */
 export const CLASSIFY_INBOX_HREF = "#/spending/classify";
 
@@ -10,4 +12,13 @@ export const CLASSIFY_INBOX_HREF = "#/spending/classify";
 export function classifyInboxRequested(pending: boolean, route: string, hash: string): boolean {
   if (route !== "spending") return false;
   return pending || hash === CLASSIFY_INBOX_HREF;
+}
+
+/**
+ * Whether a period of inclusive dates shares a day with the inbox's window,
+ * so a link from it opens an inbox that can hold its purchases.
+ */
+export function overlapsClassifyWindow(range: Readonly<{ startDate: string; endDate: string }>, today: string): boolean {
+  const window = classifyPeriod(today);
+  return range.startDate <= window.endDate && range.endDate >= window.startDate;
 }
