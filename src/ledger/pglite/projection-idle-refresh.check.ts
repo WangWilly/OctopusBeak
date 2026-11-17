@@ -109,7 +109,7 @@ test("an unsupported Kind is recorded once until what it was read from changes",
   }
 });
 
-test("deriving again from unchanged facts writes nothing to any table", async () => {
+test("deriving again from unchanged facts grows no table beyond its own commit", async () => {
   const fixture = await createSpendingCategoryFixture();
   try {
     const cathay = { namespace: "cathay", stream: "domestic-deposit", accountType: "depository" } as const;
@@ -132,8 +132,6 @@ test("deriving again from unchanged facts writes nothing to any table", async ()
       [table, Number((await fixture.store.query<{ n: number | string }>(`SELECT count(*) AS n FROM "${table}"`)).rows[0]!.n)])));
     const invoices = (await fixture.store.query<{ invoice_id: Uint8Array }>("SELECT invoice_id FROM einvoice_invoices")).rows;
     const transactions = (await fixture.store.query<{ transaction_id: Uint8Array }>("SELECT transaction_id FROM financial_transactions")).rows;
-    // Every derivation bookkeeps its own commit; nothing else may grow.
-    const bookkeeping = new Set(["canonical_commits", "projection_generation_provenance"]);
     const derive = {
       "a full refresh": { refreshEnrichmentAll: true },
       "a refresh of every transaction": { transactionIds: transactions.map((row) => row.transaction_id) },
@@ -148,8 +146,9 @@ test("deriving again from unchanged facts writes nothing to any table", async ()
             await syncEInvoiceItemCategorizations(transaction, { invoiceId: invoice_id, commitId: commit.id, observedAt: "2026-09-30T00:00:00Z" });
         });
         const after = await counts();
-        const grew = tables.filter((table) => !bookkeeping.has(table) && after[table] !== before[table]);
-        assert.deepEqual(grew, [], `${name}, pass ${pass}, writes nothing`);
+        const grew = Object.fromEntries(tables.filter((table) => after[table] !== before[table]).map((table) => [table, after[table]! - before[table]!]));
+        // The pass's own commit and the knowledge event that records it.
+        assert.deepEqual(grew, { canonical_commits: 1, projection_generation_provenance: 1 }, `${name}, pass ${pass}`);
       }
   } finally {
     await fixture.close();
