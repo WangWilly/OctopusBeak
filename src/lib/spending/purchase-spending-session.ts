@@ -66,6 +66,8 @@ export type SpendingPageIntent =
   | Readonly<{ kind: "revoke"; record: PurchaseRecord }>
   /** Set or, with a null code, clear the user's category on one purchase (ADR 0038). */
   | Readonly<{ kind: "category"; purchaseId: string; categoryCode: string | null }>
+  /** Set or, with a null code, clear the user's category on every named purchase, in one commit or none. */
+  | Readonly<{ kind: "category_many"; purchaseIds: readonly string[]; categoryCode: string | null }>
   /** Confirm the strong pairs the user was shown, in one commit or none. */
   | Readonly<{
     kind: "strong";
@@ -853,6 +855,13 @@ class PurchaseSpendingSessionImplementation implements PurchaseSpendingSession {
         return {
           busyAction: `category:${intent.purchaseId}`,
           request: { action: "categorize", kind: "category", purchaseId: intent.purchaseId, categoryCode: intent.categoryCode, dataVersion },
+          errors: "caller",
+        };
+      case "category_many":
+        if (intent.purchaseIds.length === 0) return null;
+        return {
+          busyAction: "category_many",
+          request: { action: "categorize", kind: "category_many", purchaseIds: intent.purchaseIds, categoryCode: intent.categoryCode, dataVersion },
           errors: "caller",
         };
       case "strong":

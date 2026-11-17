@@ -400,6 +400,24 @@ test("a category change runs as a page action at the shown version and takes its
   session.dispose();
 });
 
+test("a category change on many purchases sends one action at the shown version, and none for an empty set", async () => {
+  const invoice = invoiceRecord("Invoice");
+  const recategorized = invoiceRecord("Invoice, recategorized");
+  const { calls, transport } = makeTransport({
+    applyPageAction: async (input: unknown) => {
+      calls.actions.push(input);
+      return { ...actionResult(2, [recategorized]), action: "categorize", kind: "category_many", subject: { invoiceIds: ["invoice-1"], transactionIds: [] } };
+    },
+  });
+  const { session, current } = createSession(report(1, [invoice]), transport);
+  session.start();
+  assert.deepEqual(await session.applyPageAction({ kind: "category_many", purchaseIds: [], categoryCode: "dining" }), { status: "refused" });
+  assert.equal((await session.applyPageAction({ kind: "category_many", purchaseIds: ["invoice:invoice-1", "bank:payment-2"], categoryCode: "dining" })).status, "committed");
+  assert.deepEqual(calls.actions, [{ action: "categorize", kind: "category_many", purchaseIds: ["invoice:invoice-1", "bank:payment-2"], categoryCode: "dining", dataVersion: 1 }]);
+  assert.equal(current().report.knowledgeAt, 2, "the action result was accepted");
+  session.dispose();
+});
+
 test("a category change that changed nothing leaves the page as shown", async () => {
   const invoice = invoiceRecord("Invoice");
   const { calls, transport } = makeTransport({
@@ -489,6 +507,7 @@ const pageIntents: readonly Readonly<{
     prepare: async () => ({ kind: "revoke", record: { ...linkedRecord(), link: { invoiceId: "invoice-1", transactionId: "payment-1" } } as never }),
   },
   { kind: "category", errors: "caller", prepare: async () => ({ kind: "category", purchaseId: "invoice:invoice-1", categoryCode: "dining" }) },
+  { kind: "category_many", errors: "caller", prepare: async () => ({ kind: "category_many", purchaseIds: ["invoice:invoice-1"], categoryCode: "dining" }) },
   { kind: "strong", errors: "caller", prepare: async () => ({ kind: "strong", shownKnowledgeAt: 2, month: "2026-10", pairs: [pair] }) },
 ];
 

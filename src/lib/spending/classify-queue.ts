@@ -183,7 +183,8 @@ export function matches(item: SpendingClassifyQueueItem, query: string): boolean
   return amount !== null && item.amount !== null && compareExact(item.amount, amount) === 0;
 }
 
-function capped(purchaseIds: readonly string[]): ClassifyApplyTargets {
+/** At most one action's worth of ids, largest first as given, and how many are left for another. */
+export function capped(purchaseIds: readonly string[]): ClassifyApplyTargets {
   return Object.freeze({
     purchaseIds: Object.freeze(purchaseIds.slice(0, MAX_CATEGORIZATION_TARGETS)),
     overflow: Math.max(0, purchaseIds.length - MAX_CATEGORIZATION_TARGETS),

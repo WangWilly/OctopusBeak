@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { get } from "svelte/store";
   import { taipeiDate } from "$lib/settings/system-timezone-store.ts";
-  import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
+  import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ListChecks, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
@@ -52,6 +52,8 @@
   import MonthPaceChart from "./MonthPaceChart.svelte";
   import MonthTrendChart from "./MonthTrendChart.svelte";
   import SpendingMergeModal from "./SpendingMergeModal.svelte";
+  import SpendingClassifyModal from "./SpendingClassifyModal.svelte";
+  import { createClassifyQueueStore, loadDesktopClassifyQueue } from "../classify-queue-store.ts";
   import SpendingPurchaseModal from "./SpendingPurchaseModal.svelte";
   import ManualSpendingList from "./ManualSpendingList.svelte";
   import type { ManualSpendingPurchase } from "$lib/spending/manual-spending.ts";
@@ -79,6 +81,12 @@
     applyPageAction: (intent) => spendingSession.applyPageAction(intent),
   });
   const reviewState = review.state;
+  const classifyQueue = createClassifyQueueStore({
+    load: loadDesktopClassifyQueue,
+    refreshSummary: () => refreshSummary(),
+  });
+  const classifyState = classifyQueue.state;
+  let classifyOpen = false;
 
   let report = purchaseReport;
   let isUpdating = false;
@@ -221,6 +229,8 @@
     ? $reviewState.monthInsight?.largestByCurrency.find((entry) => entry.amount.currency === selectedCurrency) ?? null
     : undefined;
   $: pendingOverviewCount = $reviewState.overview?.pendingCount ?? null;
+  $: if (report.summary) classifyQueue.sync(report.knowledgeAt, today);
+  $: classifyCount = $classifyState.items?.length ?? null;
   $: selectedDayReading = current?.days.find((day) => day.date === selectedDay) ?? null;
   $: activeMonthIndex = months.indexOf(activeMonth);
   $: previousMonthKey = activeMonthIndex > 0 ? months[activeMonthIndex - 1] : null;
@@ -370,6 +380,17 @@
     mergeTab = tab;
   }
 
+  /** A queue whose last read failed reads again as the inbox opens, which shows the outcome. */
+  function openClassify() {
+    detailRecord = null;
+    if ($classifyState.error) classifyQueue.reload();
+    classifyOpen = true;
+  }
+
+  function applyClassification(purchaseIds: readonly string[], categoryCode: string | null) {
+    return spendingSession.applyPageAction({ kind: "category_many", purchaseIds, categoryCode });
+  }
+
   // A pairing action shows its own failure on the page, so these need not read the outcome.
   async function decidePair(pair: SpendingCandidatePairRef, decision: "confirm" | "deny") {
     await spendingSession.applyPageAction({ kind: "decide", pair, decision });
@@ -417,6 +438,21 @@
         <span>{$t.spendingReview.mergeButton}</span>
         {#if pendingOverviewCount !== null && pendingOverviewCount > 0}<span class="merge-count num" data-pending-overview-count>{pendingOverviewCount}</span>{/if}
       </button>
+      {#if classifyCount !== null || $classifyState.error}
+        <button
+          type="button"
+          class="merge-trigger"
+          data-open-classify
+          disabled={classifyCount === 0}
+          title={classifyCount === 0 ? $t.classifyInbox.triggerDone : null}
+          aria-label={classifyCount === null ? $t.classifyInbox.trigger : classifyCount === 0 ? $t.classifyInbox.triggerDone : $t.classifyInbox.triggerAria(classifyCount)}
+          onclick={openClassify}
+        >
+          <ListChecks size={15} strokeWidth={2} aria-hidden="true" />
+          <span>{$t.classifyInbox.trigger}</span>
+          {#if classifyCount !== null && classifyCount > 0}<span class="merge-count num" data-classify-count>{classifyCount}</span>{/if}
+        </button>
+      {/if}
     {/if}
   </svelte:fragment>
 
@@ -897,6 +933,15 @@
       />
     {/if}
 
+    {#if classifyOpen}
+      <SpendingClassifyModal
+        queue={classifyQueue}
+        busy={busyAction !== null || isUpdating}
+        onApply={applyClassification}
+        onClose={() => classifyOpen = false}
+      />
+    {/if}
+
     {#if canonical.availability === "unavailable"}
       <p class="panel-meta purchase-canonical-note">{$t.purchaseSpending.missingCanonical}</p>
     {/if}
@@ -913,7 +958,8 @@
   h2 { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.3; }
 
   .merge-trigger { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-size: 13px; font-weight: 680; white-space: nowrap; cursor: pointer; }
-  .merge-trigger:hover { background: var(--surface-soft); }
+  .merge-trigger:hover:not(:disabled) { background: var(--surface-soft); }
+  .merge-trigger:disabled { color: var(--muted); cursor: default; }
   .merge-count { min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: white; font-size: 11px; font-weight: 750; text-align: center; }
 
   .icon-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); cursor: pointer; }
