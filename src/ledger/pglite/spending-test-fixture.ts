@@ -40,7 +40,9 @@ export type FixtureTransactionInput = Readonly<{
   accountStream?: Readonly<{ namespace: string; stream: string; accountType: "depository" | "investment" | "loan"; institutionKey?: string }>;
   /** The investment action or loan event kind its writer records beside the transaction. */
   event?: Readonly<{ investment: "buy" | "sell" | "corporate_action_in" | "corporate_action_out" | "dividend" }>
-    | Readonly<{ loan: "disbursement" | "payment" | "interest" | "fee" }>;
+    | Readonly<{ loan: "disbursement" | "payment" | "interest" | "fee" }>
+    /** A MaiCoin TWD cash movement as the MAX adapter records it: the TWD is a quantity and the cash effect is zero. */
+    | Readonly<{ investment: "corporate_action_in" | "corporate_action_out"; twdQuantity: string }>;
 }>;
 
 export type FixtureCardFacts = Readonly<{
@@ -237,6 +239,7 @@ export async function createSpendingCategoryFixture() {
   }
 
   let security: Uint8Array | null = null;
+  let twdCash: Uint8Array | null = null;
   async function recordEvent(transaction: Pick<PGliteStore, "query">, ids: Readonly<{ transactionId: Uint8Array; revisionId: Uint8Array; recordId: Uint8Array; commitId: Uint8Array; accountId: Uint8Array }>, input: FixtureTransactionInput) {
     const event = input.event;
     if (!event) return;
@@ -248,12 +251,29 @@ export async function createSpendingCategoryFixture() {
       );
       return;
     }
+    await transaction.query(
+      "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'fixture', 'fixture/investment') ON CONFLICT DO NOTHING",
+      [bankCapture, sourceCommit],
+    );
+    if ("twdQuantity" in event) {
+      if (!twdCash) {
+        twdCash = uuidBytes();
+        await transaction.query(
+          `INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type)
+           VALUES ($1, 'maicoin', 'maicoin:TWD', 'TWD', NULL, NULL, 'TWD', 'cash')`,
+          [twdCash],
+        );
+      }
+      await transaction.query(
+        `INSERT INTO investment_transactions(transaction_id, capture_id, commit_id, account_id, security_id, source_record_id, action,
+           quantity_coefficient, quantity_scale, cash_coefficient, cash_scale, cash_currency, effective_on, funding_evidence_json)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '0', 0, 'TWD', $10, '{"kind":"unresolved"}')`,
+        [ids.transactionId, bankCapture, ids.commitId, ids.accountId, twdCash, ids.recordId, event.investment, event.twdQuantity, input.scale ?? 0, input.date ?? "2026-09-01"],
+      );
+      return;
+    }
     if (!security) {
       security = uuidBytes();
-      await transaction.query(
-        "INSERT INTO investment_captures(capture_id, commit_id, source_id, contract_version) VALUES ($1, $2, 'fixture', 'fixture/investment') ON CONFLICT DO NOTHING",
-        [bankCapture, sourceCommit],
-      );
       await transaction.query(
         `INSERT INTO investment_securities(security_id, source_id, security_key, producer_security_id, name, ticker, currency, security_type)
          VALUES ($1, 'fixture', 'fixture-security', 'fixture-security', NULL, NULL, 'TWD', 'equity')`,
