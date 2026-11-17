@@ -66,6 +66,9 @@
   export let refreshSummary: () => Promise<void> = async () => {};
   /** Manual Account purchases, already counted in the summary totals. */
   export let manualPurchases: readonly ManualSpendingPurchase[] = [];
+  /** Another page asked for the classification inbox; it opens once and the request is handed back. */
+  export let openClassifyRequested = false;
+  export let classifyRequestHandled: () => void = () => {};
   let today = get(taipeiDate);
   const spendingSession = createPurchaseSpendingSession({
     report: purchaseReport,
@@ -231,6 +234,10 @@
   $: pendingOverviewCount = $reviewState.overview?.pendingCount ?? null;
   $: if (report.summary) classifyQueue.sync(report.knowledgeAt, today);
   $: classifyCount = $classifyState.items?.length ?? null;
+  $: if (openClassifyRequested) {
+    openClassify();
+    classifyRequestHandled();
+  }
   $: selectedDayReading = current?.days.find((day) => day.date === selectedDay) ?? null;
   $: activeMonthIndex = months.indexOf(activeMonth);
   $: previousMonthKey = activeMonthIndex > 0 ? months[activeMonthIndex - 1] : null;

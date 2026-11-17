@@ -4,6 +4,7 @@
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import { moneyText } from "$lib/spending/components/money-text.ts";
   import { dayHeadingText } from "$lib/spending/spending-display.ts";
+  import { CLASSIFY_INBOX_HREF, overlapsClassifyWindow } from "$lib/spending/classify-inbox-link.ts";
   import {
     compareExact,
     exactToNumber,
@@ -440,6 +441,9 @@
                 <p class="drill-fact">{$t.cashFlow.drillLargest(percent(largest / exactToNumber(total), $locale))}</p>
               {/if}
               <footer class="drill-foot">
+                {#if target.kind === "outflow" && target.group === null && overlapsClassifyWindow(range, today)}
+                  <a class="button secondary" href={CLASSIFY_INBOX_HREF} data-drill-classify>{$t.cashFlow.drillClassify}</a>
+                {/if}
                 <button type="button" class="button primary" data-drill-only onclick={() => onlyGroup(target)}><Filter size={14} strokeWidth={2} aria-hidden="true" />{$t.cashFlow.drillOnly(drillLabel(target))}</button>
               </footer>
             </div>
@@ -1128,7 +1132,9 @@
 
   .drill-foot {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
+    gap: 8px;
     padding: 12px 18px 16px;
   }
 
