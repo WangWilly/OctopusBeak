@@ -115,8 +115,10 @@
   $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares, $t);
   /** Covered accounts repeat ones counted elsewhere, so they stay folded until asked for. */
   let coveredOpen = false;
-  $: coveredShown = coveredOpen || query !== "" || sorted.length + sortedPreview.length === 0;
-  $: listed = [...sorted, ...sortedPreview, ...sortedCovered];
+  /** A search, or a list with nothing else in it, shows them whatever the toggle says. */
+  $: coveredForced = query !== "" || sorted.length + sortedPreview.length === 0;
+  $: coveredShown = coveredOpen || coveredForced;
+  $: listed = [...sorted, ...sortedPreview, ...(coveredShown ? sortedCovered : [])];
   $: if (listed.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
   }
@@ -480,16 +482,21 @@
               {#if sortedCovered.length}
                 <tr class="covered-heading">
                   <td colspan="5">
-                    <button
-                      type="button"
-                      class="covered-toggle"
-                      aria-expanded={coveredShown}
-                      on:click={() => (coveredOpen = !coveredShown)}
-                    >
-                      <ChevronRight class="covered-caret" size={14} strokeWidth={2.2} aria-hidden="true" />
+                    {#if coveredForced}
                       <strong>{$t.accounts.coveredHeading}<span class="covered-count num">{$t.accounts.coveredCount(sortedCovered.length)}</span></strong>
                       <span class="account-meta">{$t.accounts.coveredHeadingNote}</span>
-                    </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="covered-toggle"
+                        aria-expanded={coveredOpen}
+                        on:click={() => (coveredOpen = !coveredOpen)}
+                      >
+                        <ChevronRight class="covered-caret" size={14} strokeWidth={2.2} aria-hidden="true" />
+                        <strong>{$t.accounts.coveredHeading}<span class="covered-count num">{$t.accounts.coveredCount(sortedCovered.length)}</span></strong>
+                        <span class="account-meta">{$t.accounts.coveredHeadingNote}</span>
+                      </button>
+                    {/if}
                   </td>
                 </tr>
                 {#if coveredShown}

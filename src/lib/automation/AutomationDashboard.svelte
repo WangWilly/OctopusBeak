@@ -694,10 +694,13 @@ import type {
     return dictionary.automation.syncStage;
   }
 
-  /** Cancel warns, a missing sign-in asks to be set up, and every other row action defers to "Sync all". */
+  /**
+   * Cancel warns. A row blocked until the person acts (missing sign-in, or a
+   * reset "Sync all" never runs) keeps the ink action; a routine run defers to "Sync all".
+   */
   function taskControlTone(task: AutomationTaskRow) {
     if (task.primaryAction === "Cancel") return "danger";
-    return task.primaryAction === "Configure" ? "primary" : "default";
+    return task.primaryAction === "Configure" || task.primaryAction === "Delete financial data" ? "primary" : "default";
   }
 
   async function primaryTaskAction(task: AutomationTaskRow) {
