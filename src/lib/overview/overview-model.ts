@@ -59,6 +59,8 @@ export type NetWorth = {
   chips: NetWorthChip[];
   /** The origins the chips' changes count. */
   chipsProvenance: Provenance;
+  /** Set when earlier records hold only debts, so the series starts on this date. */
+  debtsOnlyBefore: string | null;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
@@ -113,7 +115,9 @@ const MIN_CONTRIBUTION = 0.5;
 export function readOverview(dto: OverviewModelInput, options: { today: string }): OverviewModel {
   const rates = indexExchangeRates(dto.exchangeRates);
   const history = [...dto.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
-  const series = netWorthSeries(history, rates);
+  const debtsOnlyBefore = assetsFirstRecorded(dto);
+  const recorded = netWorthSeries(history, rates);
+  const series = debtsOnlyBefore ? recorded.filter((point) => point.date >= debtsOnlyBefore) : recorded;
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
   const { valuationDate } = dto;
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
@@ -131,13 +135,14 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
       valuationDate,
       chips: chips.chips,
       chipsProvenance: chips.provenance,
+      debtsOnlyBefore,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
     todayChange: readTodayChange(dto, series, ledger, rates, options.today),
     assetAllocation,
     liabilityAllocation,
-    historyRows: convertedHistoryRows(history, series, ledger, rates),
+    historyRows: convertedHistoryRows(history, recorded, ledger, rates),
   };
 }
 
@@ -194,6 +199,27 @@ function readTicker(
   const items = [...fiat, ...crypto];
   if (items.length > 0) return { state: "items", items };
   return accounts.length === 0 || foreign.length > 0 ? { state: "rates-pending" } : { state: "domestic-only" };
+}
+
+/**
+ * A loan imported with a year of history before any deposit would plot a year
+ * of negative net worth, because no asset was recorded yet. When assets are
+ * held but first recorded after a debt, the series starts on that first asset
+ * record. The other way round is a real net worth: assets with no debts yet.
+ */
+function assetsFirstRecorded(dto: OverviewModelInput): string | null {
+  let assets = "";
+  let debts = "";
+  for (const account of dto.accounts) {
+    for (const row of dto.dailyHistoryByAccount[account.id] ?? []) {
+      if (account.group === "liability") {
+        if (!debts || row.date < debts) debts = row.date;
+      } else if (!assets || row.date < assets) {
+        assets = row.date;
+      }
+    }
+  }
+  return assets && debts && debts < assets ? assets : null;
 }
 
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {
