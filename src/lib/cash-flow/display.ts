@@ -125,6 +125,29 @@ export function groupByDay(rows: readonly CashFlowRow[]): readonly CashFlowDay[]
   return [...days.entries()].map(([date, dayRows]) => ({ date, rows: dayRows, net: netByCurrency(dayRows) }));
 }
 
+export type CashFlowListEntry =
+  | Readonly<{ kind: "row"; row: CashFlowRow }>
+  | Readonly<{ kind: "zeros"; key: string; account: CashFlowAccount; rows: readonly CashFlowRow[] }>;
+
+/**
+ * A day's zero-amount rows from one account fold into one entry where the
+ * first of them stood, so a source that posts several 0 rewards a day does not
+ * bury the day's real flow. A lone zero row stays a row.
+ */
+export function foldZeroRows(date: string, rows: readonly CashFlowRow[]): CashFlowListEntry[] {
+  const zeros = new Map<string, CashFlowRow[]>();
+  for (const row of rows) {
+    if (isZeroExact(row.amount)) zeros.set(row.details.account.id, [...(zeros.get(row.details.account.id) ?? []), row]);
+  }
+  const entries: CashFlowListEntry[] = [];
+  for (const row of rows) {
+    const folded = isZeroExact(row.amount) ? zeros.get(row.details.account.id)! : null;
+    if (!folded || folded.length < 2) entries.push({ kind: "row", row });
+    else if (folded[0] === row) entries.push({ kind: "zeros", key: `${date}:${row.details.account.id}`, account: row.details.account, rows: folded });
+  }
+  return entries;
+}
+
 export function countedNet(rows: readonly CashFlowRow[]): readonly ExactMoney[] {
   return netByCurrency(rows);
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { List } from "@lucide/svelte";
+  import { ChevronRight, List } from "@lucide/svelte";
   import { tick } from "svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import type {
@@ -113,6 +113,9 @@
   $: sorted = sortAccounts(filtered, sortKey, sortDirection, shares, $t);
   $: sortedPreview = sortAccounts(filteredPreview, sortKey, sortDirection, shares, $t);
   $: sortedCovered = sortAccounts(filteredCovered, sortKey, sortDirection, shares, $t);
+  /** Covered accounts repeat ones counted elsewhere, so they stay folded until asked for. */
+  let coveredOpen = false;
+  $: coveredShown = coveredOpen || query !== "" || sorted.length + sortedPreview.length === 0;
   $: listed = [...sorted, ...sortedPreview, ...sortedCovered];
   $: if (listed.length === 0 && selectedAccountId !== null) {
     selectedAccountId = null;
@@ -147,6 +150,7 @@
 
   async function focusAccount(accountId: string) {
     if (![...accounts, ...coveredAccounts].some((account) => account.id === accountId)) return;
+    if (coveredAccounts.some((account) => account.id === accountId)) coveredOpen = true;
     selectedAccountId = accountId;
     await tick();
     const row = [...(tableWrap?.querySelectorAll<HTMLElement>("[data-account-id]") ?? [])]
@@ -476,13 +480,23 @@
               {#if sortedCovered.length}
                 <tr class="covered-heading">
                   <td colspan="5">
-                    <strong>{$t.accounts.coveredHeading}</strong>
-                    <span class="account-meta">{$t.accounts.coveredHeadingNote}</span>
+                    <button
+                      type="button"
+                      class="covered-toggle"
+                      aria-expanded={coveredShown}
+                      on:click={() => (coveredOpen = !coveredShown)}
+                    >
+                      <ChevronRight class="covered-caret" size={14} strokeWidth={2.2} aria-hidden="true" />
+                      <strong>{$t.accounts.coveredHeading}<span class="covered-count num">{$t.accounts.coveredCount(sortedCovered.length)}</span></strong>
+                      <span class="account-meta">{$t.accounts.coveredHeadingNote}</span>
+                    </button>
                   </td>
                 </tr>
-                {#each sortedCovered as account (account.id)}
-                  {@render accountRow(account, "covered")}
-                {/each}
+                {#if coveredShown}
+                  {#each sortedCovered as account (account.id)}
+                    {@render accountRow(account, "covered")}
+                  {/each}
+                {/if}
               {/if}
             </tbody>
           </table>
@@ -591,6 +605,53 @@
     display: block;
     font-size: 13px;
     font-weight: 680;
+  }
+
+  .covered-toggle {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
+    column-gap: var(--space-2);
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .covered-toggle > :global(.covered-caret) {
+    grid-row: 1;
+    align-self: center;
+    color: var(--muted);
+    transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .covered-toggle[aria-expanded="true"] > :global(.covered-caret) {
+    transform: rotate(90deg);
+  }
+
+  .covered-toggle .account-meta {
+    grid-column: 2;
+  }
+
+  .covered-toggle:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
+    border-radius: var(--radius);
+  }
+
+  .covered-count {
+    margin-left: var(--space-2);
+    color: var(--muted);
+    font-weight: 560;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .covered-toggle > :global(.covered-caret) {
+      transition: none;
+    }
   }
 
   .account-card.covered strong,

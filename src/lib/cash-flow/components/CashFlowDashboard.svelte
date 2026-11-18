@@ -20,6 +20,7 @@
   import {
     accountLabel,
     countedNet,
+    foldZeroRows,
     groupByDay,
     inflowColor,
     inflowGroupLabel,
@@ -86,6 +87,16 @@
   $: visibleRows = page.transactions.filter((row) =>
     (accountFilter === null || row.accountId === accountFilter.id) && (listFilter === null || rowInGroup(row, listFilter)));
   $: days = groupByDay(visibleRows);
+  /** Folded zero-amount groups the person opened; a search lists every matching row instead. */
+  let openZeroGroups = new Set<string>();
+  function dayEntries(day: { date: string; rows: readonly CashFlowRow[] }, searching: boolean) {
+    return searching ? day.rows.map((row) => ({ kind: "row" as const, row })) : foldZeroRows(day.date, day.rows);
+  }
+  function toggleZeroGroup(key: string) {
+    const next = new Set(openZeroGroups);
+    if (!next.delete(key)) next.add(key);
+    openZeroGroups = next;
+  }
   $: searchNet = countedNet(page.transactions);
   $: fieldCounts = page.search?.fields ?? null;
   $: drillRows = drill === null ? [] : page.transactions.filter((row) => row.amount.currency === selectedCurrency && rowInGroup(row, drill!));
@@ -225,6 +236,27 @@
     return dayHeadingText(date, $locale).replace(/\d+日\s*/u, " ").replace(/,?\s*\d+$/u, "");
   }
 </script>
+
+{#snippet cashRow(row: CashFlowRow)}
+  {@const tag = rowTag(row)}
+  <button type="button" class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class} aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, row)}`} onclick={() => detailRow = row}>
+    <span class="time num" data-row-time>{row.details.time ?? ""}</span>
+    {#if row.cashFlow.class === "not_counted"}<CashFlowAccountMark account={row.details.account}><ArrowLeftRight size={13} strokeWidth={2.2} /></CashFlowAccountMark>{:else}<CashFlowAccountMark account={row.details.account} />{/if}
+    <span class="row-text">
+      <strong>{rowTitle($t, row)}</strong>
+      <span><span class="dot" style:background={row.cashFlow.class === "outflow" || row.cashFlow.class === "refund" ? outflowColor(row.cashFlow.categories[0]?.group ?? null) : row.cashFlow.class === "inflow" ? inflowColor(0) : "var(--border)"} aria-hidden="true"></span>{rowCategoryText($t, row)} · {accountLabel($t, row.details.account)}{#if row.details.note && row.details.note !== rowTitle($t, row)} · {row.details.note}{/if}</span>
+    </span>
+    <span class="tags">
+      {#each row.details.edit?.tags ?? [] as userTag (userTag.tagId)}<span class="tag" data-row-tag={userTag.label}>#{userTag.label}</span>{/each}
+      {#if row.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}
+      {#if tag}<span class="tag" class:accent={row.cashFlow.class === "not_counted"}>{tag}</span>{/if}
+    </span>
+    <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !isZeroExact(row.amount)} data-sensitive>
+      {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted").replace(/^TWD /u, "")}
+    </strong>
+  </button>
+{/snippet}
+
 
 <DashboardShell
   active="cash-flow"
@@ -522,26 +554,29 @@
                   <span class="rule" aria-hidden="true"></span>
                 </div>
                 <ul class="rows">
-                  {#each day.rows as row (row.transactionId)}
-                    {@const tag = rowTag(row)}
-                    <li>
-                    <button type="button" class="row" class:transfer={row.cashFlow.class === "not_counted"} class:unresolved={row.cashFlow.class === "unresolved"} data-row={row.transactionId} data-row-class={row.cashFlow.class} aria-label={`${$t.cashFlow.detail.open}: ${rowTitle($t, row)}`} onclick={() => detailRow = row}>
-                      <span class="time num" data-row-time>{row.details.time ?? ""}</span>
-                      {#if row.cashFlow.class === "not_counted"}<CashFlowAccountMark account={row.details.account}><ArrowLeftRight size={13} strokeWidth={2.2} /></CashFlowAccountMark>{:else}<CashFlowAccountMark account={row.details.account} />{/if}
-                      <span class="row-text">
-                        <strong>{rowTitle($t, row)}</strong>
-                        <span><span class="dot" style:background={row.cashFlow.class === "outflow" || row.cashFlow.class === "refund" ? outflowColor(row.cashFlow.categories[0]?.group ?? null) : row.cashFlow.class === "inflow" ? inflowColor(0) : "var(--border)"} aria-hidden="true"></span>{rowCategoryText($t, row)} · {accountLabel($t, row.details.account)}{#if row.details.note && row.details.note !== rowTitle($t, row)} · {row.details.note}{/if}</span>
-                      </span>
-                      <span class="tags">
-                        {#each row.details.edit?.tags ?? [] as userTag (userTag.tagId)}<span class="tag" data-row-tag={userTag.label}>#{userTag.label}</span>{/each}
-                        {#if row.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}
-                        {#if tag}<span class="tag" class:accent={row.cashFlow.class === "not_counted"}>{tag}</span>{/if}
-                      </span>
-                      <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !isZeroExact(row.amount)} data-sensitive>
-                        {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted").replace(/^TWD /u, "")}
-                      </strong>
-                    </button>
-                    </li>
+                  {#each dayEntries(day, Boolean(page.search)) as entry (entry.kind === "row" ? entry.row.transactionId : entry.key)}
+                    {#if entry.kind === "row"}
+                      <li>{@render cashRow(entry.row)}</li>
+                    {:else}
+                      {@const open = openZeroGroups.has(entry.key)}
+                      <li>
+                        <button type="button" class="row zero-group" aria-expanded={open} data-zero-group={entry.key} onclick={() => toggleZeroGroup(entry.key)}>
+                          <span class="time num"></span>
+                          <CashFlowAccountMark account={entry.account} />
+                          <span class="row-text">
+                            <strong>{$t.cashFlow.zeroRows(entry.rows.length)}</strong>
+                            <span>{accountLabel($t, entry.account)}</span>
+                          </span>
+                          <span class="tags"><ChevronRight class="zero-caret" size={14} strokeWidth={2.2} aria-hidden="true" /></span>
+                          <strong class="amount money" data-sensitive>0</strong>
+                        </button>
+                      </li>
+                      {#if open}
+                        {#each entry.rows as row (row.transactionId)}
+                          <li class="zero-member">{@render cashRow(row)}</li>
+                        {/each}
+                      {/if}
+                    {/if}
                   {/each}
                 </ul>
               </div>
@@ -1370,6 +1405,27 @@
 
   .row.transfer {
     background: var(--accent-soft);
+  }
+
+  .zero-group .row-text strong,
+  .zero-group .amount {
+    color: var(--muted);
+    font-weight: 560;
+  }
+
+  .zero-group :global(.zero-caret) {
+    color: var(--muted);
+    transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .zero-group[aria-expanded="true"] :global(.zero-caret) {
+    transform: rotate(90deg);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .zero-group :global(.zero-caret) {
+      transition: none;
+    }
   }
 
   .row.transfer .row-text strong {
