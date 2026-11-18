@@ -64,7 +64,7 @@
   .key-option:disabled { cursor: default; opacity: 0.55; }
   .key-option:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
   kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 4px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-soft); color: var(--muted); font-family: var(--font-body); font-size: 11px; font-weight: 700; }
-  .key-option[aria-pressed="true"] kbd { border-color: transparent; background: color-mix(in oklch, var(--surface) 22%, transparent); color: var(--surface); }
+  .key-option[aria-pressed="true"] kbd { border-color: transparent; background: var(--surface); color: var(--fg); }
   .dot { flex: none; width: 7px; height: 7px; border-radius: 999px; }
   .default-tag { padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; }
   .hint { margin: 0; color: var(--muted); font-size: 12px; }
