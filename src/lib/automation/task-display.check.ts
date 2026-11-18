@@ -7,4 +7,6 @@ test("a task name's parenthesized English name becomes its own line", () => {
   assert.deepEqual(taskLabelParts("Cathay United Bank (國泰世華銀行)"), { name: "Cathay United Bank", aside: "國泰世華銀行" });
   assert.deepEqual(taskLabelParts("LINE Bank"), { name: "LINE Bank", aside: null });
   assert.deepEqual(taskLabelParts("匯率同步"), { name: "匯率同步", aside: null });
+  assert.deepEqual(taskLabelParts("遠東商銀存款（預覽）"), { name: "遠東商銀存款（預覽）", aside: null }, "a preview marker stays with the name");
+  assert.deepEqual(taskLabelParts("Far Eastern International Bank deposits (preview)").aside, null);
 });

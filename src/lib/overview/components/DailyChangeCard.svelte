@@ -15,6 +15,8 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
   $: hasChange = bars.some((bar) => bar.change !== null);
   $: maxAbs = Math.max(1, ...bars.map((bar) => Math.abs(bar.change ?? 0)));
   $: lastWithChange = bars.findLast((bar) => bar.change !== null)?.date ?? null;
+  /** Narrow, every other date is drawn, counted from the highlighted latest day so its label always shows. */
+  $: latestIndex = Math.max(0, bars.findIndex((bar) => bar.date === lastWithChange));
 </script>
 
 <article class="card daily-change-card" data-daily-change>
@@ -34,12 +36,13 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
   </header>
   {#if hasChange}
     <ol class="bars">
-      {#each bars as bar (bar.date)}
+      {#each bars as bar, index (bar.date)}
         {@const height = bar.change === null ? 0 : (Math.abs(bar.change) / maxAbs) * 50}
         <li
           class="bar-day"
           data-direction={bar.change === null ? "none" : bar.change < 0 ? "down" : "up"}
           data-latest={bar.date === lastWithChange ? "" : undefined}
+          data-label-skip={Math.abs(index - latestIndex) % 2 === 1 ? "" : undefined}
           title={bar.change === null ? $t.overview.dailyChangeNoRecord : undefined}
         >
           <span class="bar-plot" aria-hidden="true">
@@ -176,8 +179,9 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
     font-weight: 750;
   }
 
-  /* Too narrow for a date under every bar: every other one, counted back from
-   * the latest, is drawn whole across the room its unlabelled neighbour leaves. */
+  /* Too narrow for a date under every bar: every other one, counted from the
+   * latest, is drawn whole across the room its unlabelled neighbour leaves. The
+   * skipped dates stay in the text for screen readers. */
   @container (max-width: 500px) {
     .bar-date {
       position: relative;
@@ -187,8 +191,8 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
       translate: -50%;
     }
 
-    .bar-day:nth-last-child(2n) .bar-date {
-      visibility: hidden;
+    [data-label-skip] .bar-date {
+      color: transparent;
     }
   }
 </style>

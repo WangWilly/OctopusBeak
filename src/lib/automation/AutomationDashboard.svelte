@@ -1014,6 +1014,7 @@ import type {
                   </div>
                 </td>
                 <td class="credential-state">
+                  <span class="card-label">{$t.automation.credentialStatus}</span>
                   {#if allCredentialsLoading(task, listAutomation)}
                     <span class="spinner" aria-label={$t.common.loading}></span>
                   {:else if anyCredentialReadFailed(task, listAutomation)}
@@ -1024,7 +1025,7 @@ import type {
                     <span class="chip warn">{$t.common.missing}</span>
                   {/if}
                 </td>
-                <td class="mono latest-time">{latestTaskTime(task)}</td>
+                <td class="mono latest-time"><span class="card-label">{$t.automation.latestTime($systemTimezone)}</span>{latestTaskTime(task)}</td>
                 <td>
                   {#if present(task).showProgress}
                   <div
@@ -2552,7 +2553,11 @@ import type {
   }
 
   /* Narrower than the table's 720px floor, each task becomes a card instead of scrolling sideways. */
-  @container (max-width: 719px) {
+  .card-label {
+    display: none;
+  }
+
+  @container (width < 720px) {
     .automation-table {
       display: block;
       min-width: 0;
@@ -2582,8 +2587,17 @@ import type {
       border-top: 1px solid var(--border);
     }
 
-    .automation-table tbody > tr.task-row:first-child {
+    .automation-table tbody > tr.task-row:first-child,
+    .automation-table tr.inline-run-details-row + tr.task-row {
       border-top: 0;
+    }
+
+    .card-label {
+      display: block;
+      color: var(--muted);
+      font-family: var(--font-body);
+      font-size: 10px;
+      font-weight: 650;
     }
 
     .automation-table tr.task-row > td {
