@@ -286,7 +286,7 @@ test("a loan recorded before any asset is not plotted as negative net worth", ()
     },
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.date), ["2026-10-01", "2026-10-05"], "the trend starts once both sides are recorded");
-  assert.deepEqual(model.netWorth.oneSidedBefore, { date: "2026-10-01", recorded: "debts" });
+  assert.equal(model.netWorth.debtsOnlyBefore, "2026-10-01");
   const since = model.netWorth.chips.find((chip) => chip.kind === "since-start");
   assert.equal(since?.kind === "since-start" ? since.since : null, "2026-10-01");
   assert.equal(model.historyRows.length, 4, "the daily detail still lists the debt-only dates");
@@ -296,7 +296,37 @@ test("a portfolio with one side only keeps its whole trend", () => {
   const bank = account("bank", "bank", twd(1000));
   const model = readOverview(input(only(bank, [row("2026-09-25", twd(900)), row("2026-10-05", twd(1000))])), { today: "2026-10-05" });
   assert.equal(model.series.length, 2);
-  assert.equal(model.netWorth.oneSidedBefore, null);
+  assert.equal(model.netWorth.debtsOnlyBefore, null);
+});
+
+test("a debt first recorded after the assets keeps the asset history", () => {
+  const bank = account("bank", "bank", twd(1000));
+  const card = account("card", "credit-card", twd(-100));
+  const model = readOverview(input({
+    accounts: [bank, card],
+    dailyHistory: [row("2025-01-01", twd(800)), row("2026-10-04", twd(900)), row("2026-10-05", twd(900))],
+    dailyHistoryByAccount: {
+      bank: [row("2025-01-01", twd(800)), row("2026-10-05", twd(1000))],
+      card: [row("2026-10-04", twd(-100))],
+    },
+  }), { today: "2026-10-05" });
+  assert.deepEqual(model.series.map((point) => point.date), ["2025-01-01", "2026-10-04", "2026-10-05"]);
+  assert.equal(model.netWorth.debtsOnlyBefore, null);
+});
+
+test("assets first recorded today leave no trend yet but still say why", () => {
+  const loan = account("loan", "loan", twd(-500));
+  const bank = account("bank", "bank", twd(1200));
+  const model = readOverview(input({
+    accounts: [loan, bank],
+    dailyHistory: [row("2025-10-05", twd(-500)), row("2026-10-05", twd(700))],
+    dailyHistoryByAccount: {
+      loan: [row("2025-10-05", twd(-500))],
+      bank: [row("2026-10-05", twd(1200))],
+    },
+  }), { today: "2026-10-05" });
+  assert.deepEqual(model.series.map((point) => point.date), ["2026-10-05"]);
+  assert.equal(model.netWorth.debtsOnlyBefore, "2026-10-05", "the card's empty state names the date");
 });
 
 function previewAccount(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {
