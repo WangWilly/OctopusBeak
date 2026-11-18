@@ -25,8 +25,20 @@ export const ASSET_CATEGORY_COLOR: Record<AssetCategory, string> = {
   other: SERIES.teal,
 };
 
-export function liabilityColor(kind: AccountKind): string {
-  return kind === "loan" ? SERIES.slate : kind === "credit-card" ? SERIES.clay : SERIES.teal;
+/**
+ * `nth` counts earlier accounts of the same kind, so neighbouring loans in a
+ * treemap differ: each further one steps toward Slate Ink, which keeps white
+ * labels readable.
+ */
+export function liabilityColor(kind: AccountKind, nth = 0): string {
+  const base = kind === "loan" ? SERIES.slate : kind === "credit-card" ? SERIES.clay : SERIES.teal;
+  return nth === 0 ? base : `color-mix(in oklch, ${base}, oklch(18% 0.012 250) ${Math.min(nth, 3) * 18}%)`;
+}
+
+/** A balance chart series for one account kind, matching the overview allocation colors. */
+export function kindSeriesColor(kind: AccountKind, mode: "asset" | "liability"): string | null {
+  if (mode === "liability") return liabilityColor(kind);
+  return kind in ASSET_CATEGORY_COLOR ? ASSET_CATEGORY_COLOR[kind as AssetCategory] : null;
 }
 
 function intlLocale(locale: Locale): string {

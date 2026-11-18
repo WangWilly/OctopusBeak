@@ -76,6 +76,14 @@ test("a terminal row shows its progress only when it needs attention or onboardi
   assert.equal(presentTaskRow(row({ status: "queued", isActive: false }), context("en")).showProgress, false);
 });
 
+test("a finished run states its outcome instead of a progress bar", () => {
+  const partial = row({ status: "partial", isActive: false, progressPercent: 88 });
+  assert.equal(presentTaskRow(partial, context("en")).showProgress, true);
+  assert.equal(presentTaskRow(partial, context("en")).showProgressBar, false, "a stopped bar would read as still running");
+  assert.equal(presentTaskRow(partial, context("en", { onboardingProgressTaskId: "post-statements" })).showProgressBar, true);
+  assert.equal(presentTaskRow(row({ status: "running" }), context("en")).showProgressBar, true);
+});
+
 test("the sync line puts an active run first, then missing credentials, then the last run", () => {
   const missing = context("en", { credentialState: () => "missing" });
   assert.equal(presentTaskRow(row(), missing).syncStatus.tone, "active");

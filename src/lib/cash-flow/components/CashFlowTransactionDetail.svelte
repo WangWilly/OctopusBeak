@@ -7,7 +7,8 @@
   import { SPENDING_CATEGORY_GROUP_IDS, spendingCategoryCodesForGroup } from "$lib/spending/category-groups.ts";
   import { SPENDING_GROUP_COLORS, codeLabel, dayHeadingText, groupLabel } from "$lib/spending/spending-display.ts";
   import { PERSONAL_CATEGORY_CODES, isPersonalCategoryCode } from "../../../ledger/canonical/personal-category-codes.ts";
-  import { absoluteExact, isZeroExact, type ExactAmount } from "$lib/shared-money/exact-money.ts";
+  import { absoluteExact, type ExactAmount } from "$lib/shared-money/exact-money.ts";
+  import { displaysAsZero } from "$lib/shared-money/money.ts";
   import { NOTE_MAX_LENGTH, normalizeTagLabel, noteProblem, noteText, tagLabelProblem } from "$lib/financial/transaction-detail.ts";
   import { cashFlowDirection, type CashFlowRow, type CashFlowUserTag } from "../model.ts";
   import { accountLabel, rowCategoryText, rowTitle, signedAmount } from "../display.ts";
@@ -171,7 +172,7 @@
         <span class="muted">{rowCategoryText($t, row)}</span>
       </div>
       <div class="head-amount">
-        <strong class="money amount" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !isZeroExact(row.amount)} data-sensitive data-detail-amount>
+        <strong class="money amount" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !displaysAsZero(row.amount)} data-sensitive data-detail-amount>
           {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted")}
         </strong>
         {#if edit?.tags.length}

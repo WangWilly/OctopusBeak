@@ -11,6 +11,7 @@ import {
   type ExactMoney,
 } from "../shared-money/exact-money.ts";
 import { cashFlowDirection, type CashFlowAccount, type CashFlowRow } from "./model.ts";
+import { displaysAsZero } from "../shared-money/money.ts";
 
 /** An outflow group; null is the Unclassified bucket. */
 export type OutflowGroupKey = CashFlowOutflowGroup;
@@ -127,24 +128,25 @@ export function groupByDay(rows: readonly CashFlowRow[]): readonly CashFlowDay[]
 
 export type CashFlowListEntry =
   | Readonly<{ kind: "row"; row: CashFlowRow }>
-  | Readonly<{ kind: "zeros"; key: string; account: CashFlowAccount; rows: readonly CashFlowRow[] }>;
+  | Readonly<{ kind: "zeros"; key: string; account: CashFlowAccount; rows: readonly CashFlowRow[]; total: ExactMoney | null }>;
 
 /**
- * A zero row folds only when it has nothing to show: a counted, collected row
- * with no tags. An undecided kind, a transfer, a manual entry or a tag stays
+ * A row that reads as 0 folds only when it has nothing else to show: a
+ * counted, collected row with no tags. An undecided kind, a transfer, a manual entry or a tag stays
  * visible on its own row.
  */
 function foldable(row: CashFlowRow): boolean {
-  return isZeroExact(row.amount)
+  return displaysAsZero(row.amount)
     && (row.cashFlow.class === "inflow" || row.cashFlow.class === "outflow" || row.cashFlow.class === "refund")
     && row.source !== "manual"
     && (row.details.edit?.tags.length ?? 0) === 0;
 }
 
 /**
- * A day's foldable zero rows from one account fold into one entry where the
- * first of them stood, so a source that posts several 0 rewards a day does not
- * bury the day's real flow. A lone zero row stays a row.
+ * A day's foldable rows from one account fold into one entry where the first
+ * of them stood, so a source that posts several sub-unit rewards a day does
+ * not bury the day's real flow. A lone such row stays a row. The entry carries
+ * the rows' signed sum when they share a currency.
  */
 export function foldZeroRows(date: string, rows: readonly CashFlowRow[]): CashFlowListEntry[] {
   const zeros = new Map<string, CashFlowRow[]>();
@@ -155,9 +157,16 @@ export function foldZeroRows(date: string, rows: readonly CashFlowRow[]): CashFl
   for (const row of rows) {
     const folded = foldable(row) ? zeros.get(row.details.account.id)! : null;
     if (!folded || folded.length < 2) entries.push({ kind: "row", row });
-    else if (folded[0] === row) entries.push({ kind: "zeros", key: `${date}:${row.details.account.id}`, account: row.details.account, rows: folded });
+    else if (folded[0] === row) entries.push({ kind: "zeros", key: `${date}:${row.details.account.id}`, account: row.details.account, rows: folded, total: signedTotal(folded) });
   }
   return entries;
+}
+
+function signedTotal(rows: readonly CashFlowRow[]): ExactMoney | null {
+  const currency = rows[0]?.amount.currency;
+  if (!currency || rows.some((row) => row.amount.currency !== currency)) return null;
+  const sum = rows.reduce<ExactAmount>((total, row) => addExact(total, signedAmount(row)), { coefficient: "0", scale: 0 });
+  return { ...normalizeExact(sum), currency };
 }
 
 export function countedNet(rows: readonly CashFlowRow[]): readonly ExactMoney[] {

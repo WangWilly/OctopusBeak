@@ -1007,6 +1007,7 @@ import type {
                       id: present(task).isOnboardingProgress ? "automation.progress" : null,
                     }}
                   >
+                    {#if present(task).showProgressBar}
                     <div
                       class="progress-bar"
                       class:working={present(task).progressWorking}
@@ -1026,6 +1027,9 @@ import type {
                         <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
+                    {:else}
+                    <span class={`chip outcome-chip ${statusClass(task.status)}`} data-status={task.status}>{present(task).progressLabel}</span>
+                    {/if}
                     {#if ["failed", "cancelled"].includes(task.status) && present(task).failure}
                       {@const failure = present(task).failure!}
                       <div class="workflow-failure-summary" role="status">

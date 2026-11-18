@@ -1,5 +1,6 @@
 import { accountOrigin, mergeProvenance, NO_PROVENANCE, withOrigin, type Provenance } from "../../shared-ledger/provenance.ts";
 import { historyPointKey, type AccountKind, type AccountRowDto, type DailyHistoryRowDto } from "../../shared-ledger/types.ts";
+import { kindSeriesColor } from "../../overview/overview-format.ts";
 
 export type BalanceChartMode = "asset" | "liability";
 export type BalanceChartFilter = AccountKind | "all";
@@ -60,7 +61,7 @@ export function buildStackedBalanceChartData(options: {
   const times = uniqueTimes(dates);
   const groups = options.filter === "all"
     ? groupByKind(accounts, options.mode)
-    : accounts.map((account) => ({ key: account.id, label: account.label, accounts: [account] }));
+    : accounts.map((account) => ({ key: account.id, label: account.label, kind: null, accounts: [account] }));
   const series = groups
     .map((group, index) => {
       const data = dates.map((date, index) => ({
@@ -72,7 +73,8 @@ export function buildStackedBalanceChartData(options: {
       return {
         key: group.key,
         label: group.label,
-        color: STACK_COLORS[index % STACK_COLORS.length],
+        // A kind keeps its own color wherever it appears; per-account series cycle the set.
+        color: (group.kind && kindSeriesColor(group.kind, options.mode)) || STACK_COLORS[index % STACK_COLORS.length],
         data,
         provenance: group.accounts
           .filter((account) => dates.some((date) =>
@@ -141,6 +143,7 @@ function groupByKind(accounts: AccountRowDto[], mode: BalanceChartMode) {
   return order
     .map((kind) => ({
       key: kind,
+      kind,
       label: labelForKind(kind),
       accounts: accounts.filter((account) => account.kind === kind),
     }))
