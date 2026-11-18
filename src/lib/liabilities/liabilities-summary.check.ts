@@ -216,6 +216,8 @@ test("with no countable mortgage the tile is empty, and an omitted one is still 
   assert.deepEqual(readMortgageRepaid([account("verified-loan", "loan", 300)]), { shares: [], omitted: false });
   assert.deepEqual(readMortgageRepaid([previewLoan("x", "TWD", 900, { category: "housing", originalAmount: null })]),
     { shares: [], omitted: true });
+  assert.deepEqual(readMortgageRepaid([previewLoan("zero", "TWD", 900, { category: "housing", originalAmount: "0" })]),
+    { shares: [], omitted: true }, "a zero original amount is no original amount, not a missing mortgage");
 });
 
 test("a verified liability without a rate marks the total incomplete, while a preview one is only named", () => {

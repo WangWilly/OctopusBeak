@@ -99,6 +99,7 @@ test("a TDCC account localizes its stored Institution and shows its logo only wh
   assert.equal(institutionLogo("fubon"), "fubon");
   assert.equal(institutionLogo("broker-9600"), "fubon", "Fubon Securities carries the Fubon group mark");
   assert.equal(institutionLogo("broker-8880"), "cathay", "Cathay Securities carries the Cathay group mark");
+  assert.equal(institutionLogo("broker-9B00"), "bank-812", "Taishin Securities carries the Taishin mark from its Preview source");
   assert.equal(institutionLogo("broker-8890"), null, "a joint venture keeps no group mark");
 
   const broker = account({ label: "永豐金 · Investment account · 1", institution: "永豐金", institutionKey: "broker-9A00", product: "Investment account" });

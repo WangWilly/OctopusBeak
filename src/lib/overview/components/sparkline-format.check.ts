@@ -24,8 +24,9 @@ assert.deepEqual(buildCenteredSparklineYAxis([0]), {
 });
 
 test("a stacked balance axis tops out just above the tallest total", () => {
-  const axis = buildStackedYAxis([1_470_000, 1_550_000, 1_490_000]);
+  const axis = buildStackedYAxis([1_470_000, 1_550_000, 1_490_000, Number.NaN]);
   assert.equal(axis.min, 0);
-  assert.ok(axis.max > 1_550_000 && axis.max < 1_700_000, `top ${axis.max} leaves no half-span gap`);
+  assert.equal(axis.max, 1_550_000 * 1.08, "8% headroom above the tallest total");
+  assert.equal(axis.step, axis.max / 4, "tick labels keep the precision of a quarter of the axis");
   assert.equal(buildStackedYAxis([0, 0]).max, 1, "an all-zero stack still has a drawable axis");
 });
