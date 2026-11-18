@@ -286,7 +286,7 @@ test("a loan recorded before any asset is not plotted as negative net worth", ()
     },
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.date), ["2026-10-01", "2026-10-05"], "the trend starts once both sides are recorded");
-  assert.equal(model.netWorth.debtsOnlyBefore, "2026-10-01");
+  assert.equal(model.netWorth.assetsRecordedFrom, "2026-10-01");
   const since = model.netWorth.chips.find((chip) => chip.kind === "since-start");
   assert.equal(since?.kind === "since-start" ? since.since : null, "2026-10-01");
   assert.equal(model.historyRows.length, 4, "the daily detail still lists the debt-only dates");
@@ -296,7 +296,43 @@ test("a portfolio with one side only keeps its whole trend", () => {
   const bank = account("bank", "bank", twd(1000));
   const model = readOverview(input(only(bank, [row("2026-09-25", twd(900)), row("2026-10-05", twd(1000))])), { today: "2026-10-05" });
   assert.equal(model.series.length, 2);
-  assert.equal(model.netWorth.debtsOnlyBefore, null);
+  assert.equal(model.netWorth.assetsRecordedFrom, null);
+});
+
+test("one asset recorded a day ahead of the rest does not start the trend", () => {
+  const loan = account("loan", "loan", twd(-1000));
+  const fund = account("fund", "fund", twd(900));
+  const banks = ["a", "b", "c"].map((id) => account(id, "bank", twd(500)));
+  const model = readOverview(input({
+    accounts: [loan, fund, ...banks],
+    dailyHistory: [row("2025-11-06", twd(-1000)), row("2026-10-24", twd(-100)), row("2026-10-25", twd(1400))],
+    dailyHistoryByAccount: {
+      loan: [row("2025-11-06", twd(-1000))],
+      fund: [row("2026-10-24", twd(900))],
+      ...Object.fromEntries(banks.map((bank) => [bank.id, [row("2026-10-25", twd(500))]])),
+    },
+  }), { today: "2026-10-25" });
+  assert.equal(model.netWorth.assetsRecordedFrom, "2026-10-25", "the first import ends on 10/25, not on the fund's 10/24");
+  assert.deepEqual(model.series.map((point) => point.date), ["2026-10-25"]);
+});
+
+test("assets added long after the first import keep the trend before them", () => {
+  const loan = account("loan", "loan", twd(-1000));
+  const bank = account("bank", "bank", twd(800));
+  const fund = account("fund", "fund", twd(900));
+  const manual = ["house", "car", "policy"].map((id) => account(id, "manual", twd(5000)));
+  const model = readOverview(input({
+    accounts: [loan, bank, fund, ...manual],
+    dailyHistory: [row("2025-11-01", twd(-1000)), row("2025-12-01", twd(700)), row("2026-10-05", twd(15700))],
+    dailyHistoryByAccount: {
+      loan: [row("2025-11-01", twd(-1000))],
+      bank: [row("2025-12-01", twd(800))],
+      fund: [row("2025-12-01", twd(900))],
+      ...Object.fromEntries(manual.map((asset) => [asset.id, [row("2026-10-05", twd(5000))]])),
+    },
+  }), { today: "2026-10-05" });
+  assert.equal(model.netWorth.assetsRecordedFrom, "2025-12-01");
+  assert.deepEqual(model.series.map((point) => point.date), ["2025-12-01", "2026-10-05"]);
 });
 
 test("a debt first recorded after the assets keeps the asset history", () => {
@@ -311,7 +347,7 @@ test("a debt first recorded after the assets keeps the asset history", () => {
     },
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.date), ["2025-01-01", "2026-10-04", "2026-10-05"]);
-  assert.equal(model.netWorth.debtsOnlyBefore, null);
+  assert.equal(model.netWorth.assetsRecordedFrom, null);
 });
 
 test("assets first recorded today leave no trend yet but still say why", () => {
@@ -326,7 +362,7 @@ test("assets first recorded today leave no trend yet but still say why", () => {
     },
   }), { today: "2026-10-05" });
   assert.deepEqual(model.series.map((point) => point.date), ["2026-10-05"]);
-  assert.equal(model.netWorth.debtsOnlyBefore, "2026-10-05", "the card's empty state names the date");
+  assert.equal(model.netWorth.assetsRecordedFrom, "2026-10-05", "the card's empty state names the date");
 });
 
 function previewAccount(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {

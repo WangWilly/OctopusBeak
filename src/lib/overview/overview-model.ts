@@ -59,8 +59,8 @@ export type NetWorth = {
   chips: NetWorthChip[];
   /** The origins the chips' changes count. */
   chipsProvenance: Provenance;
-  /** Set when earlier records hold only debts, so the series starts on this date. */
-  debtsOnlyBefore: string | null;
+  /** Set when debts were recorded before the first import of assets, so the series starts on this date. */
+  assetsRecordedFrom: string | null;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
@@ -115,9 +115,9 @@ const MIN_CONTRIBUTION = 0.5;
 export function readOverview(dto: OverviewModelInput, options: { today: string }): OverviewModel {
   const rates = indexExchangeRates(dto.exchangeRates);
   const history = [...dto.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
-  const debtsOnlyBefore = assetsFirstRecorded(dto);
+  const assetsFrom = assetsRecordedFrom(dto);
   const recorded = netWorthSeries(history, rates);
-  const series = debtsOnlyBefore ? recorded.filter((point) => point.date >= debtsOnlyBefore) : recorded;
+  const series = assetsFrom ? recorded.filter((point) => point.date >= assetsFrom) : recorded;
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
   const { valuationDate } = dto;
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
@@ -135,7 +135,7 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
       valuationDate,
       chips: chips.chips,
       chipsProvenance: chips.provenance,
-      debtsOnlyBefore,
+      assetsRecordedFrom: assetsFrom,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
@@ -201,25 +201,35 @@ function readTicker(
   return accounts.length === 0 || foreign.length > 0 ? { state: "rates-pending" } : { state: "domestic-only" };
 }
 
+/** Asset accounts first recorded this many days after the first one belong to the same first import. */
+const FIRST_IMPORT_DAYS = 3;
+
 /**
  * A loan imported with a year of history before any deposit would plot a year
- * of negative net worth, because no asset was recorded yet. When assets are
- * held but first recorded after a debt, the series starts on that first asset
- * record. The other way round is a real net worth: assets with no debts yet.
+ * of negative net worth, because no asset was recorded yet. The first import
+ * can also spread its assets over a few days by statement date: a fund dated
+ * one day ahead of every bank, set alone against every loan, put the start
+ * near zero and the since-start chip at −217%. When debts were recorded first,
+ * the series starts on the last first-record date of that first import.
+ * Assets added later never move the start, so entering a house today keeps
+ * the year before it; assets recorded before any debt keep the whole history.
  */
-function assetsFirstRecorded(dto: OverviewModelInput): string | null {
-  let assets = "";
+function assetsRecordedFrom(dto: OverviewModelInput): string | null {
   let debts = "";
+  const assetStarts: string[] = [];
   for (const account of dto.accounts) {
-    for (const row of dto.dailyHistoryByAccount[account.id] ?? []) {
-      if (account.group === "liability") {
-        if (!debts || row.date < debts) debts = row.date;
-      } else if (!assets || row.date < assets) {
-        assets = row.date;
-      }
-    }
+    const dates = (dto.dailyHistoryByAccount[account.id] ?? []).map((row) => row.date);
+    if (dates.length === 0) continue;
+    const first = dates.reduce((earliest, date) => (date < earliest ? date : earliest));
+    if (account.group !== "liability") assetStarts.push(first);
+    else if (!debts || first < debts) debts = first;
   }
-  return assets && debts && debts < assets ? assets : null;
+  if (!debts || assetStarts.length === 0) return null;
+  assetStarts.sort();
+  const firstAsset = assetStarts[0]!;
+  if (debts >= firstAsset) return null;
+  const importEnd = addDays(firstAsset, FIRST_IMPORT_DAYS);
+  return assetStarts.filter((date) => date <= importEnd).at(-1)!;
 }
 
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {
