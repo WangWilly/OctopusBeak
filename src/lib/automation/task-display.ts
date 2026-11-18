@@ -15,6 +15,19 @@ export function taskLabel(task: Pick<AutomationTaskRow, "displayName">, language
   return task.displayName[language];
 }
 
+const CJK = /[\u3400-\u9fff]/;
+
+/**
+ * A name with its other-language name in parentheses, "台北富邦銀行（Taipei Fubon
+ * Bank）", split so that name can sit on its own line. A same-language aside,
+ * such as （預覽） or (preview), stays part of the name.
+ */
+export function taskLabelParts(label: string): { name: string; aside: string | null } {
+  const match = /^(.+?)\s*[（(]([^（）()]+)[）)]$/.exec(label);
+  if (!match || CJK.test(match[1]!) === CJK.test(match[2]!)) return { name: label, aside: null };
+  return { name: match[1]!, aside: match[2]! };
+}
+
 export function taskLogo(task: Pick<AutomationTaskRow, "credentialGroupId">) {
   return task.credentialGroupId ? sourceLogo(task.credentialGroupId) : null;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NO_PROVENANCE } from "../shared-ledger/provenance.ts";
-import { dayOffset, monthTicks, niceTicks } from "./net-worth-chart.ts";
+import { dayOffset, monthTicks, niceTicks, spacedTicks } from "./net-worth-chart.ts";
 
 test("axis ticks are round and cover the data", () => {
   const ticks = niceTicks(1_690_000, 2_150_000, 6);
@@ -22,4 +22,11 @@ test("each month is labelled once at its first point", () => {
 
 test("x positions follow calendar days, not point count", () => {
   assert.equal(dayOffset("2026-09-30", "2026-10-02"), 2);
+});
+
+test("month labels too close together keep the latest and give way going back", () => {
+  const x = (tick: number) => tick;
+  assert.deepEqual(spacedTicks([0, 10, 30, 52, 74, 96], x, 40), [10, 52, 96], "every other month on a narrow chart, the cramped first one dropped");
+  assert.deepEqual(spacedTicks([0, 60, 120], x, 40), [0, 60, 120], "a wide chart labels every month");
+  assert.deepEqual(spacedTicks([], x, 40), []);
 });

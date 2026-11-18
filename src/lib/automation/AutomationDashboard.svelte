@@ -90,7 +90,7 @@ import type {
     DashboardBlockPayload,
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
-  import { formatRunTime, statusClass, taskLabel, taskLogo } from "./task-display.ts";
+  import { formatRunTime, statusClass, taskLabel, taskLabelParts, taskLogo } from "./task-display.ts";
   import { lastSyncSummary } from "./sync-summary.ts";
   import type {
     AutomationPageModel,
@@ -994,6 +994,7 @@ import type {
           </thead>
           <tbody>
             {#each stage.tasks as task (task.id)}
+              {@const label = taskLabelParts(taskLabel(task, $locale))}
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
@@ -1006,10 +1007,14 @@ import type {
                         <ArrowLeftRight size={16} strokeWidth={2.2} aria-hidden="true" />
                       {/if}
                     </span>
-                    <strong>{taskLabel(task, $locale)}</strong>
+                    <span class="task-label">
+                      <strong>{label.name}</strong>
+                      {#if label.aside}<span class="task-aside">{label.aside}</span>{/if}
+                    </span>
                   </div>
                 </td>
                 <td class="credential-state">
+                  <span class="card-label">{$t.automation.credentialStatus}</span>
                   {#if allCredentialsLoading(task, listAutomation)}
                     <span class="spinner" aria-label={$t.common.loading}></span>
                   {:else if anyCredentialReadFailed(task, listAutomation)}
@@ -1020,7 +1025,7 @@ import type {
                     <span class="chip warn">{$t.common.missing}</span>
                   {/if}
                 </td>
-                <td class="mono latest-time">{latestTaskTime(task)}</td>
+                <td class="mono latest-time"><span class="card-label">{$t.automation.latestTime($systemTimezone)}</span>{latestTaskTime(task)}</td>
                 <td>
                   {#if present(task).showProgress}
                   <div
@@ -2351,6 +2356,17 @@ import type {
     font-weight: 720;
   }
 
+  .task-label {
+    min-width: 0;
+    display: grid;
+  }
+
+  .task-aside {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
   .mono {
     color: var(--muted);
     font-family: var(--font-mono);
@@ -2534,6 +2550,80 @@ import type {
   /* The task table scrolls sideways when narrow; its details stay pinned to the visible width. */
   .task-table-wrap {
     container-type: inline-size;
+  }
+
+  /* Narrower than the table's 720px floor, each task becomes a card instead of scrolling sideways. */
+  .card-label {
+    display: none;
+  }
+
+  @container (width < 720px) {
+    .automation-table {
+      display: block;
+      min-width: 0;
+    }
+
+    .automation-table colgroup,
+    .automation-table thead {
+      display: none;
+    }
+
+    .automation-table tbody,
+    .automation-table tr.inline-run-details-row,
+    .automation-table tr.inline-run-details-row > td {
+      display: block;
+    }
+
+    .automation-table tr.task-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-areas:
+        "name name actions"
+        "credential time time"
+        "status status status";
+      align-items: center;
+      gap: var(--space-2) var(--space-3);
+      padding: var(--space-4) 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .automation-table tbody > tr.task-row:first-child,
+    .automation-table tr.inline-run-details-row + tr.task-row {
+      border-top: 0;
+    }
+
+    .card-label {
+      display: block;
+      color: var(--muted);
+      font-family: var(--font-body);
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .automation-table tr.task-row > td {
+      display: block;
+      padding: 0;
+      border-top: 0;
+      background: none;
+    }
+
+    .automation-table tr.task-row > td:nth-child(1) { grid-area: name; }
+    .automation-table tr.task-row > td:nth-child(2) { grid-area: credential; }
+    .automation-table tr.task-row > td:nth-child(3) { grid-area: time; }
+    .automation-table tr.task-row > td:nth-child(4) { grid-area: status; }
+    .automation-table tr.task-row > td:nth-child(5) { grid-area: actions; }
+
+    .automation-table tr.task-row.task-active {
+      background: color-mix(in oklch, var(--accent) 5%, var(--surface));
+    }
+
+    .automation-table tr.task-row.task-attention {
+      background: color-mix(in oklch, var(--danger) 6%, var(--surface));
+    }
+
+    .task-name {
+      min-width: 0;
+    }
   }
 
   .inline-run-details {

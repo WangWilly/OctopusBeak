@@ -1056,15 +1056,19 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   .sidebar {
     position: static;
     height: auto;
-    padding: var(--space-4);
+    padding: var(--space-3);
   }
 
   .sidebar-toggle {
     display: none;
   }
 
-  .side-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Every page in one row, so none sits alone on a second one. */
+  .side-nav,
+  .shell-page.sidebar-collapsed .side-nav {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: var(--space-1);
   }
 
   .side-status {
@@ -1073,11 +1077,10 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 
   .shell-page.sidebar-collapsed .sidebar {
     align-items: stretch;
-    padding: var(--space-4);
+    padding: var(--space-3);
   }
 
   .shell-page.sidebar-collapsed .side-nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
     justify-items: stretch;
   }
 

@@ -450,7 +450,7 @@
       min-height: 56px;
       flex-direction: column;
       gap: 2px;
-      padding: 4px;
+      padding: 4px 0;
       font-size: 11px;
     }
 
