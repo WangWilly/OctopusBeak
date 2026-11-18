@@ -14,6 +14,7 @@ import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
   } from "$lib/overview/overview-model.ts";
   import { formatPct, formatShortDate } from "$lib/overview/overview-format.ts";
 import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
+  import { formatUtcDate } from "$lib/time/timezone.ts";
   import type { NetPositionDto } from "$lib/shared-ledger/types.ts";
 
   export let net: NetPositionDto;
@@ -87,6 +88,10 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {#if hasTrend}
     <NetWorthChart points={visible} label={$t.overview.chartAria} />
     <p class="caption">
+      {#if netWorth.oneSidedBefore}
+        <span data-one-sided>{$t.overview.chartOneSided(formatUtcDate(netWorth.oneSidedBefore.date, "UTC", $locale), netWorth.oneSidedBefore.recorded)}</span>
+        <span aria-hidden="true">·</span>
+      {/if}
       {$t.overview.chartCaption}
       <OriginMarkers provenance={mergeProvenance(...visible.map((point) => point.provenance))} placement="above" />
     </p>

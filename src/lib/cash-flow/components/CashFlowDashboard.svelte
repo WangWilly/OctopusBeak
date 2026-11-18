@@ -537,7 +537,7 @@
                         {#if row.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}
                         {#if tag}<span class="tag" class:accent={row.cashFlow.class === "not_counted"}>{tag}</span>{/if}
                       </span>
-                      <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted"} data-sensitive>
+                      <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !isZeroExact(row.amount)} data-sensitive>
                         {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted").replace(/^TWD /u, "")}
                       </strong>
                     </button>

@@ -273,6 +273,32 @@ test("an account recorded for the first time is new coverage, not a change in ne
   assert.deepEqual(detail?.dailyChange, [{ currency: "TWD", value: 250 }]);
 });
 
+test("a loan recorded before any asset is not plotted as negative net worth", () => {
+  const loan = account("loan", "loan", twd(-500));
+  const bank = account("bank", "bank", twd(1200));
+  const debtOnly = (date: string) => ({ ...row(date, twd(-500)), assets: [], liabilities: twd(500) });
+  const model = readOverview(input({
+    accounts: [loan, bank],
+    dailyHistory: [debtOnly("2026-06-01"), debtOnly("2026-09-01"), row("2026-10-01", twd(700)), row("2026-10-05", twd(700))],
+    dailyHistoryByAccount: {
+      loan: [debtOnly("2026-06-01"), debtOnly("2026-10-05")],
+      bank: [row("2026-10-01", twd(1200)), row("2026-10-05", twd(1200))],
+    },
+  }), { today: "2026-10-05" });
+  assert.deepEqual(model.series.map((point) => point.date), ["2026-10-01", "2026-10-05"], "the trend starts once both sides are recorded");
+  assert.deepEqual(model.netWorth.oneSidedBefore, { date: "2026-10-01", recorded: "debts" });
+  const since = model.netWorth.chips.find((chip) => chip.kind === "since-start");
+  assert.equal(since?.kind === "since-start" ? since.since : null, "2026-10-01");
+  assert.equal(model.historyRows.length, 4, "the daily detail still lists the debt-only dates");
+});
+
+test("a portfolio with one side only keeps its whole trend", () => {
+  const bank = account("bank", "bank", twd(1000));
+  const model = readOverview(input(only(bank, [row("2026-09-25", twd(900)), row("2026-10-05", twd(1000))])), { today: "2026-10-05" });
+  assert.equal(model.series.length, 2);
+  assert.equal(model.netWorth.oneSidedBefore, null);
+});
+
 function previewAccount(id: string, amountLines: CurrencyAmountDto[]): AccountRowDto {
   return {
     ...account(id, amountLines[0]?.currency === "TWD" ? "bank" : "foreign", amountLines),

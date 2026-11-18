@@ -31,6 +31,8 @@ const en = {
     rangeAll: "All",
     chartAria: "Net worth trend",
     chartCaption: "Converted to TWD at each day's rate",
+    chartOneSided: (date: string, recorded: "assets" | "debts") =>
+      `Before ${date} only ${recorded === "debts" ? "debts" : "assets"} were recorded, so the trend starts on that day`,
     chartEmptyTitle: "No net worth trend yet",
     chartEmptyBody: "After the first sync, this shows how your net worth changes each day.",
     dailyChangeTitle: "Daily change",
@@ -111,6 +113,7 @@ const zh: typeof en = {
     rangeAll: "全部",
     chartAria: "淨資產走勢",
     chartCaption: "依各日匯率換算為 TWD",
+    chartOneSided: (date, recorded) => `${date} 之前只有${recorded === "debts" ? "負債" : "資產"}紀錄，走勢從這天開始`,
     chartEmptyTitle: "還沒有淨資產走勢",
     chartEmptyBody: "完成第一次同步後，這裡會顯示每天的淨資產變化。",
     dailyChangeTitle: "每日變動",

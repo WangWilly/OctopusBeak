@@ -59,6 +59,8 @@ export type NetWorth = {
   chips: NetWorthChip[];
   /** The origins the chips' changes count. */
   chipsProvenance: Provenance;
+  /** Set when earlier records hold only one side, so the series starts at `date`. */
+  oneSidedBefore: { date: string; recorded: "assets" | "debts" } | null;
 };
 
 /** One calendar day; `change` is null when that day has no record to compare. */
@@ -113,7 +115,9 @@ const MIN_CONTRIBUTION = 0.5;
 export function readOverview(dto: OverviewModelInput, options: { today: string }): OverviewModel {
   const rates = indexExchangeRates(dto.exchangeRates);
   const history = [...dto.dailyHistory].sort((left, right) => left.date.localeCompare(right.date));
-  const series = netWorthSeries(history, rates);
+  const oneSidedBefore = oneSidedUntil(dto);
+  const recorded = netWorthSeries(history, rates);
+  const series = oneSidedBefore ? recorded.filter((point) => point.date >= oneSidedBefore.date) : recorded;
   const ledger = accountLedger(dto.dailyHistoryByAccount, rates);
   const { valuationDate } = dto;
   const assetAllocation = readAssetAllocation(dto.accounts, rates, valuationDate);
@@ -131,13 +135,14 @@ export function readOverview(dto: OverviewModelInput, options: { today: string }
       valuationDate,
       chips: chips.chips,
       chipsProvenance: chips.provenance,
+      oneSidedBefore,
     },
     series,
     dailyBars: readDailyBars(series, ledger, options.today),
     todayChange: readTodayChange(dto, series, ledger, rates, options.today),
     assetAllocation,
     liabilityAllocation,
-    historyRows: convertedHistoryRows(history, series, ledger, rates),
+    historyRows: convertedHistoryRows(history, recorded, ledger, rates),
   };
 }
 
@@ -194,6 +199,26 @@ function readTicker(
   const items = [...fiat, ...crypto];
   if (items.length > 0) return { state: "items", items };
   return accounts.length === 0 || foreign.length > 0 ? { state: "rates-pending" } : { state: "domestic-only" };
+}
+
+/**
+ * Net worth is assets less debts, so a date where only one side has a record
+ * is not a net worth. A loan imported with a year of history before any
+ * deposit would otherwise plot a year of negative net worth. When both sides
+ * are held, the series starts where the later side's first record does.
+ */
+function oneSidedUntil(dto: OverviewModelInput): NetWorth["oneSidedBefore"] {
+  const first = { assets: "", debts: "" };
+  for (const account of dto.accounts) {
+    const side = account.group === "liability" ? "debts" : "assets";
+    for (const row of dto.dailyHistoryByAccount[account.id] ?? []) {
+      if (!first[side] || row.date < first[side]) first[side] = row.date;
+    }
+  }
+  if (!first.assets || !first.debts || first.assets === first.debts) return null;
+  return first.assets < first.debts
+    ? { date: first.debts, recorded: "assets" }
+    : { date: first.assets, recorded: "debts" };
 }
 
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {

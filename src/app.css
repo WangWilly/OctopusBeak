@@ -1092,14 +1092,37 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
     padding-left: 0;
   }
 
+  /*
+   * The title takes only the space the actions leave, so it shortens instead of
+   * covering them: first the section name goes, then the title is not drawn
+   * (the nav already marks the page) while staying the heading's text.
+   */
   .topbar-title {
-    position: absolute;
-    left: 50%;
-    max-width: calc(100% - 240px);
-    justify-content: center;
+    container-type: inline-size;
+    justify-content: safe center;
+    overflow: hidden;
+  }
+
+  .topbar-title > span {
+    flex: none;
+  }
+
+  .topbar-title strong {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    transform: translateX(-50%);
+  }
+
+  @container (max-width: 160px) {
+    .topbar-title > span {
+      display: none;
+    }
+  }
+
+  @container (max-width: 64px) {
+    .topbar-title strong {
+      opacity: 0;
+    }
   }
 
   .toolbar {
