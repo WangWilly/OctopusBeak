@@ -11,6 +11,7 @@ import {
   stackedBalanceChartState,
 } from "./stacked-balance-chart-data.ts";
 import { NO_PROVENANCE, originProvenance } from "../../shared-ledger/provenance.ts";
+import { ASSET_CATEGORY_COLOR, liabilityColor } from "../../overview/overview-format.ts";
 
 const PREVIEW = originProvenance("preview");
 const MANUAL = originProvenance("manual");
@@ -84,6 +85,16 @@ const allLiabilities = buildStackedBalanceChartData({
 assert.deepEqual(allLiabilities.series.map((series) => series.key), ["credit-card", "loan"]);
 assert.deepEqual(allLiabilities.series[0].data.map((point) => point.value), [400, 410]);
 assert.deepEqual(allLiabilities.totals.map((point) => point.value), [900, 930]);
+assert.deepEqual(
+  allLiabilities.series.map((series) => series.color),
+  [liabilityColor("credit-card"), liabilityColor("loan")],
+  "a kind keeps the overview's color: cards clay, loans slate",
+);
+assert.deepEqual(
+  allAssets.series.map((series) => series.color),
+  [ASSET_CATEGORY_COLOR.bank, ASSET_CATEGORY_COLOR.fund],
+  "a missing kind does not shift the colors after it",
+);
 
 const sameDayCaptures = buildStackedBalanceChartData({
   accounts: [accounts[4]!],

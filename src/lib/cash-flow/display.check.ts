@@ -57,6 +57,19 @@ test("a zero row with something to show is never folded", () => {
   ]);
 });
 
+test("a reward that reads as 0 TWD folds, and the entry carries the rows' sum", () => {
+  const entries = foldZeroRows("2026-11-18", [
+    { ...row("yield", "maicoin", "4"), amount: { coefficient: "4", scale: 2, currency: "TWD" } },
+    { ...row("hold", "maicoin", "2"), amount: { coefficient: "2", scale: 2, currency: "TWD" } },
+    { ...row("bigger", "maicoin", "496"), amount: { coefficient: "496", scale: 2, currency: "TWD" } },
+  ]);
+  assert.deepEqual(entries.map((entry) => entry.kind === "row" ? entry.row.transactionId : entry.rows.map((member) => member.transactionId)), [
+    ["yield", "hold"],
+    "bigger",
+  ], "4.96 TWD reads as 5 and stays a row");
+  assert.deepEqual(entries[0]?.kind === "zeros" ? entries[0].total : null, { coefficient: "6", scale: 2, currency: "TWD" });
+});
+
 test("a zero written at a finer scale still folds", () => {
   const entries = foldZeroRows("2026-11-11", [row("a", "maicoin", "000"), { ...row("b", "maicoin", "0"), amount: { coefficient: "000", scale: 2, currency: "TWD" } }]);
   assert.deepEqual(entries.map((entry) => entry.kind), ["zeros"]);

@@ -40,6 +40,14 @@ function exactDigits(exact: ExactDecimal, digits: number, locale: Locale): Reado
   return { text: `${grouped}${fraction}`, negative, zero: rounded === 0n };
 }
 
+/**
+ * Whether an exact amount reads as 0 in its currency's precision, such as a
+ * 0.04 TWD reward. A figure the person sees as 0 is treated as 0 on screen.
+ */
+export function displaysAsZero(amount: Readonly<{ coefficient: string; scale: number; currency: string }>): boolean {
+  return exactDigits(amount, fractionDigits(amount.currency), "en")?.zero ?? false;
+}
+
 /** An amount's digits in its currency's precision, e.g. `−19,410` or `+12.50`, without the currency code. */
 export function formatAmount(
   value: number,

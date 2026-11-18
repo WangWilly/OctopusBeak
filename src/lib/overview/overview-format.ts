@@ -25,8 +25,24 @@ export const ASSET_CATEGORY_COLOR: Record<AssetCategory, string> = {
   other: SERIES.teal,
 };
 
-export function liabilityColor(kind: AccountKind): string {
-  return kind === "loan" ? SERIES.slate : kind === "credit-card" ? SERIES.clay : SERIES.teal;
+/** Lightness drops for the 2nd, 3rd, … account of one kind; consecutive steps always differ. */
+const SAME_KIND_STEPS = [0, 0.06, 0.12, 0.03, 0.09] as const;
+
+/**
+ * `nth` counts earlier accounts of the same kind, so neighbouring loans in a
+ * treemap differ. Only lightness drops, so a card stays clay and white labels
+ * stay readable.
+ */
+export function liabilityColor(kind: AccountKind, nth = 0): string {
+  const base = kind === "loan" ? SERIES.slate : kind === "credit-card" ? SERIES.clay : SERIES.teal;
+  const step = SAME_KIND_STEPS[nth % SAME_KIND_STEPS.length]!;
+  return step === 0 ? base : `oklch(from ${base} calc(l - ${step}) c h)`;
+}
+
+/** A balance chart series for one account kind, matching the overview allocation colors. */
+export function kindSeriesColor(kind: AccountKind, mode: "asset" | "liability"): string | null {
+  if (mode === "liability") return liabilityColor(kind);
+  return kind in ASSET_CATEGORY_COLOR ? ASSET_CATEGORY_COLOR[kind as AssetCategory] : null;
 }
 
 function intlLocale(locale: Locale): string {

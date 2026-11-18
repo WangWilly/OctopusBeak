@@ -44,6 +44,8 @@ export type TaskRowView = Readonly<{
   progressLabel: string;
   progressWorking: boolean;
   showProgress: boolean;
+  /** A bar only while a run moves (or for the onboarding run); a finished run states its outcome instead. */
+  showProgressBar: boolean;
   showProgressStatus: boolean;
   isOnboardingProgress: boolean;
   failure: TaskRowFailure | null;
@@ -66,6 +68,7 @@ export function presentTaskRow(row: AutomationTaskRow, context: TaskRowViewConte
     showProgress: progressWorking
       || (row.isActive && row.status === "waiting_for_human")
       || (isTerminalAutomationStatus(row.status) && (row.status !== "completed" || isOnboardingProgress)),
+    showProgressBar: progressWorking || (row.isActive && row.status === "waiting_for_human") || isOnboardingProgress,
     showProgressStatus: row.status === "waiting_for_human" || row.status === "cancelling",
     isOnboardingProgress,
     failure: failure(row, context),

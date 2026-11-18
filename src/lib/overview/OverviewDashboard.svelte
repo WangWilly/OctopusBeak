@@ -50,12 +50,12 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     share: slice.share,
     color: ASSET_CATEGORY_COLOR[slice.category],
   }));
-  $: liabilityTiles = model.liabilityAllocation.slices.map((slice): AllocationTile => ({
+  $: liabilityTiles = model.liabilityAllocation.slices.map((slice, index, slices): AllocationTile => ({
     key: slice.account.id,
     label: liabilityLabel(slice.account, $t),
     value: slice.value,
     share: slice.share,
-    color: liabilityColor(slice.account.kind),
+    color: liabilityColor(slice.account.kind, slices.slice(0, index).filter((earlier) => earlier.account.kind === slice.account.kind).length),
   }));
 
   function formatImportedAt(value: string | null) {

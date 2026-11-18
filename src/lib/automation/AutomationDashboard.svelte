@@ -1007,6 +1007,7 @@ import type {
                       id: present(task).isOnboardingProgress ? "automation.progress" : null,
                     }}
                   >
+                    {#if present(task).showProgressBar}
                     <div
                       class="progress-bar"
                       class:working={present(task).progressWorking}
@@ -1026,6 +1027,9 @@ import type {
                         <span class={`chip ${statusClass(task.status)}`}>{present(task).statusLabel}</span>
                       {/if}
                     </div>
+                    {:else}
+                    <span class={`chip outcome-chip ${statusClass(task.status)}`} data-status={task.status}>{present(task).statusLabel}</span>
+                    {/if}
                     {#if ["failed", "cancelled"].includes(task.status) && present(task).failure}
                       {@const failure = present(task).failure!}
                       <div class="workflow-failure-summary" role="status">
@@ -2330,6 +2334,11 @@ import type {
     align-items: center;
   }
 
+  /* An outcome tag sizes to its words, like the settled tags in other rows. */
+  .outcome-chip {
+    justify-self: start;
+  }
+
   .progress-bar {
     position: relative;
     width: 100%;
@@ -3057,14 +3066,15 @@ import type {
     }
   }
 
+  /* Every status tone tints at the same 10% as a settled chip, so the tags read as one set. */
   .chip.warn {
     color: var(--warn);
-    background: color-mix(in oklch, var(--warn) 6%, white);
+    background: color-mix(in oklch, var(--warn) 10%, white);
   }
 
   .chip.bad {
     color: var(--danger);
-    background: color-mix(in oklch, var(--danger) 6%, white);
+    background: color-mix(in oklch, var(--danger) 10%, white);
   }
 
   /* Onboarding keeps a column free beside the panel so the coach never covers it. */

@@ -14,6 +14,7 @@
     addExact,
     type ExactAmount,
   } from "$lib/shared-money/exact-money.ts";
+  import { displaysAsZero } from "$lib/shared-money/money.ts";
   import type { CashFlowInflowGroup } from "../../../ledger/canonical/cash-flow-inclusion.ts";
   import type { CashFlowAccount, CashFlowPageDto, CashFlowPageRequest, CashFlowRow } from "../model.ts";
   import { CASH_FLOW_SEARCH_FIELDS, cashFlowDirection, cashFlowTransferRole } from "../model.ts";
@@ -251,7 +252,7 @@
       {#if row.source === "manual"}<span class="tag">{$t.cashFlow.manualTag}</span>{/if}
       {#if tag}<span class="tag" class:accent={row.cashFlow.class === "not_counted"}>{tag}</span>{/if}
     </span>
-    <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !isZeroExact(row.amount)} data-sensitive>
+    <strong class="amount money" class:positive={cashFlowDirection(row) === "inflow" && row.cashFlow.class !== "not_counted" && !displaysAsZero(row.amount)} data-sensitive>
       {moneyText(signedAmount(row), $locale, row.cashFlow.class !== "not_counted").replace(/^TWD /u, "")}
     </strong>
   </button>
@@ -568,7 +569,7 @@
                             <span>{accountLabel($t, entry.account)}</span>
                           </span>
                           <span class="tags"><ChevronRight class="zero-caret" size={14} strokeWidth={2.2} aria-hidden="true" /></span>
-                          <strong class="amount money" data-sensitive>0</strong>
+                          <strong class="amount money" data-sensitive>{entry.total ? moneyText(entry.total, $locale, true).replace(/^TWD /u, "") : ""}</strong>
                         </button>
                       </li>
                       {#if open}
