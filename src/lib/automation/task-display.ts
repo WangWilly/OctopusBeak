@@ -15,6 +15,12 @@ export function taskLabel(task: Pick<AutomationTaskRow, "displayName">, language
   return task.displayName[language];
 }
 
+/** A name with a parenthesized aside, "台北富邦銀行（Taipei Fubon Bank）", split so the aside can sit on its own line. */
+export function taskLabelParts(label: string): { name: string; aside: string | null } {
+  const match = /^(.+?)\s*[（(]([^（）()]+)[）)]$/.exec(label);
+  return match ? { name: match[1]!, aside: match[2]! } : { name: label, aside: null };
+}
+
 export function taskLogo(task: Pick<AutomationTaskRow, "credentialGroupId">) {
   return task.credentialGroupId ? sourceLogo(task.credentialGroupId) : null;
 }

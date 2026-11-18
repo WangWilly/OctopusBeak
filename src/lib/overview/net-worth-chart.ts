@@ -30,6 +30,21 @@ export function monthTicks(points: readonly NetWorthPoint[]): NetWorthPoint[] {
   return ticks;
 }
 
+/**
+ * The ticks whose labels fit: walking back from the latest, a tick closer than
+ * `minGap` pixels to the last one kept is skipped, so a cramped first month
+ * gives way to the months after it.
+ */
+export function spacedTicks<T>(ticks: readonly T[], x: (tick: T) => number, minGap: number): T[] {
+  const kept: T[] = [];
+  for (let index = ticks.length - 1; index >= 0; index -= 1) {
+    const tick = ticks[index]!;
+    const last = kept.at(-1);
+    if (last === undefined || x(last) - x(tick) >= minGap) kept.push(tick);
+  }
+  return kept.reverse();
+}
+
 /** Days since the first point, so gaps between observations keep their width. */
 export function dayOffset(from: string, to: string): number {
   return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { locale } from "$lib/i18n/i18n.ts";
   import type { NetWorthPoint } from "$lib/overview/overview-model.ts";
-  import { dayOffset, monthTicks, niceTicks } from "$lib/overview/net-worth-chart.ts";
+  import { dayOffset, monthTicks, niceTicks, spacedTicks } from "$lib/overview/net-worth-chart.ts";
   import { formatCompact, formatDayWithWeekday, formatMonth } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
 
@@ -28,7 +28,9 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   $: areaPath = points.length > 0
     ? `${linePath}L${xOf(points.at(-1)!).toFixed(1)},${PAD.top + plotHeight}L${xOf(points[0]!).toFixed(1)},${PAD.top + plotHeight}Z`
     : "";
-  $: xTicks = monthTicks(points);
+  /** A month label needs about this much room; narrower, every other month (or fewer) is labelled. */
+  const MONTH_LABEL_GAP = 40;
+  $: xTicks = spacedTicks(monthTicks(points), xOf, MONTH_LABEL_GAP);
   $: shownIndex = activeIndex ?? points.length - 1;
   $: shown = points[shownIndex] ?? null;
   $: if (activeIndex !== null && activeIndex >= points.length) activeIndex = null;

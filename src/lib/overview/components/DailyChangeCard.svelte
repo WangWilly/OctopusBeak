@@ -104,6 +104,7 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
   }
 
   .bars {
+    container-type: inline-size;
     min-height: 260px;
     display: grid;
     grid-template-columns: repeat(14, minmax(0, 1fr));
@@ -173,5 +174,21 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
   [data-latest] .bar-date {
     color: var(--fg);
     font-weight: 750;
+  }
+
+  /* Too narrow for a date under every bar: every other one, counted back from
+   * the latest, is drawn whole across the room its unlabelled neighbour leaves. */
+  @container (max-width: 500px) {
+    .bar-date {
+      position: relative;
+      left: 50%;
+      width: max-content;
+      overflow: visible;
+      translate: -50%;
+    }
+
+    .bar-day:nth-last-child(2n) .bar-date {
+      visibility: hidden;
+    }
   }
 </style>
