@@ -301,10 +301,6 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   backdrop-filter: blur(16px);
 }
 
-.topbar.title-hidden .topbar-actions {
-  grid-column: 3;
-}
-
 .topbar-controls {
   min-width: 0;
   display: flex;

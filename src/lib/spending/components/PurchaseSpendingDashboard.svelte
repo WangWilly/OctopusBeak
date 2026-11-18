@@ -1078,7 +1078,8 @@
   .record-texts { display: grid; flex: 1; gap: 2px; min-width: 0; }
   .record-texts strong { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .record-texts > span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .fallback-date { color: var(--warn); font-weight: 700; }
+  /* A note on where the date came from, not a warning: it stays in the line's muted voice. */
+  .fallback-date { color: inherit; }
   .status-tag { display: inline-flex; flex: none; align-items: center; gap: 4px; padding: 3px 8px; border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 720; white-space: nowrap; }
   .status-tag.pending { background: var(--accent-soft); color: var(--accent); }
   .record-amount { flex: none; min-width: 110px; font-size: 14px; font-weight: 750; text-align: right; white-space: nowrap; }
