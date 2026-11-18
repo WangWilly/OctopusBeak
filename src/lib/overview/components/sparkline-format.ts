@@ -24,6 +24,13 @@ export function buildSparklineYAxis(values: number[]) {
   };
 }
 
+/** A stack drawn up from zero: the top sits just above the tallest total instead of half a span beyond it. */
+export function buildStackedYAxis(totals: number[]) {
+  const top = Math.max(0, ...totals.filter(Number.isFinite));
+  const max = top === 0 ? 1 : top * 1.08;
+  return { min: 0, max, step: max / 4, ticks: [] };
+}
+
 export function buildTrendYAxis(values: number[]) {
   const finiteValues = values.filter(Number.isFinite);
   if (finiteValues.length === 0) return { min: 0, max: 0, step: 0, ticks: [] };

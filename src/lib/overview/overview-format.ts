@@ -60,8 +60,11 @@ export function formatPct(ratio: number, locale: Locale, digits = 1): string {
 }
 
 /** Unsigned share, e.g. `36.9%`. */
+/** A positive share too small for one decimal reads as "<0.1%", never as 0.0%. */
 export function formatShare(ratio: number, locale: Locale): string {
-  return `${new Intl.NumberFormat(intlLocale(locale), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(ratio * 100)}%`;
+  const format = new Intl.NumberFormat(intlLocale(locale), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  if (ratio > 0 && ratio < 0.0005) return `<${format.format(0.1)}%`;
+  return `${format.format(ratio * 100)}%`;
 }
 
 /** Rates and implied prices keep enough precision to show a small move. */

@@ -17,7 +17,7 @@ assert.match(source, /tickSpacing: 80/);
 assert.match(source, /tooltipContext=\{\{ mode: "band" \}\}/);
 assert.match(source, /\.stacked-balance-chart :global\(\.lc-layout-svg\)\s*\{[^}]*overflow:\s*hidden;/);
 assert.match(source, /isSingleSeriesSelected = selectedSeriesKeys\.length === 1;/);
-assert.match(source, /buildSparklineYAxis\(\[0, \.\.\.visibleChart\.totals\.map\(\(point\) => point\.value\)\]\)/);
+assert.match(source, /buildStackedYAxis\(visibleChart\.totals\.map\(\(point\) => point\.value\)\)/);
 assert.match(source, /yDomain = isSingleSeriesSelected \? \[yAxis\.min, yAxis\.max\] : \[0, yAxis\.max\];/);
 assert.match(source, /yBaseline=\{isSingleSeriesSelected \? null : 0\}/);
 assert.match(source, /transform=\{\{ mode: "domain", axis: "x" \}\}/);

@@ -159,9 +159,17 @@ export function institutionNames(locale: "en" | "zh-TW"): Record<InstitutionKey,
     [key, name[locale] ?? name["zh-TW"]])) as Record<InstitutionKey, string>;
 }
 
+/** Brokers in the same financial group as a logo Institution, which carry that group's mark. */
+const GROUP_BROKER_LOGOS: Partial<Record<InstitutionKey, LogoInstitutionKey>> = {
+  "broker-9600": "fubon",
+  "broker-8880": "cathay",
+};
+
 /** The logo an Institution shows; null for the many catalog Institutions with neither a source of their own nor a Preview source. */
 export function institutionLogo(key: InstitutionKey | undefined): LogoInstitutionKey | PreviewInstitutionLogoKey | null {
   if (key === undefined) return null;
+  const group = GROUP_BROKER_LOGOS[key];
+  if (group) return group;
   return (INSTITUTION_KEYS as readonly string[]).includes(key) || PREVIEW_INSTITUTION_LOGO_KEYS.has(key)
     ? key as LogoInstitutionKey | PreviewInstitutionLogoKey
     : null;

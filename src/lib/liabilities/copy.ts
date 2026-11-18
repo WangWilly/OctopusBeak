@@ -19,6 +19,8 @@ const en = {
     utilization: "Card utilization",
     mortgageRepaid: "Mortgage repaid",
     mortgageOriginalMissing: "Some mortgages report no original amount",
+    mortgageNone: "No loan is labelled as a mortgage",
+    mortgageNoOriginal: "No mortgage reports its original amount",
     marginExposure: "Investment margin exposure",
     empty: {
       bannerTitle: "No debt accounts yet",
@@ -56,6 +58,8 @@ const zh: typeof en = {
     utilization: "信用卡使用率",
     mortgageRepaid: "房貸已還",
     mortgageOriginalMissing: "部分房貸未提供原始金額",
+    mortgageNone: "沒有標示為房貸的貸款",
+    mortgageNoOriginal: "房貸都未提供原始金額",
     marginExposure: "投資融資曝險",
     empty: {
       bannerTitle: "還沒有任何負債帳戶",

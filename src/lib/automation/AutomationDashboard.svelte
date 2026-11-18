@@ -997,7 +997,15 @@ import type {
               <tr class="task-row" class:task-active={task.isActive} class:task-attention={statusClass(task.status) === "bad"} id={`${task.id}-task-row`}>
                 <td>
                   <div class="task-name">
-                    <span class="task-logo"><InstitutionLogo institution={taskLogo(task)} /></span>
+                    <span class="task-logo">
+                      {#if taskLogo(task)}
+                        <InstitutionLogo institution={taskLogo(task)} />
+                      {:else if task.kind === "crawler"}
+                        <Landmark size={16} strokeWidth={2.2} aria-hidden="true" />
+                      {:else}
+                        <ArrowLeftRight size={16} strokeWidth={2.2} aria-hidden="true" />
+                      {/if}
+                    </span>
                     <strong>{taskLabel(task, $locale)}</strong>
                   </div>
                 </td>
@@ -2334,6 +2342,7 @@ import type {
     width: 20px;
     height: 20px;
     flex: none;
+    color: var(--muted);
     display: grid;
     place-items: center;
   }
