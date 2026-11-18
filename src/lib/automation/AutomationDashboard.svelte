@@ -694,6 +694,15 @@ import type {
     return dictionary.automation.syncStage;
   }
 
+  /**
+   * Cancel warns. A row blocked until the person acts (missing sign-in, or a
+   * reset "Sync all" never runs) keeps the ink action; a routine run defers to "Sync all".
+   */
+  function taskControlTone(task: AutomationTaskRow) {
+    if (task.primaryAction === "Cancel") return "danger";
+    return task.primaryAction === "Configure" || task.primaryAction === "Delete financial data" ? "primary" : "default";
+  }
+
   async function primaryTaskAction(task: AutomationTaskRow) {
     if (task.primaryAction === "Delete financial data") {
       onOpenFinancialDataSettings();
@@ -1041,7 +1050,7 @@ import type {
                 <td class="right">
                   <div class="task-actions">
                     <button
-                      class={`button task-control ${task.primaryAction === "Cancel" ? "danger" : "primary"}`}
+                      class={`button task-control ${taskControlTone(task)}`}
                       type="button"
                       disabled={!task.canRun}
                       aria-busy={task.isActive}
@@ -2439,6 +2448,20 @@ import type {
     border-color: var(--accent);
     color: var(--accent);
     background: var(--accent-soft);
+  }
+
+  /* "Sync all" is the page's one primary action; a row's own run stays quiet. */
+  .task-control.default {
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    transition: background-color 160ms ease, border-color 160ms ease;
+  }
+
+  .task-control.default:not(:disabled):hover {
+    border-color: color-mix(in oklch, var(--fg) 22%, var(--border));
+    background: var(--surface-soft);
   }
 
   .task-control.primary,
