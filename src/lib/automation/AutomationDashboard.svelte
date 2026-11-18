@@ -805,9 +805,11 @@ import type {
         <h2>
           {summaryAutomation.active
             ? $t.automation.runningTaskHeading(summaryAutomation.activeTaskCount)
-            : lastSync
-              ? $t.automation.lastSyncHeading(lastSync.completed)
-              : $t.automation.startSyncHeading}
+            : !lastSync
+              ? $t.automation.startSyncHeading
+              : lastSync.completed > 0
+                ? $t.automation.lastSyncHeading(lastSync.completed)
+                : $t.automation.lastSyncNoneCompleted}
         </h2>
         {#if !summaryAutomation.active}
           <p class="sync-hero-meta" data-last-sync>
