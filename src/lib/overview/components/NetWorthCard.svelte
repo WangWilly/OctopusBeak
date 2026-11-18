@@ -30,8 +30,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   $: rangeLabels = { "30d": $t.overview.range30, "90d": $t.overview.range90, all: $t.overview.rangeAll };
   $: visible = seriesInRange(series, range);
   $: hasTrend = series.length > 1;
-  $: debtsOnlyNote = netWorth.debtsOnlyBefore
-    ? $t.overview.chartDebtsOnly(formatUtcDate(netWorth.debtsOnlyBefore, "UTC", $locale))
+  $: assetsFromNote = netWorth.assetsRecordedFrom
+    ? $t.overview.chartAssetsFrom(formatUtcDate(netWorth.assetsRecordedFrom, "UTC", $locale))
     : "";
 
   function chipLabel(chip: NetWorthChip) {
@@ -91,15 +91,15 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   {#if hasTrend}
     <NetWorthChart points={visible} label={$t.overview.chartAria} />
     <p class="caption">
-      {#if debtsOnlyNote}
-        <span data-debts-only>{debtsOnlyNote}</span>
+      {#if assetsFromNote}
+        <span data-assets-from>{assetsFromNote}</span>
         <span aria-hidden="true">·</span>
       {/if}
       {$t.overview.chartCaption}
       <OriginMarkers provenance={mergeProvenance(...visible.map((point) => point.provenance))} placement="above" />
     </p>
   {:else}
-    <CardPlaceholder state="net-worth" title={$t.overview.chartEmptyTitle} body={debtsOnlyNote || $t.overview.chartEmptyBody}>
+    <CardPlaceholder state="net-worth" title={$t.overview.chartEmptyTitle} body={assetsFromNote || $t.overview.chartEmptyBody}>
       <ChartLine size={18} strokeWidth={2} />
     </CardPlaceholder>
   {/if}
