@@ -59,7 +59,7 @@ export type NetWorth = {
   chips: NetWorthChip[];
   /** The origins the chips' changes count. */
   chipsProvenance: Provenance;
-  /** Set when debts were recorded before most assets, so the series starts on this date. */
+  /** Set when debts were recorded before the first import of assets, so the series starts on this date. */
   assetsRecordedFrom: string | null;
 };
 
@@ -201,14 +201,18 @@ function readTicker(
   return accounts.length === 0 || foreign.length > 0 ? { state: "rates-pending" } : { state: "domestic-only" };
 }
 
+/** Asset accounts first recorded this many days after the first one belong to the same first import. */
+const FIRST_IMPORT_DAYS = 3;
+
 /**
  * A loan imported with a year of history before any deposit would plot a year
- * of negative net worth, because no asset was recorded yet. One asset recorded
- * a day ahead of the rest does no better: a fund alone against every loan put
- * the start near zero and the since-start chip at −217%. When debts were
- * recorded first, the series starts on the date by which at least half of the
- * asset accounts have a record. Assets recorded first are a real net worth:
- * assets with no debts yet.
+ * of negative net worth, because no asset was recorded yet. The first import
+ * can also spread its assets over a few days by statement date: a fund dated
+ * one day ahead of every bank, set alone against every loan, put the start
+ * near zero and the since-start chip at −217%. When debts were recorded first,
+ * the series starts on the last first-record date of that first import.
+ * Assets added later never move the start, so entering a house today keeps
+ * the year before it; assets recorded before any debt keep the whole history.
  */
 function assetsRecordedFrom(dto: OverviewModelInput): string | null {
   let debts = "";
@@ -222,8 +226,10 @@ function assetsRecordedFrom(dto: OverviewModelInput): string | null {
   }
   if (!debts || assetStarts.length === 0) return null;
   assetStarts.sort();
-  const start = assetStarts[Math.ceil(assetStarts.length / 2) - 1]!;
-  return debts < assetStarts[0]! ? start : null;
+  const firstAsset = assetStarts[0]!;
+  if (debts >= firstAsset) return null;
+  const importEnd = addDays(firstAsset, FIRST_IMPORT_DAYS);
+  return assetStarts.filter((date) => date <= importEnd).at(-1)!;
 }
 
 function netWorthSeries(history: readonly DailyHistoryRowDto[], rates: ExchangeRateIndex): NetWorthPoint[] {
