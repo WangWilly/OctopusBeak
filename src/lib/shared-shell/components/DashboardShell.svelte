@@ -32,7 +32,6 @@
   export let sideLabel = "Net position";
   export let sideValue = "--";
   export let sideValueSensitive = true;
-  export let titleHidden = false;
   export let sideSub = "";
   export let sideSubSensitive = false;
   /** The origins the side figure counts. */
@@ -198,7 +197,7 @@
 <svelte:window onkeydown={handleDisplayScaleKeydown} />
 
 <div class:values-hidden={!valuesVisible} class:sidebar-collapsed={sidebarCollapsed} class="shell-page">
-  <header class="topbar" class:title-hidden={titleHidden}>
+  <header class="topbar">
     <div class="topbar-controls">
       <button
         class="sidebar-toggle"
@@ -223,7 +222,8 @@
       </button>
     </div>
 
-    <h1 class="topbar-title" class:visually-hidden={titleHidden}><span>{eyebrow}</span><span aria-hidden="true">—</span><strong>{title}</strong></h1>
+    <!-- A page whose title is its section name ("Settings") shows it once. -->
+    <h1 class="topbar-title">{#if eyebrow !== title}<span>{eyebrow}</span><span aria-hidden="true">—</span>{/if}<strong>{title}</strong></h1>
 
     <div class="topbar-actions">
       <slot name="topbar-leading" />

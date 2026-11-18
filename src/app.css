@@ -292,17 +292,14 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   grid-row: 1;
   min-height: var(--topbar-height);
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
+  /* The sides always fit their buttons; the title takes what is left and ellipsizes. */
+  grid-template-columns: minmax(max-content, 1fr) minmax(0, auto) minmax(max-content, 1fr);
   align-items: center;
   gap: var(--space-4);
   padding: 0 var(--space-5);
   border-bottom: 1px solid var(--border);
   background: color-mix(in oklch, var(--surface) 96%, transparent);
   backdrop-filter: blur(16px);
-}
-
-.topbar.title-hidden .topbar-actions {
-  grid-column: 3;
 }
 
 .topbar-controls {
@@ -325,9 +322,20 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   white-space: nowrap;
 }
 
+.topbar-title {
+  overflow: hidden;
+}
+
+.topbar-title > span {
+  flex: none;
+}
+
 .topbar-title strong {
+  min-width: 0;
+  overflow: hidden;
   color: inherit;
   font: inherit;
+  text-overflow: ellipsis;
 }
 
 .topbar-actions {
@@ -1100,17 +1108,6 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   .topbar-title {
     container-type: inline-size;
     justify-content: safe center;
-    overflow: hidden;
-  }
-
-  .topbar-title > span {
-    flex: none;
-  }
-
-  .topbar-title strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
   @container (max-width: 160px) {

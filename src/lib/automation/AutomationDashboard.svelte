@@ -91,6 +91,7 @@ import type {
     DashboardBlockValueMap,
   } from "$lib/shared-shell/dashboard-blocks.ts";
   import { formatRunTime, statusClass, taskLabel, taskLogo } from "./task-display.ts";
+  import { lastSyncSummary } from "./sync-summary.ts";
   import type {
     AutomationPageModel,
     AutomationCredentialRedaction,
@@ -770,7 +771,6 @@ import type {
   {sideValue}
   sideValueSensitive={false}
   {sideSub}
-  titleHidden
 >
   <svelte:fragment slot="topbar-actions">
     <button
@@ -796,6 +796,7 @@ import type {
   <div class="content automation-content">
     <ProgressiveBlock label="summary" state={blockState(blocks, "summary")} retry={() => retryBlock("summary")} let:data>
     {@const summaryAutomation = selectAutomationBlockModel(pageModel, automationBlockData("summary", data)?.automation, $state.runtime, $state.pendingActions)}
+    {@const lastSync = summaryAutomation.active ? null : lastSyncSummary(summaryAutomation.tasks)}
     <section class:active={summaryAutomation.active} class="card sync-hero" aria-label={$t.automation.commandCenter}>
       <div class="sync-hero-copy">
         {#if summaryAutomation.active}
@@ -804,8 +805,22 @@ import type {
         <h2>
           {summaryAutomation.active
             ? $t.automation.runningTaskHeading(summaryAutomation.activeTaskCount)
-            : $t.automation.startSyncHeading}
+            : !lastSync
+              ? $t.automation.startSyncHeading
+              : lastSync.completed > 0
+                ? $t.automation.lastSyncHeading(lastSync.completed)
+                : $t.automation.lastSyncNoneCompleted}
         </h2>
+        {#if !summaryAutomation.active}
+          <p class="sync-hero-meta" data-last-sync>
+            {#if lastSync}
+              {#if lastSync.unfinished > 0}<span class="unfinished">{$t.automation.lastSyncUnfinished(lastSync.unfinished)}</span><span aria-hidden="true">·</span>{/if}
+              <span>{$t.automation.lastSyncAt(formatTime(lastSync.finishedAt))}</span>
+            {:else}
+              {$t.automation.startSyncHint($t.automation.syncAll)}
+            {/if}
+          </p>
+        {/if}
         {#if iconTasks.length}
           <div class="active-task-filter">
             <div
@@ -1993,6 +2008,20 @@ import type {
     font-size: 22px;
     line-height: 1.25;
     letter-spacing: -0.01em;
+  }
+
+  .sync-hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .sync-hero-meta .unfinished {
+    color: var(--warn);
+    font-weight: 650;
   }
 
   .running-kicker {

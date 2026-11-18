@@ -338,7 +338,7 @@
   .purchase-facts dl > div { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 10px 0; border-bottom: 1px solid var(--border); }
   .purchase-facts dt { flex: none; color: var(--muted); font-size: 12px; font-weight: 560; }
   .purchase-facts dd { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; margin: 0; font-size: 13px; font-weight: 650; text-align: right; }
-  .purchase-facts dd.caution { color: var(--warn); }
+  .purchase-facts dd.caution { color: var(--muted); }
   .category-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; }
   .text-button { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
   .text-button:hover { text-decoration: underline; text-underline-offset: 3px; }
