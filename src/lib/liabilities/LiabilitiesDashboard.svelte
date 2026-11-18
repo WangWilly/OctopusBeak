@@ -153,7 +153,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
             ? $t.overview.unconverted(summary.unconvertedCurrencies.join(", "))
             : "",
           usesEstimatedCredit ? $t.overview.creditCardEstimateBasis : "",
-          mortgage.omitted ? $t.liabilities.mortgageOriginalMissing : "",
+          mortgage.omitted && mortgage.shares.length > 0 ? $t.liabilities.mortgageOriginalMissing : "",
         ].filter(Boolean)}
       >
         {#if isEmpty}
@@ -197,7 +197,8 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
               provenance={originProvenance("preview")}
             />
           {:else}
-            <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.mortgageRepaid} value="—" sub="–" share={0} />
+            {@const why = mortgage.omitted ? $t.liabilities.mortgageNoOriginal : $t.liabilities.mortgageNone}
+            <SummaryTile color={EMPTY_TILE_COLOR} head={$t.liabilities.mortgageRepaid} value="—" sub={why} subTitle={why} share={0} />
           {/each}
         {/if}
       </PageTotalCard>

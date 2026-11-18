@@ -159,9 +159,26 @@ export function institutionNames(locale: "en" | "zh-TW"): Record<InstitutionKey,
     [key, name[locale] ?? name["zh-TW"]])) as Record<InstitutionKey, string>;
 }
 
-/** The logo an Institution shows; null for the many catalog Institutions with neither a source of their own nor a Preview source. */
+/** Brokers owned by the same financial group as a bank with a logo carry that group's mark. Joint ventures such as 大和國泰 do not. */
+const GROUP_BROKER_LOGOS: Partial<Record<InstitutionKey, LogoInstitutionKey | PreviewInstitutionLogoKey>> = {
+  "broker-9600": "fubon",
+  "broker-8880": "cathay",
+  "broker-9A00": "sinopac",
+  "broker-6160": "ctbc",
+  "broker-8840": "esun",
+  "broker-9300": "hncb",
+  "broker-9B00": "bank-812",
+  "broker-7000": "bank-017",
+};
+
+/**
+ * The logo an Institution shows: its own, or its financial group's for a group
+ * broker. Null for the many catalog Institutions with none of these.
+ */
 export function institutionLogo(key: InstitutionKey | undefined): LogoInstitutionKey | PreviewInstitutionLogoKey | null {
   if (key === undefined) return null;
+  const group = GROUP_BROKER_LOGOS[key];
+  if (group) return group;
   return (INSTITUTION_KEYS as readonly string[]).includes(key) || PREVIEW_INSTITUTION_LOGO_KEYS.has(key)
     ? key as LogoInstitutionKey | PreviewInstitutionLogoKey
     : null;

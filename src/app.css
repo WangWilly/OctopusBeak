@@ -853,6 +853,7 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
 
 .row-bar span {
   display: block;
+  min-width: 3px;
   height: 100%;
   border-radius: inherit;
   background: var(--accent);

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
   import { locale, t } from "$lib/i18n/i18n.ts";
-  import { buildSparklineYAxis, buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
+  import { buildStackedYAxis, buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import { formatSnapshotAxisLabel } from "$lib/overview/components/snapshot-chart-data.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -44,7 +44,7 @@
   $: xDomain = xValues;
   $: yAxis = isSingleSeriesSelected
     ? buildTrendYAxis(visibleChart.totals.map((point) => point.value))
-    : buildSparklineYAxis([0, ...visibleChart.totals.map((point) => point.value)]);
+    : buildStackedYAxis(visibleChart.totals.map((point) => point.value));
   $: yDomain = isSingleSeriesSelected ? [yAxis.min, yAxis.max] : [0, yAxis.max];
   $: displayLabel = label || $t.common.balance;
   $: kindLabels = {

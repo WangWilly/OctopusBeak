@@ -185,7 +185,7 @@ export function readMortgageRepaid(accounts: readonly AccountRowDto[]): Mortgage
     const loan = account.preview?.loan;
     const owed = account.amountLines[0];
     if (!loan || loan.category !== "housing" || loan.closedAt !== null || !owed) continue;
-    if (loan.originalAmount === null) {
+    if (loan.originalAmount === null || !(Number(loan.originalAmount) > 0)) {
       omitted = true;
       continue;
     }
@@ -195,7 +195,6 @@ export function readMortgageRepaid(accounts: readonly AccountRowDto[]): Mortgage
     sums.set(loan.currency, sum);
   }
   const shares = [...sums.entries()]
-    .filter(([, sum]) => sum.original > 0)
     .sort(([left], [right]) => (left === "TWD" ? -1 : right === "TWD" ? 1 : left.localeCompare(right)))
     .map(([currency, sum]) => ({ currency, ...sum, repaid: 1 - sum.outstanding / sum.original }));
   return { shares, omitted };

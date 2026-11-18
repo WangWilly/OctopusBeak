@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatPct, formatShortDate, maskedAccountDigits } from "./overview-format.ts";
+import { formatPct, formatShare, formatShortDate, maskedAccountDigits } from "./overview-format.ts";
 import { formatTwdNumber } from "../shared-money/money.ts";
 
 test("an account label shows only the last four digits of its provider number", () => {
@@ -22,4 +22,10 @@ test("signed figures use a true minus and hide the sign of zero", () => {
 test("short dates follow the interface language", () => {
   assert.equal(formatShortDate("2026-10-04", "zh-TW"), "10/4");
   assert.equal(formatShortDate("2026-10-04", "en"), "Oct 4");
+});
+
+test("a positive share too small for one decimal never reads as 0.0%", () => {
+  assert.equal(formatShare(0.0000016, "zh-TW"), "<0.1%");
+  assert.equal(formatShare(0.0005, "zh-TW"), "0.1%");
+  assert.equal(formatShare(0.416, "en"), "41.6%");
 });
