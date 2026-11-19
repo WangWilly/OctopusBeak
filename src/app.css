@@ -585,6 +585,12 @@ html.desktop-shell .topbar :is(a, button, input, select, textarea, [role="button
   line-height: 1.2;
 }
 
+.selected-actions-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .action-group {
   display: flex;
   flex-wrap: wrap;

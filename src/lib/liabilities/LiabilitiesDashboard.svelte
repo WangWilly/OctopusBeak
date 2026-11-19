@@ -26,6 +26,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
   import { currencyCount, formatAmount, formatMoney } from "$lib/shared-money/money.ts";
   import StackedBalanceChart from "$lib/shared-accounts/components/StackedBalanceChart.svelte";
   import { localizeAccount, localizeAccounts } from "$lib/shared-accounts/localize-account.ts";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
   import {
     buildStackedBalanceChartData,
     chartCurrenciesFor,
@@ -172,6 +173,7 @@ import { formatTwd, formatTwdNumber } from "$lib/shared-money/money.ts";
               approx={payment.kind === "card-estimate"}
               value={paymentAmount(payment)}
               sub={accountShort(payment.account, $t)}
+              subLogo={institutionLogo(payment.account.institutionKey)}
               subTitle={localizeAccount(payment.account, $t).label}
               share={payment.share}
             />

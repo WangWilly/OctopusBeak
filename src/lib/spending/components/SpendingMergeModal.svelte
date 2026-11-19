@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
-  import { ArrowLeft, Check, CreditCard, GitMerge, History, Info, Landmark, Receipt, TriangleAlert, Unlink, X } from "@lucide/svelte";
+  import { ArrowLeft, Check, GitMerge, History, Info, TriangleAlert, Unlink, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
-  import { institutionLogo } from "$lib/institutions/institutions.ts";
+  import SourceIcon from "./SourceIcon.svelte";
   import type { SpendingCandidatePageItem, SpendingCandidatePairRef } from "../model.ts";
   import type { SpendingPurchaseRecordView as PurchaseRecord } from "../purchase-matching.ts";
   import type { SpendingReviewStore } from "../spending-review-store.ts";
@@ -154,7 +154,7 @@
                 <div class="pair-sources">
                   {#if item.invoiceRecord}
                     <div class="source-line">
-                      {@render invoiceIcon()}
+                      <SourceIcon source={{ kind: "invoice" }} />
                       <span class="source-texts">
                         <strong>{item.invoiceRecord.invoice ? $t.spendingReview.invoiceNumber(item.invoiceRecord.invoice.revision.invoiceNumber) : $t.spendingReview.einvoice}</strong>
                         <span>{invoiceMeta(item.invoiceRecord)}</span>
@@ -164,7 +164,7 @@
                   {/if}
                   {#if item.paymentRecord?.transaction}
                     <div class="source-line">
-                      {@render paymentIcon(item.paymentRecord.paymentSource?.institution, item.paymentRecord.transaction.stream === "credit-card")}
+                      <SourceIcon source={{ kind: "payment", institution: item.paymentRecord.paymentSource?.institution, card: item.paymentRecord.transaction.stream === "credit-card" }} />
                       <span class="source-texts">
                         <strong>{paymentText($t, item.paymentRecord.transaction, item.paymentRecord.paymentSource)}</strong>
                         <span>{paymentMeta(item.paymentRecord)}</span>
@@ -236,14 +236,14 @@
                 </div>
                 {#if entry.invoice}
                   <div class="source-line">
-                    {@render invoiceIcon()}
+                    <SourceIcon source={{ kind: "invoice" }} />
                     <span class="source-texts"><strong>{$t.spendingReview.invoiceNumber(entry.invoice.invoiceNumber)}</strong><span>{[monthDayText(entry.invoice.occurrence), entry.invoice.sellerName].filter(Boolean).join(" · ")}</span></span>
                     <span class="money" data-sensitive>{amountText(entry.invoice.amount)}</span>
                   </div>
                 {/if}
                 {#if entry.payment}
                   <div class="source-line">
-                    {@render paymentIcon(entry.payment.institution, entry.payment.cardMask !== null)}
+                    <SourceIcon source={{ kind: "payment", institution: entry.payment.institution, card: entry.payment.cardMask !== null }} />
                     <span class="source-texts">
                       <strong>{paymentText($t, { stream: entry.payment.cardMask ? "credit-card" : "account" }, { institution: entry.payment.institution, cardMask: entry.payment.cardMask, billingPeriod: null })}</strong>
                       <span>{[monthDayText(entry.payment.date), entry.payment.description].filter(Boolean).join(" · ")}</span>
@@ -272,19 +272,6 @@
     </footer>
   </section>
 </div>
-
-{#snippet invoiceIcon()}
-  <span class="source-icon" class:logo={institutionLogo("einvoice") !== null} aria-hidden="true">
-    {#if institutionLogo("einvoice")}<InstitutionLogo institution={institutionLogo("einvoice")} size={20} />{:else}<Receipt size={14} strokeWidth={2} />{/if}
-  </span>
-{/snippet}
-
-{#snippet paymentIcon(institution: string | null | undefined, card: boolean)}
-  {@const logo = institutionKeyLogo(institution)}
-  <span class="source-icon" class:logo={logo !== null} aria-hidden="true">
-    {#if logo}<InstitutionLogo institution={logo} size={20} />{:else if card}<CreditCard size={14} strokeWidth={2} />{:else}<Landmark size={14} strokeWidth={2} />{/if}
-  </span>
-{/snippet}
 
 <style>
   .merge-modal { z-index: 45; }
@@ -320,9 +307,6 @@
   .pair-evidence { display: grid; gap: 10px; min-width: 0; }
   .pair-sources { display: grid; gap: var(--space-2); padding-left: var(--space-3); border-left: 2px solid var(--border); }
   .source-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .source-icon { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--surface-soft); color: var(--muted); }
-  /* A source with a known Institution shows its logo in the same slot; the generic glyph stays for the rest. */
-  .source-icon.logo { background: none; }
   .payment :global(.institution-logo) { margin-right: 4px; vertical-align: -2px; }
   .source-texts { display: grid; flex: 1; gap: 1px; min-width: 0; }
   .source-texts strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
