@@ -289,8 +289,8 @@ export function createNextBankSource(options: Readonly<{ http?: PreviewHttpOpene
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Next Bank account. Its data may be incomplete or wrong. Next Bank's sign-in CAPTCHA is solved from its spoken audio with the on-device speech recogniser, and the run stops at sign-in when it cannot read the clip.",
-        "zh-TW": "預覽來源，從未以真實的將來銀行帳戶執行過，資料可能不完整或有誤。將來銀行登入的驗證碼以語音播放，由裝置上的語音辨識器解題；無法辨識時，執行會在登入時停止。",
+        en: "Next Bank's sign-in CAPTCHA is solved from its spoken audio with the on-device speech recogniser, and the run stops at sign-in when it cannot read the clip.",
+        "zh-TW": "將來銀行登入的驗證碼以語音播放，由裝置上的語音辨識器解題；無法辨識時，執行會在登入時停止。",
       },
       requirements: [{ en: "A Next Bank account with web sign-in.", "zh-TW": "可用網頁登入的將來銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Next Bank.", "zh-TW": "輸入登入將來銀行使用的身分證字號、使用者代碼與密碼。" }],

@@ -399,8 +399,8 @@ export function createObankSource(options: Readonly<{ http?: PreviewHttpOpener; 
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live O-Bank account. Its data may be incomplete or wrong. Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
-        "zh-TW": "預覽來源，從未以真實的王道銀行帳戶執行過，資料可能不完整或有誤。圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
+        en: "Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
+        "zh-TW": "圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
       },
       requirements: [{ en: "An O-Bank account with online banking sign-in.", "zh-TW": "可登入網路銀行的王道銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to O-Bank online banking.", "zh-TW": "輸入登入王道銀行網路銀行使用的身分證字號、使用者代號與密碼。" }],
