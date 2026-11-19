@@ -5,7 +5,7 @@ import {
   spendingCategoryCodesForGroup,
   type SpendingCategoryGroup,
 } from "./category-groups.ts";
-import { byAmount, byMerchant, capped, matches, type ClassifyApplyTargets, type ClassifyMerchantGroup } from "./classify-queue.ts";
+import { byMerchant, byTime, capped, matches, type ClassifyApplyTargets, type ClassifyMerchantGroup } from "./classify-queue.ts";
 import type { SpendingClassifyQueueItem } from "./model.ts";
 
 /**
@@ -83,8 +83,11 @@ export function classifyPeriod(today: string): Readonly<{ startDate: string; end
   return { startDate: start.toISOString().slice(0, 10), endDate: today };
 }
 
-/** What the inbox shows: its order, the search box, and the 「只看」 merchant in 依金額. */
-export type ClassifyView = Readonly<{ mode: "amount" | "merchant"; query: string; merchantKey: string | null }>;
+/** What the inbox shows: its order, the search box, and the 「只看」 merchant in a list of single purchases. */
+export type ClassifyView = Readonly<{ mode: ClassifyMode; query: string; merchantKey: string | null }>;
+
+/** 依時間 lists single purchases; 依商家 lists merchant groups. */
+export type ClassifyMode = "time" | "merchant";
 
 /** A merchant row with the purchases it shows and writes, and how many of its purchases the search hides. */
 export type ClassifyMerchantRow = Readonly<{ group: ClassifyMerchantGroup; members: readonly SpendingClassifyQueueItem[]; unmatched: number }>;
@@ -96,10 +99,10 @@ function merchantPurchaseIds(items: readonly SpendingClassifyQueueItem[], key: s
   return new Set(byMerchant(items).find((group) => group.key === key)?.purchaseIds ?? []);
 }
 
-/** The 依金額 rows, largest first: the search's matches, inside 「只看」 when one is set. */
-export function classifyAmountRows(items: readonly SpendingClassifyQueueItem[], view: ClassifyView): readonly SpendingClassifyQueueItem[] {
+/** The 依時間 rows, newest first: the search's matches, inside 「只看」 when one is set. */
+export function classifyPurchaseRows(items: readonly SpendingClassifyQueueItem[], view: ClassifyView): readonly SpendingClassifyQueueItem[] {
   const only = view.merchantKey === null ? null : merchantPurchaseIds(items, view.merchantKey);
-  return byAmount(items).filter((item) => (only === null || only.has(item.purchaseId)) && matches(item, view.query));
+  return byTime(items).filter((item) => (only === null || only.has(item.purchaseId)) && matches(item, view.query));
 }
 
 /** The 依商家 rows: each group with a purchase the search matches, showing only those purchases. */
@@ -119,11 +122,11 @@ export function classifyMerchantRows(items: readonly SpendingClassifyQueueItem[]
 export function classifyWriteTargets(items: readonly SpendingClassifyQueueItem[], view: ClassifyView, control: ClassifyControl): ClassifyApplyTargets {
   if (control.kind === "search") {
     if (view.query.trim() === "") return capped([]);
-    const merchantKey = view.mode === "amount" ? view.merchantKey : null;
-    return capped(classifyAmountRows(items, { ...view, merchantKey }).map((item) => item.purchaseId));
+    const merchantKey = view.mode === "merchant" ? null : view.merchantKey;
+    return capped(classifyPurchaseRows(items, { ...view, merchantKey }).map((item) => item.purchaseId));
   }
-  if (view.mode === "amount")
-    return capped(classifyAmountRows(items, view).some((item) => item.purchaseId === control.key) ? [control.key] : []);
+  if (view.mode !== "merchant")
+    return capped(classifyPurchaseRows(items, view).some((item) => item.purchaseId === control.key) ? [control.key] : []);
   return capped(classifyMerchantRows(items, view.query).find((row) => row.group.key === control.key)?.members.map((item) => item.purchaseId) ?? []);
 }
 

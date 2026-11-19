@@ -1,5 +1,5 @@
 import type { Translation } from "../i18n/i18n.ts";
-import { isInstitutionKey } from "../institutions/institutions.ts";
+import { institutionLogo, isInstitutionKey, type LogoKey } from "../institutions/institutions.ts";
 import { isPersonalCategoryCode, type PersonalCategoryCode } from "../../ledger/canonical/personal-category-codes.ts";
 import { spendingCategoryGroup } from "./category-groups.ts";
 import type { SpendingCandidateReasons } from "./model.ts";
@@ -108,6 +108,22 @@ export function paymentText(
   return card
     ? t.spendingReview.cardPayment(institution, withMask ? lastFour(source) : null)
     : t.spendingReview.accountPayment(institution);
+}
+
+/** An Institution's logo by its stored key; null for a key without one. */
+export function institutionKeyLogo(key: string | null | undefined): LogoKey | null {
+  return key && isInstitutionKey(key) ? institutionLogo(key) : null;
+}
+
+/**
+ * The logo leading a purchase's payment method: the paying Institution's,
+ * the e-invoice platform's for an invoice-only purchase, and none for a
+ * refund, whose text names no payment.
+ */
+export function paymentLogo(record: Pick<PurchaseRecord, "basis" | "transaction" | "paymentSource">): LogoKey | null {
+  if (record.basis === "refund") return null;
+  if (record.transaction) return institutionKeyLogo(record.paymentSource?.institution);
+  return institutionLogo("einvoice");
 }
 
 /** The row's 「category · payment method」 second half. */

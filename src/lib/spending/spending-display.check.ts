@@ -7,6 +7,7 @@ import {
   decidedAtText,
   mergedReasons,
   pairingAmountsDiffer,
+  paymentLogo,
   paymentMethodText,
   purchaseTimeText,
   reasonTexts,
@@ -57,6 +58,15 @@ test("the payment method names the institution, the card's last four and the mer
   assert.equal(paymentMethodText(zh, record({ paymentSource: null })), "信用卡", "an unknown institution falls back to the stream");
   assert.equal(paymentMethodText(zh, record({ paymentSource: { institution: "esun", cardMask: "****12x4", billingPeriod: null } })), "玉山銀行信用卡", "only four digits count as a mask");
   assert.equal(paymentMethodText(zh, record({ basis: "invoice", transaction: null, paymentSource: null })), "電子發票");
+});
+
+test("the payment method leads with the paying Institution's logo", () => {
+  assert.equal(paymentLogo(record()), "esun");
+  assert.equal(paymentLogo(record({ basis: "linked" })), "esun", "a merged row shows the bank that paid");
+  assert.equal(paymentLogo(record({ basis: "invoice", transaction: null, paymentSource: null })), "einvoice");
+  assert.equal(paymentLogo(record({ paymentSource: null })), null, "an unknown institution shows no logo");
+  assert.equal(paymentLogo(record({ paymentSource: { institution: "bank-004", cardMask: null, billingPeriod: null } })), null, "nor does one without a logo");
+  assert.equal(paymentLogo(record({ basis: "refund" })), null);
 });
 
 test("category text rolls codes into display groups and says when a purchase is split or unclassified", () => {

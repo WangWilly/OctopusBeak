@@ -3,11 +3,13 @@
   import { ListFilter, Search, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
   import { MAX_CATEGORIZATION_TARGETS } from "../../financial/page-actions.ts";
   import type { PersonalCategoryCode } from "../../../ledger/canonical/personal-category-codes.ts";
   import { SPENDING_CATEGORY_GROUP_BY_CODE, type SpendingCategoryGroup } from "../category-groups.ts";
   import {
-    classifyAmountRows,
+    classifyPurchaseRows,
     classifyGroupCodes,
     classifyKeyCommand,
     classifyMerchantRows,
@@ -16,13 +18,14 @@
     keepsMerchantFilter,
     movedKey,
     type ClassifyControl,
+    type ClassifyMode,
     type ClassifyView,
   } from "../classify-inbox.ts";
   import type { ClassifyMerchantGroup } from "../classify-queue.ts";
   import type { ClassifyQueueStore } from "../classify-queue-store.ts";
   import type { SpendingClassifyDetails, SpendingClassifyQueueItem } from "../model.ts";
   import type { SpendingPageActionOutcome } from "../purchase-spending-session.ts";
-  import { exactDecimalText, monthDayText, paymentText } from "../spending-display.ts";
+  import { exactDecimalText, institutionKeyLogo, monthDayText, paymentText } from "../spending-display.ts";
   import CategoryKeyPicker from "./CategoryKeyPicker.svelte";
   import { moneyTotals } from "$lib/shared-money/exact-money.ts";
   import { moneyText } from "./money-text.ts";
@@ -34,13 +37,12 @@
   /** Another Spending action is running; the page takes one action at a time. */
   export let busy = false;
 
-  type Mode = "amount" | "merchant";
   type Toast =
     | Readonly<{ kind: "applied"; purchaseIds: readonly string[] }>
     | Readonly<{ kind: "undone"; count: number }>;
 
   const state = queue.state;
-  let mode: Mode = "amount";
+  let mode: ClassifyMode = "time";
   let query = "";
   /** 「逐筆看」: the by-amount list narrowed to one merchant group. */
   let merchantFilter: ClassifyMerchantGroup | null = null;
@@ -55,10 +57,10 @@
   let searchInput: HTMLInputElement | null = null;
 
   $: items = $state.items ?? [];
-  $: view = { mode, query, merchantKey: mode === "amount" ? merchantFilter?.key ?? null : null } satisfies ClassifyView;
-  $: amountRows = classifyAmountRows(items, view);
+  $: view = { mode, query, merchantKey: mode === "merchant" ? null : merchantFilter?.key ?? null } satisfies ClassifyView;
+  $: purchaseRows = classifyPurchaseRows(items, view);
   $: merchantRows = classifyMerchantRows(items, query);
-  $: keys = mode === "amount" ? amountRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
+  $: keys = mode !== "merchant" ? purchaseRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
   $: followRows(keys);
   $: currentControl = currentKey === null ? null : { kind: "current", key: currentKey } satisfies ClassifyControl;
   $: currentTargets = currentControl ? classifyWriteTargets(items, view, currentControl) : null;
@@ -78,7 +80,7 @@
     shownKeys = next;
   }
 
-  function chooseMode(next: Mode) {
+  function chooseMode(next: ClassifyMode) {
     if (next === mode) return;
     mode = next;
     merchantFilter = null;
@@ -87,7 +89,7 @@
   }
 
   function reviewEach(entry: ClassifyMerchantGroup) {
-    mode = "amount";
+    mode = "time";
     merchantFilter = entry;
     query = "";
     shownKeys = [];
@@ -208,6 +210,12 @@
     return item.amount ? moneyText(item.amount, $locale) : $t.purchaseSpending.amountUnavailable;
   }
 
+  /** The paying Institution's logo; an invoice-only purchase shows the e-invoice platform's. */
+  function paymentLogo(item: SpendingClassifyQueueItem) {
+    if (!item.payment) return institutionLogo("einvoice");
+    return institutionKeyLogo(item.payment.institution);
+  }
+
   function accountText(item: SpendingClassifyQueueItem) {
     return item.payment
       ? paymentText($t, item.payment, { institution: item.payment.institution, cardMask: item.payment.cardMask, billingPeriod: null })
@@ -236,6 +244,10 @@
     return !first || !last ? "" : first === last ? monthDayText(first) : `${monthDayText(first)} – ${monthDayText(last)}`;
   }
 </script>
+
+{#snippet payment(item: SpendingClassifyQueueItem, size: number)}
+  <span class="payment">{#if paymentLogo(item)}<InstitutionLogo institution={paymentLogo(item)} {size} />{/if}{accountText(item)}</span>
+{/snippet}
 
 {#snippet details(facts: SpendingClassifyDetails)}
   <div class="row-details" data-classify-details>
@@ -273,7 +285,7 @@
 >
   <div class="toolbar">
     <div class="filters mode" role="group" aria-label={$t.classifyInbox.modeAria}>
-      <button type="button" class="filter-btn" aria-pressed={mode === "amount"} data-classify-mode="amount" onclick={() => chooseMode("amount")}>{$t.classifyInbox.byAmount}</button>
+      <button type="button" class="filter-btn" aria-pressed={mode === "time"} data-classify-mode="time" onclick={() => chooseMode("time")}>{$t.classifyInbox.byTime}</button>
       <button type="button" class="filter-btn" aria-pressed={mode === "merchant"} data-classify-mode="merchant" onclick={() => chooseMode("merchant")}>{$t.classifyInbox.byMerchant}</button>
     </div>
     <label class="search-field">
@@ -289,7 +301,7 @@
         data-classify-search
       />
     </label>
-    {#if merchantFilter && mode === "amount"}
+    {#if merchantFilter && mode !== "merchant"}
       <span class="merchant-filter" data-classify-merchant-filter>
         <ListFilter size={14} strokeWidth={2} aria-hidden="true" />{$t.classifyInbox.merchantOnly(merchantFilter.displayName ?? merchantFilter.key)}
         <button type="button" class="text-button" onclick={showAll}><X size={13} strokeWidth={2} aria-hidden="true" />{$t.classifyInbox.showAll}</button>
@@ -317,8 +329,8 @@
       <p class="list-empty">{$t.classifyInbox.noMatch}</p>
     {:else}
       <div class="rows" role="listbox" aria-label={$t.classifyInbox.listAria} aria-busy={saving || $state.loading}>
-        {#if mode === "amount"}
-          {#each amountRows as item (item.purchaseId)}
+        {#if mode !== "merchant"}
+          {#each purchaseRows as item (item.purchaseId)}
             <div
               class="row"
               role="option"
@@ -331,7 +343,7 @@
               <div class="row-head">
                 <span class="row-texts">
                   <strong>{item.title ?? $t.purchaseSpending.merchantUnavailable}</strong>
-                  <span>{monthDayText(item.date)} · {accountText(item)}</span>
+                  <span class="row-meta">{monthDayText(item.date)} · {@render payment(item, 14)}</span>
                 </span>
                 <span class="money" data-sensitive>{amountText(item)}</span>
               </div>
@@ -365,7 +377,7 @@
                     <li>
                       <span class="member-date num">{monthDayText(member.date)}</span>
                       <span class="member-title">
-                        {member.title ?? $t.purchaseSpending.merchantUnavailable} · {accountText(member)}
+                        {member.title ?? $t.purchaseSpending.merchantUnavailable} · {@render payment(member, 12)}
                         {#if member.details.items.length > 0}<span class="member-items">{itemNames(member.details)}</span>{/if}
                       </span>
                       <span class="money" data-sensitive>{amountText(member)}</span>
@@ -456,6 +468,10 @@
   .row:focus { outline: none; }
   .row:focus-visible { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
   .row-head { display: flex; align-items: center; gap: var(--space-4); }
+  /* The paying Institution's logo leads its name, as on the account tables. */
+  .payment { display: inline; }
+  .payment :global(.institution-logo) { margin-right: 4px; vertical-align: -2px; }
+  .row-texts .payment { overflow: visible; }
   /* The row being classified shows what its sources say beyond the title. */
   .row-details { display: grid; gap: 6px; padding: 8px 0 2px; border-top: 1px solid var(--border); font-size: 12px; }
   .detail-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--space-3); margin: 0; color: var(--muted); }
