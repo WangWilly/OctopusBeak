@@ -257,9 +257,8 @@
 >
   <div class="window-drag-region" aria-hidden="true"></div>
   {#if currentSlide <= 2}
-    <div class="progress" aria-hidden="true">
-      {#each [1, 2, 3, 4, 5, 6] as item}<span class:active={item === currentSlide}></span>{/each}
-    </div>
+    <!-- The same 「01 / 06」 count and bars the later slides carry, centred where the stage has no card for it. -->
+    <div class="progress">{@render stepProgress(currentSlide)}</div>
   {/if}
   <span class="visually-hidden" aria-live="polite">{progressText}</span>
 
@@ -448,28 +447,13 @@
   .progress {
     position: fixed;
     z-index: 8;
-    top: max(18px, env(safe-area-inset-top));
+    top: max(40px, env(safe-area-inset-top));
     left: 50%;
-    display: flex;
-    gap: 8px;
+    width: min(320px, 70vw);
+    color: var(--deep-blue);
     transform: translateX(-50%);
     pointer-events: none;
     -webkit-app-region: drag;
-  }
-
-  .progress span {
-    width: 7px;
-    height: 7px;
-    border: 1px solid rgb(7 31 74 / 28%);
-    border-radius: 999px;
-    background: rgb(255 255 255 / 54%);
-    transition: width 240ms ease, background 240ms ease;
-  }
-
-  .progress span.active {
-    width: 22px;
-    border-color: var(--deep-blue);
-    background: var(--deep-blue);
   }
 
   .intro-slide {
