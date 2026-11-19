@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { locale } from "$lib/i18n/i18n.ts";
-  import type { HistoryPoint } from "$lib/shared-accounts/balance-history.ts";
+  import { Area, AreaChart, Tooltip } from "layerchart";
+  import { curveLinear, curveStepAfter } from "d3-shape";
+  import { locale, t } from "$lib/i18n/i18n.ts";
+  import { buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
+  import type { HistoryChartPoint } from "$lib/shared-accounts/balance-history-chart.ts";
+  import { formatAmount } from "$lib/shared-money/money.ts";
 
-  export let points: HistoryPoint[];
+  export let points: HistoryChartPoint[];
   /** Ledger balances hold until the next movement, so they draw as steps. */
   export let stepped = false;
   export let tone: "asset" | "liability" = "asset";
@@ -10,169 +14,250 @@
   export let todayLabel: string;
   export let currency: string;
   export let label: string;
+  /** A day pointed at from outside the chart: a hovered table row or statistic, or the last clicked point. */
+  export let highlightDay: string | null = null;
+  export let onSelectDay: (day: string) => void = () => {};
 
-  const HEIGHT = 170;
-  const PAD = { top: 12, right: 12, bottom: 26, left: 64 };
-  const TICKS = 4;
+  type ChartContext = {
+    xScale: ((value: string) => number) & { bandwidth?: () => number };
+    yScale: (value: number) => number;
+    height: number;
+  };
 
-  let width = 800;
+  let brushedYDomain: [number, number] | null = null;
+  let yRangeReset = 0;
+  let lastSignature = "";
 
-  $: values = points.map((point) => point.balance);
-  $: scale = niceScale(Math.min(...values), Math.max(...values));
-  $: plotWidth = Math.max(1, width - PAD.left - PAD.right);
-  $: plotHeight = HEIGHT - PAD.top - PAD.bottom;
-  // A lone point has no span to cover, so it sits in the middle of the plot.
-  $: x = (index: number) => PAD.left + (points.length <= 1 ? plotWidth / 2 : (index / (points.length - 1)) * plotWidth);
-  $: y = (value: number) => PAD.top + plotHeight - ((value - scale.min) / (scale.max - scale.min)) * plotHeight;
-  $: path = linePath(points, stepped, x, y);
-  $: area = path ? `${path} L${x(points.length - 1)},${PAD.top + plotHeight} L${x(0)},${PAD.top + plotHeight} Z` : "";
-  $: xLabels = axisLabels(points, today, todayLabel, $locale);
+  $: signature = `${currency}:${points[0]?.day ?? ""}:${points.at(-1)?.day ?? ""}:${points.length}`;
+  $: if (signature !== lastSignature) {
+    lastSignature = signature;
+    resetYRange();
+  }
+  $: curve = stepped ? curveStepAfter : curveLinear;
+  $: xDomain = points.map((point) => point.position);
+  $: yAxis = buildTrendYAxis(points.map((point) => point.balance));
+  $: yDomain = brushedYDomain ?? [yAxis.min, yAxis.max];
   $: last = points.at(-1) ?? null;
-  $: number = new Intl.NumberFormat($locale, { maximumFractionDigits: 0 });
+  $: highlighted = highlightDay === null ? null : points.find((point) => point.day === highlightDay) ?? null;
 
-  function niceScale(low: number, high: number) {
-    if (!Number.isFinite(low) || !Number.isFinite(high)) return { min: 0, max: 1, step: 1 };
-    const span = high - low || Math.abs(high) || 1;
-    const rough = span / TICKS;
-    const magnitude = 10 ** Math.floor(Math.log10(rough));
-    const step = [1, 2, 2.5, 5, 10].map((factor) => factor * magnitude).find((candidate) => candidate >= rough) ?? rough;
-    const min = Math.floor((low - span * 0.05) / step) * step;
-    const max = Math.ceil((high + span * 0.05) / step) * step;
-    return { min: Math.max(low >= 0 ? 0 : min, min), max, step };
+  function resetYRange() {
+    brushedYDomain = null;
+    yRangeReset += 1;
   }
 
-  function linePath(source: HistoryPoint[], step: boolean, toX: typeof x, toY: typeof y) {
-    if (source.length === 0) return "";
-    return source.map((point, index) => {
-      if (index === 0) return `M${toX(0)},${toY(point.balance)}`;
-      return step
-        ? `H${toX(index)} V${toY(point.balance)}`
-        : `L${toX(index)},${toY(point.balance)}`;
-    }).join(" ");
+  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
+    const [start, end] = brush.y;
+    brushedYDomain = brush.active && typeof start === "number" && typeof end === "number"
+      ? [Math.min(start, end), Math.max(start, end)]
+      : null;
   }
 
-  /** Month names for long ranges, day labels otherwise; the final point reads as today. */
-  function axisLabels(source: HistoryPoint[], todayDay: string, todayText: string, language: string) {
-    if (source.length === 0) return [];
-    const long = source.length > 120 || (source.length > 1 && source[0].day.slice(0, 7) !== source.at(-1)!.day.slice(0, 7) && source.length < 20);
-    const labels: { index: number; text: string }[] = [];
-    if (long) {
-      let lastMonth = "";
-      source.forEach((point, index) => {
-        const month = point.day.slice(0, 7);
-        if (month === lastMonth) return;
-        lastMonth = month;
-        labels.push({
-          index,
-          text: new Intl.DateTimeFormat(language, { month: "short", timeZone: "UTC" }).format(new Date(`${point.day}T00:00:00Z`)),
-        });
-      });
-    } else {
-      const every = Math.max(1, Math.ceil(source.length / 5));
-      source.forEach((point, index) => {
-        if (index % every === 0) labels.push({ index, text: point.day.slice(5).replace("-", "/") });
-      });
-    }
-    const lastIndex = source.length - 1;
-    const filtered = labels.filter((item) => lastIndex - item.index >= Math.max(1, source.length / 12) || item.index === lastIndex);
-    if (source[lastIndex].day === todayDay) {
-      return [...filtered.filter((item) => item.index !== lastIndex), { index: lastIndex, text: todayText }];
-    }
-    return filtered;
+  function pointAt(position: unknown) {
+    return typeof position === "string" ? points[Number(position)] ?? null : null;
+  }
+
+  function axisDate(position: unknown) {
+    const point = pointAt(position);
+    if (!point) return "";
+    return point === last && point.day === today ? todayLabel : point.day.slice(5);
+  }
+
+  function axisAmount(value: unknown) {
+    return typeof value === "number" ? formatSparklineTick(value, yAxis.step) : String(value);
+  }
+
+  function longDate(day: string) {
+    return new Intl.DateTimeFormat($locale, { year: "numeric", month: "short", day: "numeric", weekday: "short", timeZone: "UTC" })
+      .format(new Date(`${day}T00:00:00Z`));
+  }
+
+  function amount(value: number, signed = false) {
+    return formatAmount(value, currency, { locale: $locale, signed });
+  }
+
+  /** The centre of a point's band, in plot coordinates. */
+  function plotX(context: ChartContext, point: HistoryChartPoint) {
+    return context.xScale(point.position) + (context.xScale.bandwidth?.() ?? 0) / 2;
+  }
+
+  function inYRange(value: number) {
+    return value >= yDomain[0] && value <= yDomain[1];
+  }
+
+  function selectPoint(_event: MouseEvent, detail: { data: HistoryChartPoint | null }) {
+    if (detail.data) onSelectDay(detail.data.day);
   }
 </script>
 
-<div class="history-chart" data-tone={tone} bind:clientWidth={width}>
+<div class="history-chart" data-tone={tone} data-history-chart>
   {#if points.length > 0}
-    <svg {width} height={HEIGHT} role="img" aria-label={label}>
-      {#each Array.from({ length: Math.round((scale.max - scale.min) / scale.step) + 1 }, (_, index) => scale.min + index * scale.step) as tick}
-        <line class="grid" x1={PAD.left} x2={width - PAD.right} y1={y(tick)} y2={y(tick)} />
-        <text class="y-label num" x={PAD.left - 10} y={y(tick)} dominant-baseline="middle" text-anchor="end">{number.format(tick)}</text>
-      {/each}
-      <path class="area" d={area} />
-      <path class="line" d={path} />
-      {#if !stepped && points.length <= 60}
-        {#each points as point, index}
-          <circle class="dot" cx={x(index)} cy={y(point.balance)} r="3" />
-        {/each}
+    <div class="history-chart-controls">
+      {#if brushedYDomain}
+        <button class="history-chart-reset" type="button" onclick={resetYRange}>{$t.spending.chartReset}</button>
       {/if}
-      {#each xLabels as item}
-        <text
-          class="x-label num"
-          class:today={item.index === points.length - 1 && last?.day === today}
-          x={x(item.index)}
-          y={HEIGHT - 6}
-          text-anchor={item.index === points.length - 1 && points.length > 1 ? "end" : "middle"}
-        >{item.text}</text>
-      {/each}
-      {#if last}
-        <circle class="end-dot" cx={x(points.length - 1)} cy={y(last.balance)} r="5" />
-      {/if}
-    </svg>
-    {#if last && last.day === today}
-      <span
-        class="end-label num"
-        class:centered={points.length === 1}
-        style:left={`${x(points.length - 1)}px`}
-        style:top={`${Math.max(0, y(last.balance) - 34)}px`}
-        data-sensitive
-      >{todayLabel} {currency} {number.format(last.balance)}</span>
-    {/if}
+    </div>
+    <div class="history-chart-stage" role="img" aria-label={label}>
+      {#key `${signature}:${yRangeReset}`}
+        <AreaChart
+          data={points}
+          x="position"
+          y="balance"
+          {xDomain}
+          {yDomain}
+          yBaseline={null}
+          yNice={false}
+          axis={true}
+          grid={{ y: true }}
+          rule={false}
+          brush={{ axis: "y", clickToReset: false, onBrushEnd: trackYRange }}
+          tooltipContext={{ mode: "band", onclick: selectPoint }}
+          padding={{ top: 12, right: 14, bottom: 24, left: 52 }}
+          height={220}
+          props={{
+            xAxis: { class: "sparkline-axis", format: axisDate, tickSpacing: 80 },
+            yAxis: { class: "sparkline-axis", format: axisAmount, tickLabelProps: { "data-sensitive": "" } },
+            grid: { class: "sparkline-grid" },
+            highlight: { points: { r: 5, class: "history-chart-hover-dot" }, lines: { class: "history-chart-hover-line" } },
+          }}
+        >
+          {#snippet marks({ context }: { context: ChartContext })}
+            <Area seriesKey="default" {curve} class="history-chart-area" line={{ class: "history-chart-line" }} />
+            {#if highlighted && inYRange(highlighted.balance)}
+              <line
+                class="history-chart-pin"
+                x1={plotX(context, highlighted)}
+                x2={plotX(context, highlighted)}
+                y1={0}
+                y2={context.height}
+              />
+              <circle class="history-chart-pin-dot" cx={plotX(context, highlighted)} cy={context.yScale(highlighted.balance)} r="5" />
+            {/if}
+            {#if last && inYRange(last.balance)}
+              <circle class="history-chart-end-dot" cx={plotX(context, last)} cy={context.yScale(last.balance)} r="4" />
+            {/if}
+          {/snippet}
+          {#snippet tooltip({ context })}
+            <Tooltip.Root {context} class="sparkline-tooltip" variant="none" portal={false}>
+              {#snippet children({ data }: { data: HistoryChartPoint })}
+                <div class="sparkline-tooltip-body history-chart-tooltip">
+                  <span>{longDate(data.day)}{data === last && data.day === today ? ` · ${todayLabel}` : ""}</span>
+                  <strong data-sensitive>{amount(data.balance)}</strong>
+                  {#if data.cycle}
+                    <span class="detail num">{data.cycle.start.slice(5).replace("-", "/")} – {data.cycle.end.slice(5).replace("-", "/")}</span>
+                  {/if}
+                  {#if data.inflow > 0 || data.outflow > 0}
+                    <span class="flows num" data-sensitive>
+                      {#if data.inflow > 0}<span>{$t.accountHistory.moneyIn} {amount(data.inflow)}</span>{/if}
+                      {#if data.outflow > 0}<span>{$t.accountHistory.moneyOut} {amount(data.outflow)}</span>{/if}
+                    </span>
+                  {:else if data.change !== null && data.change !== 0}
+                    <span class="change num" data-sensitive>
+                      {$t.accountHistory.changeFromPrevious(amount(data.change, true))}
+                    </span>
+                  {/if}
+                </div>
+              {/snippet}
+            </Tooltip.Root>
+          {/snippet}
+        </AreaChart>
+      {/key}
+    </div>
+    <p class="history-chart-hint">{$t.accountHistory.chartHint}</p>
   {/if}
 </div>
 
 <style>
   .history-chart {
     --line: var(--accent);
-    position: relative;
-    min-height: 170px;
-    /* The svg is drawn at the measured width; without this it holds the card at its widest size. */
-    contain: inline-size;
+    min-width: 0;
   }
 
   .history-chart[data-tone="liability"] { --line: var(--danger); }
 
-  svg { display: block; overflow: visible; }
-  .grid { stroke: var(--border); stroke-width: 1; }
-
-  .y-label,
-  .x-label {
-    fill: var(--muted);
-    font-size: 10px;
+  .history-chart-controls {
+    display: flex;
+    justify-content: flex-end;
+    min-height: 24px;
   }
 
-  .x-label.today { fill: var(--fg); font-weight: 750; }
+  .history-chart-reset {
+    min-height: 24px;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
 
-  .line {
+  .history-chart-reset:hover { color: var(--fg); }
+
+  .history-chart-reset:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .history-chart-stage {
+    height: 220px;
+    cursor: pointer;
+  }
+
+  .history-chart-stage :global(.lc-layout-svg) { overflow: hidden; }
+
+  .history-chart :global(.history-chart-area) {
+    fill: color-mix(in oklch, var(--line) 12%, transparent);
+    fill-opacity: 1;
+  }
+
+  .history-chart :global(.history-chart-line) {
     fill: none;
     stroke: var(--line);
     stroke-width: 2;
     stroke-linejoin: round;
   }
 
-  .area {
-    fill: color-mix(in oklch, var(--line) 10%, transparent);
+  .history-chart :global(.history-chart-end-dot) { fill: var(--line); }
+
+  .history-chart :global(.history-chart-hover-dot),
+  .history-chart :global(.history-chart-pin-dot) {
+    fill: var(--line);
+    stroke: var(--surface);
+    stroke-width: 2.5;
   }
 
-  .dot {
-    fill: var(--surface);
-    stroke: var(--line);
-    stroke-width: 1.5;
+  .history-chart :global(.history-chart-hover-line),
+  .history-chart :global(.history-chart-pin) {
+    stroke: color-mix(in oklch, var(--fg) 30%, transparent);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
   }
 
-  .end-dot { fill: var(--line); }
+  .history-chart :global(.history-chart-pin),
+  .history-chart :global(.history-chart-pin-dot),
+  .history-chart :global(.history-chart-end-dot) { pointer-events: none; }
 
-  .end-label {
-    position: absolute;
-    transform: translateX(calc(-100% + 8px));
-    padding: 3px 8px;
-    border-radius: 6px;
-    background: var(--fg);
-    color: var(--surface);
+  .history-chart-tooltip { min-width: 164px; }
+  .history-chart-tooltip .detail,
+  .history-chart-tooltip .flows,
+  .history-chart-tooltip .change {
     font-size: 11px;
-    font-weight: 750;
-    white-space: nowrap;
+    font-weight: 650;
+    opacity: 0.86;
   }
 
-  .end-label.centered { transform: translateX(-50%); }
+  .history-chart-tooltip .flows {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+  }
+
+  .history-chart-hint {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+    text-align: right;
+  }
 </style>

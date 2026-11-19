@@ -88,6 +88,8 @@ const en = {
       `${new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(2026, month - 1, 1)))} statement`,
     transactionCount: (count: number) => `${count} transaction${count === 1 ? "" : "s"}`,
     noRows: "No balance records in this period.",
+    changeFromPrevious: (amount: string) => `${amount} from the previous point`,
+    chartHint: "Click the chart to find that day in the table; drag up or down to zoom.",
   },
   transactions: {
     title: "Transactions",
@@ -168,6 +170,8 @@ const en = {
     transactionRevisionId: "Transaction revision ID",
     sourceRecordId: "Source record ID",
     noRows: "No canonical statements are available for this card.",
+    chartTitle: "Statement amounts",
+    chartHint: "Click a bar to open that statement.",
   },
   positions: {
     title: "Positions",
@@ -286,6 +290,8 @@ const zh: typeof en = {
     statementTitle: (month) => `${month} 月對帳單結帳`,
     transactionCount: (count) => `${count} 筆交易`,
     noRows: "這段期間沒有餘額紀錄。",
+    changeFromPrevious: (amount) => `較前一點 ${amount}`,
+    chartHint: "點選圖表可跳到表格中的那一天；上下拖曳可縮放。",
   },
   transactions: {
     title: "交易",
@@ -364,6 +370,8 @@ const zh: typeof en = {
     transactionRevisionId: "交易修訂版 ID",
     sourceRecordId: "來源紀錄 ID",
     noRows: "此卡尚無可用的標準對帳單。",
+    chartTitle: "每期對帳單金額",
+    chartHint: "點選長條可展開該期對帳單。",
   },
   positions: {
     title: "持有部位",

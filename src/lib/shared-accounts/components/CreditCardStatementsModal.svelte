@@ -1,5 +1,6 @@
 <script lang="ts">
   import { CalendarCheck, CalendarClock, CalendarDays, Check, ChevronDown, Download, FileText } from "@lucide/svelte";
+  import { tick } from "svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { localDate } from "$lib/settings/system-timezone-store.ts";
@@ -14,6 +15,7 @@
   import type { AccountRowDto, CreditCardStatementDto, CurrencyAmountDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
+  import StatementAmountChart from "./StatementAmountChart.svelte";
 
   export let open = false;
   export let account: AccountRowDto | null = null;
@@ -23,6 +25,8 @@
   let expandedId: string | null = null;
   let transactionsShownId: string | null = null;
   let shownAccountId: string | null = null;
+  let hoverId: string | null = null;
+  let table: HTMLTableElement | null = null;
 
   $: statements = latestStatementRevisions(account?.creditCard?.statements ?? []);
   $: years = statementYears(statements);
@@ -37,6 +41,8 @@
   $: shown = year === null ? statements : statements.filter((statement) => statement.cycleEnd.startsWith(`${year}-`));
   $: today = $localDate;
   $: primaryCurrency = account?.amountLines[0]?.currency ?? "TWD";
+  // One axis holds one currency; a lone bar has nothing to compare against.
+  $: charted = shown.filter((statement) => statement.statementBalance.currency === primaryCurrency);
 
   function close() {
     open = false;
@@ -73,6 +79,16 @@
   function toggle(statement: CreditCardStatementDto) {
     expandedId = expandedId === statement.statementId ? null : statement.statementId;
     transactionsShownId = null;
+  }
+
+  /** Unfolds the statement picked on the chart and brings its row into view. */
+  async function openStatement(statementId: string) {
+    expandedId = statementId;
+    transactionsShownId = null;
+    await tick();
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    table?.querySelector(`[data-statement-id="${CSS.escape(statementId)}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
   }
 
   function exportCsv() {
@@ -140,7 +156,16 @@
         {#if statements.length === 0}
           <div class="empty-state" role="status">{$t.statements.noRows}</div>
         {:else}
-          <table class="table statements-table">
+          {#if charted.length > 1}
+            <section class="statement-summary" aria-label={$t.statements.chartTitle}>
+              <div class="summary-head">
+                <h3>{$t.statements.chartTitle}</h3>
+                <p>{$t.statements.chartHint}</p>
+              </div>
+              <StatementAmountChart statements={charted} selectedId={expandedId} {hoverId} onSelect={openStatement} />
+            </section>
+          {/if}
+          <table class="table statements-table" bind:this={table}>
             <thead>
               <tr>
                 <th>{$t.statements.cycle}</th>
@@ -156,7 +181,14 @@
               {#each shown as statement (statement.statementId)}
                 {@const status = statementStatus(statement, today)}
                 {@const expanded = expandedId === statement.statementId}
-                <tr class="statement-row" class:expanded data-statement-id={statement.statementId} data-statement-revision-id={statement.statementRevisionId}>
+                <tr
+                  class="statement-row"
+                  class:expanded
+                  data-statement-id={statement.statementId}
+                  data-statement-revision-id={statement.statementRevisionId}
+                  on:mouseenter={() => (hoverId = statement.statementId)}
+                  on:mouseleave={() => (hoverId = null)}
+                >
                   <td class="cycle">
                     <strong>{monthLabel(statement)}</strong>
                     <span class="num">{shortDate(statement.cycleStart)} – {shortDate(statement.cycleEnd)} · {$t.statements.transactionCount(statement.memberships.length)}</span>
@@ -268,6 +300,32 @@
   .statements-toolbar {
     padding: 0 var(--space-6) var(--space-4);
     border-bottom: 1px solid var(--border);
+  }
+
+  .statement-summary {
+    display: grid;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-6);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .summary-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-4);
+  }
+
+  .summary-head h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 750;
+  }
+
+  .summary-head p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
   }
 
   .menu-anchor { position: relative; width: fit-content; }
