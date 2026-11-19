@@ -52,6 +52,7 @@
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
   import type { SettingsFocus } from "$lib/desktop/api.ts";
+  import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
   /** When onboarding completed or exited; null for records from before it was kept. */
@@ -84,6 +85,10 @@
   let draftScale: number | null = null;
   let shortcutModifier = "Ctrl";
   let activeSection: (typeof SECTIONS)[number]["id"] = SECTIONS[0].id;
+  /** A section is the one being read once its heading passes this far below the window top, under the top bar. */
+  const SECTION_READING_LINE = 120;
+  /** A section chosen in the nav stays active until the person scrolls on their own; near the page end it may never reach the line. */
+  let chosenSection: (typeof SECTIONS)[number]["id"] | null = null;
   let now = new Date();
   let selectedTimezone = $systemTimezone;
   $: timezoneOptions = timezones.includes(selectedTimezone)
@@ -150,18 +155,28 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting)
-        .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
-      if (visible) activeSection = visible.target.id as typeof activeSection;
-    }, { rootMargin: "0px 0px -60% 0px" });
-    for (const section of SECTIONS) {
-      const element = document.getElementById(section.id);
-      if (element) observer.observe(element);
-    }
+    // Every scroll re-reads every section, so a section still in view is never
+    // skipped because it did not cross an edge this time.
+    const followScroll = () => {
+      const scroller = document.scrollingElement ?? document.documentElement;
+      const id = activeSectionAt(
+        SECTIONS.map((section) => ({ id: section.id, top: document.getElementById(section.id)?.getBoundingClientRect().top ?? Infinity })),
+        SECTION_READING_LINE,
+        scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2,
+      );
+      if (chosenSection) activeSection = chosenSection;
+      else if (id) activeSection = id as typeof activeSection;
+    };
+    const releaseChoice = () => (chosenSection = null);
+    followScroll();
+    window.addEventListener("scroll", followScroll, { passive: true, capture: true });
+    window.addEventListener("resize", followScroll);
+    for (const type of ["wheel", "touchmove", "keydown"] as const) window.addEventListener(type, releaseChoice, { passive: true });
     return () => {
       clearInterval(clock);
-      observer.disconnect();
+      window.removeEventListener("scroll", followScroll, { capture: true });
+      window.removeEventListener("resize", followScroll);
+      for (const type of ["wheel", "touchmove", "keydown"] as const) window.removeEventListener(type, releaseChoice);
     };
   });
 
@@ -248,6 +263,7 @@
 
   function showSection(id: typeof activeSection) {
     activeSection = id;
+    chosenSection = id;
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -664,7 +680,7 @@
               {#if !previewDeleteConfirming}
                 <button
                   id="delete-preview-data"
-                  class="button"
+                  class="button danger"
                   type="button"
                   disabled={previewDeleteStatus === "pending"}
                   aria-busy={previewDeleteStatus === "pending"}
