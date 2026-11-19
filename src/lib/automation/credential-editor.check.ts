@@ -171,7 +171,8 @@ test("a save whose sheet was closed and reopened during the reload neither close
     editor.dispatch({ type: "open" }, ctx);
   };
   editor.dispatch({ type: "open" }, ctx);
-  editor.enableAndSelect("maicoin", ctx);
+  editor.choose("maicoin", ctx);
+  editor.dispatch({ type: "toggle-group", groupId: "maicoin" }, ctx);
   editor.dispatch({ type: "stage-value", key: "MAICOIN_ID", value: "user-1" }, ctx);
   stories.length = 0;
   await save(editor, ctx);
@@ -190,7 +191,8 @@ test("during the story's source selection a saved source is told and its runnabl
   const tasks = [{ credentialGroupId: "fubon", canRun: true }, { credentialGroupId: "maicoin", canRun: true }];
   const { editor, stories, ran } = harness({ tasks });
   editor.dispatch({ type: "open" }, ctx);
-  editor.enableAndSelect("maicoin", ctx);
+  editor.choose("maicoin", ctx);
+  editor.dispatch({ type: "toggle-group", groupId: "maicoin" }, ctx);
   editor.dispatch({ type: "stage-value", key: "MAICOIN_ID", value: "user-1" }, ctx);
   const plan = planCredentialSave(editor.sheet(), ctx);
   assert.equal(plan.kind, "submit");
@@ -212,7 +214,8 @@ test("a saved source whose task cannot run starts nothing", async () => {
   });
   const { editor, ran } = harness({ tasks: [{ credentialGroupId: "maicoin", canRun: false }] });
   editor.dispatch({ type: "open" }, ctx);
-  editor.enableAndSelect("maicoin", ctx);
+  editor.choose("maicoin", ctx);
+  editor.dispatch({ type: "toggle-group", groupId: "maicoin" }, ctx);
   editor.dispatch({ type: "stage-value", key: "MAICOIN_ID", value: "user-1" }, ctx);
   assert.equal(planCredentialSave(editor.sheet(), ctx).kind, "submit");
   await save(editor, ctx);
@@ -222,9 +225,9 @@ test("a saved source whose task cannot run starts nothing", async () => {
 test("choosing a source tells the story only at source selection, and the story's entry opens the picker", () => {
   const { editor, stories } = harness();
   editor.choose("cathay", context());
-  editor.enableAndSelect("cathay", context({ onboardingSourceSelection: true, onboardingNodeId: "source-entry" }));
+  editor.choose("cathay", context({ onboardingSourceSelection: true, onboardingNodeId: "source-entry" }));
   assert.deepEqual(stories, []);
-  editor.enableAndSelect("cathay", context({ onboardingSourceSelection: true, onboardingNodeId: "source-selection" }));
+  editor.choose("cathay", context({ onboardingSourceSelection: true, onboardingNodeId: "source-selection" }));
   editor.openFromStoryEntry(context({ onboardingSourceSelection: true, onboardingNodeId: "source-entry" }));
   assert.deepEqual(stories, [{ type: "choose-source", credentialGroupId: "cathay" }, { type: "open-picker" }]);
   assert.equal(editor.sheet().presentation, "picker");

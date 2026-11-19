@@ -74,12 +74,6 @@ export function createCredentialEditor<Task extends EditorTask>(ports: Credentia
       if (choosing) ports.onboarding.story({ type: "choose-source", credentialGroupId: groupId });
     },
 
-    enableAndSelect(groupId: string, context: CredentialSheetContext) {
-      const choosing = choosingSource(context);
-      dispatch({ type: "enable-and-select-group", groupId }, context);
-      if (choosing) ports.onboarding.story({ type: "choose-source", credentialGroupId: groupId });
-    },
-
     async selectCertificateFile(key: string, locale: Locale, context: CredentialSheetContext) {
       dispatch({ type: "certificate-file-started", key }, context);
       const { generation } = sheet();
