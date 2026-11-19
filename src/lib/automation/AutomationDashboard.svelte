@@ -23,7 +23,6 @@
     Landmark,
     Lock,
     Minus,
-    Plus,
     RefreshCw,
     Search,
     FlaskConical,
@@ -537,10 +536,6 @@ import type {
 
   function selectAllStatementTypes(group: CredentialGroupDto) {
     dispatchSheet({ type: "select-all-statement-types", groupId: group.id });
-  }
-
-  function enableAndSelectGroup(groupId: string) {
-    credentialEditor.enableAndSelect(groupId, sheetContext);
   }
 
   function updateCredentialDraft(key: string, event: Event) {
@@ -1489,13 +1484,6 @@ import type {
                       <span class="rail-row-copy"><strong>{credentialGroupName(group)}</strong></span>
                       {#if group.id === sheet.selectedGroupId}<ChevronRight size={16} aria-hidden="true" />{/if}
                     </button>
-                    <button
-                      type="button"
-                      class="rail-add"
-                      aria-label={$t.automation.enableCredentialGroup(credentialGroupName(group))}
-                      title={$t.automation.enableCredentialGroup(credentialGroupName(group))}
-                      onclick={() => enableAndSelectGroup(group.id)}
-                    ><Plus size={14} /></button>
                   </li>
                 {/each}
               </ul>
@@ -3344,8 +3332,7 @@ import type {
     background: var(--surface);
   }
 
-  .rail-row:focus-visible,
-  .rail-add:focus-visible {
+  .rail-row:focus-visible {
     outline: none;
     box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
   }
@@ -3404,34 +3391,8 @@ import type {
     background: var(--accent);
   }
 
-  .rail-available {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
   .rail-available .rail-row {
     min-height: 40px;
-  }
-
-  .rail-add {
-    width: 26px;
-    height: 26px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    margin-right: var(--space-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    color: var(--muted);
-    cursor: pointer;
-    transition: color 160ms ease, border-color 160ms ease;
-  }
-
-  .rail-add:hover {
-    border-color: color-mix(in oklch, var(--accent) 40%, var(--border));
-    color: var(--accent);
   }
 
   .credential-body {

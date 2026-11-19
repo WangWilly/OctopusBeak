@@ -139,9 +139,9 @@ test("choosing a source during onboarding source selection shows its details", (
   assert.equal(outside.presentation, "picker");
 });
 
-test("enable-and-select chooses the source and enables it, disabling the other single source", () => {
+test("choosing a source and switching it on enables it, disabling the other single source", () => {
   const ctx = onboarding({ onboardingNodeId: "source-selection" });
-  const state = run([{ type: "open" }, { type: "enable-and-select-group", groupId: "cathay" }], ctx);
+  const state = run([{ type: "open" }, { type: "choose-group", groupId: "cathay" }, { type: "toggle-group", groupId: "cathay" }], ctx);
   assert.equal(state.selectedGroupId, "cathay");
   assert.deepEqual(state.changes.enabled, { fubon: false, cathay: true });
 });
@@ -216,7 +216,7 @@ test("the view derives the rail, pending changes and the selected group fallback
 
 test("onboarding readiness needs the source enabled, its sign-in details and confirmed statements", () => {
   const ctx = onboarding({ credentialState: () => "missing" });
-  let state = run([{ type: "open" }, { type: "enable-and-select-group", groupId: "cathay" }], ctx);
+  let state = run([{ type: "open" }, { type: "choose-group", groupId: "cathay" }, { type: "toggle-group", groupId: "cathay" }], ctx);
   let view = credentialSheetView(state, ctx);
   assert.equal(view.onboardingSourceEnabled, true);
   assert.equal(view.onboardingMissingCredentialKey, "CATHAY_ID");

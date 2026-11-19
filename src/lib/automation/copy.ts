@@ -135,7 +135,6 @@ const en = {
     credentialsSummary: "Sign-in details are encrypted on this device",
     credentialGroupsEnabled: "Enabled",
     credentialGroupsAvailable: "Available to add",
-    enableCredentialGroup: (name: string) => `Enable ${name}`,
     credentialSyncStatuses: {
       completed: "Synced",
       partial: "Partly synced",
@@ -551,7 +550,6 @@ const zh: typeof en = {
     credentialsSummary: "登入資料以加密儲存在這台裝置",
     credentialGroupsEnabled: "已啟用",
     credentialGroupsAvailable: "可新增",
-    enableCredentialGroup: (name) => `啟用${name}`,
     credentialSyncStatuses: {
       completed: "同步成功",
       partial: "部分成功",

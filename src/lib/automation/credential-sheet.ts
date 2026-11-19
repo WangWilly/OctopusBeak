@@ -86,7 +86,6 @@ export type CredentialSheetAction =
   | Readonly<{ type: "close" }>
   | Readonly<{ type: "select-group"; groupId: string }>
   | Readonly<{ type: "choose-group"; groupId: string }>
-  | Readonly<{ type: "enable-and-select-group"; groupId: string }>
   | Readonly<{ type: "present"; presentation: CredentialSheetPresentation }>
   | Readonly<{ type: "present-onboarding"; presentation: CredentialSheetPresentation; groupId: string | null }>
   | Readonly<{ type: "search"; search: string }>
@@ -276,10 +275,6 @@ export function reduceCredentialSheet(
       return selectGroup(state, action.groupId, context);
     case "choose-group":
       return chooseGroup(state, action.groupId, context);
-    case "enable-and-select-group": {
-      const chosen = chooseGroup(state, action.groupId, context);
-      return withChanges(chosen, setGroupEnabled(groups, chosen.changes, action.groupId, true));
-    }
     case "present":
       return { ...state, presentation: action.presentation };
     case "present-onboarding": {
