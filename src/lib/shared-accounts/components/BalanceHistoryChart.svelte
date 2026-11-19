@@ -45,11 +45,16 @@
     yRangeReset += 1;
   }
 
-  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
+  /**
+   * The chart owns the zoom, so a click that picks a day leaves it in place;
+   * only the reset button clears it. A drag shorter than a few percent of the
+   * axis is a wobbling click, not a zoom.
+   */
+  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null>; reset: () => void } }) {
     const [start, end] = brush.y;
-    brushedYDomain = brush.active && typeof start === "number" && typeof end === "number"
-      ? [Math.min(start, end), Math.max(start, end)]
-      : null;
+    if (!brush.active || typeof start !== "number" || typeof end !== "number") return;
+    if (Math.abs(end - start) >= (yDomain[1] - yDomain[0]) * 0.03) brushedYDomain = [Math.min(start, end), Math.max(start, end)];
+    brush.reset();
   }
 
   function pointAt(position: unknown) {
@@ -109,7 +114,7 @@
           axis={true}
           grid={{ y: true }}
           rule={false}
-          brush={{ axis: "y", clickToReset: false, onBrushEnd: trackYRange }}
+          brush={{ axis: "y", zoomOnBrush: false, clickToReset: false, onBrushEnd: trackYRange }}
           tooltipContext={{ mode: "band", onclick: selectPoint }}
           padding={{ top: 12, right: 14, bottom: 24, left: 52 }}
           height={220}
@@ -122,7 +127,7 @@
         >
           {#snippet marks({ context }: { context: ChartContext })}
             <Area seriesKey="default" {curve} class="history-chart-area" line={{ class: "history-chart-line" }} />
-            {#if highlighted && inYRange(highlighted.balance)}
+            {#if highlighted}
               <line
                 class="history-chart-pin"
                 x1={plotX(context, highlighted)}
@@ -130,7 +135,9 @@
                 y1={0}
                 y2={context.height}
               />
-              <circle class="history-chart-pin-dot" cx={plotX(context, highlighted)} cy={context.yScale(highlighted.balance)} r="5" />
+              {#if inYRange(highlighted.balance)}
+                <circle class="history-chart-pin-dot" cx={plotX(context, highlighted)} cy={context.yScale(highlighted.balance)} r="5" />
+              {/if}
             {/if}
             {#if last && inYRange(last.balance)}
               <circle class="history-chart-end-dot" cx={plotX(context, last)} cy={context.yScale(last.balance)} r="4" />

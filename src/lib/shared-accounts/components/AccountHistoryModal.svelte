@@ -44,7 +44,7 @@
   let shownAccountId: string | null = null;
   /** The day last picked on the chart or a statistic, and the table row that explains it. */
   let pinnedDay: string | null = null;
-  let linkedDay: string | null = null;
+  let linkedIndex: number | null = null;
   /** The day under the pointer in the table or statistics. */
   let hoverDay: string | null = null;
   let table: HTMLTableElement | null = null;
@@ -100,7 +100,7 @@
 
   function clearLink(..._changed: unknown[]) {
     pinnedDay = null;
-    linkedDay = null;
+    linkedIndex = null;
     hoverDay = null;
   }
 
@@ -110,10 +110,10 @@
     pinnedDay = day;
     const index = entryIndexForDay(history.entries, day);
     if (index < 0) {
-      linkedDay = null;
+      linkedIndex = null;
       return;
     }
-    linkedDay = history.entries[index].day;
+    linkedIndex = index;
     page = Math.floor(index / PAGE_SIZE) + 1;
     await tick();
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -295,10 +295,10 @@
             </tr>
           </thead>
           <tbody>
-            {#each current.rows as entry}
+            {#each current.rows as entry, row}
               <tr
                 data-entry-kind={entry.kind}
-                class:linked={entry.day === linkedDay}
+                class:linked={current.first - 1 + row === linkedIndex}
                 onmouseenter={() => (hoverDay = entry.day)}
                 onmouseleave={() => (hoverDay = null)}
               >

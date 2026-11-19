@@ -37,6 +37,7 @@
     expandedId = statements[0]?.statementId ?? null;
     transactionsShownId = null;
     yearMenuOpen = false;
+    hoverId = null;
   }
   $: shown = year === null ? statements : statements.filter((statement) => statement.cycleEnd.startsWith(`${year}-`));
   $: today = $localDate;
@@ -47,6 +48,7 @@
   function close() {
     open = false;
     yearMenuOpen = false;
+    hoverId = null;
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -58,6 +60,7 @@
   function chooseYear(next: number | null) {
     year = next;
     yearMenuOpen = false;
+    hoverId = null;
   }
 
   function shortDate(value: string) {
