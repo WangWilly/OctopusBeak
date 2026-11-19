@@ -132,8 +132,7 @@ const en = {
     progressTerminalWithPercent: (status: string, percent: number) => `${status} · ${percent}%`,
     credentialSyncToggle: "Enabled",
     credentialsTitle: "Sign-in details",
-    credentialsSummary: (count: number) =>
-      `${count} ${count === 1 ? "service" : "services"} enabled · Sign-in details are encrypted on this device`,
+    credentialsSummary: "Sign-in details are encrypted on this device",
     credentialGroupsEnabled: "Enabled",
     credentialGroupsAvailable: "Available to add",
     enableCredentialGroup: (name: string) => `Enable ${name}`,
@@ -549,7 +548,7 @@ const zh: typeof en = {
     progressTerminalWithPercent: (status, percent) => `${status} · ${percent}%`,
     credentialSyncToggle: "啟用同步",
     credentialsTitle: "登入資料",
-    credentialsSummary: (count) => `已啟用 ${count} 個服務 · 登入資料以加密儲存在這台裝置`,
+    credentialsSummary: "登入資料以加密儲存在這台裝置",
     credentialGroupsEnabled: "已啟用",
     credentialGroupsAvailable: "可新增",
     enableCredentialGroup: (name) => `啟用${name}`,

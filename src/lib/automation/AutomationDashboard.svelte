@@ -1422,7 +1422,8 @@ import type {
         <span class="credential-head-icon" aria-hidden="true"><KeyRound size={20} /></span>
         <div class="credential-head-copy">
           <h2 id="credentials-title">{$t.automation.credentialsTitle}</h2>
-          <p>{$t.automation.credentialsSummary(sheetView.savedEnabledGroupCount)}</p>
+          <!-- The rail heading already counts the enabled services. -->
+          <p>{$t.automation.credentialsSummary}</p>
         </div>
         {#if !onboardingSourceSelection}
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
@@ -1486,6 +1487,7 @@ import type {
                     >
                       <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy"><strong>{credentialGroupName(group)}</strong></span>
+                      {#if group.id === sheet.selectedGroupId}<ChevronRight size={16} aria-hidden="true" />{/if}
                     </button>
                     <button
                       type="button"
@@ -1851,7 +1853,8 @@ import type {
           {/if}
         </p>
         {#if !onboardingSourceSelection && !sheet.changes.editor}
-          <button class="button" type="button" onclick={discardCredentialChanges}>{$t.common.cancel}</button>
+          <!-- With nothing to discard, the button only closes, and says so. -->
+          <button class="button" type="button" onclick={discardCredentialChanges}>{sheetView.dirty ? $t.common.cancel : $t.common.close}</button>
         {/if}
         <button
           class="button primary"
