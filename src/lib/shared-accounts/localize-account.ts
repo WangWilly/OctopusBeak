@@ -39,6 +39,19 @@ export function localizeAccount(account: AccountRowDto, dictionary: Translation)
   return { ...account, institution, product, label };
 }
 
+/**
+ * An account named without its Institution, for beside the Institution's
+ * logo: 「銀行帳戶 末碼 1234」, or 「加密資產帳戶 · 帳戶 1」 when its
+ * identifier has no four digits.
+ */
+export function accountShortLabel(account: AccountRowDto, dictionary: Translation): string {
+  const { product, label } = localizeAccount(account, dictionary);
+  const digits = maskedAccountDigits(label);
+  if (digits) return `${product} ${dictionary.overview.accountMask(digits)}`;
+  const identifier = label.split(" · ")[2];
+  return identifier ? `${product} · ${identifier}` : product;
+}
+
 export function localizeAccounts(accounts: readonly AccountRowDto[], dictionary: Translation): AccountRowDto[] {
   return accounts.map((account) => localizeAccount(account, dictionary));
 }

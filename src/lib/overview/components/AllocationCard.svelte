@@ -8,7 +8,7 @@
     share: number;
     color: string;
     /** The accounts the tile adds up, largest first; `share` is of the tile. */
-    members: { key: string; label: string; logo: LogoKey | null; value: number; share: number }[];
+    members: { key: string; label: string; short: string; logo: LogoKey | null; value: number; share: number }[];
   };
 </script>
 
@@ -42,38 +42,61 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   export let state: string;
 
   const HEIGHT = 236;
-  const TIP_WIDTH = 360;
+  const TIP_WIDTH = 320;
   /** A breakdown lists this many accounts and counts the rest. */
   const TIP_ROWS = 8;
 
+  /** Room the tile's own label takes at its top. */
+  const LABEL_ROOM = 84;
+  const GAP = 6;
+  const EDGE = 8;
+
   let width = 0;
-  /** The tile whose breakdown shows, from hover or keyboard focus. */
-  let activeKey: string | null = null;
+  /** The tile whose breakdown shows, from hover or keyboard focus, and where it sits in the window. */
+  let active: { key: string; anchor: DOMRect; card: DOMRect; viewHeight: number } | null = null;
+  let tipHeight = 0;
+  let card: HTMLElement | null = null;
 
   $: rects = squarify(tiles.map((tile) => tile.value), width, HEIGHT);
-  $: activeIndex = activeKey === null ? -1 : tiles.findIndex((tile) => tile.key === activeKey);
-  $: activeTile = activeIndex < 0 ? null : tiles[activeIndex] ?? null;
-  $: activeRect = activeIndex < 0 ? null : rects[activeIndex] ?? null;
+  $: activeTile = active === null ? null : tiles.find((tile) => tile.key === active!.key) ?? null;
   $: tipId = `${state}-allocation-breakdown`;
+  $: tipWidth = active === null ? TIP_WIDTH : Math.min(TIP_WIDTH, active.card.width - EDGE * 2);
+  $: place = active === null ? null : tipPlacement(active.anchor, active.card, active.viewHeight, tipHeight, tipWidth);
+
+  function show(key: string, event: Event) {
+    active = {
+      key,
+      anchor: (event.currentTarget as HTMLElement).getBoundingClientRect(),
+      card: card!.getBoundingClientRect(),
+      // The page's visible height, without a horizontal scrollbar.
+      viewHeight: document.documentElement.clientHeight,
+    };
+  }
+
+  function hide(key: string) {
+    if (active?.key === key) active = null;
+  }
 
   /**
-   * Inside a tile big enough to hold it, under the tile's own label; otherwise
-   * below a tile in the upper half or above one in the lower half. Always
-   * inside the card's width.
+   * In window coordinates, so the tooltip floats over the page instead of
+   * growing it: inside a tile with room under its label, else below the tile
+   * when the window has room there, else above it. Sideways it stays inside
+   * its own card, clear of the window edge and the scrollbar.
    */
-  function tipPlacement(rect: { x: number; y: number; width: number; height: number }, rows: number) {
-    // The tile's own label takes its top 84px; the tooltip is a head line plus a line per account.
-    const tipHeight = 44 + Math.min(rows, TIP_ROWS) * 22 + (rows > TIP_ROWS ? 20 : 0);
-    if (rect.width >= TIP_WIDTH + 16 && rect.height >= 84 + tipHeight)
-      return { left: rect.x + 8, top: "auto", bottom: `${HEIGHT - rect.y - rect.height + 8}px` };
-    const left = Math.max(0, Math.min(rect.x, width - TIP_WIDTH));
-    return rect.y + rect.height / 2 <= HEIGHT / 2
-      ? { left, top: `${rect.y + rect.height + 6}px`, bottom: "auto" }
-      : { left, top: "auto", bottom: `${HEIGHT - rect.y + 6}px` };
+  function tipPlacement(anchor: DOMRect, bounds: DOMRect, viewH: number, height: number, tipW: number) {
+    if (anchor.width >= tipW + EDGE * 2 && anchor.height >= LABEL_ROOM + height + EDGE)
+      return { left: anchor.left + EDGE, top: anchor.bottom - height - EDGE };
+    const left = Math.max(bounds.left + EDGE, Math.min(anchor.left, bounds.right - tipW - EDGE));
+    const below = anchor.bottom + GAP;
+    if (below + height <= viewH - EDGE) return { left, top: below };
+    return { left, top: Math.max(EDGE, anchor.top - GAP - height) };
   }
 </script>
 
-<article class="card allocation-card" data-allocation={state}>
+<!-- The tooltip is pinned to where the tile was, so any scroll dismisses it. -->
+<svelte:window onscrollcapture={() => (active = null)} onresize={() => (active = null)} />
+
+<article class="card allocation-card" data-allocation={state} bind:this={card}>
   <header class="card-head">
     <div>
       <h2>{title}</h2>
@@ -92,7 +115,6 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     <a class="link" {href}>{linkLabel}<ArrowRight size={14} strokeWidth={2} aria-hidden="true" /></a>
   </header>
   {#if tiles.length > 0}
-    <div class="treemap-wrap">
     <ul class="treemap" bind:clientWidth={width} style:height={`${HEIGHT}px`} aria-label={title}>
       {#each tiles as tile, index (tile.key)}
         {@const rect = rects[index]}
@@ -109,12 +131,12 @@ import { formatTwd } from "$lib/shared-money/money.ts";
             style:height={`${rect.height}px`}
             style:--tile-color={tile.color}
             tabindex="0"
-            aria-describedby={activeKey === tile.key ? tipId : undefined}
+            aria-describedby={active?.key === tile.key ? tipId : undefined}
             data-allocation-tile={tile.key}
-            onpointerenter={() => (activeKey = tile.key)}
-            onpointerleave={() => { if (activeKey === tile.key) activeKey = null; }}
-            onfocus={() => (activeKey = tile.key)}
-            onblur={() => { if (activeKey === tile.key) activeKey = null; }}
+            onpointerenter={(event) => show(tile.key, event)}
+            onpointerleave={() => hide(tile.key)}
+            onfocus={(event) => show(tile.key, event)}
+            onblur={() => hide(tile.key)}
           >
             <span class="tile-label">{tile.label}</span>
             <strong class="tile-share num" data-sensitive>{formatShare(tile.share, $locale)}</strong>
@@ -123,16 +145,16 @@ import { formatTwd } from "$lib/shared-money/money.ts";
         {/if}
       {/each}
     </ul>
-    {#if activeTile && activeRect && activeTile.members.length > 0}
-      {@const place = tipPlacement(activeRect, activeTile.members.length)}
+    {#if activeTile && place && activeTile.members.length > 0}
       <div
         class="breakdown"
         id={tipId}
         role="tooltip"
+        bind:offsetHeight={tipHeight}
         style:left={`${place.left}px`}
-        style:top={place.top}
-        style:bottom={place.bottom}
-        style:width={`${Math.min(TIP_WIDTH, width)}px`}
+        style:top={`${place.top}px`}
+        style:width={`${tipWidth}px`}
+        style:visibility={tipHeight > 0 ? "visible" : "hidden"}
         data-allocation-breakdown={activeTile.key}
       >
         <p class="breakdown-head">
@@ -142,7 +164,8 @@ import { formatTwd } from "$lib/shared-money/money.ts";
         <ul>
           {#each activeTile.members.slice(0, TIP_ROWS) as member (member.key)}
             <li>
-              <span class="member-name">{#if member.logo}<InstitutionLogo institution={member.logo} size={14} />{/if}<span>{member.label}</span></span>
+              <!-- The logo names the Institution, so beside it only the account and its last four digits show; a screen reader hears the full name. -->
+              <span class="member-name">{#if member.logo}<InstitutionLogo institution={member.logo} size={16} /><span class="visually-hidden">{member.label}</span><span aria-hidden="true">{member.short}</span>{:else}<span>{member.label}</span>{/if}</span>
               <span class="member-value money" data-sensitive>{formatTwd(member.value, $locale)}</span>
               <span class="member-share num" data-sensitive>{formatShare(member.share, $locale)}</span>
             </li>
@@ -153,7 +176,6 @@ import { formatTwd } from "$lib/shared-money/money.ts";
         {/if}
       </div>
     {/if}
-    </div>
     {#if note}<p class="note">{note}</p>{/if}
   {:else}
     <CardPlaceholder {state} title={emptyTitle} body={emptyBody}>
@@ -213,10 +235,6 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     list-style: none;
   }
 
-  .treemap-wrap {
-    position: relative;
-  }
-
   .tile {
     position: absolute;
     outline: none;
@@ -271,7 +289,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
 
   /* The accounts a tile adds up: a tooltip, so it floats in ink like the chart tooltips. */
   .breakdown {
-    position: absolute;
+    position: fixed;
     z-index: 5;
     display: grid;
     gap: 6px;
