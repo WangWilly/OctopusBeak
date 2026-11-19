@@ -297,6 +297,7 @@ assert.match(
 assert.match(source, /\{#each sheetView\.railEnabledGroups as group \(group\.id\)\}/);
 assert.match(source, /\{#each sheetView\.railAvailableGroups as group \(group\.id\)\}/);
 assert.doesNotMatch(source, /class="rail-add"/, "a source is enabled only by its switch, not a second button in the rail");
+assert.match(source, /\{#each sheetView\.railAvailableGroups as group \(group\.id\)\}[\s\S]*?onclick=\{\(\) => chooseCredentialGroup\(group\.id\)\}/, "an available source is chosen from the rail, then enabled by its switch");
 assert.match(source, /class="credential-footer"/);
 assert.match(source, /type="submit"\s*disabled=\{!sheetView\.canSubmit\}/);
 assert.match(source, /if \(sheet\.changes\.editor\) \{\s*event\.preventDefault\(\);\s*dispatchSheet\(\{ type: "editor-cancel" \}\);/);
