@@ -818,8 +818,8 @@ export function createCtbcCardSource(options: Readonly<{ http?: PreviewHttpOpene
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live CTBC account. Its data may be incomplete or wrong. It collects CTBC credit cards and foreign currency demand deposits, which the verified CTBC deposit source does not collect. It signs in through the CTBC mobile banking App protocol, separately from the verified CTBC deposit source, so it has its own sign-in details. CTBC may ask a new device to approve the sign-in in its App; the sync then stops instead of waiting.",
-        "zh-TW": "預覽來源，從未以真實的中國信託帳戶執行過，資料可能不完整或有誤。它收集中國信託信用卡與外幣活期存款，已驗證的中國信託存款來源不收集這些資料。它透過中國信託行動銀行 App 的協定登入，與已驗證的中國信託存款來源分開登入，因此有自己的登入資料。中國信託可能要求新裝置在 App 核准登入，這時同步會停止，不會等待。",
+        en: "It collects CTBC credit cards and foreign currency demand deposits, which the verified CTBC deposit source does not collect. It signs in through the CTBC mobile banking App protocol, separately from the verified CTBC deposit source, so it has its own sign-in details. CTBC may ask a new device to approve the sign-in in its App; the sync then stops instead of waiting.",
+        "zh-TW": "它收集中國信託信用卡與外幣活期存款，已驗證的中國信託存款來源不收集這些資料。它透過中國信託行動銀行 App 的協定登入，與已驗證的中國信託存款來源分開登入，因此有自己的登入資料。中國信託可能要求新裝置在 App 核准登入，這時同步會停止，不會等待。",
       },
       requirements: [{ en: "A CTBC account with online or mobile banking sign-in, and a CTBC credit card or foreign currency account.", "zh-TW": "可登入網路銀行或行動銀行、並持有中國信託信用卡或外幣帳戶的中國信託帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to CTBC online or mobile banking.", "zh-TW": "輸入登入中國信託網路銀行或行動銀行使用的身分證字號、使用者代號與密碼。" }],

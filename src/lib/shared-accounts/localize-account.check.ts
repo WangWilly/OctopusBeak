@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { translations } from "../i18n/i18n.ts";
 import type { AccountRowDto } from "../shared-ledger/types.ts";
-import { accountKindLabel, accountModalTitle, localizeAccount } from "./localize-account.ts";
+import { accountKindLabel, accountModalTitle, accountShortLabel, localizeAccount } from "./localize-account.ts";
 
 function account(overrides: Partial<AccountRowDto>): AccountRowDto {
   return {
@@ -46,4 +46,12 @@ test("every account kind reads in the interface language, including Other", () =
   assert.notEqual(accountKindLabel("other", translations["zh-TW"]), "Other", "the zh-TW table no longer shows English Other");
   assert.equal(accountKindLabel("credit-card", translations.en), "Credit Card");
   assert.equal(accountKindLabel("fund", translations["zh-TW"]), translations["zh-TW"].accounts.fund);
+});
+
+test("beside its Institution's logo an account reads by product and last four digits", () => {
+  const zh = translations["zh-TW"];
+  assert.equal(accountShortLabel(account({ label: "Cathay United Bank · Bank account · ****5678" }), zh), "銀行帳戶 末碼 5678");
+  assert.equal(accountShortLabel(account({ unidentifiedOrdinal: 1 }), zh), "銀行帳戶 · 帳戶 1", "an identifier without four digits stays whole");
+  assert.equal(accountShortLabel(account({ label: "Cathay United Bank · Bank account" }), zh), "銀行帳戶");
+  assert.equal(accountShortLabel(account({ label: "Cathay United Bank · Bank account · ****5678" }), translations.en), "Bank account ending 5678");
 });

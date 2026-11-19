@@ -721,8 +721,8 @@ export function createMegaSource(options: Readonly<{ http?: PreviewHttpOpener; s
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Mega Bank account. Its data may be incomplete or wrong. An on-device solver reads Mega Bank's numeric image CAPTCHA. When it cannot read five images in a row, the run stops before signing in.",
-        "zh-TW": "預覽來源，從未以真實的兆豐銀行帳戶執行過，資料可能不完整或有誤。兆豐銀行的數字圖形驗證碼由裝置上的解題器辨識；連續五張都無法辨識時，執行會在登入前停止。",
+        en: "An on-device solver reads Mega Bank's numeric image CAPTCHA. When it cannot read five images in a row, the run stops before signing in.",
+        "zh-TW": "兆豐銀行的數字圖形驗證碼由裝置上的解題器辨識；連續五張都無法辨識時，執行會在登入前停止。",
       },
       requirements: [{ en: "A Mega Bank account with mobile banking sign-in.", "zh-TW": "可登入兆豐行動銀行的帳戶。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Mega Bank mobile banking.", "zh-TW": "輸入登入兆豐行動銀行使用的身分證字號、使用者代號與登入密碼。" }],

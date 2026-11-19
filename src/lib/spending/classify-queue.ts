@@ -3,7 +3,7 @@ import { MAX_CATEGORIZATION_TARGETS } from "../financial/page-actions.ts";
 import type { SpendingClassifyQueueItem } from "./model.ts";
 
 /**
- * Pure views over the classification inbox's queue: the by-amount and
+ * Pure views over the classification inbox's queue: the by-time and
  * by-merchant orders, the search filter, and the purchase set each apply
  * scope names. A merchant key groups rows for display only; it is never
  * stored and never becomes a categorization rule (User categorization scope).
@@ -15,7 +15,7 @@ export type ClassifyMerchantGroup = Readonly<{
   displayName: string | null;
   count: number;
   totals: readonly MoneyTotal[];
-  /** Largest first, as byAmount orders them. */
+  /** Newest first, as byTime orders them. */
   purchaseIds: readonly string[];
 }>;
 
@@ -24,7 +24,7 @@ export type ClassifyApplyScope =
   | Readonly<{ kind: "merchant"; key: string }>
   | Readonly<{ kind: "search"; query: string }>;
 
-/** The ids one action carries, largest first, and how many the cap left for another action. */
+/** The ids one action carries, newest first, and how many the cap left for another action. */
 export type ClassifyApplyTargets = Readonly<{ purchaseIds: readonly string[]; overflow: number }>;
 
 /** Payment channels that prefix the merchant in bank descriptions, such as 「LINE Pay－全聯福利中心」. */
@@ -93,22 +93,17 @@ function payeeKey(text: string): string {
   return unlessEmpty(key, key.replace(/(?<=\D)[\s#\-_]*(?:no\.?\s*)?\d+$/u, ""));
 }
 
-/** Larger amount first, a missing amount last, then the later date, then the purchase id. */
-function compareItems(left: SpendingClassifyQueueItem, right: SpendingClassifyQueueItem): number {
-  const leftAmount = left.amount, rightAmount = right.amount;
-  if (leftAmount && rightAmount) {
-    const order = compareExact(rightAmount, leftAmount);
-    if (order !== 0) return order;
-  } else if (leftAmount || rightAmount) {
-    return leftAmount ? -1 : 1;
-  }
+/** Newest first: by date, then by the recorded time of day, a date-only purchase after the timed ones that day. */
+function compareTime(left: SpendingClassifyQueueItem, right: SpendingClassifyQueueItem): number {
   if (left.date !== right.date) return left.date < right.date ? 1 : -1;
+  const leftTime = left.details.time ?? "", rightTime = right.details.time ?? "";
+  if (leftTime !== rightTime) return leftTime < rightTime ? 1 : -1;
   return left.purchaseId < right.purchaseId ? -1 : left.purchaseId > right.purchaseId ? 1 : 0;
 }
 
-/** One row per purchase, largest first. Amounts compare by value; the queue is almost always one currency. */
-export function byAmount(items: readonly SpendingClassifyQueueItem[]): readonly SpendingClassifyQueueItem[] {
-  return Object.freeze([...items].sort(compareItems));
+/** One row per purchase, newest first. */
+export function byTime(items: readonly SpendingClassifyQueueItem[]): readonly SpendingClassifyQueueItem[] {
+  return Object.freeze([...items].sort(compareTime));
 }
 
 function groupKey(item: SpendingClassifyQueueItem): string {
@@ -128,17 +123,11 @@ function mostCommonTitle(items: readonly SpendingClassifyQueueItem[]): string | 
   return best?.[0] ?? null;
 }
 
-function largestTotal(group: ClassifyMerchantGroup): ExactAmount {
-  return group.totals.reduce<ExactAmount>(
-    (largest, total) => (compareExact(total, largest) > 0 ? total : largest),
-    { coefficient: "0", scale: 0 },
-  );
-}
-
-/** One row per merchant key: most purchases first, then the larger total, then the key. */
+/** One row per merchant key, the group with the latest purchase first; its members newest first. */
 export function byMerchant(items: readonly SpendingClassifyQueueItem[]): readonly ClassifyMerchantGroup[] {
   const members = new Map<string, SpendingClassifyQueueItem[]>();
-  for (const item of byAmount(items)) {
+  // Walking newest first, groups enter the map in order of their latest purchase.
+  for (const item of byTime(items)) {
     const key = groupKey(item);
     const list = members.get(key);
     if (list) list.push(item);
@@ -151,10 +140,7 @@ export function byMerchant(items: readonly SpendingClassifyQueueItem[]): readonl
     totals: moneyTotals(list.flatMap((item) => item.amount ? [item.amount] : [])),
     purchaseIds: Object.freeze(list.map((item) => item.purchaseId)),
   }));
-  return Object.freeze(groups.sort((left, right) =>
-    right.count - left.count
-    || compareExact(largestTotal(right), largestTotal(left))
-    || (left.key < right.key ? -1 : left.key > right.key ? 1 : 0)));
+  return Object.freeze(groups);
 }
 
 const SEARCH_AMOUNT = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/u;
@@ -183,7 +169,7 @@ export function matches(item: SpendingClassifyQueueItem, query: string): boolean
   return amount !== null && item.amount !== null && compareExact(item.amount, amount) === 0;
 }
 
-/** At most one action's worth of ids, largest first as given, and how many are left for another. */
+/** At most one action's worth of ids, in the order given, and how many are left for another. */
 export function capped(purchaseIds: readonly string[]): ClassifyApplyTargets {
   return Object.freeze({
     purchaseIds: Object.freeze(purchaseIds.slice(0, MAX_CATEGORIZATION_TARGETS)),
@@ -204,6 +190,6 @@ export function applyTargets(items: readonly SpendingClassifyQueueItem[], scope:
       return capped(byMerchant(items).find((group) => group.key === scope.key)?.purchaseIds ?? []);
     case "search":
       if (normalizedText(scope.query) === "") return capped([]);
-      return capped(byAmount(items).filter((item) => matches(item, scope.query)).map((item) => item.purchaseId));
+      return capped(byTime(items).filter((item) => matches(item, scope.query)).map((item) => item.purchaseId));
   }
 }

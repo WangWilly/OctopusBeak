@@ -70,18 +70,26 @@ test("the classify queue lists the range's Unclassified purchases that the user 
         {
           purchaseId: `invoice:${plainInvoice}`, basis: "invoice", date: "2026-09-15", title: "某某工作室",
           amount: { currency: "TWD", coefficient: "250", scale: 0 }, payment: null,
+          details: { time: "13:45", bankDescription: null, items: [
+            { name: "Widget", quantity: { coefficient: "1", scale: 0 }, amount: { currency: "TWD", coefficient: "250", scale: 0 } },
+          ] },
         },
         {
           purchaseId: linked.purchaseId, basis: "linked", date: "2026-09-12", title: "網路家庭國際資訊股份有限公司",
           amount: { currency: "TWD", coefficient: "500", scale: 0 }, payment: { stream: "credit-card", institution: "fubon", cardMask: null },
+          details: { time: "13:45", bankDescription: "PCHOME", items: [
+            { name: "Cable", quantity: { coefficient: "1", scale: 0 }, amount: { currency: "TWD", coefficient: "500", scale: 0 } },
+          ] },
         },
         {
           purchaseId: `transaction:${cleared}`, basis: "bank-transaction", date: "2026-08-20", title: "大苑子",
           amount: { currency: "TWD", coefficient: "80", scale: 0 }, payment: { stream: "credit-card", institution: "fubon", cardMask: null },
+          details: { time: null, bankDescription: null, items: [] },
         },
         {
           purchaseId: `transaction:${plain}`, basis: "bank-transaction", date: "2026-09-05", title: "全聯福利中心－台北民生",
           amount: { currency: "TWD", coefficient: "300", scale: 0 }, payment: { stream: "credit-card", institution: "fubon", cardMask: "****1234" },
+          details: { time: null, bankDescription: null, items: [] }, // the bank's words are already the title
         },
       ].sort((left, right) => left.purchaseId.localeCompare(right.purchaseId)),
     );
@@ -129,6 +137,23 @@ test("categorizing the whole queue empties it and clearing the same set restores
     const after = await read();
     assert.equal(after.knowledgeAt, undone.knowledgeAt);
     assert.deepEqual(after.items, before.items, "clearing returns every queued purchase exactly as it was");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a queued invoice carries every item, in invoice order", async () => {
+  const fixture = await createSpendingCategoryFixture();
+  try {
+    const names = ["Widget", "Gadget", "Gizmo", "Sprocket", "Bracket", "Hinge", "Spring"];
+    const invoice = await fixture.commitInvoice({
+      stableKey: "AB20000001:2026-09-20", date: "2026-09-20", sellerName: "某某工作室",
+      items: names.map((name, index) => ({ sequence: index + 1, name, amount: String(10 * (index + 1)) })),
+    });
+    const knowledgeAt = await fixture.knowledgeAt();
+    const queue = freshPage(await createPGliteSpendingQuery(fixture.store).classifyQueue({ knowledgeAt, ...RANGE }));
+    const details = queue.items.find((item) => item.purchaseId === `invoice:${invoice}`)!.details;
+    assert.deepEqual(details.items.map((item) => item.name), names);
   } finally {
     await fixture.close();
   }

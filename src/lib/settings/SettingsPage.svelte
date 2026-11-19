@@ -52,6 +52,7 @@
     type AppUpdateUiContext,
   } from "$lib/shared-shell/app-update-context.ts";
   import type { SettingsFocus } from "$lib/desktop/api.ts";
+  import { activeSectionAt } from "$lib/settings/section-spy.ts";
 
   export let onboardingStatus: "active" | "exited" | "completed" | null = null;
   /** When onboarding completed or exited; null for records from before it was kept. */
@@ -84,6 +85,10 @@
   let draftScale: number | null = null;
   let shortcutModifier = "Ctrl";
   let activeSection: (typeof SECTIONS)[number]["id"] = SECTIONS[0].id;
+  /** A section is the one being read once its heading passes this far below the window top, under the top bar. */
+  const SECTION_READING_LINE = 120;
+  /** A section chosen in the nav stays active until the person scrolls on their own; near the page end it may never reach the line. */
+  let chosenSection: (typeof SECTIONS)[number]["id"] | null = null;
   let now = new Date();
   let selectedTimezone = $systemTimezone;
   $: timezoneOptions = timezones.includes(selectedTimezone)
@@ -150,18 +155,34 @@
     displayScaleAvailable = supportsDisplayScale(window.octopusBeak);
     shortcutModifier = isMacPlatform(navigator) ? "⌘" : "Ctrl";
     const clock = setInterval(() => (now = new Date()), 60_000);
-    const observer = new IntersectionObserver((entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting)
-        .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
-      if (visible) activeSection = visible.target.id as typeof activeSection;
-    }, { rootMargin: "0px 0px -60% 0px" });
-    for (const section of SECTIONS) {
-      const element = document.getElementById(section.id);
-      if (element) observer.observe(element);
-    }
+    // Every scroll re-reads every section, so a section still in view is never
+    // skipped because it did not cross an edge this time.
+    const followScroll = () => {
+      const scroller = document.scrollingElement ?? document.documentElement;
+      const id = activeSectionAt(
+        SECTIONS.map((section) => ({ id: section.id, top: document.getElementById(section.id)?.getBoundingClientRect().top ?? Infinity })),
+        SECTION_READING_LINE,
+        scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2,
+      );
+      if (chosenSection) activeSection = chosenSection;
+      else if (id) activeSection = id as typeof activeSection;
+    };
+    const releaseChoice = () => (chosenSection = null);
+    // A press anywhere but the nav (the scrollbar, autoscroll) is the person taking over the scroll.
+    const releaseOnPress = (event: PointerEvent) => {
+      if (!(event.target instanceof Element && event.target.closest(".settings-nav"))) releaseChoice();
+    };
+    followScroll();
+    window.addEventListener("scroll", followScroll, { passive: true, capture: true });
+    window.addEventListener("resize", followScroll);
+    for (const type of ["wheel", "touchmove", "keydown"] as const) window.addEventListener(type, releaseChoice, { passive: true });
+    window.addEventListener("pointerdown", releaseOnPress, { passive: true });
     return () => {
       clearInterval(clock);
-      observer.disconnect();
+      window.removeEventListener("scroll", followScroll, { capture: true });
+      window.removeEventListener("resize", followScroll);
+      for (const type of ["wheel", "touchmove", "keydown"] as const) window.removeEventListener(type, releaseChoice);
+      window.removeEventListener("pointerdown", releaseOnPress);
     };
   });
 
@@ -248,6 +269,7 @@
 
   function showSection(id: typeof activeSection) {
     activeSection = id;
+    chosenSection = id;
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -458,7 +480,6 @@
           </li>
         {/each}
       </ul>
-      <p class="settings-version">OctopusBeak {__APP_VERSION__}</p>
     </nav>
 
     <div class="settings-sections">
@@ -632,19 +653,19 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label" id="preview-features-label">{$t.settings.previewFeatures}</span>
+              <span class="setting-label" id="preview-features-label">{$t.settings.previewSourcesToggle}</span>
               <small class="setting-hint">{$t.settings.previewFeaturesHint}</small>
             </div>
             <div class="setting-control">
               <button
                 id="preview-features-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={previewEnabled}
                 aria-labelledby="preview-features-label"
                 onclick={togglePreviewFeatures}
               >
-                <span>{previewEnabled ? $t.settings.previewFeaturesOn : $t.settings.previewFeaturesOff}</span>
+                <span class="visually-hidden">{previewEnabled ? $t.settings.previewFeaturesOn : $t.settings.previewFeaturesOff}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -664,7 +685,7 @@
               {#if !previewDeleteConfirming}
                 <button
                   id="delete-preview-data"
-                  class="button"
+                  class="button danger"
                   type="button"
                   disabled={previewDeleteStatus === "pending"}
                   aria-busy={previewDeleteStatus === "pending"}
@@ -705,13 +726,13 @@
             <div class="setting-control">
               <button
                 id="usage-statistics-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={usageEnabled}
                 aria-labelledby="usage-statistics-label"
                 onclick={toggleUsageStatistics}
               >
-                <span>{usageEnabled ? $t.settings.usageStatisticsOn : $t.settings.usageStatisticsOff}</span>
+                <span class="visually-hidden">{usageEnabled ? $t.settings.usageStatisticsOn : $t.settings.usageStatisticsOff}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -756,7 +777,7 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$updateView ? $t.settings.appUpdatesVersion($updateView.currentVersion) : $t.settings.appUpdates}</span>
+              <span class="setting-label">{$t.settings.appUpdatesVersion($updateView?.currentVersion ?? __APP_VERSION__)}</span>
               <small id="app-update-status" class="setting-hint" aria-live="polite">{updateLine}</small>
             </div>
             <div class="onboarding-setting-actions">
@@ -779,13 +800,13 @@
             <div class="setting-control">
               <button
                 id="app-updates-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={updatesEnabled}
                 aria-labelledby="app-updates-label"
                 onclick={toggleAppUpdates}
               >
-                <span>{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="visually-hidden">{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -798,14 +819,14 @@
             <div class="setting-control">
               <button
                 id="app-updates-auto-download-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={updatesAutoDownload}
                 aria-labelledby="app-updates-auto-download-label"
                 disabled={!updatesEnabled}
                 onclick={toggleAppUpdatesAutoDownload}
               >
-                <span>{updatesAutoDownload ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="visually-hidden">{updatesAutoDownload ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -965,7 +986,7 @@
         <div class="card settings-card">
           <div class="setting-row onboarding-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.onboardingSection}</span>
+              <span class="setting-label">{$t.settings.onboardingStatusLabel}</span>
               {#if onboardingMeta.length > 0}
                 <small class="setting-hint" data-onboarding-meta>{onboardingMeta.join(" · ")}</small>
               {/if}
@@ -1032,7 +1053,8 @@
     align-items: start;
     gap: var(--space-6);
     max-width: 1200px;
-    margin: 0;
+    /* Centred, so a wide window leaves even margins instead of one empty side. */
+    margin: 0 auto;
   }
 
   .settings-save-status {
@@ -1056,8 +1078,7 @@
     display: grid;
     gap: var(--space-1);
     margin: 0;
-    padding: 0 0 var(--space-3);
-    border-bottom: 1px solid var(--border);
+    padding: 0;
     list-style: none;
   }
 
@@ -1082,13 +1103,6 @@
     background: var(--surface);
     color: var(--fg);
     font-weight: 750;
-  }
-
-  .settings-version {
-    margin: var(--space-4) 0 0;
-    padding: 0 var(--space-3);
-    font-size: 12px;
-    font-weight: 700;
   }
 
   .settings-sections {
@@ -1227,6 +1241,25 @@
 
   .collection-switch[aria-pressed="true"] .switch-track { background: var(--fg); }
   .collection-switch[aria-pressed="true"] .switch-track::after { transform: translateX(12px); }
+  /*
+   * A setting that is only on or off is the switch alone, right-aligned: the
+   * track already shows its state, so the box and the 「開啟／關閉」 words it
+   * carried are gone (the words stay for a screen reader).
+   */
+  .setting-switch {
+    justify-self: end;
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    padding: 4px;
+    border-color: transparent;
+    border-radius: 999px;
+    background: none;
+  }
+  .setting-switch .switch-track { width: 38px; height: 22px; }
+  .setting-switch .switch-track::after { top: 3px; left: 3px; width: 16px; height: 16px; }
+  .setting-switch[aria-pressed="true"] .switch-track::after { transform: translateX(16px); }
+  .setting-switch:disabled { cursor: not-allowed; opacity: 0.48; }
   .time-field.disabled { opacity: 0.55; }
   .time-field select:disabled { cursor: default; }
 

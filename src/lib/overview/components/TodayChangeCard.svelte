@@ -7,6 +7,8 @@
   import { formatPct, formatShortDate } from "$lib/overview/overview-format.ts";
 import { formatTwdNumber } from "$lib/shared-money/money.ts";
   import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
   import type { AccountRowDto } from "$lib/shared-ledger/types.ts";
 
   export let change: TodayChange;
@@ -49,7 +51,10 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
           {@const width = (Math.abs(row.change) / maxAbs) * 50}
           <li data-direction={row.change < 0 ? "down" : "up"}>
             <span class="who">
-              <strong title={accountName(row.account)}>{accountName(row.account)}</strong>
+              <span class="name">
+                <InstitutionLogo institution={institutionLogo(row.account.institutionKey)} size={16} />
+                <strong title={accountName(row.account)}>{accountName(row.account)}</strong>
+              </span>
               {#if row.reason}<span class="reason">{reasonText(row.reason)}</span>{/if}
             </span>
             <span class="track" aria-hidden="true"><span class="fill" style:width={`${Math.max(width, 0.8)}%`}></span></span>
@@ -145,6 +150,13 @@ import { formatTwdNumber } from "$lib/shared-money/money.ts";
 
   .who {
     display: grid;
+    min-width: 0;
+  }
+
+  .name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
   }
 

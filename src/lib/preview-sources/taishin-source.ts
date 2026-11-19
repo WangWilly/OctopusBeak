@@ -712,8 +712,8 @@ export function createTaishinSource(options: Readonly<{
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Taishin account. Its data may be incomplete or wrong. An on-device solver reads Taishin's image CAPTCHA. When it cannot read the image, the run stops before signing in.",
-        "zh-TW": "預覽來源，從未以真實的台新銀行帳戶執行過，資料可能不完整或有誤。台新網路銀行的圖形驗證碼由裝置上的解題器辨識；無法辨識時，執行會在登入前停止。",
+        en: "An on-device solver reads Taishin's image CAPTCHA. When it cannot read the image, the run stops before signing in.",
+        "zh-TW": "台新網路銀行的圖形驗證碼由裝置上的解題器辨識；無法辨識時，執行會在登入前停止。",
       },
       requirements: [{ en: "A Taishin online-banking (網路銀行) login.", "zh-TW": "可登入台新網路銀行的帳號。" }],
       steps: [{ en: "Enter the ID number, user code, and password you use to sign in to Taishin online banking.", "zh-TW": "輸入登入台新網路銀行使用的身分證字號、使用者代碼與使用者密碼。" }],

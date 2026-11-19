@@ -3,7 +3,7 @@ import test from "node:test";
 import { SPENDING_CATEGORY_GROUP_BY_CODE, SPENDING_CATEGORY_GROUP_IDS } from "./category-groups.ts";
 import {
   CLASSIFY_CODE_KEYS,
-  classifyAmountRows,
+  classifyPurchaseRows,
   classifyGroupCodes,
   classifyGroupKey,
   classifyKeyCommand,
@@ -80,7 +80,7 @@ test("the period is the twelve months ending today", () => {
 });
 
 function queued(purchaseId: string, title: string, amount: string): SpendingClassifyQueueItem {
-  return { purchaseId, basis: "bank-transaction", date: "2026-09-01", title, amount: { currency: "TWD", coefficient: amount, scale: 0 }, payment: null };
+  return { purchaseId, basis: "bank-transaction", date: "2026-09-01", title, amount: { currency: "TWD", coefficient: amount, scale: 0 }, payment: null, details: { time: null, bankDescription: null, items: [] } };
 }
 
 const pxmartAndDinTaiFung = [
@@ -93,8 +93,8 @@ const pxmartAndDinTaiFung = [
 const ids = (rows: readonly { purchaseId: string }[]) => rows.map((row) => row.purchaseId);
 
 test("「全部套用」 under 「只看」 writes only that merchant's search results", () => {
-  const view = { mode: "amount", query: "300", merchantKey: "全聯" } as const;
-  const shown = classifyAmountRows(pxmartAndDinTaiFung, view);
+  const view = { mode: "time", query: "300", merchantKey: "全聯" } as const;
+  const shown = classifyPurchaseRows(pxmartAndDinTaiFung, view);
   assert.deepEqual(ids(shown).sort(), ["p1", "p2"]);
   const written = classifyWriteTargets(pxmartAndDinTaiFung, view, { kind: "search" });
   assert.deepEqual([...written.purchaseIds].sort(), ["p1", "p2"], "the 300 at 鼎泰豐 is not on screen");
@@ -120,13 +120,13 @@ test("a merchant row under a search shows and writes only its matching purchases
 });
 
 test("「只看」 stays while the merchant has queued purchases a search hid", () => {
-  const view = { mode: "amount", query: "500", merchantKey: "全聯" } as const;
+  const view = { mode: "time", query: "500", merchantKey: "全聯" } as const;
   assert.equal(keepsMerchantFilter(pxmartAndDinTaiFung, view, ["p3"]), true, "p1 and p2 are still queued");
   assert.equal(keepsMerchantFilter(pxmartAndDinTaiFung, view, ["p1", "p2", "p3"]), false);
 });
 
 test("the current row writes only a row that is shown", () => {
-  const view = { mode: "amount", query: "", merchantKey: "全聯" } as const;
+  const view = { mode: "time", query: "", merchantKey: "全聯" } as const;
   assert.deepEqual(classifyWriteTargets(pxmartAndDinTaiFung, view, { kind: "current", key: "p3" }).purchaseIds, ["p3"]);
   assert.deepEqual(classifyWriteTargets(pxmartAndDinTaiFung, view, { kind: "current", key: "d1" }).purchaseIds, [], "鼎泰豐 is outside 「只看」");
   assert.deepEqual(classifyWriteTargets(pxmartAndDinTaiFung, { mode: "merchant", query: "", merchantKey: null }, { kind: "current", key: "missing" }).purchaseIds, []);

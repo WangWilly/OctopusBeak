@@ -502,8 +502,8 @@ export function createSkbankSource(options: Readonly<{ http?: PreviewHttpOpener 
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live Shin Kong Bank account. Its data may be incomplete or wrong. It signs in through the Shin Kong Bank mobile banking API with your online banking credentials.",
-        "zh-TW": "預覽來源，從未以真實的新光銀行帳戶執行過，資料可能不完整或有誤。它以你的網路銀行帳密，透過新光銀行行動銀行 API 登入。",
+        en: "It signs in through the Shin Kong Bank mobile banking API with your online banking credentials.",
+        "zh-TW": "它以你的網路銀行帳密，透過新光銀行行動銀行 API 登入。",
       },
       requirements: [{ en: "A Shin Kong Bank online banking account.", "zh-TW": "新光銀行網路銀行帳戶。" }],
       steps: [{ en: "Enter the ID number, user ID, and password you use to sign in to Shin Kong Bank online banking.", "zh-TW": "輸入登入新光銀行網路銀行使用的身分證字號、使用者代號與密碼。" }],

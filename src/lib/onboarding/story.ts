@@ -201,6 +201,20 @@ export const FIRST_OVERVIEW_STORY = {
   nodes: Record<OnboardingNodeId, OnboardingStoryNode>;
 };
 
+/**
+ * How the credentials sheet must look for a node to have its target: what a
+ * later node's Previous restores when it returns there. A progression resumed
+ * after a restart opens the sheet the same way, so the coach is not left
+ * pointing at nothing.
+ */
+export function onboardingNodePresentation(storyId: string, nodeId: OnboardingNodeId): OnboardingPresentation {
+  if (storyId !== FIRST_OVERVIEW_STORY.id) return "none";
+  const nodes: readonly OnboardingStoryNode[] = Object.values(FIRST_OVERVIEW_STORY.nodes);
+  for (const node of nodes)
+    if (node.previous?.nodeId === nodeId && node.previous.presentation !== "none") return node.previous.presentation;
+  return "none";
+}
+
 export function onboardingStoryNode(
   storyId: string,
   nodeId: string,

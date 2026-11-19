@@ -15,6 +15,8 @@ export type StackedBalancePoint = {
 export type StackedBalanceSeries = {
   key: string;
   label: string;
+  /** The one account a per-account series draws; null for a series of a whole kind. */
+  account: AccountRowDto | null;
   color: string;
   data: StackedBalancePoint[];
   /** The origins of the accounts with a balance in the series. */
@@ -73,6 +75,7 @@ export function buildStackedBalanceChartData(options: {
       return {
         key: group.key,
         label: group.label,
+        account: group.kind === null ? group.accounts[0] ?? null : null,
         // A kind keeps its own color wherever it appears; per-account series cycle the set.
         color: (group.kind && kindSeriesColor(group.kind, options.mode)) || STACK_COLORS[index % STACK_COLORS.length],
         data,

@@ -4,6 +4,7 @@
   import { taipeiDate } from "$lib/settings/system-timezone-store.ts";
   import { ArrowRight, Calendar, ChartColumn, ChartLine, ChevronLeft, ChevronRight, CircleDashed, GitMerge, Info, Link, ListChecks, ReceiptText, RefreshCw, Search, TrendingUp } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import {
     type SpendingPurchaseRecordView as PurchaseRecord,
@@ -41,6 +42,7 @@
     monthDayText,
     monthText,
     pairingAmountsDiffer,
+    paymentLogo,
     paymentMethodText,
     recordCategoryText,
     recordGroups,
@@ -812,7 +814,7 @@
                 <span class="category-dot" style:background={SPENDING_GROUP_COLORS[groups[0] ?? "unclassified"]} aria-hidden="true"></span>
                 <span class="record-texts">
                   <strong>{recordLabel(record)}</strong>
-                  <span>{recordCategoryText($t, record)} · {paymentMethodText($t, record)}{#if occurrenceBasisLabel(record)}{" · "}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}</span>
+                  <span>{recordCategoryText($t, record)} · <span class="payment">{#if paymentLogo(record)}<InstitutionLogo institution={paymentLogo(record)} size={14} />{/if}{paymentMethodText($t, record)}</span>{#if occurrenceBasisLabel(record)}{" · "}<span class="fallback-date" data-date-basis="posting-date-fallback">{occurrenceBasisLabel(record)}</span>{/if}</span>
                 </span>
                 {#if record.basis === "linked"}
                   <span class="status-tag merged" data-status="merged"><Link size={12} strokeWidth={2.2} aria-hidden="true" />{$t.spendingReview.statusMerged}</span>
@@ -1078,6 +1080,8 @@
   .record-texts { display: grid; flex: 1; gap: 2px; min-width: 0; }
   .record-texts strong { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .record-texts > span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  /* The paying Institution's logo leads its name, as in the classify inbox. */
+  .payment :global(.institution-logo) { margin-right: 4px; vertical-align: -2px; }
   /* A note on where the date came from, not a warning: it stays in the line's muted voice. */
   .fallback-date { color: inherit; }
   .status-tag { display: inline-flex; flex: none; align-items: center; gap: 4px; padding: 3px 8px; border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 720; white-space: nowrap; }

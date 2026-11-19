@@ -3,11 +3,13 @@
   import { ListFilter, Search, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import Modal from "$lib/shared-shell/components/Modal.svelte";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
   import { MAX_CATEGORIZATION_TARGETS } from "../../financial/page-actions.ts";
   import type { PersonalCategoryCode } from "../../../ledger/canonical/personal-category-codes.ts";
   import { SPENDING_CATEGORY_GROUP_BY_CODE, type SpendingCategoryGroup } from "../category-groups.ts";
   import {
-    classifyAmountRows,
+    classifyPurchaseRows,
     classifyGroupCodes,
     classifyKeyCommand,
     classifyMerchantRows,
@@ -16,13 +18,14 @@
     keepsMerchantFilter,
     movedKey,
     type ClassifyControl,
+    type ClassifyMode,
     type ClassifyView,
   } from "../classify-inbox.ts";
   import type { ClassifyMerchantGroup } from "../classify-queue.ts";
   import type { ClassifyQueueStore } from "../classify-queue-store.ts";
-  import type { SpendingClassifyQueueItem } from "../model.ts";
+  import type { SpendingClassifyDetails, SpendingClassifyQueueItem } from "../model.ts";
   import type { SpendingPageActionOutcome } from "../purchase-spending-session.ts";
-  import { monthDayText, paymentText } from "../spending-display.ts";
+  import { institutionKeyLogo, plainDecimalText, monthDayText, paymentText } from "../spending-display.ts";
   import CategoryKeyPicker from "./CategoryKeyPicker.svelte";
   import { moneyTotals } from "$lib/shared-money/exact-money.ts";
   import { moneyText } from "./money-text.ts";
@@ -34,15 +37,14 @@
   /** Another Spending action is running; the page takes one action at a time. */
   export let busy = false;
 
-  type Mode = "amount" | "merchant";
   type Toast =
     | Readonly<{ kind: "applied"; purchaseIds: readonly string[] }>
     | Readonly<{ kind: "undone"; count: number }>;
 
   const state = queue.state;
-  let mode: Mode = "amount";
+  let mode: ClassifyMode = "time";
   let query = "";
-  /** 「逐筆看」: the by-amount list narrowed to one merchant group. */
+  /** 「逐筆看」: the by-time list narrowed to one merchant group. */
   let merchantFilter: ClassifyMerchantGroup | null = null;
   let currentKey: string | null = null;
   let shownKeys: readonly string[] = [];
@@ -55,10 +57,10 @@
   let searchInput: HTMLInputElement | null = null;
 
   $: items = $state.items ?? [];
-  $: view = { mode, query, merchantKey: mode === "amount" ? merchantFilter?.key ?? null : null } satisfies ClassifyView;
-  $: amountRows = classifyAmountRows(items, view);
+  $: view = { mode, query, merchantKey: mode === "merchant" ? null : merchantFilter?.key ?? null } satisfies ClassifyView;
+  $: purchaseRows = classifyPurchaseRows(items, view);
   $: merchantRows = classifyMerchantRows(items, query);
-  $: keys = mode === "amount" ? amountRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
+  $: keys = mode !== "merchant" ? purchaseRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
   $: followRows(keys);
   $: currentControl = currentKey === null ? null : { kind: "current", key: currentKey } satisfies ClassifyControl;
   $: currentTargets = currentControl ? classifyWriteTargets(items, view, currentControl) : null;
@@ -78,7 +80,7 @@
     shownKeys = next;
   }
 
-  function chooseMode(next: Mode) {
+  function chooseMode(next: ClassifyMode) {
     if (next === mode) return;
     mode = next;
     merchantFilter = null;
@@ -87,7 +89,7 @@
   }
 
   function reviewEach(entry: ClassifyMerchantGroup) {
-    mode = "amount";
+    mode = "time";
     merchantFilter = entry;
     query = "";
     shownKeys = [];
@@ -119,8 +121,10 @@
     await tick();
     const row = currentKey === null ? null : list?.querySelector<HTMLElement>(`[data-classify-row="${CSS.escape(currentKey)}"]`);
     if (row) {
-      row.focus();
-      row.scrollIntoView({ block: "nearest" });
+      row.focus({ preventScroll: true });
+      // A row taller than the list, an invoice with many items, shows its head first.
+      const tall = list !== null && row.getBoundingClientRect().height > list.getBoundingClientRect().height;
+      row.scrollIntoView({ block: tall ? "start" : "nearest" });
     } else {
       searchInput?.focus();
     }
@@ -206,10 +210,33 @@
     return item.amount ? moneyText(item.amount, $locale) : $t.purchaseSpending.amountUnavailable;
   }
 
+  /** The paying Institution's logo; an invoice-only purchase shows the e-invoice platform's. */
+  function paymentLogo(item: SpendingClassifyQueueItem) {
+    if (!item.payment) return institutionLogo("einvoice");
+    return institutionKeyLogo(item.payment.institution);
+  }
+
   function accountText(item: SpendingClassifyQueueItem) {
     return item.payment
       ? paymentText($t, item.payment, { institution: item.payment.institution, cardMask: item.payment.cardMask, billingPeriod: null })
       : $t.classifyInbox.noPayment;
+  }
+
+  function hasDetails(details: SpendingClassifyDetails) {
+    return details.time !== null || details.bankDescription !== null || details.items.length > 0;
+  }
+
+  /** 「衛生紙 ×2」: a quantity of one goes unsaid. */
+  function itemText(item: SpendingClassifyDetails["items"][number]) {
+    const name = item.name ?? $t.purchaseSpending.itemNameUnavailable;
+    if (!item.quantity) return name;
+    const quantity = plainDecimalText(item.quantity);
+    return quantity === "1" ? name : `${name} ×${quantity}`;
+  }
+
+  /** A merchant member's items, every name in full. */
+  function itemNames(details: SpendingClassifyDetails) {
+    return details.items.map((item) => item.name ?? $t.purchaseSpending.itemNameUnavailable).join("、");
   }
 
   function dateRange(members: readonly SpendingClassifyQueueItem[]) {
@@ -218,6 +245,33 @@
     return !first || !last ? "" : first === last ? monthDayText(first) : `${monthDayText(first)} – ${monthDayText(last)}`;
   }
 </script>
+
+{#snippet payment(item: SpendingClassifyQueueItem, size: number)}
+  <span class="payment">{#if paymentLogo(item)}<InstitutionLogo institution={paymentLogo(item)} {size} />{/if}{accountText(item)}</span>
+{/snippet}
+
+{#snippet details(facts: SpendingClassifyDetails)}
+  <div class="row-details" data-classify-details>
+    {#if facts.time !== null || facts.bankDescription !== null}
+      <p class="detail-line">
+        {#if facts.time !== null}<span class="num" data-classify-time>{facts.time}</span>{/if}
+        {#if facts.bankDescription !== null}
+          <span class="bank-description" data-classify-bank-description><span class="detail-label">{$t.classifyInbox.bankDescription}</span>{facts.bankDescription}</span>
+        {/if}
+      </p>
+    {/if}
+    {#if facts.items.length > 0}
+      <ul class="detail-items" data-classify-items={facts.items.length}>
+        {#each facts.items as line, index (index)}
+          <li>
+            <span class="item-name">{itemText(line)}</span>
+            <span class="money" data-sensitive>{line.amount ? moneyText(line.amount, $locale) : "—"}</span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </div>
+{/snippet}
 
 <svelte:window onkeydown={onKeydown} />
 
@@ -232,7 +286,7 @@
 >
   <div class="toolbar">
     <div class="filters mode" role="group" aria-label={$t.classifyInbox.modeAria}>
-      <button type="button" class="filter-btn" aria-pressed={mode === "amount"} data-classify-mode="amount" onclick={() => chooseMode("amount")}>{$t.classifyInbox.byAmount}</button>
+      <button type="button" class="filter-btn" aria-pressed={mode === "time"} data-classify-mode="time" onclick={() => chooseMode("time")}>{$t.classifyInbox.byTime}</button>
       <button type="button" class="filter-btn" aria-pressed={mode === "merchant"} data-classify-mode="merchant" onclick={() => chooseMode("merchant")}>{$t.classifyInbox.byMerchant}</button>
     </div>
     <label class="search-field">
@@ -248,7 +302,7 @@
         data-classify-search
       />
     </label>
-    {#if merchantFilter && mode === "amount"}
+    {#if merchantFilter && mode !== "merchant"}
       <span class="merchant-filter" data-classify-merchant-filter>
         <ListFilter size={14} strokeWidth={2} aria-hidden="true" />{$t.classifyInbox.merchantOnly(merchantFilter.displayName ?? merchantFilter.key)}
         <button type="button" class="text-button" onclick={showAll}><X size={13} strokeWidth={2} aria-hidden="true" />{$t.classifyInbox.showAll}</button>
@@ -276,8 +330,8 @@
       <p class="list-empty">{$t.classifyInbox.noMatch}</p>
     {:else}
       <div class="rows" role="listbox" aria-label={$t.classifyInbox.listAria} aria-busy={saving || $state.loading}>
-        {#if mode === "amount"}
-          {#each amountRows as item (item.purchaseId)}
+        {#if mode !== "merchant"}
+          {#each purchaseRows as item (item.purchaseId)}
             <div
               class="row"
               role="option"
@@ -287,11 +341,16 @@
               onclick={() => select(item.purchaseId)}
               onkeydown={onKeydown}
             >
-              <span class="row-texts">
-                <strong>{item.title ?? $t.purchaseSpending.merchantUnavailable}</strong>
-                <span>{monthDayText(item.date)} · {accountText(item)}</span>
-              </span>
-              <span class="money" data-sensitive>{amountText(item)}</span>
+              <div class="row-head">
+                <span class="row-texts">
+                  <strong>{item.title ?? $t.purchaseSpending.merchantUnavailable}</strong>
+                  <span class="row-meta">{monthDayText(item.date)} · {@render payment(item, 14)}</span>
+                </span>
+                <span class="money" data-sensitive>{amountText(item)}</span>
+              </div>
+              {#if item.purchaseId === currentKey && hasDetails(item.details)}
+                {@render details(item.details)}
+              {/if}
             </div>
           {/each}
         {:else}
@@ -306,7 +365,7 @@
               onclick={() => select(entry.key)}
               onkeydown={onKeydown}
             >
-              <div class="merchant-head">
+              <div class="row-head">
                 <span class="row-texts">
                   <strong>{entry.displayName ?? $t.purchaseSpending.merchantUnavailable}</strong>
                   <span>{$t.classifyInbox.purchases(members.length)} · {dateRange(members)}</span>
@@ -318,7 +377,10 @@
                   {#each members as member (member.purchaseId)}
                     <li>
                       <span class="member-date num">{monthDayText(member.date)}</span>
-                      <span class="member-title">{member.title ?? $t.purchaseSpending.merchantUnavailable} · {accountText(member)}</span>
+                      <span class="member-title">
+                        {member.title ?? $t.purchaseSpending.merchantUnavailable} · {@render payment(member, 12)}
+                        {#if member.details.items.length > 0}<span class="member-items">{itemNames(member.details)}</span>{/if}
+                      </span>
                       <span class="money" data-sensitive>{amountText(member)}</span>
                     </li>
                   {/each}
@@ -401,19 +463,34 @@
   .notice.danger { border-color: color-mix(in oklch, var(--danger) 35%, var(--border)); background: color-mix(in oklch, var(--danger) 6%, var(--surface)); color: var(--danger); }
   .list-body { flex: 1; min-height: 0; padding: var(--space-3) var(--space-5); background: var(--bg); }
   .rows { display: grid; gap: 4px; }
-  .row { display: flex; align-items: center; gap: var(--space-4); padding: 10px 14px; border: 1px solid transparent; border-radius: 10px; background: var(--surface); cursor: pointer; }
+  .row { display: grid; gap: var(--space-2); padding: 10px 14px; border: 1px solid transparent; border-radius: 10px; background: var(--surface); cursor: pointer; }
   .row:hover { border-color: var(--border); }
   .row[aria-selected="true"] { border-color: var(--fg); box-shadow: 0 1px 2px rgb(15 23 42 / 0.08); }
   .row:focus { outline: none; }
   .row:focus-visible { box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); }
-  .row.merchant { display: grid; gap: var(--space-2); }
-  .merchant-head { display: flex; align-items: center; gap: var(--space-4); }
+  .row-head { display: flex; align-items: center; gap: var(--space-4); }
+  /* The paying Institution's logo leads its name, as on the account tables. */
+  .payment { display: inline; }
+  .payment :global(.institution-logo) { margin-right: 4px; vertical-align: -2px; }
+  .row-texts .payment { overflow: visible; }
+  /* The row being classified shows what its sources say beyond the title. */
+  .row-details { display: grid; gap: 6px; padding: 8px 0 2px; border-top: 1px solid var(--border); font-size: 12px; }
+  .detail-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--space-3); margin: 0; color: var(--muted); }
+  .detail-line .num { color: var(--fg); font-weight: 650; }
+  .bank-description { display: inline-flex; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+  .detail-label { flex: none; font-weight: 650; }
+  .detail-items { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+  /* Names wrap in full; each amount sits on its name's last line. */
+  .detail-items li { display: flex; align-items: last baseline; justify-content: space-between; gap: var(--space-3); }
+  .item-name { min-width: 0; overflow-wrap: anywhere; }
+  .detail-items .money { flex: none; color: var(--muted); font-size: 12px; font-weight: 560; }
+  .member-items { display: block; color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
   .row-texts { display: grid; flex: 1; gap: 2px; min-width: 0; }
   .row-texts strong { overflow: hidden; font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .row-texts span { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
   .row .money { flex: none; font-size: 14px; font-weight: 720; white-space: nowrap; }
   .members { display: grid; gap: 2px; max-height: 220px; margin: 0; padding: 6px 0 0; overflow: auto; border-top: 1px solid var(--border); list-style: none; }
-  .members li { display: flex; align-items: center; gap: var(--space-3); padding: 3px 0; font-size: 12px; }
+  .members li { display: flex; align-items: baseline; gap: var(--space-3); padding: 3px 0; font-size: 12px; }
   .member-date { flex: none; width: 44px; color: var(--muted); }
   .member-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .members .money { font-size: 12px; font-weight: 650; }

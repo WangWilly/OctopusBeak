@@ -265,8 +265,8 @@ export function createKgibankSource(options: Readonly<{
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live KGI Bank account. Its data may be incomplete or wrong. Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
-        "zh-TW": "預覽來源，從未以真實的凱基銀行帳戶執行過，資料可能不完整或有誤。圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
+        en: "Its image verification runs on your device; an unaccepted challenge stops the run before sign-in.",
+        "zh-TW": "圖形驗證在你的裝置上執行；辨識未通過時，執行會在登入前停止。",
       },
       requirements: [{ en: "A KGI Bank online-banking (網路銀行) login.", "zh-TW": "可登入凱基網路銀行的帳號。" }],
       steps: [{

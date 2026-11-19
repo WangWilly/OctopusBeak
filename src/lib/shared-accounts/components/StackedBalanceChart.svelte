@@ -7,10 +7,14 @@
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatUtcDate } from "$lib/time/timezone.ts";
   import { NO_PROVENANCE } from "$lib/shared-ledger/provenance.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
+  import { accountShortLabel } from "$lib/shared-accounts/localize-account.ts";
   import {
     selectStackedBalanceChartSeries,
     stackedBalanceChartState,
     type StackedBalanceChartData,
+    type StackedBalanceSeries,
   } from "./stacked-balance-chart-data.ts";
 
   export let chart: StackedBalanceChartData = { dates: [], series: [], totals: [], signature: "", provenance: NO_PROVENANCE };
@@ -123,6 +127,17 @@
   }
 </script>
 
+<!-- A series of one account: as in the Overview breakdown, the logo names the Institution and a screen reader hears the full name. -->
+{#snippet seriesName(item: { key: string; label: string; account: StackedBalanceSeries["account"] }, size: number)}
+  {#if item.account && institutionLogo(item.account.institutionKey)}
+    <InstitutionLogo institution={institutionLogo(item.account.institutionKey)} {size} />
+    <span class="visually-hidden">{item.label}</span>
+    <span class="series-short" aria-hidden="true">{accountShortLabel(item.account, $t)}</span>
+  {:else}
+    {kindLabels[item.key] ?? item.label}
+  {/if}
+{/snippet}
+
 {#if chartState === "trend"}
   <div class="stacked-balance-chart">
     <div class="stacked-balance-controls">
@@ -179,7 +194,7 @@
                   <div class="stacked-balance-tooltip-row">
                     <span class="stacked-balance-tooltip-label">
                       <span class="stacked-balance-tooltip-swatch" style:background-color={item.color}></span>
-                      {kindLabels[item.key] ?? item.label}
+                      {@render seriesName(item, 14)}
                     </span>
                     <strong data-sensitive>{formatMoney({ currency, value: tooltipValue(item, data) }, { locale: $locale })}</strong>
                   </div>
@@ -202,7 +217,7 @@
           onclick={() => toggleSeries(series.key)}
         >
           <span class="stacked-balance-legend-swatch" style:background-color={series.color}></span>
-          <span class="stacked-balance-legend-label">{kindLabels[series.key] ?? series.label}</span>
+          <span class="stacked-balance-legend-label">{@render seriesName(series, 12)}</span>
         </button>
       {/each}
     </div>
@@ -338,5 +353,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .stacked-balance-legend-label :global(.institution-logo) {
+    margin-right: 4px;
+    vertical-align: -2px;
   }
 </style>

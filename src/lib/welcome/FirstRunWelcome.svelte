@@ -50,6 +50,9 @@
 
   const STAGE_WIDTH = 1440;
   const STAGE_HEIGHT = 900;
+  /** The hero window's left edge and width on the stage, as `.hero-window` places it. */
+  const HERO_LEFT = 600;
+  const HERO_WIDTH = 920;
   const HERO_SCREENS = { 3: overviewScreen, 4: assetsScreen, 5: spendingScreen } as const;
   const TOUR_ICONS = {
     3: [Scale, Coins, ChartLine],
@@ -74,7 +77,6 @@
   let root: HTMLElement;
   let introductionIcon: HTMLButtonElement;
   let languageContinueButton: HTMLButtonElement;
-  let languageSelected = false;
   let transitionLocked = false;
   let direction: "forward" | "backward" = "forward";
   let circleCover = false;
@@ -102,6 +104,11 @@
     viewportHeight / STAGE_HEIGHT,
   )));
 
+  // How much of the hero window the viewport shows. When it bleeds off the
+  // right edge it fades out there, so the cut reads as deliberate, not broken.
+  $: stageLeft = Math.max(0, (viewportWidth - STAGE_WIDTH * stageScale) / 2);
+  $: heroVisible = Math.min(1, ((viewportWidth - stageLeft) / stageScale - HERO_LEFT) / HERO_WIDTH);
+
   function requestTransition(action: FirstRunWelcomeAction, duration = 320) {
     if (transitionLocked) return;
     const next = reduceFirstRunWelcome(state, action);
@@ -117,13 +124,12 @@
   async function chooseLanguage(value: Locale) {
     if (transitionLocked) return;
     setLocale(value);
-    languageSelected = true;
     await tick();
     languageContinueButton?.focus();
   }
 
   function confirmLanguage() {
-    if (transitionLocked || !languageSelected) return;
+    if (transitionLocked) return;
     const next = reduceFirstRunWelcome(state, { type: "confirm-language" });
     if (next === state) return;
     transitionLocked = true;
@@ -259,9 +265,8 @@
 >
   <div class="window-drag-region" aria-hidden="true"></div>
   {#if currentSlide <= 2}
-    <div class="progress" aria-hidden="true">
-      {#each [1, 2, 3, 4, 5, 6] as item}<span class:active={item === currentSlide}></span>{/each}
-    </div>
+    <!-- The same 「01 / 06」 count and bars the later slides carry, centred where the stage has no card for it. -->
+    <div class="progress">{@render stepProgress(currentSlide)}</div>
   {/if}
   <span class="visually-hidden" aria-live="polite">{progressText}</span>
 
@@ -288,21 +293,20 @@
           </button>
         {/each}
       </div>
-      {#if languageSelected}
-        <button
-          class="language-continue"
-          bind:this={languageContinueButton}
-          type="button"
-          onclick={confirmLanguage}
-        >
-          {$t.firstRunWelcome.continue}
-          <ArrowRight size={18} aria-hidden="true" />
-        </button>
-      {/if}
+      <!-- The current language is already a choice, so continuing needs no extra click. -->
+      <button
+        class="language-continue"
+        bind:this={languageContinueButton}
+        type="button"
+        onclick={confirmLanguage}
+      >
+        {$t.firstRunWelcome.continue}
+        <ArrowRight size={18} aria-hidden="true" />
+      </button>
     </section>
   {:else if currentSlide === 2}
     <section class="intro-slide introduction-slide" data-slide="2" aria-labelledby="welcome-introduction-heading">
-      <button class="intro-back" data-focus-default type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
+      <button class="intro-back" type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
         <ArrowLeft size={18} aria-hidden="true" />
       </button>
       <button bind:this={introductionIcon} class="introduction-icon app-icon-shell" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
@@ -311,13 +315,18 @@
       <div class="introduction-copy">
         <h1 id="welcome-introduction-heading">{$t.firstRunWelcome.introductionTitle}</h1>
         <p>{$t.firstRunWelcome.introductionBody}</p>
+        <!-- The icon also advances, but a visible button says how to go on. -->
+        <button class="language-continue introduction-next" data-focus-default type="button" onclick={activateIntroduction}>
+          {$t.firstRunWelcome.next}
+          <ArrowRight size={18} aria-hidden="true" />
+        </button>
       </div>
       <img class="icon-arrow" src={curvedArrow} alt="" aria-hidden="true" draggable="false" />
     </section>
   {:else if tourSlide && tour}
     <section class="stage-slide tour-slide" data-slide={tourSlide} aria-labelledby={`welcome-slide-${tourSlide}-heading`}>
       <div class="stage">
-        <div class="hero-window" aria-hidden="true">
+        <div class="hero-window" class:bleeding={heroVisible < 1} style:--hero-visible={`${heroVisible * 100}%`} aria-hidden="true">
           <div class="titlebar"><span></span><span></span><span></span></div>
           <img src={HERO_SCREENS[tourSlide]} alt="" draggable="false" />
         </div>
@@ -446,28 +455,22 @@
   .progress {
     position: fixed;
     z-index: 8;
-    top: max(18px, env(safe-area-inset-top));
+    top: max(40px, env(safe-area-inset-top));
     left: 50%;
-    display: flex;
-    gap: 8px;
+    width: min(320px, 70vw);
+    color: white;
     transform: translateX(-50%);
     pointer-events: none;
     -webkit-app-region: drag;
   }
 
-  .progress span {
-    width: 7px;
-    height: 7px;
-    border: 1px solid rgb(7 31 74 / 28%);
-    border-radius: 999px;
-    background: rgb(255 255 255 / 54%);
-    transition: width 240ms ease, background 240ms ease;
+  /* Over the ink's dark top edge the count and bars are drawn in white; on the cards they stay ink. */
+  .progress .step-bars span {
+    background: rgb(255 255 255 / 30%);
   }
 
-  .progress span.active {
-    width: 22px;
-    border-color: var(--deep-blue);
-    background: var(--deep-blue);
+  .progress .step-bars span.filled {
+    background: white;
   }
 
   .intro-slide {
@@ -531,10 +534,10 @@
     justify-content: space-between;
     min-height: 58px;
     padding: 0 20px;
-    border: 1px solid rgb(255 255 255 / 68%);
+    border: 1px solid rgb(255 255 255 / 46%);
     border-radius: 18px;
-    color: var(--deep-blue);
-    background: rgb(255 255 255 / 70%);
+    color: white;
+    background: rgb(255 255 255 / 12%);
     box-shadow: 0 12px 36px rgb(7 31 74 / 11%);
     font: inherit;
     font-weight: 750;
@@ -542,9 +545,11 @@
     cursor: pointer;
   }
 
+  /* Only the chosen language is a solid card; the other stays glass, so the choice reads at a glance. */
   .language-options button.selected {
-    border-color: rgb(7 31 74 / 52%);
-    background: rgb(255 255 255 / 88%);
+    border-color: white;
+    color: var(--deep-blue);
+    background: rgb(255 255 255 / 94%);
   }
 
   .selection-mark {
@@ -577,6 +582,10 @@
   .transitioning .language-slide .force-heading {
     transform: scale(1.08);
     transition: transform 360ms ease;
+  }
+
+  .introduction-next {
+    margin: 28px auto 0;
   }
 
   .transitioning .language-slide .language-options,
@@ -624,10 +633,12 @@
     letter-spacing: -.04em;
   }
 
+  /* Solid ink: at 76% the line washed out over the brightest part of the ink background. */
   .introduction-copy p {
     max-width: 650px;
     margin: 16px auto 0;
-    color: rgb(7 31 74 / 76%);
+    color: var(--deep-blue);
+    font-weight: 600;
     font-size: clamp(1rem, 1.45vw, 1.25rem);
     line-height: 1.65;
   }
@@ -717,6 +728,11 @@
 
   .step-bars span.filled {
     background: var(--deep-blue);
+  }
+
+  .hero-window.bleeding {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(var(--hero-visible) - 16%), transparent var(--hero-visible));
+    mask-image: linear-gradient(90deg, #000 calc(var(--hero-visible) - 16%), transparent var(--hero-visible));
   }
 
   .hero-window {

@@ -284,6 +284,19 @@
     return "";
   }
 
+  /**
+   * Retrying and finishing are the step's action; cancelling is destructive.
+   * Exit leaves the whole guide, so it is a quiet link set apart, never the
+   * equal of Previous.
+   */
+  function commandClass(command: OnboardingCommandId) {
+    if (command === "exit") return "coach-exit";
+    if (command === "retryWorkflow" || command === "retryOverview" || command === "finish") return "button primary";
+    if (command === "cancelWorkflow") return "button danger";
+    if (command === "previous") return "button";
+    return "button secondary";
+  }
+
   function commandDisabled(command: OnboardingCommandId, enabled: boolean) {
     return !enabled || (command !== "exit" && (operationPending || cancelPending));
   }
@@ -354,14 +367,14 @@
       ? `--coach-left:${coachPosition.left}px;--coach-top:${coachPosition.top}px;--coach-width:${coachPosition.width}px`
       : undefined}
   >
-    <div class="coach-meta">
-      <span>{$t.onboarding.stepLabel(current, story?.total ?? 0)}</span>
+    <!-- The pixel guide leads the coach beside the step and its title. -->
+    <div class="coach-head">
       <span class="guide" aria-hidden="true"></span>
+      <div class="coach-heading">
+        <span class="coach-meta">{$t.onboarding.stepLabel(current, story?.total ?? 0)}</span>
+        <h2 id="onboarding-title">{title}</h2>
+      </div>
     </div>
-    <div class="milestones" aria-hidden="true">
-      {#each Array.from({ length: story?.total ?? 0 }, (_, index) => index + 1) as item}<span class:active={item === current}></span>{/each}
-    </div>
-    <h2 id="onboarding-title">{title}</h2>
     <p>{body}</p>
     {#if state.error}
       {#if workflowFailureExplanation(state.error, $locale)}
@@ -379,7 +392,7 @@
     <div class="coach-actions">
       {#each story?.commands ?? [] as commandView (commandView.id)}
         <button
-          class={`button ${commandView.id === "retryWorkflow" || commandView.id === "retryOverview" || commandView.id === "finish" ? "primary" : commandView.id === "cancelWorkflow" ? "danger" : "secondary"}`}
+          class={commandClass(commandView.id)}
           type="button"
           disabled={commandDisabled(commandView.id, commandView.enabled)}
           aria-describedby={commandView.id === "previous" && !commandView.enabled ? "onboarding-previous-reason" : undefined}
@@ -461,40 +474,73 @@
     bottom: 24px;
     left: auto;
   }
-  .coach-meta, .coach-actions {
+  .coach-actions {
     display: flex;
     align-items: center;
     justify-content: flex-start;
     flex-wrap: wrap;
     gap: 12px;
   }
-  .coach-meta { justify-content: space-between; }
   .coach-meta {
     color: var(--muted);
     font-size: 12px;
     font-weight: 750;
   }
+  .coach-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 10px;
+  }
+  .coach-heading { display: grid; gap: 2px; min-width: 0; }
+  /*
+   * The sprite is two 24px pixel-art frames whose octopus fills only their
+   * middle. Drawn at exactly 3x, every source pixel is a crisp 3x3 block; the
+   * tile shows each frame's middle 64px, so the octopus reads large and the
+   * other frame never shows at the edge.
+   */
   .guide {
-    width: 32px;
-    height: 32px;
-    background: url("./assets/onboarding-guide-sprite.webp") left center / 200% 100% no-repeat;
+    --frame: 72px;
+    --crop: 4px;
+    flex: none;
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+    background: var(--surface-soft) url("./assets/onboarding-guide-sprite.webp") no-repeat;
+    background-size: calc(var(--frame) * 2) var(--frame);
+    background-position: calc(var(--crop) * -1) calc(var(--crop) * -1);
     animation: guide-idle 1.2s step-end infinite;
     image-rendering: pixelated;
   }
-  .milestones { display: flex; gap: 7px; margin: 8px 0 14px; }
-  .milestones span { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
-  .milestones span.active { background: var(--accent); }
-  h2 { margin: 0 0 8px; font-size: 23px; line-height: 1.2; }
+  @keyframes guide-idle {
+    50% { background-position: calc((var(--frame) + var(--crop)) * -1) calc(var(--crop) * -1); }
+  }
+  .coach-exit {
+    min-height: 38px;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 650;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .coach-exit:hover { color: var(--fg); }
+  .coach-exit:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent); border-radius: 4px; }
+  h2 { margin: 0; font-size: 23px; line-height: 1.2; }
   .coach > p { margin: 0 0 14px; color: var(--muted); line-height: 1.45; }
   .coach-error { margin: 0 0 10px; color: var(--danger); font-size: 13px; }
   .coach-disabled-reason { margin: 0 0 10px !important; color: var(--muted); font-size: 12px; line-height: 1.3 !important; }
   .coach-actions :global(.button) { min-height: 38px; padding: 8px 11px; }
-  @keyframes guide-idle { 50% { background-position: right center; } }
   @media (max-height: 700px) {
     .coach { padding: 18px; }
-    .guide { width: 26px; height: 26px; }
-    .milestones { margin: 6px 0 10px; }
-    h2 { margin-bottom: 6px; font-size: 21px; }
+    .guide { --frame: 48px; width: 40px; height: 40px; border-radius: 10px; }
+    .coach-head { gap: 12px; margin-bottom: 8px; }
+    h2 { font-size: 21px; }
     .coach > p { margin-bottom: 10px; line-height: 1.38; }
     .coach-disabled-reason { margin-bottom: 7px !important; }
     .coach-actions { gap: 7px; }
@@ -502,12 +548,13 @@
   @media (max-height: 560px) {
     .coach { padding: 14px; }
     .coach-meta { font-size: 11px; }
-    .guide { width: 22px; height: 22px; }
-    .milestones { margin: 4px 0 7px; }
-    h2 { margin-bottom: 4px; font-size: 19px; }
+    .guide { --frame: 48px; width: 40px; height: 40px; border-radius: 10px; }
+    .coach-head { gap: 10px; margin-bottom: 6px; }
+    h2 { font-size: 19px; }
     .coach > p { margin-bottom: 7px; line-height: 1.3; }
     .coach-actions :global(.button) { min-height: 34px; padding: 6px 9px; }
   }
+
   @media (prefers-reduced-motion: reduce) {
     .guide { animation: none; }
   }

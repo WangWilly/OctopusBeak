@@ -6,12 +6,14 @@
   import OverviewTicker from "$lib/overview/components/OverviewTicker.svelte";
   import TodayChangeCard from "$lib/overview/components/TodayChangeCard.svelte";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
-  import { ASSET_CATEGORY_COLOR, formatShortDate, liabilityColor, maskedAccountDigits } from "$lib/overview/overview-format.ts";
+  import { ASSET_CATEGORY_COLOR, formatShortDate, liabilityColor } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
   import { readOverview, type OverviewModel } from "$lib/overview/overview-model.ts";
   import type { OverviewPageDto } from "$lib/overview/types.ts";
   import { awaitingFirstData } from "$lib/shared-ledger/first-data.ts";
-  import { localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import { accountKindLabel, accountShortLabel, localizeAccount } from "$lib/shared-accounts/localize-account.ts";
+  import { institutionLogo } from "$lib/institutions/institutions.ts";
+  import type { AllocationMember } from "$lib/shared-ledger/twd-valuation.ts";
   import DashboardShell from "$lib/shared-shell/components/DashboardShell.svelte";
   import EmptySourceBanner from "$lib/shared-shell/components/EmptySourceBanner.svelte";
   import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
@@ -49,13 +51,15 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     value: slice.value,
     share: slice.share,
     color: ASSET_CATEGORY_COLOR[slice.category],
+    members: tileMembers(slice.accounts, slice.value, $t),
   }));
-  $: liabilityTiles = model.liabilityAllocation.slices.map((slice, index, slices): AllocationTile => ({
-    key: slice.account.id,
-    label: liabilityLabel(slice.account, $t),
+  $: liabilityTiles = model.liabilityAllocation.slices.map((slice): AllocationTile => ({
+    key: slice.kind,
+    label: accountKindLabel(slice.kind, $t),
     value: slice.value,
     share: slice.share,
-    color: liabilityColor(slice.account.kind, slices.slice(0, index).filter((earlier) => earlier.account.kind === slice.account.kind).length),
+    color: liabilityColor(slice.kind),
+    members: tileMembers(slice.accounts, slice.value, $t),
   }));
 
   function formatImportedAt(value: string | null) {
@@ -64,10 +68,21 @@ import { formatTwd } from "$lib/shared-money/money.ts";
       : $t.common.notYet;
   }
 
-  function liabilityLabel(account: OverviewPageDto["accounts"][number], dictionary: Translation) {
-    const digits = maskedAccountDigits(account.label);
-    const { institution, product } = localizeAccount(account, dictionary);
-    return `${institution} · ${product}${digits ? ` ${dictionary.overview.accountMask(digits)}` : ""}`;
+  /** 「銀行帳戶 末碼 1234」, and with its Institution for where no logo names it. */
+  function memberNames(account: OverviewPageDto["accounts"][number], dictionary: Translation) {
+    const short = accountShortLabel(account, dictionary);
+    return { short, label: `${localizeAccount(account, dictionary).institution} · ${short}` };
+  }
+
+  /** The accounts a tile adds up, for its hover breakdown. */
+  function tileMembers(accounts: readonly AllocationMember[], total: number, dictionary: Translation): AllocationTile["members"] {
+    return accounts.map(({ account, value }) => ({
+      key: account.id,
+      ...memberNames(account, dictionary),
+      logo: institutionLogo(account.institutionKey),
+      value,
+      share: total > 0 ? value / total : 0,
+    }));
   }
 
   function rateNote(current: OverviewModel, foreign: boolean, dictionary: Translation) {

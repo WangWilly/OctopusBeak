@@ -393,7 +393,10 @@
     <div class="selected-actions" aria-label={$t.accounts.actions}>
       <div class="selected-actions-label">
         <span class="label">{$t.accounts.actions}</span>
-        <strong>{selectedAccount.label}</strong>
+        <span class="selected-actions-name">
+          <InstitutionLogo institution={institutionLogo(selectedAccount.institutionKey)} size={16} />
+          <strong>{selectedAccount.label}</strong>
+        </span>
       </div>
       <div class="action-group">
         {#if selectedAccount.manual}

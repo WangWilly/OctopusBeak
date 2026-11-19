@@ -392,8 +392,8 @@ export function createNewnewbankSource(options: Readonly<{ http?: PreviewHttpOpe
     deviceIdentityKey: NEWNEWBANK_KEY.deviceId,
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live New New Bank account. Its data may be incomplete or wrong. It signs in through the New New Bank App protocol as a separate device and collects the NT-dollar digital account balance, three months of transactions, and the personal-loan overview.",
-        "zh-TW": "預覽來源，從未以真實的 New New Bank 帳戶執行過，資料可能不完整或有誤。它以 New New Bank App 的協定、作為另一台裝置登入，收集臺幣數位帳戶餘額、近三個月交易明細與個人貸款總覽。",
+        en: "It signs in through the New New Bank App protocol as a separate device and collects the NT-dollar digital account balance, three months of transactions, and the personal-loan overview.",
+        "zh-TW": "它以 New New Bank App 的協定、作為另一台裝置登入，收集臺幣數位帳戶餘額、近三個月交易明細與個人貸款總覽。",
       },
       requirements: [{ en: "A Union Bank New New Bank digital account that signs in to the New New Bank App.", "zh-TW": "可登入 New New Bank App 的聯邦銀行 New New Bank 數位帳戶。" }],
       steps: [

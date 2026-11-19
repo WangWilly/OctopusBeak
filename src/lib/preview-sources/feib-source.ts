@@ -317,8 +317,8 @@ export function createFeibSource(options: Readonly<{ page?: FeibPageOpener; solv
     ],
     setupGuide: {
       summary: {
-        en: "Preview source, never run against a live FEIB account. Its data may be incomplete or wrong. It collects NT-dollar demand deposit balances and three months of transactions. Its image verification is solved on your device; a challenge the on-device solver is not confident about ends the run without signing in.",
-        "zh-TW": "預覽來源，從未以真實的遠東商銀帳戶執行過，資料可能不完整或有誤。它收集臺幣活期存款餘額與近三個月交易明細。圖形驗證在你的裝置上辨識；辨識信心不足時，該次執行會在登入前停止。",
+        en: "It collects NT-dollar demand deposit balances and three months of transactions. Its image verification is solved on your device; a challenge the on-device solver is not confident about ends the run without signing in.",
+        "zh-TW": "它收集臺幣活期存款餘額與近三個月交易明細。圖形驗證在你的裝置上辨識；辨識信心不足時，該次執行會在登入前停止。",
       },
       requirements: [{ en: "An FEIB personal online-banking (個人網路銀行) login.", "zh-TW": "可登入遠東商銀個人網路銀行的帳號。" }],
       steps: [{

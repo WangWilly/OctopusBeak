@@ -206,7 +206,6 @@ test("closing resets the edits and advances the generation", () => {
 test("the view derives the rail, pending changes and the selected group fallback", () => {
   const state = run([{ type: "open" }, { type: "toggle-group", groupId: "maicoin" }]);
   const view = credentialSheetView({ ...state, selectedGroupId: "" }, context());
-  assert.equal(view.savedEnabledGroupCount, 1);
   assert.deepEqual(view.railEnabledGroups.map((g) => g.id), ["fubon", "maicoin"]);
   assert.deepEqual(view.railAvailableGroups.map((g) => g.id), ["cathay"]);
   assert.deepEqual(view.pendingChanges, [{ kind: "enabled", groupId: "maicoin", enabled: true }]);

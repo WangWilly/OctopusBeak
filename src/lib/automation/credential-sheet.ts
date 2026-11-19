@@ -110,7 +110,6 @@ export type CredentialSheetAction =
 export type CredentialSheetView = Readonly<{
   pendingChanges: PendingCredentialChange[];
   dirty: boolean;
-  savedEnabledGroupCount: number;
   visibleGroups: CredentialGroupDto[];
   railEnabledGroups: CredentialGroupDto[];
   railAvailableGroups: CredentialGroupDto[];
@@ -406,7 +405,6 @@ export function credentialSheetView(
   return {
     pendingChanges,
     dirty: pendingChanges.length > 0 || Boolean(changes.editor?.draft.trim()),
-    savedEnabledGroupCount: groups.filter((group) => group.enabled).length,
     visibleGroups,
     railEnabledGroups: visibleGroups.filter((group) => effectiveGroupEnabled(groups, changes, group.id)),
     railAvailableGroups: visibleGroups.filter((group) => !effectiveGroupEnabled(groups, changes, group.id)),

@@ -1,5 +1,7 @@
 <script lang="ts">
   import OriginMarkers from "$lib/shared-shell/components/OriginMarkers.svelte";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import type { LogoKey } from "$lib/institutions/institutions.ts";
   import { NO_PROVENANCE, type Provenance } from "$lib/shared-ledger/provenance.ts";
 
   export let color: string;
@@ -8,6 +10,8 @@
   export let sub = "";
   export let subTitle: string | undefined = undefined;
   export let subSensitive = false;
+  /** The Institution the sub line names, whose logo leads it. */
+  export let subLogo: LogoKey | null = null;
   /** 0..1 of the bar; null draws no bar. */
   export let share: number | null = null;
   export let approx = false;
@@ -22,7 +26,7 @@
     {#if approx}<span class="approx" aria-hidden="true">≈</span>{/if}<span class="money" data-sensitive>{value}</span>
   </strong>
   {#if sub}
-    <span class="sub" class:money={subSensitive} data-sensitive={subSensitive || undefined} title={subTitle}>{sub}</span>
+    <span class="sub" class:money={subSensitive} class:with-logo={subLogo !== null} data-sensitive={subSensitive || undefined} title={subTitle}>{#if subLogo}<InstitutionLogo institution={subLogo} size={14} />{/if}<span class="sub-text">{sub}</span></span>
   {/if}
   {#if share !== null}
     <span class="bar" aria-hidden="true"><span data-sensitive style:width={`${Math.max(0, Math.min(1, share)) * 100}%`}></span></span>
@@ -80,6 +84,18 @@
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .sub.with-logo {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .sub.with-logo .sub-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .bar {

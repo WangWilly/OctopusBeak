@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   applyTargets,
-  byAmount,
+  byTime,
   byMerchant,
   matches,
   merchantKey,
@@ -18,6 +18,7 @@ function item(purchaseId: string, title: string | null, amount: string | null, d
     title,
     amount: amount === null ? null : { currency: "TWD", coefficient: amount, scale: 0 },
     payment: null,
+    details: { time: null, bankDescription: null, items: [] },
   };
 }
 
@@ -74,37 +75,25 @@ test("merchantKey keys a deposit's 摘要 · 備註 on the payee, never on the t
   assert.equal(merchantKey("金融卡消費 · 全聯福利中心"), merchantKey("全聯實業股份有限公司"));
 });
 
-test("byAmount puts the largest purchase first and a missing amount last", () => {
+test("byMerchant groups by merchant key, the group with the latest purchase first", () => {
   const rows = [
-    item("transaction:b", "B", "90", "2026-09-02"),
-    item("transaction:a", "A", null),
-    item("transaction:c", "C", "1200"),
-    item("transaction:d", "D", "90", "2026-09-05"),
-  ];
-  assert.deepEqual(byAmount(rows).map((row) => row.purchaseId), ["transaction:c", "transaction:d", "transaction:b", "transaction:a"]);
-  assert.deepEqual(rows.map((row) => row.purchaseId), ["transaction:b", "transaction:a", "transaction:c", "transaction:d"], "the input is not reordered");
-});
-
-test("byMerchant groups by merchant key, most purchases first, then the larger total", () => {
-  const rows = [
-    item("transaction:1", "全聯福利中心－台北民生", "300"),
-    item("invoice:2", "全聯實業股份有限公司", "120"),
-    item("transaction:3", "全聯福利中心", "80"),
-    item("transaction:4", "鼎泰豐－信義店", "2400"),
-    item("transaction:5", "鼎泰豐", "900"),
-    item("transaction:6", "UBER TRIP", "3000"),
-    item("invoice:7", null, "40"),
-    item("invoice:8", null, "50"),
+    item("transaction:1", "全聯福利中心－台北民生", "300", "2026-09-01"),
+    item("invoice:2", "全聯實業股份有限公司", "120", "2026-09-10"),
+    item("transaction:3", "全聯福利中心", "80", "2026-09-04"),
+    item("transaction:4", "鼎泰豐－信義店", "2400", "2026-09-12"),
+    item("transaction:5", "鼎泰豐", "900", "2026-09-02"),
+    item("transaction:6", "UBER TRIP", "3000", "2026-09-08"),
+    item("invoice:7", null, "40", "2026-09-03"),
   ];
   const groups = byMerchant(rows);
   assert.deepEqual(groups.map((group) => [group.key, group.count]), [
-    ["全聯", 3], ["鼎泰豐", 2], ["uber trip", 1], ["purchase:invoice:8", 1], ["purchase:invoice:7", 1],
-  ]);
-  const pxmart = groups[0]!;
+    ["鼎泰豐", 2], ["全聯", 3], ["uber trip", 1], ["purchase:invoice:7", 1],
+  ], "a merchant's latest purchase places it, not how many it has");
+  const pxmart = groups[1]!;
   assert.equal(pxmart.displayName, "全聯福利中心", "ties between titles go to the shorter one");
   assert.deepEqual(pxmart.totals, [{ currency: "TWD", coefficient: "500", scale: 0, count: 3 }]);
-  assert.deepEqual(pxmart.purchaseIds, ["transaction:1", "invoice:2", "transaction:3"]);
-  assert.equal(groups[1]!.displayName, "鼎泰豐");
+  assert.deepEqual(pxmart.purchaseIds, ["invoice:2", "transaction:3", "transaction:1"], "members newest first");
+  assert.equal(groups[0]!.displayName, "鼎泰豐");
 });
 
 test("matches finds a row by title text, merchant alias, or exact amount", () => {
@@ -147,9 +136,21 @@ test("an apply scope resolves to the queued purchases it names, capped per actio
   assert.deepEqual(applyTargets(rows, { kind: "search", query: "全聯" }), { purchaseIds: ["invoice:2", "transaction:1"], overflow: 0 });
   assert.deepEqual(applyTargets(rows, { kind: "search", query: "  " }), { purchaseIds: [], overflow: 0 });
 
-  const many = Array.from({ length: MAX_CATEGORIZATION_TARGETS + 5 }, (_, index) => item(`transaction:${String(index).padStart(5, "0")}`, "全聯", String(index + 1)));
+  const many = Array.from({ length: MAX_CATEGORIZATION_TARGETS + 5 }, (_, index) =>
+    item(`transaction:${String(index).padStart(5, "0")}`, "全聯", "1", index === 7 ? "2026-09-30" : "2026-09-01"));
   const capped = applyTargets(many, { kind: "merchant", key: "全聯" });
   assert.equal(capped.purchaseIds.length, MAX_CATEGORIZATION_TARGETS);
   assert.equal(capped.overflow, 5);
-  assert.equal(capped.purchaseIds[0], "transaction:01004", "the largest purchases go first");
+  assert.equal(capped.purchaseIds[0], "transaction:00007", "the newest purchases go first");
+});
+
+test("byTime puts the newest purchase first, the timed ones before a date-only one that day", () => {
+  const timed = (id: string, date: string, time: string | null) => ({ ...item(id, "x", "1", date), details: { time, bankDescription: null, items: [] } });
+  const rows = [
+    timed("transaction:old", "2026-09-01", "23:00"),
+    timed("transaction:dateOnly", "2026-09-03", null),
+    timed("transaction:morning", "2026-09-03", "08:15"),
+    timed("transaction:evening", "2026-09-03", "19:40"),
+  ];
+  assert.deepEqual(byTime(rows).map((row) => row.purchaseId), ["transaction:evening", "transaction:morning", "transaction:dateOnly", "transaction:old"]);
 });

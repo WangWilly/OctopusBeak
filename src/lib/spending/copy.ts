@@ -254,7 +254,7 @@ const en = {
     title: "Sort categories",
     subtitle: (count: number) => `Last 12 months · ${count} uncategorized`,
     modeAria: "List order",
-    byAmount: "By amount",
+    byTime: "By time",
     byMerchant: "By merchant",
     search: "Search description or amount",
     listAria: "Uncategorized purchases",
@@ -289,6 +289,7 @@ const en = {
     keysCode: "Category",
     keysApply: "Apply",
     saving: "Saving…",
+    bankDescription: "Bank description",
   },
 };
 
@@ -541,7 +542,7 @@ const zh: typeof en = {
     title: "整理分類",
     subtitle: (count) => `近 12 個月 · 未分類 ${count} 筆`,
     modeAria: "排列方式",
-    byAmount: "依金額",
+    byTime: "依時間",
     byMerchant: "依商家",
     search: "搜尋說明或金額",
     listAria: "未分類的消費",
@@ -576,6 +577,7 @@ const zh: typeof en = {
     keysCode: "細類",
     keysApply: "套用",
     saving: "儲存中…",
+    bankDescription: "銀行說明",
   },
 };
 

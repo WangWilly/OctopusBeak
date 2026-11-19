@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
-  import { ArrowLeft, Check, CreditCard, GitMerge, History, Info, Landmark, Receipt, TriangleAlert, Unlink, X } from "@lucide/svelte";
+  import { ArrowLeft, Check, GitMerge, History, Info, TriangleAlert, Unlink, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import SourceIcon from "./SourceIcon.svelte";
   import type { SpendingCandidatePageItem, SpendingCandidatePairRef } from "../model.ts";
   import type { SpendingPurchaseRecordView as PurchaseRecord } from "../purchase-matching.ts";
   import type { SpendingReviewStore } from "../spending-review-store.ts";
   import {
     decidedAtText,
+    institutionKeyLogo,
     monthDayText,
     paymentText,
     reasonTexts,
@@ -151,7 +154,7 @@
                 <div class="pair-sources">
                   {#if item.invoiceRecord}
                     <div class="source-line">
-                      <span class="source-icon" aria-hidden="true"><Receipt size={14} strokeWidth={2} /></span>
+                      <SourceIcon source={{ kind: "invoice" }} />
                       <span class="source-texts">
                         <strong>{item.invoiceRecord.invoice ? $t.spendingReview.invoiceNumber(item.invoiceRecord.invoice.revision.invoiceNumber) : $t.spendingReview.einvoice}</strong>
                         <span>{invoiceMeta(item.invoiceRecord)}</span>
@@ -161,7 +164,7 @@
                   {/if}
                   {#if item.paymentRecord?.transaction}
                     <div class="source-line">
-                      <span class="source-icon" aria-hidden="true">{#if item.paymentRecord.transaction.stream === "credit-card"}<CreditCard size={14} strokeWidth={2} />{:else}<Landmark size={14} strokeWidth={2} />{/if}</span>
+                      <SourceIcon source={{ kind: "payment", institution: item.paymentRecord.paymentSource?.institution, card: item.paymentRecord.transaction.stream === "credit-card" }} />
                       <span class="source-texts">
                         <strong>{paymentText($t, item.paymentRecord.transaction, item.paymentRecord.paymentSource)}</strong>
                         <span>{paymentMeta(item.paymentRecord)}</span>
@@ -201,7 +204,7 @@
             <article class="merged-row" data-merged-purchase={record.purchaseId}>
               <div class="merged-texts">
                 <strong>{recordMerchant($t, record)}</strong>
-                <span>{recordCategoryText($t, record)} · {monthDayText(record.occurrence.value)}{#if record.transaction}{" · "}{paymentText($t, record.transaction, record.paymentSource)}{/if}</span>
+                <span>{recordCategoryText($t, record)} · {monthDayText(record.occurrence.value)}{#if record.transaction}{" · "}<span class="payment">{#if institutionKeyLogo(record.paymentSource?.institution)}<InstitutionLogo institution={institutionKeyLogo(record.paymentSource?.institution)} size={14} />{/if}{paymentText($t, record.transaction, record.paymentSource)}</span>{/if}</span>
                 {#if record.link}<span class="merged-when">{record.link.origin === "user" ? $t.spendingReview.mergedByYou(decidedAtText(record.link.decidedAt)) : $t.spendingReview.mergedAutomatically(decidedAtText(record.link.decidedAt))}</span>{/if}
               </div>
               <span class="money merged-amount" data-sensitive>{amountText(record.amount)}</span>
@@ -233,14 +236,14 @@
                 </div>
                 {#if entry.invoice}
                   <div class="source-line">
-                    <span class="source-icon" aria-hidden="true"><Receipt size={14} strokeWidth={2} /></span>
+                    <SourceIcon source={{ kind: "invoice" }} />
                     <span class="source-texts"><strong>{$t.spendingReview.invoiceNumber(entry.invoice.invoiceNumber)}</strong><span>{[monthDayText(entry.invoice.occurrence), entry.invoice.sellerName].filter(Boolean).join(" · ")}</span></span>
                     <span class="money" data-sensitive>{amountText(entry.invoice.amount)}</span>
                   </div>
                 {/if}
                 {#if entry.payment}
                   <div class="source-line">
-                    <span class="source-icon" aria-hidden="true">{#if entry.payment.cardMask}<CreditCard size={14} strokeWidth={2} />{:else}<Landmark size={14} strokeWidth={2} />{/if}</span>
+                    <SourceIcon source={{ kind: "payment", institution: entry.payment.institution, card: entry.payment.cardMask !== null }} />
                     <span class="source-texts">
                       <strong>{paymentText($t, { stream: entry.payment.cardMask ? "credit-card" : "account" }, { institution: entry.payment.institution, cardMask: entry.payment.cardMask, billingPeriod: null })}</strong>
                       <span>{[monthDayText(entry.payment.date), entry.payment.description].filter(Boolean).join(" · ")}</span>
@@ -304,7 +307,7 @@
   .pair-evidence { display: grid; gap: 10px; min-width: 0; }
   .pair-sources { display: grid; gap: var(--space-2); padding-left: var(--space-3); border-left: 2px solid var(--border); }
   .source-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  .source-icon { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--surface-soft); color: var(--muted); }
+  .payment :global(.institution-logo) { margin-right: 4px; vertical-align: -2px; }
   .source-texts { display: grid; flex: 1; gap: 1px; min-width: 0; }
   .source-texts strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .source-texts span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

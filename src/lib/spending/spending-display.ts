@@ -1,5 +1,5 @@
 import type { Translation } from "../i18n/i18n.ts";
-import { isInstitutionKey } from "../institutions/institutions.ts";
+import { institutionLogo, isInstitutionKey, type LogoKey } from "../institutions/institutions.ts";
 import { isPersonalCategoryCode, type PersonalCategoryCode } from "../../ledger/canonical/personal-category-codes.ts";
 import { spendingCategoryGroup } from "./category-groups.ts";
 import type { SpendingCandidateReasons } from "./model.ts";
@@ -110,6 +110,22 @@ export function paymentText(
     : t.spendingReview.accountPayment(institution);
 }
 
+/** An Institution's logo by its stored key; null for a key without one. */
+export function institutionKeyLogo(key: string | null | undefined): LogoKey | null {
+  return key && isInstitutionKey(key) ? institutionLogo(key) : null;
+}
+
+/**
+ * The logo leading a purchase's payment method: the paying Institution's,
+ * the e-invoice platform's for an invoice-only purchase, and none for a
+ * refund, whose text names no payment.
+ */
+export function paymentLogo(record: Pick<PurchaseRecord, "basis" | "transaction" | "paymentSource">): LogoKey | null {
+  if (record.basis === "refund") return null;
+  if (record.transaction) return institutionKeyLogo(record.paymentSource?.institution);
+  return institutionLogo("einvoice");
+}
+
 /** The row's 「category · payment method」 second half. */
 export function paymentMethodText(t: Translation, record: PurchaseRecord): string {
   if (record.basis === "refund") return t.spendingReview.refund;
@@ -162,6 +178,22 @@ export function mergedReasons(record: PurchaseRecord): MatchReasons | null {
 /** `M/D` from an ISO date or date-time. */
 export function monthDayText(value: string): string {
   return `${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}`;
+}
+
+/** An exact decimal as written: coefficient 15, scale 1 reads 1.5. */
+export function exactDecimalText(value: Readonly<{ coefficient: string; scale: number }> | null): string {
+  if (!value) return "—";
+  if (value.scale === 0) return value.coefficient;
+  const negative = value.coefficient.startsWith("-");
+  const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, "0");
+  const split = digits.length - value.scale;
+  return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
+}
+
+/** An exact decimal without trailing zeros: 1.000 reads 1, 2.50 reads 2.5. */
+export function plainDecimalText(value: Readonly<{ coefficient: string; scale: number }>): string {
+  const text = exactDecimalText(value);
+  return text.includes(".") ? text.replace(/\.?0+$/u, "") : text;
 }
 
 /** `HH:mm` when the value carries a time; occurrence precision decides whether it is shown. */

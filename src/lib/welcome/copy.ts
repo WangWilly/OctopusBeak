@@ -72,11 +72,11 @@ const zh: typeof en = {
         title: "清晰簡潔",
         subtitle: "一個視野，所有資產",
         features: [
-          { title: "淨部位一眼看懂", body: "自動同步淨資產" },
+          { title: "淨資產一眼看懂", body: "自動同步，不用手動加總" },
           { title: "多幣別自動換算", body: "不用擔心購買力換算，資產以 TWD 呈現" },
           { title: "快照歷史", body: "每天留下一筆紀錄，走勢清楚可回顧" },
         ],
-        callout: { label: "淨部位", value: "TWD 2,352,813", detail: "已匯入 2026/11/01 00:15" },
+        callout: { label: "淨資產", value: "TWD 2,352,813", detail: "已匯入 2026/11/01 00:15" },
       },
       {
         title: "帳戶同步",

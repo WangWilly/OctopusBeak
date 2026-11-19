@@ -107,3 +107,17 @@ test("without history and with a rate dated after today, the Net position is the
   assert.equal(assets.total, 1000 + 3300, "the side totals use the later rate, as the Net position does");
   assert.equal(net.value, assets.total - liabilities.total);
 });
+
+test("liabilities fold into one slice per kind that lists its accounts, largest first", () => {
+  const rates = indexExchangeRates([]);
+  const liabilities = readLiabilityAllocation([
+    account("card-a", "credit-card", twd(100)),
+    account("loan-a", "loan", twd(600)),
+    account("loan-b", "loan", twd(900)),
+    account("card-b", "credit-card", twd(400)),
+    account("paid", "credit-card", twd(0)),
+  ], rates, "2026-10-05", null);
+  assert.deepEqual(liabilities.slices.map((slice) => [slice.kind, slice.value, slice.share]), [["loan", 1500, 0.75], ["credit-card", 500, 0.25]]);
+  assert.deepEqual(liabilities.slices.map((slice) => slice.accounts.map((member) => member.account.id)), [["loan-b", "loan-a"], ["card-b", "card-a"]],
+    "a paid-off card owes nothing and is not part of a slice");
+});

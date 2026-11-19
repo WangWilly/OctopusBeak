@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import { Check, ChevronDown, ChevronUp, CreditCard, GitMerge, Landmark, Link, Receipt, Tag, Unlink, X } from "@lucide/svelte";
+  import { Check, ChevronDown, ChevronUp, GitMerge, Link, Tag, Unlink, X } from "@lucide/svelte";
   import { locale, t } from "$lib/i18n/i18n.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
+  import SourceIcon from "./SourceIcon.svelte";
   import { SPENDING_CATEGORY_GROUP_IDS, spendingCategoryCodesForGroup } from "../category-groups.ts";
   import type { SpendingCandidatePageItem, SpendingCandidatePairRef } from "../model.ts";
   import type { SpendingPurchaseRecordView as PurchaseRecord } from "../purchase-matching.ts";
@@ -15,6 +17,7 @@
     longDateText,
     mergedReasons,
     monthDayText,
+    paymentLogo,
     paymentText,
     periodText,
     purchaseTimeText,
@@ -23,6 +26,7 @@
     recordCategoryDetailText,
     recordGroups,
     recordMerchant,
+    exactDecimalText,
     timeOfDay,
   } from "../spending-display.ts";
   import { moneyText, type ExactMoney } from "./money-text.ts";
@@ -71,15 +75,6 @@
 
   function amountText(amount: ExactMoney | null, signed = false) {
     return amount ? moneyText(amount, $locale, signed) : $t.purchaseSpending.amountUnavailable;
-  }
-
-  function exactText(value: { coefficient: string; scale: number } | null) {
-    if (!value) return "—";
-    if (value.scale === 0) return value.coefficient;
-    const negative = value.coefficient.startsWith("-");
-    const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, "0");
-    const split = digits.length - value.scale;
-    return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
   }
 
   function invoiceMeta(source: PurchaseRecord) {
@@ -173,7 +168,7 @@
           <dl>
             <div><dt>{$t.spendingReview.purchaseTime}</dt><dd>{purchaseTimeText(record.occurrence)}</dd></div>
             {#if postingDate}<div><dt>{$t.spendingReview.postingDate}</dt><dd>{fullDateText(postingDate)}</dd></div>{/if}
-            <div><dt>{$t.spendingReview.paymentMethod}</dt><dd>{record.transaction ? paymentText($t, record.transaction, record.paymentSource) : $t.spendingReview.einvoice}</dd></div>
+            <div><dt>{$t.spendingReview.paymentMethod}</dt><dd>{#if paymentLogo(record)}<InstitutionLogo institution={paymentLogo(record)} size={16} />{/if}{record.transaction ? paymentText($t, record.transaction, record.paymentSource) : $t.spendingReview.einvoice}</dd></div>
             <div class="category-fact">
               <dt>{$t.spendingReview.category}</dt>
               <dd>
@@ -199,14 +194,14 @@
             <div class="merged-group">
               {#if record.invoice}
                 <div class="source-card">
-                  <span class="source-icon" aria-hidden="true"><Receipt size={15} strokeWidth={2} /></span>
+                  <SourceIcon source={{ kind: "invoice" }} size={32} />
                   <span class="source-texts"><strong>{$t.spendingReview.invoiceNumber(record.invoice.revision.invoiceNumber)}</strong><span>{invoiceMeta(record)}</span></span>
                   <span class="money" data-sensitive>{amountText(record.difference?.invoiceAmount ?? record.invoice.revision.total)}</span>
                 </div>
               {/if}
               {#if record.transaction}
                 <div class="source-card">
-                  <span class="source-icon" aria-hidden="true">{#if record.transaction.stream === "credit-card"}<CreditCard size={15} strokeWidth={2} />{:else}<Landmark size={15} strokeWidth={2} />{/if}</span>
+                  <SourceIcon source={{ kind: "payment", institution: record.paymentSource?.institution, card: record.transaction.stream === "credit-card" }} size={32} />
                   <span class="source-texts"><strong>{paymentText($t, record.transaction, record.paymentSource)}</strong><span>{paymentMeta(record)}</span></span>
                   <span class="money" data-sensitive>{amountText(record.transaction.amount)}</span>
                 </div>
@@ -227,13 +222,13 @@
             <div class="section-head"><h3>{ownInvoice ? $t.spendingReview.invoiceRecord : $t.spendingReview.paymentRecord}</h3></div>
             {#if ownInvoice && record.invoice}
               <div class="source-card">
-                <span class="source-icon" aria-hidden="true"><Receipt size={15} strokeWidth={2} /></span>
+                <SourceIcon source={{ kind: "invoice" }} size={32} />
                 <span class="source-texts"><strong>{$t.spendingReview.invoiceNumber(record.invoice.revision.invoiceNumber)}</strong><span>{invoiceMeta(record)}</span></span>
                 <span class="money" data-sensitive>{amountText(record.amount)}</span>
               </div>
             {:else if record.transaction}
               <div class="source-card">
-                <span class="source-icon" aria-hidden="true">{#if record.transaction.stream === "credit-card"}<CreditCard size={15} strokeWidth={2} />{:else}<Landmark size={15} strokeWidth={2} />{/if}</span>
+                <SourceIcon source={{ kind: "payment", institution: record.paymentSource?.institution, card: record.transaction.stream === "credit-card" }} size={32} />
                 <span class="source-texts"><strong>{paymentText($t, record.transaction, record.paymentSource)}</strong><span>{paymentMeta(record)}</span></span>
                 <span class="money" data-sensitive>{amountText(record.amount)}</span>
               </div>
@@ -247,10 +242,10 @@
               <div class="match-box" data-pending-match={pendingItem.candidate.candidateId}>
                 <div class="source-card">
                   {#if counterpart.invoice}
-                    <span class="source-icon" aria-hidden="true"><Receipt size={15} strokeWidth={2} /></span>
+                    <SourceIcon source={{ kind: "invoice" }} size={32} />
                     <span class="source-texts"><strong>{$t.spendingReview.invoiceNumber(counterpart.invoice.revision.invoiceNumber)}</strong><span>{invoiceMeta(counterpart)}</span></span>
                   {:else if counterpart.transaction}
-                    <span class="source-icon" aria-hidden="true">{#if counterpart.transaction.stream === "credit-card"}<CreditCard size={15} strokeWidth={2} />{:else}<Landmark size={15} strokeWidth={2} />{/if}</span>
+                    <SourceIcon source={{ kind: "payment", institution: counterpart.paymentSource?.institution, card: counterpart.transaction.stream === "credit-card" }} size={32} />
                     <span class="source-texts"><strong>{paymentText($t, counterpart.transaction, counterpart.paymentSource)}</strong><span>{paymentMeta(counterpart)}</span></span>
                   {/if}
                   <span class="money" data-sensitive>{amountText(counterpart.amount)}</span>
@@ -303,8 +298,8 @@
       {#each source.items as item (item.itemId)}
         <tr>
           <td>{item.name ?? $t.purchaseSpending.itemNameUnavailable}</td>
-          <td class="num">×{exactText(item.quantity)}</td>
-          <td><span class="money" data-sensitive>{item.amount ? exactText(item.amount) : "—"}</span></td>
+          <td class="num">×{exactDecimalText(item.quantity)}</td>
+          <td><span class="money" data-sensitive>{item.amount ? exactDecimalText(item.amount) : "—"}</span></td>
         </tr>
       {/each}
     </tbody>
@@ -348,7 +343,6 @@
   .section-head span { color: var(--muted); font-size: 11px; }
   .match-head { padding-top: 4px; }
   .source-card { display: flex; align-items: center; gap: 10px; min-width: 0; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-  .source-icon { display: grid; flex: none; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--surface-soft); color: var(--muted); }
   .source-texts { display: grid; flex: 1; gap: 1px; min-width: 0; }
   .source-texts strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
   .source-texts span { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }

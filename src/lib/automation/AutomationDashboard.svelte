@@ -15,6 +15,7 @@
     ChevronRight,
     ChevronUp,
     CircleAlert,
+    CircleCheck,
     CircleEllipsis,
     CloudDownload,
     Info,
@@ -1421,7 +1422,8 @@ import type {
         <span class="credential-head-icon" aria-hidden="true"><KeyRound size={20} /></span>
         <div class="credential-head-copy">
           <h2 id="credentials-title">{$t.automation.credentialsTitle}</h2>
-          <p>{$t.automation.credentialsSummary(sheetView.savedEnabledGroupCount)}</p>
+          <!-- The rail heading already counts the enabled services. -->
+          <p>{$t.automation.credentialsSummary}</p>
         </div>
         {#if !onboardingSourceSelection}
           <button class="modal-close" type="button" aria-label={$t.common.close} onclick={closeCredentials}><X size={20} /></button>
@@ -1485,6 +1487,7 @@ import type {
                     >
                       <InstitutionLogo institution={sourceLogo(group.id)} size={24} />
                       <span class="rail-row-copy"><strong>{credentialGroupName(group)}</strong></span>
+                      {#if group.id === sheet.selectedGroupId}<ChevronRight size={16} aria-hidden="true" />{/if}
                     </button>
                     <button
                       type="button"
@@ -1528,7 +1531,7 @@ import type {
               {@const summary = present(syncTask).lastSyncSummary}
               <div class="last-sync" data-tone={syncTask.isActive ? "active" : syncStatus.tone} aria-live="polite">
                 <span class="last-sync-icon" aria-hidden="true">
-                  {#if syncTask.isActive}<span class="spinner"></span>{:else}<CircleAlert size={16} />{/if}
+                  {#if syncTask.isActive}<span class="spinner"></span>{:else if syncStatus.tone === "good"}<CircleCheck size={16} />{:else}<CircleAlert size={16} />{/if}
                 </span>
                 <div class="last-sync-copy">
                   <strong>
@@ -1684,7 +1687,7 @@ import type {
             </section>
 
             {#if group.preview}
-              <div class="source-notice" role="note" data-preview-disclosure>
+              <div class="source-notice info" role="note" data-preview-disclosure>
                 <FlaskConical size={16} aria-hidden="true" />
                 <p>
                   <strong>{$t.automation.previewSourceTitle}</strong>
@@ -1722,9 +1725,17 @@ import type {
                 aria-describedby={sheet.statementSelectionError ? `${group.id}-statement-error` : undefined}
               >
                 <legend class="visually-hidden">{$t.automation.statementsToCollect}</legend>
-                <div class="statement-selection-head" aria-hidden="true">
-                  <h4>{$t.automation.statementsToCollect}</h4>
-                  <span class="statement-count tabular">{$t.automation.selectedStatementCount(selectedTypes.length, group.statementTypes.length)}</span>
+                <div class="statement-selection-head">
+                  <!-- The legend names the group for a screen reader; this is its visible twin. -->
+                  <span class="statement-selection-title" aria-hidden="true">{$t.automation.statementsToCollect}</span>
+                  <span class="statement-selection-tools">
+                    <span class="statement-count tabular">{$t.automation.selectedStatementCount(selectedTypes.length, group.statementTypes.length)}</span>
+                    {#if selectedTypes.length < group.statementTypes.length}
+                      <button type="button" class="text-action" onclick={() => selectAllStatementTypes(group)}>
+                        {$t.automation.selectAllStatements}
+                      </button>
+                    {/if}
+                  </span>
                 </div>
                 <ul class="statement-type-list">
                   {#each group.statementTypes as type (type.id)}
@@ -1760,11 +1771,6 @@ import type {
                     class="credential-error statement-selection-error"
                     aria-live="polite"
                   >{sheet.statementSelectionError}</p>
-                  {#if selectedTypes.length < group.statementTypes.length}
-                    <button type="button" class="text-action" onclick={() => selectAllStatementTypes(group)}>
-                      {$t.automation.selectAllStatements}
-                    </button>
-                  {/if}
                 </div>
               </fieldset>
             {/if}
@@ -1847,7 +1853,8 @@ import type {
           {/if}
         </p>
         {#if !onboardingSourceSelection && !sheet.changes.editor}
-          <button class="button" type="button" onclick={discardCredentialChanges}>{$t.common.cancel}</button>
+          <!-- With nothing to discard, the button only closes, and says so. -->
+          <button class="button" type="button" onclick={discardCredentialChanges}>{sheetView.dirty ? $t.common.cancel : $t.common.close}</button>
         {/if}
         <button
           class="button primary"
@@ -3350,12 +3357,17 @@ import type {
     gap: 2px;
   }
 
+  /* Two lines, so a long name keeps its product and 「（預覽）」, the part that tells sources apart. */
   .rail-row-copy strong {
+    display: -webkit-box;
     overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     font-size: 14px;
     font-weight: 680;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
   }
 
   .rail-status {
@@ -3483,6 +3495,16 @@ import type {
     color: var(--muted);
   }
 
+  /* A note that changes nothing the person does reads as information, so the warning tint stays for the ones that do. */
+  .source-notice.info {
+    border-color: var(--border);
+    background: var(--surface-soft);
+  }
+
+  .source-notice.info :global(svg) {
+    color: var(--muted);
+  }
+
   .credential-switch {
     width: auto;
     min-width: 0;
@@ -3583,7 +3605,8 @@ import type {
   }
 
   .credential-block h4,
-  .statement-selection-head h4 {
+  .statement-selection-title {
+    display: block;
     margin: 0 0 var(--space-2);
     font-size: 15px;
     font-weight: 720;
@@ -3599,10 +3622,21 @@ import type {
     background: var(--surface);
   }
 
+  /*
+   * The rows share one set of columns, so an empty field's input ends where a
+   * saved field's mask does, and the badge column keeps room for 「已輸入」
+   * before anything is typed.
+   */
+  .credential-fields {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr) minmax(88px, auto);
+  }
+
   .credential-row {
     min-height: 52px;
     display: grid;
-    grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr) auto;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
     align-items: center;
     column-gap: var(--space-4);
     padding: var(--space-2) var(--space-4);
@@ -3788,8 +3822,15 @@ import type {
     gap: var(--space-4);
   }
 
+  .statement-selection-tools {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  /* A count, not a control: muted so the 全選 beside it reads as the action. */
   .statement-count {
-    color: var(--accent);
+    color: var(--muted);
     font-size: 13px;
     font-weight: 680;
   }
@@ -3862,7 +3903,7 @@ import type {
     gap: var(--space-3);
   }
 
-  .statement-selection-foot:has(.statement-selection-error:empty):not(:has(.text-action)) {
+  .statement-selection-foot:has(.statement-selection-error:empty) {
     display: none;
   }
 

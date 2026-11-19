@@ -7,6 +7,8 @@ import {
   decidedAtText,
   mergedReasons,
   pairingAmountsDiffer,
+  paymentLogo,
+  plainDecimalText,
   paymentMethodText,
   purchaseTimeText,
   reasonTexts,
@@ -57,6 +59,15 @@ test("the payment method names the institution, the card's last four and the mer
   assert.equal(paymentMethodText(zh, record({ paymentSource: null })), "信用卡", "an unknown institution falls back to the stream");
   assert.equal(paymentMethodText(zh, record({ paymentSource: { institution: "esun", cardMask: "****12x4", billingPeriod: null } })), "玉山銀行信用卡", "only four digits count as a mask");
   assert.equal(paymentMethodText(zh, record({ basis: "invoice", transaction: null, paymentSource: null })), "電子發票");
+});
+
+test("the payment method leads with the paying Institution's logo", () => {
+  assert.equal(paymentLogo(record()), "esun");
+  assert.equal(paymentLogo(record({ basis: "linked" })), "esun", "a merged row shows the bank that paid");
+  assert.equal(paymentLogo(record({ basis: "invoice", transaction: null, paymentSource: null })), "einvoice");
+  assert.equal(paymentLogo(record({ paymentSource: null })), null, "an unknown institution shows no logo");
+  assert.equal(paymentLogo(record({ paymentSource: { institution: "bank-004", cardMask: null, billingPeriod: null } })), null, "nor does one without a logo");
+  assert.equal(paymentLogo(record({ basis: "refund" })), null);
 });
 
 test("category text rolls codes into display groups and says when a purchase is split or unclassified", () => {
@@ -155,4 +166,11 @@ test("day and month totals group record amounts by upper-cased currency and redu
     { currency: "TWD", coefficient: "150", scale: 0, count: 2 },
     { currency: "USD", coefficient: "125", scale: 2, count: 1 },
   ]);
+});
+
+test("a plain decimal drops trailing zeros, so a quantity of 1 stored at scale 3 reads 1", () => {
+  assert.equal(plainDecimalText({ coefficient: "1000", scale: 3 }), "1");
+  assert.equal(plainDecimalText({ coefficient: "250", scale: 2 }), "2.5");
+  assert.equal(plainDecimalText({ coefficient: "12", scale: 0 }), "12");
+  assert.equal(plainDecimalText({ coefficient: "-1500", scale: 3 }), "-1.5");
 });

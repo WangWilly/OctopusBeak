@@ -23,10 +23,13 @@ export const TRAILING_DAYS = 30;
 
 export type AssetCategory = "brokerage" | "crypto" | "bank" | "fund" | "foreign" | "manual" | "other";
 
+/** An account inside an allocation slice, with its converted value; largest first. */
+export type AllocationMember = { account: AccountRowDto; value: number };
+
 export type AssetAllocation = {
   total: number;
   valuationDate: string;
-  slices: { category: AssetCategory; value: number; share: number }[];
+  slices: { category: AssetCategory; value: number; share: number; accounts: AllocationMember[] }[];
   unconvertedCurrencies: string[];
   /** A verified account has an amount but no rate, so `total` is not a complete TWD figure. */
   incomplete: boolean;
@@ -37,7 +40,8 @@ export type LiabilityAllocation = {
   total: number;
   /** Liabilities / assets, both in TWD; null without both sides. */
   ratio: number | null;
-  slices: { account: AccountRowDto; value: number; share: number }[];
+  /** One slice per account kind, as Assets has one per category. */
+  slices: { kind: AccountKind; value: number; share: number; accounts: AllocationMember[] }[];
   unconvertedCurrencies: string[];
   /** A verified account has an amount but no rate, so `total` is not a complete TWD figure. */
   incomplete: boolean;
@@ -155,12 +159,16 @@ export function carriedNet(rows: readonly DailyHistoryRowDto[], date: string): C
   return carried?.netAssets ?? [];
 }
 
+function byValue(members: readonly AllocationMember[]): AllocationMember[] {
+  return [...members].sort((left, right) => right.value - left.value);
+}
+
 export function readAssetAllocation(
   accounts: readonly AccountRowDto[],
   rates: ExchangeRateIndex,
   valuationDate: string,
 ): AssetAllocation {
-  const byCategory = new Map<AssetCategory, { value: number; provenance: Provenance }>();
+  const byCategory = new Map<AssetCategory, { value: number; provenance: Provenance; accounts: AllocationMember[] }>();
   const unconverted = new Set<string>();
   let incomplete = false;
   for (const account of accounts) {
@@ -171,21 +179,21 @@ export function readAssetAllocation(
       continue;
     }
     const category = ASSET_CATEGORY[account.kind];
-    const current = byCategory.get(category) ?? { value: 0, provenance: NO_PROVENANCE };
+    const current = byCategory.get(category) ?? { value: 0, provenance: NO_PROVENANCE, accounts: [] };
     byCategory.set(category, {
       value: current.value + value,
       provenance: account.amountLines.length > 0 ? withOrigin(current.provenance, accountOrigin(account)) : current.provenance,
+      accounts: value === 0 ? current.accounts : [...current.accounts, { account, value }],
     });
   }
   // Only categories with a positive value reach the total, so only theirs mark it.
   const counted = [...byCategory].filter(([, sum]) => sum.value > 0);
-  const positive = counted.map(([category, sum]) => [category, sum.value] as const);
-  const total = positive.reduce((sum, [, value]) => sum + value, 0);
+  const total = counted.reduce((sum, [, { value }]) => sum + value, 0);
   return {
     total,
     valuationDate,
-    slices: positive
-      .map(([category, value]) => ({ category, value, share: value / total }))
+    slices: counted
+      .map(([category, { value, accounts }]) => ({ category, value, share: value / total, accounts: byValue(accounts) }))
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
     incomplete,
@@ -209,11 +217,16 @@ export function readLiabilityAllocation(
     return value !== null && value > 0 ? [{ account, value }] : [];
   });
   const total = owed.reduce((sum, row) => sum + row.value, 0);
+  const byKind = new Map<AccountKind, AllocationMember[]>();
+  for (const row of owed) byKind.set(row.account.kind, [...byKind.get(row.account.kind) ?? [], row]);
   return {
     total,
     ratio: total > 0 && assetTotal !== null && assetTotal > 0 ? total / assetTotal : null,
-    slices: owed
-      .map((row) => ({ ...row, share: row.value / total }))
+    slices: [...byKind]
+      .map(([kind, accounts]) => {
+        const value = accounts.reduce((sum, row) => sum + row.value, 0);
+        return { kind, value, share: value / total, accounts: byValue(accounts) };
+      })
       .sort((left, right) => right.value - left.value),
     unconvertedCurrencies: [...unconverted].sort(),
     incomplete,
