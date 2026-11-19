@@ -74,7 +74,6 @@
   let root: HTMLElement;
   let introductionIcon: HTMLButtonElement;
   let languageContinueButton: HTMLButtonElement;
-  let languageSelected = false;
   let transitionLocked = false;
   let direction: "forward" | "backward" = "forward";
   let circleCover = false;
@@ -117,13 +116,12 @@
   async function chooseLanguage(value: Locale) {
     if (transitionLocked) return;
     setLocale(value);
-    languageSelected = true;
     await tick();
     languageContinueButton?.focus();
   }
 
   function confirmLanguage() {
-    if (transitionLocked || !languageSelected) return;
+    if (transitionLocked) return;
     const next = reduceFirstRunWelcome(state, { type: "confirm-language" });
     if (next === state) return;
     transitionLocked = true;
@@ -288,21 +286,20 @@
           </button>
         {/each}
       </div>
-      {#if languageSelected}
-        <button
-          class="language-continue"
-          bind:this={languageContinueButton}
-          type="button"
-          onclick={confirmLanguage}
-        >
-          {$t.firstRunWelcome.continue}
-          <ArrowRight size={18} aria-hidden="true" />
-        </button>
-      {/if}
+      <!-- The current language is already a choice, so continuing needs no extra click. -->
+      <button
+        class="language-continue"
+        bind:this={languageContinueButton}
+        type="button"
+        onclick={confirmLanguage}
+      >
+        {$t.firstRunWelcome.continue}
+        <ArrowRight size={18} aria-hidden="true" />
+      </button>
     </section>
   {:else if currentSlide === 2}
     <section class="intro-slide introduction-slide" data-slide="2" aria-labelledby="welcome-introduction-heading">
-      <button class="intro-back" data-focus-default type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
+      <button class="intro-back" type="button" aria-label={$t.firstRunWelcome.previous} onclick={() => navigate("backward")}>
         <ArrowLeft size={18} aria-hidden="true" />
       </button>
       <button bind:this={introductionIcon} class="introduction-icon app-icon-shell" type="button" aria-label={$t.firstRunWelcome.activateIntroduction} onclick={activateIntroduction}>
@@ -311,6 +308,11 @@
       <div class="introduction-copy">
         <h1 id="welcome-introduction-heading">{$t.firstRunWelcome.introductionTitle}</h1>
         <p>{$t.firstRunWelcome.introductionBody}</p>
+        <!-- The icon also advances, but a visible button says how to go on. -->
+        <button class="language-continue introduction-next" data-focus-default type="button" onclick={activateIntroduction}>
+          {$t.firstRunWelcome.next}
+          <ArrowRight size={18} aria-hidden="true" />
+        </button>
       </div>
       <img class="icon-arrow" src={curvedArrow} alt="" aria-hidden="true" draggable="false" />
     </section>
@@ -531,10 +533,10 @@
     justify-content: space-between;
     min-height: 58px;
     padding: 0 20px;
-    border: 1px solid rgb(255 255 255 / 68%);
+    border: 1px solid rgb(255 255 255 / 46%);
     border-radius: 18px;
-    color: var(--deep-blue);
-    background: rgb(255 255 255 / 70%);
+    color: white;
+    background: rgb(255 255 255 / 12%);
     box-shadow: 0 12px 36px rgb(7 31 74 / 11%);
     font: inherit;
     font-weight: 750;
@@ -542,9 +544,11 @@
     cursor: pointer;
   }
 
+  /* Only the chosen language is a solid card; the other stays glass, so the choice reads at a glance. */
   .language-options button.selected {
-    border-color: rgb(7 31 74 / 52%);
-    background: rgb(255 255 255 / 88%);
+    border-color: white;
+    color: var(--deep-blue);
+    background: rgb(255 255 255 / 94%);
   }
 
   .selection-mark {
@@ -581,6 +585,10 @@
 
   .transitioning .language-slide .language-options,
   .transitioning .language-slide .language-prompt,
+  .introduction-next {
+    margin: 28px auto 0;
+  }
+
   .transitioning .language-slide .language-continue {
     transform: translateY(12px);
     transition: transform 300ms ease;

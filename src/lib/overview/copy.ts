@@ -4,7 +4,7 @@ const en = {
   overview: {
     eyebrow: "Overview",
     title: "Portfolio",
-    sideLabel: "Net position",
+    sideLabel: "Net worth",
     currentAwaiting: "Current balances have not been collected yet.",
     currentEmpty: "No financial accounts are available yet.",
     currentUnavailable: "Current balances are temporarily unavailable.",
@@ -89,7 +89,7 @@ const zh: typeof en = {
   overview: {
     eyebrow: "總覽",
     title: "投資組合",
-    sideLabel: "淨部位",
+    sideLabel: "淨資產",
     currentAwaiting: "目前尚未收集餘額。",
     currentEmpty: "尚無可用的財務帳戶。",
     currentUnavailable: "目前餘額暫時無法使用。",

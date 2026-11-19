@@ -30,7 +30,7 @@
     requiredOnboardingRoute,
     type OnboardingWorkflowToken,
   } from "$lib/onboarding/controller.ts";
-  import type { OnboardingPresentation, OnboardingStoryEvent } from "$lib/onboarding/story.ts";
+  import { onboardingNodePresentation, type OnboardingPresentation, type OnboardingStoryEvent } from "$lib/onboarding/story.ts";
   import {
     readOnboardingState,
     writeOnboardingState,
@@ -518,6 +518,21 @@
       selectedCredentialGroupId: event.credentialGroupId,
       sourceConfiguredAt: event.configuredAt,
     });
+  }
+
+  /**
+   * A progression resumed after a restart reopens the sheet its node points
+   * into, once, when Automation first mounts; later steps open it themselves.
+   */
+  let onboardingResumed = false;
+  $: if (automationDashboard && onboardingState?.status === "active") {
+    if (!onboardingResumed) {
+      onboardingResumed = true;
+      void automationDashboard.applyOnboardingCredentialPresentation(
+        onboardingNodePresentation(onboardingState.storyId, onboardingState.storyNodeId),
+        onboardingState.selectedCredentialGroupId,
+      );
+    }
   }
 
   async function previousOnboardingNode() {
