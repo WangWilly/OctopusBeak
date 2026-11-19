@@ -192,3 +192,14 @@ test("keeps the step-2 coach off the panel around the source rail", () => {
     assert.equal(intersects(panel, result, result), false);
   }
 });
+
+test("hangs the coach under a top-bar button instead of beside it", () => {
+  const target = { left: 1035, top: 8, width: 92, height: 40 };
+  const size = { width: 360, height: 180 };
+  const result = placeOnboardingCoach(target, size, { width: 1250, height: 800 });
+  assert.ok(result);
+  assert.equal(result.side, "below");
+  assert.equal(result.top, 8 + 40 + 18);
+  assert.equal(intersects(target, result, size), false);
+  assert.ok(inside(result, size, { width: 1250, height: 800 }));
+});

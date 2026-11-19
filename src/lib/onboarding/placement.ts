@@ -11,6 +11,8 @@ type Position = {
 
 const MARGIN = 24;
 const GAP = 18;
+/** A target this close to the top is in the window's top bar. */
+const TOP_BAR_BOTTOM = 80;
 export const ONBOARDING_COACH_WIDTH = 360;
 /** Width a panel must leave free on its right for the coach to sit beside it. */
 export const ONBOARDING_COACH_RESERVE = ONBOARDING_COACH_WIDTH + GAP + MARGIN;
@@ -52,10 +54,14 @@ export function placeOnboardingCoach(
         MARGIN,
         viewport.width - size.width - MARGIN,
       );
+      const below = { side: "below" as const, left: centeredLeft, top: target.top + target.height + GAP };
+      // Beside a top-bar button the coach would cover the page's first card; under it, it hangs from the button.
+      const inTopBar = target.top + target.height <= TOP_BAR_BOTTOM;
       const candidates = [
+        ...(inTopBar ? [below] : []),
         { side: "right" as const, left: target.left + target.width + GAP, top: centeredTop },
         { side: "left" as const, left: target.left - size.width - GAP, top: centeredTop },
-        { side: "below" as const, left: centeredLeft, top: target.top + target.height + GAP },
+        ...(inTopBar ? [] : [below]),
         { side: "above" as const, left: centeredLeft, top: target.top - size.height - GAP },
         {
           side: "bottom-right" as const,

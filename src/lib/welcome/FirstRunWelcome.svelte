@@ -50,6 +50,9 @@
 
   const STAGE_WIDTH = 1440;
   const STAGE_HEIGHT = 900;
+  /** The hero window's left edge and width on the stage, as `.hero-window` places it. */
+  const HERO_LEFT = 600;
+  const HERO_WIDTH = 920;
   const HERO_SCREENS = { 3: overviewScreen, 4: assetsScreen, 5: spendingScreen } as const;
   const TOUR_ICONS = {
     3: [Scale, Coins, ChartLine],
@@ -100,6 +103,11 @@
     viewportWidth / STAGE_WIDTH,
     viewportHeight / STAGE_HEIGHT,
   )));
+
+  // How much of the hero window the viewport shows. When it bleeds off the
+  // right edge it fades out there, so the cut reads as deliberate, not broken.
+  $: stageLeft = Math.max(0, (viewportWidth - STAGE_WIDTH * stageScale) / 2);
+  $: heroVisible = Math.min(1, ((viewportWidth - stageLeft) / stageScale - HERO_LEFT) / HERO_WIDTH);
 
   function requestTransition(action: FirstRunWelcomeAction, duration = 320) {
     if (transitionLocked) return;
@@ -318,7 +326,7 @@
   {:else if tourSlide && tour}
     <section class="stage-slide tour-slide" data-slide={tourSlide} aria-labelledby={`welcome-slide-${tourSlide}-heading`}>
       <div class="stage">
-        <div class="hero-window" aria-hidden="true">
+        <div class="hero-window" class:bleeding={heroVisible < 1} style:--hero-visible={`${heroVisible * 100}%`} aria-hidden="true">
           <div class="titlebar"><span></span><span></span><span></span></div>
           <img src={HERO_SCREENS[tourSlide]} alt="" draggable="false" />
         </div>
@@ -450,10 +458,19 @@
     top: max(40px, env(safe-area-inset-top));
     left: 50%;
     width: min(320px, 70vw);
-    color: var(--deep-blue);
+    color: white;
     transform: translateX(-50%);
     pointer-events: none;
     -webkit-app-region: drag;
+  }
+
+  /* Over the ink's dark top edge the count and bars are drawn in white; on the cards they stay ink. */
+  .progress .step-bars span {
+    background: rgb(255 255 255 / 30%);
+  }
+
+  .progress .step-bars span.filled {
+    background: white;
   }
 
   .intro-slide {
@@ -616,10 +633,12 @@
     letter-spacing: -.04em;
   }
 
+  /* Solid ink: at 76% the line washed out over the brightest part of the ink background. */
   .introduction-copy p {
     max-width: 650px;
     margin: 16px auto 0;
-    color: rgb(7 31 74 / 76%);
+    color: var(--deep-blue);
+    font-weight: 600;
     font-size: clamp(1rem, 1.45vw, 1.25rem);
     line-height: 1.65;
   }
@@ -709,6 +728,11 @@
 
   .step-bars span.filled {
     background: var(--deep-blue);
+  }
+
+  .hero-window.bleeding {
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(var(--hero-visible) - 16%), transparent var(--hero-visible));
+    mask-image: linear-gradient(90deg, #000 calc(var(--hero-visible) - 16%), transparent var(--hero-visible));
   }
 
   .hero-window {
