@@ -220,7 +220,10 @@ test("allocations group assets by kind, list each debt, and relate them", () => 
   assert.equal(model.assetAllocation.valuationDate, "2026-10-04");
   assert.deepEqual(model.assetAllocation.unconvertedCurrencies, ["EUR"], "an unconvertible account is named, not silently priced");
   assert.equal(model.assetAllocation.incomplete, true, "the verified EUR account has no rate");
-  assert.deepEqual(model.liabilityAllocation.slices.map((slice) => [slice.account.id, slice.share]), [["loan", 0.8], ["card", 0.2]]);
+  assert.deepEqual(model.assetAllocation.slices.find((slice) => slice.category === "bank")?.accounts.map((member) => [member.account.id, member.value]),
+    [["bank-a", 300], ["bank-b", 200]], "a slice lists the accounts it adds up, largest first");
+  assert.deepEqual(model.liabilityAllocation.slices.map((slice) => [slice.kind, slice.share, slice.accounts.map((member) => member.account.id)]),
+    [["loan", 0.8, ["loan"]], ["credit-card", 0.2, ["card"]]], "liabilities split by kind, as assets split by category");
   assert.equal(model.liabilityAllocation.total, 1000);
   assert.equal(model.liabilityAllocation.incomplete, false);
   assert.equal(model.liabilityAllocation.ratio, null, "no debt ratio against an incomplete Assets total");

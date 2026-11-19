@@ -1,10 +1,14 @@
 <script lang="ts" context="module">
+  import type { LogoKey } from "$lib/institutions/institutions.ts";
+
   export type AllocationTile = {
     key: string;
     label: string;
     value: number;
     share: number;
     color: string;
+    /** The accounts the tile adds up, largest first; `share` is of the tile. */
+    members: { key: string; label: string; logo: LogoKey | null; value: number; share: number }[];
   };
 </script>
 
@@ -17,6 +21,7 @@
   import { formatShare } from "$lib/overview/overview-format.ts";
 import { formatTwd } from "$lib/shared-money/money.ts";
   import { squarify } from "$lib/overview/treemap-layout.ts";
+  import InstitutionLogo from "$lib/institutions/InstitutionLogo.svelte";
 
   export let title: string;
   /** TWD total of the tiles; null when there is nothing to total. */
@@ -37,10 +42,35 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   export let state: string;
 
   const HEIGHT = 236;
+  const TIP_WIDTH = 360;
+  /** A breakdown lists this many accounts and counts the rest. */
+  const TIP_ROWS = 8;
 
   let width = 0;
+  /** The tile whose breakdown shows, from hover or keyboard focus. */
+  let activeKey: string | null = null;
 
   $: rects = squarify(tiles.map((tile) => tile.value), width, HEIGHT);
+  $: activeIndex = activeKey === null ? -1 : tiles.findIndex((tile) => tile.key === activeKey);
+  $: activeTile = activeIndex < 0 ? null : tiles[activeIndex] ?? null;
+  $: activeRect = activeIndex < 0 ? null : rects[activeIndex] ?? null;
+  $: tipId = `${state}-allocation-breakdown`;
+
+  /**
+   * Inside a tile big enough to hold it, under the tile's own label; otherwise
+   * below a tile in the upper half or above one in the lower half. Always
+   * inside the card's width.
+   */
+  function tipPlacement(rect: { x: number; y: number; width: number; height: number }, rows: number) {
+    // The tile's own label takes its top 84px; the tooltip is a head line plus a line per account.
+    const tipHeight = 44 + Math.min(rows, TIP_ROWS) * 22 + (rows > TIP_ROWS ? 20 : 0);
+    if (rect.width >= TIP_WIDTH + 16 && rect.height >= 84 + tipHeight)
+      return { left: rect.x + 8, top: "auto", bottom: `${HEIGHT - rect.y - rect.height + 8}px` };
+    const left = Math.max(0, Math.min(rect.x, width - TIP_WIDTH));
+    return rect.y + rect.height / 2 <= HEIGHT / 2
+      ? { left, top: `${rect.y + rect.height + 6}px`, bottom: "auto" }
+      : { left, top: "auto", bottom: `${HEIGHT - rect.y + 6}px` };
+  }
 </script>
 
 <article class="card allocation-card" data-allocation={state}>
@@ -62,10 +92,13 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     <a class="link" {href}>{linkLabel}<ArrowRight size={14} strokeWidth={2} aria-hidden="true" /></a>
   </header>
   {#if tiles.length > 0}
+    <div class="treemap-wrap">
     <ul class="treemap" bind:clientWidth={width} style:height={`${HEIGHT}px`} aria-label={title}>
       {#each tiles as tile, index (tile.key)}
         {@const rect = rects[index]}
         {#if rect}
+          <!-- A tile takes focus only to show its breakdown tooltip, as a tooltip's trigger must. -->
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <li
             class="tile"
             class:compact={rect.width < 120 || rect.height < 72}
@@ -75,7 +108,13 @@ import { formatTwd } from "$lib/shared-money/money.ts";
             style:width={`${rect.width}px`}
             style:height={`${rect.height}px`}
             style:--tile-color={tile.color}
-            title={tile.label}
+            tabindex="0"
+            aria-describedby={activeKey === tile.key ? tipId : undefined}
+            data-allocation-tile={tile.key}
+            onpointerenter={() => (activeKey = tile.key)}
+            onpointerleave={() => { if (activeKey === tile.key) activeKey = null; }}
+            onfocus={() => (activeKey = tile.key)}
+            onblur={() => { if (activeKey === tile.key) activeKey = null; }}
           >
             <span class="tile-label">{tile.label}</span>
             <strong class="tile-share num" data-sensitive>{formatShare(tile.share, $locale)}</strong>
@@ -84,6 +123,37 @@ import { formatTwd } from "$lib/shared-money/money.ts";
         {/if}
       {/each}
     </ul>
+    {#if activeTile && activeRect && activeTile.members.length > 0}
+      {@const place = tipPlacement(activeRect, activeTile.members.length)}
+      <div
+        class="breakdown"
+        id={tipId}
+        role="tooltip"
+        style:left={`${place.left}px`}
+        style:top={place.top}
+        style:bottom={place.bottom}
+        style:width={`${Math.min(TIP_WIDTH, width)}px`}
+        data-allocation-breakdown={activeTile.key}
+      >
+        <p class="breakdown-head">
+          <strong>{activeTile.label}</strong>
+          <span>{$t.overview.tileAccounts(activeTile.members.length)} · <span class="num" data-sensitive>{formatShare(activeTile.share, $locale)}</span></span>
+        </p>
+        <ul>
+          {#each activeTile.members.slice(0, TIP_ROWS) as member (member.key)}
+            <li>
+              <span class="member-name">{#if member.logo}<InstitutionLogo institution={member.logo} size={14} />{/if}<span>{member.label}</span></span>
+              <span class="member-value money" data-sensitive>{formatTwd(member.value, $locale)}</span>
+              <span class="member-share num" data-sensitive>{formatShare(member.share, $locale)}</span>
+            </li>
+          {/each}
+        </ul>
+        {#if activeTile.members.length > TIP_ROWS}
+          <p class="breakdown-more">{$t.overview.tileMoreAccounts(activeTile.members.length - TIP_ROWS)}</p>
+        {/if}
+      </div>
+    {/if}
+    </div>
     {#if note}<p class="note">{note}</p>{/if}
   {:else}
     <CardPlaceholder {state} title={emptyTitle} body={emptyBody}>
@@ -143,8 +213,13 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     list-style: none;
   }
 
+  .treemap-wrap {
+    position: relative;
+  }
+
   .tile {
     position: absolute;
+    outline: none;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -188,6 +263,79 @@ import { formatTwd } from "$lib/shared-money/money.ts";
 
   .tile.tiny > * {
     display: none;
+  }
+
+  .tile:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--surface);
+  }
+
+  /* The accounts a tile adds up: a tooltip, so it floats in ink like the chart tooltips. */
+  .breakdown {
+    position: absolute;
+    z-index: 5;
+    display: grid;
+    gap: 6px;
+    padding: var(--space-3);
+    border-radius: 6px;
+    background: color-mix(in oklch, var(--fg) 92%, transparent);
+    box-shadow: 0 14px 34px rgb(15 23 42 / 0.16);
+    color: white;
+    font-size: 12px;
+    pointer-events: none;
+  }
+
+  .breakdown-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin: 0;
+  }
+
+  .breakdown-head span {
+    color: rgb(255 255 255 / 0.72);
+  }
+
+  .breakdown ul {
+    display: grid;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .breakdown li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto 44px;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .member-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .member-name > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .member-value {
+    font-weight: 700;
+  }
+
+  .member-share {
+    color: rgb(255 255 255 / 0.72);
+    text-align: right;
+  }
+
+  .breakdown-more {
+    margin: 0;
+    color: rgb(255 255 255 / 0.72);
   }
 
   .note {
