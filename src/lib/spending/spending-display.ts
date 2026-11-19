@@ -180,7 +180,6 @@ export function monthDayText(value: string): string {
   return `${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}`;
 }
 
-/** `HH:mm` when the value carries a time; occurrence precision decides whether it is shown. */
 /** An exact decimal as written: coefficient 15, scale 1 reads 1.5. */
 export function exactDecimalText(value: Readonly<{ coefficient: string; scale: number }> | null): string {
   if (!value) return "—";
@@ -191,6 +190,13 @@ export function exactDecimalText(value: Readonly<{ coefficient: string; scale: n
   return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
 }
 
+/** An exact decimal without trailing zeros: 1.000 reads 1, 2.50 reads 2.5. */
+export function plainDecimalText(value: Readonly<{ coefficient: string; scale: number }>): string {
+  const text = exactDecimalText(value);
+  return text.includes(".") ? text.replace(/\.?0+$/u, "") : text;
+}
+
+/** `HH:mm` when the value carries a time; occurrence precision decides whether it is shown. */
 export function timeOfDay(value: string): string | null {
   return value.match(/T(\d{2}:\d{2})/u)?.[1] ?? null;
 }

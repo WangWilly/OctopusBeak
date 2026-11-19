@@ -584,12 +584,12 @@
     transition: transform 360ms ease;
   }
 
-  .transitioning .language-slide .language-options,
-  .transitioning .language-slide .language-prompt,
   .introduction-next {
     margin: 28px auto 0;
   }
 
+  .transitioning .language-slide .language-options,
+  .transitioning .language-slide .language-prompt,
   .transitioning .language-slide .language-continue {
     transform: translateY(12px);
     transition: transform 300ms ease;

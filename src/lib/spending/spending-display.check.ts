@@ -8,6 +8,7 @@ import {
   mergedReasons,
   pairingAmountsDiffer,
   paymentLogo,
+  plainDecimalText,
   paymentMethodText,
   purchaseTimeText,
   reasonTexts,
@@ -165,4 +166,11 @@ test("day and month totals group record amounts by upper-cased currency and redu
     { currency: "TWD", coefficient: "150", scale: 0, count: 2 },
     { currency: "USD", coefficient: "125", scale: 2, count: 1 },
   ]);
+});
+
+test("a plain decimal drops trailing zeros, so a quantity of 1 stored at scale 3 reads 1", () => {
+  assert.equal(plainDecimalText({ coefficient: "1000", scale: 3 }), "1");
+  assert.equal(plainDecimalText({ coefficient: "250", scale: 2 }), "2.5");
+  assert.equal(plainDecimalText({ coefficient: "12", scale: 0 }), "12");
+  assert.equal(plainDecimalText({ coefficient: "-1500", scale: 3 }), "-1.5");
 });

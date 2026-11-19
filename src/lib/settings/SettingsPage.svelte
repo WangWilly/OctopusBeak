@@ -168,15 +168,21 @@
       else if (id) activeSection = id as typeof activeSection;
     };
     const releaseChoice = () => (chosenSection = null);
+    // A press anywhere but the nav (the scrollbar, autoscroll) is the person taking over the scroll.
+    const releaseOnPress = (event: PointerEvent) => {
+      if (!(event.target instanceof Element && event.target.closest(".settings-nav"))) releaseChoice();
+    };
     followScroll();
     window.addEventListener("scroll", followScroll, { passive: true, capture: true });
     window.addEventListener("resize", followScroll);
     for (const type of ["wheel", "touchmove", "keydown"] as const) window.addEventListener(type, releaseChoice, { passive: true });
+    window.addEventListener("pointerdown", releaseOnPress, { passive: true });
     return () => {
       clearInterval(clock);
       window.removeEventListener("scroll", followScroll, { capture: true });
       window.removeEventListener("resize", followScroll);
       for (const type of ["wheel", "touchmove", "keydown"] as const) window.removeEventListener(type, releaseChoice);
+      window.removeEventListener("pointerdown", releaseOnPress);
     };
   });
 

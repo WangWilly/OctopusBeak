@@ -254,7 +254,7 @@ const en = {
     title: "Sort categories",
     subtitle: (count: number) => `Last 12 months · ${count} uncategorized`,
     modeAria: "List order",
-    byTime: "By date",
+    byTime: "By time",
     byMerchant: "By merchant",
     search: "Search description or amount",
     listAria: "Uncategorized purchases",
@@ -289,7 +289,7 @@ const en = {
     keysCode: "Category",
     keysApply: "Apply",
     saving: "Saving…",
-    bankDescription: "Bank",
+    bankDescription: "Bank description",
   },
 };
 

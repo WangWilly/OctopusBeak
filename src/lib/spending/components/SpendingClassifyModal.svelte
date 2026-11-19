@@ -25,7 +25,7 @@
   import type { ClassifyQueueStore } from "../classify-queue-store.ts";
   import type { SpendingClassifyDetails, SpendingClassifyQueueItem } from "../model.ts";
   import type { SpendingPageActionOutcome } from "../purchase-spending-session.ts";
-  import { exactDecimalText, institutionKeyLogo, monthDayText, paymentText } from "../spending-display.ts";
+  import { institutionKeyLogo, plainDecimalText, monthDayText, paymentText } from "../spending-display.ts";
   import CategoryKeyPicker from "./CategoryKeyPicker.svelte";
   import { moneyTotals } from "$lib/shared-money/exact-money.ts";
   import { moneyText } from "./money-text.ts";
@@ -44,7 +44,7 @@
   const state = queue.state;
   let mode: ClassifyMode = "time";
   let query = "";
-  /** 「逐筆看」: the by-amount list narrowed to one merchant group. */
+  /** 「逐筆看」: the by-time list narrowed to one merchant group. */
   let merchantFilter: ClassifyMerchantGroup | null = null;
   let currentKey: string | null = null;
   let shownKeys: readonly string[] = [];
@@ -229,8 +229,9 @@
   /** 「衛生紙 ×2」: a quantity of one goes unsaid. */
   function itemText(item: SpendingClassifyDetails["items"][number]) {
     const name = item.name ?? $t.purchaseSpending.itemNameUnavailable;
-    const quantity = exactDecimalText(item.quantity);
-    return item.quantity && quantity !== "1" ? `${name} ×${quantity}` : name;
+    if (!item.quantity) return name;
+    const quantity = plainDecimalText(item.quantity);
+    return quantity === "1" ? name : `${name} ×${quantity}`;
   }
 
   /** A merchant member's items, every name in full. */

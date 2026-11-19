@@ -75,6 +75,7 @@ import {
 } from "./spending-sql.ts";
 import { readKnowledgePoint } from "./knowledge-point.ts";
 import { kindAcceptsCategory } from "../canonical/transaction-taxonomy.ts";
+import { timeOfDay } from "../../lib/spending/spending-display.ts";
 
 /**
  * The Purchase report: the one interface for Purchase-basis spending
@@ -800,8 +801,9 @@ function classifyDetails(record: PurchaseRecord): SpendingClassifyDetails {
   const bankDescription = record.transaction?.description?.trim() || null;
   const items = record.items.filter((item) => item.name !== null || item.amount !== null);
   return Object.freeze({
-    time: record.occurrence.precision === "date" ? null : record.occurrence.value.match(/T(\d{2}:\d{2})/u)?.[1] ?? null,
-    bankDescription: bankDescription === record.description ? null : bankDescription,
+    time: record.occurrence.precision === "date" ? null : timeOfDay(record.occurrence.value),
+    // Stored descriptions may carry surrounding spaces; the bank's words count as the title when they match it trimmed.
+    bankDescription: bankDescription === record.description?.trim() ? null : bankDescription,
     items: Object.freeze(items.map((item) => Object.freeze({
       name: item.name,
       quantity: item.quantity,

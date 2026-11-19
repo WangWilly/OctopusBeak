@@ -53,7 +53,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
 
   let width = 0;
   /** The tile whose breakdown shows, from hover or keyboard focus, and where it sits in the window. */
-  let active: { key: string; anchor: DOMRect; card: DOMRect; viewHeight: number } | null = null;
+  let active: { key: string; tile: HTMLElement; anchor: DOMRect; card: DOMRect; viewHeight: number } | null = null;
   let tipHeight = 0;
   let card: HTMLElement | null = null;
 
@@ -63,14 +63,26 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   $: tipWidth = active === null ? TIP_WIDTH : Math.min(TIP_WIDTH, active.card.width - EDGE * 2);
   $: place = active === null ? null : tipPlacement(active.anchor, active.card, active.viewHeight, tipHeight, tipWidth);
 
-  function show(key: string, event: Event) {
-    active = {
+  function measure(key: string, tile: HTMLElement) {
+    return {
       key,
-      anchor: (event.currentTarget as HTMLElement).getBoundingClientRect(),
+      tile,
+      anchor: tile.getBoundingClientRect(),
       card: card!.getBoundingClientRect(),
       // The page's visible height, without a horizontal scrollbar.
       viewHeight: document.documentElement.clientHeight,
     };
+  }
+
+  function show(key: string, event: Event) {
+    // A new tile's breakdown is measured afresh, so the last one's height never places it.
+    if (active?.key !== key) tipHeight = 0;
+    active = measure(key, event.currentTarget as HTMLElement);
+  }
+
+  /** A scroll, including the one focus makes to bring a tile into view, moves the breakdown with its tile. */
+  function follow() {
+    if (active) active = measure(active.key, active.tile);
   }
 
   function hide(key: string) {
@@ -93,8 +105,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   }
 </script>
 
-<!-- The tooltip is pinned to where the tile was, so any scroll dismisses it. -->
-<svelte:window onscrollcapture={() => (active = null)} onresize={() => (active = null)} />
+<svelte:window onscrollcapture={follow} onresize={follow} />
 
 <article class="card allocation-card" data-allocation={state} bind:this={card}>
   <header class="card-head">
