@@ -64,11 +64,11 @@
   }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
 {#if open && account && preview}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
     <div
       class="modal-panel"
       role="dialog"

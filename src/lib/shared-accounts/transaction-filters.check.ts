@@ -8,6 +8,7 @@ import {
   flowCounts,
   pageOf,
   presetRange,
+  shortDay,
   transactionsCsv,
 } from "./transaction-filters.ts";
 
@@ -63,4 +64,10 @@ test("the CSV export splits money out and in, and quotes cells that need it", ()
     "Asia/Taipei",
   );
   assert.equal(csv, "﻿日期,摘要,支出,存入,幣別,備註\r\n2026-10-04,\"全聯, 福利中心\",1286,,TWD,\r\n2026-10-01,Salary,,68500,TWD,pending\r\n");
+});
+
+test("a table date drops the year only within today's year", () => {
+  assert.equal(shortDay("2026-10-02", "2026-11-19"), "10/02");
+  assert.equal(shortDay("2025-10-02", "2026-11-19"), "2025/10/02");
+  assert.equal(shortDay("", "2026-11-19"), "--");
 });

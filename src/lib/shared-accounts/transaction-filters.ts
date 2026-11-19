@@ -22,6 +22,12 @@ export function addDays(day: string, days: number): string {
   return new Date(Date.parse(`${day}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
 }
 
+/** A table date: `10/02` within today's year, `2025/10/02` before it, `--` when unknown. */
+export function shortDay(day: string, today: string): string {
+  if (!day) return "--";
+  return day.slice(0, 4) === today.slice(0, 4) ? day.slice(5).replace("-", "/") : day.replaceAll("-", "/");
+}
+
 /** First day of the month `months` away from `day`'s month. */
 export function addMonths(day: string, months: number): string {
   const [year, month] = day.split("-").map(Number);

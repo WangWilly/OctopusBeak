@@ -3,7 +3,6 @@
 
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { formatShare } from "$lib/overview/overview-format.ts";
-import { formatTwd } from "$lib/shared-money/money.ts";
   import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle } from "$lib/shared-accounts/localize-account.ts";
@@ -14,7 +13,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
     recentDividends,
   } from "$lib/shared-accounts/position-summary.ts";
   import type { AccountRowDto, AssetPositionDto, TransactionRowDto } from "$lib/shared-ledger/types.ts";
-  import { formatAmountLines, formatMoney } from "$lib/shared-money/money.ts";
+  import { formatAmountLines, formatMoney, formatTwd } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
 
   export let open = false;
@@ -70,11 +69,11 @@ import { formatTwd } from "$lib/shared-money/money.ts";
   }
 </script>
 
-<svelte:window on:keydown={closeOnEscape} />
+<svelte:window onkeydown={closeOnEscape} />
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="positions-title" tabindex="-1">
       <AccountModalHeader {account} eyebrow={$t.positions.title} titleId="positions-title" onClose={close}>
         {#if account}
@@ -141,7 +140,7 @@ import { formatTwd } from "$lib/shared-money/money.ts";
       </div>
 
       <div class="positions-footer">
-        <button class="button primary export" type="button" disabled={rows.length === 0} on:click={exportCsv}>
+        <button class="button primary export" type="button" disabled={rows.length === 0} onclick={exportCsv}>
           <Download size={15} strokeWidth={2} aria-hidden="true" />
           {$t.transactions.exportCsv}
         </button>
