@@ -18,6 +18,7 @@
     addDays,
     daysInRange,
     pageOf,
+    shortDay,
     type DateRange,
     type RangePreset,
   } from "$lib/shared-accounts/transaction-filters.ts";
@@ -150,7 +151,7 @@
   }
 
   function shortDate(day: string) {
-    return day.slice(0, 4) === today.slice(0, 4) ? day.slice(5).replace("-", "/") : day.replaceAll("-", "/");
+    return shortDay(day, today);
   }
 
   function entryTitle(entry: HistoryEntry) {

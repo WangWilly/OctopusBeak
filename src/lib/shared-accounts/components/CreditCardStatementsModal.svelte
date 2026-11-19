@@ -12,6 +12,7 @@
     statementYears,
     statementsCsv,
   } from "$lib/shared-accounts/statement-list.ts";
+  import { shortDay } from "$lib/shared-accounts/transaction-filters.ts";
   import type { AccountRowDto, CreditCardStatementDto, CurrencyAmountDto } from "$lib/shared-ledger/types.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
   import AccountModalHeader from "./AccountModalHeader.svelte";
@@ -64,8 +65,7 @@
   }
 
   function shortDate(value: string) {
-    if (!value) return "--";
-    return value.slice(0, 4) === today.slice(0, 4) ? value.slice(5).replace("-", "/") : value.replaceAll("-", "/");
+    return shortDay(value, today);
   }
 
   /** Amounts in the card's own currency read as plain numbers, as on a paper statement. */
@@ -110,11 +110,11 @@
   }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
 {#if open}
   <div class="modal open" data-statement-modal>
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
     <div class="modal-panel statements-panel" role="dialog" aria-modal="true" aria-labelledby="statements-title" tabindex="-1">
       <AccountModalHeader {account} eyebrow={$t.statements.title} titleId="statements-title" onClose={close}>
         {#if statements.length > 0}
@@ -135,7 +135,7 @@
               aria-haspopup="menu"
               aria-expanded={yearMenuOpen}
               aria-label={`${$t.statements.yearFilter}: ${year === null ? $t.statements.allYears : $t.statements.year(year)}`}
-              on:click={() => (yearMenuOpen = !yearMenuOpen)}
+              onclick={() => (yearMenuOpen = !yearMenuOpen)}
             >
               <CalendarDays size={15} strokeWidth={2} aria-hidden="true" />
               {year === null ? $t.statements.allYears : $t.statements.year(year)}
@@ -144,7 +144,7 @@
             {#if yearMenuOpen}
               <div class="year-menu" role="menu" aria-label={$t.statements.yearFilter}>
                 {#each [...years, null] as option}
-                  <button type="button" role="menuitemradio" aria-checked={year === option} on:click={() => chooseYear(option)}>
+                  <button type="button" role="menuitemradio" aria-checked={year === option} onclick={() => chooseYear(option)}>
                     {option === null ? $t.statements.allYears : $t.statements.year(option)}
                     {#if year === option}<Check size={15} strokeWidth={2.25} aria-hidden="true" />{/if}
                   </button>
@@ -189,8 +189,8 @@
                   class:expanded
                   data-statement-id={statement.statementId}
                   data-statement-revision-id={statement.statementRevisionId}
-                  on:mouseenter={() => (hoverId = statement.statementId)}
-                  on:mouseleave={() => (hoverId = null)}
+                  onmouseenter={() => (hoverId = statement.statementId)}
+                  onmouseleave={() => (hoverId = null)}
                 >
                   <td class="cycle">
                     <strong>{monthLabel(statement)}</strong>
@@ -215,7 +215,7 @@
                       type="button"
                       aria-expanded={expanded}
                       aria-label={expanded ? $t.statements.collapse(monthLabel(statement)) : $t.statements.expand(monthLabel(statement))}
-                      on:click={() => toggle(statement)}
+                      onclick={() => toggle(statement)}
                     >
                       <ChevronDown size={16} strokeWidth={2} aria-hidden="true" />
                     </button>
@@ -236,7 +236,7 @@
                             class="button lineage-toggle"
                             type="button"
                             aria-expanded={transactionsShownId === statement.statementId}
-                            on:click={() => (transactionsShownId = transactionsShownId === statement.statementId ? null : statement.statementId)}
+                            onclick={() => (transactionsShownId = transactionsShownId === statement.statementId ? null : statement.statementId)}
                           >
                             <FileText size={15} strokeWidth={2} aria-hidden="true" />
                             {transactionsShownId === statement.statementId ? $t.statements.hideTransactions : $t.statements.viewTransactions}
@@ -270,7 +270,7 @@
       </div>
 
       <div class="statements-footer">
-        <button class="button primary export" type="button" disabled={shown.length === 0} on:click={exportCsv}>
+        <button class="button primary export" type="button" disabled={shown.length === 0} onclick={exportCsv}>
           <Download size={15} strokeWidth={2} aria-hidden="true" />
           {$t.transactions.exportCsv}
         </button>

@@ -19,6 +19,7 @@
     filterTransactions,
     flowCounts,
     pageOf,
+    shortDay,
     transactionDay,
     transactionsCsv,
     type DateRange,
@@ -93,8 +94,7 @@
   }
 
   function shortDate(row: TransactionRowDto) {
-    const day = transactionDay(row, $systemTimezone);
-    return day.slice(0, 4) === today.slice(0, 4) ? day.slice(5).replace("-", "/") : day.replaceAll("-", "/");
+    return shortDay(transactionDay(row, $systemTimezone), today);
   }
 
   /** Unsigned amount; the column already says which way the money moved. */
@@ -123,11 +123,11 @@
   }
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
 {#if open}
   <div class="modal open">
-    <button class="modal-backdrop" type="button" aria-label={$t.common.close} on:click={close}></button>
+    <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
     <div class="modal-panel transactions-panel" role="dialog" aria-modal="true" aria-labelledby="transactions-title" tabindex="-1">
       <AccountModalHeader {account} eyebrow={$t.transactions.eyebrow} titleId="transactions-title" onClose={close}>
         {#if account}
@@ -156,7 +156,7 @@
             type="button"
             aria-expanded={menu === "type"}
             aria-haspopup="menu"
-            on:click={() => toggleMenu("type")}
+            onclick={() => toggleMenu("type")}
           >
             <ListFilter size={15} strokeWidth={2} aria-hidden="true" />
             {$t.transactions.flows[flow]}
@@ -166,7 +166,7 @@
             <div class="type-menu" role="menu" aria-label={$t.transactions.typeMenu}>
               <p class="menu-title">{$t.transactions.typeMenu}</p>
               {#each FLOWS as item}
-                <button type="button" role="menuitemradio" aria-checked={flow === item} data-flow={item} on:click={() => chooseFlow(item)}>
+                <button type="button" role="menuitemradio" aria-checked={flow === item} data-flow={item} onclick={() => chooseFlow(item)}>
                   <span class="flow-icon" data-flow={item}>
                     {#if item === "in"}<ArrowDownLeft size={14} strokeWidth={2} aria-hidden="true" />
                     {:else if item === "out"}<ArrowUpRight size={14} strokeWidth={2} aria-hidden="true" />
@@ -225,15 +225,15 @@
       <div class="transactions-footer">
         <span>{$t.transactions.pageRange(current.first, current.last, current.total)}</span>
         <div class="pager">
-          <button class="pager-step" type="button" aria-label={$t.transactions.previousPage} disabled={current.page <= 1} on:click={() => (page = current.page - 1)}>
+          <button class="pager-step" type="button" aria-label={$t.transactions.previousPage} disabled={current.page <= 1} onclick={() => (page = current.page - 1)}>
             <ChevronLeft size={16} strokeWidth={2} aria-hidden="true" />
           </button>
           <span class="num">{current.page} / {current.pageCount}</span>
-          <button class="pager-step" type="button" aria-label={$t.transactions.nextPage} disabled={current.page >= current.pageCount} on:click={() => (page = current.page + 1)}>
+          <button class="pager-step" type="button" aria-label={$t.transactions.nextPage} disabled={current.page >= current.pageCount} onclick={() => (page = current.page + 1)}>
             <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
-        <button class="button primary export" type="button" disabled={filtered.length === 0} on:click={exportCsv}>
+        <button class="button primary export" type="button" disabled={filtered.length === 0} onclick={exportCsv}>
           <Download size={15} strokeWidth={2} aria-hidden="true" />
           {$t.transactions.exportCsv}
         </button>
