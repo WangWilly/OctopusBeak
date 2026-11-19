@@ -3619,10 +3619,21 @@ import type {
     background: var(--surface);
   }
 
+  /*
+   * The rows share one set of columns, so an empty field's input ends where a
+   * saved field's mask does, and the badge column keeps room for 「已輸入」
+   * before anything is typed.
+   */
+  .credential-fields {
+    display: grid;
+    grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr) minmax(88px, auto);
+  }
+
   .credential-row {
     min-height: 52px;
     display: grid;
-    grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr) auto;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
     align-items: center;
     column-gap: var(--space-4);
     padding: var(--space-2) var(--space-4);
