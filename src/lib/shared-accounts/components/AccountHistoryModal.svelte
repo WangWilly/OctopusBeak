@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronLeft, ChevronRight, Download } from "@lucide/svelte";
+  import { tick } from "svelte";
 
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { localDate, systemTimezone } from "$lib/settings/system-timezone-store.ts";
@@ -10,6 +11,7 @@
     historyStats,
     type HistoryEntry,
   } from "$lib/shared-accounts/balance-history.ts";
+  import { entryIndexForDay, historyChartPoints } from "$lib/shared-accounts/balance-history-chart.ts";
   import { downloadCsv } from "$lib/shared-accounts/download-csv.ts";
   import { accountModalTitle, localizeAccount } from "$lib/shared-accounts/localize-account.ts";
   import {
@@ -40,6 +42,12 @@
   let page = 1;
   let rangeOpen = false;
   let shownAccountId: string | null = null;
+  /** The day last picked on the chart or a statistic, and the table row that explains it. */
+  let pinnedDay: string | null = null;
+  let linkedIndex: number | null = null;
+  /** The day under the pointer in the table or statistics. */
+  let hoverDay: string | null = null;
+  let table: HTMLTableElement | null = null;
 
   $: today = $localDate;
   $: kind = account ? historyKind(account) : "snapshots";
@@ -50,6 +58,7 @@
     preset = "custom";
     page = 1;
     rangeOpen = false;
+    clearLink();
   }
   $: currencies = account ? historyCurrencies(account, rows) : [];
   $: if (!currencies.includes(currency)) currency = currencies[0] ?? "TWD";
@@ -58,6 +67,8 @@
     ? buildBalanceHistory({ account, transactions, dailyHistory: rows, currency, range: activeRange, today, timeZone: $systemTimezone })
     : null;
   $: stats = history ? historyStats(history) : null;
+  $: chartPoints = history ? historyChartPoints(history) : [];
+  $: clearLink(currency);
   $: current = pageOf(history?.entries ?? [], page, PAGE_SIZE);
   $: liability = account?.group === "liability";
   $: columns = kind === "ledger"
@@ -84,6 +95,34 @@
     preset = nextPreset;
     page = 1;
     rangeOpen = false;
+    clearLink();
+  }
+
+  function clearLink(..._changed: unknown[]) {
+    pinnedDay = null;
+    linkedIndex = null;
+    hoverDay = null;
+  }
+
+  /** Pins a day on the chart and turns the table to the row that explains it. */
+  async function selectDay(day: string) {
+    if (!history) return;
+    pinnedDay = day;
+    const index = entryIndexForDay(history.entries, day);
+    if (index < 0) {
+      linkedIndex = null;
+      return;
+    }
+    linkedIndex = index;
+    page = Math.floor(index / PAGE_SIZE) + 1;
+    await tick();
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    table?.querySelector("tr.linked")?.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  }
+
+  function turnPage(next: number) {
+    page = next;
+    hoverDay = null;
   }
 
   function countIn(candidate: DateRange | null) {
@@ -156,6 +195,20 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+<!-- A statistic that names a day points the chart and the table at it. -->
+{#snippet statPoint(point: { day: string; balance: number })}
+  <button
+    class="stat-point num"
+    type="button"
+    data-sensitive
+    onclick={() => selectDay(point.day)}
+    onmouseenter={() => (hoverDay = point.day)}
+    onmouseleave={() => (hoverDay = null)}
+    onfocus={() => (hoverDay = point.day)}
+    onblur={() => (hoverDay = null)}
+  >{formatAmount(point.balance, currency, { locale: $locale })} · {shortDate(point.day)}</button>
+{/snippet}
+
 {#if open}
   <div class="modal open">
     <button class="modal-backdrop" type="button" aria-label={$t.common.close} onclick={close}></button>
@@ -201,8 +254,8 @@
             {#if stats}
               <dl class="stats" data-history-stats>
                 {#if stats.kind === "card"}
-                  <div><dt>{$t.accountHistory.lastStatement}</dt><dd class="num" data-sensitive>{formatAmount(stats.lastStatement.balance, currency, { locale: $locale })} · {shortDate(stats.lastStatement.day)}</dd></div>
-                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{formatAmount(stats.high.balance, currency, { locale: $locale })} · {shortDate(stats.high.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.lastStatement}</dt><dd>{@render statPoint(stats.lastStatement)}</dd></div>
+                  <div><dt>{$t.accountHistory.highest}</dt><dd>{@render statPoint(stats.high)}</dd></div>
                   <div><dt>{$t.accountHistory.monthlyAverage}</dt><dd class="num" data-sensitive>{formatAmount(stats.average, currency, { locale: $locale })}</dd></div>
                 {:else}
                   <div>
@@ -211,14 +264,16 @@
                       {formatAmount(stats.net, currency, { locale: $locale, signed: true })}
                     </dd>
                   </div>
-                  <div><dt>{$t.accountHistory.highest}</dt><dd class="num" data-sensitive>{formatAmount(stats.high.balance, currency, { locale: $locale })} · {shortDate(stats.high.day)}</dd></div>
-                  <div><dt>{$t.accountHistory.lowest}</dt><dd class="num" data-sensitive>{formatAmount(stats.low.balance, currency, { locale: $locale })} · {shortDate(stats.low.day)}</dd></div>
+                  <div><dt>{$t.accountHistory.highest}</dt><dd>{@render statPoint(stats.high)}</dd></div>
+                  <div><dt>{$t.accountHistory.lowest}</dt><dd>{@render statPoint(stats.low)}</dd></div>
                 {/if}
               </dl>
             {/if}
           </div>
           <BalanceHistoryChart
-            points={history?.points ?? []}
+            points={chartPoints}
+            highlightDay={hoverDay ?? pinnedDay}
+            onSelectDay={selectDay}
             stepped={kind === "ledger"}
             tone={liability ? "liability" : "asset"}
             {today}
@@ -228,7 +283,7 @@
           />
         </section>
 
-        <table class="table history-table">
+        <table class="table history-table" bind:this={table}>
           <thead>
             <tr>
               <th>{$t.transactions.date}</th>
@@ -240,8 +295,13 @@
             </tr>
           </thead>
           <tbody>
-            {#each current.rows as entry}
-              <tr data-entry-kind={entry.kind}>
+            {#each current.rows as entry, row}
+              <tr
+                data-entry-kind={entry.kind}
+                class:linked={current.first - 1 + row === linkedIndex}
+                onmouseenter={() => (hoverDay = entry.day)}
+                onmouseleave={() => (hoverDay = null)}
+              >
                 <td class="date num">{shortDate(entry.day)}</td>
                 <td class="description">
                   <strong>{entryTitle(entry)}</strong>
@@ -268,11 +328,11 @@
       <div class="history-footer">
         <span>{$t.transactions.pageRange(current.first, current.last, current.total)}</span>
         <div class="pager">
-          <button class="pager-step" type="button" aria-label={$t.transactions.previousPage} disabled={current.page <= 1} onclick={() => (page = current.page - 1)}>
+          <button class="pager-step" type="button" aria-label={$t.transactions.previousPage} disabled={current.page <= 1} onclick={() => turnPage(current.page - 1)}>
             <ChevronLeft size={16} strokeWidth={2} aria-hidden="true" />
           </button>
           <span class="num">{current.page} / {current.pageCount}</span>
-          <button class="pager-step" type="button" aria-label={$t.transactions.nextPage} disabled={current.page >= current.pageCount} onclick={() => (page = current.page + 1)}>
+          <button class="pager-step" type="button" aria-label={$t.transactions.nextPage} disabled={current.page >= current.pageCount} onclick={() => turnPage(current.page + 1)}>
             <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
           </button>
         </div>
@@ -355,6 +415,32 @@
   .stats div { display: grid; justify-items: end; gap: 2px; }
   .stats dt { color: var(--muted); font-size: 11px; font-weight: 650; }
   .stats dd { margin: 0; font-size: 13px; font-weight: 750; }
+
+  .stat-point {
+    padding: 0;
+    border: 0;
+    border-bottom: 1px dashed color-mix(in oklch, var(--muted) 60%, transparent);
+    background: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .stat-point:hover { border-bottom-color: var(--fg); }
+
+  .stat-point:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .history-table tbody tr { transition: background-color 160ms ease-out; }
+  .history-table tbody tr.linked { background: var(--accent-soft); }
+  .history-table tbody tr.linked .date { color: var(--accent); font-weight: 750; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .history-table tbody tr { transition: none; }
+  }
   .stats dd[data-tone="good"] { color: var(--success); }
   .stats dd[data-tone="bad"] { color: var(--danger); }
 
