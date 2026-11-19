@@ -648,19 +648,19 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label" id="preview-features-label">{$t.settings.previewFeatures}</span>
+              <span class="setting-label" id="preview-features-label">{$t.settings.previewSourcesToggle}</span>
               <small class="setting-hint">{$t.settings.previewFeaturesHint}</small>
             </div>
             <div class="setting-control">
               <button
                 id="preview-features-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={previewEnabled}
                 aria-labelledby="preview-features-label"
                 onclick={togglePreviewFeatures}
               >
-                <span>{previewEnabled ? $t.settings.previewFeaturesOn : $t.settings.previewFeaturesOff}</span>
+                <span class="visually-hidden">{previewEnabled ? $t.settings.previewFeaturesOn : $t.settings.previewFeaturesOff}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -721,13 +721,13 @@
             <div class="setting-control">
               <button
                 id="usage-statistics-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={usageEnabled}
                 aria-labelledby="usage-statistics-label"
                 onclick={toggleUsageStatistics}
               >
-                <span>{usageEnabled ? $t.settings.usageStatisticsOn : $t.settings.usageStatisticsOff}</span>
+                <span class="visually-hidden">{usageEnabled ? $t.settings.usageStatisticsOn : $t.settings.usageStatisticsOff}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -795,13 +795,13 @@
             <div class="setting-control">
               <button
                 id="app-updates-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={updatesEnabled}
                 aria-labelledby="app-updates-label"
                 onclick={toggleAppUpdates}
               >
-                <span>{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="visually-hidden">{updatesEnabled ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -814,14 +814,14 @@
             <div class="setting-control">
               <button
                 id="app-updates-auto-download-toggle"
-                class="switch collection-switch"
+                class="switch collection-switch setting-switch"
                 type="button"
                 aria-pressed={updatesAutoDownload}
                 aria-labelledby="app-updates-auto-download-label"
                 disabled={!updatesEnabled}
                 onclick={toggleAppUpdatesAutoDownload}
               >
-                <span>{updatesAutoDownload ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
+                <span class="visually-hidden">{updatesAutoDownload ? $t.settings.appUpdatesOn : $t.settings.appUpdatesOffLabel}</span>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
             </div>
@@ -981,7 +981,7 @@
         <div class="card settings-card">
           <div class="setting-row onboarding-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$t.settings.onboardingSection}</span>
+              <span class="setting-label">{$t.settings.onboardingStatusLabel}</span>
               {#if onboardingMeta.length > 0}
                 <small class="setting-hint" data-onboarding-meta>{onboardingMeta.join(" · ")}</small>
               {/if}
@@ -1243,6 +1243,25 @@
 
   .collection-switch[aria-pressed="true"] .switch-track { background: var(--fg); }
   .collection-switch[aria-pressed="true"] .switch-track::after { transform: translateX(12px); }
+  /*
+   * A setting that is only on or off is the switch alone, right-aligned: the
+   * track already shows its state, so the box and the 「開啟／關閉」 words it
+   * carried are gone (the words stay for a screen reader).
+   */
+  .setting-switch {
+    justify-self: end;
+    width: auto;
+    min-width: 0;
+    min-height: 0;
+    padding: 4px;
+    border-color: transparent;
+    border-radius: 999px;
+    background: none;
+  }
+  .setting-switch .switch-track { width: 38px; height: 22px; }
+  .setting-switch .switch-track::after { top: 3px; left: 3px; width: 16px; height: 16px; }
+  .setting-switch[aria-pressed="true"] .switch-track::after { transform: translateX(16px); }
+  .setting-switch:disabled { cursor: not-allowed; opacity: 0.48; }
   .time-field.disabled { opacity: 0.55; }
   .time-field select:disabled { cursor: default; }
 

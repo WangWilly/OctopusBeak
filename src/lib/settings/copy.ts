@@ -46,6 +46,8 @@ const en = {
       "Connect banks that OctopusBeak has not yet verified against live data. Preview data stays separate from verified data.",
     previewFeaturesHint:
       "Shows preview sources in sign-in settings and includes them in syncing. Turning this off hides them and their data but keeps the data.",
+    previewSourcesToggle: "Show preview sources",
+    onboardingStatusLabel: "Guide status",
     previewFeaturesOn: "On",
     previewFeaturesOff: "Off",
     usageStatistics: "Usage statistics",
@@ -208,6 +210,8 @@ const zh: typeof en = {
     previewFeatures: "預覽測試功能",
     previewFeaturesDescription: "連接 OctopusBeak 尚未以實際資料驗證的銀行。預覽資料與已驗證的資料分開保存。",
     previewFeaturesHint: "在登入設定顯示預覽來源，並納入同步。關閉後會隱藏預覽來源與其資料，但資料仍會保留。",
+    previewSourcesToggle: "顯示預覽來源",
+    onboardingStatusLabel: "引導狀態",
     previewFeaturesOn: "開啟",
     previewFeaturesOff: "關閉",
     usageStatistics: "使用統計",
