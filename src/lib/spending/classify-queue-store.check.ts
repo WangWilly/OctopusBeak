@@ -7,7 +7,7 @@ import type { SpendingClassifyQueueDto, SpendingClassifyQueueItem, SpendingClass
 type Reply = SpendingPageReadResult<SpendingClassifyQueueDto>;
 
 function item(purchaseId: string): SpendingClassifyQueueItem {
-  return { purchaseId, basis: "bank-transaction", date: "2026-10-01", title: purchaseId, amount: null, payment: null };
+  return { purchaseId, basis: "bank-transaction", date: "2026-10-01", title: purchaseId, amount: null, payment: null, details: { time: null, bankDescription: null, items: [] } };
 }
 
 function queue(knowledgeAt: number, ids: readonly string[]): Reply {

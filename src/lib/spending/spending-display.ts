@@ -165,6 +165,16 @@ export function monthDayText(value: string): string {
 }
 
 /** `HH:mm` when the value carries a time; occurrence precision decides whether it is shown. */
+/** An exact decimal as written: coefficient 15, scale 1 reads 1.5. */
+export function exactDecimalText(value: Readonly<{ coefficient: string; scale: number }> | null): string {
+  if (!value) return "—";
+  if (value.scale === 0) return value.coefficient;
+  const negative = value.coefficient.startsWith("-");
+  const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, "0");
+  const split = digits.length - value.scale;
+  return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
+}
+
 export function timeOfDay(value: string): string | null {
   return value.match(/T(\d{2}:\d{2})/u)?.[1] ?? null;
 }

@@ -32,6 +32,7 @@ import {
 import {
   SPENDING_UNCLASSIFIED_CATEGORY_SELECTOR,
   type SpendingCategoryMonthTotal,
+  type SpendingClassifyDetails,
   type SpendingClassifyQueueDto,
   type SpendingClassifyQueueItem,
   type SpendingClassifyQueueRequest,
@@ -794,6 +795,21 @@ function classifyQueueEligible(row: PurchaseCategoryRow): boolean {
   return row.kind !== null && kindAcceptsCategory(row.kind);
 }
 
+/** What a queued purchase's sources say beyond its title: the time, the bank's own words, and every invoice item. */
+function classifyDetails(record: PurchaseRecord): SpendingClassifyDetails {
+  const bankDescription = record.transaction?.description?.trim() || null;
+  const items = record.items.filter((item) => item.name !== null || item.amount !== null);
+  return Object.freeze({
+    time: record.occurrence.precision === "date" ? null : record.occurrence.value.match(/T(\d{2}:\d{2})/u)?.[1] ?? null,
+    bankDescription: bankDescription === record.description ? null : bankDescription,
+    items: Object.freeze(items.map((item) => Object.freeze({
+      name: item.name,
+      quantity: item.quantity,
+      amount: item.amount ? Object.freeze({ currency: item.amount.currency, coefficient: item.amount.coefficient, scale: item.amount.scale }) : null,
+    }))),
+  });
+}
+
 /**
  * The classification inbox: every purchase in the date range that the inbox
  * may categorize, by the Purchase records Spending shows.
@@ -832,6 +848,7 @@ export async function queryCurrentSpendingClassifyQueue(
         institution: record.paymentSource.institution,
         cardMask: record.paymentSource.cardMask,
       }) : null,
+      details: classifyDetails(record),
     })];
   });
   // As on the record page: the SQL rows and the record builder should agree.

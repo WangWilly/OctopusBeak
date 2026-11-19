@@ -23,6 +23,7 @@
     recordCategoryDetailText,
     recordGroups,
     recordMerchant,
+    exactDecimalText,
     timeOfDay,
   } from "../spending-display.ts";
   import { moneyText, type ExactMoney } from "./money-text.ts";
@@ -71,15 +72,6 @@
 
   function amountText(amount: ExactMoney | null, signed = false) {
     return amount ? moneyText(amount, $locale, signed) : $t.purchaseSpending.amountUnavailable;
-  }
-
-  function exactText(value: { coefficient: string; scale: number } | null) {
-    if (!value) return "—";
-    if (value.scale === 0) return value.coefficient;
-    const negative = value.coefficient.startsWith("-");
-    const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, "0");
-    const split = digits.length - value.scale;
-    return `${negative ? "-" : ""}${digits.slice(0, split)}.${digits.slice(split)}`;
   }
 
   function invoiceMeta(source: PurchaseRecord) {
@@ -303,8 +295,8 @@
       {#each source.items as item (item.itemId)}
         <tr>
           <td>{item.name ?? $t.purchaseSpending.itemNameUnavailable}</td>
-          <td class="num">×{exactText(item.quantity)}</td>
-          <td><span class="money" data-sensitive>{item.amount ? exactText(item.amount) : "—"}</span></td>
+          <td class="num">×{exactDecimalText(item.quantity)}</td>
+          <td><span class="money" data-sensitive>{item.amount ? exactDecimalText(item.amount) : "—"}</span></td>
         </tr>
       {/each}
     </tbody>

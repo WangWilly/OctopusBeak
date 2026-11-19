@@ -80,7 +80,7 @@ test("the period is the twelve months ending today", () => {
 });
 
 function queued(purchaseId: string, title: string, amount: string): SpendingClassifyQueueItem {
-  return { purchaseId, basis: "bank-transaction", date: "2026-09-01", title, amount: { currency: "TWD", coefficient: amount, scale: 0 }, payment: null };
+  return { purchaseId, basis: "bank-transaction", date: "2026-09-01", title, amount: { currency: "TWD", coefficient: amount, scale: 0 }, payment: null, details: { time: null, bankDescription: null, items: [] } };
 }
 
 const pxmartAndDinTaiFung = [

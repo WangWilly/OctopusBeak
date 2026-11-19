@@ -289,6 +289,7 @@ const en = {
     keysCode: "Category",
     keysApply: "Apply",
     saving: "Saving…",
+    bankDescription: "Bank",
   },
 };
 
@@ -576,6 +577,7 @@ const zh: typeof en = {
     keysCode: "細類",
     keysApply: "套用",
     saving: "儲存中…",
+    bankDescription: "銀行說明",
   },
 };
 

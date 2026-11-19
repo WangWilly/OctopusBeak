@@ -350,6 +350,21 @@ export type SpendingClassifyQueueItem = Readonly<{
   amount: SpendingMoneyDto | null;
   /** The paying account, for paymentText; null for an invoice-only purchase. */
   payment: Readonly<{ stream: string; institution: string; cardMask: string | null }> | null;
+  /** What the sources say beyond the title, shown under the row being classified. */
+  details: SpendingClassifyDetails;
+}>;
+
+export type SpendingClassifyDetails = Readonly<{
+  /** `HH:mm` when a source recorded the time of day; null for a date-only purchase. */
+  time: string | null;
+  /** The bank's own description, when it is not already the title. */
+  bankDescription: string | null;
+  /** Every invoice item, in invoice order. */
+  items: readonly Readonly<{
+    name: string | null;
+    quantity: Readonly<{ coefficient: string; scale: number }> | null;
+    amount: SpendingMoneyDto | null;
+  }>[];
 }>;
 
 /** Every queued purchase in the range, unpaginated; knowledgeAt is the categorize action's dataVersion. */

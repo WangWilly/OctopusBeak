@@ -18,6 +18,7 @@ function item(purchaseId: string, title: string | null, amount: string | null, d
     title,
     amount: amount === null ? null : { currency: "TWD", coefficient: amount, scale: 0 },
     payment: null,
+    details: { time: null, bankDescription: null, items: [] },
   };
 }
 
