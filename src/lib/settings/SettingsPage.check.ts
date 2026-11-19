@@ -91,7 +91,7 @@ test("Settings offers onboarding start when none exists and restart only for com
     assert.match(rateStatus(null), /^Next \d+\/\d+ 06:00$/);
 
     const { version } = JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { version: string };
-    assert.match(text(renderSettings("completed")), new RegExp(`OctopusBeak ${version.replaceAll(".", "\\.")}`));
+    assert.match(text(renderSettings("completed")), new RegExp(`Version ${version.replaceAll(".", "\\.")}`), "the version shows once, in Automatic updates beside Check now");
 
     for (const label of ["Delete all collected financial data", "Clear all sign-in data"]) {
       const button = findButton(renderSettings("completed"), label);

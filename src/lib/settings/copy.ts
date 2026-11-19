@@ -60,8 +60,8 @@ const en = {
     usageStatisticsOff: "Off",
     usagePayload: "What the report contains",
     usagePayloadHint: "The full content of the report as it is sent. It holds nothing that identifies you personally.",
-    showUsagePayload: "Show",
-    hideUsagePayload: "Hide",
+    showUsagePayload: "View contents",
+    hideUsagePayload: "Hide contents",
     usagePayloadFailed: "Could not load the report content.",
     appUpdates: "Automatic updates",
     appUpdatesDescription:
@@ -222,8 +222,8 @@ const zh: typeof en = {
     usageStatisticsOff: "關閉",
     usagePayload: "統計報告的內容",
     usagePayloadHint: "回報傳送的完整內容列表，不包含你個人可識別的資訊。",
-    showUsagePayload: "顯示",
-    hideUsagePayload: "隱藏",
+    showUsagePayload: "查看內容",
+    hideUsagePayload: "收起內容",
     usagePayloadFailed: "無法載入回報內容。",
     appUpdates: "自動更新",
     appUpdatesDescription:

@@ -474,7 +474,6 @@
           </li>
         {/each}
       </ul>
-      <p class="settings-version">OctopusBeak {__APP_VERSION__}</p>
     </nav>
 
     <div class="settings-sections">
@@ -772,7 +771,7 @@
         <div class="card settings-card">
           <div class="setting-row">
             <div class="setting-label-group">
-              <span class="setting-label">{$updateView ? $t.settings.appUpdatesVersion($updateView.currentVersion) : $t.settings.appUpdates}</span>
+              <span class="setting-label">{$t.settings.appUpdatesVersion($updateView?.currentVersion ?? __APP_VERSION__)}</span>
               <small id="app-update-status" class="setting-hint" aria-live="polite">{updateLine}</small>
             </div>
             <div class="onboarding-setting-actions">
@@ -1048,7 +1047,8 @@
     align-items: start;
     gap: var(--space-6);
     max-width: 1200px;
-    margin: 0;
+    /* Centred, so a wide window leaves even margins instead of one empty side. */
+    margin: 0 auto;
   }
 
   .settings-save-status {
@@ -1072,8 +1072,7 @@
     display: grid;
     gap: var(--space-1);
     margin: 0;
-    padding: 0 0 var(--space-3);
-    border-bottom: 1px solid var(--border);
+    padding: 0;
     list-style: none;
   }
 
@@ -1098,13 +1097,6 @@
     background: var(--surface);
     color: var(--fg);
     font-weight: 750;
-  }
-
-  .settings-version {
-    margin: var(--space-4) 0 0;
-    padding: 0 var(--space-3);
-    font-size: 12px;
-    font-weight: 700;
   }
 
   .settings-sections {
