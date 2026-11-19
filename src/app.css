@@ -82,6 +82,16 @@ a {
   text-decoration: none;
 }
 
+/*
+ * Links and images here act as buttons, so they never start a native drag.
+ * A drag shows the URL under the pointer, and when the app is busy a small
+ * move during a click starts one and swallows the click.
+ */
+a,
+img {
+  -webkit-user-drag: none;
+}
+
 .money,
 .num {
   font-family: var(--font-mono);
