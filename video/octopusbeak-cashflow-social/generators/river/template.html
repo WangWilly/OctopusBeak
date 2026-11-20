@@ -190,43 +190,14 @@
     <div id="f02-stage" class="clip" data-start="0" data-duration="21.5" data-track-index="2" data-layout-allow-occlusion>
       <div id="f02-card"></div>
 
-      <!-- the river: trunk, interest strand, tributaries, kept band, pool (built by script) -->
-      <svg id="f02-river" class="f02-full" viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-layout-allow-occlusion>
-        <defs>
-          <clipPath id="f02-pool-shape"><path d="M322.5 1340 L120 1340 A40 40 0 0 0 80 1380 L80 1520 A40 40 0 0 0 120 1560 L500 1560 A40 40 0 0 0 540 1520 L540 1340 Z" /></clipPath>
-          <clipPath id="f02-pool-water"><rect id="f02-pool-water-r" x="70" y="1560" width="480" height="0" /></clipPath>
-        </defs>
-        <g id="f02-river-all" data-layout-allow-overflow>
-          <g id="f02-g-interest"></g>
-          <g id="f02-g-pool" opacity="0">
-            <g clip-path="url(#f02-pool-shape)">
-              <g clip-path="url(#f02-pool-water)">
-                <rect x="80" y="1336" width="460" height="224" fill="#ebf0ed" />
-                <g id="f02-pool-lines"></g>
-              </g>
-              <line id="f02-pool-surface" x1="80" x2="540" y1="1560" y2="1560" stroke="#285d3f" stroke-opacity="0.45" stroke-width="2" />
-            </g>
-            <path id="f02-pool-wall" fill="none" stroke="#285d3f" stroke-width="2"
-              d="M322.5 1340 L120 1340 A40 40 0 0 0 80 1380 L80 1520 A40 40 0 0 0 120 1560 L500 1560 A40 40 0 0 0 540 1520 L540 1340" />
-          </g>
-          <g id="f02-g-trunk"></g>
-        </g>
-      </svg>
+      <!-- the river: trunk, 利息 strand, tributaries, 留下來 band and pool, painted as water by render(t) -->
+      <canvas id="f02-river-gl" class="f02-full" width="1080" height="1920" data-layout-allow-occlusion data-layout-allow-overflow></canvas>
+      <canvas id="f02-river-cv" class="f02-full" width="1080" height="1920" data-layout-allow-occlusion data-layout-allow-overflow></canvas>
 
       <!-- transfers: ribbons, coin, pills — lift away together -->
       <div id="f02-xfer" data-layout-allow-occlusion>
-        <svg id="f02-ribbons" class="f02-full" viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <defs>
-            <linearGradient id="f02-fade-left" gradientUnits="userSpaceOnUse" x1="20" y1="0" x2="300" y2="0">
-              <stop offset="0" stop-color="#fff" stop-opacity="0" />
-              <stop offset="1" stop-color="#fff" stop-opacity="1" />
-            </linearGradient>
-            <mask id="f02-fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1080" height="1920">
-              <rect x="0" y="0" width="1080" height="1920" fill="url(#f02-fade-left)" />
-            </mask>
-          </defs>
-          <g id="f02-g-ribbons"></g>
-        </svg>
+        <canvas id="f02-rib-gl" class="f02-full" width="1080" height="1920"></canvas>
+        <canvas id="f02-rib-ov" class="f02-full" width="1080" height="1920"></canvas>
         <div id="f02-coin"><div id="f02-coin-cur" data-s="coinCur"></div><div id="f02-coin-amt" class="f02-mono" data-s="coinAmt"></div></div>
         <div id="f02-seal-a" class="f02-pill" data-s="sealA"></div>
         <div id="f02-pill-b" class="f02-pill" data-s="pillB" style="left: 930px; top: 1346px"></div>
@@ -316,7 +287,6 @@
         window.__timelines = window.__timelines || {};
         const DUR = 21.5;
         const FILM_START = 4.5;
-        const NS = "http://www.w3.org/2000/svg";
         const host = document.querySelector('[data-composition-id="02-river"]');
         const $ = (id) => host.querySelector('[id="' + id + '"]');
         const tl = gsap.timeline({ paused: true });
@@ -395,129 +365,308 @@
           return { pts, nrm };
         }
         const f1 = (v) => Math.round(v * 10) / 10;
-        function polyline(sm, d) {
-          const p = sm.pts, n = sm.nrm;
-          let s = "";
-          for (let i = 0; i < p.length; i += 2) s += (i ? "L" : "M") + f1(p[i] + n[i] * d) + " " + f1(p[i + 1] + n[i + 1] * d);
-          return s;
+
+        // ── water: WebGL flowmap shader fed by three screen-space input maps drawn from the band geometry ──
+        //   col  (1080×1920): band colour, alpha = water mask
+        //   flow (540×960):   RG = flow direction (centreline tangent), B = channel top speed (px/s)
+        //   dist (540×960):   R = distance to the nearest bank (px), G = channel half-width, B = 255 in the pool
+        // Junctions are blended in these maps (overlapping, alpha-faded), so the shader sees one body of water.
+        const CW = 1080, CH = 1920;
+        function geom(chain, n, u1, w) {
+          const sm = sampleChain(chain, n, u1);
+          const p = sm.pts, cum = [0];
+          for (let i = 2; i < p.length; i += 2) cum.push(cum[cum.length - 1] + Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]));
+          return { pts: p, nrm: sm.nrm, cum, len: cum[cum.length - 1], w };
         }
-        function bodyPath(sm, w) {
-          const p = sm.pts, n = sm.nrm, h = w / 2;
-          let s = "";
-          for (let i = 0; i < p.length; i += 2) s += (i ? "L" : "M") + f1(p[i] - n[i] * h) + " " + f1(p[i + 1] - n[i + 1] * h);
-          for (let i = p.length - 2; i >= 0; i -= 2) s += "L" + f1(p[i] + n[i] * h) + " " + f1(p[i + 1] + n[i + 1] * h);
-          return s + "Z";
+        function bodyTrace(ctx, g, h) {
+          const p = g.pts, n = g.nrm;
+          ctx.beginPath();
+          for (let i = 0; i < p.length; i += 2) ctx[i ? "lineTo" : "moveTo"](p[i] - n[i] * h, p[i + 1] - n[i + 1] * h);
+          for (let i = p.length - 2; i >= 0; i -= 2) ctx.lineTo(p[i] + n[i] * h, p[i + 1] + n[i + 1] * h);
+          ctx.closePath();
+        }
+        function offsetTrace(ctx, g, d) {
+          const p = g.pts, n = g.nrm;
+          ctx.beginPath();
+          for (let i = 0; i < p.length; i += 2) ctx[i ? "lineTo" : "moveTo"](p[i] + n[i] * d, p[i + 1] + n[i + 1] * d);
+        }
+        const b255 = (v) => Math.max(0, Math.min(255, Math.round(v)));
+
+        function makeInputs() {
+          const mk = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+          const I = { colC: mk(CW, CH), flowC: mk(CW / 2, CH / 2), distC: mk(CW / 2, CH / 2) };
+          I.col = I.colC.getContext("2d"); I.flow = I.flowC.getContext("2d"); I.dist = I.distC.getContext("2d");
+          I.all = [I.col, I.flow, I.dist];
+          return I;
+        }
+        function clearInputs(I, transparent) {
+          I.col.setTransform(1, 0, 0, 1, 0, 0); I.col.clearRect(0, 0, CW, CH);
+          I.flow.setTransform(1, 0, 0, 1, 0, 0); I.dist.setTransform(1, 0, 0, 1, 0, 0);
+          if (transparent) { I.flow.clearRect(0, 0, CW / 2, CH / 2); I.dist.clearRect(0, 0, CW / 2, CH / 2); }
+          else {
+            I.flow.fillStyle = "rgb(128,128,0)"; I.flow.fillRect(0, 0, CW / 2, CH / 2);
+            I.dist.fillStyle = "rgb(0,0,0)"; I.dist.fillRect(0, 0, CW / 2, CH / 2);
+          }
+          I.flow.setTransform(0.5, 0, 0, 0.5, 0, 0); I.dist.setTransform(0.5, 0, 0, 0.5, 0, 0);
+        }
+        const each = (I, fn) => { for (const c of I.all) fn(c); };
+        // draw one input set over another (in the destination's current clip)
+        function I_COMPOSE(D, S) {
+          D.col.drawImage(S.colC, 0, 0);
+          for (const [d, sc] of [[D.flow, S.flowC], [D.dist, S.distC]]) {
+            d.save(); d.setTransform(1, 0, 0, 1, 0, 0); d.drawImage(sc, 0, 0); d.restore();
+          }
         }
 
-        // ── engraved band: filled body + 1.2px lines every 7px along the flow ──
-        // Flowing down, the normal points to −x, so a lane at offset d sits at x = centre − d. A global x grid
-        // (x = 754 − 7k) keeps the trunk's lanes continuous into the 留下來 band and the tributaries.
-        const GRIDX = 754;
-        function makeBand(parent, o) {
-          const g = document.createElementNS(NS, "g");
-          parent.appendChild(g);
-          const body = document.createElementNS(NS, "path");
-          g.appendChild(body);
-          const lg = document.createElementNS(NS, "g");
-          lg.setAttribute("fill", "none"); lg.setAttribute("stroke-width", "1.2");
-          lg.setAttribute("stroke-dasharray", "64 7");
-          g.appendChild(lg);
-          const offs = [];
-          if (o.W >= 10) {
-            if (o.gridX != null) {
-              for (let x = GRIDX - 7 * 140; x < 1200; x += 7) {
-                const d = o.gridX - x;
-                if (Math.abs(d) <= o.W / 2 - 2.5) offs.push(d);
-              }
-            } else {
-              for (let d = -o.W / 2 + 3.5; d <= o.W / 2 - 2.5; d += 7) offs.push(d);
-            }
+        // st: {chain, n, u, w, fill, vmax, parent:{off,H,w0}, join, edge, edgeOp, edgeW, edgeDash}
+        function emitBand(I, ov, st) {
+          if (st.u <= 0.0005) return;
+          const g = geom(st.chain, st.n, st.u, st.w);
+          if (g.len < 0.5) return;
+          const h = st.w / 2;
+          const j = st.parent ? st.join : 0;
+          const he = st.parent ? lerp(h, st.parent.H, j) : h;
+          const oe = st.parent ? st.parent.off * j * (st.w / st.parent.w0) : 0;
+          // colour + mask
+          bodyTrace(I.col, g, h); I.col.fillStyle = st.fill; I.col.fill();
+          // flow and bank distance, one quad per centreline segment (overlapped to hide seams)
+          const P = g.pts, N = g.nrm, vm = b255(st.vmax);
+          const distAt = (v) => Math.max(0, he - Math.abs(v + oe));
+          for (let i = 0; i + 3 < P.length; i += 2) {
+            let ax = P[i], ay = P[i + 1], bx = P[i + 2], by = P[i + 3];
+            const tl = Math.hypot(bx - ax, by - ay) || 1, tx = (bx - ax) / tl, ty = (by - ay) / tl;
+            ax -= tx * 1.2; ay -= ty * 1.2; bx += tx * 1.2; by += ty * 1.2;
+            const nax = N[i], nay = N[i + 1], nbx = N[i + 2], nby = N[i + 3];
+            const quad = (ctx) => {
+              ctx.beginPath();
+              ctx.moveTo(ax - nax * h, ay - nay * h); ctx.lineTo(bx - nbx * h, by - nby * h);
+              ctx.lineTo(bx + nbx * h, by + nby * h); ctx.lineTo(ax + nax * h, ay + nay * h); ctx.closePath();
+            };
+            quad(I.flow);
+            I.flow.fillStyle = "rgb(" + b255((tx * 0.5 + 0.5) * 255) + "," + b255((ty * 0.5 + 0.5) * 255) + "," + vm + ")";
+            I.flow.fill();
+            quad(I.dist);
+            const gr = I.dist.createLinearGradient(ax - nax * h, ay - nay * h, ax + nax * h, ay + nay * h);
+            const he8 = b255(he);
+            gr.addColorStop(0, "rgb(" + b255(distAt(-h)) + "," + he8 + ",0)");
+            const kink = (-oe + h) / (2 * h);
+            if (kink > 0.001 && kink < 0.999) gr.addColorStop(kink, "rgb(" + b255(he) + "," + he8 + ",0)");
+            gr.addColorStop(1, "rgb(" + b255(distAt(h)) + "," + he8 + ",0)");
+            I.dist.fillStyle = gr; I.dist.fill();
           }
-          const lines = offs.map((d, k) => {
-            const p = document.createElementNS(NS, "path");
-            lg.appendChild(p);
-            return { el: p, d, phase: ((k * 23) % 71) };
-          });
-          const edges = [];
-          if (o.edges) for (let i = 0; i < 2; i++) {
-            const e = document.createElementNS(NS, "path");
-            e.setAttribute("fill", "none");
-            g.appendChild(e);
-            edges.push(e);
+          if (ov && st.edgeOp > 0.001) {
+            ov.save();
+            ov.lineWidth = st.edgeW; ov.strokeStyle = st.edge; ov.globalAlpha = Math.min(1, st.edgeOp) * ov.globalAlpha;
+            if (st.edgeDash) { ov.setLineDash(st.edgeDash); ov.lineDashOffset = -st.vmax * 0.3 * st.t; }
+            for (const sgn of [-1, 1]) { offsetTrace(ov, g, sgn * h); ov.stroke(); }
+            ov.restore();
           }
-          return { g, body, lg, lines, edges, o, last: {} };
         }
-        // state: {chain, w, u (draw progress), fill, line, lineOp, edge, edgeOp, edgeW, op}
-        function drawBand(b, st, t) {
-          const sm = sampleChain(st.chain, b.o.n, st.u);
-          const visible = st.u > 0.0005 && st.op > 0.001;
-          b.g.setAttribute("opacity", visible ? f1(st.op * 1000) / 1000 : 0);
-          if (!visible) return;
-          b.body.setAttribute("d", bodyPath(sm, st.w));
-          b.body.setAttribute("fill", st.fill);
-          const showLines = st.lineOp > 0.001;
-          b.lg.setAttribute("opacity", showLines ? f1(st.lineOp * 1000) / 1000 : 0);
-          if (showLines) {
-            b.lg.setAttribute("stroke", st.line);
-            const k = st.w / b.o.W;
-            const flow = -40 * t;
-            for (const L of b.lines) {
-              L.el.setAttribute("d", polyline(sm, L.d * k));
-              L.el.setAttribute("stroke-dashoffset", f1(L.phase + flow));
+
+        // 留下來 pool (x 80–540, y 1340–1560): a calm basin fed from the top; the waterline rises and sloshes as it settles
+        const POOL = new Path2D("M322.5 1340 L120 1340 A40 40 0 0 0 80 1380 L80 1520 A40 40 0 0 0 120 1560 L500 1560 A40 40 0 0 0 540 1520 L540 1340 Z");
+        const POOL_WALL = new Path2D("M322.5 1340 L120 1340 A40 40 0 0 0 80 1380 L80 1520 A40 40 0 0 0 120 1560 L500 1560 A40 40 0 0 0 540 1520 L540 1340");
+        function emitPool(I, ov, t, op, pw, wr) {
+          if (op <= 0.001) return;
+          const since = t - T.water;
+          const slosh = (x) => {
+            const amp = since > 0 ? 7 * Math.exp(-1.6 * since) : 0;
+            return amp * Math.sin(5.4 * since) * (x - 310) / 230 + 1.6 * amp / 7 * Math.sin(x / 23 + 2.6 * t);
+          };
+          const wy = lerp(1562, 1336, wr);
+          if (wr > 0) {
+            const surf = new Path2D();
+            for (let x = 75; x <= 545; x += 10) surf[x === 75 ? "moveTo" : "lineTo"](x, wy + slosh(x));
+            const body = new Path2D(surf); body.lineTo(545, 1570); body.lineTo(75, 1570); body.closePath();
+            each(I, (c) => { c.save(); c.globalAlpha = op; c.clip(POOL); c.clip(body); });
+            I.col.fillStyle = "#ebf0ed"; I.col.fillRect(70, 1326, 480, 250);
+            I.flow.fillStyle = "rgb(255,128,6)"; I.flow.fillRect(70, 1326, 480, 250);
+            I.dist.fillStyle = "rgb(60,60,255)"; I.dist.fillRect(70, 1326, 480, 250);
+            for (let k = 60; k >= 1; k -= 3) {
+              I.dist.lineWidth = 2 * k; I.dist.strokeStyle = "rgb(" + k + ",60,255)";
+              I.dist.stroke(POOL_WALL); if (wr < 1) I.dist.stroke(surf);
+            }
+            each(I, (c) => c.restore());
+            if (wr < 1 || since < 1.6) {
+              ov.save(); ov.globalAlpha = op; ov.clip(POOL);
+              ov.lineWidth = 1.6; ov.strokeStyle = "rgba(40,93,63,0.45)"; ov.stroke(surf);
+              ov.restore();
             }
           }
-          if (b.edges.length) {
-            const show = st.edgeOp > 0.001;
-            for (let i = 0; i < 2; i++) {
-              const e = b.edges[i];
-              e.setAttribute("opacity", show ? f1(st.edgeOp * 1000) / 1000 : 0);
-              if (!show) continue;
-              e.setAttribute("d", polyline(sm, (i ? 1 : -1) * st.w / 2));
-              e.setAttribute("stroke", st.edge);
-              e.setAttribute("stroke-width", st.edgeW);
-              if (st.edgeDash) e.setAttribute("stroke-dasharray", st.edgeDash);
-            }
+          if (pw > 0) {
+            ov.save(); ov.globalAlpha = op;
+            ov.setLineDash([1200, 1200]); ov.lineDashOffset = 1200 * (1 - pw);
+            ov.lineWidth = 2; ov.strokeStyle = "#285d3f"; ov.stroke(POOL_WALL);
+            ov.restore();
           }
+        }
+
+        const WATER_FS = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uCol; uniform sampler2D uFlow; uniform sampler2D uDist;
+uniform vec2 uRes; uniform float uTime; uniform float uDetail;
+uniform vec4 uZ[6]; uniform vec4 uPool;
+float hash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float noise(vec2 p){ vec2 i = floor(p); vec2 f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y); }
+const mat2 R2 = mat2(1.6, 1.2, -1.2, 1.6);
+float fbm(vec2 p){ float s = 0.0; float a = 0.5; for (int i = 0; i < 4; i++){ s += a * noise(p); p = R2 * p; a *= 0.5; } return s; }
+float hgt(vec2 p, float turb){
+  vec2 q = p / 95.0;
+  vec2 w = vec2(fbm(q * 0.55 + vec2(3.1, 1.7)), fbm(q * 0.55 + vec2(7.7, 4.3)));
+  float h = fbm(q + 1.7 * w);
+  h += (0.07 + 0.30 * turb) * noise(p / 13.0);
+  return h;
+}
+void main(){
+  vec2 uv = vUv; vec2 p = uv * uRes;
+  vec4 c = texture2D(uCol, uv);
+  if (c.a < 0.002) { gl_FragColor = vec4(0.0); return; }
+  vec3 base = c.rgb;
+  if (uDetail < 0.001) { gl_FragColor = vec4(base * c.a, c.a); return; }
+  vec4 fl = texture2D(uFlow, uv); vec4 ds = texture2D(uDist, uv);
+  vec2 dir = fl.rg * 2.0 - 1.0; float dl = length(dir); dir = dl > 0.08 ? dir / dl : vec2(0.0);
+  float vmax = fl.b * 255.0;
+  float d = ds.r * 255.0; float he = max(ds.g * 255.0, 1.0); float pool = step(0.5, ds.b);
+  float lat = clamp(1.0 - d / he, 0.0, 1.0);
+  vec2 F = dir * vmax * (1.0 - 0.72 * lat * lat);
+  float turb = 0.0;
+  for (int i = 0; i < 6; i++){
+    vec2 dz = p - uZ[i].xy; float r2 = dot(dz, dz);
+    float f = uZ[i].w * exp(-r2 / (uZ[i].z * uZ[i].z)) * (1.0 - pool);
+    turb += f; F += vec2(-dz.y, dz.x) / (sqrt(r2) + 1.0) * f * 22.0;
+  }
+  turb = min(turb, 1.5);
+  const float T = 1.1;
+  float jit = noise(p / 240.0) * 0.7;
+  float ph0 = fract(uTime / T + jit); float ph1 = fract(uTime / T + jit + 0.5);
+  float w0 = 1.0 - abs(2.0 * ph0 - 1.0); float w1 = 1.0 - w0;
+  vec2 a0 = p - F * ph0 * T; vec2 a1 = p - F * ph1 * T + vec2(41.0, 73.0);
+  vec2 ex = vec2(1.5, 0.0); vec2 ey = vec2(0.0, 1.5);
+  float h0a = hgt(a0, turb); float hxa = hgt(a0 + ex, turb); float hya = hgt(a0 + ey, turb);
+  float h0b = hgt(a1, turb); float hxb = hgt(a1 + ex, turb); float hyb = hgt(a1 + ey, turb);
+  float h0 = w0 * h0a + w1 * h0b;
+  float gx = (w0 * (hxa - h0a) + w1 * (hxb - h0b)) / 1.5;
+  float gy = (w0 * (hya - h0a) + w1 * (hyb - h0b)) / 1.5;
+  if (pool > 0.5 && uPool.z > 0.0){
+    vec2 dz = p - uPool.xy; float r = length(dz) + 0.001;
+    float e = exp(-r / 230.0) * uPool.z;
+    float dr = cos(r / 13.0 - uTime * 1.9) / 13.0 * e * 1.1;
+    gx += dr * dz.x / r; gy += dr * dz.y / r;
+  }
+  float K = mix(22.0, 10.0, pool) * (1.0 + 0.6 * turb);
+  vec3 N = normalize(vec3(-gx * K, -gy * K, 1.0));
+  float bl = dot(base, vec3(0.2126, 0.7152, 0.0722));
+  float depth = smoothstep(0.0, 1.0, 1.0 - lat);
+  vec3 deep = base * mix(0.70, 0.93, bl) + vec3(0.0, 0.012, 0.03) * (1.0 - bl);
+  vec3 shallow = mix(base, vec3(0.93, 0.95, 0.94), mix(0.16, 0.05, bl));
+  vec3 wc = mix(shallow, deep, depth * 0.85);
+  wc *= 0.95 + 0.10 * h0;
+  float up = clamp(0.5 - N.y * 3.0, 0.0, 1.0);
+  vec3 sky = mix(vec3(0.60, 0.72, 0.80), vec3(0.95, 0.98, 1.0), up);
+  float fres = clamp(0.05 + 2.4 * (1.0 - N.z), 0.0, 1.0);
+  wc = mix(wc, sky, fres * mix(0.34, 0.14, bl));
+  vec3 Lg = normalize(vec3(-0.30, -0.62, 0.72));
+  vec3 Hh = normalize(Lg + vec3(0.0, 0.0, 1.0));
+  float ndh = max(dot(N, Hh), 0.0);
+  float spec = pow(ndh, 70.0) * 0.45;
+  float g0 = noise(a0 / 2.4); float g1 = noise(a1 / 2.4);
+  float glit = w0 * smoothstep(0.955, 0.995, g0) + w1 * smoothstep(0.955, 0.995, g1);
+  glit *= smoothstep(0.6, 0.95, noise(p / 7.0 + vec2(uTime * 2.3, -uTime * 1.1))) * 2.5 * pow(ndh, 30.0);
+  float c0 = 1.0 - abs(2.0 * fbm(a0 / 40.0 + 2.0) - 1.0); float c1 = 1.0 - abs(2.0 * fbm(a1 / 40.0 + 2.0) - 1.0);
+  float caus = pow(w0 * c0 + w1 * c1, 8.0);
+  wc += caus * 0.11 * (0.35 + 0.65 * depth) * vec3(0.86, 1.0, 0.95) * (1.0 - 0.75 * bl);
+  float fn = w0 * fbm(a0 / 15.0 + 5.0) + w1 * fbm(a1 / 15.0 + 5.0);
+  float edge = 1.0 - smoothstep(0.0, 6.0 + 6.0 * turb, d);
+  float foam = edge * smoothstep(0.40, 0.66, fn) * step(5.0, he);
+  foam += turb * 0.35 * smoothstep(0.58, 0.78, fn);
+  wc = mix(wc, vec3(0.96, 0.985, 1.0), clamp(foam * 0.8, 0.0, 1.0) * mix(1.0, 0.35, bl));
+  wc += vec3(1.0, 0.98, 0.93) * (spec * 0.85 + glit * 0.9) * mix(1.0, 0.5, bl);
+  float aW = c.a * mix(0.82, 1.0, smoothstep(0.0, 12.0, d));
+  vec3 outc = mix(base, clamp(wc, 0.0, 1.0), uDetail);
+  float a = mix(c.a, aW, uDetail);
+  gl_FragColor = vec4(outc * a, a);
+}`;
+        function makeWater(canvas) {
+          const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, premultipliedAlpha: true, alpha: true, antialias: false });
+          if (!gl) {
+            const c2 = canvas.getContext("2d");
+            return { draw(I) { c2.clearRect(0, 0, CW, CH); c2.drawImage(I.colC, 0, 0); } };
+          }
+          const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+          const prog = gl.createProgram();
+          gl.attachShader(prog, sh(gl.VERTEX_SHADER, "attribute vec2 aP; varying vec2 vUv; void main(){ vUv = vec2(aP.x * 0.5 + 0.5, 0.5 - aP.y * 0.5); gl_Position = vec4(aP, 0.0, 1.0); }"));
+          gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, WATER_FS));
+          gl.linkProgram(prog);
+          gl.useProgram(prog);
+          const buf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+          const loc = gl.getAttribLocation(prog, "aP");
+          gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+          const texs = [0, 1, 2].map((k) => {
+            const tx = gl.createTexture();
+            gl.activeTexture(gl.TEXTURE0 + k); gl.bindTexture(gl.TEXTURE_2D, tx);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            return tx;
+          });
+          gl.uniform1i(gl.getUniformLocation(prog, "uCol"), 0);
+          gl.uniform1i(gl.getUniformLocation(prog, "uFlow"), 1);
+          gl.uniform1i(gl.getUniformLocation(prog, "uDist"), 2);
+          gl.uniform2f(gl.getUniformLocation(prog, "uRes"), CW, CH);
+          const uTime = gl.getUniformLocation(prog, "uTime"), uDetail = gl.getUniformLocation(prog, "uDetail");
+          const uZ = gl.getUniformLocation(prog, "uZ"), uPool = gl.getUniformLocation(prog, "uPool");
+          gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+          gl.viewport(0, 0, CW, CH);
+          return {
+            draw(I, t, detail, zones, pool) {
+              [I.colC, I.flowC, I.distC].forEach((cv, k) => {
+                gl.activeTexture(gl.TEXTURE0 + k); gl.bindTexture(gl.TEXTURE_2D, texs[k]);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+              });
+              gl.uniform1f(uTime, t); gl.uniform1f(uDetail, detail);
+              const z = new Float32Array(24);
+              (zones || []).slice(0, 6).forEach((q, i) => z.set(q, i * 4));
+              gl.uniform4fv(uZ, z);
+              gl.uniform4f(uPool, pool ? pool[0] : 0, pool ? pool[1] : 0, pool ? pool[2] : 0, 0);
+              gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+              gl.drawArrays(gl.TRIANGLES, 0, 3);
+            }
+          };
         }
 
         // ── palette ──
         const C = {
           salary: "#285d3f", interest: "#76527c", home: "#7d4a40", transport: "#915d2a", dining: "#266299",
           daily: "#186e57", shopping: "#76527c", leisure: "#2a5e6a", keptFill: "#ebf0ed",
-          ribbon: "rgba(44, 100, 133, 0.85)", ribbonPale: "rgba(223, 238, 248, 1)", lineW: "rgba(255, 255, 255, 0.22)",
-          lineG: "rgba(40, 93, 63, 0.18)"
+          ribbon: "rgba(44, 100, 133, 0.92)", ribbonPale: "rgba(223, 238, 248, 1)"
         };
 
         // ── river layout (1px = 200 TWD) ──
         // 薪資 435px enters from the left edge at y 790–1225 and pivots about the inner corner (322.5, 1225) into a
-        // vertical trunk x 322.5–757.5 (every engraving lane is a quarter circle about that corner).
+        // vertical trunk x 322.5–757.5. Flowing down, the normal points to −x, so lateral offsets are 540 − x.
         // Below y=1225 the trunk is already two pieces: 留下來 216px (x 322.5–538.5) and 流出 219px (x 538.5–757.5),
-        // so the split in scenes 4–5 needs no re-cut.
+        // so the split in scenes 4–5 needs no re-cut; until then the trunk's own water covers them.
         const K = 0.5523 * 217.5;
-        const trunkA0 = [
-          straight(-40, 1007.5, 322.5, 1007.5),
-          [322.5, 1007.5, 322.5 + K, 1007.5, 540, 1225 - K, 540, 1225],
-          straight(540, 1225, 540, 1242)
+        const BEND = [322.5, 1007.5, 322.5 + K, 1007.5, 540, 1225 - K, 540, 1225];
+        const trunkA0 = [straight(-40, 1007.5, 322.5, 1007.5), BEND, straight(540, 1225, 540, 1242)];
+        const trunkExt = [straight(-40, 1007.5, 322.5, 1007.5), BEND, straight(540, 1225, 540, 1960)];
+        const L_H = 362.5, L_ARC = 341.6, L_PIECE = 735, SEAM = L_H + L_ARC;
+        const TRIBS = [ // name, width, start centre x at y=1225 (the 流出 group starts 3px inside 留下來, as in 16:9, so no bank shows between them), end (x, y) centre; thin ones end pointing right at x=1040
+          ["home", 147, 609, 627, 1560], ["transport", 24, 694.5, 1040, 1546], ["dining", 17, 715, 1040, 1489.5],
+          ["daily", 14, 730.5, 1040, 1440], ["shopping", 9, 742, 1040, 1394.5], ["leisure", 8, 750.5, 1040, 1352]
         ];
-        const L_H = 362.5, L_ARC = 341.6, L_STUB = 17, L_PIECE = 735, SEAM = L_H + L_ARC;
-        const TRIBS = [ // name, width, start centre x at y=1225, end (x, y) centre, ends horizontally at x=1040 unless home
-          ["home", 147, 612, 627, 1560], ["transport", 24, 697.5, 1040, 1546], ["dining", 17, 718, 1040, 1489.5],
-          ["daily", 14, 733.5, 1040, 1440], ["shopping", 9, 745, 1040, 1394.5], ["leisure", 8, 753.5, 1040, 1352]
-        ];
-        const gTrunk = $("f02-g-trunk"), gInt = $("f02-g-interest"), gRib = $("f02-g-ribbons");
-        const trunkA = makeBand(gTrunk, { W: 435, gridX: 540, n: 24 });
-        const kept = makeBand(gTrunk, { W: 216, gridX: 430.5, n: 1, edges: true });
-        const tribs = TRIBS.map(([name, w, sx, ex, ey]) => ({
-          name, w, sx, ex, ey,
-          band: makeBand(gTrunk, { W: w, gridX: sx, n: 30 })
-        }));
-        tribs.slice().reverse().forEach((tb) => gTrunk.appendChild(tb.band.g)); // 居家 drawn last (on top)
-        const interest = makeBand(gInt, { W: 4, n: 30 });
+        const tribs = TRIBS.map(([name, w, sx, ex, ey]) => ({ name, w, sx, ex, ey }));
 
+        const sx0 = fx(SEG.salary[0]), sx1 = fx(SEG.salary[1]);
         const trunkA1 = [
-          straight(fx(SEG.salary[0]), CY_IN, lerp(fx(SEG.salary[0]), fx(SEG.salary[1]), 0.45), CY_IN),
-          straight(lerp(fx(SEG.salary[0]), fx(SEG.salary[1]), 0.45), CY_IN, lerp(fx(SEG.salary[0]), fx(SEG.salary[1]), 0.97), CY_IN),
-          straight(lerp(fx(SEG.salary[0]), fx(SEG.salary[1]), 0.97), CY_IN, fx(SEG.salary[1]), CY_IN)
+          straight(sx0, CY_IN, lerp(sx0, sx1, 0.45), CY_IN),
+          straight(lerp(sx0, sx1, 0.45), CY_IN, lerp(sx0, sx1, 0.97), CY_IN),
+          straight(lerp(sx0, sx1, 0.97), CY_IN, sx1, CY_IN)
         ];
         const kept0 = [straight(430.5, 1225, 430.5, 1960)];
         const keptPool = [straight(430.5, 1225, 430.5, 1346)];
@@ -537,14 +686,11 @@
         const CHIP_TOP = { transport: 1504, dining: 1451, daily: 1403, shopping: 1360, leisure: 1318 };
         for (const k in CHIP_TOP) $("f02-chip-" + k).style.top = CHIP_TOP[k] + "px";
 
-        // ribbons (half scale, 1px = 400 TWD)
-        const ribA = { band: makeBand(gRib, { W: 75, n: 60 }), chain: [[560, 840, 600, 660, 880, 640, 950, 870]], w: 75 };
-        const ribB = { band: makeBand(gRib, { W: 80, n: 40 }), chain: [[700, 1050, 790, 1040, 870, 1090, 950, 1090], [950, 1090, 1015, 1095, 1015, 1245, 950, 1250]], w: 80 };
-        const gC = document.createElementNS(NS, "g");
-        gC.setAttribute("mask", "url(#f02-fade-mask)");
-        gRib.appendChild(gC);
-        const ribC1 = { band: makeBand(gC, { W: 30, n: 50, edges: true }), chain: [[520, 850, 470, 700, 300, 662, -40, 652]], w: 30 };
-        const ribC2 = { band: makeBand(gC, { W: 30, n: 50, edges: true }), chain: [[555, 845, 520, 690, 360, 628, -40, 618]], w: 30 };
+        // ribbons (half scale, 1px = 400 TWD) — also water, in the transfer blue
+        const ribA = { chain: [[560, 840, 600, 660, 880, 640, 950, 870]], w: 75, n: 60 };
+        const ribB = { chain: [[700, 1050, 790, 1040, 870, 1090, 950, 1090], [950, 1090, 1015, 1095, 1015, 1245, 950, 1250]], w: 80, n: 40 };
+        const ribC1 = { chain: [[520, 850, 470, 700, 300, 662, -40, 652]], w: 30, n: 50 };
+        const ribC2 = { chain: [[555, 845, 520, 690, 360, 628, -40, 618]], w: 30, n: 50 };
 
         // seal on ribbon (a) near its crest
         (function () {
@@ -553,18 +699,6 @@
           el.style.left = f1(p[0]) + "px"; el.style.top = f1(p[1]) + "px";
         })();
         gsap.set(['[id="f02-seal-a"]', '[id="f02-pill-b"]', '[id="f02-pill-c"]'], { xPercent: -50, yPercent: -50 });
-
-        // pool engraving (static horizontal lines)
-        (function () {
-          const pl = $("f02-pool-lines");
-          for (let y = 1343; y < 1560; y += 7) {
-            const l = document.createElementNS(NS, "line");
-            l.setAttribute("x1", 80); l.setAttribute("x2", 540);
-            l.setAttribute("y1", y); l.setAttribute("y2", y);
-            l.setAttribute("stroke", C.lineG); l.setAttribute("stroke-width", "1.2");
-            pl.appendChild(l);
-          }
-        })();
 
         // ── timing (composition seconds) — identical to the 16:9 river ──
         const T = {
@@ -580,11 +714,11 @@
         // water front, in px of flow length from the left edge
         const FRONT_END = SEAM + L_PIECE + 20;
         const front = (t) => -20 + (FRONT_END + 20) * prog(t, T.drawAt, T.drawDur, E.p1io);
-        function trunkU(s) {
+        function trunkU(s) { // draw progress along trunkExt (horizontal, bend, vertical run to the bottom edge)
           if (s <= 0) return 0;
           if (s < L_H) return (s / L_H) / 3;
           if (s < SEAM) return (1 + (s - L_H) / L_ARC) / 3;
-          return (2 + clamp01((s - SEAM) / L_STUB)) / 3;
+          return (2 + clamp01((s - SEAM) / L_PIECE)) / 3;
         }
         const pieceU = (s) => clamp01((s - SEAM) / L_PIECE);
         function frontTime(s) { // when the water front reaches flow length s (for node pulses)
@@ -611,11 +745,13 @@
         CN.forEach((c) => { c.last = null; });
 
         // ── render the whole river from time ──
-        const waterR = $("f02-pool-water-r");
-        const surface = $("f02-pool-surface");
+        const cvR = $("f02-river-cv"), cvBo = $("f02-rib-ov");
+        const glR = makeWater($("f02-river-gl")), glB = makeWater($("f02-rib-gl"));
+        const IR = makeInputs(), IB = makeInputs(), IT = makeInputs();
+        const mkC = () => { const c = document.createElement("canvas"); c.width = CW; c.height = CH; return c; };
+        const cvC = mkC(), cvCo = mkC(); // strands (c) colour and dashed banks, masked toward the left edge
         function render(t) {
           const m = prog(t, T.morph, T.morphDur, E.p2io);          // river → bars
-          const engr = 1 - prog(t, T.morph, 0.45, E.lin);           // engraving fades to flat
           const lastFade = t < T.morph + T.morphDur ? 1 : 0; // exact bars fade in on top, then take over
           // morph staging: trunk, 利息 and 留下來 compress vertically first, then stretch to their x;
           // tributaries swing over first, then settle into the outflow row
@@ -625,67 +761,125 @@
           const mD = prog(t, T.morph + T.morphDur * 0.3, T.morphDur * 0.7, E.p2io);
           const s = front(t);
 
-          // trunk
-          drawBand(trunkA, {
-            chain: lerpChainXY(trunkA0, trunkA1, mB, mA), w: lerp(435, BAR_W, mA), u: m > 0 ? 1 : trunkU(s),
-            fill: C.salary, line: C.lineW, lineOp: engr, op: lastFade
-          }, t);
+          const water = 1 - prog(t, T.morph, 0.45, E.lin);           // the water calms to flat bar colour
+          const zf = (t0, t1) => clamp01(Math.min((t - t0) / 0.5, (t1 - t) / 0.5));
+          clearInputs(IR);
+          const ov = cvR.getContext("2d");
+          ov.clearRect(0, 0, CW, CH);
+          let poolU = null;
+          if (lastFade) {
+            // 利息 strand (under the trunk)
+            emitBand(IR, null, {
+              chain: lerpChainXY(int0, int1, mB, mA), n: 30, w: lerp(4, BAR_W, mB),
+              u: Math.max(prog(t, T.intAt, T.intDur, E.p2io), m > 0 ? 1 : 0), fill: C.interest, vmax: 130
+            });
+            // pool: wall draws, water rises
+            const pw = prog(t, T.pool, 0.6, E.p2io);
+            const wr = prog(t, T.water, T.waterDur, E.p3o);
+            const poolOp = (t >= T.pool ? 1 : 0) * (1 - prog(t, T.morph, 0.5, E.lin));
+            emitPool(IR, ov, t, poolOp, pw, wr);
+            if (wr > 0) poolU = [430.5, 1346, poolOp];
 
-          // 利息 strand
-          drawBand(interest, {
-            chain: lerpChainXY(int0, int1, mB, mA), w: lerp(4, BAR_W, mB), u: Math.max(prog(t, T.intAt, T.intDur, E.p2io), m > 0 ? 1 : 0),
-            fill: C.interest, line: C.lineW, lineOp: 0, op: lastFade
-          }, t);
+            const pu = m > 0 ? 1 : pieceU(s);
+            const trunkSt = {
+              chain: m > 0 ? lerpChainXY(trunkA0, trunkA1, mB, mA) : trunkExt, n: 24, w: lerp(435, BAR_W, mA),
+              u: m > 0 ? 1 : trunkU(s), fill: C.salary, vmax: 92
+            };
+            // the trunk proper stops just past the fork (y 1285); below it the pieces carry on
+            each(IR, (c) => { c.save(); if (m === 0) { c.beginPath(); c.rect(-60, -60, CW + 120, 1285 + 60); c.clip(); } });
+            emitBand(IR, null, trunkSt);
+            each(IR, (c) => c.restore());
+            // 留下來 band
+            const kc = prog(t, T.keptTurn, 0.6, E.p2io);
+            const kr = prog(t, T.keptRetract, 0.7, E.p2io);
+            emitBand(IR, ov, {
+              chain: m > 0 ? lerpChainXY(keptPool, kept1, mB, mA) : lerpChain(kept0, keptPool, kr), n: 1,
+              w: lerp(216, BAR_W, mA), u: pu, t,
+              fill: mixColor(C.salary, C.keptFill, kc), vmax: lerp(92, 60, kc),
+              parent: { off: 540 - 430.5, H: 217.5, w0: 216 }, join: 1 - prog(t, T.trib, T.tribDur, E.p2io),
+              edge: "rgb(40, 93, 63)", edgeOp: kc * (1 - m) + m * 0.55, edgeW: lerp(2, 0.8, m)
+            });
+            // tributaries peel off and fan (居家 last, on top)
+            for (let i = tribs.length - 1; i >= 0; i--) {
+              const tb = tribs[i];
+              const a = prog(t, T.trib + i * T.tribStep, T.tribDur, E.p2io);
+              emitBand(IR, null, {
+                chain: m > 0 ? lerpChainXY(tb.c1, tb.c2, mD, mC) : lerpChain(tb.c0, tb.c1, a), n: 30,
+                w: lerp(tb.w, BAR_W, mD), u: pu,
+                fill: mixColor(C.salary, C[tb.name], a), vmax: lerp(92, 100 + 40 * (1 - tb.w / 147), a),
+                parent: { off: 540 - tb.sx, H: 217.5, w0: tb.w }, join: 1 - a
+              });
+            }
+            // the fork: the trunk flows on over the branch heads and fades out over 60px below y 1225 (留下來 is only 121px long before the pool),
+            // so colour, flow and banks blend into the branches instead of butting against them
+            if (m === 0) {
+              // the trunk's water recedes from the bottom edge back up to the fork as the branches peel away
+              const Y = lerp(2080, 1225, prog(t, T.trib, 1.1, E.p2io));
+              clearInputs(IT, true);
+              each(IT, (c) => { c.save(); c.beginPath(); c.rect(-60, 1225, CW + 120, 900); c.clip(); });
+              emitBand(IT, null, trunkSt);
+              each(IT, (c) => c.restore());
+              each(IT, (c) => {
+                c.save();
+                c.globalCompositeOperation = "destination-in";
+                const gr = c.createLinearGradient(0, Y, 0, Y + 60);
+                gr.addColorStop(0, "rgba(0,0,0,1)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+                c.fillStyle = gr; c.fillRect(-60, -60, CW + 120, CH + 120);
+                c.restore();
+              });
+              I_COMPOSE(IR, IT);
+            }
+          }
+          const ZONES = lastFade ? [
+            [540, 1240, 130, 0.9 * zf(2.6, T.morph)],          // the fork
+            [330, 1238, 70, 0.8 * zf(2.1, T.morph)],           // 利息 joins
+            [548, 850, 62, 0.9 * zf(5.7, 9.4)],                // ribbon (a) and strands (c) leave at 7028
+            [705, 1050, 62, 0.9 * zf(6.9, 9.4)],               // ribbon (b) leaves toward 7819
+            [430.5, 1346, 90, 0.5 * zf(15.9, T.morph)]         // 留下來 pours into the pool
+          ] : [];
+          glR.draw(IR, t, water, ZONES, poolU);
 
-          // tributaries peel off and fan
-          const pu = m > 0 ? 1 : pieceU(s);
-          tribs.forEach((tb, i) => {
-            const a = prog(t, T.trib + i * T.tribStep, T.tribDur, E.p2io);
-            const chain = m > 0 ? lerpChainXY(tb.c1, tb.c2, mD, mC) : lerpChain(tb.c0, tb.c1, a);
-            drawBand(tb.band, {
-              chain, w: lerp(tb.w, BAR_W, mD), u: pu,
-              fill: mixColor(C.salary, C[tb.name], a), line: C.lineW, lineOp: engr, op: lastFade
-            }, t);
-          });
-
-          // 留下來 band
-          const kc = prog(t, T.keptTurn, 0.6, E.p2io);
-          const kr = prog(t, T.keptRetract, 0.7, E.p2io);
-          drawBand(kept, {
-            chain: m > 0 ? lerpChainXY(keptPool, kept1, mB, mA) : lerpChain(kept0, keptPool, kr),
-            w: lerp(216, BAR_W, mA), u: pu,
-            fill: mixColor(C.salary, C.keptFill, kc),
-            line: kc < 0.5 ? C.lineW : C.lineG, lineOp: engr * Math.abs(1 - 2 * kc),
-            edge: "rgb(40, 93, 63)", edgeOp: kc * (1 - m) + m * 0.55, edgeW: lerp(2, 0.8, m), op: lastFade
-          }, t);
-
-          // pool: wall draws, water rises
-          const pw = prog(t, T.pool, 0.6, E.p2io);
-          const wr = prog(t, T.water, T.waterDur, E.p3o);
-          const poolOp = (t >= T.pool ? 1 : 0) * (1 - prog(t, T.morph, 0.5, E.lin));
-          $("f02-g-pool").setAttribute("opacity", poolOp);
-          const wall = $("f02-pool-wall");
-          wall.setAttribute("stroke-dasharray", "1200 1200");
-          wall.setAttribute("stroke-dashoffset", f1(1200 * (1 - pw)));
-          const wy = lerp(1560, 1338, wr);
-          waterR.setAttribute("y", f1(wy)); waterR.setAttribute("height", f1(1562 - wy));
-          surface.setAttribute("y1", f1(wy)); surface.setAttribute("y2", f1(wy));
-          surface.setAttribute("opacity", wr > 0 && wr < 1 ? 1 : 0);
-
-          // transfer ribbons
+          // transfer ribbons (same water, in the transfer blue)
           const pale = prog(t, T.pale, 0.4, E.lin);
+          clearInputs(IB);
+          const rov = cvBo.getContext("2d");
+          rov.clearRect(0, 0, CW, CH);
           const ribFill = mixColor(C.ribbon, C.ribbonPale, pale);
-          const ribLine = 1 - pale;
           for (const [r, at] of [[ribA, T.ribA], [ribB, T.ribB]]) {
-            drawBand(r.band, { chain: r.chain, w: r.w, u: prog(t, at, T.ribDur, E.p2io), fill: ribFill, line: C.lineW, lineOp: ribLine, op: 1 }, t);
+            emitBand(IB, null, { chain: r.chain, n: r.n, w: r.w, u: prog(t, at, T.ribDur, E.p2io), fill: ribFill, vmax: 120 });
           }
+          {
+            const c = IB.col; c.save(); c.globalCompositeOperation = "destination-out";
+            const gr = c.createRadialGradient(700, 1050, 30, 700, 1050, 110);
+            gr.addColorStop(0, "rgba(0,0,0,1)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+            c.fillStyle = gr; c.fillRect(560, 910, 280, 280); c.restore();
+          }
+          // unpaired strands: thinner water with dashed banks, evaporating toward the left edge
+          const sc = cvC.getContext("2d"), so = cvCo.getContext("2d");
+          sc.clearRect(0, 0, CW, CH); so.clearRect(0, 0, CW, CH);
+          let anyC = false;
+          const keepCol = IB.col; IB.col = sc; IB.all[0] = sc;
           for (const [r, d] of [[ribC1, 0], [ribC2, 0.12]]) {
-            drawBand(r.band, {
-              chain: r.chain, w: r.w, u: prog(t, T.ribC + d, T.ribDur, E.p2io),
-              fill: mixColor("rgba(44, 100, 133, 0.5)", C.ribbonPale, pale), line: C.lineW, lineOp: ribLine,
-              edge: "#2c6485", edgeOp: 1 - pale, edgeW: 1.6, edgeDash: "7 5", op: 1
-            }, t);
+            const u = prog(t, T.ribC + d, T.ribDur, E.p2io);
+            if (u > 0) anyC = true;
+            emitBand(IB, so, {
+              chain: r.chain, n: r.n, w: r.w, u, t, fill: mixColor("rgba(44, 100, 133, 0.6)", C.ribbonPale, pale), vmax: 120,
+              edge: "#2c6485", edgeOp: 1 - pale, edgeW: 1.6, edgeDash: [7, 5]
+            });
           }
+          IB.col = keepCol; IB.all[0] = keepCol;
+          if (anyC) {
+            for (const [c2, dst] of [[sc, IB.col], [so, rov]]) {
+              c2.save();
+              c2.globalCompositeOperation = "destination-in";
+              const gr = c2.createLinearGradient(20, 0, 300, 0);
+              gr.addColorStop(0, "rgba(0,0,0,0)"); gr.addColorStop(1, "rgba(0,0,0,1)");
+              c2.fillStyle = gr; c2.fillRect(0, 0, CW, CH);
+              c2.restore();
+              dst.drawImage(c2.canvas, 0, 0);
+            }
+          }
+          glB.draw(IB, t, 1 - pale, [], null);
 
           // node pulses
           for (const n of NODES) {

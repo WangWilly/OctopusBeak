@@ -17,7 +17,7 @@ narration: no
 User request (verbatim): 「重點是在「收支流水」提供的介面，在統一的頁面幫助使用者觀察所有帳戶的收支變化。已經登入 hyperframes。另外需要英文版與直式社群版。發揮你的創意力，可以討論方向。」
 
 Chosen direction (user picked A from three pitches): **「錢的河流」**. Accounts are nodes on one
-river drawn in banknote line-engraving; salary flows in, transfers between the person's own
+river of realistic flowing water (a WebGL flowmap shader); salary flows in, transfers between the person's own
 accounts loop out and lift away as not counted, outflow splits into category tributaries, and
 what remains pools as 留下來. The river then flattens into the page's real two-row flow bar and
 the real app screen takes over. Sound: music bed + SFX, no narration (user choice).

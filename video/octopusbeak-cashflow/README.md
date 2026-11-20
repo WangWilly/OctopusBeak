@@ -2,7 +2,7 @@
 
 A 31-second 1920×1080 motion graphic for the Cash flow page, in zh-TW and English, built with
 [HyperFrames](https://hyperframes.heygen.com). Concept 「錢的河流」: October's money as one river drawn
-in banknote line-engraving. Salary flows in, transfers between your own accounts loop out and lift
+as realistic flowing water (a WebGL flowmap shader in `generators/river/template.html`). Salary flows in, transfers between your own accounts loop out and lift
 away as not counted, outflow splits into category tributaries, and what stays pools as 留下來. The
 river then flattens into the page's real flow bar and the real screen lands on top of it. The 9:16
 social cut is [`../octopusbeak-cashflow-social`](../octopusbeak-cashflow-social/README.md).
