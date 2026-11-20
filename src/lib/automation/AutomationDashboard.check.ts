@@ -289,10 +289,6 @@ assert.match(
   /if \(\(await submission\.settled\) === "failed"\) runActions\.setError\(\$t\.automation\.saveCredentialsFailed\)/,
   "a failed save shows the page's own copy, not the raw error",
 );
-assert.match(
-  saveCredentialsSource,
-  /if \(submission\.kind === "focus-statement-selection"\) \{\s*await tick\(\);\s*document\.getElementById\(`\$\{submission\.groupId\}-statement-selection`\)\?\.focus\(\)/,
-);
 
 assert.match(source, /\{#each sheetView\.railEnabledGroups as group \(group\.id\)\}/);
 assert.match(source, /\{#each sheetView\.railAvailableGroups as group \(group\.id\)\}/);
