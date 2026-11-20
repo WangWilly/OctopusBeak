@@ -70,12 +70,12 @@ function installReads({ records, pair }) {
   };
 }
 
-async function openPage(t, runtime, { hidden = false } = {}) {
+async function openPage(t, runtime, { hidden = false, setup = "" } = {}) {
   const page = await runtime.newPage(t, { viewport: { width: 1280, height: 900 } });
   await page.clock.setFixedTime(new Date("2026-10-05T12:00:00+08:00"));
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(spendingDesktopApiInitScript(model) + `;(${installReads.toString()})(${JSON.stringify({ records, pair })});`);
+  await page.addInitScript(spendingDesktopApiInitScript(model) + `;(${installReads.toString()})(${JSON.stringify({ records, pair })});${setup}`);
   await page.addInitScript((valuesVisible) => {
     localStorage.setItem("octopusbeak-locale", "zh-TW");
     localStorage.setItem("octopusbeak-values-visible", valuesVisible);
@@ -174,5 +174,53 @@ test("the 帳目合併 and 消費明細 modals act on the pairs and purchase the
     });
   } finally {
     await runtime.close();
+  }
+});
+
+// Refuse the first write so the open inbox reloads while its category and merchant stay selected.
+function installClassificationQueue() {
+  const spending = window.octopusBeak.spending;
+  const calls = window.__calls.categories;
+  spending.loadClassifyQueue = async (request) => ({
+    ...request, schemaVersion: 1,
+    items: ["A", calls.length ? "C" : "B"].map((id) => ({
+      purchaseId: id, title: "全聯 " + id, date: "2026-10-03", basis: "bank-transaction",
+      amount: { currency: "TWD", coefficient: "300", scale: 0 }, payment: null,
+      details: { time: null, bankDescription: null, items: [] },
+    })),
+  });
+  spending.applyPageAction = async (request) => {
+    calls.push(request);
+    throw new Error("Reload classification queue");
+  };
+}
+
+test("classification controls follow the displayed purchases when the count stays at two", async (t) => {
+  const runtime = await acquireBrowserTestRuntime();
+  t.after(() => runtime.close());
+  for (const activation of ["click current", "Enter on row", "click search", "Enter on search"]) {
+    await t.test(activation, async (t) => {
+      const { page, errors } = await openPage(t, runtime, { setup: `(${installClassificationQueue.toString()})();` });
+      await page.locator("[data-open-classify]").click();
+      await page.locator("[data-classify-mode=merchant]").click();
+      await page.locator("[data-classify-search]").fill("300");
+      await page.locator("[data-picker-group=home]").click();
+      for (const [index, second] of ["B", "C"].entries()) {
+        await page.locator("[data-classify-members] li").filter({ hasText: "全聯 " + second }).waitFor();
+        const current = page.locator("[data-classify-apply-count='2']");
+        const search = page.locator("[data-classify-apply-search]");
+        await current.waitFor();
+        await page.locator("[data-classify-search-covers='2']").waitFor();
+        if (activation === "Enter on row") await page.locator("[data-classify-row='全聯']").press("Enter");
+        else if (activation === "Enter on search") await search.press("Enter");
+        else await (activation === "click current" ? current : search).click();
+        await page.waitForFunction((count) => window.__calls.categories.length === count, index + 1);
+        assert.deepEqual(await page.evaluate(() => window.__calls.categories.at(-1)), {
+          kind: "category_many", action: "categorize", categoryCode: "housing_and_utilities",
+          purchaseIds: ["A", second], dataVersion: 7,
+        });
+      }
+      assert.deepEqual(errors, []);
+    });
   }
 });
