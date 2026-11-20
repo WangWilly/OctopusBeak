@@ -1,0 +1,836 @@
+<template id="02-river-template">
+  <div id="root" data-composition-id="02-river" data-start="0" data-duration="21.5" data-width="1920" data-height="1080">
+    <style>
+      @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"); }
+      @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"); }
+      @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"); }
+      @font-face { font-family: "Menlo"; font-weight: 400; src: local("Menlo-Regular"); }
+      @font-face { font-family: "Menlo"; font-weight: 700; src: local("Menlo-Bold"); }
+
+      [data-composition-id="02-river"] {
+        position: relative; width: 1920px; height: 1080px; overflow: hidden;
+        font-family: "PingFang TC", sans-serif; color: #0e1217;
+      }
+      [data-composition-id="02-river"] * { box-sizing: border-box; }
+      .f02-mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums; }
+      .f02-full { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+
+      /* ── grounds ── */
+      [id="f02-night"] {
+        position: absolute; inset: 0; overflow: hidden;
+        background: linear-gradient(135deg, #071f4a 0%, #0d4672 52%, #12808f 100%);
+      }
+      [id="f02-paper"] {
+        position: absolute; inset: 0; overflow: hidden;
+        background:
+          radial-gradient(ellipse 70% 60% at 0% 100%, #edf4f1 0%, rgba(237, 244, 241, 0.6) 45%, rgba(237, 244, 241, 0) 80%),
+          #f9fafc;
+        clip-path: circle(0px at 360px 640px);
+      }
+      .f02-rosette { position: absolute; width: 1000px; height: 1000px; transform-origin: 50% 50%; }
+      .f02-rosette svg { width: 1000px; height: 1000px; display: block; }
+      [id="f02-night-rosette"] { left: 460px; top: 40px; color: #edf4f1; opacity: 0.14; }
+      [id="f02-paper-rosette"] { left: 1000px; top: 260px; color: #2c6485; opacity: 0.05; }
+
+      /* ── stage ── */
+      [id="f02-stage"] { position: absolute; inset: 0; }
+      [id="f02-card"] {
+        position: absolute; left: 120px; top: 230px; width: 1680px; height: 585px;
+        background: #ffffff; border-radius: 16px; box-shadow: 0 20px 50px rgba(15, 23, 42, 0.10);
+        opacity: 0;
+      }
+      [id="f02-xfer"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+
+      /* real flow bars at the screenshot's measured geometry (hero png 2172×756 shown at x=120, y=230, width 1680) */
+      [id="f02-bars"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; opacity: 0; }
+      .f02-bar { position: absolute; border-radius: 5px; }
+      .f02-bar-lbl { position: absolute; font-size: 20px; font-weight: 700; white-space: nowrap; color: #ffffff; }
+      [id="f02-bar-kept"] { background: #ebf0ed; border: 1px solid rgba(40, 93, 63, 0.4); }
+      [id="f02-bar-kept-lbl"] { color: #285d3f; text-align: center; }
+
+      /* account nodes */
+      .f02-node { position: absolute; width: 88px; height: 88px; }
+      .f02-disc {
+        position: absolute; inset: 0; border-radius: 50%; background: #ffffff;
+        border: 1px solid #d5dae1; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+      }
+      .f02-disc img { position: absolute; left: 15px; top: 15px; width: 56px; height: 56px; object-fit: contain; display: block; }
+      .f02-ring {
+        position: absolute; left: -2px; top: -2px; width: 92px; height: 92px; border-radius: 50%;
+        border: 3px solid #18a9a4; opacity: 0;
+      }
+      .f02-nlabel {
+        position: absolute; left: -76px; top: 98px; width: 240px; text-align: center; white-space: nowrap;
+      }
+      .f02-nlabel span {
+        display: inline-block; padding: 1px 9px; border-radius: 11px;
+        font-size: 20px; line-height: 22px; font-weight: 600; color: #ffffff;
+        background: rgba(249, 250, 252, 0);
+      }
+
+      /* river labels */
+      .f02-blabel { position: absolute; white-space: nowrap; font-weight: 700; opacity: 0; }
+      [id="f02-lbl-salary"] { left: 140px; top: 627.9px; font-size: 24px; line-height: 24px; color: #ffffff; }
+      [id="f02-lbl-interest"] { left: 96px; top: 994.8px; font-size: 20px; line-height: 20px; color: #76527c; }
+      [id="f02-lbl-home"] { right: 140px; top: 752.4px; font-size: 22px; line-height: 22px; color: #ffffff; }
+      .f02-chip {
+        position: absolute; height: 24px; padding: 0 8px; border-radius: 12px; white-space: nowrap;
+        font-size: 20px; line-height: 22px; font-weight: 700; opacity: 0;
+        background: rgba(249, 250, 252, 0.94); border: 1px solid currentColor;
+      }
+      [id="f02-pool-lbl"] {
+        left: 1500px; top: 517.9px; width: 300px; text-align: center;
+        font-size: 24px; line-height: 24px; color: #285d3f;
+      }
+
+      /* ribbon pills and coin */
+      .f02-pill {
+        position: absolute; height: 32px; padding: 0 14px; border-radius: 16px; white-space: nowrap;
+        background: #1f4f73; color: #ffffff; font-size: 18px; line-height: 32px; font-weight: 700;
+        box-shadow: 0 6px 16px rgba(15, 23, 42, 0.18); opacity: 0;
+      }
+      [id="f02-coin"] {
+        position: absolute; left: 1556px; top: 356px; width: 128px; height: 128px; border-radius: 50%;
+        background: #f4f8fb; border: 2px solid #2c6485; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+        opacity: 0;
+      }
+      [id="f02-coin"]::before {
+        content: ""; position: absolute; inset: 6px; border-radius: 50%; border: 1px dashed rgba(44, 100, 133, 0.55);
+      }
+      [id="f02-coin-cur"] {
+        position: absolute; left: 0; top: 30px; width: 124px; text-align: center;
+        font-size: 18px; line-height: 18px; font-weight: 600; color: #2c6485;
+      }
+      [id="f02-coin-amt"] {
+        position: absolute; left: 0; top: 60px; width: 124px; text-align: center;
+        font-size: 22px; line-height: 22px; font-weight: 700; color: #1f4f73;
+      }
+
+      /* headline block */
+      [id="f02-eyebrow"] {
+        position: absolute; left: 120px; top: 111.4px; font-size: 24px; line-height: 24px;
+        font-weight: 700; color: #18a9a4; white-space: nowrap; opacity: 0;
+      }
+      .f02-head {
+        position: absolute; left: 120px; width: 820px; line-height: 56px; font-weight: 700; color: #0e1217; opacity: 0;
+      }
+      .f02-g { color: #285d3f; }
+
+      /* counter strip */
+      [id="f02-counters"] { position: absolute; left: 0; top: 0; width: 1920px; height: 260px; opacity: 0; }
+      .f02-clabel {
+        position: absolute; top: 93.1px; font-size: 22px; line-height: 22px; font-weight: 500;
+        color: #5e646a; white-space: nowrap; opacity: 0.35;
+      }
+      .f02-cnum {
+        position: absolute; top: 126.9px; font-size: 54px; line-height: 54px; font-weight: 700;
+        white-space: nowrap; color: #5e646a; opacity: 0.35;
+      }
+      .f02-op {
+        position: absolute; top: 133.6px; font-size: 40px; line-height: 40px; font-weight: 500;
+        color: #5e646a; opacity: 0;
+      }
+      .f02-csub {
+        position: absolute; top: 181.5px; font-size: 18px; line-height: 20px; font-weight: 500;
+        color: #5e646a; opacity: 0;
+      }
+      .f02-stack {
+        position: absolute; left: 1290px; font-size: 22px; line-height: 22px; font-weight: 700;
+        color: #5e646a; white-space: nowrap; opacity: 0;
+      }
+      .f02-strike { position: absolute; left: 1286px; width: 100px; height: 2px; background: #7d4a40; transform-origin: 0 50%; opacity: 0; }
+
+      /* transfer panel */
+      [id="f02-panel"] {
+        position: absolute; left: 1440px; top: 228px; width: 360px; height: 160px;
+        border-radius: 12px; background: #dfeef8; opacity: 0;
+      }
+      [id="f02-panel-head"] {
+        position: absolute; left: 18px; top: 16px; right: 12px; display: flex; align-items: center; gap: 8px;
+        font-weight: 700; color: #2c6485; white-space: nowrap; line-height: 24px;
+      }
+      [id="f02-panel-head"] svg { flex: none; }
+      .f02-prow {
+        position: absolute; left: 18px; right: 18px; height: 26px; display: flex; justify-content: space-between;
+        align-items: baseline; font-size: 18px; line-height: 26px; color: #2c6485; font-weight: 600; white-space: nowrap;
+      }
+      .f02-prow .f02-mono { font-weight: 700; color: #1f3f57; }
+    </style>
+
+    <!-- ground 1: night (continues 01-hook) -->
+    <div id="f02-night" class="clip" data-start="0" data-duration="21.5" data-track-index="0">
+      <svg class="f02-full" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <symbol id="f02-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="f02-ro"><path id="f02-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#f02-ro0" transform="rotate(9)"/><use href="#f02-ro0" transform="rotate(18)"/><use href="#f02-ro0" transform="rotate(27)"/><use href="#f02-ro0" transform="rotate(36)"/><use href="#f02-ro0" transform="rotate(45)"/><use href="#f02-ro0" transform="rotate(54)"/><use href="#f02-ro0" transform="rotate(63)"/><use href="#f02-ro0" transform="rotate(72)"/><use href="#f02-ro0" transform="rotate(81)"/><use href="#f02-ro0" transform="rotate(90)"/><use href="#f02-ro0" transform="rotate(99)"/><use href="#f02-ro0" transform="rotate(108)"/><use href="#f02-ro0" transform="rotate(117)"/><use href="#f02-ro0" transform="rotate(126)"/><use href="#f02-ro0" transform="rotate(135)"/><use href="#f02-ro0" transform="rotate(144)"/><use href="#f02-ro0" transform="rotate(153)"/><use href="#f02-ro0" transform="rotate(162)"/><use href="#f02-ro0" transform="rotate(171)"/><use href="#f02-ro0" transform="rotate(180)"/><use href="#f02-ro0" transform="rotate(189)"/><use href="#f02-ro0" transform="rotate(198)"/><use href="#f02-ro0" transform="rotate(207)"/><use href="#f02-ro0" transform="rotate(216)"/><use href="#f02-ro0" transform="rotate(225)"/><use href="#f02-ro0" transform="rotate(234)"/><use href="#f02-ro0" transform="rotate(243)"/><use href="#f02-ro0" transform="rotate(252)"/><use href="#f02-ro0" transform="rotate(261)"/><use href="#f02-ro0" transform="rotate(270)"/><use href="#f02-ro0" transform="rotate(279)"/><use href="#f02-ro0" transform="rotate(288)"/><use href="#f02-ro0" transform="rotate(297)"/><use href="#f02-ro0" transform="rotate(306)"/><use href="#f02-ro0" transform="rotate(315)"/><use href="#f02-ro0" transform="rotate(324)"/><use href="#f02-ro0" transform="rotate(333)"/><use href="#f02-ro0" transform="rotate(342)"/><use href="#f02-ro0" transform="rotate(351)"/></g><use href="#f02-ro" transform="rotate(1.1)"/><use href="#f02-ro" transform="rotate(2.3)"/><use href="#f02-ro" transform="rotate(3.4)"/><use href="#f02-ro" transform="rotate(4.5)"/><use href="#f02-ro" transform="rotate(5.6)"/><use href="#f02-ro" transform="rotate(6.8)"/><use href="#f02-ro" transform="rotate(7.9)"/><g id="f02-rb"><path id="f02-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#f02-rb0" transform="rotate(15)"/><use href="#f02-rb0" transform="rotate(30)"/><use href="#f02-rb0" transform="rotate(45)"/><use href="#f02-rb0" transform="rotate(60)"/><use href="#f02-rb0" transform="rotate(75)"/><use href="#f02-rb0" transform="rotate(90)"/><use href="#f02-rb0" transform="rotate(105)"/><use href="#f02-rb0" transform="rotate(120)"/><use href="#f02-rb0" transform="rotate(135)"/><use href="#f02-rb0" transform="rotate(150)"/><use href="#f02-rb0" transform="rotate(165)"/><use href="#f02-rb0" transform="rotate(180)"/><use href="#f02-rb0" transform="rotate(195)"/><use href="#f02-rb0" transform="rotate(210)"/><use href="#f02-rb0" transform="rotate(225)"/><use href="#f02-rb0" transform="rotate(240)"/><use href="#f02-rb0" transform="rotate(255)"/><use href="#f02-rb0" transform="rotate(270)"/><use href="#f02-rb0" transform="rotate(285)"/><use href="#f02-rb0" transform="rotate(300)"/><use href="#f02-rb0" transform="rotate(315)"/><use href="#f02-rb0" transform="rotate(330)"/><use href="#f02-rb0" transform="rotate(345)"/></g><use href="#f02-rb" transform="rotate(1.9)"/><use href="#f02-rb" transform="rotate(3.8)"/><use href="#f02-rb" transform="rotate(5.6)"/><use href="#f02-rb" transform="rotate(7.5)"/><use href="#f02-rb" transform="rotate(9.4)"/><use href="#f02-rb" transform="rotate(11.3)"/><use href="#f02-rb" transform="rotate(13.1)"/><g id="f02-rh"><path id="f02-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#f02-rh0" transform="rotate(32.7)"/><use href="#f02-rh0" transform="rotate(65.5)"/><use href="#f02-rh0" transform="rotate(98.2)"/><use href="#f02-rh0" transform="rotate(130.9)"/><use href="#f02-rh0" transform="rotate(163.6)"/><use href="#f02-rh0" transform="rotate(196.4)"/><use href="#f02-rh0" transform="rotate(229.1)"/><use href="#f02-rh0" transform="rotate(261.8)"/><use href="#f02-rh0" transform="rotate(294.5)"/><use href="#f02-rh0" transform="rotate(327.3)"/></g><use href="#f02-rh" transform="rotate(5.5)"/><use href="#f02-rh" transform="rotate(10.9)"/><use href="#f02-rh" transform="rotate(16.4)"/><use href="#f02-rh" transform="rotate(21.8)"/><use href="#f02-rh" transform="rotate(27.3)"/><g id="f02-rc"><path id="f02-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#f02-rc0" transform="rotate(30)"/><use href="#f02-rc0" transform="rotate(60)"/><use href="#f02-rc0" transform="rotate(90)"/><use href="#f02-rc0" transform="rotate(120)"/><use href="#f02-rc0" transform="rotate(150)"/><use href="#f02-rc0" transform="rotate(180)"/><use href="#f02-rc0" transform="rotate(210)"/><use href="#f02-rc0" transform="rotate(240)"/><use href="#f02-rc0" transform="rotate(270)"/><use href="#f02-rc0" transform="rotate(300)"/><use href="#f02-rc0" transform="rotate(330)"/></g><use href="#f02-rc" transform="rotate(3.8)"/><use href="#f02-rc" transform="rotate(7.5)"/><use href="#f02-rc" transform="rotate(11.3)"/><use href="#f02-rc" transform="rotate(15)"/><use href="#f02-rc" transform="rotate(18.8)"/><use href="#f02-rc" transform="rotate(22.5)"/><use href="#f02-rc" transform="rotate(26.3)"/><g id="f02-ri"><path id="f02-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#f02-ri0" transform="rotate(40)"/><use href="#f02-ri0" transform="rotate(80)"/><use href="#f02-ri0" transform="rotate(120)"/><use href="#f02-ri0" transform="rotate(160)"/><use href="#f02-ri0" transform="rotate(200)"/><use href="#f02-ri0" transform="rotate(240)"/><use href="#f02-ri0" transform="rotate(280)"/><use href="#f02-ri0" transform="rotate(320)"/></g><use href="#f02-ri" transform="rotate(6.7)"/><use href="#f02-ri" transform="rotate(13.3)"/><use href="#f02-ri" transform="rotate(20)"/><use href="#f02-ri" transform="rotate(26.7)"/><use href="#f02-ri" transform="rotate(33.3)"/></symbol>
+          <g id="f02-w" fill="none" stroke="currentColor"><path id="f02-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#f02-wl" transform="translate(487.5 -28.1)"/><use href="#f02-wl" transform="translate(525 -18.7)"/><use href="#f02-wl" transform="translate(562.5 -9.4)"/><use href="#f02-wl" transform="translate(37.5 9.4)"/><use href="#f02-wl" transform="translate(75 18.8)"/><use href="#f02-wl" transform="translate(112.5 28.1)"/><use href="#f02-wl" transform="translate(150 37.5)"/><use href="#f02-wl" transform="translate(187.5 46.9)"/><use href="#f02-wl" transform="translate(225 56.3)"/><use href="#f02-wl" transform="translate(262.5 65.6)"/><use href="#f02-wl" transform="translate(300 75)"/><use href="#f02-wl" transform="translate(337.5 84.4)"/><use href="#f02-wl" transform="translate(375 93.8)"/><use href="#f02-wl" transform="translate(412.5 103.1)"/><use href="#f02-wl" transform="translate(450 112.5)"/><use href="#f02-wl" transform="translate(487.5 121.9)"/><use href="#f02-wl" transform="translate(525 131.3)"/><use href="#f02-wl" transform="translate(562.5 140.6)"/><use href="#f02-wl" transform="translate(0 150)"/><use href="#f02-wl" transform="translate(37.5 159.4)"/><use href="#f02-wl" transform="translate(75 168.8)"/><use href="#f02-wl" transform="translate(112.5 178.1)"/><use href="#f02-wl" transform="translate(150 187.5)"/><use href="#f02-wl" transform="translate(187.5 196.9)"/><use href="#f02-wl" transform="translate(225 206.3)"/><use href="#f02-wl" transform="translate(262.5 215.6)"/><use href="#f02-wl" transform="translate(300 225)"/><use href="#f02-wl" transform="translate(337.5 234.4)"/><use href="#f02-wl" transform="translate(375 243.8)"/><use href="#f02-wl" transform="translate(412.5 253.1)"/><use href="#f02-wl" transform="translate(450 262.5)"/><use href="#f02-wl" transform="translate(487.5 271.9)"/><use href="#f02-wl" transform="translate(525 281.3)"/><use href="#f02-wl" transform="translate(562.5 290.6)"/><use href="#f02-wl" transform="translate(0 300)"/><use href="#f02-wl" transform="translate(37.5 309.4)"/><use href="#f02-wl" transform="translate(75 318.8)"/></g>
+          <pattern id="f02-waves-teal" style="color: #18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#f02-w" /></pattern>
+          <pattern id="f02-waves-ink" style="color: #0e1217" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#f02-w" /></pattern>
+        </defs>
+        <rect width="1920" height="1080" fill="url(#f02-waves-teal)" opacity="0.4" />
+      </svg>
+      <div id="f02-night-rosette" class="f02-rosette">
+        <svg viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <use href="#f02-rosette" x="0" y="0" width="1000" height="1000" stroke-width="1" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- ground 2: paper, circle-wiped out from node 富邦 7028 -->
+    <div id="f02-paper" class="clip" data-start="0" data-duration="21.5" data-track-index="1" data-layout-allow-occlusion>
+      <svg class="f02-full" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="1920" height="1080" fill="url(#f02-waves-ink)" opacity="0.04" />
+      </svg>
+      <div id="f02-paper-rosette" class="f02-rosette">
+        <svg viewBox="0 0 1000 1000" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <use href="#f02-rosette" x="0" y="0" width="1000" height="1000" stroke-width="1" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- stage -->
+    <div id="f02-stage" class="clip" data-start="0" data-duration="21.5" data-track-index="2" data-layout-allow-occlusion>
+      <div id="f02-card"></div>
+
+      <!-- the river: trunk, interest strand, tributaries, kept band, pool (built by script) -->
+      <svg id="f02-river" class="f02-full" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" data-layout-allow-occlusion>
+        <defs>
+          <clipPath id="f02-trunk-clip"><rect id="f02-trunk-clip-r" x="-60" y="-60" width="0" height="1200" /></clipPath>
+          <clipPath id="f02-pool-shape"><rect x="1500" y="400" width="300" height="260" rx="40" /></clipPath>
+          <clipPath id="f02-pool-water"><rect id="f02-pool-water-r" x="1490" y="660" width="320" height="0" /></clipPath>
+        </defs>
+        <g id="f02-river-all" data-layout-allow-overflow>
+          <g id="f02-g-interest"></g>
+          <g id="f02-g-pool" opacity="0">
+            <g clip-path="url(#f02-pool-shape)">
+              <g clip-path="url(#f02-pool-water)">
+                <rect x="1500" y="400" width="300" height="260" fill="#ebf0ed" />
+                <g id="f02-pool-lines"></g>
+              </g>
+              <line id="f02-pool-surface" x1="1500" x2="1800" y1="660" y2="660" stroke="#285d3f" stroke-opacity="0.45" stroke-width="2" />
+            </g>
+            <path id="f02-pool-wall" fill="none" stroke="#285d3f" stroke-width="2"
+              d="M1503.34 424 A40 40 0 0 1 1540 400 L1760 400 A40 40 0 0 1 1800 440 L1800 620 A40 40 0 0 1 1760 660 L1540 660 A40 40 0 0 1 1505.36 640" />
+          </g>
+          <g id="f02-g-trunk" clip-path="url(#f02-trunk-clip)"></g>
+        </g>
+      </svg>
+
+      <!-- transfers: ribbons, coin, pills — lift away together -->
+      <div id="f02-xfer" data-layout-allow-occlusion>
+        <svg id="f02-ribbons" class="f02-full" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="f02-fade-up" gradientUnits="userSpaceOnUse" x1="0" y1="250" x2="0" y2="470">
+              <stop offset="0" stop-color="#fff" stop-opacity="0" />
+              <stop offset="1" stop-color="#fff" stop-opacity="1" />
+            </linearGradient>
+            <mask id="f02-fade-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1920" height="1080">
+              <rect x="0" y="0" width="1920" height="1080" fill="url(#f02-fade-up)" />
+            </mask>
+          </defs>
+          <g id="f02-g-ribbons"></g>
+        </svg>
+        <div id="f02-coin"><div id="f02-coin-cur" data-s="coinCur"></div><div id="f02-coin-amt" class="f02-mono" data-s="coinAmt"></div></div>
+        <div id="f02-seal-a" class="f02-pill" data-s="sealA"></div>
+        <div id="f02-pill-b" class="f02-pill" data-s="pillB" style="left: 1620px; top: 512px"></div>
+        <div id="f02-pill-c" class="f02-pill" data-s="pillC" style="left: 165px; top: 480px"></div>
+      </div>
+
+      <!-- the real flow bars (end state, handed to 03-close) -->
+      <div id="f02-bars" data-layout-allow-occlusion>
+        <div class="f02-bar" id="f02-bar-salary" style="background: #285d3f"></div>
+        <div class="f02-bar" id="f02-bar-interest" style="background: #76527c"></div>
+        <div class="f02-bar" id="f02-bar-home" style="background: #7d4a40"></div>
+        <div class="f02-bar" id="f02-bar-transport" style="background: #915d2a"></div>
+        <div class="f02-bar" id="f02-bar-dining" style="background: #266299"></div>
+        <div class="f02-bar" id="f02-bar-daily" style="background: #186e57"></div>
+        <div class="f02-bar" id="f02-bar-shopping" style="background: #76527c"></div>
+        <div class="f02-bar" id="f02-bar-leisure" style="background: #2a5e6a"></div>
+        <div class="f02-bar" id="f02-bar-kept"></div>
+        <div class="f02-bar-lbl" id="f02-bar-salary-lbl" data-s="barSalary"></div>
+        <div class="f02-bar-lbl" id="f02-bar-home-lbl" data-s="barHome"></div>
+        <div class="f02-bar-lbl" id="f02-bar-kept-lbl" data-s="barKept"></div>
+      </div>
+
+      <!-- account nodes -->
+      <div id="f02-nodes">
+        <div class="f02-node" id="f02-n7028" style="left: 316px; top: 596px"><div class="f02-ring"></div><div class="f02-disc"><img src="assets/logos/fubon.webp" alt="" /></div><div class="f02-nlabel" data-layout-allow-overflow><span data-s="node7028"></span></div></div>
+        <div class="f02-node" id="f02-n7036" style="left: 956px; top: 296px"><div class="f02-ring"></div><div class="f02-disc"><img src="assets/logos/fubon.webp" alt="" /></div><div class="f02-nlabel" data-layout-allow-overflow><span data-s="node7036"></span></div></div>
+        <div class="f02-node" id="f02-n7819" style="left: 1296px; top: 296px"><div class="f02-ring"></div><div class="f02-disc"><img src="assets/logos/yuanta-bank.webp" alt="" /></div><div class="f02-nlabel" data-layout-allow-overflow><span data-s="node7819"></span></div></div>
+        <div class="f02-node" id="f02-nesun" style="left: 1136px; top: 703px"><div class="f02-ring"></div><div class="f02-disc"><img src="assets/logos/esun.webp" alt="" /></div><div class="f02-nlabel" data-layout-allow-overflow><span data-s="nodeEsun"></span></div></div>
+      </div>
+
+      <!-- band labels -->
+      <div id="f02-lbl-salary" class="f02-blabel" data-s="salary"></div>
+      <div id="f02-lbl-interest" class="f02-blabel" data-s="interest"></div>
+      <div id="f02-lbl-home" class="f02-blabel" data-s="home"></div>
+      <div id="f02-chip-transport" class="f02-chip" data-s="transport" style="right: 130px; top: 855px; color: #915d2a"></div>
+      <div id="f02-chip-dining" class="f02-chip" data-s="dining" style="right: 130px; top: 893.5px; color: #266299"></div>
+      <div id="f02-chip-daily" class="f02-chip" data-s="daily" style="right: 130px; top: 927px; color: #186e57"></div>
+      <div id="f02-chip-shopping" class="f02-chip" data-s="shopping" style="right: 310px; top: 956.5px; color: #76527c"></div>
+      <div id="f02-chip-leisure" class="f02-chip" data-s="leisure" style="right: 130px; top: 983px; color: #2a5e6a"></div>
+      <div id="f02-pool-lbl" class="f02-blabel" data-s="pool"></div>
+
+      <!-- headline block -->
+      <div id="f02-eyebrow" data-s="eyebrow"></div>
+      <div id="f02-h1" class="f02-head" data-s="h1"></div>
+      <div id="f02-h2" class="f02-head" data-s="h2"></div>
+      <div id="f02-h3" class="f02-head" data-s="h3"></div>
+      <div id="f02-h4" class="f02-head" data-s="h4"></div>
+
+      <!-- counter strip -->
+      <div id="f02-counters">
+        <div id="f02-cl-in" class="f02-clabel" style="left: 1000px" data-s="cellIn"></div>
+        <div id="f02-cl-out" class="f02-clabel" style="left: 1290px" data-s="cellOut"></div>
+        <div id="f02-cl-kept" class="f02-clabel" style="left: 1560px" data-s="cellKept"></div>
+        <div id="f02-cn-in" class="f02-cnum f02-mono" style="left: 1000px">—</div>
+        <div id="f02-cn-out" class="f02-cnum f02-mono" style="left: 1290px">—</div>
+        <div id="f02-cn-kept" class="f02-cnum f02-mono" style="left: 1560px">—</div>
+        <div id="f02-op-minus" class="f02-op" style="left: 1250px">−</div>
+        <div id="f02-op-eq" class="f02-op" style="left: 1525px">=</div>
+        <div id="f02-cs-in" class="f02-csub" style="left: 1000px; width: 240px" data-s="subIn"></div>
+        <div id="f02-cs-out" class="f02-csub" style="left: 1290px; width: 230px" data-s="subOut"></div>
+        <div id="f02-cs-kept" class="f02-csub" style="left: 1560px; width: 262px" data-s="subKept"></div>
+      </div>
+      <div id="f02-stack-a" class="f02-stack f02-mono" style="top: 123.6px">+30,000</div>
+      <div id="f02-stack-b" class="f02-stack f02-mono" style="top: 149.6px">+32,064</div>
+      <div id="f02-stack-c" class="f02-stack f02-mono" style="top: 175.6px">+24,040</div>
+      <div id="f02-strike-a" class="f02-strike" style="top: 133.4px"></div>
+      <div id="f02-strike-b" class="f02-strike" style="top: 159.4px"></div>
+      <div id="f02-strike-c" class="f02-strike" style="top: 185.4px"></div>
+
+      <!-- transfer panel -->
+      <div id="f02-panel">
+        <div id="f02-panel-head">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="#2c6485" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 6h13M11.5 2.5 15 6l-3.5 3.5M16 12H3M6.5 8.5 3 12l3.5 3.5" />
+          </svg>
+          <span data-s="panelHead"></span>
+        </div>
+        <div class="f02-prow" style="top: 52px"><span data-s="rowA"></span><span class="f02-mono">TWD 30,000</span></div>
+        <div class="f02-prow" style="top: 86px"><span data-s="rowB"></span><span class="f02-mono">TWD 32,064</span></div>
+        <div class="f02-prow" style="top: 120px"><span data-s="rowC"></span><span class="f02-mono">TWD 24,040</span></div>
+      </div>
+    </div>
+
+    <script>
+      const STR = {
+  "lang": "en",
+  "eyebrow": "New · Cash flow",
+  "h1": "Every account's money, one river.",
+  "h2": "Moving money between your own accounts isn't inflow or outflow.",
+  "h3": "Where the money went,<br>at a glance.",
+  "h4": "In October, of every 100<br>that came in, <span class=\"f02-g\">50</span> stayed.",
+  "headFont": 48,
+  "cellIn": "Inflow",
+  "cellOut": "Outflow",
+  "cellKept": "Kept",
+  "subIn": "2 items · Salary 99.5%",
+  "subOut": "22 items · Home 67%",
+  "subKept": "50% of inflow, up 30 points<br>on the previous period",
+  "node7028": "Fubon 7028",
+  "node7036": "Fubon 7036",
+  "node7819": "Yuanta 7819",
+  "nodeEsun": "E.SUN",
+  "salary": "Salary 86,500",
+  "interest": "Interest 412",
+  "sealA": "Internal transfer · paired",
+  "pillB": "Currency exchange",
+  "pillC": "Unpaired · 2",
+  "coinCur": "USD",
+  "coinAmt": "1,000.00",
+  "panelHead": "Between your accounts · not counted",
+  "panelHeadFont": 16,
+  "rowA": "Internal transfer · 1",
+  "rowB": "Currency exchange · 1",
+  "rowC": "Unpaired · 2",
+  "home": "Home 29,381",
+  "transport": "Transport 4,736",
+  "dining": "Dining 3,458",
+  "daily": "Daily 2,889",
+  "shopping": "Shopping 1,780",
+  "leisure": "Leisure 1,500",
+  "pool": "Kept 43,168 · 50%",
+  "barSalary": "Salary 86,500",
+  "barHome": "Home 29,381",
+  "barKept": "Kept 43,168 · 50%",
+  "barInY": [
+    509,
+    573
+  ],
+  "barOutY": [
+    592,
+    656
+  ]
+};
+      (function () {
+        window.__timelines = window.__timelines || {};
+        const DUR = 21.5;
+        const FILM_START = 4.5;
+        const NS = "http://www.w3.org/2000/svg";
+        const host = document.querySelector('[data-composition-id="02-river"]');
+        const $ = (id) => host.querySelector('[id="' + id + '"]');
+        const tl = gsap.timeline({ paused: true });
+
+        // ── strings ──
+        host.querySelectorAll("[data-s]").forEach((el) => { el.innerHTML = STR[el.getAttribute("data-s")]; });
+        $("f02-panel-head").style.fontSize = STR.panelHeadFont + "px";
+        for (const id of ["f02-h1", "f02-h2", "f02-h3", "f02-h4"]) {
+          const el = $(id);
+          el.style.fontSize = STR.headFont + "px";
+          el.style.top = (206 - (56 - STR.headFont) / 2 - 0.86 * STR.headFont) + "px"; // first baseline at y=206
+        }
+
+        // ── real flow-bar geometry: screenshot pixels → frame ──
+        const S = 1680 / 2172;
+        const fx = (X) => 120 + X * S;
+        const fy = (Y) => 230 + Y * S;
+        const IN = STR.barInY, OUT = STR.barOutY;
+        const CY_IN = fy((IN[0] + IN[1]) / 2), CY_OUT = fy((OUT[0] + OUT[1]) / 2);
+        const BAR_W = (IN[1] - IN[0]) * S;
+        const SEG = { // [x0, x1) in screenshot pixels
+          salary: [178, 2080], interest: [2083, 2122],
+          home: [178, 815], transport: [819, 922], dining: [926, 1002], daily: [1005, 1069],
+          shopping: [1072, 1111], leisure: [1115, 1153], kept: [1156, 2122]
+        };
+        function placeBar(id, seg, row) {
+          const el = $(id);
+          el.style.left = fx(seg[0]) + "px"; el.style.width = ((seg[1] - seg[0]) * S) + "px";
+          el.style.top = fy(row[0]) + "px"; el.style.height = ((row[1] - row[0]) * S) + "px";
+          el.style.lineHeight = ((row[1] - row[0]) * S) + "px";
+        }
+        placeBar("f02-bar-salary", SEG.salary, IN);
+        placeBar("f02-bar-interest", SEG.interest, IN);
+        for (const k of ["home", "transport", "dining", "daily", "shopping", "leisure", "kept"]) placeBar("f02-bar-" + k, SEG[k], OUT);
+        // in-bar labels as the storyboard hands them to 03-close: 20px 700, x=272, vertically centred in the bar
+        placeBar("f02-bar-salary-lbl", [196.5, 2080], IN);
+        placeBar("f02-bar-home-lbl", [196.5, 815], OUT);
+        placeBar("f02-bar-kept-lbl", SEG.kept, OUT);
+
+        // ── eases ──
+        const E = {
+          p1io: gsap.parseEase("power1.inOut"), p2io: gsap.parseEase("power2.inOut"),
+          p2o: gsap.parseEase("power2.out"), p3o: gsap.parseEase("power3.out"), lin: (x) => x
+        };
+        const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+        const prog = (t, t0, dur, ease) => (ease || E.lin)(clamp01((t - t0) / dur));
+        const lerp = (a, b, p) => a + (b - a) * p;
+        const mixColor = (a, b, p) => gsap.utils.interpolate(a, b, p);
+
+        // ── geometry: cubic chains ──
+        const straight = (x0, y0, x1, y1) => [x0, y0, x0 + (x1 - x0) / 3, y0 + (y1 - y0) / 3, x0 + 2 * (x1 - x0) / 3, y0 + 2 * (y1 - y0) / 3, x1, y1];
+        const lerpChain = (A, B, p) => A.map((seg, i) => seg.map((v, j) => lerp(v, B[i][j], p)));
+        const lerpChainXY = (A, B, px, py) => A.map((seg, i) => seg.map((v, j) => lerp(v, B[i][j], j % 2 ? py : px)));
+        function sampleChain(chain, n, u1) {
+          const pts = [], nrm = [];
+          const total = chain.length;
+          const steps = Math.max(1, Math.ceil(n * total * u1));
+          let lnx = 0, lny = 1;
+          for (let s = 0; s <= steps; s++) {
+            const U = (s / steps) * u1 * total;
+            const si = Math.min(total - 1, Math.floor(U));
+            const u = U - si;
+            const c = chain[si];
+            const mu = 1 - u;
+            const x = mu * mu * mu * c[0] + 3 * mu * mu * u * c[2] + 3 * mu * u * u * c[4] + u * u * u * c[6];
+            const y = mu * mu * mu * c[1] + 3 * mu * mu * u * c[3] + 3 * mu * u * u * c[5] + u * u * u * c[7];
+            let tx = 3 * mu * mu * (c[2] - c[0]) + 6 * mu * u * (c[4] - c[2]) + 3 * u * u * (c[6] - c[4]);
+            let ty = 3 * mu * mu * (c[3] - c[1]) + 6 * mu * u * (c[5] - c[3]) + 3 * u * u * (c[7] - c[5]);
+            const L = Math.hypot(tx, ty);
+            if (L > 1e-6) { lnx = -ty / L; lny = tx / L; }
+            pts.push(x, y); nrm.push(lnx, lny);
+          }
+          return { pts, nrm };
+        }
+        const f1 = (v) => Math.round(v * 10) / 10;
+        function polyline(sm, d) {
+          const p = sm.pts, n = sm.nrm;
+          let s = "";
+          for (let i = 0; i < p.length; i += 2) s += (i ? "L" : "M") + f1(p[i] + n[i] * d) + " " + f1(p[i + 1] + n[i + 1] * d);
+          return s;
+        }
+        function bodyPath(sm, w) {
+          const p = sm.pts, n = sm.nrm, h = w / 2;
+          let s = "";
+          for (let i = 0; i < p.length; i += 2) s += (i ? "L" : "M") + f1(p[i] - n[i] * h) + " " + f1(p[i + 1] - n[i + 1] * h);
+          for (let i = p.length - 2; i >= 0; i -= 2) s += "L" + f1(p[i] + n[i] * h) + " " + f1(p[i + 1] + n[i + 1] * h);
+          return s + "Z";
+        }
+
+        // ── engraved band: filled body + 1.2px lines every 7px along the flow ──
+        const GRID0 = 427.5; // global line grid so trunk and branches line up where they meet
+        function makeBand(parent, o) {
+          const g = document.createElementNS(NS, "g");
+          parent.appendChild(g);
+          const body = document.createElementNS(NS, "path");
+          g.appendChild(body);
+          const lg = document.createElementNS(NS, "g");
+          lg.setAttribute("fill", "none"); lg.setAttribute("stroke-width", "1.2");
+          lg.setAttribute("stroke-dasharray", "64 7");
+          g.appendChild(lg);
+          const offs = [];
+          if (o.W >= 10) {
+            if (o.gridY != null) {
+              for (let y = GRID0 - 7 * 80; y < 1200; y += 7) {
+                const d = y - o.gridY;
+                if (Math.abs(d) <= o.W / 2 - 2.5) offs.push(d);
+              }
+            } else {
+              for (let d = -o.W / 2 + 3.5; d <= o.W / 2 - 2.5; d += 7) offs.push(d);
+            }
+          }
+          const lines = offs.map((d, k) => {
+            const p = document.createElementNS(NS, "path");
+            lg.appendChild(p);
+            return { el: p, d, phase: ((k * 23) % 71) };
+          });
+          const edges = [];
+          if (o.edges) for (let i = 0; i < 2; i++) {
+            const e = document.createElementNS(NS, "path");
+            e.setAttribute("fill", "none");
+            g.appendChild(e);
+            edges.push(e);
+          }
+          return { g, body, lg, lines, edges, o, last: {} };
+        }
+        // state: {chain, w, u (draw progress), fill, line, lineOp, edge, edgeOp, edgeW, op}
+        function drawBand(b, st, t) {
+          const sm = sampleChain(st.chain, b.o.n, st.u);
+          const visible = st.u > 0.0005 && st.op > 0.001;
+          b.g.setAttribute("opacity", visible ? f1(st.op * 1000) / 1000 : 0);
+          if (!visible) return;
+          b.body.setAttribute("d", bodyPath(sm, st.w));
+          b.body.setAttribute("fill", st.fill);
+          const showLines = st.lineOp > 0.001;
+          b.lg.setAttribute("opacity", showLines ? f1(st.lineOp * 1000) / 1000 : 0);
+          if (showLines) {
+            b.lg.setAttribute("stroke", st.line);
+            const k = st.w / b.o.W;
+            const flow = -40 * t;
+            for (const L of b.lines) {
+              L.el.setAttribute("d", polyline(sm, L.d * k));
+              L.el.setAttribute("stroke-dashoffset", f1(L.phase + flow));
+            }
+          }
+          if (b.edges.length) {
+            const show = st.edgeOp > 0.001;
+            for (let i = 0; i < 2; i++) {
+              const e = b.edges[i];
+              e.setAttribute("opacity", show ? f1(st.edgeOp * 1000) / 1000 : 0);
+              if (!show) continue;
+              e.setAttribute("d", polyline(sm, (i ? 1 : -1) * st.w / 2));
+              e.setAttribute("stroke", st.edge);
+              e.setAttribute("stroke-width", st.edgeW);
+              if (st.edgeDash) e.setAttribute("stroke-dasharray", st.edgeDash);
+            }
+          }
+        }
+
+        // ── palette ──
+        const C = {
+          salary: "#285d3f", interest: "#76527c", home: "#7d4a40", transport: "#915d2a", dining: "#266299",
+          daily: "#186e57", shopping: "#76527c", leisure: "#2a5e6a", keptFill: "#ebf0ed",
+          ribbon: "rgba(44, 100, 133, 0.85)", ribbonPale: "rgba(223, 238, 248, 1)", lineW: "rgba(255, 255, 255, 0.22)",
+          lineG: "rgba(40, 93, 63, 0.18)"
+        };
+
+        // ── river layout (1px = 200 TWD) ──
+        // trunk: 薪資 432px centred y=640 (424–856); 利息 4px joins along the bottom (856–860) at x=330.
+        // past x=1060 the trunk is already two pieces: 留下來 216px (424–640) and 流出 219px (640–859),
+        // so the split in scenes 4–5 needs no re-cut.
+        const TRIBS = [ // name, width, start top at x=1060, end top at x=1800
+          ["home", 147, 637, 690], ["transport", 24, 784, 855], ["dining", 17, 808, 897],
+          ["daily", 14, 825, 932], ["shopping", 9, 839, 964], ["leisure", 8, 848, 991]
+        ];
+        const gTrunk = $("f02-g-trunk"), gInt = $("f02-g-interest"), gRib = $("f02-g-ribbons");
+        const trunkA = makeBand(gTrunk, { W: 432, gridY: 640, n: 1 });
+        const kept = makeBand(gTrunk, { W: 216, gridY: 532, n: 1, edges: true });
+        const tribs = TRIBS.map(([name, w, y0, y1]) => ({
+          name, w, y0c: y0 + w / 2, y1c: y1 + w / 2,
+          band: makeBand(gTrunk, { W: w, gridY: y0 + w / 2, n: 28 })
+        }));
+        tribs.reverse().forEach((tb) => gTrunk.appendChild(tb.band.g)); // 居家 drawn last (on top)
+        tribs.reverse();
+        const interest = makeBand(gInt, { W: 4, n: 30 });
+
+        const trunkA0 = [straight(-40, 640, 1060, 640)];
+        const trunkA1 = [straight(fx(SEG.salary[0]), CY_IN, fx(SEG.salary[1]), CY_IN)];
+        const kept0 = [straight(1060, 532, 1940, 532)];
+        const keptPool = [straight(1060, 532, 1505, 532)];
+        const kept1 = [straight(fx(SEG.kept[0]), CY_OUT, fx(SEG.kept[1]), CY_OUT)];
+        const int0 = [[-30, 1010, 140, 1010, 230, 858, 330, 858], [330, 858, 400, 858, 440, 850, 520, 850]]; // merges under the trunk
+        const ix0 = fx(SEG.interest[0]), ix1 = fx(SEG.interest[1]);
+        const int1 = [[ix0, CY_IN, ix0, CY_IN, ix0, CY_IN, ix0, CY_IN], straight(ix0, CY_IN, ix1, CY_IN)];
+        for (const tb of tribs) {
+          tb.c0 = [straight(1060, tb.y0c, 1940, tb.y0c)];
+          tb.c1 = [[1060, tb.y0c, 1360, tb.y0c, 1500, tb.y1c, 1800, tb.y1c]];
+          tb.c2 = [straight(fx(SEG[tb.name][0]), CY_OUT, fx(SEG[tb.name][1]), CY_OUT)];
+        }
+
+        // ribbons (half scale, 1px = 400 TWD)
+        const ribA = { band: makeBand(gRib, { W: 75, n: 60 }), chain: [[360, 620, 390, 360, 780, 290, 1000, 340]], w: 75 };
+        const ribB = { band: makeBand(gRib, { W: 80, n: 40 }), chain: [[1290, 600, 1290, 480, 1340, 420, 1340, 340], [1340, 340, 1340, 240, 1620, 250, 1620, 420]], w: 80 };
+        const gC = document.createElementNS(NS, "g");
+        gC.setAttribute("mask", "url(#f02-fade-mask)");
+        gRib.appendChild(gC);
+        const ribC1 = { band: makeBand(gC, { W: 30, n: 50, edges: true }), chain: [[340, 610, 320, 450, 200, 330, 120, -40]], w: 30 };
+        const ribC2 = { band: makeBand(gC, { W: 30, n: 50, edges: true }), chain: [[375, 610, 365, 450, 300, 330, 270, -40]], w: 30 };
+
+        // seal on ribbon (a) near its crest
+        (function () {
+          const c = ribA.chain[0], u = 0.6, mu = 0.4;
+          const x = mu * mu * mu * c[0] + 3 * mu * mu * u * c[2] + 3 * mu * u * u * c[4] + u * u * u * c[6];
+          const y = mu * mu * mu * c[1] + 3 * mu * mu * u * c[3] + 3 * mu * u * u * c[5] + u * u * u * c[7];
+          const el = $("f02-seal-a");
+          el.style.left = f1(x) + "px"; el.style.top = f1(y) + "px";
+        })();
+        gsap.set(['[id="f02-seal-a"]', '[id="f02-pill-b"]', '[id="f02-pill-c"]'], { xPercent: -50, yPercent: -50 });
+
+        // pool engraving (static horizontal lines on the global grid)
+        (function () {
+          const pl = $("f02-pool-lines");
+          for (let y = GRID0 - 28; y < 660; y += 7) {
+            const l = document.createElementNS(NS, "line");
+            l.setAttribute("x1", 1500); l.setAttribute("x2", 1800);
+            l.setAttribute("y1", y); l.setAttribute("y2", y);
+            l.setAttribute("stroke", C.lineG); l.setAttribute("stroke-width", "1.2");
+            pl.appendChild(l);
+          }
+        })();
+
+        // ── timing (composition seconds) ──
+        const T = {
+          drawAt: 0.9, drawDur: 1.8,          // trunk draws on left → right
+          intAt: 1.3, intDur: 1.0,            // 利息 strand
+          ribA: 5.7, ribB: 6.9, ribC: 8.1,    // ribbon ticks (film 10.2 / 11.4 / 12.6)
+          ribDur: 0.8,
+          pale: 8.6, fly: 9.0, flyDur: 1.2,
+          trib: 11.0, tribStep: 0.15, tribDur: 1.3,
+          keptTurn: 15.7, keptRetract: 15.8, pool: 16.0, water: 16.45, waterDur: 0.95,
+          morph: 19.8, morphDur: 1.2
+        };
+        const trunkFront = (t) => -60 + 2000 * prog(t, T.drawAt, T.drawDur, E.p1io);
+        function frontTime(x) { // when the water front reaches x (for node pulses)
+          let lo = T.drawAt, hi = T.drawAt + T.drawDur;
+          for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (trunkFront(m) < x) lo = m; else hi = m; }
+          return lo;
+        }
+
+        // ── nodes: pulse when the water reaches them ──
+        const NODES = [
+          { id: "f02-n7036", x: 1000 }, { id: "f02-n7819", x: 1340 }, { id: "f02-nesun", x: 1180 }
+        ].map((n) => ({ disc: $(n.id).querySelector(".f02-disc"), ring: $(n.id).querySelector(".f02-ring"), at: frontTime(n.x) }));
+
+        const NLABELS = [["f02-n7028", 360, 640], ["f02-n7036", 1000, 340], ["f02-n7819", 1340, 340], ["f02-nesun", 1180, 747]]
+          .map(([id, x, y]) => ({ el: $(id).querySelector(".f02-nlabel span"), dist: Math.hypot(x - 360, y + 73 - 640), k: -1 }));
+
+        // ── counters: stepped odometers (24 discrete steps) ──
+        const odo = (target, p) => Math.round(target * Math.floor(p * 24 + 1e-9) / 24).toLocaleString("en-US");
+        const CN = [
+          { el: $("f02-cn-in"), at: 1.0, dur: 1.6, target: 86912 },
+          { el: $("f02-cn-out"), at: 11.2, dur: 1.6, target: 43744 },
+          { el: $("f02-cn-kept"), at: 16.4, dur: 1.4, target: 43168 }
+        ];
+        CN.forEach((c) => { c.last = null; });
+
+        // ── render the whole river from time ──
+        const clipR = $("f02-trunk-clip-r");
+        const waterR = $("f02-pool-water-r");
+        const surface = $("f02-pool-surface");
+        const xferEl = $("f02-xfer");
+        function render(t) {
+          const m = prog(t, T.morph, T.morphDur, E.p2io);          // river → bars
+          const engr = 1 - prog(t, T.morph, 0.45, E.lin);           // engraving fades to flat
+          const lastFade = t < T.morph + T.morphDur ? 1 : 0; // exact bars fade in on top, then take over
+          // morph staging: trunk, 利息 and 留下來 compress vertically first, then stretch to their x;
+          // tributaries slide left first (under the trunk), then rise into the outflow row
+          const mA = prog(t, T.morph, T.morphDur * 0.55, E.p2io);
+          const mB = prog(t, T.morph + T.morphDur * 0.25, T.morphDur * 0.75, E.p2io);
+          const mC = prog(t, T.morph, T.morphDur * 0.75, E.p2io);
+          const mD = prog(t, T.morph + T.morphDur * 0.3, T.morphDur * 0.7, E.p2io);
+
+          clipR.setAttribute("width", f1(Math.max(0, trunkFront(t) + 60)));
+
+          // trunk
+          drawBand(trunkA, {
+            chain: lerpChainXY(trunkA0, trunkA1, mB, mA), w: lerp(432, BAR_W, mA), u: 1,
+            fill: C.salary, line: C.lineW, lineOp: engr, op: lastFade
+          }, t);
+
+          // 利息 strand
+          drawBand(interest, {
+            chain: lerpChainXY(int0, int1, mB, mA), w: lerp(4, BAR_W, mB), u: Math.max(prog(t, T.intAt, T.intDur, E.p2io), m > 0 ? 1 : 0),
+            fill: C.interest, line: C.lineW, lineOp: 0, op: lastFade
+          }, t);
+
+          // tributaries peel off and fan
+          tribs.forEach((tb, i) => {
+            const a = prog(t, T.trib + i * T.tribStep, T.tribDur, E.p2io);
+            const chain = m > 0 ? lerpChainXY(tb.c1, tb.c2, mC, mD) : lerpChain(tb.c0, tb.c1, a);
+            drawBand(tb.band, {
+              chain, w: lerp(tb.w, BAR_W, mD), u: 1,
+              fill: mixColor(C.salary, C[tb.name], a), line: C.lineW, lineOp: engr, op: lastFade
+            }, t);
+          });
+
+          // 留下來 band
+          const kc = prog(t, T.keptTurn, 0.6, E.p2io);
+          const kr = prog(t, T.keptRetract, 0.7, E.p2io);
+          drawBand(kept, {
+            chain: m > 0 ? lerpChainXY(keptPool, kept1, mB, mA) : lerpChain(kept0, keptPool, kr),
+            w: lerp(216, BAR_W, mA), u: 1,
+            fill: mixColor(C.salary, C.keptFill, kc),
+            line: kc < 0.5 ? C.lineW : C.lineG, lineOp: engr * Math.abs(1 - 2 * kc),
+            edge: "rgb(40, 93, 63)", edgeOp: kc * (1 - m) + m * 0.55, edgeW: lerp(2, 0.8, m), op: lastFade
+          }, t);
+
+          // pool: wall draws, water rises
+          const pw = prog(t, T.pool, 0.6, E.p2io);
+          const wr = prog(t, T.water, T.waterDur, E.p3o);
+          const poolOp = (t >= T.pool ? 1 : 0) * (1 - prog(t, T.morph, 0.5, E.lin));
+          $("f02-g-pool").setAttribute("opacity", poolOp);
+          const wall = $("f02-pool-wall");
+          wall.setAttribute("stroke-dasharray", "1200 1200");
+          wall.setAttribute("stroke-dashoffset", f1(1200 * (1 - pw)));
+          const wy = lerp(660, 398, wr);
+          waterR.setAttribute("y", f1(wy)); waterR.setAttribute("height", f1(662 - wy));
+          surface.setAttribute("y1", f1(wy)); surface.setAttribute("y2", f1(wy));
+          surface.setAttribute("opacity", wr > 0 && wr < 1 ? 1 : 0);
+
+          // transfer ribbons
+          const pale = prog(t, T.pale, 0.4, E.lin);
+          const ribFill = mixColor(C.ribbon, C.ribbonPale, pale);
+          const ribLine = 1 - pale;
+          for (const [r, at] of [[ribA, T.ribA], [ribB, T.ribB]]) {
+            drawBand(r.band, { chain: r.chain, w: r.w, u: prog(t, at, T.ribDur, E.p2io), fill: ribFill, line: C.lineW, lineOp: ribLine, op: 1 }, t);
+          }
+          for (const [r, d] of [[ribC1, 0], [ribC2, 0.12]]) {
+            drawBand(r.band, {
+              chain: r.chain, w: r.w, u: prog(t, T.ribC + d, T.ribDur, E.p2io),
+              fill: mixColor("rgba(44, 100, 133, 0.5)", C.ribbonPale, pale), line: C.lineW, lineOp: ribLine,
+              edge: "#2c6485", edgeOp: 1 - pale, edgeW: 1.6, edgeDash: "7 5", op: 1
+            }, t);
+          }
+
+          // node pulses
+          for (const n of NODES) {
+            const k = (t - n.at) / 0.6;
+            if (k > 0 && k < 1) {
+              n.disc.style.transform = "scale(" + (1 + 0.12 * Math.sin(Math.PI * k)).toFixed(4) + ")";
+              n.ring.style.transform = "scale(" + (1 + 0.6 * k).toFixed(4) + ")";
+              n.ring.style.opacity = (0.8 * (1 - k)).toFixed(4);
+            } else {
+              n.disc.style.transform = "none"; n.ring.style.opacity = "0";
+            }
+          }
+
+          // node labels: white on night → ink on a paper chip as the wipe edge passes
+          const wipeR = 2300 * prog(t, 0, 0.9, E.p2io);
+          for (const L of NLABELS) {
+            const k = clamp01((wipeR - L.dist + 40) / 80);
+            if (k !== L.k) {
+              L.k = k;
+              L.el.style.color = mixColor("#ffffff", "#0e1217", k);
+              L.el.style.backgroundColor = "rgba(249, 250, 252, " + (0.9 * k).toFixed(3) + ")";
+            }
+          }
+
+        // odometers
+          for (const c of CN) {
+            const txt = t < c.at ? "—" : odo(c.target, prog(t, c.at, c.dur, E.p2o));
+            if (txt !== c.last) { c.el.textContent = txt; c.last = txt; }
+          }
+        }
+        let drvT = 0;
+        const driver = { get t() { return drvT; }, set t(x) { drvT = x; render(x); } };
+        tl.fromTo(driver, { t: 0 }, { t: DUR, duration: DUR, ease: "none" }, 0);
+
+        // ── grounds ──
+        tl.fromTo('[id="f02-night-rosette"]', { rotation: 0.6 * FILM_START }, { rotation: 0.6 * (FILM_START + DUR), duration: DUR, ease: "none" }, 0);
+        tl.fromTo('[id="f02-paper-rosette"]', { rotation: 0.6 * FILM_START }, { rotation: 0.6 * (FILM_START + DUR), duration: DUR, ease: "none" }, 0);
+
+        // ── Scene 1 (0.0–0.9): paper circle-wipes out from 富邦 7028 ──
+        tl.fromTo('[id="f02-paper"]', { clipPath: "circle(0px at 360px 640px)" },
+          { clipPath: "circle(2300px at 360px 640px)", duration: 0.9, ease: "power2.inOut" }, 0);
+        // node labels turn white → ink as the paper edge passes each node (see render)
+        tl.fromTo('[id="f02-counters"]', { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, 0.5);
+
+        // ── headline wipes ──
+        tl.fromTo('[id="f02-eyebrow"]', { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 0.75);
+        const HEADS = [["f02-h1", 0.85], ["f02-h2", 5.0], ["f02-h3", 10.5], ["f02-h4", 15.5]];
+        HEADS.forEach(([id, at], i) => {
+          tl.fromTo('[id="' + id + '"]', { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, at);
+          const next = HEADS[i + 1];
+          const outAt = next ? next[1] - 0.25 : 19.5;
+          tl.to('[id="' + id + '"]', { opacity: 0, y: -20, duration: 0.25, ease: "power2.in" }, outAt);
+        });
+
+        // ── Scene 2 (0.7–5.0): inflow ──
+        tl.fromTo('[id="f02-lbl-salary"]', { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.4, ease: "power3.out" }, 1.55);
+        tl.fromTo('[id="f02-lbl-interest"]', { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, 1.9);
+        tl.to('[id="f02-cl-in"]', { opacity: 1, duration: 0.3, ease: "power1.out" }, 1.0);
+        tl.fromTo('[id="f02-cn-in"]', { opacity: 0.35, color: "#5e646a" }, { opacity: 1, color: "#285d3f", duration: 0.2, ease: "power1.out" }, 1.0);
+        tl.fromTo('[id="f02-cs-in"]', { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 2.6);
+
+        // ── Scene 3 (5.0–10.5): transfers ──
+        tl.fromTo('[id="f02-seal-a"]', { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out" }, T.ribA + T.ribDur);
+        tl.fromTo('[id="f02-coin"]', { opacity: 0, scale: 0.7 }, { opacity: 1, scale: 1, duration: 0.45, ease: "expo.out" }, T.ribB + 0.7);
+        tl.fromTo('[id="f02-pill-b"]', { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out" }, T.ribB + 0.85);
+        tl.fromTo('[id="f02-pill-c"]', { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out" }, T.ribC + 0.4);
+        // amounts float into the 流出 cell (grey, not counted yet)
+        tl.to('[id="f02-cn-out"]', { opacity: 0, duration: 0.2, ease: "power1.out" }, T.ribA);
+        [["f02-stack-a", T.ribA, 690 - 1290, 300 - 124], ["f02-stack-b", T.ribB, 1480 - 1290, 300 - 150], ["f02-stack-c", T.ribC, 230 - 1290, 360 - 176]]
+          .forEach(([id, at, dx, dy]) => {
+            tl.fromTo('[id="' + id + '"]', { opacity: 0, x: dx, y: dy }, { opacity: 1, x: 0, y: 0, duration: 0.6, ease: "power2.inOut" }, at + 0.05);
+          });
+        tl.fromTo('[data-composition-id="02-river"] .f02-strike', { opacity: 1, scaleX: 0 }, { opacity: 1, scaleX: 1, duration: 0.22, ease: "power2.out" }, 8.62);
+        tl.to(['[data-composition-id="02-river"] .f02-strike', '[data-composition-id="02-river"] .f02-stack'],
+          { opacity: 0, y: "+=22", duration: 0.3, ease: "power2.in" }, 8.88);
+        tl.to('[id="f02-cn-out"]', { opacity: 0.35, duration: 0.25, ease: "power1.out" }, 9.15);
+        // ribbons pale out, detach and condense into the transfer panel
+        tl.to(['[id="f02-seal-a"]', '[id="f02-pill-b"]', '[id="f02-pill-c"]'], { opacity: 0, duration: 0.3, ease: "power1.out" }, T.fly);
+        tl.fromTo(xferEl, { x: 0, y: 0, scale: 1, opacity: 1 },
+          { x: 1620 - 935, y: 308 - 360, scale: 0.2, duration: T.flyDur, ease: "power2.inOut", transformOrigin: "935px 360px" }, T.fly);
+        tl.to(xferEl, { opacity: 0, duration: 0.5, ease: "power1.in" }, T.fly + T.flyDur - 0.5);
+        tl.fromTo('[id="f02-panel"]', { opacity: 0, scale: 0.86 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out", transformOrigin: "50% 50%" }, T.fly + 0.7);
+        tl.fromTo('[data-composition-id="02-river"] .f02-prow', { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out", stagger: 0.08 }, T.fly + 0.95);
+
+        // ── Scene 4 (10.5–15.5): outflow ──
+        tl.fromTo('[id="f02-lbl-home"]', { opacity: 0 }, { opacity: 1, duration: 0.4, ease: "power1.out" }, T.trib + T.tribDur - 0.1);
+        ["transport", "dining", "daily", "shopping", "leisure"].forEach((k, i) => {
+          tl.fromTo('[id="f02-chip-' + k + '"]', { opacity: 0, x: 10 }, { opacity: 1, x: 0, duration: 0.35, ease: "power3.out" },
+            T.trib + (i + 1) * T.tribStep + T.tribDur - 0.1);
+        });
+        tl.to('[id="f02-cl-out"]', { opacity: 1, duration: 0.3, ease: "power1.out" }, 11.2);
+        tl.fromTo('[id="f02-cn-out"]', { opacity: 0.35, color: "#5e646a" }, { opacity: 1, color: "#0e1217", duration: 0.2, ease: "power1.out", immediateRender: false }, 11.2);
+        tl.fromTo('[id="f02-cs-out"]', { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 12.8);
+
+        // ── Scene 5 (15.5–19.5): kept ──
+        tl.fromTo('[id="f02-pool-lbl"]', { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 17.1);
+        tl.to('[id="f02-cl-kept"]', { opacity: 1, duration: 0.3, ease: "power1.out" }, 16.4);
+        tl.fromTo('[id="f02-cn-kept"]', { opacity: 0.35, color: "#5e646a" }, { opacity: 1, color: "#285d3f", duration: 0.2, ease: "power1.out" }, 16.4);
+        tl.fromTo('[id="f02-cs-kept"]', { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }, 17.4);
+        tl.fromTo('[id="f02-op-minus"]', { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out" }, 17.1);
+        tl.fromTo('[id="f02-op-eq"]', { opacity: 0, scale: 0.4 }, { opacity: 1, scale: 1, duration: 0.4, ease: "expo.out" }, 17.25);
+
+        // ── Scene 6 (19.5–21.5): flatten into the real flow bars ──
+        tl.to(['[id="f02-nodes"]', '[id="f02-counters"]', '[id="f02-panel"]', '[id="f02-eyebrow"]',
+          '[id="f02-lbl-salary"]', '[id="f02-lbl-interest"]', '[id="f02-lbl-home"]', '[id="f02-pool-lbl"]',
+          '[data-composition-id="02-river"] .f02-chip'],
+          { opacity: 0, duration: 0.4, ease: "power1.inOut" }, 19.5);
+        tl.fromTo('[id="f02-card"]',
+          { opacity: 0, scaleX: 1840 / 1680, scaleY: 680 / 585, y: 177.5 },
+          { opacity: 1, scaleX: 1, scaleY: 1, y: 0, duration: 1.2, ease: "power2.inOut", transformOrigin: "50% 50%" }, 19.6);
+        tl.fromTo('[id="f02-bars"]', { opacity: 0 }, { opacity: 1, duration: 0.12, ease: "none" }, T.morph + T.morphDur - 0.12);
+        tl.fromTo(['[id="f02-bar-salary-lbl"]', '[id="f02-bar-home-lbl"]', '[id="f02-bar-kept-lbl"]'],
+          { opacity: 0 }, { opacity: 1, duration: 0.25, ease: "power1.out" }, T.morph + T.morphDur - 0.05);
+
+        render(0);
+        tl.set({}, {}, DUR);
+        window.__timelines["02-river"] = tl;
+      })();
+    </script>
+  </div>
+</template>
