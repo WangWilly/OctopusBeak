@@ -485,10 +485,16 @@ import type {
     target?.focus();
   }
 
-  $: if (signInSettingsGroupId && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
-    const groupId = signInSettingsGroupId;
+  async function openRequestedSignInSettings(groupId: string) {
+    // Let a just-completed save finish rendering its close before opening another source.
+    await tick();
+    if (signInSettingsGroupId !== groupId || credentialEditor.sheet().saving) return;
     onSignInSettingsOpened();
-    void showCredentialSource(groupId, "source");
+    await showCredentialSource(groupId, "source");
+  }
+
+  $: if (signInSettingsGroupId && !sheet.saving && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
+    void openRequestedSignInSettings(signInSettingsGroupId);
   }
 
   function registrationBlocksRun(task: Pick<AutomationTaskRow, "credentialGroupId">) {
