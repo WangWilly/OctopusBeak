@@ -1,0 +1,297 @@
+<template id="01-hook-template">
+  <div id="root" data-composition-id="01-hook" data-start="0" data-duration="4.5" data-width="1920" data-height="1080">
+    <style>
+      @font-face { font-family: "PingFang TC"; font-weight: 400; src: local("PingFangTC-Regular"), local("PingFang TC"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 500; src: local("PingFangTC-Medium"), local("PingFang TC Medium"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 600; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+      @font-face { font-family: "PingFang TC"; font-weight: 700; src: local("PingFangTC-Semibold"), local("PingFang TC Semibold"); }
+      @font-face { font-family: "SF Mono"; font-weight: 400; src: local("SFMono-Regular"), local("SF Mono Regular"), local("Menlo-Regular"); }
+      @font-face { font-family: "SF Mono"; font-weight: 700; src: local("SFMono-Bold"), local("SF Mono Bold"), local("Menlo-Bold"); }
+
+      #root {
+        position: relative; width: 1920px; height: 1080px; overflow: hidden;
+        font-family: "PingFang TC", sans-serif; color: #0e1217;
+      }
+      #root * { box-sizing: border-box; }
+      [id="f01-defs"] { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+      [id="f01-night"] {
+        position: absolute; inset: 0; overflow: hidden;
+        background: linear-gradient(135deg, #071f4a 0%, #0d4672 52%, #12808f 100%);
+      }
+      [id="f01-night-waves"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+      [id="f01-night-rosette"] {
+        position: absolute; left: 460px; top: 40px; width: 1000px; height: 1000px;
+        color: #edf4f1; opacity: 0.14; transform-origin: 50% 50%;
+      }
+      [id="f01-night-rosette"] svg { display: block; width: 1000px; height: 1000px; overflow: visible; }
+
+      [id="f01-stage"] { position: absolute; inset: 0; }
+      .f01-card {
+        position: absolute; height: 116px; border-radius: 18px;
+        background: rgba(255, 255, 255, 0.95);
+        box-shadow: 0 18px 40px rgba(4, 18, 40, 0.28);
+        transform-origin: 50% 50%; opacity: 0;
+      }
+      .f01-stream { position: absolute; top: 34px; width: 280px; height: 48px; overflow: visible; }
+      .f01-name {
+        position: absolute; left: 106px; right: 24px; top: 18px;
+        font-size: 26px; font-weight: 600; line-height: 36px; white-space: nowrap; color: #0e1217;
+      }
+      .f01-row2 {
+        position: absolute; left: 106px; right: 24px; top: 56px; height: 44px;
+        display: flex; justify-content: space-between; align-items: baseline;
+      }
+      .f01-sub { font-size: 22px; font-weight: 500; line-height: 44px; color: #5e646a; white-space: nowrap; }
+      .f01-amt {
+        font-family: "SF Mono", ui-monospace, Menlo, monospace; font-weight: 700; font-size: 34px;
+        line-height: 44px; font-variant-numeric: tabular-nums; white-space: nowrap;
+      }
+      .f01-disc {
+        position: absolute; width: 88px; height: 88px; border-radius: 50%;
+        background: #ffffff; border: 1px solid #d5dae1;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+        transform-origin: 50% 50%; opacity: 0;
+      }
+      .f01-disc img { position: absolute; left: 15px; top: 15px; width: 56px; height: 56px; object-fit: contain; display: block; }
+      .f01-label {
+        position: absolute; width: 240px; height: 28px; text-align: center;
+        font-size: 20px; font-weight: 600; line-height: 28px; color: #ffffff; white-space: nowrap;
+        clip-path: inset(0% 100% 0% 0%);
+      }
+      [id="f01-head"] { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: visible; }
+      [id="f01-head"] text { font-family: "PingFang TC", sans-serif; font-weight: 700; }
+    </style>
+
+    <svg id="f01-defs" xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
+      <defs>
+        <symbol id="f01-rosette" viewBox="-460 -460 920 920" fill="none" stroke="currentColor" stroke-linecap="round"><g id="f01-ro"><path id="f01-ro0" d="M376 0 376.5 -4.3 378.1 -8.3 380.7 -12 384.3 -15.2 388.6 -17.6 393.6 -19.1 399.2 -19.8 405 -19.4 411 -17.9 417 -15.3 422.7 -11.7 428 -7.1 432.6 -1.5 436.6 4.8 439.6 11.8 441.7 19.2 442.7 27 442.6 34.8 441.5 42.6 439.3 50.1 436 57.1 431.9 63.5 427.1 69.2 421.6 73.9 415.6 77.7 409.4 80.3 403.2 82 397 82.5 391.2 82 385.8 80.5 381.1 78.1 377.2 75.1 374.2 71.4 372.2 67.4 371.2 63.1 371.4 58.8" vector-effect="non-scaling-stroke"/><use href="#f01-ro0" transform="rotate(9)"/><use href="#f01-ro0" transform="rotate(18)"/><use href="#f01-ro0" transform="rotate(27)"/><use href="#f01-ro0" transform="rotate(36)"/><use href="#f01-ro0" transform="rotate(45)"/><use href="#f01-ro0" transform="rotate(54)"/><use href="#f01-ro0" transform="rotate(63)"/><use href="#f01-ro0" transform="rotate(72)"/><use href="#f01-ro0" transform="rotate(81)"/><use href="#f01-ro0" transform="rotate(90)"/><use href="#f01-ro0" transform="rotate(99)"/><use href="#f01-ro0" transform="rotate(108)"/><use href="#f01-ro0" transform="rotate(117)"/><use href="#f01-ro0" transform="rotate(126)"/><use href="#f01-ro0" transform="rotate(135)"/><use href="#f01-ro0" transform="rotate(144)"/><use href="#f01-ro0" transform="rotate(153)"/><use href="#f01-ro0" transform="rotate(162)"/><use href="#f01-ro0" transform="rotate(171)"/><use href="#f01-ro0" transform="rotate(180)"/><use href="#f01-ro0" transform="rotate(189)"/><use href="#f01-ro0" transform="rotate(198)"/><use href="#f01-ro0" transform="rotate(207)"/><use href="#f01-ro0" transform="rotate(216)"/><use href="#f01-ro0" transform="rotate(225)"/><use href="#f01-ro0" transform="rotate(234)"/><use href="#f01-ro0" transform="rotate(243)"/><use href="#f01-ro0" transform="rotate(252)"/><use href="#f01-ro0" transform="rotate(261)"/><use href="#f01-ro0" transform="rotate(270)"/><use href="#f01-ro0" transform="rotate(279)"/><use href="#f01-ro0" transform="rotate(288)"/><use href="#f01-ro0" transform="rotate(297)"/><use href="#f01-ro0" transform="rotate(306)"/><use href="#f01-ro0" transform="rotate(315)"/><use href="#f01-ro0" transform="rotate(324)"/><use href="#f01-ro0" transform="rotate(333)"/><use href="#f01-ro0" transform="rotate(342)"/><use href="#f01-ro0" transform="rotate(351)"/></g><use href="#f01-ro" transform="rotate(1.1)"/><use href="#f01-ro" transform="rotate(2.3)"/><use href="#f01-ro" transform="rotate(3.4)"/><use href="#f01-ro" transform="rotate(4.5)"/><use href="#f01-ro" transform="rotate(5.6)"/><use href="#f01-ro" transform="rotate(6.8)"/><use href="#f01-ro" transform="rotate(7.9)"/><g id="f01-rb"><path id="f01-rb0" d="M300 0 306.2 1.6 311.9 3.3 316.8 5 320.4 6.7 322.8 8.5 323.8 10.2 323.7 11.9 322.7 13.5 321.2 15.1 319.6 16.7 318.3 18.4 317.5 20 317.4 21.6 317.9 23.3 319 25.1 320.4 26.9 321.7 28.7 322.4 30.5 322.4 32.2 321.1 33.8 318.6 35.2 314.7 36.4 309.7 37.5 303.8 38.4 297.4 39.2 291.1 39.9 285.2 40.6 280.2 41.4 276.3 42.3 273.7 43.3 272.4 44.6 272.2 46 272.9 47.6 274.1 49.3 275.3 51 276.2 52.7 276.6 54.3 276.3 55.7 275.4 57 273.9 58.2 272.1 59.3 270.4 60.4 269.1 61.6 268.7 63 269.5 64.7 271.4 66.7 274.7 69 279 71.6 284.2 74.6 289.8 77.6" vector-effect="non-scaling-stroke"/><use href="#f01-rb0" transform="rotate(15)"/><use href="#f01-rb0" transform="rotate(30)"/><use href="#f01-rb0" transform="rotate(45)"/><use href="#f01-rb0" transform="rotate(60)"/><use href="#f01-rb0" transform="rotate(75)"/><use href="#f01-rb0" transform="rotate(90)"/><use href="#f01-rb0" transform="rotate(105)"/><use href="#f01-rb0" transform="rotate(120)"/><use href="#f01-rb0" transform="rotate(135)"/><use href="#f01-rb0" transform="rotate(150)"/><use href="#f01-rb0" transform="rotate(165)"/><use href="#f01-rb0" transform="rotate(180)"/><use href="#f01-rb0" transform="rotate(195)"/><use href="#f01-rb0" transform="rotate(210)"/><use href="#f01-rb0" transform="rotate(225)"/><use href="#f01-rb0" transform="rotate(240)"/><use href="#f01-rb0" transform="rotate(255)"/><use href="#f01-rb0" transform="rotate(270)"/><use href="#f01-rb0" transform="rotate(285)"/><use href="#f01-rb0" transform="rotate(300)"/><use href="#f01-rb0" transform="rotate(315)"/><use href="#f01-rb0" transform="rotate(330)"/><use href="#f01-rb0" transform="rotate(345)"/></g><use href="#f01-rb" transform="rotate(1.9)"/><use href="#f01-rb" transform="rotate(3.8)"/><use href="#f01-rb" transform="rotate(5.6)"/><use href="#f01-rb" transform="rotate(7.5)"/><use href="#f01-rb" transform="rotate(9.4)"/><use href="#f01-rb" transform="rotate(11.3)"/><use href="#f01-rb" transform="rotate(13.1)"/><g id="f01-rh"><path id="f01-rh0" d="M272.7 0 272.6 -2.4 272.3 -4.8 271.8 -7.1 271.1 -9.5 270.2 -11.8 269 -14.1 267.7 -16.4 266.2 -18.6 264.5 -20.8 262.6 -22.9 260.5 -24.9 258.2 -26.9 255.7 -28.8 253 -30.7 250.2 -32.4 247.2 -34.1 244 -35.7 240.6 -37.1 237.1 -38.5 233.4 -39.8 229.5 -40.9 225.5 -42 221.4 -42.9 217.1 -43.7 212.7 -44.4 208.2 -44.9 203.5 -45.3 198.7 -45.6 193.8 -45.7 188.8 -45.7 183.7 -45.6 178.5 -45.2 173.2 -44.8 167.8 -44.2 162.3 -43.4 156.8 -42.5 151.2 -41.4 145.6 -40.2 139.9 -38.8 134.2 -37.3 128.4 -35.6 122.6 -33.7 116.8 -31.7 111 -29.6 105.2 -27.3 99.4 -24.8 93.5 -22.2 87.7 -19.4 81.9 -16.5 76.2 -13.4 70.4 -10.2 64.8 -6.8 59.1 -3.3 53.5 0.3 48 4.1 42.5 8 37.1 12 31.8 16.1 26.6 20.4 21.4 24.7 16.4 29.2 11.4 33.8 6.6 38.5 1.8 43.2 -2.8 48.1 -7.3 53 -11.7 58 -16 63.1 -20.1 68.3 -24.1 73.5 -27.9 78.8 -31.7 84.1 -35.2 89.4 -38.7 94.8 -41.9 100.2 -45.1 105.7 -48 111.1 -50.9 116.6 -53.5 122.1 -56 127.5 -58.3 133 -60.5 138.4 -62.5 143.8 -64.4 149.2 -66.1 154.5 -67.6 159.8 -69 165 -70.2 170.2 -71.2 175.3 -72.1 180.3 -72.8 185.3 -73.4 190.2 -73.8 195 -74.1 199.6 -74.2 204.2 -74.2 208.7 -74 213 -73.7 217.3 -73.2 221.4 -72.6 225.4 -71.9 229.2 -71 232.9 -70 236.4 -68.9 239.8 -67.7 243 -66.4 246.1 -64.9 249 -63.4 251.7 -61.7 254.3 -60 256.7 -58.2 258.8 -56.3 260.9 -54.3 262.7 -52.3 264.3 -50.1 265.7 -48 267 -45.7 268 -43.5 268.9 -41.2 269.5 -38.8 270" vector-effect="non-scaling-stroke"/><use href="#f01-rh0" transform="rotate(32.7)"/><use href="#f01-rh0" transform="rotate(65.5)"/><use href="#f01-rh0" transform="rotate(98.2)"/><use href="#f01-rh0" transform="rotate(130.9)"/><use href="#f01-rh0" transform="rotate(163.6)"/><use href="#f01-rh0" transform="rotate(196.4)"/><use href="#f01-rh0" transform="rotate(229.1)"/><use href="#f01-rh0" transform="rotate(261.8)"/><use href="#f01-rh0" transform="rotate(294.5)"/><use href="#f01-rh0" transform="rotate(327.3)"/></g><use href="#f01-rh" transform="rotate(5.5)"/><use href="#f01-rh" transform="rotate(10.9)"/><use href="#f01-rh" transform="rotate(16.4)"/><use href="#f01-rh" transform="rotate(21.8)"/><use href="#f01-rh" transform="rotate(27.3)"/><g id="f01-rc"><path id="f01-rc0" d="M64 0 68 0.9 71.5 1.9 74.2 2.9 75.9 4 76.6 5 76.3 6 75.5 6.9 74.6 7.8 73.7 8.7 73.4 9.7 73.5 10.7 74 11.7 74.8 12.8 75.3 14 75.3 15 74.4 15.8 72.5 16.4 69.6 16.7 65.9 16.7 61.8 16.6 57.7 16.3 54.1 16 51.3 15.9 49.4 16.1 48.6 16.5 48.5 17.2 48.9 18.1 49.5 19 49.9 19.9 49.9 20.7 49.4 21.2 48.5 21.6 47.4 21.8 46.4 22.1 46 22.7 46.3 23.6 47.5 25 49.6 26.9 52.3 29.3 55.4 32" vector-effect="non-scaling-stroke"/><use href="#f01-rc0" transform="rotate(30)"/><use href="#f01-rc0" transform="rotate(60)"/><use href="#f01-rc0" transform="rotate(90)"/><use href="#f01-rc0" transform="rotate(120)"/><use href="#f01-rc0" transform="rotate(150)"/><use href="#f01-rc0" transform="rotate(180)"/><use href="#f01-rc0" transform="rotate(210)"/><use href="#f01-rc0" transform="rotate(240)"/><use href="#f01-rc0" transform="rotate(270)"/><use href="#f01-rc0" transform="rotate(300)"/><use href="#f01-rc0" transform="rotate(330)"/></g><use href="#f01-rc" transform="rotate(3.8)"/><use href="#f01-rc" transform="rotate(7.5)"/><use href="#f01-rc" transform="rotate(11.3)"/><use href="#f01-rc" transform="rotate(15)"/><use href="#f01-rc" transform="rotate(18.8)"/><use href="#f01-rc" transform="rotate(22.5)"/><use href="#f01-rc" transform="rotate(26.3)"/><g id="f01-ri"><path id="f01-ri0" d="M53.1 0 52.9 -1.6 52.4 -3.2 51.5 -4.6 50.2 -6 48.7 -7.2 46.8 -8.3 44.6 -9.1 42.2 -9.7 39.6 -10 36.8 -10 33.8 -9.8 30.7 -9.2 27.6 -8.4 24.4 -7.2 21.2 -5.7 18.1 -3.9 15.1 -1.8 12.2 0.5 9.5 3.1 7 5.9 4.7 8.8 2.6 12 0.8 15.2 -0.7 18.5 -1.9 21.9 -2.8 25.3 -3.4 28.6 -3.8 31.9 -3.8 35 -3.5 37.9 -3 40.7 -2.2 43.2 -1.2 45.5 0 47.5 1.3 49.2 2.8 50.5 4.4 51.5 6 52.1 7.6 52.4 9.2 52.3" vector-effect="non-scaling-stroke"/><use href="#f01-ri0" transform="rotate(40)"/><use href="#f01-ri0" transform="rotate(80)"/><use href="#f01-ri0" transform="rotate(120)"/><use href="#f01-ri0" transform="rotate(160)"/><use href="#f01-ri0" transform="rotate(200)"/><use href="#f01-ri0" transform="rotate(240)"/><use href="#f01-ri0" transform="rotate(280)"/><use href="#f01-ri0" transform="rotate(320)"/></g><use href="#f01-ri" transform="rotate(6.7)"/><use href="#f01-ri" transform="rotate(13.3)"/><use href="#f01-ri" transform="rotate(20)"/><use href="#f01-ri" transform="rotate(26.7)"/><use href="#f01-ri" transform="rotate(33.3)"/></symbol>
+<g id="f01-w" fill="none" stroke="currentColor"><path id="f01-wl" d="M-600 12.6q6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7 6 4.7 12 0.5 6 -4.6 12 0.3 6 5 12 0 6 -5.4 12 -0.3 6 5.4 12 -0.4 6 -6.2 12 -0.7 6 5.6 12 -0.9 6 -6.7 12 -1.1 6 5.7 12 -1.3 6 -7 12 -1.4 6 5.6 12 -1.6 6 -7.2 12 -1.7 6 5.4 12 -1.8 6 -7.1 12 -1.8 6 5 12 -1.9 6 -6.8 12 -1.9 6 4.7 12 -1.9 6 -6.2 12 -1.7 6 4.1 12 -1.8 6 -5.5 12 -1.6 6 3.7 12 -1.4 6 -4.7 12 -1.3 6 3.1 12 -1.1 6 -3.8 12 -0.9 6 2.6 12 -0.7 6 -2.9 12 -0.5 6 2.1 12 -0.3 6 -2 12 0 6 1.8 12 0.3 6 -1.3 12 0.4 6 1.5 12 0.7 6 -0.6 12 0.9 6 1.4 12 1.1 6 -0.1 12 1.3 6 1.3 12 1.4 6 0.2 12 1.6 6 1.5 12 1.7 6 0.2 12 1.8 6 1.8 12 1.8 6 0 12 1.9 6 2.1 12 1.9 6 -0.5 12 1.9 6 2.5 12 1.7 6 -1.1 12 1.8 6 3.1 12 1.6 6 -1.9 12 1.4 6 3.6 12 1.3 6 -2.7 12 1.1 6 4.2 12 0.9 6 -3.6 12 0.7" transform="translate(0 4.7)"/><use href="#f01-wl" transform="translate(487.5 -28.1)"/><use href="#f01-wl" transform="translate(525 -18.7)"/><use href="#f01-wl" transform="translate(562.5 -9.4)"/><use href="#f01-wl" transform="translate(37.5 9.4)"/><use href="#f01-wl" transform="translate(75 18.8)"/><use href="#f01-wl" transform="translate(112.5 28.1)"/><use href="#f01-wl" transform="translate(150 37.5)"/><use href="#f01-wl" transform="translate(187.5 46.9)"/><use href="#f01-wl" transform="translate(225 56.3)"/><use href="#f01-wl" transform="translate(262.5 65.6)"/><use href="#f01-wl" transform="translate(300 75)"/><use href="#f01-wl" transform="translate(337.5 84.4)"/><use href="#f01-wl" transform="translate(375 93.8)"/><use href="#f01-wl" transform="translate(412.5 103.1)"/><use href="#f01-wl" transform="translate(450 112.5)"/><use href="#f01-wl" transform="translate(487.5 121.9)"/><use href="#f01-wl" transform="translate(525 131.3)"/><use href="#f01-wl" transform="translate(562.5 140.6)"/><use href="#f01-wl" transform="translate(0 150)"/><use href="#f01-wl" transform="translate(37.5 159.4)"/><use href="#f01-wl" transform="translate(75 168.8)"/><use href="#f01-wl" transform="translate(112.5 178.1)"/><use href="#f01-wl" transform="translate(150 187.5)"/><use href="#f01-wl" transform="translate(187.5 196.9)"/><use href="#f01-wl" transform="translate(225 206.3)"/><use href="#f01-wl" transform="translate(262.5 215.6)"/><use href="#f01-wl" transform="translate(300 225)"/><use href="#f01-wl" transform="translate(337.5 234.4)"/><use href="#f01-wl" transform="translate(375 243.8)"/><use href="#f01-wl" transform="translate(412.5 253.1)"/><use href="#f01-wl" transform="translate(450 262.5)"/><use href="#f01-wl" transform="translate(487.5 271.9)"/><use href="#f01-wl" transform="translate(525 281.3)"/><use href="#f01-wl" transform="translate(562.5 290.6)"/><use href="#f01-wl" transform="translate(0 300)"/><use href="#f01-wl" transform="translate(37.5 309.4)"/><use href="#f01-wl" transform="translate(75 318.8)"/></g>
+        <pattern id="f01-waves-teal" style="color: #18a9a4" patternUnits="userSpaceOnUse" width="600" height="300"><use href="#f01-w" /></pattern>
+        <linearGradient id="f01-hg" x1="0" y1="0" x2="0" y2="1"><stop offset="0.15" stop-color="#ffffff"/><stop offset="0.78" stop-color="#c4f5ee"/><stop offset="1" stop-color="#8ce3da"/></linearGradient>
+      </defs>
+    </svg>
+
+    <div id="f01-night" class="clip" data-start="0" data-duration="4.5" data-track-index="0">
+      <svg id="f01-night-waves" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="1920" height="1080" fill="url(#f01-waves-teal)" opacity="0.4" />
+      </svg>
+      <div id="f01-night-rosette">
+        <svg viewBox="-460 -460 920 920" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><use href="#f01-rosette" x="-460" y="-460" width="920" height="920" /></svg>
+      </div>
+    </div>
+
+    <div id="f01-stage" class="clip" data-start="0" data-duration="4.5" data-track-index="1">
+        <div id="f01-card0" class="f01-card" data-layout-allow-occlusion>
+          <svg id="f01-stream0" class="f01-stream" viewBox="0 -24 280 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="f01-sg0" x1="0" y1="0" x2="280" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5fd4c9" stop-opacity="0.85"/><stop offset="1" stop-color="#5fd4c9" stop-opacity="0"/></linearGradient>
+              <clipPath id="f01-sc0"><rect id="f01-sr0" x="0" y="-24" width="0" height="48" /></clipPath>
+            </defs>
+            <g clip-path="url(#f01-sc0)" fill="none" stroke="url(#f01-sg0)" stroke-linecap="round">
+              <path d="M0 -4 C 40 -18, 80 10, 130 -4 S 220 -18, 280 -6" stroke-width="2" />
+              <path d="M0 4 C 40 -10, 80 18, 130 4 S 220 -10, 280 2" stroke-width="1.2" />
+              <path id="f01-sd0" d="M0 0 C 40 -14, 80 14, 130 0 S 220 -14, 280 -2" stroke-width="1.6" stroke-dasharray="10 14" />
+            </g>
+          </svg>
+          <div id="f01-name0" class="f01-name"></div>
+          <div class="f01-row2">
+            <span id="f01-sub0" class="f01-sub"></span>
+            <span class="f01-amt" style="color: #285d3f">+2,473</span>
+          </div>
+        </div>
+        <div id="f01-card1" class="f01-card" data-layout-allow-occlusion>
+          <svg id="f01-stream1" class="f01-stream" viewBox="0 -24 280 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="f01-sg1" x1="0" y1="0" x2="280" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5fd4c9" stop-opacity="0.85"/><stop offset="1" stop-color="#5fd4c9" stop-opacity="0"/></linearGradient>
+              <clipPath id="f01-sc1"><rect id="f01-sr1" x="0" y="-24" width="0" height="48" /></clipPath>
+            </defs>
+            <g clip-path="url(#f01-sc1)" fill="none" stroke="url(#f01-sg1)" stroke-linecap="round">
+              <path d="M0 -4 C 40 -18, 80 10, 130 -4 S 220 -18, 280 -6" stroke-width="2" />
+              <path d="M0 4 C 40 -10, 80 18, 130 4 S 220 -10, 280 2" stroke-width="1.2" />
+              <path id="f01-sd1" d="M0 0 C 40 -14, 80 14, 130 0 S 220 -14, 280 -2" stroke-width="1.6" stroke-dasharray="10 14" />
+            </g>
+          </svg>
+          <div id="f01-name1" class="f01-name"></div>
+          <div class="f01-row2">
+            <span id="f01-sub1" class="f01-sub"></span>
+            <span class="f01-amt" style="color: #285d3f">+30,000</span>
+          </div>
+        </div>
+        <div id="f01-card2" class="f01-card" data-layout-allow-occlusion>
+          <svg id="f01-stream2" class="f01-stream" viewBox="0 -24 280 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="f01-sg2" x1="0" y1="0" x2="280" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5fd4c9" stop-opacity="0.85"/><stop offset="1" stop-color="#5fd4c9" stop-opacity="0"/></linearGradient>
+              <clipPath id="f01-sc2"><rect id="f01-sr2" x="0" y="-24" width="0" height="48" /></clipPath>
+            </defs>
+            <g clip-path="url(#f01-sc2)" fill="none" stroke="url(#f01-sg2)" stroke-linecap="round">
+              <path d="M0 -4 C 40 -18, 80 10, 130 -4 S 220 -18, 280 -6" stroke-width="2" />
+              <path d="M0 4 C 40 -10, 80 18, 130 4 S 220 -10, 280 2" stroke-width="1.2" />
+              <path id="f01-sd2" d="M0 0 C 40 -14, 80 14, 130 0 S 220 -14, 280 -2" stroke-width="1.6" stroke-dasharray="10 14" />
+            </g>
+          </svg>
+          <div id="f01-name2" class="f01-name"></div>
+          <div class="f01-row2">
+            <span id="f01-sub2" class="f01-sub"></span>
+            <span class="f01-amt" style="color: #7d4a40">−18,345</span>
+          </div>
+        </div>
+        <div id="f01-card3" class="f01-card" data-layout-allow-occlusion>
+          <svg id="f01-stream3" class="f01-stream" viewBox="0 -24 280 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="f01-sg3" x1="0" y1="0" x2="280" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5fd4c9" stop-opacity="0.85"/><stop offset="1" stop-color="#5fd4c9" stop-opacity="0"/></linearGradient>
+              <clipPath id="f01-sc3"><rect id="f01-sr3" x="0" y="-24" width="0" height="48" /></clipPath>
+            </defs>
+            <g clip-path="url(#f01-sc3)" fill="none" stroke="url(#f01-sg3)" stroke-linecap="round">
+              <path d="M0 -4 C 40 -18, 80 10, 130 -4 S 220 -18, 280 -6" stroke-width="2" />
+              <path d="M0 4 C 40 -10, 80 18, 130 4 S 220 -10, 280 2" stroke-width="1.2" />
+              <path id="f01-sd3" d="M0 0 C 40 -14, 80 14, 130 0 S 220 -14, 280 -2" stroke-width="1.6" stroke-dasharray="10 14" />
+            </g>
+          </svg>
+          <div id="f01-name3" class="f01-name"></div>
+          <div class="f01-row2">
+            <span id="f01-sub3" class="f01-sub"></span>
+            <span class="f01-amt" style="color: #7d4a40">−32,064</span>
+          </div>
+        </div>
+        <div id="f01-disc0" class="f01-disc" data-layout-allow-occlusion><img src="assets/logos/fubon.webp" alt="" /></div>
+        <div id="f01-label0" class="f01-label"></div>
+        <div id="f01-disc1" class="f01-disc" data-layout-allow-occlusion><img src="assets/logos/fubon.webp" alt="" /></div>
+        <div id="f01-label1" class="f01-label"></div>
+        <div id="f01-disc2" class="f01-disc" data-layout-allow-occlusion><img src="assets/logos/esun.webp" alt="" /></div>
+        <div id="f01-label2" class="f01-label"></div>
+        <div id="f01-disc3" class="f01-disc" data-layout-allow-occlusion><img src="assets/logos/yuanta-bank.webp" alt="" /></div>
+        <div id="f01-label3" class="f01-label"></div>
+      <svg id="f01-head" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <text id="f01-l1" x="960" y="880" text-anchor="middle" fill="url(#f01-hg)"></text>
+        <text id="f01-l2" x="960" y="960" text-anchor="middle" fill="url(#f01-hg)"></text>
+        <text id="f01-l2q" x="960" y="960" text-anchor="middle" fill="transparent" opacity="0"><tspan id="f01-l2qa"></tspan><tspan id="f01-l2qb" fill="#5fd4c9"></tspan></text>
+      </svg>
+    </div>
+
+    <script>
+      (function () {
+        window.__timelines = window.__timelines || {};
+        const STR = {
+          "lang": "zh-Hant",
+          "names": [
+            "台北富邦銀行 7028",
+            "台北富邦銀行 7036",
+            "玉山銀行",
+            "元大銀行 7819"
+          ],
+          "sub": "10 月淨變動",
+          "nodes": [
+            "富邦 7028",
+            "富邦 7036",
+            "玉山",
+            "元大 7819"
+          ],
+          "line1": "錢流過四個帳戶，",
+          "line2": "這個月，到底流去哪了",
+          "q": "？",
+          "headSize": 64,
+          "cardW": 440
+        };
+        const DUR = 4.5;
+        const FILM_START = 0;
+        const root = document.querySelector('[data-composition-id="01-hook"]');
+        const $ = (id) => root.querySelector('[id="f01-' + id + '"]');
+        const tl = gsap.timeline({ paused: true });
+
+        // ground: rosette angle continuous across the film (0.6°/s)
+        tl.fromTo($("night-rosette"), { rotation: 0.6 * FILM_START },
+          { rotation: 0.6 * (FILM_START + DUR), duration: DUR, ease: "none" }, 0);
+
+        // cards (pop order 7028, 7036, 玉山, 7819) and their nodes
+        const CARDS = [
+          { cx: 500, cy: 330, tilt: -2, dx: 5.2, dy: -3, node: [360, 640] },
+          { cx: 1420, cy: 300, tilt: 1.5, dx: -4.2, dy: 4.2, node: [1000, 340] },
+          { cx: 560, cy: 600, tilt: 1.5, dx: 4.2, dy: 4.2, node: [1180, 747] },
+          { cx: 1380, cy: 620, tilt: -2.5, dx: -5.2, dy: -3, node: [1340, 340] },
+        ];
+        const W = STR.cardW, H = 116;
+        CARDS.forEach((c, i) => {
+          $("name" + i).textContent = STR.names[i];
+          $("sub" + i).textContent = STR.sub;
+          $("label" + i).textContent = STR.nodes[i];
+        });
+        [$("l1"), $("l2"), $("l2q")].forEach((el) => el.setAttribute("font-size", String(STR.headSize)));
+        $("l1").textContent = STR.line1;
+        $("l2").textContent = STR.line2 + STR.q;
+        $("l2qa").textContent = STR.line2;
+        $("l2qb").textContent = STR.q;
+        const POP0 = 0.3, POP_GAP = 0.5, POP_DUR = 0.5;
+        const FADE_AT = 3.5, FADE_DUR = 0.35;
+        const FLY_AT = 3.55, FLY_DUR = 0.7;
+        const LABEL_AT = 4.12;
+        const expoOut = gsap.parseEase("expo.out");
+        const p2Out = gsap.parseEase("power2.out");
+        const p2InOut = gsap.parseEase("power2.inOut");
+        const clamp = (x) => Math.max(0, Math.min(1, x));
+        const els = CARDS.map((c, i) => {
+          const card = $("card" + i), disc = $("disc" + i), label = $("label" + i);
+          card.style.left = (c.cx - W / 2) + "px";
+          card.style.top = (c.cy - H / 2) + "px";
+          card.style.width = W + "px";
+          $("stream" + i).style.left = W + "px";
+          disc.style.left = (c.node[0] - 44) + "px";
+          disc.style.top = (c.node[1] - 44) + "px";
+          label.style.left = (c.node[0] - 120) + "px";
+          label.style.top = (c.node[1] + 52) + "px";
+          return { card, disc, label, sr: $("sr" + i), sd: $("sd" + i) };
+        });
+
+        function render(t) {
+          CARDS.forEach((c, i) => {
+            const e = els[i];
+            const popAt = POP0 + POP_GAP * i;
+            const pp = clamp((t - popAt) / POP_DUR);
+            const s = 0.85 + 0.15 * expoOut(pp);
+            const op = p2Out(pp);
+            const f = t / DUR;
+            const ox = c.dx * f, oy = c.dy * f;
+            const fade = 1 - clamp((t - FADE_AT) / FADE_DUR);
+            e.card.style.opacity = String(op * fade);
+            e.card.style.transform = "translate(" + ox + "px," + oy + "px) rotate(" + c.tilt + "deg) scale(" + s + ")";
+            // stream: draws on after the pop, dashes run along it at 40px/s
+            const sp = clamp((t - popAt - 0.15) / 0.8);
+            e.sr.setAttribute("width", String(280 * p2Out(sp)));
+            e.sd.setAttribute("stroke-dashoffset", String(-40 * t));
+            // disc: rides the card, then flies to its node
+            const a = c.tilt * Math.PI / 180;
+            const lx = (-W / 2 + 56) * s, ly = 0;
+            const cardX = c.cx + ox + lx * Math.cos(a) - ly * Math.sin(a);
+            const cardY = c.cy + oy + lx * Math.sin(a) + ly * Math.cos(a);
+            const k = p2InOut(clamp((t - FLY_AT) / FLY_DUR));
+            const x = cardX + (c.node[0] - cardX) * k;
+            const y = cardY + (c.node[1] - cardY) * k;
+            const ds = (64 / 88) * s + (1 - (64 / 88) * s) * k;
+            const rot = c.tilt * (1 - k);
+            e.disc.style.opacity = String(op);
+            e.disc.style.transform = "translate(" + (x - c.node[0]) + "px," + (y - c.node[1]) + "px) rotate(" + rot + "deg) scale(" + ds + ")";
+            // node label prints under the disc (stepped)
+            const lp = clamp((t - LABEL_AT - 0.05 * i) / 0.24);
+            const step = Math.floor(lp * 4) / 4;
+            e.label.style.clipPath = "inset(0% " + (100 - step * 100) + "% 0% 0%)";
+          });
+        }
+        let driverT = 0;
+        const driver = { get t() { return driverT; }, set t(x) { driverT = x; render(x); } };
+        tl.fromTo(driver, { t: 0 }, { t: DUR, duration: DUR, ease: "none" }, 0);
+        render(0);
+
+        // headline: line 1 at 1.9, line 2 0.35s later; the question mark flashes teal once
+        tl.fromTo($("l1"), { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 1.9);
+        tl.fromTo($("l2"), { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 2.25);
+        tl.fromTo($("l2q"), { opacity: 0 }, { opacity: 1, duration: 0.12, ease: "power1.out" }, 2.8);
+        tl.to($("l2q"), { opacity: 0, duration: 0.45, ease: "power2.out" }, 2.95);
+        // headline lifts and fades
+        tl.to([$("l1"), $("l2")], { opacity: 0, y: -24, duration: 0.4, ease: "power2.in", stagger: 0.05 }, 3.5);
+
+        tl.set({}, {}, DUR);
+        window.__timelines["01-hook"] = tl;
+      })();
+    </script>
+  </div>
+</template>
