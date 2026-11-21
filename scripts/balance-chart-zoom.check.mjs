@@ -105,6 +105,31 @@ test("a single-series snapshot restores its scale on click and when the amount c
   await expect(ticks(page)).not.toHaveText(original);
 });
 
+const multiCurrencyRows = rows.map((row, index) => ({
+  ...row,
+  netAssets: [...row.netAssets, { currency: "USD", value: 10 + index }],
+}));
+
+for (const [setting, initialProps, changedProps] of [
+  ["currency", { rows: multiCurrencyRows, currency: "TWD" }, { currency: "USD" }],
+  ["chart mode", { rows, diverging: false }, { diverging: true }],
+]) test(`snapshot restores the default Y-axis when switching ${setting}`, async (t) => {
+  const reference = await openChart(t, "snapshot", { ...initialProps, ...changedProps });
+  const defaultTicks = await ticks(reference).allTextContents();
+  const page = await openChart(t, "snapshot", initialProps);
+  const reset = page.locator(".sparkline-range-button");
+  const originalTicks = await ticks(page).allTextContents();
+
+  await gesture(page, 0.2, 0.7);
+  await expect(reset).toBeVisible();
+  await expect(ticks(page)).not.toHaveText(originalTicks);
+  await expect(ticks(page)).not.toHaveText(defaultTicks);
+
+  await page.evaluate((props) => window.updateChartProps(props), changedProps);
+  await expect(reset).toBeHidden();
+  await expect(ticks(page)).toHaveText(defaultTicks);
+});
+
 test("history keeps zoom while picking the linked row across pages and ignoring a small drag", async (t) => {
   const page = await openChart(t, "history", { open: true, account: account("fund"), rows });
   const reset = page.locator(".history-chart-reset");
