@@ -3,11 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { PGlite } from "@electric-sql/pglite";
+import { amcheck } from "@electric-sql/pglite/contrib/amcheck";
 import { live, type PGliteWithLive } from "@electric-sql/pglite/live";
 import { createViewPortServer, type ViewSource } from "../src/lib/data-views/server/view-port.ts";
 import {
   createPgliteOperationalProvider,
 } from "../src/ledger/pglite/operational.ts";
+import { repairCorruptCatalogIndexes, type CatalogIndexRepair } from "../src/ledger/pglite/catalog-repair.ts";
 import { installFinancialStore } from "../src/ledger/pglite/store-layout.ts";
 import type { PGliteStore } from "../src/ledger/pglite/transaction.ts";
 import { startPgliteWalCheckpoints } from "../src/ledger/pglite/wal-checkpoint.ts";
@@ -34,6 +36,20 @@ export type PGliteViewWorkerRuntime = {
   close(): Promise<void>;
 };
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logCatalogRepair(repair: CatalogIndexRepair): void {
+  if (repair.status === "repaired") {
+    console.error("pglite-catalog-reindexed", repair.corrupt.join(", "));
+  } else if (repair.status === "repair-failed") {
+    console.error("pglite-catalog-reindex-failed", repair.corrupt.join(", "), messageOf(repair.error));
+  } else if (repair.status === "check-failed") {
+    console.error("pglite-catalog-check-failed", messageOf(repair.error));
+  }
+}
+
 export async function startPGliteViewWorker(
   port: MessagePort,
   createViewSource: PGliteWorkerViewSourceFactory,
@@ -44,7 +60,8 @@ export async function startPGliteViewWorker(
   let db: PGliteWithLive | undefined;
   let database: PGliteStore;
   try {
-    db = await PGlite.create(ownedDataDir, { extensions: { live } }) as PGliteWithLive;
+    db = await PGlite.create(ownedDataDir, { extensions: { live, amcheck } }) as PGliteWithLive;
+    logCatalogRepair(await repairCorruptCatalogIndexes(db as unknown as PGlite));
     database = await installFinancialStore(db as unknown as import("@electric-sql/pglite").PGlite);
   } catch (error) {
     await db?.close().catch(() => undefined);
