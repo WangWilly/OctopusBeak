@@ -30,17 +30,21 @@ async function findCorruptCatalogIndexes(db: PGlite): Promise<string[]> {
       SELECT c.oid::regclass::text AS name
       FROM pg_class c JOIN pg_am am ON am.oid = c.relam
       WHERE am.amname = 'btree'
-        AND c.relnamespace = 'pg_catalog'::regnamespace
+        AND c.relnamespace IN ('pg_catalog'::regnamespace, 'pg_toast'::regnamespace)
         AND c.relpersistence = 'p'`);
     const corrupt: string[] = [];
+    let failure: { error: unknown } | undefined;
     for (const { name } of rows) {
       try {
-        await db.query("SELECT bt_index_check($1::regclass)", [name]);
+        // heapallindexed also finds catalog rows that are missing from the index.
+        await db.query("SELECT bt_index_check($1::regclass, true)", [name]);
       } catch (error) {
-        if (!isCorruption(error)) throw error;
-        corrupt.push(name);
+        if (isCorruption(error)) corrupt.push(name);
+        else failure ??= { error };
       }
     }
+    // A check that could not run must not hide corruption another index showed.
+    if (failure && corrupt.length === 0) throw failure.error;
     return corrupt;
   } finally {
     // A leftover amcheck is harmless; failing to drop it must not hide the result.
@@ -49,7 +53,7 @@ async function findCorruptCatalogIndexes(db: PGlite): Promise<string[]> {
 }
 
 /**
- * Check every system catalog B-tree index and rebuild them all if any is
+ * Check every system catalog and catalog TOAST B-tree index and rebuild them all if any is
  * corrupt. A corrupt catalog index lets plain reads succeed while catalog
  * writes, such as the temporary views a live query creates, fail.
  *
