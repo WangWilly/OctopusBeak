@@ -93,6 +93,11 @@ export function createPGliteFinancialLiveViews(
         let stopped = false;
         let stopWatch = () => {};
         const fail = (error: unknown) => {
+          console.error(
+            "financial-live-view-failed",
+            view,
+            error instanceof Error ? error.message : String(error),
+          );
           for (const listener of listeners) listener.error(error);
         };
         const publish = (value: unknown) => {
@@ -176,7 +181,7 @@ export function createPGliteFinancialLiveViews(
           initialReady = true;
           await recompute();
         } catch (error) {
-          for (const observer of listeners) observer.error(error);
+          fail(error);
           await stop();
           throw error;
         }
