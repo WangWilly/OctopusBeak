@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Area, AreaChart, Tooltip } from "layerchart";
   import { curveLinear, curveStepAfter } from "d3-shape";
+  import { createBalanceChartZoom } from "$lib/shared-accounts/balance-chart-zoom.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import type { HistoryChartPoint } from "$lib/shared-accounts/balance-history-chart.ts";
@@ -24,38 +25,20 @@
     height: number;
   };
 
-  let brushedYDomain: [number, number] | null = null;
-  let yRangeReset = 0;
+  const zoom = createBalanceChartZoom({ click: "select-day", defaultDomain: () => [yAxis.min, yAxis.max] });
   let lastSignature = "";
 
   $: signature = `${currency}:${points[0]?.day ?? ""}:${points.at(-1)?.day ?? ""}:${points.length}`;
   $: if (signature !== lastSignature) {
     lastSignature = signature;
-    resetYRange();
+    zoom.reset();
   }
   $: curve = stepped ? curveStepAfter : curveLinear;
   $: xDomain = points.map((point) => point.position);
   $: yAxis = buildTrendYAxis(points.map((point) => point.balance));
-  $: yDomain = brushedYDomain ?? [yAxis.min, yAxis.max];
+  $: yDomain = $zoom.range ?? [yAxis.min, yAxis.max];
   $: last = points.at(-1) ?? null;
   $: highlighted = highlightDay === null ? null : points.find((point) => point.day === highlightDay) ?? null;
-
-  function resetYRange() {
-    brushedYDomain = null;
-    yRangeReset += 1;
-  }
-
-  /**
-   * The chart owns the zoom, so a click that picks a day leaves it in place;
-   * only the reset button clears it. A drag shorter than a few percent of the
-   * axis is a wobbling click, not a zoom.
-   */
-  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null>; reset: () => void } }) {
-    const [start, end] = brush.y;
-    if (!brush.active || typeof start !== "number" || typeof end !== "number") return;
-    if (Math.abs(end - start) >= (yDomain[1] - yDomain[0]) * 0.03) brushedYDomain = [Math.min(start, end), Math.max(start, end)];
-    brush.reset();
-  }
 
   function pointAt(position: unknown) {
     return typeof position === "string" ? points[Number(position)] ?? null : null;
@@ -97,12 +80,12 @@
 <div class="history-chart" data-tone={tone} data-history-chart>
   {#if points.length > 0}
     <div class="history-chart-controls">
-      {#if brushedYDomain}
-        <button class="history-chart-reset" type="button" onclick={resetYRange}>{$t.spending.chartReset}</button>
+      {#if $zoom.range}
+        <button class="history-chart-reset" type="button" onclick={zoom.reset}>{$t.spending.chartReset}</button>
       {/if}
     </div>
     <div class="history-chart-stage" role="img" aria-label={label}>
-      {#key `${signature}:${yRangeReset}`}
+      {#key $zoom.resetKey}
         <AreaChart
           data={points}
           x="position"
@@ -114,7 +97,7 @@
           axis={true}
           grid={{ y: true }}
           rule={false}
-          brush={{ axis: "y", zoomOnBrush: false, clickToReset: false, onBrushEnd: trackYRange }}
+          brush={zoom.brush}
           tooltipContext={{ mode: "band", onclick: selectPoint }}
           padding={{ top: 12, right: 14, bottom: 24, left: 52 }}
           height={220}
