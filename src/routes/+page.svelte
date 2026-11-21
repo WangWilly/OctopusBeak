@@ -151,6 +151,9 @@
     ): Promise<void>;
   } | undefined;
   let signInSettingsGroupId: string | null = null;
+  // The controller owns navigation and credential presentation throughout onboarding.
+  $: availableSignInSettingsGroupId = requiredOnboardingRoute(onboardingState) ? null : signInSettingsGroupId;
+  $: if (availableSignInSettingsGroupId) navigateToRoute("automation");
   let settingsFocus: SettingsFocus | null = null;
   let firstRunWelcomeState: FirstRunWelcomeState | null = null;
   let completingFirstRunWelcome = false;
@@ -716,7 +719,9 @@
         if (!target) return;
         if (target.route === "automation" && target.credentialGroupId) {
           signInSettingsGroupId = target.credentialGroupId;
+          return;
         }
+        signInSettingsGroupId = null;
         if (target.route === "settings") settingsFocus = target.focus;
         navigateToRoute(target.route);
       });
@@ -853,7 +858,7 @@
       onOnboardingWorkflowStarting={workflowStarting}
       onOnboardingWorkflowStarted={workflowStarted}
       onOnboardingWorkflowStartFailed={workflowStartFailed}
-      {signInSettingsGroupId}
+      signInSettingsGroupId={availableSignInSettingsGroupId}
       onSignInSettingsOpened={() => (signInSettingsGroupId = null)}
       onOpenFinancialDataSettings={() => {
         settingsFocus = "financial-data-deletion";

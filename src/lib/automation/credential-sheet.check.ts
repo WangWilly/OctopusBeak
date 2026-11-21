@@ -77,7 +77,7 @@ const onboarding = (overrides: Partial<CredentialSheetContext> = {}) =>
 test("opening resets edits, keeps the last group outside onboarding and clears the search", () => {
   const edited = run([
     { type: "open" },
-    { type: "select-group", groupId: "cathay" },
+    { type: "show-source", groupId: "cathay" },
     { type: "toggle-group", groupId: "maicoin" },
     { type: "search", search: "cat" },
   ]);
@@ -91,8 +91,20 @@ test("opening resets edits, keeps the last group outside onboarding and clears t
   const staged = run([{ type: "stage-value", key: "CATHAY_ID", value: "stale" }], context(), edited);
   const failed = run([{ type: "certificate-file-failed", key: "CATHAY_ID", message: "bad", generation: staged.generation }], context(), staged);
   const reopenedWithoutClose = run([{ type: "open" }], context(), failed);
-  assert.deepEqual(reopenedWithoutClose.changes, NO_CREDENTIAL_CHANGES, "opening an open sheet also drops its edits");
-  assert.deepEqual(reopenedWithoutClose.fileErrors, {});
+  assert.equal(reopenedWithoutClose, failed, "opening the active sheet preserves its editing session");
+});
+
+test("a source destination reveals a filtered-out group in the same editing session", () => {
+  const editing = run([
+    { type: "show-source", groupId: "fubon" },
+    { type: "stage-value", key: "FUBON_ID", value: "draft" },
+    { type: "search", search: "taipei" },
+  ]);
+  const next = run([{ type: "show-source", groupId: "maicoin" }], context(), editing);
+  assert.equal(next.generation, editing.generation);
+  assert.equal(next.changes, editing.changes);
+  assert.equal(next.presentation, "details");
+  assert.equal(credentialSheetView(next, context()).selectedGroup?.id, "maicoin");
 });
 
 test("opening during onboarding selects only a remembered collection group and shows the picker", () => {
@@ -121,11 +133,11 @@ test("opening resets edits before single-source onboarding disables the other so
 test("selecting a group confirms its saved statements, clears the error and closes the guide on change", () => {
   let state = run([{ type: "open" }, { type: "toggle-setup-guide" }]);
   state = { ...state, statementSelectionError: "pick one" };
-  const same = run([{ type: "select-group", groupId: "fubon" }], context(), state);
+  const same = run([{ type: "choose-group", groupId: "fubon" }], context(), state);
   assert.equal(same.setupGuideOpen, true);
   assert.equal(same.statementSelectionConfirmed, true);
   assert.equal(same.statementSelectionError, "");
-  const other = run([{ type: "select-group", groupId: "cathay" }], context(), state);
+  const other = run([{ type: "choose-group", groupId: "cathay" }], context(), state);
   assert.equal(other.setupGuideOpen, false);
   assert.equal(other.statementSelectionConfirmed, false);
 });
@@ -158,7 +170,7 @@ test("onboarding presentation opens a closed sheet and selects a known group", (
 });
 
 test("searching away from the selection picks the first match, or nothing during onboarding", () => {
-  const state = run([{ type: "open" }, { type: "select-group", groupId: "maicoin" }]);
+  const state = run([{ type: "open" }, { type: "show-source", groupId: "maicoin" }]);
   const searched = run([{ type: "search", search: "taipei" }], context(), state);
   assert.equal(searched.selectedGroupId, "fubon");
   assert.deepEqual(credentialSheetView(searched, context()).visibleGroups.map((g) => g.id), ["fubon"]);
@@ -172,7 +184,7 @@ test("searching away from the selection picks the first match, or nothing during
 test("statement toggles confirm the selection; editor, revert and field focus stage through credential changes", () => {
   let state = run([
     { type: "open" },
-    { type: "select-group", groupId: "cathay" },
+    { type: "show-source", groupId: "cathay" },
     { type: "toggle-statement-type", groupId: "cathay", typeId: "deposit" },
   ]);
   assert.equal(state.statementSelectionConfirmed, true);

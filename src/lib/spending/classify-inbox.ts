@@ -92,42 +92,41 @@ export type ClassifyMode = "time" | "merchant";
 /** A merchant row with the purchases it shows and writes, and how many of its purchases the search hides. */
 export type ClassifyMerchantRow = Readonly<{ group: ClassifyMerchantGroup; members: readonly SpendingClassifyQueueItem[]; unmatched: number }>;
 
-/** The control a write comes from: the current row's apply, or 「全部套用」. */
-export type ClassifyControl = Readonly<{ kind: "current"; key: string }> | Readonly<{ kind: "search" }>;
-
 function merchantPurchaseIds(items: readonly SpendingClassifyQueueItem[], key: string): ReadonlySet<string> {
   return new Set(byMerchant(items).find((group) => group.key === key)?.purchaseIds ?? []);
 }
 
-/** The 依時間 rows, newest first: the search's matches, inside 「只看」 when one is set. */
-export function classifyPurchaseRows(items: readonly SpendingClassifyQueueItem[], view: ClassifyView): readonly SpendingClassifyQueueItem[] {
-  const only = view.merchantKey === null ? null : merchantPurchaseIds(items, view.merchantKey);
-  return byTime(items).filter((item) => (only === null || only.has(item.purchaseId)) && matches(item, view.query));
-}
-
-/** The 依商家 rows: each group with a purchase the search matches, showing only those purchases. */
-export function classifyMerchantRows(items: readonly SpendingClassifyQueueItem[], query: string): readonly ClassifyMerchantRow[] {
-  const byId = new Map(items.map((item) => [item.purchaseId, item]));
-  return byMerchant(items).flatMap((group) => {
-    const members = group.purchaseIds.map((id) => byId.get(id)!).filter((item) => matches(item, query));
-    return members.length === 0 ? [] : [{ group, members, unmatched: group.count - members.length }];
-  });
-}
-
-/**
- * The purchases one control writes, which are always the purchases that
- * control shows: the current row's purchase or merchant members, or every
- * row 「全部套用」 covers. A blank search covers nothing.
- */
-export function classifyWriteTargets(items: readonly SpendingClassifyQueueItem[], view: ClassifyView, control: ClassifyControl): ClassifyApplyTargets {
-  if (control.kind === "search") {
-    if (view.query.trim() === "") return capped([]);
-    const merchantKey = view.mode === "merchant" ? null : view.merchantKey;
-    return capped(classifyPurchaseRows(items, { ...view, merchantKey }).map((item) => item.purchaseId));
+/** Visible rows and the exact, capped purchase IDs their controls display and submit. */
+export function classifyInboxList(items: readonly SpendingClassifyQueueItem[], view: ClassifyView) {
+  const only = view.mode === "time" && view.merchantKey !== null ? merchantPurchaseIds(items, view.merchantKey) : null;
+  const visible = byTime(items).filter((item) => (only === null || only.has(item.purchaseId)) && matches(item, view.query));
+  const visibleIds = visible.map((item) => item.purchaseId);
+  // Even in merchant mode a bulk action takes the newest purchases across all groups.
+  const searchTargets = capped(view.query.trim() === "" ? [] : visibleIds);
+  const targetsByKey = new Map<string, ClassifyApplyTargets>();
+  const merchantRows: ClassifyMerchantRow[] = [];
+  if (view.mode === "merchant") {
+    const visibleById = new Map(visible.map((item) => [item.purchaseId, item]));
+    for (const group of byMerchant(items)) {
+      const members: SpendingClassifyQueueItem[] = [];
+      for (const id of group.purchaseIds) {
+        const item = visibleById.get(id);
+        if (item) members.push(item);
+      }
+      if (members.length === 0) continue;
+      merchantRows.push({ group, members, unmatched: group.count - members.length });
+      targetsByKey.set(group.key, capped(members.map((item) => item.purchaseId)));
+    }
+  } else {
+    for (const id of visibleIds) targetsByKey.set(id, capped([id]));
   }
-  if (view.mode !== "merchant")
-    return capped(classifyPurchaseRows(items, view).some((item) => item.purchaseId === control.key) ? [control.key] : []);
-  return capped(classifyMerchantRows(items, view.query).find((row) => row.group.key === control.key)?.members.map((item) => item.purchaseId) ?? []);
+  return {
+    purchaseRows: view.mode === "time" ? visible : [],
+    merchantRows,
+    keys: [...targetsByKey.keys()],
+    searchTargets,
+    currentTargets: (key: string | null) => key === null ? null : targetsByKey.get(key) ?? null,
+  };
 }
 
 /** 「只看」 stays while its merchant has a queued purchase the write left, whether or not the search shows it. */

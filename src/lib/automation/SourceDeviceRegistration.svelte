@@ -100,7 +100,7 @@
 <section class="source-device" aria-labelledby={`${source}-device-title`} data-step={registration.step}>
   <div class="source-device-head">
     <div>
-      <h4 id={`${source}-device-title`} tabindex="-1">{copy.title}</h4>
+      <h4 data-credential-focus="device" id={`${source}-device-title`} tabindex="-1">{copy.title}</h4>
       <p>{copy.description}</p>
       {#if copy.disclosure}
         <p class="source-device-disclosure" role="note">{copy.disclosure}</p>

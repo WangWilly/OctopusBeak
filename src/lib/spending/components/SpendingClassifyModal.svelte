@@ -9,19 +9,16 @@
   import type { PersonalCategoryCode } from "../../../ledger/canonical/personal-category-codes.ts";
   import { SPENDING_CATEGORY_GROUP_BY_CODE, type SpendingCategoryGroup } from "../category-groups.ts";
   import {
-    classifyPurchaseRows,
+    classifyInboxList,
     classifyGroupCodes,
     classifyKeyCommand,
-    classifyMerchantRows,
-    classifyWriteTargets,
     followingKey,
     keepsMerchantFilter,
     movedKey,
-    type ClassifyControl,
     type ClassifyMode,
     type ClassifyView,
   } from "../classify-inbox.ts";
-  import type { ClassifyMerchantGroup } from "../classify-queue.ts";
+  import type { ClassifyApplyTargets, ClassifyMerchantGroup } from "../classify-queue.ts";
   import type { ClassifyQueueStore } from "../classify-queue-store.ts";
   import type { SpendingClassifyDetails, SpendingClassifyQueueItem } from "../model.ts";
   import type { SpendingPageActionOutcome } from "../purchase-spending-session.ts";
@@ -58,13 +55,10 @@
 
   $: items = $state.items ?? [];
   $: view = { mode, query, merchantKey: mode === "merchant" ? null : merchantFilter?.key ?? null } satisfies ClassifyView;
-  $: purchaseRows = classifyPurchaseRows(items, view);
-  $: merchantRows = classifyMerchantRows(items, query);
-  $: keys = mode !== "merchant" ? purchaseRows.map((item) => item.purchaseId) : merchantRows.map((row) => row.group.key);
+  $: inbox = classifyInboxList(items, view);
+  $: ({ purchaseRows, merchantRows, keys, searchTargets } = inbox);
   $: followRows(keys);
-  $: currentControl = currentKey === null ? null : { kind: "current", key: currentKey } satisfies ClassifyControl;
-  $: currentTargets = currentControl ? classifyWriteTargets(items, view, currentControl) : null;
-  $: searchTargets = classifyWriteTargets(items, view, { kind: "search" });
+  $: currentTargets = inbox.currentTargets(currentKey);
   $: categoryText = code ? categoryLabel(code) : "";
   $: disabled = saving || busy;
 
@@ -130,11 +124,9 @@
     }
   }
 
-  async function apply(control: ClassifyControl | null) {
-    if (!control || !code || disabled) return;
+  async function apply(targets: ClassifyApplyTargets | null, scope: "current" | "search") {
+    if (!targets?.purchaseIds.length || !code || disabled) return;
     const shown = view;
-    const targets = classifyWriteTargets(items, shown, control);
-    if (targets.purchaseIds.length === 0) return;
     saving = true;
     notice = "";
     const result = await onApply(targets.purchaseIds, code);
@@ -143,7 +135,7 @@
       toast = { kind: "applied", purchaseIds: targets.purchaseIds };
       group = null;
       code = null;
-      if (control.kind === "search") query = "";
+      if (scope === "search") query = "";
       if (merchantFilter && !keepsMerchantFilter(items, shown, targets.purchaseIds)) merchantFilter = null;
       queue.committed(targets.purchaseIds, result.knowledgeAt);
     } else {
@@ -192,7 +184,7 @@
     } else if (command.kind === "code") {
       pickCode(command.code);
     } else {
-      void apply(currentControl);
+      void apply(currentTargets, "current");
     }
   }
 
@@ -409,7 +401,7 @@
             class="button"
             disabled={disabled || !code || searchTargets.purchaseIds.length === 0}
             data-classify-apply-search
-            onclick={() => void apply({ kind: "search" })}
+            onclick={() => void apply(searchTargets, "search")}
           >{$t.classifyInbox.applySearch(searchTargets.purchaseIds.length, code ? categoryText : "…")}</button>
         </div>
       {/if}
@@ -422,7 +414,7 @@
         disabled={disabled || !code || !currentTargets || currentTargets.purchaseIds.length === 0}
         data-classify-apply
         data-classify-apply-count={currentTargets?.purchaseIds.length ?? 0}
-        onclick={() => void apply(currentControl)}
+        onclick={() => void apply(currentTargets, "current")}
       >
         {#if saving}{$t.classifyInbox.saving}
         {:else if !code}{$t.classifyInbox.keysApply}

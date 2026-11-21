@@ -367,7 +367,7 @@ export type SpendingClassifyDetails = Readonly<{
   }>[];
 }>;
 
-/** Every queued purchase in the range, unpaginated; knowledgeAt is the categorize action's dataVersion. */
+/** Every queued purchase in the range, unpaginated, at the version of this read. Categorization uses the Spending page version. */
 export type SpendingClassifyQueueDto = Readonly<{
   schemaVersion: 1;
   knowledgeAt: number;

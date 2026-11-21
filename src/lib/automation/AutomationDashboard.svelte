@@ -185,6 +185,7 @@ import type {
   });
   const credentialEditorState = credentialEditor.state;
   $: sheet = $credentialEditorState;
+  let credentialForm: HTMLFormElement;
   let syncOpen = false;
   let syncTasks: AutomationTaskRow[] = [];
   let expandedRunDetailsTaskId: string | null = null;
@@ -472,11 +473,28 @@ import type {
     if (task) await runTask(task);
   }
 
-  $: if (signInSettingsGroupId && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
-    const groupId = signInSettingsGroupId;
+  type CredentialDestination = "source" | "statements" | "device";
+
+  async function showCredentialSource(groupId: string | null, destination: CredentialDestination) {
+    dispatchSheet({ type: "show-source", groupId });
+    const { generation, selectedGroupId } = credentialEditor.sheet();
+    await tick();
+    if (!sheet.open || sheet.generation !== generation || sheet.selectedGroupId !== selectedGroupId) return;
+    const target = credentialForm?.querySelector<HTMLElement>(`[data-credential-focus="${destination}"]`)
+      ?? credentialForm?.querySelector<HTMLElement>('[data-credential-focus="source"]');
+    target?.focus();
+  }
+
+  async function openRequestedSignInSettings(groupId: string) {
+    // Let a just-completed save finish rendering its close before opening another source.
+    await tick();
+    if (signInSettingsGroupId !== groupId || credentialEditor.sheet().saving) return;
     onSignInSettingsOpened();
-    openCredentials();
-    selectCredentialGroup(groupId);
+    await showCredentialSource(groupId, "source");
+  }
+
+  $: if (signInSettingsGroupId && !sheet.saving && credentialGroups.some((group) => group.id === signInSettingsGroupId)) {
+    void openRequestedSignInSettings(signInSettingsGroupId);
   }
 
   function registrationBlocksRun(task: Pick<AutomationTaskRow, "credentialGroupId">) {
@@ -487,10 +505,7 @@ import type {
   async function openDeviceRegistration(groupId: string | null | undefined) {
     const source = deviceRegistrationSource(groupId);
     if (!source) return;
-    openCredentials();
-    selectCredentialGroup(source);
-    await tick();
-    document.getElementById(`${source}-device-title`)?.focus();
+    await showCredentialSource(source, "device");
   }
 
   function closeCredentials() {
@@ -604,10 +619,6 @@ import type {
     dispatchSheet({ type: "search", search: (event.currentTarget as HTMLInputElement).value });
   }
 
-  function selectCredentialGroup(groupId: string) {
-    dispatchSheet({ type: "select-group", groupId });
-  }
-
   async function runTask(task: AutomationTaskRow) {
     await runActions.runTask(task);
   }
@@ -706,10 +717,7 @@ import type {
       return;
     }
     if (task.primaryAction === "Configure") {
-      openCredentials();
-      selectCredentialGroup(task.credentialGroupId ?? "");
-      await tick();
-      document.getElementById(`${sheet.selectedGroupId}-statement-selection`)?.focus();
+      await showCredentialSource(task.credentialGroupId ?? null, "statements");
       return;
     }
     if (task.primaryAction !== "Cancel") {
@@ -726,8 +734,7 @@ import type {
     if (submission.kind === "blocked") return;
     runActions.setError("");
     if (submission.kind === "focus-statement-selection") {
-      await tick();
-      document.getElementById(`${submission.groupId}-statement-selection`)?.focus();
+      await showCredentialSource(submission.groupId, "statements");
       return;
     }
     if ((await submission.settled) === "failed") runActions.setError($t.automation.saveCredentialsFailed);
@@ -1400,6 +1407,7 @@ import type {
   >
     <button class="modal-backdrop" type="button" aria-label={$t.automation.closeCredentials} disabled={onboardingSourceSelection} onclick={closeCredentials}></button>
     <form
+      bind:this={credentialForm}
       class="modal-panel credential-modal"
       onsubmit={saveCredentials}
       use:registerOnboardingTarget={{
@@ -1498,7 +1506,7 @@ import type {
             <div class="credential-section-head">
               <InstitutionLogo institution={sourceLogo(group.id)} size={40} />
               <div class="credential-title">
-                <h3 id={`${group.id}-credentials-title`}>{credentialGroupName(group)}</h3>
+                <h3 id={`${group.id}-credentials-title`} data-credential-focus="source" tabindex="-1">{credentialGroupName(group)}</h3>
                 {#if credentialGroupAltName(group)}<p>{credentialGroupAltName(group)}</p>{/if}
               </div>
               <button
@@ -1708,6 +1716,7 @@ import type {
             {#if group.statementTypes?.length}
               <fieldset
                 class="statement-selection"
+                data-credential-focus="statements"
                 id={`${group.id}-statement-selection`}
                 tabindex="-1"
                 aria-describedby={sheet.statementSelectionError ? `${group.id}-statement-error` : undefined}
