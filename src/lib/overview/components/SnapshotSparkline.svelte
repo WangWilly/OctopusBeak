@@ -1,6 +1,7 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
   import type { DailyHistoryRowDto } from "$lib/shared-ledger/types.ts";
+  import { createBalanceChartZoom } from "$lib/shared-accounts/balance-chart-zoom.ts";
   import { locale, t, type Translation } from "$lib/i18n/i18n.ts";
   import { systemTimezone } from "$lib/settings/system-timezone-store.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -25,9 +26,7 @@
   export let diverging = false;
 
   let selectedSeriesKeys: SnapshotDivergingSeriesKey[] = [];
-  let brushedYDomain: [number, number] | null = null;
-  let hasYRange = false;
-  let yRangeReset = 0;
+  const zoom = createBalanceChartZoom({ click: "reset" });
   let lastRows = rows;
   let lastCurrency = currency;
   let lastAmountKey = amountKey;
@@ -38,7 +37,7 @@
     lastCurrency = currency;
     lastAmountKey = amountKey;
     lastDiverging = diverging;
-    resetYRange();
+    zoom.reset();
   }
   $: points = buildSnapshotChartPoints(rows, currency, amountKey, $systemTimezone, $locale);
   $: divergingSeries = diverging
@@ -75,35 +74,10 @@
   $: hasChartData = diverging ? divergingSeries.length > 0 : points.length > 0;
 
   function toggleSeries(key: SnapshotDivergingSeriesKey) {
-    if (selectedSeriesKeys.length === 0) {
-      selectedSeriesKeys = [key];
-      resetYRange();
-      return;
-    }
-    if (selectedSeriesKeySet.has(key)) {
-      selectedSeriesKeys = selectedSeriesKeys.filter((item) => item !== key);
-      resetYRange();
-      return;
-    }
-    selectedSeriesKeys = [...selectedSeriesKeys, key];
-    resetYRange();
-  }
-
-  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
-    const [start, end] = brush.y;
-    if (brush.active && typeof start === "number" && typeof end === "number") {
-      brushedYDomain = [Math.min(start, end), Math.max(start, end)];
-      hasYRange = true;
-      return;
-    }
-    brushedYDomain = null;
-    hasYRange = false;
-  }
-
-  function resetYRange() {
-    brushedYDomain = null;
-    hasYRange = false;
-    yRangeReset += 1;
+    selectedSeriesKeys = selectedSeriesKeySet.has(key)
+      ? selectedSeriesKeys.filter((item) => item !== key)
+      : [...selectedSeriesKeys, key];
+    zoom.reset();
   }
 
   function shortDate(value: unknown) {
@@ -152,12 +126,12 @@
 
 {#if hasChartData}
   <div class="sparkline-container">
-    {#if hasYRange}
+    {#if $zoom.range}
       <div class="sparkline-controls">
-        <button class="sparkline-range-button" type="button" onclick={resetYRange}>{$t.spending.chartReset}</button>
+        <button class="sparkline-range-button" type="button" onclick={zoom.reset}>{$t.spending.chartReset}</button>
       </div>
     {/if}
-    {#key yRangeReset}
+    {#key $zoom.resetKey}
     {#if diverging}
       <div class="sparkline sparkline-diverging" role="img" aria-label={ariaLabel}>
       <div class="snapshot-diverging-stage">
@@ -167,11 +141,11 @@
             x="position"
             y="value"
             transform={{ mode: "domain", axis: "x" }}
-            brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
+            brush={zoom.brush}
             series={plottedDivergingSeries}
             seriesLayout="overlap"
             {xDomain}
-            yDomain={brushedYDomain ?? yDomain}
+            yDomain={$zoom.range ?? yDomain}
             yBaseline={areaBaseline}
             yNice={false}
             axis={true}
@@ -237,9 +211,9 @@
         x="position"
         y="value"
         transform={{ mode: "domain", axis: "x" }}
-        brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
+        brush={zoom.brush}
         {xDomain}
-        yDomain={brushedYDomain ?? yDomain}
+        yDomain={$zoom.range ?? yDomain}
         yBaseline={null}
         yNice
         axis={true}

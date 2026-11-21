@@ -1,5 +1,6 @@
 <script lang="ts">
   import { AreaChart, Tooltip } from "layerchart";
+  import { createBalanceChartZoom } from "$lib/shared-accounts/balance-chart-zoom.ts";
   import { locale, t } from "$lib/i18n/i18n.ts";
   import { buildStackedYAxis, buildTrendYAxis, formatSparklineTick } from "$lib/overview/components/sparkline-format.ts";
   import { formatMoney } from "$lib/shared-money/money.ts";
@@ -22,16 +23,14 @@
   export let label = "";
 
   let selectedSeriesKeys: string[] = [];
-  let brushedYDomain: [number, number] | null = null;
+  const zoom = createBalanceChartZoom({ click: "reset" });
   let lastSignature = "";
-  let hasYRange = false;
-  let yRangeReset = 0;
   type PlotPoint = StackedBalanceChartData["totals"][number] & { position: string };
 
   $: if (chart.signature !== lastSignature) {
     selectedSeriesKeys = [];
     lastSignature = chart.signature;
-    resetYRange();
+    zoom.reset();
   }
   $: chartState = stackedBalanceChartState(chart);
   $: visibleChart = selectStackedBalanceChartSeries(chart, selectedSeriesKeys);
@@ -65,35 +64,10 @@
   $: ariaLabel = $t.chart.labelAria(displayLabel, currency);
 
   function toggleSeries(key: string) {
-    if (selectedSeriesKeys.length === 0) {
-      selectedSeriesKeys = [key];
-      resetYRange();
-      return;
-    }
-    if (selectedKeySet.has(key)) {
-      selectedSeriesKeys = selectedSeriesKeys.filter((item) => item !== key);
-      resetYRange();
-      return;
-    }
-    selectedSeriesKeys = [...selectedSeriesKeys, key];
-    resetYRange();
-  }
-
-  function trackYRange({ brush }: { brush: { active?: boolean; y: Array<number | Date | string | null> } }) {
-    const [start, end] = brush.y;
-    if (brush.active && typeof start === "number" && typeof end === "number") {
-      brushedYDomain = [Math.min(start, end), Math.max(start, end)];
-      hasYRange = true;
-      return;
-    }
-    brushedYDomain = null;
-    hasYRange = false;
-  }
-
-  function resetYRange() {
-    brushedYDomain = null;
-    hasYRange = false;
-    yRangeReset += 1;
+    selectedSeriesKeys = selectedKeySet.has(key)
+      ? selectedSeriesKeys.filter((item) => item !== key)
+      : [...selectedSeriesKeys, key];
+    zoom.reset();
   }
 
   function shortDate(value: unknown) {
@@ -141,25 +115,25 @@
 {#if chartState === "trend"}
   <div class="stacked-balance-chart">
     <div class="stacked-balance-controls">
-      {#if hasYRange}
-        <button class="stacked-balance-range-button" type="button" onclick={resetYRange}>
+      {#if $zoom.range}
+        <button class="stacked-balance-range-button" type="button" onclick={zoom.reset}>
           {$t.spending.chartReset}
         </button>
       {/if}
     </div>
     <div class="stacked-balance-stage" role="img" aria-label={ariaLabel}>
-      {#key `${chart.signature}:${selectedSeriesKeys.join(",")}:${yRangeReset}`}
+      {#key $zoom.resetKey}
       <AreaChart
         data={plottedTotals}
         flatData={plottedTotals}
         x="position"
         y="value"
         transform={{ mode: "domain", axis: "x" }}
-        brush={{ axis: "y", clickToReset: true, onBrushEnd: trackYRange }}
+        brush={zoom.brush}
         series={plottedSeries}
         seriesLayout="stack"
         {xDomain}
-        yDomain={brushedYDomain ?? yDomain}
+        yDomain={$zoom.range ?? yDomain}
         yBaseline={isSingleSeriesSelected ? null : 0}
         yNice={false}
         axis={true}
